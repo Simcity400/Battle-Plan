@@ -135,12 +135,25 @@ fn unique_marker(text: &str, marker: &str) -> usize {
 
 /// The delimited value that follows `marker`, exclusive of the outermost pair.
 /// `text` must already be comment-stripped.
+///
+/// The opening delimiter must be the FIRST non-whitespace thing after the
+/// marker (PowerShell's `@{` is allowed). Searching forward for the next `{`
+/// would happily parse a later decoy: `LANE_LOCAL_BITS = OTHER` followed
+/// anywhere below by an unrelated brace literal holding the expected registry
+/// would pass this sweep while the runtime used `OTHER`.
 fn delimited_after(text: &str, marker: &str, open_ch: char, close_ch: char) -> String {
     let start = unique_marker(text, marker);
     let rest = &text[start + marker.len()..];
-    let open = rest.find(open_ch).unwrap_or_else(|| {
-        panic!("no {open_ch:?}-delimited value opens after {marker:?}")
-    });
+    let head = rest.trim_start();
+    let head = head.strip_prefix('@').unwrap_or(head); // PowerShell `@{`
+    assert!(
+        head.starts_with(open_ch),
+        "the value assigned at {marker:?} does not open with {open_ch:?}; this \
+         sweep only reads a literal written in place, and refuses to search \
+         forward for one that may not be the value the runtime uses. Found: {:?}",
+        &head[..head.len().min(60)]
+    );
+    let open = rest.find(open_ch).expect("asserted above");
     let mut depth = 0i32;
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -326,6 +339,31 @@ fn mask_of(bits: &BTreeSet<u32>) -> u32 {
     bits.iter().fold(0u32, |mask, bit| mask | (1u32 << bit))
 }
 
+/// Asserts `needle` appears EXACTLY ONCE in `text`'s executable code.
+///
+/// A plain `contains` is satisfied by the needle sitting in a COMMENT, so a
+/// script could keep the expected text commented out beside a later, wrong,
+/// live assignment and the check would stay green. Exactly-once also rules out
+/// shadowing: two assignments where the runtime uses the second.
+fn assert_code_contains_once(text: &str, needle: &str, what: &str) {
+    let count = strip_line_comments(text).matches(needle).count();
+    assert_eq!(
+        count, 1,
+        "{what}: expected exactly one executable occurrence of {needle:?}, found \
+         {count} (0 = the line is gone, or survives only in a comment; >1 = a \
+         later assignment shadows the checked one)"
+    );
+}
+
+/// The same, over whitespace-squeezed code, for multi-line expressions.
+fn assert_squeezed_code_contains_once(text: &str, needle: &str, what: &str) {
+    let count = squeeze(&strip_line_comments(text)).matches(needle).count();
+    assert_eq!(
+        count, 1,
+        "{what}: expected exactly one executable occurrence of {needle:?}, found {count}"
+    );
+}
+
 
 /// One script table, reduced to `domain id -> mask`.
 fn check_table(label: &str, observed: &BTreeMap<u16, u32>) {
@@ -364,10 +402,13 @@ fn report_raw_capture_global_masks_match_the_contract() {
     // report call the new assigned bit undefined and block every capture that
     // publishes it.
     let known_shift = COMPACT_STATUS_V1_KNOWN_MASK.count_ones();
-    assert!(
-        text.contains(&format!("KNOWN_MASK = (1 << {known_shift}) - 1")),
-        "report_raw_capture.py KNOWN_MASK is not (1 << {known_shift}) - 1, the contract's \
-         COMPACT_STATUS_V1_KNOWN_MASK ({COMPACT_STATUS_V1_KNOWN_MASK:#x})"
+    assert_code_contains_once(
+        &text,
+        &format!("KNOWN_MASK = (1 << {known_shift}) - 1"),
+        &format!(
+            "report_raw_capture.py KNOWN_MASK must be the contract's \
+             COMPACT_STATUS_V1_KNOWN_MASK ({COMPACT_STATUS_V1_KNOWN_MASK:#x})"
+        ),
     );
     assert_eq!(
         COMPACT_STATUS_V1_KNOWN_MASK,
@@ -431,12 +472,11 @@ fn c0_pass2_spans_lane_local_table_matches_the_contract() {
     // The file's second table must be DERIVED from the first, not a second
     // hand-written registry: two local copies in one file drifted apart from
     // each other before they drifted from the contract.
-    assert!(
-        squeeze(&raw).contains(
-            "LANE_LOCAL_MASKS = { domain: sum(1 << bit for bit in bits) \
-             for domain, bits in DOMAIN_STATUS_BITS.items() }"
-        ),
-        "c0_pass2_spans.py LANE_LOCAL_MASKS is not derived from DOMAIN_STATUS_BITS"
+    assert_squeezed_code_contains_once(
+        &raw,
+        "LANE_LOCAL_MASKS = { domain: sum(1 << bit for bit in bits) \
+         for domain, bits in DOMAIN_STATUS_BITS.items() }",
+        "c0_pass2_spans.py LANE_LOCAL_MASKS must be DERIVED from DOMAIN_STATUS_BITS",
     );
 }
 
@@ -478,18 +518,20 @@ fn production_promotion_lane_local_table_matches_the_contract() {
 fn production_promotion_unknown_status_mask_is_the_contract_complement() {
     let text = read_script("ProductionCapture.Promotion.ps1");
     let expected = format!("{:08X}", !COMPACT_STATUS_V1_KNOWN_MASK);
-    assert!(
-        text.contains(&format!("[uint32]::Parse('{expected}'")),
-        "ProductionCapture.Promotion.ps1's unknown-status mask is not the complement of \
-         COMPACT_STATUS_V1_KNOWN_MASK ({COMPACT_STATUS_V1_KNOWN_MASK:#x}); expected {expected}"
+    assert_code_contains_once(
+        &text,
+        &format!("[uint32]::Parse('{expected}'"),
+        &format!(
+            "ProductionCapture.Promotion.ps1's unknown-status mask must be the \
+             complement of COMPACT_STATUS_V1_KNOWN_MASK \
+             ({COMPACT_STATUS_V1_KNOWN_MASK:#x})"
+        ),
     );
     let expected_failure = format!("[uint32]0x{:X}", COMPACT_STATUS_FAILURE_MASK);
-    assert!(
-        text.contains(&format!(
-            "$script:ProductionPromotionFailureMask = {expected_failure}"
-        )),
-        "ProductionCapture.Promotion.ps1's failure mask is not \
-         COMPACT_STATUS_FAILURE_MASK; expected {expected_failure}"
+    assert_code_contains_once(
+        &text,
+        &format!("$script:ProductionPromotionFailureMask = {expected_failure}"),
+        "ProductionCapture.Promotion.ps1's failure mask must be COMPACT_STATUS_FAILURE_MASK",
     );
 }
 
@@ -499,19 +541,27 @@ fn production_promotion_unknown_status_mask_is_the_contract_complement() {
 /// strict about the wrong thing.
 #[test]
 fn production_promotion_tests_definedness_on_the_globalized_word() {
-    let text = read_script("ProductionCapture.Promotion.ps1");
+    // Comment-stripped throughout: a `contains` over raw source is satisfied by
+    // the text sitting in a comment, and this file's comments quote both forms.
+    let code = strip_line_comments(&read_script("ProductionCapture.Promotion.ps1"));
     assert!(
-        !text.contains("($rawStatusFlags -band $script:ProductionPromotionUnknownStatusMask)"),
+        !code.contains("($rawStatusFlags -band $script:ProductionPromotionUnknownStatusMask)"),
         "the promotion gate applies the unknown-status mask to the RAW per-domain status \
          word; registered lane-local badges must be stripped first"
     );
-    assert!(
-        text.contains("($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask)"),
-        "the promotion gate no longer tests the unknown-status mask against the globalized word"
+    // Two sites: the throwing check, and the completeness receipt it writes.
+    assert_eq!(
+        code.matches("($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask)")
+            .count(),
+        2,
+        "the promotion gate must test the unknown-status mask against the GLOBALIZED \
+         word at both its throwing check and its completeness receipt; a receipt that \
+         disagrees with the check it accompanies is evidence of nothing"
     );
-    assert!(
-        text.contains("function Get-ProductionPromotionGlobalStatusFlags"),
-        "the promotion gate has no globalization helper"
+    assert_code_contains_once(
+        &code,
+        "function Get-ProductionPromotionGlobalStatusFlags",
+        "the promotion gate's globalization helper",
     );
 }
 
@@ -604,6 +654,37 @@ fn a_colon_inside_a_badge_name_is_not_a_key_separator() {
 
 // --- The harness verdict actually reaches the caller -------------------------
 
+/// EVERY `if (<condition>) { ... }` in a PowerShell script, condition
+/// included, as executable text.
+fn powershell_if_blocks(text: &str, condition: &str) -> Vec<String> {
+    let marker = format!("if ({condition}) {{");
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(found) = text[from..].find(&marker) {
+        let start = from + found;
+        let rest = &text[start..];
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, ch) in rest.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(offset + ch.len_utf8());
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end.unwrap_or_else(|| panic!("unterminated if block for {condition:?}"));
+        out.push(rest[..end].to_string());
+        from = start + end;
+    }
+    out
+}
+
 /// Extracts the body of `if (<condition>) {` ... matching `}` from a
 /// PowerShell script, condition included, as executable text.
 fn powershell_if_block(text: &str, condition: &str) -> String {
@@ -626,27 +707,39 @@ fn powershell_if_block(text: &str, condition: &str) -> String {
     panic!("unterminated if block for {condition:?}");
 }
 
-/// The exit-2 branch is the whole point of this lane's change: callers separate
-/// "undefined status bits" from every ordinary capture failure by that code.
+/// Exit code 2 is the whole point of this lane's change: callers separate
+/// "undefined status bits" from every ordinary capture failure by that code, and
+/// it is the ONLY signal here with a distinct code to lose.
 ///
-/// This does NOT retype the branch -- it lifts the exact lines out of the
-/// harness and runs them, because the defect it pins is invisible to reading:
-/// the harness sets `$ErrorActionPreference = 'Stop'`, under which `Write-Error`
-/// is TERMINATING, so a `Write-Error` immediately before `exit 2` means `exit 2`
-/// never executes and PowerShell 5.1 returns 1 instead. The branch looked
-/// correct and silently produced the wrong code.
+/// There are TWO places that must deliver it -- the terminal branch, and the
+/// cleanup-fatal branch inside `finally`, because a `throw` from `finally`
+/// terminates the script there and would otherwise swallow the code. This test
+/// lifts EVERY such branch out of the harness and runs each one; it does not
+/// retype them, because the defect it pins is invisible to reading: the harness
+/// sets `$ErrorActionPreference = 'Stop'`, under which `Write-Error` is
+/// TERMINATING, so a `Write-Error` immediately before `exit 2` means `exit 2`
+/// never executes and PowerShell 5.1 returns 1. The branch looked correct.
 #[test]
 #[cfg(windows)]
-fn the_harness_undefined_status_branch_really_exits_two() {
+fn every_harness_undefined_status_branch_really_exits_two() {
     use std::io::Write;
 
     let harness = read_script("Invoke-HeadlessRawCapture.ps1");
-    let branch = powershell_if_block(
+    let branches = powershell_if_blocks(
         &harness,
         "-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)",
     );
-    // Deliberately NOT a `branch.contains("exit 2")` guard: the branch's own
-    // comment contains that text, so such a guard passes while the code exits
+    assert_eq!(
+        branches.len(),
+        2,
+        "expected exactly two branches that convert the verdict into exit 2 \
+         (the cleanup-fatal branch inside `finally`, which must pre-empt the \
+         `throw` that would otherwise terminate the script there, and the \
+         terminal branch); found {}",
+        branches.len()
+    );
+    // Deliberately NOT a `branch.contains("exit 2")` guard: the branches' own
+    // comments contain that text, so such a guard passes while the code exits
     // 1. Only running it decides. Same reason the defect survived review.
 
     // Same preamble the harness runs under. Anything else would prove nothing.
@@ -656,84 +749,200 @@ fn the_harness_undefined_status_branch_really_exits_two() {
         "the harness no longer sets {preference}, so this proof no longer \
          reproduces its conditions"
     );
-    let script = format!(
-        "{preference}\n$undefinedStatusBitFailure = 'proof'\n{branch}\nexit 0\n"
-    );
 
-    let path = std::env::temp_dir().join(format!(
-        "hoi4_lane_i_exit_probe_{}.ps1",
-        std::process::id()
-    ));
-    let mut file = fs::File::create(&path).expect("create probe script");
-    file.write_all(script.as_bytes()).expect("write probe script");
-    drop(file);
+    for (index, branch) in branches.iter().enumerate() {
+        let script = format!(
+            "{preference}\n\
+             $undefinedStatusBitFailure = 'proof'\n\
+             $cleanupFatalMessage = 'proof cleanup failure'\n\
+             $collectorInjectionStarted = $false\n\
+             $collectorTeardownAuthenticated = $true\n\
+             $gradedWindowStarted = $false\n\
+             {branch}\n\
+             exit 0\n"
+        );
+        let path = std::env::temp_dir().join(format!(
+            "hoi4_lane_i_exit_probe_{}_{index}.ps1",
+            std::process::id()
+        ));
+        let mut file = fs::File::create(&path).expect("create probe script");
+        file.write_all(script.as_bytes()).expect("write probe script");
+        drop(file);
 
-    let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-File"])
-        .arg(&path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .expect("run powershell");
-    let _ = fs::remove_file(&path);
+        let status = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run powershell");
+        let _ = fs::remove_file(&path);
 
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "the harness's undefined-status branch does not deliver exit code 2 \
-         under its own $ErrorActionPreference; a terminating Write-Error before \
-         `exit 2` collapses it to 1. Branch was:\n{branch}"
-    );
-}
-
-/// A capture that finalized with no reporter present is an UNASKED question.
-/// The two Test-Path conditions are checked apart precisely so this case cannot
-/// hide inside a combined `-and` and fall through to a plain informational
-/// message with the recorder's own exit code.
-#[test]
-fn a_missing_reporter_is_not_a_pass() {
-    let harness = read_script("Invoke-HeadlessRawCapture.ps1");
-    assert!(
-        !harness.contains(
-            "if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and\n    (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {"
-        ) && !harness.contains(
-            "if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and\r\n    (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {"
-        ),
-        "the reporter and manifest existence checks are combined again, which \
-         makes a finalized capture with a missing reporter exit 0"
-    );
-    let branch = powershell_if_block(&harness, "$haveManifest -and -not $haveStreamReport");
-    assert!(
-        branch.contains("$undefinedStatusBitFailure ="),
-        "a finalized capture with no reporter does not set the blocking verdict: {branch}"
-    );
-}
-
-/// Every way the report can fail to answer must set the blocking verdict.
-/// Invoke-BoundedNativeCapture THROWS on timeout, so the catch is on this path,
-/// not off it.
-#[test]
-fn an_unanswered_report_is_not_a_pass() {
-    let harness = squeeze(&read_script("Invoke-HeadlessRawCapture.ps1"));
-    for required in [
-        // the undefined verdict itself
-        "if ($reportResult.ExitCode -eq 2) { $undefinedStatusBitFailure =",
-        // an exit code outside the report's own vocabulary
-        "} elseif ($reportResult.ExitCode -notin @(0, 1)) {",
-        // timeout / launch failure, which arrives as a throw
-        "} catch { Write-Host \"report failed: $($_.Exception.Message)\"",
-    ] {
-        assert!(
-            harness.contains(required),
-            "the harness no longer covers an unanswered report: missing {required:?}"
+        assert_eq!(
+            status.code(),
+            Some(2),
+            "harness undefined-status branch {index} does not deliver exit code 2 \
+             under its own $ErrorActionPreference; a terminating Write-Error before \
+             `exit 2` collapses it to 1. Branch was:\n{branch}"
         );
     }
-    assert_eq!(
-        harness.matches("$undefinedStatusBitFailure =").count(),
-        5,
-        "expected the declaration plus exactly four assignments of the blocking \
-         verdict (missing reporter, report exit 2, report exit outside its own \
-         vocabulary, report threw); a removed one is a reopened fail-open, and \
-         an added one is a path this test has not been told about"
+}
+
+/// A whole `if (...) { } elseif (...) { } else { }` chain, as executable text.
+fn powershell_if_chain(text: &str, condition: &str) -> String {
+    let marker = format!("if ({condition}) {{");
+    let start = unique_marker(text, &marker);
+    let rest = &text[start..];
+    let mut cursor = 0usize;
+    loop {
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, ch) in rest[cursor..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(cursor + offset + ch.len_utf8());
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end.unwrap_or_else(|| panic!("unterminated if chain for {condition:?}"));
+        let tail = rest[end..].trim_start();
+        if tail.starts_with("elseif") || tail.starts_with("else") {
+            cursor = end + (rest[end..].len() - tail.len());
+        } else {
+            return rest[..end].to_string();
+        }
+    }
+}
+
+/// Behavioural probe of the harness's report-dispatch chain.
+///
+/// This LIFTS the real chain out of Invoke-HeadlessRawCapture.ps1, stubs only
+/// `Invoke-BoundedNativeCapture`, and runs it. Source-shape assertions cannot
+/// cover this: commenting out one `$undefinedStatusBitFailure =` line leaves a
+/// textual check green while reopening the fail-open, and only running the
+/// chain distinguishes "the check answered clean" from "the check never ran".
+///
+/// Every case below is a way the definedness check can fail to happen. The
+/// contract is: only report exit 0 and 1 are ANSWERS. Everything else -- a
+/// crash (3), an unexpected code, a timeout (a throw), a missing reporter, or a
+/// missing manifest on a game that did not die -- must set the blocking verdict.
+#[test]
+#[cfg(windows)]
+fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
+    use std::io::Write;
+
+    let harness = read_script("Invoke-HeadlessRawCapture.ps1");
+    let chain = powershell_if_chain(&harness, "$haveStreamReport -and $haveManifest");
+    let missing_reporter =
+        powershell_if_block(&harness, "$haveManifest -and -not $haveStreamReport");
+
+    let dir = std::env::temp_dir().join(format!("hoi4_lane_i_dispatch_{}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    let manifest = dir.join("native_session_manifest.json");
+    let reporter = dir.join("report_raw_capture.py");
+    fs::write(&manifest, "{}").expect("write probe manifest");
+    fs::write(&reporter, "").expect("write probe reporter");
+    let absent = dir.join("does_not_exist");
+
+    // (label, report stub behaviour, manifest present, reporter present,
+    //  game died, expected: does the verdict block?)
+    let cases: &[(&str, &str, bool, bool, bool, bool)] = &[
+        ("report says clean", "@{Stdout='';Stderr='';ExitCode=0}", true, true, false, false),
+        ("report says blocking", "@{Stdout='';Stderr='';ExitCode=1}", true, true, false, false),
+        ("report says undefined bits", "@{Stdout='';Stderr='';ExitCode=2}", true, true, false, true),
+        // The defect this case exists for: the report used to crash onto 1,
+        // which the harness reads as an ANSWER and walks past.
+        ("report crashed (3)", "@{Stdout='';Stderr='';ExitCode=3}", true, true, false, true),
+        ("report exited outside its vocabulary", "@{Stdout='';Stderr='';ExitCode=9}", true, true, false, true),
+        // Invoke-BoundedNativeCapture throws on timeout.
+        ("report timed out (throw)", "throw 'raw-capture report timed out'", true, true, false, true),
+        ("reporter missing", "@{Stdout='';Stderr='';ExitCode=0}", true, false, false, true),
+        ("no manifest, game lived", "@{Stdout='';Stderr='';ExitCode=0}", false, true, false, true),
+        // The one explained absence: the game died, so there is nothing to grade.
+        ("no manifest, game died", "@{Stdout='';Stderr='';ExitCode=0}", false, true, true, false),
+    ];
+
+    let mut failures = Vec::new();
+    for (label, stub, have_manifest, have_reporter, game_died, want_block) in cases.iter().copied()
+    {
+        let manifest_path = if have_manifest { &manifest } else { &absent };
+        let reporter_path = if have_reporter { &reporter } else { &absent };
+        let body = if stub.starts_with("throw") {
+            stub.to_string()
+        } else {
+            format!("[pscustomobject]{stub}")
+        };
+        let script = format!(
+            "$ErrorActionPreference = 'Stop'\n\
+             function Invoke-BoundedNativeCapture {{\n\
+             \x20 param($FilePath, $Arguments, $TimeoutSeconds, $Purpose, [switch]$AllowNonzeroExit)\n\
+             \x20 {body}\n\
+             }}\n\
+             $undefinedStatusBitFailure = $null\n\
+             $manifestPath = '{manifest}'\n\
+             $streamReport = '{reporter}'\n\
+             $pythonExe = 'python.exe'\n\
+             $OutDir = '{out_dir}'\n\
+             $gameDied = ${game_died}\n\
+             $haveManifest = Test-Path -LiteralPath $manifestPath -PathType Leaf\n\
+             $haveStreamReport = Test-Path -LiteralPath $streamReport -PathType Leaf\n\
+             {missing_reporter}\n\
+             {chain}\n\
+             if ([string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {{ exit 0 }}\n\
+             exit 2\n",
+            manifest = manifest_path.display(),
+            reporter = reporter_path.display(),
+            out_dir = dir.display(),
+            game_died = if game_died { "true" } else { "false" },
+        );
+        let path = dir.join(format!("probe_{}.ps1", label.replace([' ', ',', '(', ')'], "_")));
+        let mut file = fs::File::create(&path).expect("create probe");
+        file.write_all(script.as_bytes()).expect("write probe");
+        drop(file);
+        let status = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run powershell");
+        let blocked = status.code() == Some(2);
+        if blocked != want_block {
+            failures.push(format!(
+                "{label}: blocked={blocked} (wanted {want_block}), exit={:?}",
+                status.code()
+            ));
+        }
+        let _ = fs::remove_file(&path);
+    }
+    let _ = fs::remove_dir_all(&dir);
+    assert!(
+        failures.is_empty(),
+        "the harness's report dispatch does not block on every unanswered path:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// The two existence checks must stay APART. Combined with `-and`, a finalized
+/// capture whose reporter is missing falls through to an informational message
+/// and the recorder's own exit code.
+#[test]
+fn the_reporter_and_manifest_checks_are_not_recombined() {
+    let code = squeeze(&strip_line_comments(&read_script(
+        "Invoke-HeadlessRawCapture.ps1",
+    )));
+    assert!(
+        !code.contains(
+            "if ((Test-Path -LiteralPath $streamReport -PathType Leaf) -and \
+             (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {"
+        ),
+        "the reporter and manifest existence checks are combined again, which makes a \
+         finalized capture with a missing reporter exit 0"
     );
 }

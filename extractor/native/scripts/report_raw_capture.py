@@ -15,6 +15,7 @@ Exit codes:
     0  clean
     1  blocking domains, or the hourly requirement was not met
     2  a domain published a status bit no compact-stream contract defines
+    3  this report reached NO verdict (it crashed, or could not read the run)
 """
 from __future__ import annotations
 
@@ -133,6 +134,14 @@ def decode(flags: int, domain_id: int = -1) -> list[str]:
 # ordinary residual failure (a PARTIAL_DATA hour is a known, classifiable
 # outcome; an undefined bit is not).
 EXIT_UNDEFINED_STATUS_BITS = 2
+# This report REACHED NO VERDICT: it crashed, or could not read the capture at
+# all. Distinct from 1 on purpose. Exit 1 means "I read the status words and
+# some domain is failing" -- an answer. An unhandled exception used to land on
+# 1 as well, so a malformed manifest or a bug in this file was indistinguishable
+# from a clean, informative "blocking domains" verdict, and a caller that walks
+# past exit 1 (as the capture harness does, deliberately) walked past a
+# definedness check that never ran.
+EXIT_REPORT_ERROR = 3
 
 
 def verdict_exit_code(undefined: list, blocking: list, hourly: dict) -> int:
@@ -143,13 +152,17 @@ def verdict_exit_code(undefined: list, blocking: list, hourly: dict) -> int:
     return 0
 
 
+class ReportError(Exception):
+    """This report cannot reach a verdict. Never a statement about the capture."""
+
+
 def load_manifest(run_dir: str) -> tuple[dict, str]:
     for name in ("native_session_manifest.json", "recorder/native_session_manifest.json"):
         path = os.path.join(run_dir, name)
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as handle:
                 return json.load(handle), path
-    raise SystemExit(f"no native_session_manifest.json under {run_dir}")
+    raise ReportError(f"no native_session_manifest.json under {run_dir}")
 
 
 def selftest() -> int:
@@ -189,17 +202,24 @@ def selftest() -> int:
             },
         }
 
-    def run(domains):
+    def run(domains, raw_manifest=None, write_manifest=True):
         with tempfile.TemporaryDirectory() as run_dir:
-            path = os.path.join(run_dir, "native_session_manifest.json")
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(build(domains), handle)
+            if write_manifest:
+                path = os.path.join(run_dir, "native_session_manifest.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    if raw_manifest is None:
+                        json.dump(build(domains), handle)
+                    else:
+                        handle.write(raw_manifest)
             argv = sys.argv
             sys.argv = [argv[0], "--run-dir", run_dir]
             buffer = io.StringIO()
             try:
+                # guarded_main, not main: the exit code a caller BLOCKS on is
+                # the guarded one, and the guard is itself under test.
                 with contextlib.redirect_stdout(buffer):
-                    code = main()
+                    with contextlib.redirect_stderr(buffer):
+                        code = guarded_main()
             finally:
                 sys.argv = argv
             return code, buffer.getvalue()
@@ -234,6 +254,18 @@ def selftest() -> int:
          "fuel_live (domain 10) published status bits", None),
     )
 
+    # "This report reached no verdict" must never be reported as an ordinary
+    # blocking verdict: exit 1 is an ANSWER, and the capture harness walks past
+    # exit 1 on purpose. Before EXIT_REPORT_ERROR existed, a malformed manifest
+    # and a crash in this file both landed on 1.
+    error_cases = (
+        ("a malformed manifest reaches no verdict, it is not a blocking one",
+         "{not json", True),
+        ("an empty manifest file reaches no verdict", "", True),
+        ("a manifest of the wrong shape reaches no verdict", "[]", True),
+        ("a missing manifest reaches no verdict", None, False),
+    )
+
     failures = 0
     for label, domains, want_code, want_text, forbidden in cases:
         code, out = run(domains)
@@ -245,7 +277,16 @@ def selftest() -> int:
         if not ok:
             failures += 1
             print(out)
-    print(f"selftest: {len(cases) - failures}/{len(cases)} passed")
+    for label, raw, write in error_cases:
+        code, out = run({}, raw_manifest=raw, write_manifest=write)
+        ok = code == EXIT_REPORT_ERROR and "REPORT ERROR" in out
+        print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
+              f"(want {EXIT_REPORT_ERROR}): {label}")
+        if not ok:
+            failures += 1
+            print(out)
+    total = len(cases) + len(error_cases)
+    print(f"selftest: {total - failures}/{total} passed")
     return 1 if failures else 0
 
 
@@ -456,7 +497,35 @@ def main() -> int:
     return exit_code
 
 
+def guarded_main() -> int:
+    """`main` with every unexpected failure mapped to EXIT_REPORT_ERROR.
+
+    Deliberately catches BaseException-minus-SystemExit rather than a list of
+    expected types: the whole point is that a failure this file did not
+    anticipate must not be reported as an ordinary verdict. `argparse` exits
+    via SystemExit for a usage error and keeps its own code.
+    """
+    try:
+        return main()
+    except ReportError as error:
+        print(f"\nREPORT ERROR: {error}", file=sys.stderr)
+        return EXIT_REPORT_ERROR
+    except SystemExit:
+        raise
+    except BaseException as error:  # noqa: BLE001 -- see docstring
+        import traceback
+
+        traceback.print_exc()
+        print(
+            f"\nREPORT ERROR: {type(error).__name__}: {error}\n"
+            "This report reached NO VERDICT. It is not evidence that the capture "
+            "is clean, and it is not evidence that it is dirty.",
+            file=sys.stderr,
+        )
+        return EXIT_REPORT_ERROR
+
+
 if __name__ == "__main__":
     if "--selftest" in sys.argv[1:]:
         raise SystemExit(selftest())
-    raise SystemExit(main())
+    raise SystemExit(guarded_main())

@@ -2173,14 +2173,16 @@ if ($haveStreamReport -and $haveManifest) {
                 "capture published status bits no compact-stream contract defines; see the " +
                 "CONTRACT VIOLATION section above. Declare the bit in compact_contract " +
                 "(and register it in lane_local_status_mask) or stop the producer writing it."
-        } elseif ($reportResult.ExitCode -notin @(0, 1)) {
-            # An exit code outside the report's own vocabulary means it did not
-            # reach a verdict. "The check did not run" must never read as "the
-            # check passed" -- that is the fail-open this whole change exists to
-            # remove.
+        } elseif ($reportResult.ExitCode -ne 0 -and $reportResult.ExitCode -ne 1) {
+            # Exit 3 is the report's own "I reached NO verdict" code (it crashed,
+            # or could not read the run), and anything outside its vocabulary
+            # means the same thing. Only 0 and 1 are ANSWERS. "The check did not
+            # run" must never read as "the check passed" -- that is the
+            # fail-open this whole change exists to remove, and it is why the
+            # report grew a distinct code instead of crashing onto 1.
             $undefinedStatusBitFailure =
-                "the raw-capture report exited $($reportResult.ExitCode), which is not one of " +
-                "its verdicts (0 clean / 1 blocking / 2 undefined status bits), so whether " +
+                "the raw-capture report exited $($reportResult.ExitCode) and reached no verdict " +
+                "(0 clean / 1 blocking / 2 undefined status bits / 3 report error), so whether " +
                 "this capture published an undefined status bit is UNKNOWN."
         }
     } catch {
@@ -2195,9 +2197,16 @@ if ($haveStreamReport -and $haveManifest) {
 } elseif (-not $haveStreamReport) {
     Write-Host "raw-capture report not found: $streamReport"
 } elseif ($gameDied) {
+    # The one case where the absence is EXPLAINED: the game died, so there is no
+    # capture to grade and no status word to read. The death is its own signal.
     Write-Host 'no manifest: the game died during capture, so there is nothing to finalize'
 } else {
+    # The game lived and the recorder still produced no manifest. Nothing was
+    # graded, so nothing may be reported as graded-and-clean.
     Write-Host "no manifest under $OutDir"
+    $undefinedStatusBitFailure =
+        "the capture produced no manifest under $OutDir and the game did not die, so " +
+        "whether it published an undefined status bit was never asked."
 }
 
 Write-Host "out_dir=$OutDir"
@@ -2347,10 +2356,53 @@ $scriptExitCode = [int]$recorderExit
         }
     }
     if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
+        # A throw from `finally` terminates the script THERE: it skips the
+        # undefined-status branch after this block entirely, and an uncaught
+        # PowerShell throw returns 1. So a capture that published an undefined
+        # status bit AND hit a cleanup failure silently lost its exit code 2 --
+        # the one code callers were told to key on.
+        #
+        # Both messages are reported either way. What is decided here is only
+        # which one owns the EXIT CODE, and it goes to the undefined-status
+        # verdict because that is the one with a distinct code to lose: a
+        # cleanup fatal has no machine-readable code of its own (it is 1, like
+        # every other failure), so nothing machine-readable is given up.
+        if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
+            [Console]::Error.WriteLine("cleanup failure: $cleanupFatalMessage")
+            [Console]::Error.WriteLine(
+                "compact status verdict: $undefinedStatusBitFailure")
+            [Console]::Error.WriteLine(
+                'Both failed. Exit code 2 reports the compact status verdict; the cleanup failure above still needs an operator.')
+            exit 2
+        }
         throw $cleanupFatalMessage
     }
 }
 
+# Every remaining failure below reports through exit code 1, so none of them can
+# LOSE information by yielding the code -- while the compact status verdict has a
+# distinct code (2) that exists precisely so a caller can key on it, and that is
+# gone forever if some other exit 1 runs first. So the status verdict is checked
+# FIRST and every co-occurring failure is still printed.
+#
+# Placed after teardown, not before, so the capture is still finalized,
+# receipted and left on disk: the artifact is exactly what someone has to read
+# to fix the producer.
+if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
+    # NOT Write-Error: $ErrorActionPreference is 'Stop' for this whole script,
+    # which makes Write-Error TERMINATING, so the `exit 2` below would never run
+    # and PowerShell 5.1 would return 1 instead. Straight to stderr.
+    if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
+        [Console]::Error.WriteLine(
+            'Capture ended without an authenticated collector teardown receipt.')
+    }
+    if ($gradedWindowStarted) {
+        [Console]::Error.WriteLine(
+            'Capture ended without closing the passive graded window.')
+    }
+    [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
+    exit 2
+}
 if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
     Write-Error 'Capture ended without an authenticated collector teardown receipt.'
     exit 1
@@ -2358,18 +2410,5 @@ if ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
 if ($gradedWindowStarted) {
     Write-Error 'Capture ended without closing the passive graded window.'
     exit 1
-}
-# Placed after teardown so the capture is still finalized, receipted and left on
-# disk -- the artifact is exactly what someone has to read to fix the producer.
-# It is the harness VERDICT that fails, and it fails even when the recorder
-# exited 0, because a status word nothing defines is not a gradable capture.
-if (-not [string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {
-    # NOT Write-Error: $ErrorActionPreference is 'Stop' for this whole script,
-    # which makes Write-Error TERMINATING, so the `exit 2` below never runs and
-    # PowerShell 5.1 returns 1 instead. The distinct code is the entire point of
-    # this branch -- callers separate "undefined status bits" from every
-    # ordinary capture failure by it -- so the message goes straight to stderr.
-    [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
-    exit 2
 }
 exit $scriptExitCode
