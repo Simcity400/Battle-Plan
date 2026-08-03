@@ -31,7 +31,12 @@ counters and never make the containing job fail.
   than silently replacing the first indexed artifact;
 - `functions`: names and body bounds parsed from graph headers;
 - `call_edges` and `call_edge_sources`: deduplicated caller/callee relationships
-  plus the graph artifacts that prove them;
+  plus the graph artifacts that prove them. Edge provenance is content-addressed by
+  `(source_address, graph_sha256)`, not by job: an edge is a fact about specific graph
+  bytes, so the many jobs whose closures re-export the same graph share one set of rows
+  rather than each asserting its own. Job attribution stays recoverable through
+  `artifact_provenance`, and an edge survives exactly as long as some artifact still
+  holds the bytes that assert it;
 - `external_call_endpoints` and `skipped_graph_endpoints`: non-internal endpoint
   observations and total-parser diagnostics;
 - `decompile_fts`: FTS5 content for only the canonical decompile artifact per
