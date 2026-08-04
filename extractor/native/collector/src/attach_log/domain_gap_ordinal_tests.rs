@@ -174,3 +174,166 @@ fn replacing_an_already_staged_h4dg_does_not_spend_a_second_ordinal() {
     assert_eq!(next_gap.outcome_ordinal, 1);
     assert_eq!(ordinals.get(&key), Some(&2));
 }
+
+/// The retained buffer is now built LAZILY: it does not exist until the walk
+/// reaches the first record that is actually dropped, and at that moment it is
+/// back-filled with everything the walk already passed. Before, it was
+/// allocated at the frame's size up front and every retained record was copied
+/// into it as the walk went — a 4.59 MB allocation and copy paid on every
+/// frame and kept only on the frames that rejected something.
+///
+/// The back-fill is the load-bearing half. Omitting it does not make the frame
+/// slower, it silently DELETES every record physically before the first
+/// rejected one — here, the surviving domain's PERF and DATA pair — and the
+/// published frame would be missing domains that read perfectly well.
+///
+/// MUTATION RUN: the back-fill `buffer.extend_from_slice(&records[..offset]);`
+/// was deleted, leaving `Vec::with_capacity(records.len())`, and the suite run
+/// in `--release`. Observed: this test failed with
+/// `left: [70, 70]  right: [10, 10, 70, 70]` — the two records ahead of the
+/// rejected one gone from the output while the two behind it survived.
+/// Restored.
+#[test]
+fn the_prefix_before_the_first_rejected_record_survives() {
+    let hour = FIRST_HOUR;
+    let kept_before: u16 = 10;
+    let torn_domain: u16 = 40;
+    let kept_after: u16 = 70;
+
+    // Physical order: two records for a domain that reads cleanly, then the
+    // domain that tore, then two more clean records. The first two are the
+    // prefix the back-fill is responsible for.
+    let mut records = Vec::new();
+    let mut sequence = 1u64;
+    for (domain, record_type) in [
+        (kept_before, COMPACT_RECORD_TYPE_DOMAIN_PERF),
+        (kept_before, COMPACT_RECORD_TYPE_DOMAIN_DATA),
+        (torn_domain, COMPACT_RECORD_TYPE_DOMAIN_DATA),
+        (kept_after, COMPACT_RECORD_TYPE_DOMAIN_PERF),
+        (kept_after, COMPACT_RECORD_TYPE_DOMAIN_DATA),
+    ] {
+        append_compact_record(
+            &mut records,
+            sequence,
+            hour,
+            domain,
+            record_type,
+            0,
+            &[0xA5u8; 96],
+        );
+        sequence += 1;
+    }
+
+    // Every domain present needs a bracket or it is rejected as
+    // clock-unreadable; the torn one's brackets straddle the hour.
+    let brackets = [
+        DomainClockBracket {
+            tag: kept_before,
+            opening: Some((hour, 1)),
+            closing: Some((hour, 2)),
+            worker_panicked: false,
+        },
+        DomainClockBracket {
+            tag: torn_domain,
+            opening: Some((hour, 1)),
+            closing: Some((hour + 1, 2)),
+            worker_panicked: false,
+        },
+        DomainClockBracket {
+            tag: kept_after,
+            opening: Some((hour, 1)),
+            closing: Some((hour, 2)),
+            worker_panicked: false,
+        },
+    ];
+
+    let mut ordinals = BTreeMap::new();
+    let (_next_sequence, rejected) =
+        replace_rejected_domain_records_with_gaps(
+            &mut records,
+            1,
+            hour,
+            &brackets,
+            &mut ordinals,
+            HOUR_LABEL_MISMATCH_POLICY,
+        )
+        .expect("the torn domain is replaced with a gap");
+    assert_eq!(rejected, BTreeSet::from([torn_domain]));
+
+    let mut surviving_domains = Vec::new();
+    let mut offset = 0usize;
+    while offset < records.len() {
+        let header = compact_contract::parse_compact_record_header(&records[offset..]).unwrap();
+        if header.domain_id != torn_domain {
+            surviving_domains.push(header.domain_id);
+        }
+        offset += header.record_len();
+    }
+    assert_eq!(
+        surviving_domains,
+        vec![kept_before, kept_before, kept_after, kept_after],
+        "the records ahead of the first rejected one are the back-fill's job; \
+         losing them publishes a frame missing domains that read cleanly"
+    );
+}
+
+/// A frame with nothing to reject is returned BYTE-IDENTICAL and untouched.
+///
+/// This is the path the lazy buffer exists for, and the property it must not
+/// break: the early return hands the caller the original `records`, so the
+/// caller's frame is exactly what the build produced.
+///
+/// MUTATION RUN: `*records = retained.clone().unwrap_or_default();` was
+/// inserted above the `present_rejected.is_empty()` early return, so a clean
+/// frame is overwritten by a buffer that was never built. Observed: this test
+/// failed with `a clean frame must be returned unchanged, left: []`, and eight
+/// unrelated state-fixture tests failed with it — the frame had been emptied.
+/// Restored.
+///
+/// What this test does NOT pin, stated plainly: the SAVING. Building `retained`
+/// eagerly and dropping it unused is byte-identical here and would still pass.
+/// The saving is a measurement — `buildtail_previous_frame` in the next
+/// capture — and not an assertion this or any unit test can make.
+#[test]
+fn a_frame_that_rejects_nothing_is_returned_unchanged() {
+    let hour = FIRST_HOUR;
+    let domain: u16 = 10;
+    let mut records = Vec::new();
+    for (index, record_type) in [
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        append_compact_record(
+            &mut records,
+            1 + index as u64,
+            hour,
+            domain,
+            record_type,
+            0,
+            &[0x3Cu8; 128],
+        );
+    }
+    let before = records.clone();
+    let brackets = [DomainClockBracket {
+        tag: domain,
+        opening: Some((hour, 1)),
+        closing: Some((hour, 2)),
+        worker_panicked: false,
+    }];
+    let mut ordinals = BTreeMap::new();
+    let (_next_sequence, rejected) =
+        replace_rejected_domain_records_with_gaps(
+            &mut records,
+            1,
+            hour,
+            &brackets,
+            &mut ordinals,
+            HOUR_LABEL_MISMATCH_POLICY,
+        )
+        .expect("a clean frame");
+    assert!(rejected.is_empty());
+    assert_eq!(records, before, "a clean frame must be returned unchanged");
+}

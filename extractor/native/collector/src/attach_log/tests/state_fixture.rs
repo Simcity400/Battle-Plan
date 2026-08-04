@@ -567,6 +567,7 @@ pub(super) fn drive_compact_frame(
         None,
         None,
         None,
+        &mut OutsideBuildSpans::default(),
     );
 
     let mut records = Vec::new();

@@ -1688,6 +1688,201 @@ pub const GAUGE_UNITS: &[&str] = &[
     "lw_pub_end_us",
 ];
 
+/// The OUTSIDE-BUILD frame segments: where the sweep thread spends the wall
+/// time that is not inside `build_compact_extraction_gate_records`.
+///
+/// Nothing measured this before. The frame period was known (119.76 ms in
+/// `runs/live_unlock/t19`) and the build's own `frame_time_us` was known
+/// (~93 ms), so ~27 ms — 23% of the period, and the period is what decides how
+/// many game hours a capture can keep — existed only as the arithmetic
+/// difference of two other numbers. These units make it an observation.
+///
+/// # The two shapes in this table, and why mixing them is not a defect here
+///
+/// `total` and `wait` PARTITION the interval: `total` is the whole gap between
+/// one build's return and the next build's entry, and `wait` is the part of it
+/// spent parked on the scheduler's hour latch. `total - wait` is the busy
+/// remainder.
+///
+/// Everything else is a NAMED SUB-SPAN of that busy remainder, and several of
+/// them nest inside each other (`complete`, `degnotice`, `deglog`, `openpub`
+/// and `a30insert` all run inside `prepub`). They are deliberately not made
+/// disjoint: the question each answers is "how much does THIS call cost",
+/// which stays answerable when the enclosing span is also reported, and a
+/// disjoint carve-up would have to invent a name for every gap between two
+/// timed calls. The host publishes them individually and never adds them
+/// together.
+///
+/// `outside_build_segments_do_not_sum_to_total` pins two levels of it: the
+/// `outside_build_us` object holds one labelled entry per segment carrying its
+/// own observation and no other key, and the enclosing lane-wall aggregate's
+/// whole field roster is fixed, so no total can appear beside it either. What
+/// it does not reach is a total buried deeper — inside `per_lane`, say. A
+/// recursive shape check could reach that; it is not worth the machinery for a
+/// field nobody would put there, so the gap is named and left to review rather
+/// than pretended away.
+///
+/// Every entry is a DURATION and folds `PerFrame`, so the host sums them and
+/// keeps the distribution. "Per frame" is exact whenever every build publishes
+/// a probe, which is the ordinary case. It is not a promise: the accumulator is
+/// cleared where it is PUBLISHED, so a build that returns without emitting one
+/// leaves its spans to the next probe, and that observation then covers more
+/// than one build.
+///
+/// `lw_frames` counts PROBES, not builds — it is `1` per lane-wall record — so
+/// dividing a sum by it gives the mean per PUBLISHED window, not per build.
+/// Those two are the same number exactly when every build publishes, and this
+/// build emits no count of builds that did not. A consumer that needs a true
+/// per-build mean needs a producer change; a consumer that wants to know
+/// whether it needs one can compare `lw_frames` against the manifest's
+/// scheduler hour accounting.
+///
+/// The codes are wire-stable: a segment that stops being measured keeps its
+/// code and simply stops being emitted.
+///
+/// # What is NOT reported, stated rather than discovered
+///
+/// The accumulator is published by the lane-wall probe of the next frame that
+/// emits one. So a span opened on a path that TERMINATES the capture — a `?`,
+/// a `break 'capture`, a staging-pool refusal — is never reported, because
+/// there is no later frame to report it. That is not a leak to be chased: the
+/// capture is over, and the frame period these segments describe is a
+/// steady-state quantity.
+///
+/// Two per-iteration prologue paths `continue` without closing `identity`, and
+/// both are deliberate: the campaign-rollover arm (see below) and, before it,
+/// nothing else — the uncertain-boundary retry DOES close `identity` and books
+/// its backoff to `wait`, because a sleeping thread reported as busy would
+/// corrupt the one figure `total - wait` exists to give.
+pub const OUTSIDE_BUILD_SEGMENTS: &[(u16, &str)] = &[
+    // The interval itself: previous build's return -> this build's entry.
+    (0, "total"),
+    // Parked on the read-only scheduler's hour latch (or the legacy fixed
+    // sample sleep). Idle by construction, and the only part of `total` that
+    // is not the sweep thread doing work.
+    (1, "wait"),
+    // The whole per-iteration prologue: the stop-request checks, the
+    // capture-ready and early-render session polls, the good-page cache epoch
+    // bump, the IdentityV1 re-read, the campaign-root comparison and the
+    // campaign state refresh. Named for its dominant term. Runs at the top of
+    // EVERY loop iteration, before any sweep decision.
+    //
+    // NOT closed on the campaign-rollover arm, which `continue`s from inside
+    // the identity boundary match. That iteration's cost lands in `total` and
+    // in no named segment, which is the honest reading: a rollover resets the
+    // campaign and the segment names below describe a steady-state frame.
+    (2, "identity"),
+    // The A30 evidence/production owner polls and the capture-ready /
+    // early-render session polls, also per-iteration.
+    (3, "prepoll"),
+    // The whole pre-boundary publication block: everything done to the
+    // PREVIOUS hour's finished frame before its bytes are staged for the
+    // overlapped publisher.
+    (4, "prepub"),
+    // `compact_frame_completeness_findings` — one walk of the finished frame's
+    // records. Inside `prepub`.
+    (5, "complete"),
+    // `insert_frame_degraded_notice_before_frame_end`. Inside `prepub`. Every
+    // frame in t19 was degraded, so this ran on every frame.
+    (6, "degnotice"),
+    // The degraded-frame line appended to `collector_worker_error.log`: an
+    // open/append/close per degraded frame. Inside `prepub`.
+    (7, "deglog"),
+    // `transport.open_preboundary_publication` — the campaign-identity
+    // observation that gates the staging. Inside `prepub`.
+    (8, "openpub"),
+    // `insert_a30_payloads_before_frame_end`. Inside `prepub`.
+    (9, "a30insert"),
+    // Hook/UI staging for THIS hour before the build: latched render, A37
+    // evidence, resolved tooltips, the decision panel, A38, and the
+    // selected-Present finalization.
+    (10, "hookstage"),
+    // Post-build work in the same iteration: the render/A38/scheduler-probe
+    // insertions, the pending-frame assembly, and the legacy synchronous
+    // frame write on the scheduler-off path.
+    (11, "tailinsert"),
+    // The build's OWN untimed tail: the wall time
+    // `build_compact_extraction_gate_records` spends after it stamps the
+    // `frame_time_us` that the FRAME_END record and every report carry.
+    //
+    // This is not a rounding error. `frame_time_us` is stamped with the last
+    // domain emission still several hundred lines from the end of the
+    // function, and what runs after it includes the read-counter probe, the
+    // attribution probe, the lane-wall probe, the FRAME_END append, and
+    // `replace_rejected_domain_records_with_gaps` — which allocates a second
+    // buffer the size of the frame and copies every retained record into it.
+    // A capture that reports 93 ms of build was therefore reporting the build
+    // up to that stamp and calling the rest "outside".
+    //
+    // Measured in the CALLER, as the build call's true wall time minus the
+    // `frame_time_us` the build returned, and therefore carried in the NEXT
+    // frame's probe: this frame's probe was encoded inside the very tail being
+    // measured, so the number does not exist yet when the record is written.
+    //
+    // THE NAME SAYS "PREVIOUS" BECAUSE THE RECORD'S HOUR LABEL IS NOT ITS OWN.
+    // A probe emitted for hour N carries `frame_time_us` and `total` belonging
+    // to hour N, and this value belonging to an EARLIER build. That
+    // displacement is a property of when the number becomes knowable and
+    // cannot be removed without a second probe record per frame. It is stated
+    // here, and in the manifest key, so that no consumer has to discover it.
+    //
+    // "An earlier build" and not flatly "hour N-1", because the accumulator is
+    // cleared only where it is published. A build that returns without
+    // emitting a lane-wall probe — the `state == None` path — carries its tail
+    // and its interval forward, so after a run of those the next probe's
+    // `buildtail_previous_frame` and `total` are SUMS over several builds while
+    // its `frame_time_us` is one build's. In the ordinary case, where every
+    // build publishes, it is exactly hour N-1's.
+    //
+    // The consequence for the identity: the frame period does NOT partition
+    // per frame. It partitions over a SESSION, which is the only level the
+    // manifest reports at anyway:
+    //
+    //     sum(frame_time_us) + sum(buildtail_previous_frame) + sum(total)
+    //
+    // counts each publishing build's own time, its own tail and the interval
+    // after it once each. Four things sit outside that sum, named rather than
+    // hidden, all of them at the two ends of a capture:
+    //
+    //   * the first build has no preceding `total`;
+    //   * the last build's tail is computed after its own probe, so no probe
+    //     reports it;
+    //   * the interval AFTER the last build is closed into `total` only when
+    //     another build begins, so if the capture ends after a publishing
+    //     build that interval is never closed at all — this needs no
+    //     non-publishing build and is not the same omission as the tail above;
+    //   * a capture that ends on a run of builds that published nothing never
+    //     flushes that whole suffix, which is as many builds long as the run.
+    //
+    // The first three are one build's worth each. The fourth is bounded by the
+    // length of the terminal non-publishing run, which is unbounded in
+    // principle and empty in every capture measured so far.
+    (12, "buildtail_previous_frame"),
+];
+
+/// The wire unit name for each [`OUTSIDE_BUILD_SEGMENTS`] code, indexed by that
+/// code. A `&'static str` table rather than a `format!`, because a diagnostic
+/// unit's name must be `&'static str` and because the host resolves the same
+/// table when it labels the manifest.
+pub const OUTSIDE_BUILD_UNIT_NAMES: &[&str] = &[
+    "lw_o0_us", "lw_o1_us", "lw_o2_us", "lw_o3_us", "lw_o4_us", "lw_o5_us", "lw_o6_us",
+    "lw_o7_us", "lw_o8_us", "lw_o9_us", "lw_o10_us", "lw_o11_us", "lw_o12_us",
+];
+
+/// How many outside-build segments exist. Producer and host both size their
+/// accumulators from this.
+pub const OUTSIDE_BUILD_SEGMENT_COUNT: usize = OUTSIDE_BUILD_SEGMENTS.len();
+
+/// The segment name for a wire code, or `None` for a code this build does not
+/// know. An unknown code is reported by the host under its raw number rather
+/// than dropped, so a newer collector's segment is still visible.
+pub fn outside_build_segment_name(code: u16) -> Option<&'static str> {
+    OUTSIDE_BUILD_SEGMENTS
+        .iter()
+        .find(|(segment_code, _)| *segment_code == code)
+        .map(|(_, name)| *name)
+}
+
 /// Units inside a [`STATEFUL_UNIT_PREFIXES`] family that ARE per-frame, listed
 /// explicitly because inside those families silence means undeclared.
 pub const STATEFUL_FAMILY_PER_FRAME_UNITS: &[&str] = &[
@@ -2969,6 +3164,66 @@ mod tests {
         // seen exactly once reads the same whatever it is classified as.
         for class in Accumulation::ALL {
             assert_eq!(class.fold(None, 42), 42);
+        }
+    }
+
+    /// The outside-build segment tables are ONE table read two ways: the host
+    /// resolves a wire unit name back to a segment name by the code embedded in
+    /// the name, so `OUTSIDE_BUILD_UNIT_NAMES[code]` must be the name for that
+    /// code and nothing else.
+    ///
+    /// MUTATION: reorder two entries of `OUTSIDE_BUILD_SEGMENTS`, or drop one
+    /// name from `OUTSIDE_BUILD_UNIT_NAMES`, and this fails — which is exactly
+    /// the shape that would relabel one segment's milliseconds as another's.
+    #[test]
+    fn outside_build_segment_codes_index_their_own_unit_names() {
+        assert_eq!(
+            OUTSIDE_BUILD_SEGMENTS.len(),
+            OUTSIDE_BUILD_UNIT_NAMES.len(),
+            "every segment needs exactly one wire name"
+        );
+        assert_eq!(OUTSIDE_BUILD_SEGMENT_COUNT, OUTSIDE_BUILD_SEGMENTS.len());
+        let mut seen = BTreeSet::new();
+        for (index, (code, name)) in OUTSIDE_BUILD_SEGMENTS.iter().enumerate() {
+            assert_eq!(
+                usize::from(*code),
+                index,
+                "segment {name} sits at index {index} but claims code {code}; the                  host indexes the name table by code"
+            );
+            assert_eq!(
+                OUTSIDE_BUILD_UNIT_NAMES[index],
+                format!("lw_o{code}_us"),
+                "the wire name for segment {name} must be derivable from its code"
+            );
+            assert!(seen.insert(*name), "segment name {name} is used twice");
+            assert_eq!(outside_build_segment_name(*code), Some(*name));
+        }
+        assert_eq!(
+            outside_build_segment_name(OUTSIDE_BUILD_SEGMENT_COUNT as u16),
+            None,
+            "a code this build does not know must resolve to None, not to a              neighbouring segment's name"
+        );
+    }
+
+    /// Every outside-build unit is a per-frame duration, so the registry must
+    /// say `PerFrame`. `lw_o` is not inside a stateful family and `_us` is not
+    /// a raw-word suffix, so this is what the fall-through gives — pinned
+    /// because a later suffix or prefix rule could silently capture the family
+    /// and turn a sum of durations into a MAX or a last value.
+    ///
+    /// MUTATION: add `"_us"` to `RAW_WORD_SUFFIXES` and this fails.
+    #[test]
+    fn every_outside_build_unit_is_a_per_frame_duration() {
+        for name in OUTSIDE_BUILD_UNIT_NAMES {
+            assert_eq!(
+                unit_accumulation(name),
+                Accumulation::PerFrame,
+                "{name} is a per-frame duration"
+            );
+            assert!(
+                !is_stateful_unit_family(name),
+                "{name} must not fall inside a stateful family, where silence                  means undeclared"
+            );
         }
     }
 }
