@@ -1303,7 +1303,13 @@ function Test-PassiveCaptureTeardownReceipt {
         'target_code_temporarily_instrumented', 'pinned_hook_target_code_restored',
         'semantic_game_state_mutated', 'pinned_hook_sites_restored',
         'pinned_hook_site_count', 'pinned_hook_site_baseline_sha256',
-        'pinned_hook_site_restored_sha256'
+        'pinned_hook_site_restored_sha256',
+        # Lane AS 2026-08-05: the restoration proof now verifies IAT slots
+        # for ImportExport specs (previously vacuous -- the snapshot took the
+        # exported function's prologue while the primitive writes only an IAT
+        # store). The count of verified import slots rides the receipt. t24
+        # was refused 29-vs-28 by this exact-property pin before this line.
+        'pinned_hook_import_slot_count'
     )
     Assert-PassiveExactPropertySet `
         -Value $teardown `
