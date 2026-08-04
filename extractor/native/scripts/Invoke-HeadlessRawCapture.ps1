@@ -28,8 +28,14 @@ param(
     [ValidateRange(1, 5)]
     [int]$Speed = 5,
 
+    # Not 0. At 0 the recorder's hour floor cannot fail, so a capture whose
+    # clock never moved seals exactly like one that advanced 593 hours -- the
+    # check was vacuous on every run to date, while still being the thing the
+    # failure message named. 1 is the smallest value that makes it mean
+    # something: the clock must have produced at least one game hour. Raise it
+    # deliberately for a run that is supposed to cover a span.
     [ValidateRange(0, 100000)]
-    [int]$MinGameHours = 0,
+    [int]$MinGameHours = 1,
 
     [ValidateRange(1, 10000)]
     [int]$SampleMilliseconds = 1,
