@@ -54,6 +54,7 @@ $portableStaticCrtTest = Join-Path $PSScriptRoot "Test-PortableProductStaticCrt.
 $portablePackageSelfTest = Join-Path $PSScriptRoot "Test-PortableProductPackageSelfTest.ps1"
 $productionInteractionClosureTest = Join-Path $PSScriptRoot "Test-ProductionInteractionClosure.ps1"
 $passiveCapturePolicyTest = Join-Path $PSScriptRoot "Test-PassiveCapturePolicy.ps1"
+$promotionGateAbsenceTest = Join-Path $PSScriptRoot "Test-PromotionGateAbsence.ps1"
 $readOnlyGameStateWitness = Join-Path $PSScriptRoot "Read-Hoi4GameState.ps1"
 $passiveCaptureLifecycle = Join-Path $PSScriptRoot "PassiveCapture.Lifecycle.ps1"
 $interactionClosureHelper = Join-Path $PSScriptRoot "PortableProduct.InteractionClosure.ps1"
@@ -115,6 +116,7 @@ function Get-CurrentInteractionPolicyInputs {
     $inputs = [ordered]@{
         read_only_game_state_witness_sha256 = (Get-FileHash -LiteralPath $readOnlyGameStateWitness -Algorithm SHA256).Hash.ToLowerInvariant()
         passive_capture_policy_test_sha256 = (Get-FileHash -LiteralPath $passiveCapturePolicyTest -Algorithm SHA256).Hash.ToLowerInvariant()
+        promotion_gate_absence_test_sha256 = (Get-FileHash -LiteralPath $promotionGateAbsenceTest -Algorithm SHA256).Hash.ToLowerInvariant()
         passive_capture_lifecycle_sha256 = (Get-FileHash -LiteralPath $passiveCaptureLifecycle -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     foreach ($entry in $productionSourceCapabilityPaths.GetEnumerator()) {
@@ -648,6 +650,26 @@ try {
         if ([string]$passivePolicyResult.Schema -cne 'hoi4-passive-capture-policy-test-v1' -or
             [string]$passivePolicyResult.Status -cne 'pass') {
             throw "passive capture-policy source tests returned no authority"
+        }
+
+        # A gate that passes because its evidence is ABSENT is the inverse of a
+        # gate, and PowerShell's $null-to-zero coercion makes that the DEFAULT
+        # spelling. ProductionCapture.Promotion.ps1 required a per-domain
+        # effective_failure_status_flags_or the manifest never published, and
+        # passed every domain of every capture on the resulting 0. These cases
+        # prove the coercion is real, that the Required* accessors refuse it,
+        # and that no gate clause reads a zero-required field through a cast.
+        $promotionGateAbsenceOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $promotionGateAbsenceTest)
+        if ($LASTEXITCODE -ne 0) {
+            throw "promotion-gate absence proof exited with code $LASTEXITCODE"
+        }
+        $promotionGateAbsenceResult = (($promotionGateAbsenceOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+        if ([string]$promotionGateAbsenceResult.schema -cne 'battle-plan.promotion_gate_absence_test.v1' -or
+            [string]$promotionGateAbsenceResult.status -cne 'PASS' -or
+            # Pinned so that cases silently ceasing to run is itself a failure --
+            # the same "absence is not evidence" property the cases assert.
+            [int]$promotionGateAbsenceResult.cases -ne 80) {
+            throw "promotion-gate absence proof returned no authority"
         }
 
         $staticCrtTestOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $portableStaticCrtTest)

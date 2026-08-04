@@ -280,14 +280,18 @@ function Test-ProductionCaptureArtifacts {
     $expectedDataIds = @($expectedDomains | Where-Object { $_.requires_data_record -eq $true } | ForEach-Object { [int]$_.id })
 
     if ([string](Get-ObjectProperty $manifest "stream_format") -ne "compact") { Add-CaptureProblem $problems "stream_format_not_compact" }
-    if ((Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "enabled") -ne $true) { Add-CaptureProblem $problems "production_profile_not_enabled" }
+    $profileEnabled = Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "enabled"
+    if ($profileEnabled -isnot [bool]) { Add-CaptureProblem $problems "production_profile_enabled_not_published" }
+    elseif (-not $profileEnabled) { Add-CaptureProblem $problems "production_profile_not_enabled" }
     if (@(Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "mandatory_domains_not_production_complete").Count -ne 0) { Add-CaptureProblem $problems "mandatory_domains_not_production_complete" }
     if (@(Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "profile_domains_not_scheduled").Count -ne 0) { Add-CaptureProblem $problems "profile_domains_not_scheduled" }
     if (@(Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "missing_required_static_artifacts").Count -ne 0) { Add-CaptureProblem $problems "required_static_artifacts_missing_from_profile" }
 
     $compact = Get-ObjectProperty $manifest "compact_stream"
     if ($null -eq $compact) { Add-CaptureProblem $problems "compact_stream_summary_missing" }
-    $frameCount = [int64](Get-ObjectProperty $compact "frame_end_record_count")
+    $frameCountRaw = Get-ObjectProperty $compact "frame_end_record_count"
+    if (-not (Test-IsJsonInteger $frameCountRaw)) { Add-CaptureProblem $problems "frame_end_record_count_not_published" }
+    $frameCount = if (Test-IsJsonInteger $frameCountRaw) { [int64]$frameCountRaw } else { 0 }
     if ($frameCount -le 0) { Add-CaptureProblem $problems "no_frame_end_records" }
     $frameTiming = Get-ObjectProperty $compact "frame_time_us"
     if ($null -eq $frameTiming) { Add-CaptureProblem $problems "frame_time_us_missing" }
@@ -309,21 +313,53 @@ function Test-ProductionCaptureArtifacts {
     # sink_write_us / clock_skew field. Keeps this validator in lockstep with the
     # recorder's acceptance_telemetry manifest block and timing_summary_json shape.
     foreach ($p in (Get-AcceptanceTelemetryProblems -Manifest $manifest)) { Add-CaptureProblem $problems ("acceptance_telemetry_$p") }
-    if ((Get-ObjectProperty $compact "decodable") -ne $true) { Add-CaptureProblem $problems "compact_stream_not_decodable" }
+    $decodable = Get-ObjectProperty $compact "decodable"
+    if ($decodable -isnot [bool]) { Add-CaptureProblem $problems "compact_stream_decodable_not_published" }
+    elseif (-not $decodable) { Add-CaptureProblem $problems "compact_stream_not_decodable" }
     if (@(Get-ObjectProperty $manifest "parse_errors").Count -ne 0 -or @(Get-ObjectProperty $compact "parse_errors").Count -ne 0) { Add-CaptureProblem $problems "parse_errors_present" }
     if (@(Get-ObjectProperty $manifest "ordering_errors").Count -ne 0 -or @(Get-ObjectProperty $compact "ordering_errors").Count -ne 0) { Add-CaptureProblem $problems "ordering_errors_present" }
-    if ([int64](Get-ObjectProperty $manifest "skipped_game_hours") -ne 0) { Add-CaptureProblem $problems "skipped_game_hours" }
-    if ([int64](Get-ObjectProperty $manifest "unique_game_hour_count") -ne $frameCount) { Add-CaptureProblem $problems "frame_hour_count_mismatch" }
+    # `[int64]$null` is 0, so each of these clauses used to PASS when the field
+    # was absent -- "we skipped no hours" asserted by a manifest that never said.
+    # Absence is now its own typed problem, exactly as the frame_time count
+    # above already treats it.
+    $skippedGameHours = Get-ObjectProperty $manifest "skipped_game_hours"
+    if (-not (Test-IsJsonInteger $skippedGameHours)) { Add-CaptureProblem $problems "skipped_game_hours_not_published" }
+    elseif ([int64]$skippedGameHours -ne 0) { Add-CaptureProblem $problems "skipped_game_hours" }
+    $uniqueGameHourCount = Get-ObjectProperty $manifest "unique_game_hour_count"
+    if (-not (Test-IsJsonInteger $uniqueGameHourCount)) { Add-CaptureProblem $problems "unique_game_hour_count_not_published" }
+    elseif ([int64]$uniqueGameHourCount -ne $frameCount) { Add-CaptureProblem $problems "frame_hour_count_mismatch" }
     $hourly = Get-ObjectProperty $manifest "hourly_requirement"
-    if ($null -eq $hourly -or (Get-ObjectProperty $hourly "met") -ne $true) { Add-CaptureProblem $problems "recorder_hourly_requirement_not_met" }
-    $requestedGameHours = [int64](Get-ObjectProperty $hourly "requested_game_hours")
-    if ($requestedGameHours -le 0) { Add-CaptureProblem $problems "requested_game_hours_not_positive" }
+    $hourlyMet = Get-ObjectProperty $hourly "met"
+    if ($null -eq $hourly -or $hourlyMet -isnot [bool]) { Add-CaptureProblem $problems "hourly_requirement_met_not_published" }
+    elseif (-not $hourlyMet) { Add-CaptureProblem $problems "recorder_hourly_requirement_not_met" }
+    $requestedGameHoursRaw = Get-ObjectProperty $hourly "requested_game_hours"
+    if (-not (Test-IsJsonInteger $requestedGameHoursRaw)) { Add-CaptureProblem $problems "requested_game_hours_not_published" }
+    else {
+        $requestedGameHours = [int64]$requestedGameHoursRaw
+        if ($requestedGameHours -le 0) { Add-CaptureProblem $problems "requested_game_hours_not_positive" }
+    }
 
-    $failureFlags = [uint32](Get-ObjectProperty $compact "failure_status_flags_or")
+    # An absent status word masked clean, so a manifest that published no
+    # failure_status_flags_or at all read as a capture with no failures.
+    $failureFlagsRaw = Get-ObjectProperty $compact "failure_status_flags_or"
+    if (-not (Test-IsJsonInteger $failureFlagsRaw)) {
+        Add-CaptureProblem $problems "failure_status_flags_or_not_published"
+        $failureFlags = [uint32]0
+    }
+    else {
+        $failureFlags = [uint32][int64]$failureFlagsRaw
+    }
     if (($failureFlags -band $script:CanonicalCompactFailureMask) -ne 0) { Add-CaptureProblem $problems ("canonical_failure_status_seen_0x{0:X}" -f ($failureFlags -band $script:CanonicalCompactFailureMask)) }
-    if ((Get-ObjectProperty $compact "failure_status_seen") -eq $true) { Add-CaptureProblem $problems "recorder_failure_status_seen" }
+    # `-eq $true` on an absent property is false, so a manifest that never
+    # published failure_status_seen asserted "no failure was seen" by saying
+    # nothing. The flag must be a published boolean.
+    $failureStatusSeen = Get-ObjectProperty $compact "failure_status_seen"
+    if ($failureStatusSeen -isnot [bool]) { Add-CaptureProblem $problems "failure_status_seen_not_published" }
+    elseif ($failureStatusSeen) { Add-CaptureProblem $problems "recorder_failure_status_seen" }
     $coverage = Get-ObjectProperty $compact "domain_coverage"
-    if ($null -eq $coverage -or (Get-ObjectProperty $coverage "ok") -ne $true) { Add-CaptureProblem $problems "domain_coverage_not_ok" }
+    $coverageOk = Get-ObjectProperty $coverage "ok"
+    if ($null -eq $coverage -or $coverageOk -isnot [bool]) { Add-CaptureProblem $problems "domain_coverage_ok_not_published" }
+    elseif (-not $coverageOk) { Add-CaptureProblem $problems "domain_coverage_not_ok" }
     if (@(Get-ObjectProperty $coverage "errors").Count -ne 0) { Add-CaptureProblem $problems "domain_coverage_errors" }
 
     $seenById = @{}
@@ -331,7 +367,16 @@ function Test-ProductionCaptureArtifacts {
     if ($null -ne $perDomain) {
         foreach ($property in $perDomain.PSObject.Properties) {
             $row = $property.Value
-            $id = [int](Get-ObjectProperty $row "domain_id")
+            # `[int]"47"` is 47, so a row publishing its domain_id as a STRING
+            # was entered under the integer key and satisfied the expected
+            # roster. The promotion gate rejects it independently, but this gate
+            # was returning ok = true for it.
+            $idRaw = Get-ObjectProperty $row "domain_id"
+            if (-not (Test-IsJsonInteger $idRaw)) {
+                Add-CaptureProblem $problems "per_domain_domain_id_not_an_integer"
+                continue
+            }
+            $id = [int]$idRaw
             if ($seenById.ContainsKey($id)) { Add-CaptureProblem $problems "duplicate_domain_id_$id" }
             else { $seenById[$id] = $row }
         }
@@ -414,7 +459,16 @@ function Test-ProductionCaptureArtifacts {
             (-not (Test-IsJsonInteger $dataCountRaw) -or [int64]$dataCountRaw -ne $acceptedCount)) {
             Add-CaptureProblem $problems "domain_${id}_data_record_count_mismatch"
         }
-        $rawFlags = [uint32](Get-ObjectProperty $row "status_flags_or")
+        # The effective word below already fails closed on absence. The RAW word
+        # did not: `[uint32]$null` is 0 and 0 masks clean, so a row that
+        # published no status_flags_or at all read as a clean domain. Same
+        # treatment for both, so the pair cannot disagree about what absence
+        # means.
+        $rawFlagsRaw = Get-ObjectProperty $row "status_flags_or"
+        if (-not (Test-IsJsonInteger $rawFlagsRaw)) {
+            Add-CaptureProblem $problems "domain_${id}_status_flags_or_missing"
+        }
+        $rawFlags = if (Test-IsJsonInteger $rawFlagsRaw) { [uint32][int64]$rawFlagsRaw } else { [uint32]0 }
         $effectiveFlags = Get-ObjectProperty $row "effective_failure_status_flags_or"
         if (($rawFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
             # A raw source-unavailable, hard-disabled, partial, bridge, or decode
@@ -423,13 +477,16 @@ function Test-ProductionCaptureArtifacts {
             # data into a successful real capture.
             Add-CaptureProblem $problems "domain_${id}_raw_failure_status"
         }
-        if ($null -eq $effectiveFlags) {
-            # Fail-closed: an absent/unreadable per-domain effective-failure field
-            # means we cannot evaluate whether this domain masked a real failure,
-            # so it is a validation FAILURE, not a silent pass.
+        if (-not (Test-IsJsonInteger $effectiveFlags)) {
+            # Fail-closed: an absent, null, or wrongly-typed per-domain
+            # effective-failure field means we cannot evaluate whether this
+            # domain masked a real failure, so it is a validation FAILURE, not a
+            # silent pass. The check used to be `$null -eq`, which let the JSON
+            # string "0" and the boolean $false through -- both cast to [uint32]
+            # 0 and both then masked clean.
             Add-CaptureProblem $problems "domain_${id}_effective_failure_status_flags_or_missing"
         }
-        elseif (([uint32]$effectiveFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
+        elseif (([uint32][int64]$effectiveFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
             Add-CaptureProblem $problems "domain_${id}_effective_failure_status"
         }
     }
@@ -440,18 +497,33 @@ function Test-ProductionCaptureArtifacts {
 
     $finalize = Get-ObjectProperty $manifest "host_finalize"
     $fold = Get-ObjectProperty $finalize "fold"
-    if ($null -eq $fold -or (Get-ObjectProperty $fold "skipped") -eq $true) { Add-CaptureProblem $problems "host_fold_missing_or_skipped" }
+    # `-eq $true` on an absent property is false, so a fold receipt that never
+    # published `skipped` asserted "I did not skip" by saying nothing.
+    $foldSkipped = Get-ObjectProperty $fold "skipped"
+    if ($null -eq $fold -or $foldSkipped -isnot [bool]) { Add-CaptureProblem $problems "host_fold_missing_or_skipped" }
+    elseif ($foldSkipped) { Add-CaptureProblem $problems "host_fold_missing_or_skipped" }
     else {
-        if ([int64](Get-ObjectProperty $fold "truncated_tail_bytes") -ne 0) { Add-CaptureProblem $problems "fold_truncated_tail" }
+        # Both counts must be zero, and both used to accept absence as zero.
+        $truncatedTailBytes = Get-ObjectProperty $fold "truncated_tail_bytes"
+        if (-not (Test-IsJsonInteger $truncatedTailBytes)) { Add-CaptureProblem $problems "fold_truncated_tail_bytes_not_published" }
+        elseif ([int64]$truncatedTailBytes -ne 0) { Add-CaptureProblem $problems "fold_truncated_tail" }
         if ($null -ne (Get-ObjectProperty $fold "stop_reason")) { Add-CaptureProblem $problems "fold_stop_reason_present" }
-        if ((Get-ObjectProperty $fold "ends_at_frame_end") -ne $true) { Add-CaptureProblem $problems "fold_not_closed_at_frame_end" }
-        if ([int64](Get-ObjectProperty $fold "malformed_payload_records") -ne 0) { Add-CaptureProblem $problems "fold_malformed_payload_records" }
+        $endsAtFrameEnd = Get-ObjectProperty $fold "ends_at_frame_end"
+        if ($endsAtFrameEnd -isnot [bool]) { Add-CaptureProblem $problems "fold_ends_at_frame_end_not_published" }
+        elseif (-not $endsAtFrameEnd) { Add-CaptureProblem $problems "fold_not_closed_at_frame_end" }
+        $malformedPayloadRecords = Get-ObjectProperty $fold "malformed_payload_records"
+        if (-not (Test-IsJsonInteger $malformedPayloadRecords)) { Add-CaptureProblem $problems "fold_malformed_payload_records_not_published" }
+        elseif ([int64]$malformedPayloadRecords -ne 0) { Add-CaptureProblem $problems "fold_malformed_payload_records" }
     }
     $verify = Get-ObjectProperty $finalize "verify"
     if ($null -eq $verify) { Add-CaptureProblem $problems "container_verify_missing" }
     else {
-        if ((Get-ObjectProperty $verify "stream_sha256_matches_capture") -ne $true) { Add-CaptureProblem $problems "container_stream_sha_mismatch" }
-        if ([int64](Get-ObjectProperty $verify "entries_verified") -le 0) { Add-CaptureProblem $problems "container_no_entries_verified" }
+        $streamShaMatches = Get-ObjectProperty $verify "stream_sha256_matches_capture"
+        if ($streamShaMatches -isnot [bool]) { Add-CaptureProblem $problems "container_stream_sha_match_not_published" }
+        elseif (-not $streamShaMatches) { Add-CaptureProblem $problems "container_stream_sha_mismatch" }
+        $entriesVerified = Get-ObjectProperty $verify "entries_verified"
+        if (-not (Test-IsJsonInteger $entriesVerified)) { Add-CaptureProblem $problems "container_entries_verified_not_published" }
+        elseif ([int64]$entriesVerified -le 0) { Add-CaptureProblem $problems "container_no_entries_verified" }
     }
 
     $replayFile = [string](Get-ObjectProperty $manifest "replay_file")
@@ -486,9 +558,12 @@ function Test-ProductionCaptureArtifacts {
         try { $speedProof = Get-Content -LiteralPath $SpeedProofPath -Raw | ConvertFrom-Json }
         catch { $speedProof = $null; Add-CaptureProblem $problems "speed5_proof_not_json" }
         if ($null -ne $speedProof) {
-            if ([string](Get-ObjectProperty $speedProof "schema") -ne "battle-plan.speed5_proof.v2" -or [int](Get-ObjectProperty $speedProof "speed_raw") -ne 4) { Add-CaptureProblem $problems "speed5_not_verified" }
+            $speedProofRaw = Get-ObjectProperty $speedProof "speed_raw"
+            if ([string](Get-ObjectProperty $speedProof "schema") -ne "battle-plan.speed5_proof.v2" -or
+                -not (Test-IsJsonInteger $speedProofRaw) -or [int64]$speedProofRaw -ne 4) { Add-CaptureProblem $problems "speed5_not_verified" }
             if (-not (Test-HexSha256 (Get-ObjectProperty $speedProof "domain57_game_speed_gate_v2_sha256"))) { Add-CaptureProblem $problems "speed_root_semantics_not_verified" }
-            if ([int64](Get-ObjectProperty $speedProof "sample_count") -lt 3) { Add-CaptureProblem $problems "speed5_insufficient_samples" }
+            $speedSampleCount = Get-ObjectProperty $speedProof "sample_count"
+            if (-not (Test-IsJsonInteger $speedSampleCount) -or [int64]$speedSampleCount -lt 3) { Add-CaptureProblem $problems "speed5_insufficient_samples" }
             if (-not (Test-HexSha256 (Get-ObjectProperty $speedProof "exe_sha256"))) { Add-CaptureProblem $problems "speed5_exe_sha_invalid" }
             if (-not (Test-HexSha256 (Get-ObjectProperty $speedProof "collector_control_sha256"))) { Add-CaptureProblem $problems "collector_control_sha_invalid" }
         }
@@ -1134,7 +1209,12 @@ function Test-ProductionCaptureManifest {
         $met = Resolve-JsonPath -Manifest $Manifest -Path "hourly_requirement.met"
         if (-not $met.Found) {
             $problems.Add("hourly_requirement.met missing")
-        } elseif ($met.Value -ne $true) {
+        } elseif ($met.Value -isnot [bool]) {
+            # PowerShell coerces on -eq: `1 -eq $true` and `"true" -eq $true` are
+            # both True, so a manifest publishing the NUMBER 1 or the STRING
+            # "true" satisfied a boolean requirement it never made.
+            $problems.Add("hourly_requirement.met is not a boolean")
+        } elseif (-not $met.Value) {
             $problems.Add("hourly_requirement.met is not true")
         }
     }
@@ -1144,6 +1224,10 @@ function Test-ProductionCaptureManifest {
         $skipped = Resolve-JsonPath -Manifest $Manifest -Path "skipped_game_hours"
         if (-not $skipped.Found) {
             $problems.Add("skipped_game_hours missing")
+        } elseif (-not (Test-IsJsonInteger $skipped.Value)) {
+            # `[int64]"0"` is 0 and `[int64]$false` is 0, so the string "0" and
+            # the boolean false both satisfied "must be 0".
+            $problems.Add("skipped_game_hours is not an integer")
         } elseif ([int64]$skipped.Value -ne 0) {
             $problems.Add("skipped_game_hours = $($skipped.Value) (must be 0)")
         }
@@ -1155,6 +1239,8 @@ function Test-ProductionCaptureManifest {
         $gapCount = Resolve-JsonPath -Manifest $Manifest -Path "compact_stream.domain_gap_record_count"
         if (-not $gapCount.Found) {
             $problems.Add("compact_stream.domain_gap_record_count missing")
+        } elseif (-not (Test-IsJsonInteger $gapCount.Value)) {
+            $problems.Add("compact_stream.domain_gap_record_count is not an integer")
         } elseif ([int64]$gapCount.Value -ne 0) {
             $problems.Add("compact_stream.domain_gap_record_count = $($gapCount.Value) (must be 0)")
         }

@@ -949,6 +949,24 @@ fn add_compact_global_status_flags(
     add_decoder_status(summary, status_flags);
 }
 
+/// Fold one record's value for `name` into this frame's decode aggregate, by
+/// the unit's declared accumulation class.
+///
+/// A domain can publish more than one record in a frame, so the within-frame
+/// accumulation has to obey the same rule as the cross-frame one. Summing two
+/// records' copies of an absolute running total is the same defect at a
+/// smaller scale. `compact_contract::diagnostic_channel::Accumulation` is the
+/// authority; this function is the only arithmetic here.
+fn fold_named_unit(aggregate: &mut BTreeMap<String, u64>, name: &str, value: u64) {
+    let class = compact_contract::diagnostic_channel::unit_accumulation(name);
+    match aggregate.get_mut(name) {
+        Some(entry) => *entry = class.fold(Some(*entry), value),
+        None => {
+            aggregate.insert(name.to_string(), class.fold(None, value));
+        }
+    }
+}
+
 fn add_compact_domain_problem(
     summary: &mut DomainDataDecodeSummary,
     domain_id: u16,
@@ -958,28 +976,86 @@ fn add_compact_domain_problem(
     if count == 0 {
         return;
     }
-    let entry = summary
-        .per_domain
-        .entry(domain_id)
-        .or_default()
-        .problems
-        .entry(problem.to_string())
-        .or_default();
-    *entry = entry.saturating_add(count);
+    let domain = summary.per_domain.entry(domain_id).or_default();
+    fold_named_unit(&mut domain.problems, problem, count);
 }
 
+/// Record a PER-FRAME quantity: a count derived from the payload of the frame
+/// this record rode in.
+///
+/// A value that the producer maintains across frames must NOT come through
+/// here. `debug_assert` states that, and the release path still folds by the
+/// declared class, so a miscategorised call is a loud test failure rather than
+/// a silently inflated manifest figure.
 fn add_compact_domain_data_unit(
     summary: &mut DomainDataDecodeSummary,
     domain_id: u16,
     name: &str,
     count: usize,
 ) {
-    if count == 0 {
+    debug_assert!(
+        matches!(
+            compact_contract::diagnostic_channel::unit_accumulation(name),
+            compact_contract::diagnostic_channel::Accumulation::PerFrame
+                | compact_contract::diagnostic_channel::Accumulation::LastValue
+                | compact_contract::diagnostic_channel::Accumulation::BitwiseOr
+        ),
+        "{name} is not a per-frame unit; use add_compact_domain_cumulative_unit"
+    );
+    // Skipping a zero is only safe when zero is the fold's identity. Adding 0
+    // to a sum and OR-ing 0 into a mask both change nothing, so dropping those
+    // saves a map entry and nothing else.
+    //
+    // For a LastValue unit it is NOT safe, and dropping it was a real defect:
+    // `air_strength_first_invalid_reason` is submitted on every frame, so a
+    // frame that failed with reason 31 followed by a CLEAN frame reporting 0
+    // left 31 standing in the manifest. The capture then reported a failure
+    // reason for a domain whose last observation was "no failure".
+    let class = compact_contract::diagnostic_channel::unit_accumulation(name);
+    if count == 0
+        && matches!(
+            class,
+            compact_contract::diagnostic_channel::Accumulation::PerFrame
+                | compact_contract::diagnostic_channel::Accumulation::BitwiseOr
+                | compact_contract::diagnostic_channel::Accumulation::Undeclared
+        )
+    {
         return;
     }
     if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
-        let entry = domain.data_units_total.entry(name.to_string()).or_default();
-        *entry = entry.saturating_add(count as u64);
+        fold_named_unit(&mut domain.data_units_total, name, count as u64);
+    }
+}
+
+/// Record a value the PRODUCER maintains across frames: an absolute running
+/// total, a running maximum, a latching boolean, a session constant, or an
+/// instantaneous level.
+///
+/// Separate from [`add_compact_domain_data_unit`] so the caller states which
+/// kind of number it holds at the call site, and so a name that has not been
+/// classified in the contract cannot be recorded as cumulative by accident.
+///
+/// Unlike the per-frame entry point this does NOT drop a zero: for a cumulative
+/// unit, zero is the measurement "nothing has happened yet", and dropping it
+/// would make "the counter is still 0" indistinguishable from "the domain did
+/// not report", which is the [`UnitPresence`] mistake in a different costume.
+fn add_compact_domain_cumulative_unit(
+    summary: &mut DomainDataDecodeSummary,
+    domain_id: u16,
+    name: &str,
+    value: u64,
+) {
+    debug_assert!(
+        matches!(
+            compact_contract::diagnostic_channel::unit_accumulation(name),
+            compact_contract::diagnostic_channel::Accumulation::Cumulative
+                | compact_contract::diagnostic_channel::Accumulation::Gauge
+                | compact_contract::diagnostic_channel::Accumulation::LastValue
+        ),
+        "{name} is not declared cumulative in compact_contract::diagnostic_channel"
+    );
+    if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
+        fold_named_unit(&mut domain.data_units_total, name, value);
     }
 }
 
@@ -8004,8 +8080,7 @@ fn decode_compact_air_variant_archetypes_data_payload(
             .data_changed_rows_total
             .saturating_add(lane_summary.data_changed_rows_total);
         for (name, count) in lane_summary.data_units_total {
-            let entry = domain.data_units_total.entry(name.to_string()).or_default();
-            *entry = entry.saturating_add(count);
+            fold_named_unit(&mut domain.data_units_total, &name, count);
         }
     }
 }
@@ -8030,8 +8105,7 @@ fn decode_compact_characters_leaders_cabinet_live_data_payload(
             .data_changed_rows_total
             .saturating_add(lane_summary.row_count_total);
         for (name, count) in lane_summary.data_units_total {
-            let entry = domain.data_units_total.entry(name.to_string()).or_default();
-            *entry = entry.saturating_add(count);
+            fold_named_unit(&mut domain.data_units_total, &name, count);
         }
     }
 }
@@ -8183,8 +8257,7 @@ fn decode_compact_scripted_state_flags_variables_data_payload(
             .data_changed_rows_total
             .saturating_add(verdict.summary.data_changed_rows_total);
         for (name, count) in verdict.summary.data_units_total {
-            let entry = domain.data_units_total.entry(name.to_string()).or_default();
-            *entry = entry.saturating_add(count);
+            fold_named_unit(&mut domain.data_units_total, &name, count);
         }
     }
 }
@@ -8209,8 +8282,7 @@ fn decode_compact_occupation_resistance_compliance_data_payload(
             .data_changed_rows_total
             .saturating_add(lane_summary.data_changed_rows_total);
         for (name, count) in lane_summary.data_units_total {
-            let entry = domain.data_units_total.entry(name.to_string()).or_default();
-            *entry = entry.saturating_add(count);
+            fold_named_unit(&mut domain.data_units_total, &name, count);
         }
     }
 }
@@ -8238,8 +8310,7 @@ fn decode_compact_diplomacy_intel_operatives_live_data_payload(
             .data_changed_rows_total
             .saturating_add(lane_summary.data_changed_rows_total);
         for (name, count) in lane_summary.data_units_total {
-            let entry = domain.data_units_total.entry(name.to_string()).or_default();
-            *entry = entry.saturating_add(count);
+            fold_named_unit(&mut domain.data_units_total, &name, count);
         }
     }
 }
@@ -8315,13 +8386,17 @@ fn decode_compact_air_loss_stats_live_data_payload(
         "air_loss_binding_verified_rows",
         lane_summary.binding_verified_rows as usize,
     );
+    // Each channel total is the within-frame sum over countries of that
+    // country's ENGINE LIFETIME total for the channel (statistic id 23, the
+    // 89-field aggregate air-loss HISTORY record). The world total is therefore
+    // cumulative even though this frame built it by adding: summing it again
+    // across frames multiplied the engine's lifetime figure by the frame count.
     for (label, total) in lane_summary.channel_totals {
-        let count = if total > 0 { total as usize } else { 0 };
-        add_compact_domain_data_unit(
+        add_compact_domain_cumulative_unit(
             summary,
             COMPACT_DOMAIN_AIR_LOSS_STATS_LIVE,
             &format!("air_loss_{label}_raw_sum"),
-            count,
+            total.max(0) as u64,
         );
     }
 }
@@ -8726,8 +8801,7 @@ fn decode_compact_naval_missions_status_live_data_payload(
             .data_changed_rows_total
             .saturating_add(lane_summary.changed_rows_total);
         for (name, count) in lane_summary.data_units_total {
-            let entry = domain.data_units_total.entry(name.to_string()).or_default();
-            *entry = entry.saturating_add(count);
+            fold_named_unit(&mut domain.data_units_total, &name, count);
         }
     }
 }
@@ -8823,8 +8897,7 @@ fn merge_naval_combat_lane_summary(
             .data_changed_rows_total
             .saturating_add(lane_summary.row_count);
         for (name, count) in lane_summary.data_units_total {
-            let entry = domain.data_units_total.entry(name.to_string()).or_default();
-            *entry = entry.saturating_add(count);
+            fold_named_unit(&mut domain.data_units_total, &name, count);
         }
     }
 }
@@ -8874,70 +8947,95 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             .data_changed_rows_total
             .saturating_add(decoded.rows.len() as u64);
 
-        let mut add_unit = |name: &str, count: u64| {
+        // PER-FRAME: computed from THIS batch.
+        let mut add_batch_unit = |name: &str, count: u64| {
             if count != 0 {
-                let entry = domain.data_units_total.entry(name.to_string()).or_default();
-                *entry = entry.saturating_add(count);
+                fold_named_unit(&mut domain.data_units_total, name, count);
             }
         };
-        add_unit("convoy_transport_attack_batches", 1);
-        add_unit("convoy_transport_attack_rows", decoded.rows.len() as u64);
-        add_unit(
+        add_batch_unit("convoy_transport_attack_batches", 1);
+        add_batch_unit("convoy_transport_attack_rows", decoded.rows.len() as u64);
+        add_batch_unit(
             "convoy_transport_attack_exact_complete_batches",
             u64::from(decoded.exact_events_complete),
         );
-        add_unit(
+        add_batch_unit(
             "convoy_transport_attack_incomplete_batches",
             u64::from(!decoded.exact_events_complete),
         );
-        add_unit(
+        add_batch_unit(
             "convoy_transport_attack_hook_installed_batches",
             u64::from(witness.hook_installed),
         );
-        add_unit(
+        add_batch_unit(
             "convoy_transport_attack_queue_drain_complete_batches",
             u64::from(witness.queue_drain_complete),
         );
-        add_unit(
-            "convoy_transport_attack_callbacks_seen",
-            witness.telemetry.callbacks_seen,
-        );
-        add_unit(
-            "convoy_transport_attack_original_calls",
-            witness.telemetry.original_calls,
-        );
-        add_unit(
-            "convoy_transport_attack_events_emitted",
-            witness.telemetry.events_emitted,
-        );
-        add_unit(
+        add_batch_unit(
             "convoy_transport_attack_drained_rows",
             witness.drained_rows as u64,
         );
-        add_unit(
+    }
+
+    // CUMULATIVE and GAUGE: `witness.telemetry` is the hook's
+    // `cumulative_telemetry` -- process-global `AtomicU64` counters reset only
+    // at hook install, so every batch reports the same running totals again.
+    // Summing them is what published 19,470 drops for 107 events in
+    // runs/live_unlock/t15. The binding/queue counts are the state of the
+    // publication and queue at drain time, so they are peaks, not totals.
+    //
+    // These deliberately do NOT skip a zero: for a running total, zero is the
+    // measurement "nothing has happened yet".
+    let telemetry = witness.telemetry;
+    for (name, value) in [
+        (
+            "convoy_transport_attack_callbacks_seen",
+            telemetry.callbacks_seen,
+        ),
+        (
+            "convoy_transport_attack_original_calls",
+            telemetry.original_calls,
+        ),
+        (
+            "convoy_transport_attack_events_emitted",
+            telemetry.events_emitted,
+        ),
+        ("convoy_transport_attack_dropped_events", dropped_events),
+        (
             "convoy_transport_attack_remaining_events",
             witness.remaining_events as u64,
-        );
-        add_unit(
+        ),
+        (
             "convoy_transport_attack_active_callbacks",
             witness.active_callbacks as u64,
-        );
-        add_unit(
+        ),
+        (
             "convoy_transport_attack_resolver_member_bindings",
             witness.resolver_member_bindings as u64,
-        );
-        add_unit(
+        ),
+        (
             "convoy_transport_attack_resolver_route_bindings",
             witness.resolver_route_bindings as u64,
-        );
-        add_unit(
+        ),
+        (
             "convoy_transport_attack_resolver_unbound_convoy_clients",
             witness.resolver_unbound_convoy_clients as u64,
+        ),
+    ] {
+        add_compact_domain_cumulative_unit(
+            summary,
+            COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+            name,
+            value,
         );
-        add_unit("convoy_transport_attack_dropped_events", dropped_events);
-        for (name, count) in drop_counts {
-            add_unit(name, count);
-        }
+    }
+    for (name, count) in drop_counts {
+        add_compact_domain_cumulative_unit(
+            summary,
+            COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+            name,
+            count,
+        );
     }
 
     if !decoded.exact_events_complete {
@@ -13640,26 +13738,29 @@ fn decode_compact_fired_event_popups_data_payload(
     if let Some(domain) = summary.per_domain.get_mut(&fired75::DOMAIN_ID) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(admitted_rows as u64);
     }
-    add_compact_domain_data_unit(
+    // The d75 ledger is append-only for the life of the runtime -- every frame
+    // clones the WHOLE ledger -- so these are the ledger's size, not this
+    // frame's fires.
+    add_compact_domain_cumulative_unit(
         summary,
         fired75::DOMAIN_ID,
         "fired_event_popups_rows",
-        admitted_rows,
+        admitted_rows as u64,
     );
-    add_compact_domain_data_unit(
+    add_compact_domain_cumulative_unit(
         summary,
         fired75::DOMAIN_ID,
         "fired_event_popups_unadmitted_rows",
-        decoded.rows.len().saturating_sub(admitted_rows),
+        decoded.rows.len().saturating_sub(admitted_rows) as u64,
     );
-    add_compact_domain_data_unit(
+    add_compact_domain_cumulative_unit(
         summary,
         fired75::DOMAIN_ID,
         "fired_event_popups_dropped_rows",
         decoded
             .telemetry
             .dropped_fire_rows
-            .saturating_add(decoded.telemetry.dropped_resolution_rows) as usize,
+            .saturating_add(decoded.telemetry.dropped_resolution_rows),
     );
 }
 
@@ -14107,11 +14208,13 @@ fn decode_compact_sunk_ship_history_data_payload(
     if let Some(domain) = summary.per_domain.get_mut(&sunk86::DOMAIN_ID) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(event_rows as u64);
     }
-    add_compact_domain_data_unit(
+    // `current_complete_snapshot` clones the complete writer history every
+    // frame, so this is the history's LENGTH.
+    add_compact_domain_cumulative_unit(
         summary,
         sunk86::DOMAIN_ID,
         "sunk_ship_writer_events",
-        event_rows,
+        event_rows as u64,
     );
 }
 
@@ -18028,6 +18131,115 @@ mod tests {
         out
     }
 
+    /// The two entry points must not be interchangeable, or the split is
+    /// documentation rather than enforcement.
+    ///
+    /// This is not hypothetical: routing domain 61's engine channel totals
+    /// through the per-frame entry point is exactly the mistake this caught
+    /// while the accumulation authority was being wired up.
+    ///
+    /// MUTATION: delete the `debug_assert!` in `add_compact_domain_data_unit`
+    /// and this test stops panicking, so `#[should_panic]` fails it.
+    /// A LAST-VALUE unit's zero is a measurement, and dropping it left a stale
+    /// failure standing in the manifest.
+    ///
+    /// `air_strength_first_invalid_reason` is submitted on every frame. Frame 1
+    /// fails with reason 31; frame 2 is clean and reports 0. Under the old
+    /// zero-skip the manifest kept 31, so the capture reported a failure reason
+    /// for a domain whose last observation was "no failure" — the
+    /// `UnitPresence` mistake (absent and zero conflated) in a different place.
+    ///
+    /// MUTATION: restore the unconditional `if count == 0 { return; }` and the
+    /// first assertion reads 31.
+    #[test]
+    fn a_zero_is_a_measurement_for_a_last_value_unit_and_a_no_op_for_a_sum() {
+        use compact_contract::diagnostic_channel::{unit_accumulation, Accumulation};
+        assert_eq!(
+            unit_accumulation("air_strength_first_invalid_reason"),
+            Accumulation::LastValue
+        );
+
+        let mut summary = DomainDataDecodeSummary::default();
+        summary.per_domain.entry(42).or_default();
+        add_compact_domain_data_unit(&mut summary, 42, "air_strength_first_invalid_reason", 31);
+        add_compact_domain_data_unit(&mut summary, 42, "air_strength_first_invalid_reason", 0);
+        assert_eq!(
+            summary.per_domain[&42].data_units_total["air_strength_first_invalid_reason"],
+            0,
+            "the last observation was 'no failure' and the manifest must say so"
+        );
+
+        // An ordinal is a position, not a quantity: two frames at 1 then 2 must
+        // read 2, never 3.
+        assert_eq!(
+            unit_accumulation("air_strength_first_invalid_ordinal"),
+            Accumulation::LastValue
+        );
+        add_compact_domain_data_unit(&mut summary, 42, "air_strength_first_invalid_ordinal", 1);
+        add_compact_domain_data_unit(&mut summary, 42, "air_strength_first_invalid_ordinal", 2);
+        assert_eq!(
+            summary.per_domain[&42].data_units_total["air_strength_first_invalid_ordinal"],
+            2
+        );
+
+        // And a per-frame count still drops its zeroes and still sums, so the
+        // fix did not turn every zero into a map entry.
+        add_compact_domain_data_unit(&mut summary, 42, "air_strength_rows", 0);
+        assert!(
+            !summary.per_domain[&42]
+                .data_units_total
+                .contains_key("air_strength_rows"),
+            "zero is the identity for a sum, so it need not be stored"
+        );
+        add_compact_domain_data_unit(&mut summary, 42, "air_strength_rows", 3);
+        add_compact_domain_data_unit(&mut summary, 42, "air_strength_rows", 4);
+        assert_eq!(
+            summary.per_domain[&42].data_units_total["air_strength_rows"],
+            7
+        );
+    }
+
+    // The guard is a `debug_assert!`, deliberately: the release path still
+    // folds by the DECLARED class, so a miscategorised call is a developer
+    // error rather than a wrong figure, and the hot per-unit path pays
+    // nothing for it. That means the guard does not exist in a release
+    // build and this test cannot panic there -- so it is IGNORED in
+    // release rather than left to fail the release gate.
+    #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "the guard is a debug_assert!; release compiles it out"
+    )]
+    #[should_panic(expected = "use add_compact_domain_cumulative_unit")]
+    fn a_cumulative_unit_cannot_be_recorded_through_the_per_frame_entry_point() {
+        let mut summary = DomainDataDecodeSummary::default();
+        summary.per_domain.entry(61).or_default();
+        add_compact_domain_data_unit(&mut summary, 61, "air_loss_our_fighters_lost_raw_sum", 7);
+    }
+
+    /// And the converse: a per-frame count must not be smuggled in as
+    /// producer-retained state, which would publish a MAX where a total belongs.
+    ///
+    /// MUTATION: delete the `debug_assert!` in
+    /// `add_compact_domain_cumulative_unit` and `#[should_panic]` fails.
+    // The guard is a `debug_assert!`, deliberately: the release path still
+    // folds by the DECLARED class, so a miscategorised call is a developer
+    // error rather than a wrong figure, and the hot per-unit path pays
+    // nothing for it. That means the guard does not exist in a release
+    // build and this test cannot panic there -- so it is IGNORED in
+    // release rather than left to fail the release gate.
+    #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "the guard is a debug_assert!; release compiles it out"
+    )]
+    #[should_panic(expected = "is not declared cumulative")]
+    fn a_per_frame_unit_cannot_be_recorded_through_the_cumulative_entry_point() {
+        let mut summary = DomainDataDecodeSummary::default();
+        summary.per_domain.entry(61).or_default();
+        add_compact_domain_cumulative_unit(&mut summary, 61, "air_loss_stat_rows", 7);
+    }
+
     fn decode_mtrr(payload: &[u8]) -> DomainDataDecodeSummary {
         let mut summary = DomainDataDecodeSummary::default();
         decode_compact_market_trade_sized_trailer(
@@ -18926,6 +19138,69 @@ mod tests {
             1
         );
         assert!(authority.problems.is_empty());
+    }
+
+    /// The t15 defect, reproduced through the real d90 decoder.
+    ///
+    /// The hook's counters are process-global and reported at their ABSOLUTE
+    /// value on every batch, so a capture whose counter reaches 3 across three
+    /// batches must publish 3 — not 1+2+3. In `runs/live_unlock/t15` the
+    /// counter ran 1..107 over 396 batches and the manifest published their
+    /// sum, 19,470, as an event count.
+    ///
+    /// MUTATION: record the telemetry through `add_compact_domain_data_unit`,
+    /// or classify `convoy_transport_attack_callbacks_seen` as `PerFrame`, and
+    /// the cumulative assertion reads 6 instead of 3.
+    #[test]
+    fn convoy_transport_attack_cumulative_telemetry_publishes_once_not_once_per_batch() {
+        let mut summary = DomainDataDecodeSummary::default();
+        summary
+            .per_domain
+            .entry(COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE)
+            .or_default();
+
+        // Three batches whose absolute counter reads 1, then 2, then 3.
+        for absolute in 1u64..=3 {
+            let mut witness = convoy_transport_attack_test_witness(true);
+            witness.telemetry.callbacks_seen = absolute;
+            witness.telemetry.original_calls = absolute;
+            witness.telemetry.events_emitted = absolute;
+            witness.producer_sequence_next = absolute + 1;
+            let payload = naval4950::encode_convoy_transport_attack_batch(
+                &[convoy_transport_attack_test_row()],
+                witness,
+            )
+            .expect("valid CTA2 payload");
+            decode_compact_convoy_transport_attack_live_data_payload(
+                0,
+                &payload,
+                &mut summary,
+            );
+        }
+
+        let domain = &summary.per_domain[&COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE];
+        assert_eq!(
+            domain.data_units_total["convoy_transport_attack_callbacks_seen"], 3,
+            "a counter reported at its absolute value on every batch is not summed; \
+             summing 1+2+3 is the same arithmetic that published 19,470 in t15"
+        );
+        assert_eq!(domain.data_units_total["convoy_transport_attack_original_calls"], 3);
+        assert_eq!(domain.data_units_total["convoy_transport_attack_events_emitted"], 3);
+
+        // The per-batch counters beside them must still SUM, or the fix would
+        // be "aggregate everything by MAX", which loses real counts.
+        assert_eq!(
+            domain.data_units_total["convoy_transport_attack_batches"], 3,
+            "a per-batch incidence count must still sum"
+        );
+        assert_eq!(domain.data_units_total["convoy_transport_attack_rows"], 3);
+        assert_eq!(domain.data_units_total["convoy_transport_attack_drained_rows"], 3);
+
+        // A gauge is the peak of the publication in force, not its total.
+        assert_eq!(
+            domain.data_units_total["convoy_transport_attack_resolver_route_bindings"], 1,
+            "one publication observed three times is one publication"
+        );
     }
 
     #[test]

@@ -1244,9 +1244,649 @@ impl<T> FirstFailureLatch<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Accumulation
+// ---------------------------------------------------------------------------
+
+/// How ONE frame's value for a named unit composes into the whole-capture
+/// figure the manifest publishes.
+///
+/// # Why this exists
+///
+/// [`UnitRole`] says what a unit is FOR and [`UnitPresence`] says whether its
+/// value is a measurement. Neither says how two frames' values combine, and
+/// the recorder host had no answer either: it summed everything except two
+/// hard-coded name shapes (`*_sample`, `d69_*_mask`). That default is correct
+/// only for a unit whose value describes the frame it rode in.
+///
+/// It is not correct for a unit whose producer keeps a running total and
+/// reports its ABSOLUTE value every frame. Summing an absolute running total
+/// over `n` frames yields roughly `n^2/2` times the truth. Measured, not
+/// theorised: in `runs/live_unlock/t15`, domain 90's
+/// `convoy_transport_attack_dropped_events` was published as **19,470**. The
+/// stream's 396 CTA2 batch headers carry `callbacks_seen` running 1, 2, ...,
+/// 107 — the real population is **107**, and 19,470 is the triangular sum of
+/// the same 107 events counted again on every frame that followed. The figure
+/// was quoted to the project as an event count twice.
+///
+/// The same shape was live in the `rs_*` scheduler probe, where the producer's
+/// own doc comment already said "counters are cumulative (monotonic); the host
+/// aggregates them by MAX" while the host in fact summed them.
+///
+/// # The rule
+///
+/// A unit's class is a property of its PRODUCER, and this enum is where the
+/// producer's answer is written down. [`unit_accumulation`] is the single
+/// authority; every aggregation site consults it and no aggregation site is
+/// allowed its own private rule. [`Accumulation::fold`] is the only place a
+/// value is combined.
+///
+/// # Undeclared is not a default
+///
+/// [`Accumulation::Undeclared`] exists so that "nobody classified this" is a
+/// visible state rather than a silent SUM. It folds like [`Self::PerFrame`] —
+/// changing the arithmetic for an unknown unit would silently move published
+/// figures — but the recorder counts it, the manifest publishes it, and the
+/// promotion gate refuses a capture that contains one. A new unit in a family
+/// whose values are known to be cumulative therefore cannot join the summed
+/// side quietly: it lands in `Undeclared` and says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum Accumulation {
+    /// The value describes THIS frame and nothing else: a count of rows
+    /// decoded from this frame's payload, an incidence flag for this frame, a
+    /// per-frame drain of a registry that is reset by the drain. Whole-capture
+    /// figure is the SUM.
+    PerFrame = 1,
+    /// The producer maintains the value across frames and reports its absolute
+    /// state every frame: a monotonic counter, a running maximum, a latching
+    /// boolean, or a session constant. Whole-capture figure is the MAX, which
+    /// for a monotonic series is the final value and for a constant is the
+    /// constant. Summing is what produced the 19,470.
+    Cumulative = 2,
+    /// An instantaneous level rather than a total: a queue depth, an in-flight
+    /// count, the size of the publication currently in force. Whole-capture
+    /// figure is the PEAK, so it folds by MAX like [`Self::Cumulative`], but
+    /// the two are kept apart because a peak and a final total are different
+    /// claims and a reader must be able to tell which one a figure is.
+    Gauge = 3,
+    /// A raw word sampled this frame — a hash, an address, an index, a
+    /// percentile over a window the producer already accumulated. Arithmetic
+    /// destroys it. Whole-capture figure is the LAST observed value.
+    LastValue = 4,
+    /// A bitmask of slots. Two frames failing slot 0 must read as mask 1, not
+    /// as 2 — which would name slot 1, a slot that never failed. Whole-capture
+    /// figure is the bitwise OR.
+    BitwiseOr = 5,
+    /// No producer has declared a class for this name. Folds as
+    /// [`Self::PerFrame`] so that adding the declaration later cannot change a
+    /// figure by accident, but is counted, published, and gated.
+    Undeclared = 6,
+}
+
+impl Accumulation {
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::PerFrame),
+            2 => Some(Self::Cumulative),
+            3 => Some(Self::Gauge),
+            4 => Some(Self::LastValue),
+            5 => Some(Self::BitwiseOr),
+            6 => Some(Self::Undeclared),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PerFrame => "per_frame",
+            Self::Cumulative => "cumulative",
+            Self::Gauge => "gauge",
+            Self::LastValue => "last_value",
+            Self::BitwiseOr => "bitwise_or",
+            Self::Undeclared => "undeclared",
+        }
+    }
+
+    /// Every class, for census and test enumeration.
+    pub const ALL: [Self; 6] = [
+        Self::PerFrame,
+        Self::Cumulative,
+        Self::Gauge,
+        Self::LastValue,
+        Self::BitwiseOr,
+        Self::Undeclared,
+    ];
+
+    /// Combine one frame's `incoming` value into the running figure.
+    ///
+    /// `running` is `None` for the first observation of the unit. This is the
+    /// ONLY place a diagnostic unit's values are combined; an aggregation site
+    /// that reimplements the arithmetic is the defect this type exists to
+    /// remove.
+    pub fn fold(self, running: Option<u64>, incoming: u64) -> u64 {
+        let Some(running) = running else {
+            return incoming;
+        };
+        match self {
+            Self::PerFrame | Self::Undeclared => running.saturating_add(incoming),
+            Self::Cumulative | Self::Gauge => running.max(incoming),
+            Self::LastValue => incoming,
+            Self::BitwiseOr => running | incoming,
+        }
+    }
+
+    /// Does this class need every frame's value to arrive to be correct?
+    ///
+    /// `false` for the classes whose figure survives a lost frame, which is
+    /// why a hard kill costs a cumulative unit only the in-flight tail.
+    pub const fn requires_every_frame(self) -> bool {
+        matches!(self, Self::PerFrame | Self::Undeclared)
+    }
+}
+
+/// Name prefixes whose units come from a producer that keeps state across
+/// frames, so an unregistered name in the family is [`Accumulation::Undeclared`]
+/// rather than silently per-frame.
+///
+/// This is the mechanism that stops a new unit joining the summed side by
+/// accident. Everywhere else the default is `PerFrame` — which is what the
+/// ~460 domain data units genuinely are, because their values are computed
+/// from the payload of the frame they ride in. Inside these prefixes it is not
+/// a safe default, because everything the family has ever emitted has been
+/// producer-retained state.
+pub const STATEFUL_UNIT_PREFIXES: &[&str] = &[
+    // Read-only scheduler + sink accounting (`SchedulerTelemetry`,
+    // `SinkDeliveryState`), neither reset within a capture.
+    "rs_",
+    // Domain 90's convoy terminal hook, whose drain field is named
+    // `cumulative_telemetry`.
+    "convoy_transport_attack_",
+    // Domain 61 reads the engine's 89-field per-country AGGREGATE air-loss
+    // history record; every channel is an engine lifetime total.
+    "air_loss_",
+    // Domain 75's fired-event ledger is append-only for the life of the
+    // runtime: `snapshot_rows` clones the whole ledger every frame and rows are
+    // removed only by an install abort.
+    "fired_event_popups_",
+    "d75_",
+    // The heap sweep's counters and generation are process-global statics.
+    "heap_sweep_",
+    // Domain 86's `current_complete_snapshot` clones the complete writer
+    // history every frame.
+    "sunk_ship_",
+];
+
+/// Name suffixes whose value is a raw OBSERVATION rather than a quantity: a
+/// hash, a fingerprint, a pointer, an address, a vtable, an RVA, an engine
+/// identifier, an ordinal, or a failure code.
+///
+/// This is the third category, distinct from per-frame quantities and from
+/// cumulative counters. Arithmetic on any of these is not merely inaccurate,
+/// it is meaningless — and it has already produced published lies, all of them
+/// read out of `runs/live_unlock/t15`:
+///
+/// * `h_convoy_resolver_error_hash = 18446744073709551615` — `u64::MAX`,
+///   the saturation of one hash added to itself once per frame. Also
+///   `d93_fail_reason_hash` and `d64_first_rejected_timed_effect_class_fnv1a64`.
+/// * `d43_resource_failure_resource_index = 1550483193495` — exactly
+///   `u32::MAX * 361`, i.e. the producer's "never written" reset sentinel on
+///   every one of the domain's 361 frames.
+/// * `d44_country_supply_slot_index` and `d44_country_supply_tag_db_id` —
+///   `u32::MAX * 7` apiece.
+/// * `d64_first_rejected_timed_effect_vtable = 1547721722735848` — one vtable
+///   pointer, added up 396 times.
+/// * `d41_lifecycle_failure_stage = 180063` — stage code 513, summed over 351
+///   frames.
+///
+/// The `_sample` convention was already here and already respected by one of
+/// the three aggregation sites. The rest of this list is the same convention
+/// applied to the units that predate it: a suffix rule is a NAMING rule, so
+/// units named before the rule existed were silently on the wrong side. The
+/// registry above is what makes membership explicit rather than orthographic;
+/// these suffixes cover the families where the spelling genuinely does name
+/// the value's kind, and the sweep in
+/// `tests/diagnostic_unit_accumulation_sweep.rs` is what stops a new unit
+/// relying on a spelling nobody enforced.
+pub const RAW_WORD_SUFFIXES: &[&str] = &[
+    "_sample",
+    // Digests and identities.
+    "_hash",
+    "_fnv1a64",
+    "_fingerprint",
+    // Addresses.
+    "_ptr",
+    "_rva",
+    "_address",
+    "_vtable",
+    // Engine identifiers.
+    "_id",
+    // Positions within a container. `_ordinal` names the same thing as
+    // `_index` and was missed on the first pass, which summed
+    // `air_strength_first_invalid_ordinal` and
+    // `domain47_manager_failure_ordinal`.
+    "_index",
+    "_ordinal",
+    // The width of the read that failed.
+    "_fail_width",
+    // Latched failure codes: which check refused, in which branch, on what
+    // kind of object. A code is a name written as a number.
+    "_stage",
+    "_branch",
+    "_reason",
+    "_kind",
+    "_code",
+    // NOT `_epoch`: `convoy_transport_attack_dropped_hour_or_epoch` is a
+    // cumulative DROP COUNT whose name happens to end that way. The two real
+    // epoch words are listed in `LAST_VALUE_UNITS` instead. A suffix rule is
+    // only safe when the suffix names the value's KIND rather than the last
+    // word of a sentence.
+];
+
+/// Name suffixes whose value is a bitmask of reasons, slots, or status bits.
+///
+/// Generalises the `d69_*_mask` special case the recorder had hard-coded: the
+/// same argument applies to `d70_rejected_unknown_status_mask`,
+/// `d81_failure_read_success_mask`, the three `domain45_targeted_*_reason_mask`
+/// words, `domain53_partial_cause_mask`, and
+/// `domain53_reportfail_payload_status_or`. Two frames setting bit 0 must read
+/// as 1, never as 2 — which would name a bit that was never set.
+pub const BITMASK_SUFFIXES: &[&str] = &["_mask", "_status_or"];
+
+/// Units whose value is an absolute running total, a running maximum, a
+/// latching boolean, or a session constant. Folded by MAX.
+///
+/// `rs_*` come from `read_only_scheduler::SchedulerTelemetry` and the
+/// collector's `SinkDeliveryState`; neither is ever reset within a capture, so
+/// each probe record carries the accounting AS OF that record.
+///
+/// `convoy_transport_attack_*` come from `ConvoyTerminalDrain`'s field that is
+/// literally named `cumulative_telemetry`, backed by process-global `AtomicU64`
+/// counters that `reset_observer_state_for_install` clears only at hook
+/// install.
+pub const CUMULATIVE_UNITS: &[&str] = &[
+    // --- read-only scheduler accounting (SchedulerTelemetry) ---------------
+    "rs_observations",
+    "rs_scheduled_hours",
+    "rs_accepted_hours",
+    "rs_degraded_hours",
+    "rs_refused_hours",
+    "rs_evicted_pending_hours",
+    "rs_abandoned_hours",
+    "rs_flushed_pending_hours",
+    "rs_unobserved_overrun_hours",
+    "rs_unobserved_clock_unknown_hours",
+    "rs_counter_anomaly_events",
+    "rs_post_terminal_observations",
+    "rs_gapped_domain_hours",
+    "rs_overrun_domain_hours",
+    "rs_backpressure_domain_hours",
+    "rs_torn_domain_hours",
+    "rs_worker_panic_domain_hours",
+    "rs_clock_unreadable_events",
+    "rs_control_lane_compactions",
+    "rs_reloads",
+    // Running maxima maintained by the scheduler, not per-frame depths.
+    // `read_only_scheduler` keeps each with `.max(...)`, never resetting.
+    "rs_max_request_depth",
+    "rs_max_control_depth",
+    "rs_max_publishing_depth",
+    // Session constants: capacity caps and policy latches. Constant across
+    // frames, so MAX is the constant and SUM was "the constant times frames".
+    "rs_request_cap",
+    "rs_control_cap",
+    "rs_zero_mutation_policy",
+    "rs_scheduler_active",
+    // Latching booleans: set once, never cleared.
+    "rs_terminal",
+    "rs_transport_failed",
+    "rs_finalized",
+    // --- sink delivery accounting (SinkDeliveryState) ---------------------
+    "rs_sink_write_failures",
+    "rs_sink_open_attempts",
+    "rs_sink_open_finishes",
+    "rs_sink_requested_count",
+    "rs_sink_opened_count",
+    "rs_sink_open_failures",
+    "rs_sink_write_attempts",
+    "rs_sink_write_finishes",
+    "rs_sink_write_commits",
+    "rs_sink_file_bytes_committed",
+    "rs_sink_pipe_bytes_committed",
+    // `write_times_us` is push-only for the life of the capture, so its length,
+    // total and maximum are all cumulative.
+    "rs_sink_time_sample_count",
+    "rs_sink_time_total_us",
+    "rs_sink_time_max_us",
+    "rs_configured_sink_count",
+    "rs_pipe_sink_enabled",
+    "rs_file_sink_enabled",
+    "rs_pipe_sink_requested",
+    "rs_pipe_sink_opened",
+    "rs_file_sink_requested",
+    "rs_file_sink_opened",
+    // --- domain 90 convoy transport attack hook (cumulative_telemetry) ----
+    "convoy_transport_attack_callbacks_seen",
+    "convoy_transport_attack_original_calls",
+    "convoy_transport_attack_events_emitted",
+    "convoy_transport_attack_dropped_events",
+    "convoy_transport_attack_dropped_no_original",
+    "convoy_transport_attack_dropped_teardown",
+    "convoy_transport_attack_dropped_nested",
+    "convoy_transport_attack_dropped_capture_busy",
+    "convoy_transport_attack_dropped_hour_or_epoch",
+    "convoy_transport_attack_dropped_resolver",
+    "convoy_transport_attack_dropped_candidate",
+    "convoy_transport_attack_dropped_d70_pre",
+    "convoy_transport_attack_dropped_d70_post",
+    "convoy_transport_attack_dropped_d70_mutation",
+    "convoy_transport_attack_dropped_queue_busy",
+    "convoy_transport_attack_dropped_queue_full",
+    // --- domain 75 fired-event popups (append-only ledger + hook telemetry) --
+    // `snapshot_rows` clones `state.rows` in full every frame, and rows are
+    // inserted without removal up to the queue capacity, so the published row
+    // count is the ledger SIZE, not this frame's fires.
+    "fired_event_popups_rows",
+    "fired_event_popups_unadmitted_rows",
+    "fired_event_popups_dropped_rows",
+    "d75_dropped_fire_rows",
+    "d75_dropped_resolution_rows",
+    "d75_correlation_failures",
+    "d75_invalid_definition_joins",
+    "d75_fired_ledger_shadow_mismatches",
+    // Running maximum: `queue_high_water_mark.max(rows.len())`.
+    "d75_queue_high_water_mark",
+    // Session constant.
+    "d75_queue_capacity",
+    // Latching validation booleans: set once as each hook proves itself.
+    "d75_runtime_installed",
+    "d75_fire_hook_validated",
+    "d75_option_hook_validated",
+    "d75_materialisation_hook_validated",
+    "d75_timeout_hook_validated",
+    "d75_all_event_classes_covered",
+    "d75_all_resolution_routes_covered",
+    "d75_capture_start_baseline_complete",
+    "d75_terminal_custody",
+    // --- domain 86 sunk-ship writer history --------------------------------
+    // `current_complete_snapshot` clones the complete event history, so the
+    // count is the history LENGTH.
+    "sunk_ship_writer_events",
+    // --- process-global sweep state ----------------------------------------
+    "heap_sweep_degraded",
+    "heap_sweep_degraded_total",
+    "heap_sweep_spawn_failures",
+    "heap_sweep_generation",
+    // Monotonic per-tracker stale-frame counters and absolute generation
+    // numbers; the producers say "monotonic per tracker" at the increment site.
+    "domain53_sweep_stale_frames",
+    "domain53_sweep_generation",
+    "domain53_war_validated_generation",
+    "capwar60_sweep_stale_frames",
+    // Process-global monotonic publication sequence shared by d49/d50.
+    "h_convoy_resolver_publication_sequence",
+];
+
+/// Domain 61 publishes one unit per pinned engine channel, named
+/// `air_loss_{label}_raw_sum`, where the label comes from the lane's
+/// `PINNED_CHANNELS` table. The value is the within-frame sum over countries of
+/// each country's ENGINE LIFETIME total for that channel, so it is cumulative
+/// even though the host built it by adding.
+///
+/// Matched by shape rather than listed, because the 24 labels live in the lane
+/// crate and `compact_contract` is below it in the dependency order. The shape
+/// is specific enough not to collide: `air_wing_loadout_amount_raw_sum` is a
+/// genuine per-frame sum and is not in the `air_loss_` family.
+fn is_air_loss_channel_total(name: &str) -> bool {
+    name.starts_with("air_loss_") && name.ends_with("_raw_sum")
+}
+
+/// One word of a SHA-256 carried as `<group>_sha256_<n>`, or the `<group>`
+/// prefix the producer hands to the helper that builds the four words.
+///
+/// Matched by shape so that a new digest group is classified the day it is
+/// added rather than the day someone notices its words are being added
+/// together.
+fn is_digest_word_or_group(name: &str) -> bool {
+    if let Some((group, index)) = name.rsplit_once("_sha256_") {
+        return !group.is_empty()
+            && !index.is_empty()
+            && index.bytes().all(|b| b.is_ascii_digit());
+    }
+    matches!(
+        name,
+        "d75_terminal_payload" | "d64_terminal_envelope" | "d64_terminal_del2"
+    )
+}
+
+/// Units whose value is an instantaneous level. Folded by MAX, reported as a
+/// peak.
+pub const GAUGE_UNITS: &[&str] = &[
+    // Queue depth and in-flight callback count at the instant of the drain.
+    "convoy_transport_attack_remaining_events",
+    "convoy_transport_attack_active_callbacks",
+    // The size of the d49/d50 resolver publication in force for this batch,
+    // not a total over the capture. Summing it multiplied one publication by
+    // the frame count.
+    "convoy_transport_attack_resolver_member_bindings",
+    "convoy_transport_attack_resolver_route_bindings",
+    "convoy_transport_attack_resolver_unbound_convoy_clients",
+    // How stale the d53 discovery sweep was when this frame read it.
+    "domain53_sweep_age_ms",
+    // The deferred publication's start and end OFFSETS within the frame. Their
+    // producer describes them as interval endpoints to be intersected against
+    // the reader spans, so they are positions on a timeline, not durations: a
+    // sum of start positions is not any quantity. The host does not route them
+    // into the lane-wall aggregate, so before this they were summed into
+    // `read_ab_probe`. The peak -- the latest the publication ever started or
+    // ended -- is a statistic that can be named.
+    "lw_pub_start_us",
+    "lw_pub_end_us",
+];
+
+/// Units inside a [`STATEFUL_UNIT_PREFIXES`] family that ARE per-frame, listed
+/// explicitly because inside those families silence means undeclared.
+pub const STATEFUL_FAMILY_PER_FRAME_UNITS: &[&str] = &[
+    // Literally `value: 1` once per decoded batch.
+    "convoy_transport_attack_batches",
+    // `decoded.rows.len()` — this frame's rows.
+    "convoy_transport_attack_rows",
+    // `u64::from(bool)` once per decoded batch.
+    "convoy_transport_attack_exact_complete_batches",
+    "convoy_transport_attack_incomplete_batches",
+    "convoy_transport_attack_hook_installed_batches",
+    "convoy_transport_attack_queue_drain_complete_batches",
+    // `rows.len()` of the drain this batch carried.
+    "convoy_transport_attack_drained_rows",
+    // Raised once per decoded batch that failed its witness.
+    "convoy_transport_attack_incomplete_witness",
+    // Domain 61's own row accounting is per-frame: these count the rows of THIS
+    // frame's payload, unlike the engine channel totals the rows carry.
+    "air_loss_stat_rows",
+    "air_loss_binding_verified_rows",
+];
+
+/// Units whose value is a raw sample rather than a quantity. Folded by LAST.
+pub const LAST_VALUE_UNITS: &[&str] = &[
+    // Percentiles over `write_times_us`, which the producer already
+    // accumulates for the whole capture; the last emission is the
+    // whole-capture percentile. A max over mid-capture percentiles would be a
+    // different and unnamed statistic.
+    "rs_sink_time_p50_us",
+    "rs_sink_time_p99_us",
+    // The last OS error, not a count. (`d75_install_failure_stage` needs no
+    // entry: the `_stage` suffix already names it a latched failure code.)
+    "heap_sweep_spawn_last_os_error",
+    // Epoch identifiers: a truncated 128-bit sweep epoch and d75's terminal
+    // epoch. Identifiers, not counts.
+    "heap_sweep_epoch",
+    "d75_terminal_epoch",
+];
+
+/// Units that are always zero by construction but must still be classified, so
+/// that a future nonzero value is not summed.
+pub const ZERO_GAUGE_UNITS: &[&str] = &["rs_sink_write_in_flight"];
+
+/// Raw failure CONTEXT whose names do not carry a suffix that says so.
+///
+/// Every one of these is a word read out of the engine at the moment a check
+/// refused — a side, a vector's size or capacity, an index, an observed value,
+/// an expected value, a type word, the raw bits of an `i32`, seven bytes of a
+/// reason string. They are the locator half of the diagnostic channel's
+/// contract (see [`LocatorLevel`]) and adding them together produces a number
+/// that describes nothing.
+///
+/// Listed rather than matched, because the suffixes that would catch them
+/// (`_size`, `_capacity`, `_observed`, `_abs`) each also end the name of a
+/// genuine per-frame count somewhere in the tree: `d75_queue_capacity` is a
+/// session constant, `domain47_manager_census_observed` is a census count, and
+/// `lw_hour_label_skew_abs` feeds a percentile. A suffix rule is only safe when
+/// the suffix names the value's KIND everywhere it appears.
+pub const RAW_FAILURE_CONTEXT_UNITS: &[&str] = &[
+    // d21 border-war walk.
+    "d21_failure_side",
+    "d21_failure_manager_index_plus_one",
+    "d21_failure_vector_capacity",
+    "d21_failure_vector_size",
+    "d21_failure_vector_element_index_plus_one",
+    "d21_border_war_observed_type_word",
+    "d21_border_war_type_word_observed",
+    // d57 world-tension detail read: the refused value and the raw bytes of
+    // the reason string it came with.
+    "d57_failure_current_negative",
+    "d57_failure_current_abs",
+    "d57_failure_original_negative",
+    "d57_failure_original_abs",
+    "d57_failure_reason_size",
+    "d57_failure_reason_capacity",
+    "d57_failure_reason_first_qword",
+    "d57_failure_reason_bytes_0",
+    "d57_failure_reason_bytes_1",
+    "d57_failure_reason_bytes_2",
+    "d57_failure_reason_bytes_3",
+    "d57_failure_reason_bytes_4",
+    "d57_failure_reason_bytes_5",
+    "d57_failure_reason_bytes_6",
+    // d61 per-country stat read: which country slot and which field.
+    "d61_country_read_failure_country_idx",
+    "d61_country_read_failure_field_idx",
+    // Observed-vs-expected pairs. Summing either half makes the pair
+    // meaningless even when the other half survives.
+    "d65_first_failure_observed",
+    "d65_first_failure_expected",
+    "d83_fail_actual",
+    "d83_fail_expected",
+    // d47 manager census.
+    "domain47_manager_failure_vector",
+    "domain47_manager_failure_observed_value",
+    "domain47_manager_failure_locator_observed",
+    // d48 first invalid progress line.
+    "domain48_first_invalid_progress_line_type",
+    "domain48_first_invalid_progress_cost_raw_i32_bits",
+    "domain48_first_invalid_progress_produced_raw_i32_bits",
+    // d54: the value is the error code the reject function returned, not a
+    // count of rejects.
+    "domain54_exact_orders_group_manager_rejected",
+    "domain54_orders_group_carrier_rejected",
+];
+
+/// The two `lw_*` units whose value is a session CONSTANT rather than a
+/// per-frame span.
+///
+/// The rest of the lane-wall family is genuinely per-frame and the lane-wall
+/// aggregate sums it, which agrees with `PerFrame`. These two do not: they
+/// record which prefetch-distance configuration the d53 loops actually used,
+/// which does not change within a session. The aggregate keeps the first value
+/// and raises a `mixed` flag if a later frame disagrees — strictly more
+/// information than any single fold, and consistent with `Cumulative` for a
+/// constant. Declaring them here stops the registry claiming `PerFrame` for a
+/// value the host deliberately does not sum.
+pub const LANE_WALL_SESSION_CONSTANTS: &[&str] = &[
+    "lw_prefetch_dist_relation",
+    "lw_prefetch_dist_candidates",
+];
+
+/// THE authority: how the whole-capture figure for `name` is computed.
+///
+/// Every aggregation site calls this. The classification is by name because
+/// the name is the only thing that survives the wire, and because the two
+/// producer families that keep state across frames name their units with a
+/// reserved prefix.
+///
+/// Resolution order, and each step's reason:
+///
+/// 1. `*_sample` — the established raw-word convention, already relied on by
+///    `bt_*_raw_sample` and `so_*_sample`.
+/// 2. `d69_failed_slot_mask*` / `d69_stale_slot_mask` — the established
+///    bitmask convention.
+/// 3. The explicit tables above.
+/// 4. Inside a [`STATEFUL_UNIT_PREFIXES`] family, anything left is
+///    `Undeclared`, because a default of `PerFrame` there would be a guess
+///    about producer-retained state.
+/// 5. Everything else is `PerFrame`: a domain data unit's value is computed
+///    from the payload of the frame it rode in.
+pub fn unit_accumulation(name: &str) -> Accumulation {
+    if RAW_WORD_SUFFIXES
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+    {
+        return Accumulation::LastValue;
+    }
+    if BITMASK_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
+        return Accumulation::BitwiseOr;
+    }
+    // The recorder's original hard-coded case: the numbered per-slot forms end
+    // in a digit, so the `_mask` suffix does not reach them.
+    if name.starts_with("d69_failed_slot_mask_") {
+        return Accumulation::BitwiseOr;
+    }
+    // `<prefix>_sha256_0..3`: one SHA-256 carried as four u64 words, and the
+    // digest-group prefix the producer passes to build them. d75's terminal
+    // payload and d64's terminal envelope/del2 digests are all this shape.
+    // Adding digest words together is the `_hash` defect with more steps.
+    if is_digest_word_or_group(name) {
+        return Accumulation::LastValue;
+    }
+    if CUMULATIVE_UNITS.contains(&name)
+        || LANE_WALL_SESSION_CONSTANTS.contains(&name)
+        || is_air_loss_channel_total(name)
+    {
+        return Accumulation::Cumulative;
+    }
+    if GAUGE_UNITS.contains(&name) || ZERO_GAUGE_UNITS.contains(&name) {
+        return Accumulation::Gauge;
+    }
+    if LAST_VALUE_UNITS.contains(&name) || RAW_FAILURE_CONTEXT_UNITS.contains(&name) {
+        return Accumulation::LastValue;
+    }
+    if STATEFUL_FAMILY_PER_FRAME_UNITS.contains(&name) {
+        return Accumulation::PerFrame;
+    }
+    if STATEFUL_UNIT_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    {
+        return Accumulation::Undeclared;
+    }
+    Accumulation::PerFrame
+}
+
+/// Is this name inside a family where an unregistered unit is undeclared
+/// rather than assumed per-frame?
+pub fn is_stateful_unit_family(name: &str) -> bool {
+    STATEFUL_UNIT_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn every_role_and_presence_code_is_non_zero_and_round_trips() {
@@ -1845,5 +2485,490 @@ mod tests {
         assert!(rendered.contains("dropped=14"));
         assert!(rendered.contains("bytes_dropped=412"));
         assert_eq!(TruncationAccount::complete(6).units_dropped(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Accumulation
+    // -----------------------------------------------------------------------
+
+    /// The measured `runs/live_unlock/t15` series, not a reconstruction.
+    ///
+    /// Run-length encoding of `callbacks_seen` as read from the 396 `CTA2`
+    /// batch headers in that capture's `collector_stream.bin`. The series is
+    /// monotonically non-decreasing from 1 to 107 because the counter is a
+    /// process-global `AtomicU64` reported at its absolute value every frame.
+    const T15_CALLBACKS_SEEN_RUNS: &[(u64, usize)] = &[
+        (1, 9),
+        (2, 8),
+        (3, 8),
+        (4, 3),
+        (5, 5),
+        (6, 4),
+        (7, 1),
+        (9, 1),
+        (10, 3),
+        (11, 9),
+        (12, 5),
+        (13, 4),
+        (14, 9),
+        (15, 26),
+        (16, 1),
+        (17, 2),
+        (18, 5),
+        (19, 8),
+        (20, 8),
+        (21, 5),
+        (22, 10),
+        (23, 5),
+        (24, 4),
+        (25, 1),
+        (26, 10),
+        (27, 2),
+        (28, 3),
+        (29, 2),
+        (30, 1),
+        (32, 8),
+        (33, 2),
+        (34, 1),
+        (35, 3),
+        (36, 2),
+        (37, 2),
+        (38, 3),
+        (39, 2),
+        (40, 2),
+        (41, 2),
+        (42, 4),
+        (43, 6),
+        (44, 1),
+        (45, 3),
+        (46, 2),
+        (48, 2),
+        (49, 4),
+        (50, 1),
+        (51, 9),
+        (52, 1),
+        (53, 8),
+        (54, 2),
+        (55, 1),
+        (56, 2),
+        (57, 3),
+        (58, 2),
+        (60, 1),
+        (62, 1),
+        (63, 2),
+        (64, 13),
+        (65, 4),
+        (66, 1),
+        (68, 4),
+        (69, 2),
+        (70, 4),
+        (71, 7),
+        (72, 3),
+        (73, 2),
+        (74, 2),
+        (75, 2),
+        (76, 1),
+        (77, 6),
+        (78, 4),
+        (81, 1),
+        (82, 8),
+        (84, 2),
+        (85, 2),
+        (86, 1),
+        (87, 2),
+        (89, 1),
+        (90, 2),
+        (92, 4),
+        (93, 5),
+        (94, 3),
+        (95, 3),
+        (96, 1),
+        (99, 4),
+        (100, 17),
+        (102, 9),
+        (103, 1),
+        (104, 9),
+        (105, 2),
+        (106, 15),
+        (107, 5),
+    ];
+
+    fn t15_callbacks_seen_series() -> Vec<u64> {
+        T15_CALLBACKS_SEEN_RUNS
+            .iter()
+            .flat_map(|&(value, count)| std::iter::repeat_n(value, count))
+            .collect()
+    }
+
+    /// The measured t15 defect, replayed through the authority.
+    ///
+    /// The t15 manifest published
+    /// `convoy_transport_attack_dropped_events = 19470` and
+    /// `convoy_transport_attack_callbacks_seen = 19470`. Both are the SUM of
+    /// the series below over 396 frames. The real population is 107 — the
+    /// counter's final absolute value — and 19,470 was quoted to the project
+    /// as an event count.
+    ///
+    /// MUTATION: classify `convoy_transport_attack_*` telemetry as `PerFrame`,
+    /// or make `Accumulation::Cumulative` fold by `saturating_add`, and this
+    /// fails on the 19470 vs 107 assertion.
+    #[test]
+    fn the_t15_cumulative_series_folds_to_its_last_value_not_its_sum() {
+        let series = t15_callbacks_seen_series();
+        assert_eq!(series.len(), 396, "t15 published 396 d90 batches");
+        assert!(
+            series.windows(2).all(|w| w[0] <= w[1]),
+            "the counter is monotonic, which is what makes it cumulative"
+        );
+
+        for name in [
+            "convoy_transport_attack_callbacks_seen",
+            "convoy_transport_attack_original_calls",
+            "convoy_transport_attack_dropped_hour_or_epoch",
+            "convoy_transport_attack_dropped_events",
+        ] {
+            let class = unit_accumulation(name);
+            assert_eq!(class, Accumulation::Cumulative, "{name}");
+            let mut running: Option<u64> = None;
+            for value in &series {
+                running = Some(class.fold(running, *value));
+            }
+            assert_eq!(
+                running,
+                Some(107),
+                "{name}: a cumulative unit's whole-capture figure is its final \
+                 absolute value"
+            );
+        }
+
+        // The figure this replaces, named so the regression is explicit rather
+        // than merely absent.
+        let summed = series.iter().fold(0u64, |a, b| a + b);
+        assert_eq!(summed, 19_470, "the published t15 figure");
+        assert_ne!(summed, 107);
+    }
+
+    /// A per-frame unit must still be summed. Guards the opposite mistake:
+    /// "fix the number by folding everything with MAX".
+    ///
+    /// MUTATION: fold `PerFrame` by `max` and this fails.
+    #[test]
+    fn a_per_frame_unit_is_still_summed() {
+        let class = unit_accumulation("convoy_transport_attack_rows");
+        assert_eq!(class, Accumulation::PerFrame);
+        let mut running: Option<u64> = None;
+        for value in [3u64, 1, 4, 1, 5] {
+            running = Some(class.fold(running, value));
+        }
+        assert_eq!(running, Some(14));
+
+        // And a name from no declared family at all.
+        let generic = unit_accumulation("fuel_rows_decoded");
+        assert_eq!(generic, Accumulation::PerFrame);
+        assert_eq!(generic.fold(Some(10), 5), 15);
+    }
+
+    /// The producer's own doc comment says the `rs_*` counters are cumulative
+    /// and that the host aggregates them by MAX. Until now the host summed
+    /// them.
+    ///
+    /// MUTATION: drop any `rs_` name from `CUMULATIVE_UNITS` and it becomes
+    /// `Undeclared` (because `rs_` is a stateful prefix), which this rejects.
+    #[test]
+    fn every_scheduler_probe_unit_is_classified_and_none_of_them_is_summed() {
+        // The exact roster the collector emits, transcribed from
+        // `append_compact_scheduler_probe_record`.
+        const EMITTED: &[&str] = &[
+            "rs_observations",
+            "rs_scheduled_hours",
+            "rs_accepted_hours",
+            "rs_degraded_hours",
+            "rs_refused_hours",
+            "rs_evicted_pending_hours",
+            "rs_abandoned_hours",
+            "rs_flushed_pending_hours",
+            "rs_unobserved_overrun_hours",
+            "rs_unobserved_clock_unknown_hours",
+            "rs_counter_anomaly_events",
+            "rs_post_terminal_observations",
+            "rs_gapped_domain_hours",
+            "rs_overrun_domain_hours",
+            "rs_backpressure_domain_hours",
+            "rs_torn_domain_hours",
+            "rs_worker_panic_domain_hours",
+            "rs_clock_unreadable_events",
+            "rs_control_lane_compactions",
+            "rs_max_request_depth",
+            "rs_max_publishing_depth",
+            "rs_request_cap",
+            "rs_max_control_depth",
+            "rs_control_cap",
+            "rs_reloads",
+            "rs_terminal",
+            "rs_zero_mutation_policy",
+            "rs_scheduler_active",
+            "rs_sink_write_failures",
+            "rs_sink_open_attempts",
+            "rs_sink_open_finishes",
+            "rs_sink_requested_count",
+            "rs_sink_opened_count",
+            "rs_sink_open_failures",
+            "rs_sink_write_attempts",
+            "rs_sink_write_finishes",
+            "rs_sink_write_commits",
+            "rs_sink_write_in_flight",
+            "rs_sink_file_bytes_committed",
+            "rs_sink_pipe_bytes_committed",
+            "rs_sink_time_sample_count",
+            "rs_sink_time_total_us",
+            "rs_sink_time_p50_us",
+            "rs_sink_time_p99_us",
+            "rs_sink_time_max_us",
+            "rs_transport_failed",
+            "rs_finalized",
+            "rs_configured_sink_count",
+            "rs_pipe_sink_enabled",
+            "rs_file_sink_enabled",
+            "rs_pipe_sink_requested",
+            "rs_pipe_sink_opened",
+            "rs_file_sink_requested",
+            "rs_file_sink_opened",
+        ];
+        for name in EMITTED {
+            let class = unit_accumulation(name);
+            assert_ne!(
+                class,
+                Accumulation::Undeclared,
+                "{name} reaches the manifest with no declared accumulation"
+            );
+            assert_ne!(
+                class,
+                Accumulation::PerFrame,
+                "{name} comes from SchedulerTelemetry/SinkDeliveryState, neither of \
+                 which is reset within a capture, so its per-frame value is absolute"
+            );
+        }
+    }
+
+    /// The property that makes the classification enforceable rather than
+    /// advisory: inside a family whose producer keeps state across frames, a
+    /// name nobody classified is UNDECLARED, not silently summed.
+    ///
+    /// MUTATION: make `unit_accumulation` fall through to `PerFrame` for
+    /// unregistered stateful names and this fails.
+    #[test]
+    fn an_unregistered_unit_in_a_stateful_family_is_undeclared_not_per_frame() {
+        for name in [
+            "rs_some_counter_added_next_quarter",
+            "convoy_transport_attack_something_new",
+        ] {
+            assert!(is_stateful_unit_family(name));
+            assert_eq!(
+                unit_accumulation(name),
+                Accumulation::Undeclared,
+                "{name} must announce itself rather than join the summed side"
+            );
+        }
+        // Outside those families the default stays PerFrame, which is what the
+        // per-frame payload decoders genuinely produce.
+        assert!(!is_stateful_unit_family("weather_rows_total"));
+        assert_eq!(
+            unit_accumulation("weather_rows_total"),
+            Accumulation::PerFrame
+        );
+    }
+
+    /// `Undeclared` must not change any arithmetic, or classifying a unit
+    /// later would silently move a published figure.
+    #[test]
+    fn undeclared_folds_exactly_like_per_frame() {
+        for (running, incoming) in [(None, 7u64), (Some(3), 4), (Some(u64::MAX), 1)] {
+            assert_eq!(
+                Accumulation::Undeclared.fold(running, incoming),
+                Accumulation::PerFrame.fold(running, incoming)
+            );
+        }
+    }
+
+    /// The pre-existing conventions the host had hard-coded are now expressed
+    /// in the same authority, so there is one rule rather than three.
+    #[test]
+    fn the_established_sample_and_mask_conventions_moved_into_the_authority() {
+        assert_eq!(
+            unit_accumulation("bt_unit_leader_skill_raw_sample"),
+            Accumulation::LastValue
+        );
+        assert_eq!(
+            unit_accumulation("so_d45_partial_sample"),
+            Accumulation::LastValue
+        );
+        assert_eq!(
+            unit_accumulation("d69_failed_slot_mask"),
+            Accumulation::BitwiseOr
+        );
+        assert_eq!(
+            unit_accumulation("d69_failed_slot_mask_7"),
+            Accumulation::BitwiseOr
+        );
+        assert_eq!(
+            unit_accumulation("d69_stale_slot_mask"),
+            Accumulation::BitwiseOr
+        );
+        // OR, not sum: slot 0 failing twice is mask 1, never mask 2.
+        assert_eq!(Accumulation::BitwiseOr.fold(Some(1), 1), 1);
+        // LAST, not sum: a raw word survives.
+        assert_eq!(Accumulation::LastValue.fold(Some(0xDEAD), 0xBEEF), 0xBEEF);
+    }
+
+    /// A gauge is a peak, not a total, and never a sum.
+    #[test]
+    fn a_gauge_folds_to_its_peak() {
+        let class = unit_accumulation("convoy_transport_attack_resolver_member_bindings");
+        assert_eq!(class, Accumulation::Gauge);
+        let mut running: Option<u64> = None;
+        for value in [9_865u64, 9_865, 9_865] {
+            running = Some(class.fold(running, value));
+        }
+        assert_eq!(
+            running,
+            Some(9_865),
+            "one publication observed three times is one publication"
+        );
+    }
+
+    /// The tables must not disagree with each other; a name in two of them
+    /// would make the classification depend on the order of the `if`s.
+    #[test]
+    fn the_classification_tables_are_disjoint_and_self_consistent() {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for (table, expected) in [
+            (CUMULATIVE_UNITS, Accumulation::Cumulative),
+            (GAUGE_UNITS, Accumulation::Gauge),
+            (ZERO_GAUGE_UNITS, Accumulation::Gauge),
+            (LAST_VALUE_UNITS, Accumulation::LastValue),
+            (RAW_FAILURE_CONTEXT_UNITS, Accumulation::LastValue),
+            (STATEFUL_FAMILY_PER_FRAME_UNITS, Accumulation::PerFrame),
+        ] {
+            for name in table {
+                assert!(
+                    seen.insert(name),
+                    "{name} is classified by more than one table"
+                );
+                assert_eq!(
+                    unit_accumulation(name),
+                    expected,
+                    "{name} does not resolve to the table that lists it"
+                );
+                assert!(
+                    !RAW_WORD_SUFFIXES.iter().any(|s| name.ends_with(s))
+                        && !BITMASK_SUFFIXES.iter().any(|s| name.ends_with(s)),
+                    "{name} would be captured by a suffix rule before its table, so \
+                     its table entry is either dead or contradicted"
+                );
+            }
+        }
+    }
+
+    /// The raw-observation category, pinned against the figures
+    /// `runs/live_unlock/t15` actually published.
+    ///
+    /// Each case is `(unit, published_sum, frames, true_value)` read out of
+    /// that capture's manifest. A raw observation repeated every frame sums to
+    /// a number with no referent; the whole-capture figure is the observation.
+    ///
+    /// MUTATION: drop any of these suffixes from `RAW_WORD_SUFFIXES` and the
+    /// unit becomes `PerFrame`, which this rejects.
+    #[test]
+    fn a_raw_observation_is_never_summed() {
+        // (name, what t15 published, frames it rode, the one observed value)
+        const T15: &[(&str, u64, u64, u64)] = &[
+            // u32::MAX * 361: the producer's "never written" reset sentinel on
+            // every frame of the domain.
+            (
+                "d43_resource_failure_resource_index",
+                1_550_483_193_495,
+                361,
+                0xFFFF_FFFF,
+            ),
+            (
+                "d44_country_supply_slot_index",
+                30_064_771_065,
+                7,
+                0xFFFF_FFFF,
+            ),
+            (
+                "d44_country_supply_tag_db_id",
+                30_064_771_065,
+                7,
+                0xFFFF_FFFF,
+            ),
+            // Stage code 513, summed over 351 frames.
+            ("d41_lifecycle_failure_stage", 180_063, 351, 513),
+            ("d43_classic_failure_stage", 74_366, 361, 206),
+            ("d43_resource_failure_stage", 37_544, 361, 104),
+        ];
+        for (name, published, frames, value) in T15 {
+            let class = unit_accumulation(name);
+            assert_eq!(
+                class,
+                Accumulation::LastValue,
+                "{name} is a raw observation and must not be aggregated arithmetically"
+            );
+            let mut running: Option<u64> = None;
+            for _ in 0..*frames {
+                running = Some(class.fold(running, *value));
+            }
+            assert_eq!(running, Some(*value), "{name}");
+            assert_eq!(
+                value * frames,
+                *published,
+                "{name}: the published figure must be exactly the sum this replaces"
+            );
+        }
+
+        // The saturating cases: a hash added to itself pins at u64::MAX, so the
+        // published number carries no information about the hash at all.
+        for name in [
+            "h_convoy_resolver_error_hash",
+            "d93_fail_reason_hash",
+            "d64_first_rejected_timed_effect_class_fnv1a64",
+            "d64_first_rejected_timed_effect_vtable",
+            "d64_first_rejected_timed_effect_address",
+        ] {
+            assert_eq!(unit_accumulation(name), Accumulation::LastValue, "{name}");
+        }
+        let hash = 0x9E37_79B9_7F4A_7C15u64;
+        let mut summed = 0u64;
+        for _ in 0..396 {
+            summed = summed.saturating_add(hash);
+        }
+        assert_eq!(summed, u64::MAX, "which is what t15 published for three hashes");
+        assert_eq!(Accumulation::LastValue.fold(Some(hash), hash), hash);
+    }
+
+    #[test]
+    fn accumulation_discriminants_are_pinned_and_round_trip() {
+        assert_eq!(
+            [
+                Accumulation::PerFrame.code(),
+                Accumulation::Cumulative.code(),
+                Accumulation::Gauge.code(),
+                Accumulation::LastValue.code(),
+                Accumulation::BitwiseOr.code(),
+                Accumulation::Undeclared.code(),
+            ],
+            [1, 2, 3, 4, 5, 6]
+        );
+        for class in Accumulation::ALL {
+            assert_ne!(class.code(), 0);
+            assert_eq!(Accumulation::from_code(class.code()), Some(class));
+        }
+        assert_eq!(Accumulation::from_code(0), None);
+        assert_eq!(Accumulation::from_code(7), None);
+        // First observation is the value itself for every class, so a unit
+        // seen exactly once reads the same whatever it is classified as.
+        for class in Accumulation::ALL {
+            assert_eq!(class.fold(None, 42), 42);
+        }
     }
 }

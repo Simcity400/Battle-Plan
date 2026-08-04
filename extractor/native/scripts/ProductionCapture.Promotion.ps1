@@ -81,6 +81,193 @@ function Get-ProductionPromotionProperty {
     return $property.Value
 }
 
+function Get-ProductionPromotionRequiredInteger {
+    <#
+    .SYNOPSIS
+    Read a property that MUST be present and MUST be an integer, or throw.
+
+    .DESCRIPTION
+    PowerShell coerces `$null` to zero: `[uint32]$null` is `0`, `[int64]$null`
+    is `0`. Every gate clause in this file that reads a count or a status word
+    and requires it to be zero therefore PASSED when the property was missing.
+    That is the exact inverse of a gate -- absence became the cleanest possible
+    evidence.
+
+    It was not hypothetical. The per-domain clause below requires
+    `effective_failure_status_flags_or`, and the manifest did not publish that
+    field at all, so for every domain of every capture the gate masked `0`
+    against the failure mask and passed. The same shape has bitten this project
+    before, with a `$null` exit code reading as `0`.
+
+    This helper is the fix, and the reason it is a helper rather than an inline
+    `$null` check at each site is that the trap is a property of the LANGUAGE:
+    a new clause written in the obvious way reintroduces it. A clause that
+    cannot be written without naming the property it requires cannot silently
+    accept the property's absence.
+
+    A JSON number arrives from ConvertFrom-Json as [int], [long] or [double];
+    a whole-valued [double] is accepted and converted, a fractional one is not,
+    and a string that merely looks numeric is refused outright.
+    #>
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    if ($null -eq $Object) {
+        throw "$Context is missing the object that must carry '$Name'"
+    }
+    $hasProperty = if ($Object -is [System.Collections.IDictionary]) {
+        $Object.Contains($Name)
+    }
+    else {
+        $null -ne $Object.PSObject.Properties[$Name]
+    }
+    if (-not $hasProperty) {
+        throw "$Context does not publish '$Name'; a gate must not read an absent field as 0"
+    }
+    $value = Get-ProductionPromotionProperty $Object $Name
+    if ($null -eq $value) {
+        throw "$Context publishes '$Name' as null; a gate must not read null as 0"
+    }
+    if ($value -is [bool] -or $value -is [string]) {
+        throw "$Context publishes '$Name' as $($value.GetType().Name), not an integer"
+    }
+    # Integrality is tested in the value's OWN type. Windows PowerShell's
+    # ConvertFrom-Json hands back `System.Decimal` for a JSON number with more
+    # precision than a double carries, and casting that to double FIRST erases
+    # the fraction: `[Math]::Floor([double]10.000000000000000000000000001)`
+    # equals the double, so a non-integral count would have been accepted as 10.
+    # `[Math]::Floor` has a decimal overload; letting it pick keeps the digits.
+    if ($value -is [decimal]) {
+        if ([Math]::Floor($value) -ne $value) {
+            throw "$Context publishes '$Name' as a non-integral number"
+        }
+        return [int64]$value
+    }
+    if ($value -is [double] -or $value -is [single]) {
+        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) {
+            throw "$Context publishes '$Name' as a non-finite number"
+        }
+        if ([Math]::Floor([double]$value) -ne [double]$value) {
+            throw "$Context publishes '$Name' as a non-integral number"
+        }
+        return [int64]$value
+    }
+    if ($value -isnot [int] -and $value -isnot [long] -and
+        $value -isnot [uint32] -and $value -isnot [uint64] -and
+        $value -isnot [int16] -and $value -isnot [byte]) {
+        throw "$Context publishes '$Name' as $($value.GetType().Name), not an integer"
+    }
+    return [int64]$value
+}
+
+function Get-ProductionPromotionRequiredUInt32 {
+    <#
+    .SYNOPSIS
+    A required integer that must also fit an unsigned 32-bit status word.
+    #>
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    $value = Get-ProductionPromotionRequiredInteger `
+        -Object $Object -Name $Name -Context $Context
+    if ($value -lt 0 -or $value -gt [uint32]::MaxValue) {
+        throw "$Context publishes '$Name' = $value, outside the uint32 status word"
+    }
+    return [uint32]$value
+}
+
+function Get-ProductionPromotionRequiredString {
+    <#
+    .SYNOPSIS
+    Read a property that MUST be a published, non-empty string, or throw.
+
+    .DESCRIPTION
+    `[string]123` is "123" and `[string]$null` is "", so casting an identity to
+    a string before comparing it accepts a value of the wrong type and turns an
+    absent one into the empty string. The identities this guards -- capture_id
+    and session_id -- are what bind a receipt to the plan and the manifest.
+    #>
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    if ($null -eq $Object) {
+        throw "$Context is missing the object that must carry '$Name'"
+    }
+    $hasProperty = if ($Object -is [System.Collections.IDictionary]) {
+        $Object.Contains($Name)
+    }
+    else {
+        $null -ne $Object.PSObject.Properties[$Name]
+    }
+    if (-not $hasProperty) {
+        throw "$Context does not publish '$Name'"
+    }
+    $value = Get-ProductionPromotionProperty $Object $Name
+    if ($value -isnot [string]) {
+        throw "$Context publishes '$Name' as a non-string identity"
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "$Context publishes '$Name' as an empty identity"
+    }
+    return $value
+}
+
+function Get-ProductionPromotionRequiredArray {
+    <#
+    .SYNOPSIS
+    Read a property that MUST be a published list, or throw.
+
+    .DESCRIPTION
+    The array form of the same trap. `@($null)` is not an empty array in the
+    way a reader expects -- but `@(Get-...Property $x 'absent')` yields a
+    zero-length array, and every clause of the shape
+    `@(...).Count -ne 0 { throw }` therefore PASSED when the list was missing.
+
+    "The validator found no problems" and "the validator did not publish a
+    problems list" are different facts, and only one of them is evidence.
+    #>
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    if ($null -eq $Object) {
+        throw "$Context is missing the object that must carry '$Name'"
+    }
+    $hasProperty = if ($Object -is [System.Collections.IDictionary]) {
+        $Object.Contains($Name)
+    }
+    else {
+        $null -ne $Object.PSObject.Properties[$Name]
+    }
+    if (-not $hasProperty) {
+        throw "$Context does not publish the list '$Name'; an absent list is not an empty one"
+    }
+    # NOT through Get-ProductionPromotionProperty, and NOT through an `if`
+    # expression either. PowerShell UNROLLS an empty array out of both: a
+    # function that returns `@()` returns nothing, and `$x = if (...) { @() }`
+    # assigns `$null`. Either one turns a PUBLISHED empty list back into the
+    # absence this function exists to distinguish it from. The unary comma is
+    # what keeps the array intact across each boundary.
+    if ($Object -is [System.Collections.IDictionary]) {
+        $wrapped = , $Object[$Name]
+    }
+    else {
+        $wrapped = , $Object.PSObject.Properties[$Name].Value
+    }
+    $value = $wrapped[0]
+    if ($null -eq $value) {
+        throw "$Context publishes '$Name' as null; an absent list is not an empty one"
+    }
+    return , @($value)
+}
+
 function Read-ProductionPromotionJson {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -231,19 +418,35 @@ function Get-ProductionCapturePromotionEvidence {
         throw 'captured prebuilt artifact authority differs from the current Release'
     }
 
-    $captureId = [string](Get-ProductionPromotionProperty $receipt 'capture_id')
-    $sessionId = [string](Get-ProductionPromotionProperty $receipt 'session_id')
-    if ([string]::IsNullOrWhiteSpace($captureId) -or
-        [string]::IsNullOrWhiteSpace($sessionId) -or
-        [string](Get-ProductionPromotionProperty $plan 'schema') -cne
+    # Required STRINGS, not "whatever casts to one". Casting first meant a
+    # receipt publishing `"capture_id": 123` compared equal to a plan and a
+    # manifest publishing the string "123", so a receipt of the wrong type
+    # authenticated a capture it never named.
+    $captureId = Get-ProductionPromotionRequiredString `
+        $receipt 'capture_id' 'capture receipt'
+    $sessionId = Get-ProductionPromotionRequiredString `
+        $receipt 'session_id' 'capture receipt'
+    # The plan's and the manifest's identities are required strings too. Casting
+    # only the receipt's would have left `"capture_id": 123` in the MANIFEST
+    # matching a receipt and plan that both say "123".
+    $planCaptureId = Get-ProductionPromotionRequiredString `
+        $plan 'capture_id' 'capture plan'
+    $planSessionId = Get-ProductionPromotionRequiredString `
+        $plan 'session_id' 'capture plan'
+    $manifestCaptureId = Get-ProductionPromotionRequiredString `
+        $manifest 'capture_id' 'capture manifest'
+    $manifestSessionId = Get-ProductionPromotionRequiredString `
+        $manifest 'session_id' 'capture manifest'
+    if ([string](Get-ProductionPromotionProperty $plan 'schema') -cne
             'battle-plan.production_capture_plan.v1' -or
-        [string](Get-ProductionPromotionProperty $plan 'capture_id') -cne $captureId -or
-        [string](Get-ProductionPromotionProperty $plan 'session_id') -cne $sessionId -or
-        [string](Get-ProductionPromotionProperty $manifest 'capture_id') -cne $captureId -or
-        [string](Get-ProductionPromotionProperty $manifest 'session_id') -cne $sessionId -or
+        $planCaptureId -cne $captureId -or
+        $planSessionId -cne $sessionId -or
+        $manifestCaptureId -cne $captureId -or
+        $manifestSessionId -cne $sessionId -or
         [string](Get-ProductionPromotionProperty $plan 'exe_sha256') -cne
             '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad' -or
-        [int](Get-ProductionPromotionProperty $plan 'speed_required_raw') -ne 4 -or
+        (Get-ProductionPromotionRequiredInteger `
+            $plan 'speed_required_raw' 'capture plan') -ne 4 -or
         (Get-ProductionPromotionProperty $plan 'unpaused_required') -isnot [bool] -or
         -not (Get-ProductionPromotionProperty $plan 'unpaused_required') -or
         (Get-ProductionPromotionProperty $plan 'read_only_scheduler_required') -isnot [bool] -or
@@ -254,12 +457,21 @@ function Get-ProductionCapturePromotionEvidence {
         (Get-ProductionPromotionProperty $plan 'interaction_closure'),
         (Get-ProductionPromotionProperty $receipt 'interaction_closure')
     )) {
+        # Four counts that must all be zero. An interaction closure that simply
+        # omitted them read as four zeroes -- "we drove nothing" asserted by a
+        # document that says nothing at all.
+        $closureCounts = @(
+            'client_commands_during_capture',
+            'semantic_engine_state_writes',
+            'game_process_lifecycle_commands',
+            'game_ui_commands'
+        ) | ForEach-Object {
+            Get-ProductionPromotionRequiredInteger `
+                $closure $_ 'capture interaction closure'
+        }
         if ([string](Get-ProductionPromotionProperty $closure 'policy') -cne
                 'passive_injected_observer' -or
-            [int](Get-ProductionPromotionProperty $closure 'client_commands_during_capture') -ne 0 -or
-            [int](Get-ProductionPromotionProperty $closure 'semantic_engine_state_writes') -ne 0 -or
-            [int](Get-ProductionPromotionProperty $closure 'game_process_lifecycle_commands') -ne 0 -or
-            [int](Get-ProductionPromotionProperty $closure 'game_ui_commands') -ne 0) {
+            @($closureCounts | Where-Object { $_ -ne 0 }).Count -ne 0) {
             throw 'capture interaction closure permits production client driving'
         }
     }
@@ -292,7 +504,8 @@ function Get-ProductionCapturePromotionEvidence {
             'battle-plan.speed5_proof.v2' -or
         [string](Get-ProductionPromotionProperty $speed 'session_id') -cne $sessionId -or
         [string](Get-ProductionPromotionProperty $speed 'acceptance_mode') -cne 'production' -or
-        [int](Get-ProductionPromotionProperty $speed 'speed_raw') -ne 4 -or
+        (Get-ProductionPromotionRequiredInteger `
+            $speed 'speed_raw' 'speed-five proof') -ne 4 -or
         (Get-ProductionPromotionProperty $speed 'paused') -isnot [bool] -or
         (Get-ProductionPromotionProperty $speed 'paused') -or
         ($speedSampleCount -isnot [int] -and
@@ -483,23 +696,56 @@ function Get-ProductionCapturePromotionEvidence {
 
     $compact = Get-ProductionPromotionProperty $manifest 'compact_stream'
     $frameCount = Get-ProductionPromotionProperty $compact 'frame_end_record_count'
-    $gapRows = @(Get-ProductionPromotionProperty $compact 'domain_gap_outcomes')
+    $gapRows = Get-ProductionPromotionRequiredArray `
+        $compact 'domain_gap_outcomes' 'capture manifest compact_stream'
     if ($frameCount -isnot [int] -and $frameCount -isnot [long]) {
         throw 'capture frame count is not an integer'
     }
     $frameCount = [int64]$frameCount
+    # Every clause below required a value to be ZERO, and every one of them read
+    # a missing property as zero. They now demand the field.
+    $manifestSkippedGameHours = Get-ProductionPromotionRequiredInteger `
+        $manifest 'skipped_game_hours' 'capture manifest'
+    $manifestUniqueGameHours = Get-ProductionPromotionRequiredInteger `
+        $manifest 'unique_game_hour_count' 'capture manifest'
+    $compactGapRecordCount = Get-ProductionPromotionRequiredInteger `
+        $compact 'domain_gap_record_count' 'capture manifest compact_stream'
+    $compactFailureFlags = Get-ProductionPromotionRequiredUInt32 `
+        $compact 'failure_status_flags_or' 'capture manifest compact_stream'
+    $compactFailureSeen = Get-ProductionPromotionProperty $compact 'failure_status_seen'
+    if ($compactFailureSeen -isnot [bool]) {
+        throw 'capture manifest compact_stream does not publish a boolean failure_status_seen'
+    }
     if ($frameCount -le 0 -or
-        [int64](Get-ProductionPromotionProperty $manifest 'skipped_game_hours') -ne 0 -or
-        [int64](Get-ProductionPromotionProperty $manifest 'unique_game_hour_count') -ne
-            $frameCount -or
-        [int64](Get-ProductionPromotionProperty $compact 'domain_gap_record_count') -ne 0 -or
+        $manifestSkippedGameHours -ne 0 -or
+        $manifestUniqueGameHours -ne $frameCount -or
+        $compactGapRecordCount -ne 0 -or
         $gapRows.Count -ne 0 -or
-        ([uint32](Get-ProductionPromotionProperty $compact 'failure_status_flags_or') -band
-            $script:ProductionPromotionFailureMask) -ne 0 -or
-        ([uint32](Get-ProductionPromotionProperty $compact 'failure_status_flags_or') -band
-            $script:ProductionPromotionUnknownStatusMask) -ne 0 -or
-        (Get-ProductionPromotionProperty $compact 'failure_status_seen') -eq $true) {
+        ($compactFailureFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
+        ($compactFailureFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0 -or
+        $compactFailureSeen) {
         throw 'capture is not a zero-loss all-hour production stream'
+    }
+    # An undeclared diagnostic unit means a published figure whose aggregation
+    # rule nobody stated. See
+    # `compact_contract::diagnostic_channel::Accumulation`.
+    $accumulation = Get-ProductionPromotionProperty $compact 'diagnostic_unit_accumulation'
+    if ($null -eq $accumulation) {
+        throw 'capture manifest compact_stream does not publish diagnostic_unit_accumulation'
+    }
+    if ([string](Get-ProductionPromotionProperty $accumulation 'schema') -cne
+            'battle-plan.diagnostic_unit_accumulation.v1') {
+        throw 'capture manifest publishes an unrecognised diagnostic_unit_accumulation schema'
+    }
+    $undeclaredUnits = @(Get-ProductionPromotionProperty $accumulation 'undeclared')
+    if ((Get-ProductionPromotionRequiredInteger `
+                $accumulation 'undeclared_unit_count' 'diagnostic_unit_accumulation') -ne
+            $undeclaredUnits.Count) {
+        throw 'diagnostic_unit_accumulation undeclared count disagrees with its own list'
+    }
+    if ($undeclaredUnits.Count -ne 0) {
+        throw ('capture publishes ' + $undeclaredUnits.Count +
+            ' diagnostic unit(s) with no declared accumulation class')
     }
     if ((@(Get-ProductionPromotionProperty $manifest 'scheduled_domains') -join "`0") -cne
         ($scheduledNames -join "`0")) {
@@ -510,9 +756,27 @@ function Get-ProductionCapturePromotionEvidence {
     for ($index = 0; $index -lt $expectedDomains.Count; $index++) {
         $wireName = [string]$scheduledNames[$index]
         $row = Get-ProductionPromotionProperty $perDomain $wireName
-        $rawStatusFlags = [uint32](Get-ProductionPromotionProperty $row 'status_flags_or')
-        $effectiveStatusFlags =
-            [uint32](Get-ProductionPromotionProperty $row 'effective_failure_status_flags_or')
+        # `$row` is required BEFORE anything is read out of it: the old code
+        # tested `$null -eq $row` inside the same clause that had already
+        # coerced two of its properties, and `[uint32]` on a property of $null
+        # is 0, so a missing domain row reached the failure-mask test as a clean
+        # status word.
+        if ($null -eq $row) {
+            throw "capture manifest has no per_domain row for $wireName"
+        }
+        $rowContext = "capture manifest per_domain.$wireName"
+        $rawStatusFlags = Get-ProductionPromotionRequiredUInt32 `
+            $row 'status_flags_or' $rowContext
+        # THE field the manifest did not publish. Absent, it read as 0 and every
+        # domain passed the two clauses below for want of data.
+        $effectiveStatusFlags = Get-ProductionPromotionRequiredUInt32 `
+            $row 'effective_failure_status_flags_or' $rowContext
+        $rowDomainId = Get-ProductionPromotionRequiredInteger `
+            $row 'domain_id' $rowContext
+        $rowRecordCount = Get-ProductionPromotionRequiredInteger `
+            $row 'record_count' $rowContext
+        $rowDataRecordCount = Get-ProductionPromotionRequiredInteger `
+            $row 'data_record_count' $rowContext
         # The lane-local mask is selected by the PLAN's domain id, never by the
         # manifest's, so a manifest cannot nominate the exemption it wants. The
         # two are required to agree by the first clause below.
@@ -523,11 +787,9 @@ function Get-ProductionCapturePromotionEvidence {
         # mask deliberately stays on the RAW word -- whether a lane-local badge
         # that collides with a global failure bit (d51 bit 12) should block
         # promotion is a policy question this gate keeps answering "yes" to.
-        if ($null -eq $row -or
-            [int](Get-ProductionPromotionProperty $row 'domain_id') -ne
-                [int]$expectedDomains[$index].id -or
-            [int64](Get-ProductionPromotionProperty $row 'record_count') -ne $frameCount -or
-            [int64](Get-ProductionPromotionProperty $row 'data_record_count') -ne $frameCount -or
+        if ($rowDomainId -ne [int]$expectedDomains[$index].id -or
+            $rowRecordCount -ne $frameCount -or
+            $rowDataRecordCount -ne $frameCount -or
             ($rawStatusFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
             ($effectiveStatusFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
             ($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0 -or
@@ -538,14 +800,12 @@ function Get-ProductionCapturePromotionEvidence {
             id = [int]$expectedDomains[$index].id
             name = [string]$expectedDomains[$index].name
             wire_name = $wireName
-            record_count = [int64](Get-ProductionPromotionProperty $row 'record_count')
-            data_record_count =
-                [int64](Get-ProductionPromotionProperty $row 'data_record_count')
+            record_count = $rowRecordCount
+            data_record_count = $rowDataRecordCount
             raw_failure_status_flags_or = $rawStatusFlags
             effective_failure_status_flags_or = $effectiveStatusFlags
             real_source_complete =
-                ([int64](Get-ProductionPromotionProperty $row 'data_record_count') -eq
-                    $frameCount -and
+                ($rowDataRecordCount -eq $frameCount -and
                 ($rawStatusFlags -band $script:ProductionPromotionFailureMask) -eq 0 -and
                 ($effectiveStatusFlags -band $script:ProductionPromotionFailureMask) -eq 0 -and
                 ($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -eq 0 -and
@@ -568,7 +828,8 @@ function Get-ProductionCapturePromotionEvidence {
             'battle-plan.production_capture_validation.v2' -or
         (Get-ProductionPromotionProperty $validation 'ok') -isnot [bool] -or
         -not (Get-ProductionPromotionProperty $validation 'ok') -or
-        @(Get-ProductionPromotionProperty $validation 'problems').Count -ne 0 -or
+        (Get-ProductionPromotionRequiredArray `
+            $validation 'problems' 'production validation report').Count -ne 0 -or
         [string](Get-ProductionPromotionProperty $validation 'manifest_sha256') -cne
             (Get-ProductionPromotionSha256 -Path $paths.manifest) -or
         [int](Get-ProductionPromotionProperty $validation 'expected_domain_count') -ne
@@ -770,7 +1031,8 @@ function Get-ProductionCapturePromotionEvidence {
             'extractor.sink-reconciliation-verification.v2' -or
         [string](Get-ProductionPromotionProperty $sink 'expected_outcome') -cne 'success' -or
         [string](Get-ProductionPromotionProperty $sink 'verdict') -cne 'passed' -or
-        @(Get-ProductionPromotionProperty $sink 'problems').Count -ne 0 -or
+        (Get-ProductionPromotionRequiredArray `
+            $sink 'problems' 'sink reconciliation report').Count -ne 0 -or
         [IO.Path]::GetFullPath([string](Get-ProductionPromotionProperty $sink 'run_dir')) -ine
             [IO.Path]::GetFullPath($runDir) -or
         $sinkManifestSha -cne
@@ -881,17 +1143,15 @@ function Get-ProductionCapturePromotionEvidence {
             sink_reconciliation_report_sha256 =
                 Get-ProductionPromotionSha256 -Path $paths.sink
             frame_count = $frameCount
-            unique_game_hour_count =
-                [int64](Get-ProductionPromotionProperty $manifest 'unique_game_hour_count')
-            skipped_game_hours =
-                [int64](Get-ProductionPromotionProperty $manifest 'skipped_game_hours')
-            domain_gap_record_count =
-                [int64](Get-ProductionPromotionProperty $compact 'domain_gap_record_count')
+            unique_game_hour_count = $manifestUniqueGameHours
+            skipped_game_hours = $manifestSkippedGameHours
+            domain_gap_record_count = $compactGapRecordCount
             independent_compact_gate_require_zero_loss = $true
+            undeclared_diagnostic_unit_count = $undeclaredUnits.Count
         }
         zero_loss = (
-            [int64](Get-ProductionPromotionProperty $manifest 'skipped_game_hours') -eq 0 -and
-            [int64](Get-ProductionPromotionProperty $compact 'domain_gap_record_count') -eq 0 -and
+            $manifestSkippedGameHours -eq 0 -and
+            $compactGapRecordCount -eq 0 -and
             $gapRows.Count -eq 0
         )
         speed5_evidence = [ordered]@{
