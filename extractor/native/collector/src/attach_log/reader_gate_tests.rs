@@ -420,7 +420,7 @@ fn spawn_gated_learns_the_hold_time_of_the_tag_it_ran() {
     let tag = COST_LEARNED_TEST_TAG;
     assert_eq!(lane_cost_hint(tag), 0, "the reserved tag starts unranked");
     let gate = ReaderGate::new(2);
-    let lanes = FrameLaneTracker::new(Instant::now(), 0, 0);
+    let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     thread::scope(|scope| {
         let handle = spawn_gated(scope, Some(&gate), &lanes, tag, || {
             let started = Instant::now();
@@ -441,7 +441,7 @@ fn spawn_gated_learns_the_hold_time_of_the_tag_it_ran() {
 fn spawn_gated_without_gate_runs_all_workers() {
     // None gate: every worker runs and returns its value; each ungated
     // worker gets its own lane in the span report.
-    let lanes = FrameLaneTracker::new(Instant::now(), 0, 0);
+    let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     let out: Vec<usize> = thread::scope(|scope| {
         let handles: Vec<_> = (0..8)
             .map(|i| spawn_gated(scope, None, &lanes, 300 + i as u16, move || i * 2))
@@ -461,7 +461,7 @@ fn spawn_gated_without_gate_runs_all_workers() {
 fn spawn_gated_with_gate_returns_same_results() {
     // Gated: same results as ungated; the gate only affects scheduling.
     let gate = ReaderGate::new(2);
-    let lanes = FrameLaneTracker::new(Instant::now(), 0, 0);
+    let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     let out: Vec<usize> = thread::scope(|scope| {
         let gref = Some(&gate);
         let handles: Vec<_> = (0..8)

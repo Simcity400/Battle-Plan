@@ -13,7 +13,7 @@ fn lane_assignment_reporting_matches_execution() {
     const PERMITS: usize = 3;
     const FAKE_DOMAINS: u16 = 12;
     let gate = ReaderGate::new(PERMITS);
-    let tracker = FrameLaneTracker::new(Instant::now(), 0, 0);
+    let tracker = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     thread::scope(|scope| {
         let gref = Some(&gate);
         let tref = &tracker;
@@ -195,6 +195,7 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
         &BTreeSet::new(),
         130,
         700,
+        0,
         &OutsideBuildSpans::default(),
         &summary,
     );
@@ -267,6 +268,7 @@ fn every_outside_build_segment_reaches_the_probe_under_its_own_name() {
         &BTreeSet::new(),
         130,
         700,
+        0,
         &outside,
         &summary,
     );
@@ -314,6 +316,7 @@ fn a_zero_outside_build_segment_is_stated_rather_than_omitted() {
         &BTreeSet::new(),
         130,
         700,
+        0,
         &OutsideBuildSpans::default(),
         &summary,
     );

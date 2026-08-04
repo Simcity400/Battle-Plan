@@ -1600,11 +1600,11 @@ fn the_prewarm_records_its_own_d47_clock_bracket_beside_the_workers() {
     );
     for bracket in &d47_brackets {
         assert_eq!(
-            bracket.opening.map(|(observed, _)| observed),
+            bracket.opening.map(|observation| observation.hour),
             Some(hour),
             "every d47 bracket observed the fixture's staged hour"
         );
-        assert_eq!(bracket.closing.map(|(observed, _)| observed), Some(hour));
+        assert_eq!(bracket.closing.map(|observation| observation.hour), Some(hour));
         assert!(!bracket.worker_panicked);
     }
     assert!(

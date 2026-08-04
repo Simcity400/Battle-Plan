@@ -27,8 +27,8 @@ const DOMAIN_ID: u16 = COMPACT_DOMAIN_DIVISIONS;
 fn bracket(tag: u16, opening: i32, closing: i32) -> DomainClockBracket {
     DomainClockBracket {
         tag,
-        opening: Some((opening, 1)),
-        closing: Some((closing, 2)),
+        opening: Some(clock_obs(opening, 1)),
+        closing: Some(clock_obs(closing, 2)),
         worker_panicked: false,
     }
 }
@@ -70,7 +70,7 @@ fn a_bracket_is_graded_against_the_frames_label_not_only_against_itself() {
         bracket_hour_verdict(
             &DomainClockBracket {
                 tag: DOMAIN_ID,
-                opening: Some((LABEL_HOUR, 1)),
+                opening: Some(clock_obs(LABEL_HOUR, 1)),
                 closing: None,
                 worker_panicked: false,
             },
@@ -757,4 +757,364 @@ fn the_shipped_policy_refuses_mislabelled_hours_since_t20_priced_them() {
          mislabelled hours a stop condition; reverting to CountOnly re-admits \
          them and needs an owner decision, not an edit"
     );
+}
+
+// ---------------------------------------------------------------------------
+// WHERE the boundary fell, not only how much it cost.
+//
+// t21 established the mechanism: frame build p50 89.7 ms against hours whose
+// period p50 is 154 ms but whose p05 is 75 ms, and 102 of the 317 hours with a
+// successor ended before their own frame's build did. What the stream could NOT
+// say is where INSIDE that build the hour ended, so every proposal to shorten
+// or reorder the sweep could only be bounded, never priced.
+// `frame_boundary_position` is that missing coordinate, and these are its
+// contract.
+// ---------------------------------------------------------------------------
+
+/// A bracket with explicit ordinals AND explicit stamps, for the cases where
+/// the two must be allowed to disagree. `clock_obs` deliberately ties them
+/// together; this is the seam that unties them.
+fn stamped(tag: u16, opening: (i32, u64, u64), closing: (i32, u64, u64)) -> DomainClockBracket {
+    DomainClockBracket {
+        tag,
+        opening: Some(ClockObservation {
+            hour: opening.0,
+            ordinal: opening.1,
+            at_us: opening.2,
+        }),
+        closing: Some(ClockObservation {
+            hour: closing.0,
+            ordinal: closing.1,
+            at_us: closing.2,
+        }),
+        worker_panicked: false,
+    }
+}
+
+/// The position is the FIRST post-label observation by ordinal, and the count
+/// is the brackets that had closed before it.
+///
+/// MUTATION RUN: in `frame_boundary_position`, `min_by_key(|o| o.ordinal)`
+/// changed to `max_by_key`, suite run in `--release`. OBSERVED:
+///   left: Some(FrameBoundaryPosition { at_us: 90000, brackets_closed_before: 3 })
+///  right: Some(FrameBoundaryPosition { at_us: 61000, brackets_closed_before: 2 })
+/// The LAST witness reported as the boundary, which places every boundary at
+/// the end of the build and makes the instrument say the opposite of the truth.
+/// Six other tests in this file fail with it; every pre-existing hour-label
+/// test stays green. Restored.
+#[test]
+fn the_boundary_position_is_the_first_post_label_observation() {
+    // Four brackets. The first two run wholly inside the label and close at
+    // ordinals 2 and 4; the third opens at ordinal 5 already in label+1, and a
+    // fourth observes label+1 again later. The answer is the ordinal-5 read.
+    let brackets = [
+        stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000)),
+        stamped(11, (LABEL_HOUR, 3, 21_000), (LABEL_HOUR, 4, 40_000)),
+        stamped(12, (LABEL_HOUR + 1, 5, 61_000), (LABEL_HOUR + 1, 6, 80_000)),
+        stamped(13, (LABEL_HOUR + 1, 7, 81_000), (LABEL_HOUR + 1, 8, 90_000)),
+    ];
+    assert_eq!(
+        frame_boundary_position(&brackets, LABEL_HOUR),
+        Some(FrameBoundaryPosition {
+            at_us: 61_000,
+            brackets_closed_before: 2,
+        }),
+        "the boundary is witnessed by the earliest read that saw a later hour, \
+         and two brackets had closed by then"
+    );
+}
+
+/// ABSENT AND ZERO ARE DIFFERENT FACTS, and the type says so.
+///
+/// A frame whose sweep ran wholly inside its own hour witnessed no boundary at
+/// all; a frame whose very first clock read already saw the next hour witnessed
+/// one at offset zero. Collapsing them would turn the healthiest 220 frames of
+/// t21 into the sickest.
+///
+/// MUTATION RUN: the `?` on the `min_by_key` replaced with
+/// `.unwrap_or(ClockObservation { hour: game_hour_raw, ordinal: 0, at_us: 0 })`
+/// — a measured zero where nothing was observed. OBSERVED:
+///   left: Some(FrameBoundaryPosition { at_us: 0, brackets_closed_before: 0 })
+///  right: None
+/// Every clean frame reports a boundary at the build origin. Restored.
+#[test]
+fn no_boundary_is_absent_and_a_boundary_at_the_origin_is_zero() {
+    let clean = [
+        stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000)),
+        stamped(11, (LABEL_HOUR, 3, 21_000), (LABEL_HOUR, 4, 40_000)),
+    ];
+    assert_eq!(
+        frame_boundary_position(&clean, LABEL_HOUR),
+        None,
+        "a sweep that never saw a later hour witnessed no boundary"
+    );
+
+    // The same shape, except the very first read of the build already saw the
+    // next hour: a MEASURED zero.
+    let from_the_origin = [stamped(10, (LABEL_HOUR + 1, 1, 0), (LABEL_HOUR + 1, 2, 20_000))];
+    assert_eq!(
+        frame_boundary_position(&from_the_origin, LABEL_HOUR),
+        Some(FrameBoundaryPosition {
+            at_us: 0,
+            brackets_closed_before: 0,
+        }),
+        "a build that began in the next hour witnessed the boundary at its own \
+         origin, which is a measurement and not an absence"
+    );
+}
+
+/// Any LATER hour, not only `label + 1`.
+///
+/// t21 carries 16 `HourLabelMismatch` witnesses at `(+2, +2)` — two boundaries
+/// inside one build. A frame whose first post-label observation is label+2 has
+/// still witnessed a boundary; requiring exactly label+1 would report it as
+/// having witnessed nothing, which is the opposite of the truth and would hide
+/// precisely the worst frames.
+///
+/// MUTATION RUN: filter changed to `observation.hour == game_hour_raw + 1`.
+/// OBSERVED: `left: None`, `right: Some(FrameBoundaryPosition { at_us: 45000,
+/// brackets_closed_before: 1 })` — the frame that fell two hours behind reports
+/// as clean, and it is the ONLY test in the file that fails, so nothing else
+/// would have caught it. Restored.
+#[test]
+fn a_frame_that_fell_two_hours_behind_still_reports_its_boundary() {
+    let brackets = [
+        stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000)),
+        stamped(11, (LABEL_HOUR + 2, 3, 45_000), (LABEL_HOUR + 2, 4, 60_000)),
+    ];
+    assert_eq!(
+        frame_boundary_position(&brackets, LABEL_HOUR),
+        Some(FrameBoundaryPosition {
+            at_us: 45_000,
+            brackets_closed_before: 1,
+        })
+    );
+}
+
+/// A label the calendar refuses yields no position, for the same reason it
+/// suppresses the mismatch rule: comparing an observed hour against a
+/// placeholder is arithmetic on something that was never an observation. The
+/// `COMPACT_STATUS_NO_CLOCK` sentinel `0` is one such label.
+///
+/// MUTATION RUN: the `frame_label_is_a_real_hour` guard deleted. OBSERVED:
+///   left: Some(FrameBoundaryPosition { at_us: 5000, brackets_closed_before: 0 })
+///  right: None
+/// Every bracket in a NO_CLOCK frame is "later than" the sentinel, so the
+/// position reported is simply the frame's first read and means nothing.
+/// Restored.
+#[test]
+fn a_label_the_calendar_refuses_has_no_boundary_position() {
+    let brackets = [stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000))];
+    assert!(!frame_label_is_a_real_hour(0), "0 is the NO_CLOCK sentinel");
+    assert_eq!(frame_boundary_position(&brackets, 0), None);
+    // CONTROL: the identical brackets against a real label they DO outrun, so
+    // the assertion above is not passing because this shape never reports
+    // anything.
+    assert!(frame_boundary_position(&brackets, LABEL_HOUR - 1).is_some());
+}
+
+/// A PANICKED bracket is in neither population.
+///
+/// `bracket_hour_verdict` answers `WorkerPanic` for one, meaning nothing it
+/// says about the clock is trustworthy. A position derived from a bracket that
+/// function refuses would be the only place in the tree that trusts one, and
+/// the two numbers returned would then describe different sets of brackets.
+///
+/// MUTATION RUN: the `!bracket.worker_panicked` filter deleted from the
+/// `trustworthy` closure. OBSERVED:
+///   left: Some(FrameBoundaryPosition { at_us: 30000, brackets_closed_before: 1 })
+///  right: None
+/// A boundary witnessed only by an unwinding worker published as the frame's
+/// boundary. Restored.
+#[test]
+fn a_panicked_bracket_witnesses_no_boundary_and_closes_nothing() {
+    let panicked = [
+        stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000)),
+        DomainClockBracket {
+            worker_panicked: true,
+            ..stamped(11, (LABEL_HOUR + 1, 3, 30_000), (LABEL_HOUR + 1, 4, 40_000))
+        },
+    ];
+    assert_eq!(
+        frame_boundary_position(&panicked, LABEL_HOUR),
+        None,
+        "the only witness unwound, and the panic is already its own refusal"
+    );
+
+    // And it is not counted as CLOSED either, so both numbers describe the same
+    // population. Here a trustworthy bracket does witness the boundary, and the
+    // panicked one that closed before it must not be counted.
+    let mixed = [
+        DomainClockBracket {
+            worker_panicked: true,
+            ..stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000))
+        },
+        stamped(11, (LABEL_HOUR, 3, 21_000), (LABEL_HOUR, 4, 40_000)),
+        stamped(12, (LABEL_HOUR + 1, 5, 61_000), (LABEL_HOUR + 1, 6, 80_000)),
+    ];
+    assert_eq!(
+        frame_boundary_position(&mixed, LABEL_HOUR),
+        Some(FrameBoundaryPosition {
+            at_us: 61_000,
+            brackets_closed_before: 1,
+        }),
+        "one trustworthy bracket had closed; the panicked one is not counted"
+    );
+}
+
+/// A bracket whose CLOSING read failed authentication has no ordinal, so its
+/// position in the order is unknown and it is not counted as closed. Inventing
+/// an order for it would be arithmetic on an absence, and the condition is
+/// separately visible as a `ClockUnreadable` refusal.
+///
+/// MUTATION RUN: the count's predicate changed to
+/// `bracket.closing.is_none_or(|c| c.ordinal < first.ordinal)`. OBSERVED:
+///   left: Some(FrameBoundaryPosition { at_us: 61000, brackets_closed_before: 2 })
+///  right: Some(FrameBoundaryPosition { at_us: 61000, brackets_closed_before: 1 })
+/// A bracket that never proved it closed counted as part of the completed
+/// sweep. Restored.
+#[test]
+fn an_unreadable_close_is_not_counted_as_closed() {
+    let brackets = [
+        stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000)),
+        DomainClockBracket {
+            tag: 11,
+            opening: Some(clock_obs(LABEL_HOUR, 3)),
+            closing: None,
+            worker_panicked: false,
+        },
+        stamped(12, (LABEL_HOUR + 1, 5, 61_000), (LABEL_HOUR + 1, 6, 80_000)),
+    ];
+    assert_eq!(
+        frame_boundary_position(&brackets, LABEL_HOUR),
+        Some(FrameBoundaryPosition {
+            at_us: 61_000,
+            brackets_closed_before: 1,
+        })
+    );
+}
+
+/// The ORDINAL orders the reads; the stamp only reports one.
+///
+/// Two brackets on different threads can have their wall stamps land in the
+/// opposite order to the reads themselves; only the ordinal is a total order.
+/// If the position were selected by `at_us`, a frame would report a boundary
+/// earlier than the read that actually witnessed it, and the closed-count —
+/// which is keyed on the ordinal — would describe a different moment than the
+/// offset published beside it.
+///
+/// MUTATION RUN: `min_by_key(|o| o.ordinal)` changed to
+/// `min_by_key(|o| o.at_us)`. OBSERVED:
+///   left: Some(FrameBoundaryPosition { at_us: 50000, brackets_closed_before: 1 })
+///  right: Some(FrameBoundaryPosition { at_us: 52000, brackets_closed_before: 1 })
+/// The reported offset is bracket 11's closing stamp while the count is still
+/// keyed on the ordinal that selected it — one field describing one
+/// observation and the other describing another. Restored.
+#[test]
+fn the_ordinal_orders_the_reads_and_the_stamp_only_reports_them() {
+    // Ordinal 5 is the first post-label read, but its stamp landed AFTER
+    // ordinal 6's. Bracket 11 closes at ordinal 6, i.e. after the witness.
+    let brackets = [
+        stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000)),
+        stamped(12, (LABEL_HOUR + 1, 5, 52_000), (LABEL_HOUR + 1, 7, 80_000)),
+        stamped(11, (LABEL_HOUR, 3, 21_000), (LABEL_HOUR + 1, 6, 50_000)),
+    ];
+    assert_eq!(
+        frame_boundary_position(&brackets, LABEL_HOUR),
+        Some(FrameBoundaryPosition {
+            at_us: 52_000,
+            brackets_closed_before: 1,
+        }),
+        "ordinal 5 is the first witness even though its stamp is later, and \
+         only bracket 10 had closed before it"
+    );
+}
+
+/// THE WIRE, not only the function: the three units reach the probe record with
+/// the values the derivation produced, and the two value units are OMITTED —
+/// not zeroed — when there is no boundary.
+///
+/// MUTATION RUN: both value units emitted unconditionally with
+/// `boundary.map_or(0, |boundary| ..)`. OBSERVED: `left: Some(0)`,
+/// `right: None` on `an absent boundary must publish NO position; a zero would
+/// read as a build that began in the next hour` — the unit present at zero on
+/// a frame that observed nothing, which a manifest cannot tell apart from a
+/// build that began in the next hour. Restored.
+#[test]
+fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
+    let summary = summarize_lane_spans(&[]);
+    let witnessed = [
+        stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000)),
+        stamped(11, (LABEL_HOUR + 1, 3, 61_000), (LABEL_HOUR + 1, 4, 80_000)),
+    ];
+    let mut out = Vec::new();
+    append_compact_lane_wall_probe_record(
+        &mut out,
+        7,
+        LABEL_HOUR,
+        5,
+        900,
+        125,
+        Some(0),
+        &witnessed,
+        &BTreeSet::new(),
+        130,
+        700,
+        23_641,
+        &OutsideBuildSpans::default(),
+        &summary,
+    );
+    let units = compact_perf_diagnostic_units(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]);
+    let value = |name: &str| {
+        units
+            .iter()
+            .find(|unit| unit.name == name)
+            .map(|unit| unit.value)
+    };
+    assert_eq!(value("lw_next_hour_at_us"), Some(61_000));
+    assert_eq!(value("lw_next_hour_brackets_closed"), Some(1));
+    assert_eq!(value("lw_next_hour_missing"), Some(0));
+    assert_eq!(
+        value("lw_fanout_origin_us"),
+        Some(23_641),
+        "the distance between the two origins this record mixes must be on the \
+         wire, or a build-relative offset cannot be placed against a \
+         fan-out-relative span"
+    );
+
+    // A frame whose sweep stayed inside its hour: the two value units are gone
+    // and the flag says why.
+    let clean = [stamped(10, (LABEL_HOUR, 1, 5_000), (LABEL_HOUR, 2, 20_000))];
+    let mut out = Vec::new();
+    append_compact_lane_wall_probe_record(
+        &mut out,
+        7,
+        LABEL_HOUR,
+        5,
+        900,
+        125,
+        Some(0),
+        &clean,
+        &BTreeSet::new(),
+        130,
+        700,
+        23_641,
+        &OutsideBuildSpans::default(),
+        &summary,
+    );
+    let units = compact_perf_diagnostic_units(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]);
+    let value = |name: &str| {
+        units
+            .iter()
+            .find(|unit| unit.name == name)
+            .map(|unit| unit.value)
+    };
+    assert_eq!(
+        value("lw_next_hour_at_us"),
+        None,
+        "an absent boundary must publish NO position; a zero would read as a \
+         build that began in the next hour"
+    );
+    assert_eq!(value("lw_next_hour_brackets_closed"), None);
+    assert_eq!(value("lw_next_hour_missing"), Some(1));
 }

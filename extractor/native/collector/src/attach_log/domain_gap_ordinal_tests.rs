@@ -126,8 +126,8 @@ fn replacing_an_already_staged_h4dg_does_not_spend_a_second_ordinal() {
     let mut ordinals = BTreeMap::from([(key, 1)]);
     let torn = DomainClockBracket {
         tag: domain_id,
-        opening: Some((hour, 1)),
-        closing: Some((hour + 1, 2)),
+        opening: Some(clock_obs(hour, 1)),
+        closing: Some(clock_obs(hour + 1, 2)),
         worker_panicked: false,
     };
 
@@ -229,20 +229,20 @@ fn the_prefix_before_the_first_rejected_record_survives() {
     let brackets = [
         DomainClockBracket {
             tag: kept_before,
-            opening: Some((hour, 1)),
-            closing: Some((hour, 2)),
+            opening: Some(clock_obs(hour, 1)),
+            closing: Some(clock_obs(hour, 2)),
             worker_panicked: false,
         },
         DomainClockBracket {
             tag: torn_domain,
-            opening: Some((hour, 1)),
-            closing: Some((hour + 1, 2)),
+            opening: Some(clock_obs(hour, 1)),
+            closing: Some(clock_obs(hour + 1, 2)),
             worker_panicked: false,
         },
         DomainClockBracket {
             tag: kept_after,
-            opening: Some((hour, 1)),
-            closing: Some((hour, 2)),
+            opening: Some(clock_obs(hour, 1)),
+            closing: Some(clock_obs(hour, 2)),
             worker_panicked: false,
         },
     ];
@@ -319,8 +319,8 @@ fn a_frame_that_rejects_nothing_is_returned_unchanged() {
     let before = records.clone();
     let brackets = [DomainClockBracket {
         tag: domain,
-        opening: Some((hour, 1)),
-        closing: Some((hour, 2)),
+        opening: Some(clock_obs(hour, 1)),
+        closing: Some(clock_obs(hour, 2)),
         worker_panicked: false,
     }];
     let mut ordinals = BTreeMap::new();

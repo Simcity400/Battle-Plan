@@ -36,6 +36,12 @@ pub const MAX_PARTY_LEADER_VEC: u32 = 64;
 
 pub const CCHARACTER_TYPE_OFF: u64 = 0x08;
 pub const CCHARACTER_ID_OFF: u64 = 0x0C;
+/// The manager name-index key the exact roster census brackets each character
+/// with. Lives here, beside every other `CCharacter` offset, because
+/// [`read_character_census_fields`] serves it out of the same body copy as the
+/// raw fields — an offset defined in one crate and read out of a window sized
+/// in another is exactly how the two drift apart.
+pub const CCHARACTER_NAME_TOKEN_ID_OFF: u64 = 0x18;
 pub const CCHARACTER_NAME_OFF: u64 = 0x28;
 pub const CCHARACTER_TOKEN_OFF: u64 = 0x48;
 pub const CCHARACTER_COUNTRY_TAG_DB_ID_OFF: u64 = 0x68;
@@ -668,6 +674,78 @@ pub fn read_character_raw_fields<M: LaneMemory>(
         char_id,
         unit_leader_ptr,
     })
+}
+
+/// ONE census observation of a `CCharacter`: the raw fields AND the manager
+/// name-token id, out of ONE guarded body copy when the window is available.
+///
+/// # What this removes, and why it is not a weakening
+///
+/// The exact-roster census brackets each character's two raw-field reads with a
+/// stable read of the name-token id, so a character renamed or recycled while
+/// the census walked it is refused. Read by address that bracket cost four
+/// guarded reads per character — `read_u32_stable` is a double read, taken
+/// twice — on top of the two body copies. Over t15's census width (13,405
+/// characters per frame) that is 53,620 guarded reads per prewarm, all of them
+/// for one `u32` that the body copy ALREADY CONTAINS: `0x18` sits inside
+/// [`CCHARACTER_RAW_FIELDS_SPAN`], which reaches `0xB0`.
+///
+/// The bracket still spans the same reads. Before, the order was
+/// `token, fields, fields, token`; now it is `(token, fields)` then
+/// `(token, fields)`, with each pair taken from ONE atomic copy. The interval
+/// the caller compares — first observation to second — still encloses both
+/// field reads completely; what disappears is only the width OUTSIDE them,
+/// which covered no read at all.
+///
+/// It is stronger in one respect and weaker in none. The token and the fields
+/// are now proven to have been observed at the SAME instant, where before a
+/// change landing between the opening token read and the first field read was
+/// invisible to both checks. `read_u32_stable`'s own inner double-read is not
+/// lost either: a guarded body copy cannot observe two different values for one
+/// `u32`, so the tear it guarded against is not expressible here.
+///
+/// # The fallback
+///
+/// `read_object_window` returns `None` unless the WHOLE span passed one region
+/// gate, and a character straddling a region boundary takes the by-address path
+/// exactly as it always did — including `read_u32_stable` for the token. The
+/// caller passes that reader in rather than this crate reimplementing it,
+/// because the collector's guarded-read primitives are where the stable-read
+/// contract lives. That path re-enters [`read_character_raw_fields`], which
+/// attempts the window once more before falling back — one wasted `read_into`
+/// on a path that is already the exceptional one, traded for there being a
+/// single implementation of the field-by-field reader rather than two.
+pub fn read_character_census_fields<M: LaneMemory>(
+    mem: &M,
+    roots: &ResolvedTypeRoots,
+    character_addr: u64,
+    stable_name_token_id: impl FnOnce() -> Option<u32>,
+) -> (Result<CharacterRawFields, ExtractError>, Option<u32>) {
+    // The whole premise, checked by the compiler rather than by this comment:
+    // if the span ever stops covering the name-token id, the slice below would
+    // panic at runtime on every character of every frame. Narrowing the span is
+    // a legitimate change (it is deliberately sized to the last field READ), so
+    // this must fail the build and not the capture.
+    const _: () =
+        assert!(CCHARACTER_NAME_TOKEN_ID_OFF as usize + 4 <= CCHARACTER_RAW_FIELDS_SPAN);
+    match mem.read_object_window::<CCHARACTER_RAW_FIELDS_SPAN>(character_addr) {
+        Some(body) => {
+            let off = CCHARACTER_NAME_TOKEN_ID_OFF as usize;
+            let name_token_id = u32::from_le_bytes(
+                body[off..off + 4]
+                    .try_into()
+                    .expect("the name-token id is inside CCHARACTER_RAW_FIELDS_SPAN"),
+            );
+            (
+                character_raw_fields_from_body(roots, character_addr, &body),
+                Some(name_token_id),
+            )
+        }
+        None => (
+            read_character_raw_fields(mem, roots, character_addr),
+            stable_name_token_id(),
+        ),
+    }
 }
 
 /// Bytes of a `CAdvisor` body this reader needs: through its character

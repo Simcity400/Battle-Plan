@@ -409,10 +409,10 @@ fn a_hold_refuses_the_retained_roots_without_destroying_them() {
 
 const FRAME_HOUR: i32 = 60_832_014;
 
-/// An authenticated clock observation, as `read_authenticated_scheduler_clock`
-/// returns it: the game hour plus its global observation ordinal.
-fn clock(hour: i32, ordinal: u64) -> Option<(i32, u64)> {
-    Some((hour, ordinal))
+/// An authenticated clock observation, as `observe_frame_clock` returns it: the
+/// game hour, its global observation ordinal, and its position in the frame.
+fn clock(hour: i32, ordinal: u64) -> Option<ClockObservation> {
+    Some(clock_obs(hour, ordinal))
 }
 
 /// Each way the prewarm's bracket can land, and what it proves.
@@ -435,8 +435,8 @@ fn the_prewarm_clock_verdict_separates_the_three_failures() {
         &str,
         Domain47PrewarmClockVerdict,
         bool,
-        Option<(i32, u64)>,
-        Option<(i32, u64)>,
+        Option<ClockObservation>,
+        Option<ClockObservation>,
         bool,
     ); 7] = [
         // (name, expected, scheduled, opening, closing, roots_unpublishable)

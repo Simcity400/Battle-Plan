@@ -441,10 +441,45 @@ fn census_loop_legacy(world: &BenchWorld) -> usize {
 }
 
 /// The census loop body, verbatim from
-/// `domain47_read_exact_manager_roster` + the prewarm's root build: the
-/// bracketing stable name-token reads, the torn-detecting double read of
-/// the raw fields, and the two per-character strings.
+/// `domain47_read_exact_manager_roster` + the prewarm's root build: two
+/// `read_character_census_fields` observations (each one guarded body copy
+/// serving both the torn-detecting raw fields and the name-token id) and the
+/// two per-character strings.
 fn census_loop(world: &BenchWorld) -> usize {
+    let mem = Domain47InProcessMemory;
+    let mut sink = 0usize;
+    for addr in &world.census_characters {
+        let name_token_addr = *addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+        let (first, opening) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            *addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (second, closing) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            *addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (name, token) = domain47_character_root_strings(*addr);
+        sink += opening.is_some() as usize
+            + closing.is_some() as usize
+            + first.is_ok() as usize
+            + second.is_ok() as usize
+            + name.map_or(0, |v| v.len())
+            + token.map_or(0, |v| v.len());
+    }
+    sink
+}
+
+/// The census loop body with the name-token bracket read SEPARATELY, as it
+/// stood before lane AK: `read_u32_stable` twice — four guarded reads — on top
+/// of the two body copies, for a `u32` those copies already contained.
+///
+/// Everything else is identical, including the two string reads, so the A/B
+/// isolates the four reads and nothing else.
+fn census_loop_separate_token_bracket(world: &BenchWorld) -> usize {
     let mem = Domain47InProcessMemory;
     let mut sink = 0usize;
     for addr in &world.census_characters {
@@ -630,6 +665,204 @@ fn d47_cost_census_loop() {
         T15_CENSUS_CHARACTERS,
         us * 1000.0 / T15_CENSUS_CHARACTERS as f64,
         sink
+    );
+}
+
+/// In-process A/B of lane AK's census change: the name-token bracket served
+/// out of the body copies that were already being taken, against the four
+/// separate guarded reads it replaced.
+///
+/// WHY THIS IS THE PREWARM'S BIGGEST AVAILABLE CUT. The d47 prewarm is 23.6 ms
+/// of t21's 89.7 ms frame build (p50), all of it SERIAL on the collector thread
+/// before any worker spawns, and every millisecond of it is a millisecond of
+/// hour-boundary exposure for all 68 domains. The census is its widest loop —
+/// 13,405 characters per frame at t15's roster width — and until now each of
+/// those characters paid four guarded reads for one `u32` that the two body
+/// copies beside them already contained.
+///
+/// Alternately run and reported as the median of paired deltas, for the reason
+/// `time_us_median_ab` gives: this machine runs several lanes at once and the
+/// difference of two independently-sorted medians is not itself an
+/// observation.
+///
+/// CONSERVATIVE, in the direction the module header states: the fake heap is
+/// one contiguous region so `range_confirmed_good` always hits its MRU entry,
+/// while the live heap has many regions and a higher miss rate. Removing a
+/// guarded call removes proportionally many chances to miss, so the live saving
+/// is at least this and cannot be less.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_name_token_merge_ab() {
+    let world = bench_world();
+    let (now, legacy) = time_us_median_ab(
+        9,
+        || census_loop(&world),
+        || census_loop_separate_token_bracket(&world),
+    );
+    println!(
+        "d47_cost AB census_name_token: separate bracket {legacy:.1} us -> merged {now:.1} us \
+         ({:+.1}%) over {} characters ({:.1} ns/character saved, 4 guarded reads each)",
+        (now - legacy) / legacy * 100.0,
+        T15_CENSUS_CHARACTERS,
+        (legacy - now) * 1000.0 / T15_CENSUS_CHARACTERS as f64,
+    );
+}
+
+/// In-process A/B of the roster index check's derived-set reuse: building the
+/// two key sets once for both census passes, against rebuilding them for the
+/// second.
+///
+/// Plain CPU, no engine reads on either arm — the lookup closure is a constant
+/// here — so unlike the guarded-read arms this figure is not conservative in
+/// either direction; it is what the live prewarm pays too.
+///
+/// The identities are t15's census width with the same shape the census
+/// produces: one distinct name token per character, and the character addresses
+/// the fixture laid out.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_roster_index_keys_reuse_ab() {
+    let world = bench_world();
+    let identities: Vec<(u32, usize)> = world
+        .census_characters
+        .iter()
+        .enumerate()
+        .map(|(ordinal, addr)| (ordinal as u32, *addr))
+        .collect();
+    let lookup = |_| Domain47ManagerIndexLookup::Absent;
+    let reused = || {
+        let keys = Domain47ManagerNameIndexKeys::from_identities(&identities);
+        keys.check(lookup).distinct_name_token_count as usize
+            + keys.check(lookup).distinct_name_token_count as usize
+    };
+    let rebuilt = || {
+        domain47_manager_name_index_check(&identities, lookup).distinct_name_token_count as usize
+            + domain47_manager_name_index_check(&identities, lookup).distinct_name_token_count
+                as usize
+    };
+    let (now, legacy) = time_us_median_ab(9, reused, rebuilt);
+    println!(
+        "d47_cost AB roster_index_keys: rebuilt per pass {legacy:.1} us -> built once {now:.1} us \
+         ({:+.1}%) over {} identities x 2 passes",
+        (now - legacy) / legacy * 100.0,
+        identities.len(),
+    );
+}
+
+/// Sharing the KEYS must not share the LOOKUPS: the closing pass exists to
+/// re-read the engine's derived name cache after the whole walk, and a pass
+/// that replayed the opening pass's answers would be a check that cannot fail.
+///
+/// MUTATION: memoize `check`'s lookup results on
+/// `Domain47ManagerNameIndexKeys` and this fails — the second pass performs no
+/// probes and the roster is declared safe on the first pass's stale answers.
+#[test]
+fn the_closing_roster_index_pass_re_reads_the_engine() {
+    let identities = [(7u32, 0x1000usize), (9, 0x2000), (11, 0x3000)];
+    let keys = Domain47ManagerNameIndexKeys::from_identities(&identities);
+    let mut probes = 0usize;
+    assert!(keys
+        .check(|_| {
+            probes += 1;
+            Domain47ManagerIndexLookup::Absent
+        })
+        .roster_is_safe());
+    assert_eq!(probes, 3, "the opening pass probes every distinct name");
+
+    // The SAME keys, and the engine has since started answering with a pointer
+    // outside the roster. The closing pass must see that.
+    let mut closing_probes = 0usize;
+    assert!(
+        !keys
+            .check(|_| {
+                closing_probes += 1;
+                Domain47ManagerIndexLookup::Found(0xDEAD_BEEF)
+            })
+            .roster_is_safe(),
+        "a closing pass that replayed the opening answers would call this safe"
+    );
+    assert_eq!(
+        closing_probes, 1,
+        "the closing pass probes for itself, and `all` stops at the first refusal"
+    );
+}
+
+/// The name-token id the merged census read serves is the word at `0x18`, and
+/// the whole `CCharacter` body window covers it.
+///
+/// WRITTEN AS A LITERAL, DELIBERATELY. The obvious version of this test — read
+/// the token both ways and compare — CANNOT FAIL on the offset, and that is not
+/// a hypothesis: the mutation run below was performed and the test passed.
+/// Both readers resolve the offset through `CCHARACTER_NAME_TOKEN_ID_OFF`
+/// (the collector's `DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF` is a re-export of
+/// it), and so does the fixture that writes the value, so moving the constant
+/// moves the writer and both readers together and they keep agreeing on a byte
+/// that is no longer the engine's.
+///
+/// So the offset is stated here independently. `0x18` is a pre-existing d47
+/// offset — this lane did not derive it, it made it load-bearing for a WINDOW
+/// read by serving it out of the raw-field body copy — and this is what makes
+/// changing it a deliberate act.
+///
+/// MUTATION RUN: `CCHARACTER_NAME_TOKEN_ID_OFF` changed to `0x1C` and the suite
+/// run in `--release`. OBSERVED FIRST TIME (before this assertion existed):
+/// `test result: ok. 1 passed` — the equivalence check was vacuous for the
+/// offset, which is why this assertion exists.
+#[test]
+fn d47_census_merged_and_separate_token_reads_observe_the_same_character() {
+    /// The `CCharacter` name-token id offset, stated here and not imported.
+    const NAME_TOKEN_ID_OFF: usize = 0x18;
+    assert_eq!(
+        DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF, NAME_TOKEN_ID_OFF,
+        "the census now serves the name-token id out of the CCharacter body \
+         window, so moving this offset moves what the window is read for; \
+         changing it must be deliberate"
+    );
+    assert!(
+        NAME_TOKEN_ID_OFF + 4 <= domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN,
+        "the body window must cover the name-token id, or the merged read \
+         cannot serve it"
+    );
+
+    let world = bench_world();
+    let mem = Domain47InProcessMemory;
+    let mut compared = 0usize;
+    for addr in &world.census_characters {
+        // By-address, at the LITERAL offset: independent of whatever the
+        // production constant currently says.
+        let literal_token = read_u32_stable(*addr + NAME_TOKEN_ID_OFF);
+        let name_token_addr = *addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+        let (merged_fields, merged_token) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            *addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let separate_token = read_u32_stable(name_token_addr);
+        let separate_fields =
+            domain47::extractor::read_character_raw_fields(&mem, &world.roots, *addr as u64);
+        assert_eq!(
+            merged_token, literal_token,
+            "the merged read must serve the word at 0x18 at {addr:#x}"
+        );
+        assert_eq!(
+            merged_token, separate_token,
+            "merged and by-address name-token reads disagree at {addr:#x}"
+        );
+        assert!(
+            merged_token.is_some(),
+            "the fixture must produce a readable name-token id, or this test \
+             compares two Nones"
+        );
+        assert_eq!(
+            merged_fields, separate_fields,
+            "merged and by-address raw-field reads disagree at {addr:#x}"
+        );
+        compared += 1;
+    }
+    assert_eq!(
+        compared, T15_CENSUS_CHARACTERS,
+        "every censused character must be compared"
     );
 }
 
