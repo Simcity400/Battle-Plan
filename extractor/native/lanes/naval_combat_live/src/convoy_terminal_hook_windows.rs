@@ -1180,12 +1180,17 @@ unsafe extern "system" fn convoy_terminal_hook(
 /// resolver_publication_sequence == 0 -- but the magnitude was overstated by
 /// ~180x and is corrected here.)
 ///
-/// The frames' own diagnostics carry
-/// `h_convoy_resolver_error_hash = 14547190417989963716`, which is
-/// FNV-1a-64 of "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0
-/// client handles" -- so the publication was refused every frame, the
-/// snapshot was cleared, and the receipt's sequence was zero whenever a
-/// callback reached this check.
+/// The frames' own diagnostics carry `h_convoy_resolver_error_hash_sample`,
+/// whose per-frame value is FNV-1a-64 of "clean d49/d50 walk lacks one or more
+/// exact CFEXMember+0xD0 client handles" (14547190417989963716) -- so the
+/// publication was refused every frame, the snapshot was cleared, and the
+/// receipt's sequence was zero whenever a callback reached this check.
+///
+/// The `_sample` suffix is what makes that readable. The unit was unsuffixed
+/// when t15 ran, so the host SUMMED it and the value in that run's manifest is
+/// 18446744073709551615 -- a saturated u64, not the hash. Saturation still
+/// establishes that the unit was published on many frames, which is what the
+/// paragraph above rests on; it does not by itself name the text.
 ///
 /// What that capture does NOT establish is that every one of those callbacks
 /// DID reach it: `DROP_HOUR_OR_EPOCH` is also incremented by the pre-call
@@ -2389,9 +2394,11 @@ mod resolver_refusal_tests {
     /// events in `runs/live_unlock/t15` carry, with `dropped_resolver` at
     /// zero, while the resolver was demonstrably never published: those
     /// frames' own
-    /// `h_convoy_resolver_error_hash = 14547190417989963716` (FNV-1a-64 of
-    /// "clean d49/d50 walk lacks one or more exact CFEXMember+0xD0 client
-    /// handles").
+    /// `h_convoy_resolver_error_hash_sample`, whose per-frame value is
+    /// FNV-1a-64 of "clean d49/d50 walk lacks one or more exact
+    /// CFEXMember+0xD0 client handles" (14547190417989963716). That unit was
+    /// unsuffixed when t15 ran, so the manifest carries the SUM -- saturated
+    /// to 18446744073709551615 -- rather than the hash itself.
     ///
     /// What the t15 aggregate does NOT prove: that every one of those 107
     /// callbacks reached the receipt check. `DROP_HOUR_OR_EPOCH` is also
