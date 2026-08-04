@@ -47,6 +47,20 @@ pub const DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE: u16 = 6;
 /// is actually known -- that no outcome was recorded -- and exists so that such
 /// an hour is a NAMED loss rather than an absence no ledger can see.
 pub const DOMAIN_GAP_REASON_READER_SILENT: u16 = 7;
+/// The reader's clock bracket neither tore nor observed the frame's own hour:
+/// it opened and closed in some OTHER hour entirely.
+///
+/// This is the equal-but-wrong case, and it is invisible to `TORN`. A bracket
+/// proves the hour did not CHANGE across the read; it does not prove the read
+/// happened in the hour the frame is labelled with. A sweep that begins after
+/// the label's hour has already elapsed reads hour H+1 from end to end, so
+/// `tick_before == tick_after` and every tear check passes -- while the frame
+/// still publishes under label H.
+///
+/// The witnesses make the claim self-proving: `tick_before == tick_after`
+/// (nothing tore) and both differ from `target_hour_raw` (and so name the hour
+/// actually observed). A consumer never has to take the reason's word for it.
+pub const DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH: u16 = 8;
 pub const DOMAIN_GAP_PART_STATE: u16 = 0;
 pub const DOMAIN_GAP_PART_EVENT: u16 = 1;
 pub const DOMAIN_GAP_PART_BOTH: u16 = 2;
@@ -212,6 +226,7 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
             | DOMAIN_GAP_REASON_WORKER_PANIC
             | DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE
             | DOMAIN_GAP_REASON_READER_SILENT
+            | DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH
     ) {
         return Err(format!("DOMAIN_GAP reason {reason} is unknown"));
     }
@@ -330,6 +345,31 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
                 && target_hour == range_start
                 && tick_before == 0
                 && tick_after == 0
+                && queue_capacity == 0
+                && queue_depth == 0
+                && queue_dropped == 0 => {}
+        // SELF-PROVING. The other clock reasons are believed on the producer's
+        // word -- `TORN` says the ticks differ and the grammar checks only
+        // that. This one is checkable end to end from the payload alone:
+        //
+        //   tick_before == tick_after      nothing tore, so the read is not a
+        //                                  straddle wearing a different name;
+        //   tick_before != target_hour     and the hour it DID observe is not
+        //                                  the hour the frame published under.
+        //
+        // Both conjuncts are required. Drop the first and a torn bracket
+        // encodes as a mismatch; drop the second and any clean bracket does,
+        // which would let this reason swallow the whole capture.
+        //
+        // A zero tick is rejected with the rest: zero is the wire's "no
+        // witness" value (see `READER_SILENT` above), and a reason whose entire
+        // content is "the observed hour was X" cannot be built on an absent X.
+        DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH
+            if range_start == range_end
+                && target_hour == range_start
+                && tick_before == tick_after
+                && tick_before != 0
+                && u64::try_from(target_hour).map(|label| label != tick_before) == Ok(true)
                 && queue_capacity == 0
                 && queue_depth == 0
                 && queue_dropped == 0 => {}

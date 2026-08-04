@@ -552,7 +552,8 @@ fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
         closing: clock(FRAME_HOUR + 1, 2),
         worker_panicked: false,
     }];
-    let rejected = rejected_bracket_domains(&brackets);
+    let rejected =
+        rejected_bracket_domains(&brackets, FRAME_HOUR, HourLabelMismatchPolicy::Refuse);
     let d47 = rejected
         .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
         .copied()
@@ -574,7 +575,7 @@ fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
         worker_panicked: false,
     }];
     assert!(
-        rejected_bracket_domains(&clean).is_empty(),
+        rejected_bracket_domains(&clean, FRAME_HOUR, HourLabelMismatchPolicy::Refuse).is_empty(),
         "an in-hour prewarm must reject nothing"
     );
 }
@@ -604,16 +605,41 @@ fn a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore() {
         clock(FRAME_HOUR + 1, 2),
         FRAME_HOUR,
     );
+    // PREMISE, and the reason d47's own refusal is not redundant. This frame's
+    // bracket does not tear, so the TEAR machinery -- the only thing guarding
+    // the other 67 domains when this test was written -- cannot see it.
+    // `CountOnly` is that machinery with the generalised hour-label rule
+    // switched off, and it still accepts the frame.
+    let wrong_hour_bracket = [DomainClockBracket {
+        tag: COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
+        opening: clock(FRAME_HOUR + 1, 1),
+        closing: clock(FRAME_HOUR + 1, 2),
+        worker_panicked: false,
+    }];
     assert!(
-        rejected_bracket_domains(&[DomainClockBracket {
-            tag: COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
-            opening: clock(FRAME_HOUR + 1, 1),
-            closing: clock(FRAME_HOUR + 1, 2),
-            worker_panicked: false,
-        }])
+        rejected_bracket_domains(
+            &wrong_hour_bracket,
+            FRAME_HOUR,
+            HourLabelMismatchPolicy::CountOnly,
+        )
         .is_empty(),
-        "premise: the bracket machinery accepts this frame, so the refusal \
-         cannot come from it"
+        "premise: nothing tore, so the tear machinery accepts this frame and \
+         the refusal below cannot have come from it"
+    );
+    // With the rule ON, the frame-wide check reaches the same verdict d47
+    // reaches for itself below. Two independent statements of one rule that
+    // AGREE, which is the point of generalising it -- and d47 keeps its own,
+    // because the roots it refuses are built in a phase that runs before any
+    // worker bracket exists.
+    assert_eq!(
+        rejected_bracket_domains(
+            &wrong_hour_bracket,
+            FRAME_HOUR,
+            HourLabelMismatchPolicy::Refuse,
+        )
+        .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+        .map(|outcome| outcome.0),
+        Some(compact_contract::domain_gap::DomainGapReason::HourLabelMismatch),
     );
 
     domain47_apply_prewarm_clock_verdict(verdict, &mut cache, &mut summary);

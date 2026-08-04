@@ -1487,10 +1487,18 @@ fn the_frame_builder_decides_the_d47_prewarm_clock_verdict_against_its_own_label
         "a wrong-hour prewarm must refuse its roots; the label is the only \
          thing that differs between these two frames"
     );
+    // Nothing tore, so the TEAR machinery cannot have produced the refusal
+    // above. `CountOnly` is that machinery with the generalised hour-label
+    // rule switched off, and it accepts this frame -- which is exactly the
+    // hole d47's own refusal was closing before the rule was generalised.
     assert!(
-        rejected_bracket_domains(&wrong_hour.timing.domain_clock_brackets)
-            .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
-            .is_none(),
+        rejected_bracket_domains(
+            &wrong_hour.timing.domain_clock_brackets,
+            hour,
+            HourLabelMismatchPolicy::CountOnly,
+        )
+        .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+        .is_none(),
         "premise: nothing tore, so the refusal cannot have come from a bracket"
     );
 }
@@ -1541,9 +1549,13 @@ fn the_prewarm_records_its_own_d47_clock_bracket_beside_the_workers() {
         assert!(!bracket.worker_panicked);
     }
     assert!(
-        rejected_bracket_domains(&outcome.timing.domain_clock_brackets)
-            .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
-            .is_none(),
+        rejected_bracket_domains(
+            &outcome.timing.domain_clock_brackets,
+            hour,
+            HourLabelMismatchPolicy::Refuse,
+        )
+        .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+        .is_none(),
         "an in-hour frame must reject nothing, or the count above is of two \
          failures rather than two observations"
     );
@@ -1676,6 +1688,129 @@ fn the_prewarm_clock_reads_bracket_the_phase_rather_than_sitting_beside_it() {
         closing < verdict,
         "the verdict must be applied after the closing read \
          (closing at line {closing}, verdict at line {verdict})"
+    );
+}
+
+/// THE INSTRUMENT, minted by the real frame builder and read back off the wire.
+///
+/// `lw_hour_label_skew_abs` is ONE clock read taken at the top of the heavy
+/// sweep; it answers a question about where the frame STARTED. These two
+/// counters answer the question that decides the refusal's price: of the
+/// brackets this frame actually held, how many read an hour that is not the
+/// frame's label. Nothing on the wire could answer that before -- an accepted
+/// bracket recorded its hour nowhere -- which is why t17 could only bound the
+/// frame-level rate between 4.90% and 62.65% instead of stating it.
+///
+/// Driven through `build_compact_extraction_gate_records`, so it fails if the
+/// counters are computed but never emitted, emitted but never computed, or
+/// computed from the wrong brackets.
+///
+/// MUTATION RUN: pass `0, 0` in place of the two counters at the
+/// `append_compact_lane_wall_probe_record` call site -- i.e. delete the call to
+/// `hour_label_mismatched_bracket_count`.
+/// OBSERVED: this test alone fails, on the premise assertion one line earlier
+/// (`the frame probe must report how many brackets were held`), because
+/// deleting the call deletes both counters at once. Every test in
+/// `hour_label_tests` and every `d47_root_hour_tests` test stays green, because
+/// none of them goes through the probe -- which is the whole reason this test
+/// exists beside them.
+///
+/// MUTATION RUN (2): delete the `opening.0 != game_hour_raw` clause from
+/// `bracket_hour_verdict`, i.e. the predicate rather than the wiring.
+/// OBSERVED: `every bracket in this frame read an hour that is not the label`
+/// — left `Some(0)`, right `Some(3)`.
+#[test]
+fn the_frame_probe_reports_how_many_brackets_missed_the_frames_label() {
+    let hour = fixture_game_hour_raw();
+    let control = compact_control_scheduling(&[RAW_D47_DOMAIN]);
+
+    // In-hour: the label is the hour the staged clock reads.
+    let fixture = d47_clock_fixture(hour);
+    let in_hour = drive_compact_frame(Some(&fixture.collector_state()), &control, hour, 7);
+    let held = in_hour
+        .diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_bracketed_domains")
+        .expect("the frame probe must report how many brackets were held");
+    assert!(
+        held > 0,
+        "premise: this frame holds brackets, or the mismatch count below is \
+         zero for an uninteresting reason"
+    );
+    assert_eq!(
+        in_hour.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_hour_label_mismatch_domains"),
+        Some(0),
+        "a frame whose readers ran in its own hour must report no mismatch"
+    );
+
+    // Wrong hour: the staged clock has already moved past the label, and
+    // nothing tears, so every bracket opens and closes in the SAME hour --
+    // just not this frame's.
+    let fixture = d47_clock_fixture(hour + 1);
+    let wrong_hour = drive_compact_frame(Some(&fixture.collector_state()), &control, hour, 7);
+    assert_eq!(
+        wrong_hour.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_bracketed_domains"),
+        Some(held),
+        "premise: the two frames hold the same brackets, so the only thing \
+         that differs below is the hour they read"
+    );
+    assert_eq!(
+        wrong_hour.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_hour_label_mismatch_domains"),
+        Some(held),
+        "every bracket in this frame read an hour that is not the label"
+    );
+    assert_eq!(
+        wrong_hour.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_hour_label_skew_abs"),
+        Some(1),
+        "and the frame's own start-of-sweep skew agrees, independently"
+    );
+    // Both frames carry labels the calendar admits, so both must say the rule
+    // APPLIED. Without this a zero mismatch count would be indistinguishable
+    // from a frame the rule could not be run on at all.
+    for (name, outcome) in [("in-hour", &in_hour), ("wrong-hour", &wrong_hour)] {
+        assert_eq!(
+            outcome.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_hour_label_unusable"),
+            Some(0),
+            "a frame whose label the calendar admits must say the rule applied ({name})"
+        );
+    }
+}
+
+/// THE OTHER BRANCH. Both frames above carry labels the calendar admits, so
+/// they only ever exercise `lw_hour_label_unusable == 0` -- a production edit
+/// pinning the unit to the constant `0` passes every one of them.
+///
+/// A label the calendar refuses is not hypothetical: `0` is what the frame
+/// builder substitutes when it had no authoritative clock, and a corrupt or
+/// out-of-window scheduler stamp reaches the same place. The rule cannot be
+/// applied to such a frame -- a gap could not encode against the label -- so
+/// the frame must SAY so, or a zero mismatch count reads as "checked and
+/// clean" when it means "not checkable".
+///
+/// MUTATION RUN: pin the unit's value to `0` in
+/// `append_compact_lane_wall_probe_record`.
+/// OBSERVED: `a frame the rule cannot be applied to must say so` — left
+/// `Some(0)`, right `Some(1)`. Every other test in this file and in
+/// `hour_label_tests` stays green, which is precisely the hole this closes.
+#[test]
+fn a_frame_whose_label_the_calendar_refuses_says_the_rule_did_not_apply() {
+    const NO_CLOCK_SENTINEL: i32 = 0;
+    let hour = fixture_game_hour_raw();
+    let fixture = d47_clock_fixture(hour);
+    let outcome = drive_compact_frame(
+        Some(&fixture.collector_state()),
+        &compact_control_scheduling(&[RAW_D47_DOMAIN]),
+        NO_CLOCK_SENTINEL,
+        7,
+    );
+
+    assert_eq!(
+        outcome.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_hour_label_unusable"),
+        Some(1),
+        "a frame the rule cannot be applied to must say so"
+    );
+    assert_eq!(
+        outcome.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_hour_label_mismatch_domains"),
+        Some(0),
+        "and it must not also report a mismatch it was in no position to find"
     );
 }
 

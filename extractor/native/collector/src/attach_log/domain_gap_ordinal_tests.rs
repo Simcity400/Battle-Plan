@@ -137,6 +137,7 @@ fn replacing_an_already_staged_h4dg_does_not_spend_a_second_ordinal() {
         hour,
         &[torn],
         &mut ordinals,
+        HourLabelMismatchPolicy::Refuse,
     )
     .expect("staged H4DG replacement");
     assert_eq!(next_sequence, 2);

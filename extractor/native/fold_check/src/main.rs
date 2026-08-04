@@ -171,6 +171,7 @@ fn gap_reason_names(mask: u32) -> Vec<&'static str> {
         (DomainGapReason::WorkerPanic, "WorkerPanic"),
         (DomainGapReason::SourceUnavailable, "SourceUnavailable"),
         (DomainGapReason::ReaderSilent, "ReaderSilent"),
+        (DomainGapReason::HourLabelMismatch, "HourLabelMismatch"),
     ]
     .into_iter()
     .filter(|(reason, _)| mask & (1u32 << reason.code()) != 0)

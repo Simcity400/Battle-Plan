@@ -11,9 +11,9 @@ use crate::calendar::hour_index_from_raw;
 use crate::record_semantics::{
     validate_domain_gap_payload, COMPACT_DOMAIN_GAP_MAGIC, COMPACT_DOMAIN_GAP_PAYLOAD_LEN,
     COMPACT_DOMAIN_GAP_VERSION, DOMAIN_GAP_PART_BOTH, DOMAIN_GAP_PART_EVENT, DOMAIN_GAP_PART_STATE,
-    DOMAIN_GAP_REASON_BACKPRESSURE, DOMAIN_GAP_REASON_CLOCK_UNREADABLE, DOMAIN_GAP_REASON_OVERRUN,
-    DOMAIN_GAP_REASON_READER_SILENT, DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE, DOMAIN_GAP_REASON_TORN,
-    DOMAIN_GAP_REASON_WORKER_PANIC,
+    DOMAIN_GAP_REASON_BACKPRESSURE, DOMAIN_GAP_REASON_CLOCK_UNREADABLE,
+    DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH, DOMAIN_GAP_REASON_OVERRUN, DOMAIN_GAP_REASON_READER_SILENT,
+    DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE, DOMAIN_GAP_REASON_TORN, DOMAIN_GAP_REASON_WORKER_PANIC,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +31,10 @@ pub enum DomainGapReason {
     /// record nor a gap from the domain itself. Minted by the seal so the hour
     /// is named loss instead of an absence nothing can detect.
     ReaderSilent = DOMAIN_GAP_REASON_READER_SILENT,
+    /// The reader's bracket did not tear, and did not observe the frame's hour
+    /// either. See [`DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH`] for why a bracket
+    /// alone cannot catch this and what the witnesses prove.
+    HourLabelMismatch = DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH,
 }
 
 impl DomainGapReason {
@@ -55,7 +59,7 @@ impl DomainGapReason {
     /// `from_code`. Such a variant would be an encoder/decoder asymmetry (the
     /// contract encoding a payload its own decoder refuses), which is a
     /// different defect from the one this array exists to prevent.
-    pub const ALL: [DomainGapReason; 7] = [
+    pub const ALL: [DomainGapReason; 8] = [
         Self::Torn,
         Self::Overrun,
         Self::Backpressure,
@@ -63,6 +67,7 @@ impl DomainGapReason {
         Self::WorkerPanic,
         Self::SourceUnavailable,
         Self::ReaderSilent,
+        Self::HourLabelMismatch,
     ];
 
     /// Declared slot in [`DomainGapReason::ALL`]. The match is exhaustive, so a
@@ -83,6 +88,7 @@ impl DomainGapReason {
             Self::WorkerPanic => 4,
             Self::SourceUnavailable => 5,
             Self::ReaderSilent => 6,
+            Self::HourLabelMismatch => 7,
         }
     }
 
@@ -99,6 +105,7 @@ impl DomainGapReason {
             DOMAIN_GAP_REASON_WORKER_PANIC => Ok(Self::WorkerPanic),
             DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE => Ok(Self::SourceUnavailable),
             DOMAIN_GAP_REASON_READER_SILENT => Ok(Self::ReaderSilent),
+            DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH => Ok(Self::HourLabelMismatch),
             other => Err(DomainGapError::InvalidSemantics(format!(
                 "DOMAIN_GAP reason {other} is unknown"
             ))),
@@ -273,6 +280,18 @@ mod tests {
                 DomainGapReason::SourceUnavailable => (hour(0), hour(0), 103, 103, 0, 0, 0),
                 // No witness of any kind exists; both ticks must be zero.
                 DomainGapReason::ReaderSilent => (hour(0), hour(0), 0, 0, 0, 0, 0),
+                // The bracket held steady on an hour that is NOT the target.
+                // Both witnesses carry the hour actually observed, which is
+                // the whole content of the reason.
+                DomainGapReason::HourLabelMismatch => (
+                    hour(0),
+                    hour(0),
+                    u64::try_from(hour(1)).expect("sample hour fits u64"),
+                    u64::try_from(hour(1)).expect("sample hour fits u64"),
+                    0,
+                    0,
+                    0,
+                ),
             };
         DomainGapRecordV1 {
             part: DomainGapPart::State,
@@ -437,16 +456,34 @@ mod tests {
         assert_eq!(calendar.encode(), Err(DomainGapError::InvalidGameHour(0)));
     }
 
+    /// Driven from [`DomainGapReason::ALL`] rather than from a transcribed
+    /// list.
+    ///
+    /// It WAS a transcribed list, and it went stale the moment a reason was
+    /// added: `HourLabelMismatch` was missing, so deleting its three queue-zero
+    /// predicates from the grammar would have been caught by nothing. `ALL` is
+    /// proved complete against the wire decoder by
+    /// `all_covers_every_decodable_reason`, so a reason cannot be omitted from
+    /// this sweep without first being unreachable.
+    ///
+    /// Backpressure is the single exclusion, stated as a `match` so that a new
+    /// reason has to be classified rather than silently inheriting either side.
     #[test]
     fn queue_witness_is_exactly_zero_outside_backpressure() {
-        for reason in [
-            DomainGapReason::Torn,
-            DomainGapReason::Overrun,
-            DomainGapReason::ClockUnreadable,
-            DomainGapReason::WorkerPanic,
-            DomainGapReason::SourceUnavailable,
-            DomainGapReason::ReaderSilent,
-        ] {
+        for reason in DomainGapReason::ALL {
+            let carries_queue_witness = match reason {
+                DomainGapReason::Backpressure => true,
+                DomainGapReason::Torn
+                | DomainGapReason::Overrun
+                | DomainGapReason::ClockUnreadable
+                | DomainGapReason::WorkerPanic
+                | DomainGapReason::SourceUnavailable
+                | DomainGapReason::ReaderSilent
+                | DomainGapReason::HourLabelMismatch => false,
+            };
+            if carries_queue_witness {
+                continue;
+            }
             let mut value = sample(reason);
             value.queue_capacity = 1;
             assert!(

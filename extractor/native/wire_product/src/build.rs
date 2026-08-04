@@ -1498,6 +1498,27 @@ fn map_d81_domain_gap(
                 expected: width,
             },
         ),
+        // The product's reason vocabulary has no "read the wrong hour" term,
+        // and the two candidates that look close would both LIE:
+        // `TornSweep` asserts the sweep tore, which is precisely what this
+        // outcome proves did not happen, and its witness grammar demands
+        // `tick_start != tick_end` -- so an H4DG whose defining property is
+        // that the ticks are EQUAL cannot even encode as one. `SkippedHour`
+        // asserts a discontinuity between neighbouring hours, which this
+        // outcome says nothing about.
+        //
+        // So the projection makes the narrower claim that is fully provable
+        // from the observation: for this domain-hour a DATA record was
+        // expected and none arrived. The typed reason and both hour witnesses
+        // survive intact on the H4DG record itself; only the derived ledger
+        // is coarser, and it is coarser in the direction of claiming less.
+        DomainGapReason::HourLabelMismatch => (
+            GapReason::CoverageShortfall,
+            GapWitness::Coverage {
+                observed: 0,
+                expected: width,
+            },
+        ),
     };
     let gap = GapRecord {
         tick_start,

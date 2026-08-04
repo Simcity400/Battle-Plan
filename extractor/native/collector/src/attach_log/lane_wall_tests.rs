@@ -1,5 +1,7 @@
 //! `lane_wall_tests`, extracted verbatim from `attach_log.rs`.
 
+use std::collections::BTreeSet;
+
 use super::*;
 
 // Gate test (lever #5): the scheduler-assignment REPORT must match what
@@ -182,7 +184,8 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
     let summary = summarize_lane_spans(&spans);
     let mut out = Vec::new();
     append_compact_lane_wall_probe_record(
-        &mut out, 7, 123, 5, 900, 125, Some(2), 130, 700, &summary,
+        &mut out, 7, 123, 5, 900, 125, Some(2), &[], &BTreeSet::new(), 130, 700,
+        &summary,
     );
     let header =
         compact_contract::parse_compact_record_header(&out).expect("well-formed record header");
