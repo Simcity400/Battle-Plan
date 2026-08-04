@@ -936,4 +936,78 @@ mod tests {
         assert_eq!(first.taskforces, second.taskforces);
         assert_ne!(first.capture_sequence, second.capture_sequence);
     }
+
+    /// Lane AO (2026-08-05): a publication that lands AFTER a drain is the
+    /// current frame at the NEXT drain, so reading earlier in the hour cannot
+    /// drop one.
+    ///
+    /// The collector's d95 read moved from its serial tail (~82 ms into a
+    /// ~90 ms build, where t21 measured it losing the whole domain-hour to
+    /// `HourLabelMismatch`) to the front of the build (~24 ms). That shifts
+    /// the SAMPLING PHASE by ~60 ms and nothing else, which is only safe if a
+    /// producer frame published inside those 60 ms is still served afterwards
+    /// rather than skipped.
+    ///
+    /// `current_spotted_frames_are_reusable_across_speed_five_hourly_drains`
+    /// already pins the half of this that says a drain re-serves what it
+    /// found. This pins the other half — the one the reorder actually depends
+    /// on — and the exact `capture_sequence` step, which is what lets a
+    /// consumer tell a re-served frame from a new one when the collector reads
+    /// the same slot twice in a row.
+    ///
+    /// MUTATION RUN: give `snapshot_from_latest` a `&mut LatestFrames` and
+    /// `latest.land.take()` instead of the clone — i.e. turn the retained slot
+    /// into a consuming queue, which is the shape the reorder WOULD be unsafe
+    /// under — with every call site moved and no assertion touched.
+    /// OBSERVED: this fails on `a drain must not consume the frame it served`,
+    /// and `current_spotted_frames_are_reusable_across_speed_five_hourly_drains`
+    /// falls with it.
+    #[test]
+    fn a_publication_landing_after_a_drain_is_current_at_the_next_drain() {
+        let land = |sequence: u64| CompleteFrame {
+            sequence,
+            pov_country_id: 7,
+            rows: vec![SpottedUnitHandle {
+                type_id: 1,
+                stable_id: sequence as u32,
+                raw_intel: 250,
+            }],
+        };
+        let mut latest = LatestFrames {
+            land: Some(land(11)),
+            taskforces: None,
+        };
+
+        // Hour N reads the slot at the new, earlier position in the build.
+        let early = snapshot_from_latest(&latest)
+            .expect("the retained land frame drains")
+            .expect("a complete current-POV frame");
+        assert_eq!(early.land_frame_sequence, Some(11));
+        assert!(
+            latest.land.is_some(),
+            "a drain must not consume the frame it served"
+        );
+
+        // Hour N, later: the producer publishes into the window the reorder
+        // widened — after this frame's read, before the next frame's.
+        latest.land = Some(land(12));
+
+        // Hour N+1 serves it. Nothing was dropped by reading early.
+        let next = snapshot_from_latest(&latest)
+            .expect("the replaced slot drains")
+            .expect("the new producer frame");
+        assert_eq!(
+            next.land_frame_sequence,
+            Some(12),
+            "a publication that lands after a drain must be current at the next \
+             drain, not skipped"
+        );
+        assert_eq!(
+            next.capture_sequence,
+            early.capture_sequence + 1,
+            "one drain call mints exactly one capture sequence, so the collector \
+             reading once per frame keeps the sequence continuous across the \
+             reorder"
+        );
+    }
 }

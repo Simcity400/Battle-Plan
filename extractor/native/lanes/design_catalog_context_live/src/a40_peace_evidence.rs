@@ -1157,4 +1157,68 @@ mod tests {
         drain.diagnostics.dropped_unreadable = 1;
         assert!(!drain.loss_free());
     }
+
+    /// Law: `production_payload` CONSUMES the refresh latch. One observation
+    /// reaches exactly one frame, and the frame it reaches is decided by WHEN
+    /// the collector reads.
+    ///
+    /// This is the fact lane AO's reorder (2026-08-05) turns on, and it is the
+    /// one place d97 differs from its three companions in that change: d85's
+    /// `encode_latest` clones a retained map, and d94/d95's `drain_latest`
+    /// clone a retained slot, so for those three the read position only picks
+    /// WHICH sample is served. d97's read TAKES.
+    ///
+    /// The consequence is why the read had to move rather than being left
+    /// alone. `production_payload` runs inside the collector frame's clock
+    /// bracket; if that bracket does not observe the frame's own hour,
+    /// `rejected_bracket_domains` STRIPS d97's DOMAIN_DATA record and replaces
+    /// it with a gap -- but the `take()` has already happened, so the
+    /// observation is consumed AND destroyed, and no later frame can recover
+    /// it. Capture t21 measured d97 mismatching its label in all 98 of its
+    /// mismatching frames, so that destruction was the normal case, not a
+    /// corner. Reading at the front of the build instead (t22: the earliest
+    /// in-build hour boundary is at 36.4 ms, the latest fan-out origin
+    /// 31.9 ms, and the two distributions do not overlap) pairs the take with
+    /// a record that survives.
+    ///
+    /// Mutation proof: replace `.take()` with `.as_ref().copied()` in
+    /// `production_payload`. The second call then succeeds and this fails on
+    /// `a consumed refresh must not be served twice` -- and d97 would silently
+    /// republish one engine refresh under every subsequent hour's label.
+    #[test]
+    fn a_production_payload_consumes_the_refresh_it_published() {
+        let _lifecycle = HOOK_LIFECYCLE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        {
+            let mut state = STATE
+                .get_or_init(|| Mutex::new(HookState::default()))
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *state = HookState::default();
+            state.latest_refresh = Some(LatestRefresh {
+                refresh_sequence: 4,
+                refresh_epoch: 1,
+                observation: None,
+            });
+        }
+
+        let published = production_payload(9, 7, 0).expect("the staged refresh publishes");
+        assert!(!published.is_empty());
+
+        assert_eq!(
+            production_payload(10, 8, 0),
+            Err("A40 peace refresh was not observed".to_string()),
+            "a consumed refresh must not be served twice"
+        );
+
+        {
+            let mut state = STATE
+                .get()
+                .expect("state was initialised above")
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *state = HookState::default();
+        }
+    }
 }
