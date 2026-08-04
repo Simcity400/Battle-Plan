@@ -2376,3 +2376,216 @@ fn d47_bracketed_idea_walk_refuses_a_vector_that_moved_under_it() {
         Some(T15_IDEAS_PER_COUNTRY),
     );
 }
+
+// --- what the prewarm's own clock bracket COSTS ---------------------------
+
+/// A world in which `read_authenticated_scheduler_clock` succeeds.
+///
+/// The reader forms the singleton slot as `module_base + RVA` and DEREFERENCES
+/// it, so unlike the vtable constants — which are only compared — that address
+/// must be real memory. The fake module base is therefore derived by
+/// SUBTRACTING the RVA from the arena, which puts the slot at the arena's own
+/// base. The game-state pointer it holds must pass `is_heap_pointer_aligned`,
+/// which is why the arena is taken from the heap window.
+struct ClockBenchWorld {
+    _arena: BenchArena,
+    _elsewhere: BenchArena,
+    module_base: usize,
+    date_addr: usize,
+    /// The CGameState singleton slot — the first address
+    /// `read_authenticated_scheduler_clock` touches. Read on its own it
+    /// performs the epoch transition and inserts this arena's span, which is
+    /// what lets both bench arms enter the displacement read in the same
+    /// cache state.
+    slot_addr: usize,
+    /// An address in a DIFFERENT committed region, used to displace the
+    /// one-entry `REGION_MRU` the way the prewarm's own walk does.
+    elsewhere_addr: usize,
+}
+
+fn clock_bench_world() -> ClockBenchWorld {
+    const ARENA: usize = 0x10000;
+    const GAME_STATE: usize = 0x1000;
+    let arena = BenchArena::in_heap_window(ARENA);
+    let elsewhere = BenchArena::in_heap_window(ARENA);
+    assert_ne!(
+        arena.base, elsewhere.base,
+        "the displacing read must land in a different region"
+    );
+    let slot = arena.base;
+    let game_state = arena.base + GAME_STATE;
+    let date_addr = game_state + GS_CURRENT_DATE_OFFSET;
+    assert!(
+        is_heap_pointer_aligned(game_state, 8),
+        "fixture game state must satisfy the reader's own pointer gate"
+    );
+    unsafe {
+        (slot as *mut u64).write(game_state as u64);
+        (date_addr as *mut i32).write(60_832_014);
+        (elsewhere.base as *mut u64).write(0);
+    }
+    let module_base = slot
+        .checked_sub(compact_contract::build_profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA)
+        .expect("arena sits above the singleton RVA");
+    ClockBenchWorld {
+        _arena: arena,
+        elsewhere_addr: elsewhere.base,
+        _elsewhere: elsewhere,
+        module_base,
+        date_addr,
+        slot_addr: slot,
+    }
+}
+
+/// The median of the PAIRED differences, not the difference of two medians.
+///
+/// `time_us_median_ab` sorts each arm independently, so its two medians can
+/// come from runs that saw different machine load and their difference is not
+/// itself an observation. For a sub-microsecond quantity that matters: each
+/// interleaved pair is one paired sample, and the spread of those samples is
+/// the honest error bar. Returns (median, min, max) of `b - a` in microseconds.
+fn time_us_paired_delta<A: FnMut() -> usize, B: FnMut() -> usize>(
+    runs: usize,
+    iterations: usize,
+    mut a: A,
+    mut b: B,
+) -> (f64, f64, f64) {
+    let mut deltas = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let a_us = time_us(iterations, &mut a).0;
+        let b_us = time_us(iterations, &mut b).0;
+        deltas.push(b_us - a_us);
+    }
+    deltas.sort_by(|x, y| x.partial_cmp(y).expect("no NaN timings"));
+    (deltas[runs / 2], deltas[0], deltas[runs - 1])
+}
+
+/// Price the prewarm's clock bracket.
+///
+/// WHAT IS MEASURED: two `read_authenticated_scheduler_clock` calls, which is
+/// what the bracket adds to a frame in ENGINE READS. It is deliberately NOT
+/// "the whole change": `domain47_apply_prewarm_clock_verdict` and
+/// `record_clock_bracket` are also on that path, and they are branch + enum
+/// store + one uncontended mutex push, which this does not attempt to price.
+///
+/// TWO CACHE STATES, because production's is not knowable from here.
+/// `range_confirmed_good` keeps a one-entry `REGION_MRU` plus a per-epoch
+/// sorted span list, and `page_cache_new_frame` (which bumps the epoch and so
+/// clears the list) is called ONCE PER FRAME by the capture loop — the prewarm
+/// does not call it. So between the opening and closing clock reads:
+///
+///  * `warm` — the prewarm's walk displaces the one-entry MRU but the clock
+///    region's span entry survives, so the closing read is an MRU miss plus a
+///    span-list hit. Modelled by a read into a DIFFERENT committed region.
+///  * `cold` — the prewarm touched enough distinct regions to hit
+///    `REGION_CACHE_CAP` (4096), which CLEARS the whole span list, so the
+///    closing read pays a fresh `VirtualQuery`. Modelled by an epoch bump.
+///
+/// Which one a live prewarm produces depends on how many distinct regions it
+/// touches, which no artifact in this repo measures. Both are printed and the
+/// truth is between them; quoting only one would be a claim this bench cannot
+/// support. (An earlier version quoted only the `cold` figure and called it
+/// "what the bracket adds" — that overstated it.)
+///
+/// WHAT THE DIFFERENCE IS, EXACTLY. Not "two clock reads in isolation": it is
+/// two clock reads TOGETHER WITH the cache interaction they have with the work
+/// between them, which is what a frame actually pays. Both arms open with the
+/// same bare read of the singleton slot, so the epoch transition `time_us`
+/// forces happens on the same side of the displacement read in both — without
+/// that prologue the absent arm's displacement met a STALE epoch (clear +
+/// VirtualQuery) while the present arm's met a CURRENT one (span miss +
+/// VirtualQuery), and that asymmetry, not the clock reads, was part of the
+/// difference.
+///
+/// The fake heap has two regions where the live heap has many, so the span
+/// list this searches is shorter than production's: that understates the warm
+/// figure. The error direction is therefore MIXED, not one-sided.
+///
+/// PRECISION, HONESTLY. At this magnitude the per-pair deltas are at or below
+/// this machine's noise floor while other lanes build on it: observed
+/// individual `warm` pairs have come back NEGATIVE (-0.922 us — the present arm
+/// "faster" than its own baseline) and absurdly high (32.038 us) in the same
+/// session. The MEDIAN of the nine pairs is stable across runs (0.117-0.216 us
+/// over four); the printed RANGE is not a confidence interval and must not be
+/// read as one. Quote the median, name the run count, and treat the whole
+/// result as an order of magnitude rather than a figure.
+///
+/// The number to compare against is t17's own measured phase:
+/// `acceptance_telemetry.prewarm_time_us` avg 21_784 us / p50 25_155 us over
+/// 505 samples. Nothing is asserted on absolute timing — this machine runs
+/// several lanes at once and such an assertion would be a flake.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_prewarm_clock_bracket() {
+    let world = clock_bench_world();
+    let elsewhere = world.elsewhere_addr;
+    let slot = world.slot_addr;
+    // THE SHARED PROLOGUE. `time_us` bumps the epoch before each body, and
+    // whichever read runs first pays the transition. Without this the two arms
+    // paid it in different places and the displacement read below met a
+    // different cache state in each, which put an unrelated term in the
+    // difference. One bare read of the slot moves that transition ahead of the
+    // displacement in BOTH arms.
+    let prologue = || read_u64(slot).map_or(0, |value| value as usize);
+    let warm_absent = move || {
+        let primed = prologue();
+        primed + read_u64(elsewhere).map_or(0, |value| value as usize)
+    };
+    let warm_present = move || {
+        let primed = prologue();
+        let opening = read_authenticated_scheduler_clock(world.module_base, world.date_addr);
+        let displaced = read_u64(elsewhere).map_or(0, |value| value as usize);
+        let closing = read_authenticated_scheduler_clock(world.module_base, world.date_addr);
+        primed
+            + opening.map_or(0, |(hour, _)| hour as usize)
+            + closing.map_or(0, |(hour, _)| hour as usize)
+            + displaced
+    };
+    let cold_absent = || {
+        page_cache_new_frame();
+        0usize
+    };
+    let cold_present = || {
+        let opening = read_authenticated_scheduler_clock(world.module_base, world.date_addr);
+        page_cache_new_frame();
+        let closing = read_authenticated_scheduler_clock(world.module_base, world.date_addr);
+        opening.map_or(0, |(hour, _)| hour as usize) + closing.map_or(0, |(hour, _)| hour as usize)
+    };
+    // A fixture the reader refuses would make both present arms measure the
+    // refusal path, which returns before the second stable read.
+    page_cache_new_frame();
+    assert!(
+        read_authenticated_scheduler_clock(world.module_base, world.date_addr).is_some(),
+        "clock fixture must authenticate, or the present arms measure the refusal path"
+    );
+    // The displacing read must SUCCEED, or the warm arm measures a rejection
+    // and never displaces anything.
+    assert!(
+        read_u64(elsewhere).is_some(),
+        "the displacing read must reach committed memory"
+    );
+
+    let (warm, warm_lo, warm_hi) = time_us_paired_delta(
+        9,
+        BENCH_ITERATIONS,
+        warm_absent,
+        warm_present,
+    );
+    let (cold, cold_lo, cold_hi) = time_us_paired_delta(
+        9,
+        BENCH_ITERATIONS,
+        cold_absent,
+        cold_present,
+    );
+    println!(
+        "d47_cost AB prewarm_clock_bracket (median of paired deltas, 9 interleaved runs): \
+         two clock reads plus their cache interaction with the work between them cost \
+         {warm:.3} us [{warm_lo:.3}, {warm_hi:.3}] with the region span cache INTACT, and \
+         {cold:.3} us [{cold_lo:.3}, {cold_hi:.3}] in an observed run of the CLEARED-cache \
+         scenario (that one is not a stable constant — quote it with its range). A live \
+         prewarm is somewhere between. Against t17's measured phase \
+         (21784 us avg / 25155 us p50) that is {:.5}%-{:.5}% of it.",
+        warm / 21_784.0 * 100.0,
+        cold / 21_784.0 * 100.0
+    );
+}

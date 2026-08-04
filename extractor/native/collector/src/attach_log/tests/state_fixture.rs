@@ -1383,3 +1383,299 @@ fn a_driven_frame_records_each_workers_spawn_to_return_wall_and_outcome() {
     );
 }
 
+// ---------------------------------------------------------------------
+// Demonstration 6 -- the d47 prewarm's clock bracket, driven through the
+// PRODUCTION frame builder.
+//
+// `d47_root_hour_tests` proves the helper functions
+// (`domain47_prewarm_clock_verdict`, `domain47_apply_prewarm_clock_verdict`,
+// `domain47_poison_prewarm_roots`) in isolation. It cannot prove that
+// `build_compact_extraction_gate_records` CALLS them: deleting both
+// production call sites leaves every one of those tests green. These two
+// drive the real frame instead, so the call sites are what is under test.
+// ---------------------------------------------------------------------
+
+/// The d47 scheduled-domain name, as `compact_frame_domain_directly_enabled`
+/// resolves it.
+const RAW_D47_DOMAIN: &str = "characters_leaders_cabinet_live";
+/// d82, which does NOT name d47 but pulls it in through
+/// `OWNED_EMITTED_DOMAIN_DEPENDENCIES` (82 -> 47). Scheduling this and
+/// nothing else is what tells a closure-derived enable guard apart from a
+/// direct "was d47 named" check.
+const RAW_D82_DOMAIN: &str = "character_presentation_live";
+
+/// A state whose scheduler clock authenticates and reads exactly `hour`.
+///
+/// Nothing of domain 47's own world is staged, and that is deliberate: the
+/// prewarm's clock bracket is decided before any of it is reached, so the
+/// question "was this phase in the frame's hour" has an answer whether or not
+/// there were any characters to find.
+fn d47_clock_fixture(hour: i32) -> CollectorStateFixture {
+    use compact_contract::build_profile as p;
+    const GAME_STATE: usize = 0x1000;
+    let mut fixture =
+        CollectorStateFixture::new(&[p::DOMAIN57_CGAMESTATE_SINGLETON_RVA], 0x1000, 0x4000);
+    fixture.stage_scheduler_clock_at(GAME_STATE);
+    fixture
+        .heap
+        .write_i32(GAME_STATE + GS_CURRENT_DATE_OFFSET, hour);
+    fixture
+}
+
+fn d47_clock_verdict(outcome: &FrameOutcome) -> Option<u64> {
+    outcome.diagnostic_unit(
+        COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
+        "domain47_prewarm_clock_verdict",
+    )
+}
+
+/// THE WIRING. A frame whose label is the hour the engine clock actually
+/// reads must report `InFrameHour`; a frame whose label is one hour behind
+/// the clock must report `WrongHour` and must poison d47's roots — and
+/// nothing tore, so no bracket could have caught it.
+///
+/// This is the pair `d47_root_hour_tests` cannot express: the verdict here is
+/// computed by the production frame builder from clock reads it took itself,
+/// against the label it was handed.
+///
+/// MUTATION RUN: delete the `domain47_apply_prewarm_clock_verdict(...)` call
+/// from `build_compact_extraction_gate_records`.
+/// OBSERVED: `the frame must report the prewarm's clock verdict` — left 0
+/// (`NotScheduled`, the field's default, i.e. nobody decided), right 1. All
+/// nine `d47_root_hour_tests` stay green through the same mutation, which is
+/// why this test exists.
+#[test]
+fn the_frame_builder_decides_the_d47_prewarm_clock_verdict_against_its_own_label() {
+    let hour = fixture_game_hour_raw();
+    let control = compact_control_scheduling(&[RAW_D47_DOMAIN]);
+
+    // In-hour: the label is the hour the clock reads.
+    let fixture = d47_clock_fixture(hour);
+    let in_hour = drive_compact_frame(Some(&fixture.collector_state()), &control, hour, 7);
+    assert_eq!(
+        d47_clock_verdict(&in_hour),
+        Some(1),
+        "the frame must report the prewarm's clock verdict, and an in-hour \
+         prewarm is InFrameHour (1)"
+    );
+    assert_eq!(
+        in_hour
+            .trackers
+            .characters_leaders_cabinet_live
+            .roots
+            .skipped_root_rows,
+        0,
+        "an in-hour prewarm must not poison its own roots"
+    );
+
+    // Wrong hour: the engine clock has already moved past the label. Both
+    // clock reads agree, so no bracket rejects this frame.
+    let fixture = d47_clock_fixture(hour + 1);
+    let wrong_hour = drive_compact_frame(Some(&fixture.collector_state()), &control, hour, 7);
+    assert_eq!(
+        d47_clock_verdict(&wrong_hour),
+        Some(3),
+        "a prewarm that ran wholly in the next hour is WrongHour (3)"
+    );
+    assert_ne!(
+        wrong_hour
+            .trackers
+            .characters_leaders_cabinet_live
+            .roots
+            .skipped_root_rows,
+        0,
+        "a wrong-hour prewarm must refuse its roots; the label is the only \
+         thing that differs between these two frames"
+    );
+    assert!(
+        rejected_bracket_domains(&wrong_hour.timing.domain_clock_brackets)
+            .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+            .is_none(),
+        "premise: nothing tore, so the refusal cannot have come from a bracket"
+    );
+}
+
+/// THE OTHER CALL SITE. The prewarm must contribute its OWN clock bracket to
+/// the frame, on top of the one d47's worker records — that is what makes a
+/// straddled prewarm reach the wire as a Torn DOMAIN_GAP rather than as
+/// nothing at all.
+///
+/// A straddle cannot be staged offline (it needs the engine clock to advance
+/// mid-phase), so what is asserted is the bracket's EXISTENCE and its
+/// observed hours, which is exactly what the missing call site would remove.
+///
+/// MUTATION RUN: delete the `lane_tracker.record_clock_bracket(...)` call for
+/// the prewarm from `build_compact_extraction_gate_records`.
+/// OBSERVED: `the prewarm must contribute a d47 clock bracket of its own`
+/// — left 1, right 2. Every `d47_root_hour_tests` test stays green.
+#[test]
+fn the_prewarm_records_its_own_d47_clock_bracket_beside_the_workers() {
+    let hour = fixture_game_hour_raw();
+    let fixture = d47_clock_fixture(hour);
+    let outcome = drive_compact_frame(
+        Some(&fixture.collector_state()),
+        &compact_control_scheduling(&[RAW_D47_DOMAIN]),
+        hour,
+        7,
+    );
+
+    let d47_brackets: Vec<&DomainClockBracket> = outcome
+        .timing
+        .domain_clock_brackets
+        .iter()
+        .filter(|bracket| bracket.tag == COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+        .collect();
+    assert_eq!(
+        d47_brackets.len(),
+        2,
+        "the prewarm must contribute a d47 clock bracket of its own, beside \
+         the one d47's worker records"
+    );
+    for bracket in &d47_brackets {
+        assert_eq!(
+            bracket.opening.map(|(observed, _)| observed),
+            Some(hour),
+            "every d47 bracket observed the fixture's staged hour"
+        );
+        assert_eq!(bracket.closing.map(|(observed, _)| observed), Some(hour));
+        assert!(!bracket.worker_panicked);
+    }
+    assert!(
+        rejected_bracket_domains(&outcome.timing.domain_clock_brackets)
+            .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+            .is_none(),
+        "an in-hour frame must reject nothing, or the count above is of two \
+         failures rather than two observations"
+    );
+}
+
+/// THE ENABLE GUARD. Both tests above schedule d47 by name, so they cannot
+/// tell the closure-derived `characters_leaders_cabinet_live_enabled` apart
+/// from a direct "was d47 named" check. d47 is also reached as d82's declared
+/// dependency (`OWNED_EMITTED_DOMAIN_DEPENDENCIES`, 82 -> 47), and on that
+/// path the prewarm runs while a direct check would read false — so the
+/// bracket and the verdict would be silently skipped for a frame that does
+/// run the phase.
+///
+/// MUTATION RUN: guard both new call sites on
+/// `control.scheduled_domains.iter().any(|name| name == "characters_leaders_cabinet_live")`
+/// instead of `characters_leaders_cabinet_live_enabled`.
+/// OBSERVED: 12 passed, 1 failed — this test, stopping at the assertion BEFORE
+/// the bracket count: `a dependency-reached d47 must still have its prewarm
+/// clock decided`, left Some(0) (`NotScheduled` — nobody decided), right
+/// Some(1). Both tests above stay green, because they name d47 directly.
+#[test]
+fn d47_reached_only_through_d82s_dependency_closure_still_brackets_its_prewarm() {
+    let hour = fixture_game_hour_raw();
+    let fixture = d47_clock_fixture(hour);
+    let outcome = drive_compact_frame(
+        Some(&fixture.collector_state()),
+        &compact_control_scheduling(&[RAW_D82_DOMAIN]),
+        hour,
+        7,
+    );
+
+    // Premise: scheduling d82 alone really does run d47 in this frame. Without
+    // this the assertions below would pass on a frame that never reached the
+    // phase at all.
+    assert!(
+        outcome
+            .perf(COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+            .is_some()
+            || outcome
+                .record(
+                    COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
+                    compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                )
+                .is_some(),
+        "premise: d82's dependency closure emits d47 in this frame"
+    );
+    assert_eq!(
+        d47_clock_verdict(&outcome),
+        Some(1),
+        "a dependency-reached d47 must still have its prewarm clock decided"
+    );
+    let d47_brackets = outcome
+        .timing
+        .domain_clock_brackets
+        .iter()
+        .filter(|bracket| bracket.tag == COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+        .count();
+    assert_eq!(
+        d47_brackets, 2,
+        "a d47 reached through d82's dependency closure still runs the \
+         prewarm, so it still needs its bracket"
+    );
+}
+
+/// THE ORDERING, which no offline runtime test can reach.
+///
+/// The three frame-driven tests above prove the call sites exist, that the
+/// verdict is decided against the frame's label, and that a dependency-reached
+/// d47 gets both. None can prove the two clock reads BRACKET the phase rather
+/// than sitting beside it: staging a straddle needs the engine clock to
+/// advance mid-prewarm, and the offline fixture's clock only moves when a test
+/// writes it. Move both reads above the prewarm call and every runtime test in
+/// this lane stays green while a straddle becomes structurally undetectable —
+/// the bracket reads H/H, the verdict is `InFrameHour`, and mixed-hour roots
+/// publish with no Torn rejection.
+///
+/// So the order is pinned in the source, the same way
+/// `the_gate_function_binds_every_error_it_matches` pins its own claim about
+/// the same function. Line based, so a reflow of unrelated code cannot decide
+/// the verdict.
+///
+/// MUTATION RUN: moved `let prewarm_clock_closing = ...` to sit immediately
+/// after `let prewarm_clock_opening = ...`, above the prewarm call.
+/// OBSERVED: 12 passed, 1 failed — `the prewarm's closing clock read must come
+/// AFTER the phase it closes (phase at line 40877, closing at line 40869)`.
+/// All three frame-driven tests and all nine helper tests stay green.
+#[test]
+fn the_prewarm_clock_reads_bracket_the_phase_rather_than_sitting_beside_it() {
+    const SOURCE: &str = include_str!("../../attach_log.rs");
+    let lines: Vec<&str> = SOURCE.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("fn build_compact_extraction_gate_records("))
+        .expect("the gate function is in this file");
+    let end = start
+        + 1
+        + lines[start + 1..]
+            .iter()
+            .position(|line| *line == "}")
+            .expect("the gate function ends at a column-zero brace");
+    let find = |needle: &str| -> usize {
+        lines[start..end]
+            .iter()
+            .position(|line| {
+                let trimmed = line.trim_start();
+                // The comments above these statements name them on purpose; a
+                // comment is not a call.
+                !trimmed.starts_with("//") && trimmed.contains(needle)
+            })
+            .map(|offset| start + offset + 1)
+            .unwrap_or_else(|| panic!("the gate function contains `{needle}`"))
+    };
+    let opening = find("let prewarm_clock_opening =");
+    let phase = find("prewarm_compact_characters_leaders_cabinet_roots(");
+    let closing = find("let prewarm_clock_closing =");
+    assert!(
+        opening < phase,
+        "the prewarm's opening clock read must come BEFORE the phase it opens \
+         (opening at line {opening}, phase at line {phase})"
+    );
+    assert!(
+        phase < closing,
+        "the prewarm's closing clock read must come AFTER the phase it closes \
+         (phase at line {phase}, closing at line {closing})"
+    );
+    // And the verdict must be decided after BOTH reads exist, or it decides on
+    // a `None` the closing read would have filled in.
+    let verdict = find("domain47_apply_prewarm_clock_verdict(");
+    assert!(
+        closing < verdict,
+        "the verdict must be applied after the closing read \
+         (closing at line {closing}, verdict at line {verdict})"
+    );
+}
+
