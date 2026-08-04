@@ -350,6 +350,103 @@ function Assert-C07GeneratedTreeLibraryReceipt {
             $reportedOutputs.Count, $counts["bucket_count"], $counts["cell_count"])
 }
 
+function Get-DetourIdentityLanePackages {
+    <#
+    .SYNOPSIS
+    The extractor lane packages whose detour identity only holds in an
+    optimized build.
+
+    .DESCRIPTION
+    Derived from the production source, never listed by hand. A lane owns
+    detour identity if it mentions `Rel5HookRoster` or
+    `observe_enabled_minhook_rel5`: those are the two ways a lane binds a
+    receipt to a detour function's ADDRESS, and an address is only unique in a
+    build the linker has not folded.
+
+    Why this list is needed at all: the release linker's identical-code folding
+    merges two detour bodies that compile to the same bytes, and a debug build
+    never folds. On 2026-08-05 D95's four detour bodies really did collapse to
+    two addresses under `--release` while every debug tier stayed green, because
+    the routine gate runs `nextest` in the dev profile and the only tier that
+    ever compiled these crates optimized was the full Release battery.
+
+    A hand-written package list would go stale the first time a lane is added,
+    and a stale list here fails OPEN -- the new lane simply is not checked. So
+    the scan is mechanical and an empty result is an error, not a pass.
+    #>
+    $laneRoot = Join-Path $repoRoot 'extractor\native\lanes'
+    if (-not (Test-Path -LiteralPath $laneRoot -PathType Container)) {
+        throw "extractor lane root is missing: $laneRoot"
+    }
+    $packages = [System.Collections.Generic.List[string]]::new()
+    foreach ($lane in Get-ChildItem -LiteralPath $laneRoot -Directory) {
+        $manifest = Join-Path $lane.FullName 'Cargo.toml'
+        $source = Join-Path $lane.FullName 'src'
+        if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { continue }
+        if (-not (Test-Path -LiteralPath $source -PathType Container)) { continue }
+        $binds = $false
+        foreach ($file in Get-ChildItem -LiteralPath $source -Recurse -File -Filter '*.rs') {
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            if ($text -match 'Rel5HookRoster|observe_enabled_minhook_rel5') {
+                $binds = $true
+                break
+            }
+        }
+        if (-not $binds) { continue }
+        $name = [regex]::Match(
+            (Get-Content -LiteralPath $manifest -Raw),
+            '(?m)^[ \t]*name[ \t]*=[ \t]*"(?<name>[0-9A-Za-z._-]+)"[ \t]*(?:#.*)?\r?$'
+        )
+        if (-not $name.Success) {
+            throw "lane manifest has no package name: $manifest"
+        }
+        $packages.Add($name.Groups['name'].Value)
+    }
+    if ($packages.Count -eq 0) {
+        throw (
+            'no extractor lane package binds a production hook receipt to a ' +
+            'detour address. That is not a pass: it means this scan stopped ' +
+            'matching the production source and the release detour-identity ' +
+            'gate would be checking nothing.'
+        )
+    }
+    return @($packages | Sort-Object -Unique)
+}
+
+function Invoke-ReleaseDetourIdentityGate {
+    <#
+    .SYNOPSIS
+    Run the detour-owning lane crates' unit tests in the RELEASE profile.
+
+    .DESCRIPTION
+    `--lib` only: the laws this exists for -- one distinct detour address per
+    site, each body carrying its own per-site side effect -- are unit tests
+    inside the lane crates, and building their integration targets optimized as
+    well would multiply the cost for no coverage this tier is about.
+    #>
+    $packages = Get-DetourIdentityLanePackages
+    Write-Host (
+        'Release detour-identity gate: {0} lane packages ({1})' -f `
+            $packages.Count, ($packages -join ', ')
+    )
+    $arguments = @(
+        'nextest', 'run', '--locked', '--lib', '--no-fail-fast',
+        '--cargo-profile', 'release'
+    )
+    foreach ($name in $packages) {
+        $arguments += @('--package', $name)
+    }
+    # Several receipt-custody laws -- including "a released site's detour
+    # address is free again", the one that proves the new fold check does not
+    # refuse a legitimate reinstall -- are behind this feature because they need
+    # the crate's test-mint helpers. Without it they are silently not run, which
+    # is the failure mode this whole gate exists to remove.
+    if ($packages -ccontains 'production_hook_receipt') {
+        $arguments += @('--features', 'production_hook_receipt/test-support')
+    }
+    Invoke-Checked -Program 'cargo' -Arguments $arguments
+}
+
 function Save-CargoTimingReport {
     param(
         [Parameter(Mandatory = $true)]
@@ -901,6 +998,35 @@ try {
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "final-nextest"
                     Invoke-Checked -Program "cargo" -Arguments (@("test", "--doc", "--no-fail-fast") + $timingSelection + $selection)
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "final-doctest"
+                    # Everything above ran in the DEV profile, and a detour
+                    # identity that only breaks under the release linker's
+                    # identical-code folding is invisible to all of it. Before
+                    # 2026-08-05 the only tier that compiled a lane crate
+                    # optimized was the full Release battery, and D95's four
+                    # detour bodies really did fold onto two addresses in the
+                    # optimized build of its own test binary while every debug
+                    # tier reported green.
+                    if ($workspaceName -ceq 'Extractor') {
+                        if ($Package.Count -eq 0 -and
+                            [string]::IsNullOrWhiteSpace($FilterExpression)) {
+                            # No Save-CargoTimingReport here on purpose: this
+                            # step does not pass --timings, so the only report
+                            # on disk would be the previous invocation's and
+                            # saving it under this label would attribute one
+                            # run's cost to another.
+                            Invoke-ReleaseDetourIdentityGate
+                        }
+                        else {
+                            Write-Host (
+                                'SKIPPED BY POLICY: the release detour-identity ' +
+                                'gate did NOT run, because this Final was ' +
+                                'narrowed by -Package or -FilterExpression. It ' +
+                                'owns its own package set and narrowing it would ' +
+                                'report a pass over crates it never compiled. ' +
+                                'Run an unnarrowed -Mode Final, or -Mode Release.'
+                            )
+                        }
+                    }
                 }
                 "Release" {
                     Invoke-Checked -Program "cargo" -Arguments (@("build", "--release", "--all-targets") + $timingSelection + $selection)

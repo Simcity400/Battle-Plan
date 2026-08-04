@@ -30,8 +30,9 @@
 #![cfg(windows)]
 
 use crate::{
-    next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released_set,
-    ExpectedRvaHook, HookTeardownAttestation, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    bind_detours_by_identity, next_teardown_owner_token, observe_enabled_minhook_rel5,
+    observe_released_set, ExpectedRvaHook, HookTeardownAttestation, InstalledRvaHookReceipt,
+    ReleasedRvaHookReceipt, SiteDetour,
 };
 use std::sync::Mutex;
 
@@ -76,8 +77,16 @@ impl<const N: usize> Rel5HookRoster<N> {
     /// Observe every site as an enabled REL5 patch bound to the lane's own
     /// detour, and persist the receipts.
     ///
-    /// `detours[i]` is the detour address site `i` must resolve to; a relay
-    /// pointing anywhere else is refused by
+    /// Each [`SiteDetour`] NAMES the site it services, and the binding is by
+    /// that name rather than by array position -- see
+    /// [`bind_detours_by_identity`], which also refuses a null detour and, more
+    /// importantly, refuses two sites that resolve to the SAME address. The
+    /// linker's identical-code folding really does collapse detour bodies that
+    /// compile alike (D95's four folded to two in the optimized build of its
+    /// own test binary, found 2026-08-05), and a folded
+    /// pair verifies perfectly here -- the REL5 jump at both targets does point
+    /// at that one address -- while the receipts describe the wrong engine
+    /// function. Once bound, a relay pointing anywhere else is refused by
     /// [`observe_enabled_minhook_rel5`] rather than recorded.
     ///
     /// Idempotent for a retry: a site that already holds a receipt is
@@ -91,7 +100,8 @@ impl<const N: usize> Rel5HookRoster<N> {
     /// `0..k` persisted, which is what the caller's own rollback then releases.
     /// This function does not roll back detours, because it did not install
     /// them.
-    pub fn observe_installed(&self, base: usize, detours: [usize; N]) -> Result<(), String> {
+    pub fn observe_installed(&self, base: usize, detours: [SiteDetour; N]) -> Result<(), String> {
+        let detours = bind_detours_by_identity(self.lane, &self.specs, detours)?;
         for index in 0..N {
             let existing = self.installed_slot(index)?;
             if let Some(existing) = existing {
@@ -458,10 +468,106 @@ mod tests {
             let mut released = REPUBLISH.lock_released().unwrap();
             released[0] = Some(crate::mint_test_released_receipt(SPECS[0], 1));
         }
-        let error = REPUBLISH.observe_installed(0x1_0000_0000, [1, 2]).unwrap_err();
+        let error = REPUBLISH
+            .observe_installed(0x1_0000_0000, [DETOUR_FIRST, DETOUR_SECOND])
+            .unwrap_err();
         assert!(
             error.contains("already released"),
             "the refusal must name the two-sided custody violation: {error}"
+        );
+    }
+
+    const DETOUR_FIRST: SiteDetour = SiteDetour::new("gameplay.dtest.first", 1);
+    const DETOUR_SECOND: SiteDetour = SiteDetour::new("gameplay.dtest.second", 2);
+
+    /// Law: two sites that resolve to ONE detour address are refused before any
+    /// receipt is minted.
+    ///
+    /// This is the shape the MSVC linker's identical-code folding produces, and
+    /// it was live in D95: four detour bodies compiled to two addresses under
+    /// `--release`. The refusal has to happen here rather than at
+    /// `observe_enabled_minhook_rel5`, because that function sees one site at a
+    /// time and every folded site verifies perfectly -- the REL5 jump really
+    /// does point at the address it was handed. Only the roster can see that
+    /// two of them were handed the same one.
+    ///
+    /// It runs BEFORE the released-custody check and before any module read, so
+    /// no image is needed to observe it.
+    ///
+    /// MUTATION PROOF: delete the duplicate-address loop from
+    /// `bind_detours_by_identity` and this fails.
+    #[test]
+    fn two_sites_sharing_one_detour_address_are_refused() {
+        static FOLDED: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
+        let folded = SiteDetour::new("gameplay.dtest.second", DETOUR_FIRST.address);
+        let error = FOLDED
+            .observe_installed(0x1_0000_0000, [DETOUR_FIRST, folded])
+            .unwrap_err();
+        assert!(
+            error.contains("gameplay.dtest.first")
+                && error.contains("gameplay.dtest.second")
+                && error.contains("share detour address"),
+            "the refusal must name both sites and the shared address: {error}"
+        );
+        assert!(
+            !FOLDED.has_any_custody(),
+            "a refused fold must mint no custody at all"
+        );
+    }
+
+    /// Law: a null detour is refused. An address-taken function item is never
+    /// null, so a zero means the array was assembled from something else.
+    #[test]
+    fn a_null_detour_is_refused() {
+        static NULLED: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
+        let error = NULLED
+            .observe_installed(
+                0x1_0000_0000,
+                [DETOUR_FIRST, SiteDetour::new("gameplay.dtest.second", 0)],
+            )
+            .unwrap_err();
+        assert!(error.contains("is null"), "{error}");
+        assert!(!NULLED.has_any_custody());
+    }
+
+    /// Law: the binding is BY NAME. A detour roster that does not describe the
+    /// spec roster's sites is refused rather than zipped positionally.
+    ///
+    /// MUTATION PROOF: replace the name lookup in `bind_detours_by_identity`
+    /// with `bound[index] = detours[index].address` and this fails -- the
+    /// mislabelled entry would silently bind to the wrong site.
+    #[test]
+    fn a_detour_naming_a_site_the_roster_does_not_have_is_refused() {
+        static MISNAMED: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
+        let error = MISNAMED
+            .observe_installed(
+                0x1_0000_0000,
+                [DETOUR_FIRST, SiteDetour::new("gameplay.dtest.third", 2)],
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("gameplay.dtest.third") && error.contains("matches 0 sites"),
+            "the refusal must name the detour that belongs to no site of this \
+             roster: {error}"
+        );
+        assert!(!MISNAMED.has_any_custody());
+    }
+
+    /// Law: a REORDERED detour table binds correctly rather than crosswise.
+    ///
+    /// This is the positional bug's other half. The two entries are swapped;
+    /// the binding must still hand site zero its own detour. The call then
+    /// proceeds to the module read and fails there -- there is no image behind
+    /// `0x1_0000_0000` -- which is exactly the proof that the binding did NOT
+    /// refuse.
+    #[test]
+    fn a_reordered_detour_table_still_binds_each_site_to_its_own_detour() {
+        assert_eq!(
+            crate::bind_detours_by_identity("DTEST", &SPECS, [DETOUR_SECOND, DETOUR_FIRST])
+                .expect("a reordered table names the same two sites"),
+            [DETOUR_FIRST.address, DETOUR_SECOND.address],
+            "the bound addresses must be in SPEC order regardless of the order \
+             the caller wrote them in"
         );
     }
 }

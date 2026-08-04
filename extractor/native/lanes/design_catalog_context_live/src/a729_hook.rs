@@ -7,7 +7,7 @@ use core::ffi::c_void;
 use minhook::MinHook;
 use production_hook_receipt::rel5_roster::Rel5HookRoster;
 use production_hook_receipt::{
-    ExpectedRvaHook, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    ExpectedRvaHook, InstalledRvaHookReceipt, ReleasedRvaHookReceipt, SiteDetour,
     MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::cell::Cell;
@@ -159,7 +159,13 @@ pub fn install() -> Result<InstalledHookAddress, String> {
     // re-checks the admitted original prefix against that file's own bytes at
     // this RVA, and binds the installed relay to this detour. An installation
     // that cannot be attested is rolled back rather than shipped.
-    if let Err(error) = HOOK_RECEIPTS.observe_installed(base, [hook_refresh as *const () as usize])
+    if let Err(error) = HOOK_RECEIPTS.observe_installed(
+        base,
+        [SiteDetour::new(
+            "gameplay.d78.designer_refresh",
+            hook_refresh as *const () as usize,
+        )],
+    )
     {
         let disabled = unsafe { inline_detour::disable(target as *mut c_void) };
         if disabled.is_err() {

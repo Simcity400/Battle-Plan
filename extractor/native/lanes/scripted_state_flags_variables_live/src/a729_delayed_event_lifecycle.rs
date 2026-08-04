@@ -10,8 +10,9 @@ use core::{cell::RefCell, ffi::c_void, mem, ptr};
 use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::{
-    next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
-    HookTeardownAttestation, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    bind_detours_by_identity, next_teardown_owner_token, observe_enabled_minhook_rel5,
+    observe_released, ExpectedRvaHook, HookTeardownAttestation, InstallAbortDiscard,
+    InstalledRvaHookReceipt, ReleasedRvaHookReceipt, SiteDetour,
     MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use sha2::{Digest, Sha256};
@@ -2090,8 +2091,26 @@ fn addresses(base: usize) -> InstalledHookAddresses {
     }
 }
 
-fn receipt_detours() -> [usize; 2] {
-    [hook_definition_cancel as usize, hook_hourly_update as usize]
+/// The detour addresses, each TAGGED with the site it services, in
+/// `EXPECTED_HOOKS` order.
+///
+/// Read through `bound_receipt_detours`, never directly: the binding is by
+/// name, and it refuses two sites that share one address -- which is what a
+/// linker fold of two detour bodies produces, and what would otherwise let
+/// both receipts attest successfully while naming the wrong engine function.
+fn receipt_detours() -> [SiteDetour; 2] {
+    [
+        SiteDetour::new("gameplay.d64.definition_cancel", hook_definition_cancel as usize),
+        SiteDetour::new(
+            "gameplay.d64.hourly_delayed_event_update",
+            hook_hourly_update as usize,
+        ),
+    ]
+}
+
+/// The detour addresses in `EXPECTED_HOOKS` order, bound by name.
+fn bound_receipt_detours() -> Result<[usize; 2], String> {
+    bind_detours_by_identity("A19", &EXPECTED_HOOKS, receipt_detours())
 }
 
 fn require_receipt_slot_available_for_install() -> Result<(), String> {
@@ -2146,7 +2165,7 @@ fn reobserve_installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 2], S
 
     let sites = addresses(base);
     let targets = [sites.definition_cancel, sites.hourly_update];
-    let detours = receipt_detours();
+    let detours = bound_receipt_detours()?;
     let mut reobserved = Vec::with_capacity(EXPECTED_HOOKS.len());
     for (((expected, target), detour), installed) in EXPECTED_HOOKS
         .into_iter()
@@ -2171,7 +2190,7 @@ fn reobserve_installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 2], S
 
 fn observe_install_receipts(sites: InstalledHookAddresses) -> Result<(), String> {
     let targets = [sites.definition_cancel, sites.hourly_update];
-    let detours = receipt_detours();
+    let detours = bound_receipt_detours()?;
     let receipt_state = HOOK_RECEIPTS.get_or_init(|| Mutex::new(HookReceiptState::default()));
     {
         let receipts = receipt_state

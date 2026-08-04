@@ -4,7 +4,7 @@ use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::rel5_roster::Rel5HookRoster;
 use production_hook_receipt::{
     ExpectedRvaHook, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
-    MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+    SiteDetour, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -44,6 +44,14 @@ const TASKFORCE_FRAME_SENTINEL: [u8; 16] = [
 
 /// The canonical roster admits exactly these four D95 sites.
 pub const HOOK_RECEIPT_COUNT: usize = 4;
+
+/// Site indices, in `PRODUCTION_HOOK_SPECS` order. Each detour body touches
+/// `SITE_ENTRIES` at its own index, which is what keeps the four bodies
+/// distinct -- see [`SITE_ENTRIES`].
+const SITE_INTEL_GETTER: usize = 0;
+const SITE_LAND_FRAME: usize = 1;
+const SITE_LAND_ELIGIBILITY: usize = 2;
+const SITE_TASKFORCE_FRAME: usize = 3;
 
 /// The exact production-hook specifications this lane may install, in the same
 /// order as the `specs` table `install` walks and as the `detours` array
@@ -113,6 +121,29 @@ static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 /// producing. Refusing to install again is the only outcome that stays true.
 static RETAINED_LIVE: AtomicBool = AtomicBool::new(false);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+/// How many times each detour body has been entered, indexed by `SITE_*`.
+///
+/// Two jobs, and the second is the one that must never be optimised away.
+///
+///   * EVIDENCE. d95 has produced zero rows in every capture. "The hooks are
+///     installed but the engine never calls these sites" and "the engine calls
+///     them and the frame assembly drops everything" are different defects, and
+///     these counters are the only thing that tells them apart without a
+///     debugger.
+///   * IDENTITY. Every detour body increments a DIFFERENT element of this
+///     array, so no two bodies can compile to the same bytes with the same
+///     relocations, so the linker's identical-code folding cannot merge them.
+///     Before this existed, all four D95 bodies collapsed -- in a build where
+///     the optimizer could prove the `ORIGINAL_*` slots were zero, each body is
+///     nothing but the callback lease and an early return, which is byte
+///     identical across the four -- and `/OPT:ICF` folded them to two
+///     addresses. Two engine sites then shared one relay.
+static SITE_ENTRIES: [AtomicU64; HOOK_RECEIPT_COUNT] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 static LATEST: OnceLock<Mutex<LatestFrames>> = OnceLock::new();
 static LIFECYCLE: Mutex<()> = Mutex::new(());
 
@@ -142,8 +173,23 @@ thread_local! {
 
 struct CallbackLease;
 impl CallbackLease {
-    fn enter() -> Self {
+    /// `site` is the `SITE_*` index of the detour taking the lease. It is a
+    /// constant at every call site, so each body compiles a store to a
+    /// different element of `SITE_ENTRIES` -- which is what makes the four
+    /// bodies unfoldable. Passing a runtime value here would put them back on
+    /// the same instruction bytes.
+    ///
+    /// `get` rather than `[]`: this runs on a game thread inside an
+    /// `extern "system"` detour, where a panic would unwind across the engine's
+    /// frame. The index is a constant and in range at every call site, so the
+    /// check folds away and the `None` arm is unreachable -- but "unreachable"
+    /// and "cannot happen" are the same thing only until someone adds a fifth
+    /// site and forgets the array.
+    fn enter(site: usize) -> Self {
         ACTIVE_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+        if let Some(entries) = SITE_ENTRIES.get(site) {
+            entries.fetch_add(1, Ordering::Relaxed);
+        }
         Self
     }
 }
@@ -271,20 +317,50 @@ pub fn install() -> Result<(), String> {
     Ok(())
 }
 
-/// The detour addresses, in `PRODUCTION_HOOK_SPECS` order.
+/// The detour addresses, each TAGGED with the site it services.
 ///
 /// A function rather than a `const`: a function item's address is not an
-/// integer at compile time, so this cannot be a constant. `observe_installed`
-/// refuses any site whose relay does not resolve to the address in this list,
-/// so a mis-ordered entry is a hard install failure rather than a mislabelled
-/// receipt.
-fn detours() -> [usize; HOOK_RECEIPT_COUNT] {
+/// integer at compile time, so this cannot be a constant.
+///
+/// The tags are what binds a receipt to a site. `observe_installed` matches each
+/// entry to its spec by `logical_name` and then refuses any site whose relay
+/// does not resolve to that entry's address, so a mis-ordered table is a hard
+/// install failure rather than a mislabelled receipt -- and, since the same
+/// binding refuses two sites that share an address, so is a linker fold.
+fn detours() -> [SiteDetour; HOOK_RECEIPT_COUNT] {
     [
-        hook_intel_getter as *const () as usize,
-        hook_land_frame as *const () as usize,
-        hook_land_eligibility as *const () as usize,
-        hook_taskforce_frame as *const () as usize,
+        SiteDetour::new(
+            "gameplay.d95.intel_getter",
+            hook_intel_getter as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d95.land_frame",
+            hook_land_frame as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d95.land_eligibility",
+            hook_land_eligibility as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d95.taskforce_frame",
+            hook_taskforce_frame as *const () as usize,
+        ),
     ]
+}
+
+/// How many times each D95 detour body has been entered, in
+/// `PRODUCTION_HOOK_SPECS` order.
+///
+/// Reads a live counter: the answer is a snapshot, not a transaction. It exists
+/// so "the engine never called these sites" can be told apart from "it called
+/// them and the frame assembly produced nothing", which is the open question
+/// behind d95's zero rows.
+pub fn site_entry_counts() -> [u64; HOOK_RECEIPT_COUNT] {
+    let mut counts = [0u64; HOOK_RECEIPT_COUNT];
+    for (slot, entries) in counts.iter_mut().zip(SITE_ENTRIES.iter()) {
+        *slot = entries.load(Ordering::Relaxed);
+    }
+    counts
 }
 
 /// True once this lane owns enabled, receipt-observed production hooks.
@@ -462,7 +538,7 @@ pub fn uninstall() -> Result<(), String> {
 }
 
 unsafe extern "system" fn hook_land_frame(owner: usize) {
-    let _lease = CallbackLease::enter();
+    let _lease = CallbackLease::enter(SITE_LAND_FRAME);
     let original: LandFrameFn = match original_fn(ORIGINAL_LAND_FRAME.load(Ordering::Acquire)) {
         Some(value) => value,
         None => return,
@@ -477,7 +553,7 @@ unsafe extern "system" fn hook_land_frame(owner: usize) {
 }
 
 unsafe extern "system" fn hook_taskforce_frame(owner: usize, source: usize, context: usize) {
-    let _lease = CallbackLease::enter();
+    let _lease = CallbackLease::enter(SITE_TASKFORCE_FRAME);
     let original: TaskforceFrameFn = match original_fn(ORIGINAL_TASKFORCE_FRAME.load(Ordering::Acquire)) {
         Some(value) => value,
         None => return,
@@ -496,7 +572,7 @@ unsafe extern "system" fn hook_taskforce_frame(owner: usize, source: usize, cont
 }
 
 unsafe extern "system" fn hook_intel_getter(unit: usize) -> u32 {
-    let _lease = CallbackLease::enter();
+    let _lease = CallbackLease::enter(SITE_INTEL_GETTER);
     let original: IntelGetterFn = match original_fn(ORIGINAL_GETTER.load(Ordering::Acquire)) {
         Some(value) => value,
         None => return 0,
@@ -520,7 +596,7 @@ unsafe extern "system" fn hook_intel_getter(unit: usize) -> u32 {
 }
 
 unsafe extern "system" fn hook_land_eligibility(wrapper: usize) -> u8 {
-    let _lease = CallbackLease::enter();
+    let _lease = CallbackLease::enter(SITE_LAND_ELIGIBILITY);
     let original: LandEligibilityFn = match original_fn(ORIGINAL_LAND_ELIGIBILITY.load(Ordering::Acquire)) {
         Some(value) => value,
         None => return 0,
@@ -823,10 +899,13 @@ mod tests {
     /// The two tables are independent literals -- `install` walks its own
     /// `specs` array and `PRODUCTION_HOOK_SPECS` is what the receipts and the
     /// pinned allowlist are built from -- so nothing but this holds them
-    /// together. A drift here is not a cosmetic mismatch: `observe_installed`
-    /// is handed `detours()` positionally, so a reordered spec table would bind
-    /// each receipt to the wrong detour and the whole install would be refused
-    /// live, on a real image, with no offline signal.
+    /// together. A drift here is not a cosmetic mismatch: `install` walks its
+    /// own table to decide what to patch, and the receipt roster is what the
+    /// evidence describes, so a reordered spec table would attest the wrong RVA
+    /// for each name. (The detour side is separately protected -- since
+    /// 2026-08-05 `observe_installed` binds `detours()` to the specs by
+    /// `logical_name`, not by position -- but nothing except this holds the RVA
+    /// and sentinel columns together.)
     ///
     /// Mutation proof: swap two entries of `PRODUCTION_HOOK_SPECS`, or change
     /// one `original_prefix` to a different sentinel, and this fails.
@@ -883,23 +962,98 @@ mod tests {
         );
     }
 
-    /// The detour table is the same width as the spec table and holds four
-    /// distinct, non-null addresses.
+    /// The detour table is the same width as the spec table, names the same
+    /// four sites, and holds four distinct, non-null addresses.
     ///
-    /// `observe_installed` binds `specs[i]` to `detours[i]`, so a repeated
-    /// address here would mean two sites claiming the same detour -- which a
-    /// live install would catch and an offline build would not.
+    /// THIS TEST FAILED IN `--release` AND PASSED IN DEBUG until 2026-08-05.
+    /// The four detour bodies folded to two addresses under the linker's
+    /// identical-code folding. The fold was confined to THIS BINARY -- forcing
+    /// a non-zero store into the `ORIGINAL_*` slots, which is the shape the
+    /// shipped collector cdylib has because it really does call `install`,
+    /// produced four distinct bodies with four different prologues -- but a
+    /// lane whose detour identity depends on which build it is in has no
+    /// identity, so the bodies are now unfoldable in every build.
+    ///
+    /// Why it folded here: nothing in the test binary calls `install`, so
+    /// the optimizer proves every `ORIGINAL_*` slot is zero, every body reduces
+    /// to "take the callback lease, find the slot empty, return", and the four
+    /// reductions are byte identical in two pairs -- `hook_intel_getter` with
+    /// `hook_land_eligibility` (both `xor eax,eax; ret`) and `hook_land_frame`
+    /// with `hook_taskforce_frame` (both a bare `ret`). Argument count does not
+    /// enter into it, because the collapsed bodies never touch their arguments.
+    ///
+    /// The fix is `CallbackLease::enter(SITE_*)`: each body increments a
+    /// different element of `SITE_ENTRIES`, which is a different relocation, so
+    /// no two bodies can be byte identical no matter how much of the rest of
+    /// them the optimizer removes.
+    ///
+    /// MUTATION PROOF: change any `CallbackLease::enter(SITE_X)` to another
+    /// site's index and this fails in `--release` (two bodies become identical
+    /// again). Reverting `enter` to take no argument reproduces the original
+    /// 2-of-4 failure exactly.
     #[test]
     fn every_site_has_its_own_detour() {
         let detours = detours();
-        assert!(detours.iter().all(|address| *address != 0));
-        let mut distinct = detours.to_vec();
+        assert!(detours.iter().all(|detour| detour.address != 0));
+        let mut distinct = detours.iter().map(|d| d.address).collect::<Vec<_>>();
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(
             distinct.len(),
             HOOK_RECEIPT_COUNT,
             "each D95 site needs its own detour"
+        );
+        for (index, spec) in PRODUCTION_HOOK_SPECS.iter().enumerate() {
+            assert_eq!(
+                detours[index].logical_name, spec.logical_name,
+                "the detour table must name the same sites as the spec table"
+            );
+        }
+        // And the binding the installer actually performs must accept it.
+        production_hook_receipt::bind_detours_by_identity(
+            "D95",
+            &PRODUCTION_HOOK_SPECS,
+            detours,
+        )
+        .expect("the D95 detour roster must bind to its own specs by name");
+    }
+
+    /// Law: the per-site counters are the thing that keeps the bodies apart, so
+    /// each body must touch its OWN index.
+    ///
+    /// `every_site_has_its_own_detour` proves the bodies are distinct; this
+    /// proves the mechanism is the one documented, by reading it out of the
+    /// production text. A future edit that swaps two `SITE_*` arguments would
+    /// leave two bodies identical and fail the test above, but an edit that
+    /// replaced the counters with any other distinguishing trick would silently
+    /// remove the evidence half of `SITE_ENTRIES`.
+    #[test]
+    fn every_detour_body_counts_its_own_entries() {
+        let production = production_code();
+        for site in [
+            "SITE_INTEL_GETTER",
+            "SITE_LAND_FRAME",
+            "SITE_LAND_ELIGIBILITY",
+            "SITE_TASKFORCE_FRAME",
+        ] {
+            assert_eq!(
+                production
+                    .matches(&format!("CallbackLease::enter({site})"))
+                    .count(),
+                1,
+                "exactly one detour body may take the lease for {site}"
+            );
+        }
+        assert_eq!(
+            production.matches("CallbackLease::enter(").count(),
+            HOOK_RECEIPT_COUNT,
+            "every callback lease must name the site taking it"
+        );
+        assert!(
+            production.contains("entries.fetch_add(1, Ordering::Relaxed);"),
+            "the lease must record the entry; a lease that only counted the \
+             global active-callback total would leave the four bodies byte \
+             identical and foldable again"
         );
     }
 

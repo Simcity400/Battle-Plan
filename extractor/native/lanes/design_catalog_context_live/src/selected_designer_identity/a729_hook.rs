@@ -19,7 +19,7 @@ use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::rel5_roster::Rel5HookRoster;
 use production_hook_receipt::{
-    ExpectedRvaHook, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
+    ExpectedRvaHook, InstalledRvaHookReceipt, ReleasedRvaHookReceipt, SiteDetour,
     MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::cell::Cell;
@@ -123,13 +123,28 @@ static HOOK_RECEIPTS: Rel5HookRoster<HOOK_RECEIPT_COUNT> =
 /// The detour addresses, in `PRODUCTION_HOOK_SPECS` order. A function rather
 /// than a `const` because a function item's address is not an integer at
 /// compile time.
-fn detours() -> [usize; HOOK_RECEIPT_COUNT] {
+fn detours() -> [SiteDetour; HOOK_RECEIPT_COUNT] {
     [
-        hook_equipment_selection as *const () as usize,
-        hook_equipment_autodesign_success as *const () as usize,
-        hook_division_order as *const () as usize,
-        hook_division_selection as *const () as usize,
-        hook_variant_upgrade_selection as *const () as usize,
+        SiteDetour::new(
+            "gameplay.d85.equipment_selection",
+            hook_equipment_selection as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d85.equipment_autodesign_success",
+            hook_equipment_autodesign_success as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d85.division_order",
+            hook_division_order as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d85.division_selection",
+            hook_division_selection as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d85.variant_upgrade_selection",
+            hook_variant_upgrade_selection as *const () as usize,
+        ),
     ]
 }
 
@@ -1210,8 +1225,17 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), HOOK_RECEIPT_COUNT, "receipt names must be distinct");
         let detours = detours();
-        assert!(detours.iter().all(|address| *address != 0));
-        let mut distinct = detours.to_vec();
+        assert!(detours.iter().all(|detour| detour.address != 0));
+        for (index, spec) in PRODUCTION_HOOK_SPECS.iter().enumerate() {
+            assert_eq!(detours[index].logical_name, spec.logical_name);
+        }
+        production_hook_receipt::bind_detours_by_identity(
+            "D85",
+            &PRODUCTION_HOOK_SPECS,
+            detours,
+        )
+        .expect("the selected-designer detour roster must bind to its specs by name");
+        let mut distinct = detours.iter().map(|d| d.address).collect::<Vec<_>>();
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(

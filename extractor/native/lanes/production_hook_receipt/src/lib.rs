@@ -85,6 +85,131 @@ pub struct ExpectedRvaHook {
     pub original_prefix: &'static [u8],
 }
 
+/// One lane detour address, tagged with the site it belongs to.
+///
+/// The tag is the point. A lane hands its detour addresses to the receipt layer
+/// as an array, and for as long as that array was bound POSITIONALLY the only
+/// thing holding "site `i`" to "the function that services site `i`" was the
+/// order two independent literals happened to be written in. Two ways that
+/// breaks, and neither has an offline signal:
+///
+///   * a spec table reordered without its detour table, and
+///   * two detour bodies FOLDED to one address by the linker's
+///     identical-code folding, so the array is `[a, b, a, b]` and every entry
+///     still verifies -- the REL5 jump at each of the four targets really does
+///     point at the address the array names.
+///
+/// The second one is not hypothetical. Until 2026-08-05 D95's four detour
+/// bodies folded to two addresses in the optimized build of its own test
+/// binary, and the check that noticed was a unit test the routine gate never
+/// compiled optimized. See [`bind_detours_by_identity`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SiteDetour {
+    /// The `ExpectedRvaHook::logical_name` of the site this detour services.
+    pub logical_name: &'static str,
+    /// The runtime address of the lane's detour function.
+    pub address: usize,
+}
+
+impl SiteDetour {
+    pub const fn new(logical_name: &'static str, address: usize) -> Self {
+        Self {
+            logical_name,
+            address,
+        }
+    }
+}
+
+/// Bind a lane's detour addresses to its specs BY NAME, and refuse any roster
+/// that cannot describe exactly one distinct detour per site.
+///
+/// Returns the addresses in `specs` order, so callers keep the positional array
+/// they already index -- but they now get it from a binding that was CHECKED
+/// rather than from a literal that was merely written in the same order.
+///
+/// Three refusals, each of which was previously silent:
+///
+///   * a null detour. An address-taken function item is never null, so a zero
+///     here means the caller assembled the array from something else.
+///   * a REPEATED address. "Function pointers are not guaranteed to be unique"
+///     is a documented Rust property, and the MSVC linker's `/OPT:ICF` acts on
+///     it: any two detour bodies that compile to identical bytes with identical
+///     relocations fold to one address. Both sites then attest successfully
+///     against that one address and the receipts silently describe the wrong
+///     engine function. A fold must be a hard install failure -- the lane can
+///     be fixed (give each body a per-site side effect), but a receipt that
+///     names the wrong site cannot be un-shipped.
+///   * a name that is not this roster's, is missing, or appears twice. That is
+///     the reorder case, and it now names the site rather than mis-binding it.
+pub fn bind_detours_by_identity<const N: usize>(
+    lane: &str,
+    specs: &[ExpectedRvaHook; N],
+    detours: [SiteDetour; N],
+) -> Result<[usize; N], String> {
+    for (index, detour) in detours.iter().enumerate() {
+        if detour.address == 0 {
+            return Err(format!(
+                "{lane} detour {} for site {} is null",
+                index, detour.logical_name
+            ));
+        }
+    }
+    for (index, detour) in detours.iter().enumerate() {
+        for other in detours.iter().skip(index + 1) {
+            if detour.address == other.address {
+                return Err(format!(
+                    "{lane} sites {} and {} share detour address {:#x}: two engine \
+                     functions cannot be serviced by one relay, and the receipts \
+                     would name the wrong site. This is what identical-code \
+                     folding does to two detour bodies that compile alike; give \
+                     each body a per-site side effect so they cannot fold.",
+                    detour.logical_name, other.logical_name, detour.address
+                ));
+            }
+        }
+    }
+    // A bijection, not a lookup. Checking only "every spec found a detour"
+    // leaves duplicate SPEC names binding two sites to one detour while another
+    // detour goes silently unused, which is the same misattribution by a
+    // different route.
+    for detour in detours.iter() {
+        let claimed = specs
+            .iter()
+            .filter(|spec| spec.logical_name == detour.logical_name)
+            .count();
+        if claimed != 1 {
+            return Err(format!(
+                "{lane} detour for {} matches {claimed} sites; the detour roster \
+                 and the spec roster must name the same sites exactly once each",
+                detour.logical_name
+            ));
+        }
+    }
+    let mut bound = [0usize; N];
+    for (index, spec) in specs.iter().enumerate() {
+        let mut found = None;
+        for detour in detours.iter() {
+            if detour.logical_name == spec.logical_name {
+                if found.is_some() {
+                    return Err(format!(
+                        "{lane} site {} was given more than one detour",
+                        spec.logical_name
+                    ));
+                }
+                found = Some(detour.address);
+            }
+        }
+        bound[index] = found.ok_or_else(|| {
+            format!(
+                "{lane} site {} was given no detour; the detour roster does not \
+                 describe the same sites as the spec roster",
+                spec.logical_name
+            )
+        })?;
+    }
+    Ok(bound)
+}
+
 /// Where a pointer slot comes from, and therefore what may be attested about
 /// it.
 ///
@@ -3575,6 +3700,30 @@ fn hook_spec_sha256(expected: ExpectedRvaHook) -> [u8; 32] {
 }
 
 #[cfg(windows)]
+/// The name of an ALREADY-ACTIVE site in the same loaded module that is using
+/// `candidate`'s detour address for a different engine target.
+///
+/// Only `Active` bindings count. A released site's detour is no longer in the
+/// executable, so reusing its address is not a live collision -- and refusing it
+/// would make a lane that reinstalls after a clean teardown fail forever.
+#[cfg(windows)]
+fn site_already_using_this_detour(
+    registry: &BTreeMap<(u64, u64), HookCustodyState>,
+    candidate: &ActiveHookBinding,
+) -> Option<&'static str> {
+    registry.values().find_map(|state| match state {
+        HookCustodyState::Active(active)
+            if active.observed_module_sha256 == candidate.observed_module_sha256
+                && active.observed_pe_identity_sha256 == candidate.observed_pe_identity_sha256
+                && active.observed_detour_address == candidate.observed_detour_address
+                && active.observed_runtime_address != candidate.observed_runtime_address =>
+        {
+            Some(active.logical_name)
+        }
+        _ => None,
+    })
+}
+
 fn observe_common(
     module: &ObservedMainModule,
     expected: ExpectedRvaHook,
@@ -3633,6 +3782,38 @@ fn observe_common(
     }) {
         return Err(format!(
             "{} physical module target already has a different active lease",
+            expected.logical_name
+        ));
+    }
+    // A detour address may service exactly ONE engine site.
+    //
+    // Nothing above catches the reverse of the check just made. Each site is
+    // observed on its own, and a site whose relay points at an address another
+    // site is ALREADY using verifies perfectly -- the REL5 jump really does go
+    // there. That is exactly what the linker's identical-code folding produces:
+    // two detour bodies that compile to the same bytes with the same
+    // relocations become one address, both installs succeed, and the two
+    // receipts describe two different engine functions while naming one relay.
+    // From then on every observation attributed to either site is attributed to
+    // whichever body survived the fold.
+    //
+    // This is not hypothetical. D95's four detour bodies folded to two
+    // addresses in the optimized build of its own test binary, and the only
+    // thing that noticed was a lane unit test nothing in the routine gate ever
+    // compiled optimized.
+    //
+    // Process-global on purpose. `Rel5HookRoster` can only see the sites of its
+    // own roster, and the lanes that hand-rolled their custody cannot see even
+    // that; the registry is the one place that sees every live binding. The
+    // comparison is scoped to the same observed module, so two processes'
+    // worth of state cannot collide here.
+    if let Some(other) = site_already_using_this_detour(&registry, &candidate) {
+        return Err(format!(
+            "{} detour address 0x{observed_detour_address:X} is already the \
+             detour of {other}: one relay cannot service two engine sites, and \
+             the receipts would name the wrong one. This is what identical-code \
+             folding does to two detour bodies that compile alike; give each \
+             body a per-site side effect so they cannot fold.",
             expected.logical_name
         ));
     }
@@ -8423,5 +8604,194 @@ mod retained_relay_release_tests {
         );
         assert!(MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID.contains("process-lifetime"));
         assert!(MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID.contains("relay-freed"));
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod detour_identity_tests {
+    use super::*;
+
+    const PREFIX: [u8; 16] = [0x40; 16];
+
+    const FIRST: ExpectedRvaHook = ExpectedRvaHook {
+        logical_name: "gameplay.dtest.first",
+        requested_rva: 0x1000,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &PREFIX,
+    };
+    const SECOND: ExpectedRvaHook = ExpectedRvaHook {
+        logical_name: "gameplay.dtest.second",
+        requested_rva: 0x2000,
+        target_patch_len: 5,
+        primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+        original_prefix: &PREFIX,
+    };
+
+    fn binding(name: &'static str, target: usize, detour: usize) -> ActiveHookBinding {
+        ActiveHookBinding {
+            logical_name: name,
+            observed_module_sha256: A729_EXE_SHA256,
+            observed_pe_identity_sha256: [7u8; 32],
+            requested_rva: target as u64,
+            observed_runtime_address: target,
+            target_patch_len: 5,
+            primitive_id: MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+            original_prefix_len: PREFIX.len(),
+            original_prefix_sha256: [1u8; 32],
+            hook_spec_sha256: [2u8; 32],
+            observed_relay_address: target + 0x1_0000,
+            observed_detour_address: detour,
+            authenticity_seal: 1,
+        }
+    }
+
+    fn registry_with(
+        entries: Vec<((u64, u64), HookCustodyState)>,
+    ) -> BTreeMap<(u64, u64), HookCustodyState> {
+        entries.into_iter().collect()
+    }
+
+    /// Law: one detour address services one engine site.
+    ///
+    /// This is the registry-level half of the identical-code-folding defence,
+    /// and it is the only half the lanes that hand-rolled their receipt custody
+    /// get. `observe_enabled_minhook_rel5` verifies each site on its own and a
+    /// folded pair passes -- the REL5 jump at both targets really does point at
+    /// the one surviving body -- so only a check across live bindings can see
+    /// it.
+    ///
+    /// MUTATION PROOF: delete the
+    /// `observed_runtime_address != candidate.observed_runtime_address` clause
+    /// and `reobserving_the_same_site_is_not_a_collision` fails; delete the
+    /// `observed_detour_address ==` clause and this one does.
+    #[test]
+    fn a_second_site_may_not_reuse_a_live_detour_address() {
+        let registry = registry_with(vec![(
+            (1, FIRST.requested_rva),
+            HookCustodyState::Active(binding(FIRST.logical_name, 0x1000, 0xDEAD_0000)),
+        )]);
+        let candidate = binding(SECOND.logical_name, 0x2000, 0xDEAD_0000);
+        assert_eq!(
+            site_already_using_this_detour(&registry, &candidate),
+            Some(FIRST.logical_name),
+            "a folded detour must be attributed to the site that already holds it"
+        );
+    }
+
+    /// Re-observing the SAME site is the retry path every lane uses, and it
+    /// presents the same detour for the same target. It must not be read as a
+    /// collision.
+    #[test]
+    fn reobserving_the_same_site_is_not_a_collision() {
+        let registry = registry_with(vec![(
+            (1, FIRST.requested_rva),
+            HookCustodyState::Active(binding(FIRST.logical_name, 0x1000, 0xDEAD_0000)),
+        )]);
+        let candidate = binding(FIRST.logical_name, 0x1000, 0xDEAD_0000);
+        assert_eq!(site_already_using_this_detour(&registry, &candidate), None);
+    }
+
+    /// Two sites with DIFFERENT detours are the normal case.
+    #[test]
+    fn distinct_detours_do_not_collide() {
+        let registry = registry_with(vec![(
+            (1, FIRST.requested_rva),
+            HookCustodyState::Active(binding(FIRST.logical_name, 0x1000, 0xDEAD_0000)),
+        )]);
+        let candidate = binding(SECOND.logical_name, 0x2000, 0xDEAD_1000);
+        assert_eq!(site_already_using_this_detour(&registry, &candidate), None);
+    }
+
+    /// A RELEASED site's detour is no longer in the executable. Refusing to
+    /// reuse its address would make a lane that reinstalls after a clean
+    /// teardown fail forever.
+    ///
+    /// MUTATION PROOF: make the scan consider `Released` bindings too and this
+    /// fails.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn a_released_sites_detour_address_is_free_again() {
+        let active = binding(FIRST.logical_name, 0x1000, 0xDEAD_0000);
+        let registry = registry_with(vec![(
+            (1, FIRST.requested_rva),
+            HookCustodyState::Released(ReleasedHookBinding {
+                active,
+                receipt: mint_test_released_receipt(FIRST, 1),
+            }),
+        )]);
+        let candidate = binding(SECOND.logical_name, 0x2000, 0xDEAD_0000);
+        assert_eq!(site_already_using_this_detour(&registry, &candidate), None);
+    }
+
+    /// A binding observed in a DIFFERENT module is not evidence about this one.
+    #[test]
+    fn a_different_module_is_not_a_collision() {
+        let mut foreign = binding(FIRST.logical_name, 0x1000, 0xDEAD_0000);
+        foreign.observed_module_sha256 = [0xAAu8; 32];
+        let registry = registry_with(vec![(
+            (1, FIRST.requested_rva),
+            HookCustodyState::Active(foreign),
+        )]);
+        let candidate = binding(SECOND.logical_name, 0x2000, 0xDEAD_0000);
+        assert_eq!(site_already_using_this_detour(&registry, &candidate), None);
+    }
+
+    /// Law: the two rosters name the same sites exactly once each.
+    ///
+    /// The first version of `bind_detours_by_identity` only asked "did every
+    /// spec find a detour". A spec roster with a DUPLICATED name satisfies that
+    /// while binding two sites to one detour and leaving another detour unused
+    /// -- the same misattribution the whole change exists to stop, reached from
+    /// the other side.
+    ///
+    /// MUTATION PROOF: delete the `claimed != 1` loop and this passes with
+    /// `[0xAA00, 0xAA00]`, i.e. two sites silently sharing one detour.
+    #[test]
+    fn a_duplicated_spec_name_is_refused_rather_than_bound_twice() {
+        let duplicated = [FIRST, FIRST];
+        let error = bind_detours_by_identity(
+            "DTEST",
+            &duplicated,
+            [
+                SiteDetour::new(FIRST.logical_name, 0xAA00),
+                SiteDetour::new(SECOND.logical_name, 0xBB00),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("matches 2 sites"),
+            "the refusal must say the rosters do not correspond: {error}"
+        );
+    }
+
+    /// The name-bound roster binding refuses the same fold one layer earlier,
+    /// before any image is read.
+    #[test]
+    fn the_name_binding_refuses_a_folded_pair_offline() {
+        let specs = [FIRST, SECOND];
+        let error = bind_detours_by_identity(
+            "DTEST",
+            &specs,
+            [
+                SiteDetour::new(FIRST.logical_name, 0xDEAD_0000),
+                SiteDetour::new(SECOND.logical_name, 0xDEAD_0000),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.contains("share detour address"), "{error}");
+        assert_eq!(
+            bind_detours_by_identity(
+                "DTEST",
+                &specs,
+                [
+                    SiteDetour::new(FIRST.logical_name, 0xDEAD_0000),
+                    SiteDetour::new(SECOND.logical_name, 0xDEAD_1000),
+                ],
+            )
+            .unwrap(),
+            [0xDEAD_0000, 0xDEAD_1000]
+        );
     }
 }

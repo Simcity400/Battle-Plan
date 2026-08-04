@@ -16,7 +16,7 @@ use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::rel5_roster::Rel5HookRoster;
 use production_hook_receipt::{
     ExpectedRvaHook, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
-    MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+    SiteDetour, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use std::cell::Cell;
 use std::mem;
@@ -112,15 +112,31 @@ pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [
 static HOOK_RECEIPTS: Rel5HookRoster<HOOK_RECEIPT_COUNT> =
     Rel5HookRoster::new("D97", PRODUCTION_HOOK_SPECS);
 
-/// The detour addresses, in `PRODUCTION_HOOK_SPECS` order. A function rather
-/// than a `const` because a function item's address is not an integer at
+/// The detour addresses, each TAGGED with the site it services. A function
+/// rather than a `const` because a function item's address is not an integer at
 /// compile time.
-fn detours() -> [usize; HOOK_RECEIPT_COUNT] {
+///
+/// `observe_installed` binds these to the specs BY NAME and refuses two sites
+/// that share an address, which is what a linker fold of two detour bodies
+/// looks like.
+fn detours() -> [SiteDetour; HOOK_RECEIPT_COUNT] {
     [
-        hook_conference_refresh as *const () as usize,
-        hook_claim_breakdown as *const () as usize,
-        hook_contest_breakdown as *const () as usize,
-        hook_terminal_summary as *const () as usize,
+        SiteDetour::new(
+            "gameplay.d97.conference_refresh",
+            hook_conference_refresh as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d97.claim_breakdown",
+            hook_claim_breakdown as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d97.contest_breakdown",
+            hook_contest_breakdown as *const () as usize,
+        ),
+        SiteDetour::new(
+            "gameplay.d97.terminal_summary",
+            hook_terminal_summary as *const () as usize,
+        ),
     ]
 }
 
@@ -1123,8 +1139,17 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), HOOK_RECEIPT_COUNT, "receipt names must be distinct");
         let detours = detours();
-        assert!(detours.iter().all(|address| *address != 0));
-        let mut distinct = detours.to_vec();
+        assert!(detours.iter().all(|detour| detour.address != 0));
+        for (index, spec) in PRODUCTION_HOOK_SPECS.iter().enumerate() {
+            assert_eq!(detours[index].logical_name, spec.logical_name);
+        }
+        production_hook_receipt::bind_detours_by_identity(
+            "D97",
+            &PRODUCTION_HOOK_SPECS,
+            detours,
+        )
+        .expect("the D97 detour roster must bind to its specs by name");
+        let mut distinct = detours.iter().map(|d| d.address).collect::<Vec<_>>();
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(
