@@ -264,6 +264,18 @@ impl CollectorStateFixture {
             compact_contract::build_profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA,
             game_state,
         );
+        // The clock must READ the fixture's label hour, not the heap's zero
+        // fill. Every reader bracket opens and closes against this word, and
+        // since `HOUR_LABEL_MISMATCH_POLICY` became `Refuse`, a bracket that
+        // reads hour 0 under a frame labelled `fixture_game_hour_raw()` is a
+        // mislabelled read and the domain is (correctly) replaced with a gap
+        // -- which silently deleted the very records these fixtures assert
+        // on. Tests that stage a DIFFERENT hour on purpose overwrite this
+        // word after calling this method.
+        self.heap.write_i32(
+            heap_offset + GS_CURRENT_DATE_OFFSET,
+            fixture_game_hour_raw(),
+        );
         self
     }
 
@@ -665,8 +677,18 @@ pub(super) fn bind_scheduler_clock(image: &mut ModuleImageWindow, state: &mut Co
 pub(super) fn naval_frame_fixture() -> (Box<AlignedBytes<0x9000>>, CollectorState, ModuleImageWindow)
 {
     let mut image = scheduler_clock_image();
-    let (arena, mut state) = compact_naval_fixture_at_module_base(image.module_base());
+    let (mut arena, mut state) = compact_naval_fixture_at_module_base(image.module_base());
     bind_scheduler_clock(&mut image, &mut state);
+    // The clock must READ the fixture's label hour. The arena's date word sat
+    // at its zero fill, which authenticated fine and read hour 0 -- invisible
+    // while `HOUR_LABEL_MISMATCH_POLICY` was `CountOnly`, but under `Refuse` a
+    // bracket that reads hour 0 against a real label is a mislabelled read and
+    // every domain in the frame is (correctly) replaced with a gap.
+    let date_offset = (state.date_ptr as usize)
+        .checked_sub(arena.addr())
+        .expect("the naval date root lives inside its own arena")
+        + GS_CURRENT_DATE_OFFSET;
+    arena.write_u32(date_offset, fixture_game_hour_raw() as u32);
     (arena, state, image)
 }
 
@@ -1470,23 +1492,59 @@ fn the_frame_builder_decides_the_d47_prewarm_clock_verdict_against_its_own_label
     );
 
     // Wrong hour: the engine clock has already moved past the label. Both
-    // clock reads agree, so no bracket rejects this frame.
+    // clock reads agree, so no bracket TEARS -- but since
+    // `HOUR_LABEL_MISMATCH_POLICY` became `Refuse`, an equal-but-wrong
+    // bracket replaces the domain's records with an HourLabelMismatch gap,
+    // so the verdict unit d47 computed never reaches the wire. The verdict
+    // machinery itself is still pinned by the in-hour half above; what the
+    // wrong-hour half now witnesses is the refusal.
     let fixture = d47_clock_fixture(hour + 1);
     let wrong_hour = drive_compact_frame(Some(&fixture.collector_state()), &control, hour, 7);
     assert_eq!(
         d47_clock_verdict(&wrong_hour),
-        Some(3),
-        "a prewarm that ran wholly in the next hour is WrongHour (3)"
+        None,
+        "a refused domain's verdict unit must not be published under a label \
+         its reads did not happen in"
     );
-    assert_ne!(
+    assert_eq!(
+        rejected_bracket_domains(
+            &wrong_hour.timing.domain_clock_brackets,
+            hour,
+            HOUR_LABEL_MISMATCH_POLICY,
+        )
+        .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+        .map(|(reason, _, _)| *reason),
+        Some(compact_contract::domain_gap::DomainGapReason::HourLabelMismatch),
+        "the shipped policy must reject a wholly next-hour prewarm as an \
+         HourLabelMismatch gap"
+    );
+    // Under `CountOnly` this test asserted the POISON (`skipped_root_rows`
+    // nonzero): the mismatched frame was still published, so d47's own gate
+    // was the only thing keeping wrong-hour roots off the wire. Under
+    // `Refuse` the refusal itself runs `reset_trackers_after_rejected_bracket`,
+    // which wipes the prewarm cache — poison included — so the cached
+    // wrong-hour roots cannot survive into the NEXT frame either. A reset
+    // cache is therefore the correct post-refusal state, and asserting it
+    // pins the reset: skipping the reset would leave the poison marker (a
+    // nonzero `skipped_root_rows`) behind.
+    assert_eq!(
         wrong_hour
             .trackers
             .characters_leaders_cabinet_live
             .roots
             .skipped_root_rows,
         0,
-        "a wrong-hour prewarm must refuse its roots; the label is the only \
-         thing that differs between these two frames"
+        "the refusal must reset d47's prewarm cache; a surviving poison \
+         marker means wrong-hour roots survived the refusal"
+    );
+    assert_eq!(
+        wrong_hour
+            .trackers
+            .characters_leaders_cabinet_live
+            .roots
+            .stable_root_count(),
+        0,
+        "no root observed in the wrong hour may survive the refusal"
     );
     // Nothing tore, so the TEAR machinery cannot have produced the refusal
     // above. `CountOnly` is that machinery with the generalised hour-label

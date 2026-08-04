@@ -732,26 +732,29 @@ fn the_already_gapped_set_is_read_from_the_frames_own_records() {
 /// `HOUR_LABEL_MISMATCH_POLICY` to `Refuse` leaves all twelve tests in this
 /// module passing.
 ///
-/// So the constant is unguarded, and it is not a cosmetic one. Turning it on
-/// refuses every domain whose bracket read an hour other than its frame's
-/// label, and the cost of that is bounded only between 4.6% and 35.5% of
-/// published domain-hours — on top of a capture that already loses 32.6% to
-/// backpressure. An accidental flip would be a large, silent, and very
-/// plausible-looking regression: fewer rows, no new failures, every test green.
+/// So the constant is unguarded, and it is not a cosmetic one. In either
+/// direction an accidental flip is a silent semantic change: to `CountOnly`,
+/// mislabelled data quietly re-admitted to the stream — the exact condition
+/// the owner's ruling names a stop condition; to a stricter future policy, a
+/// plausible-looking completeness regression with every test green.
 ///
-/// Flipping it is a deliberate act that needs
-/// `lw_hour_label_mismatch_brackets / lw_bracket_count` from a live capture
-/// first. This test is what makes the flip deliberate rather than possible.
+/// Capture t20 (2026-08-04, `runs/live_unlock/t20`) priced the refusal the
+/// old docstring said was unpriceable without the instrument: summed over its
+/// 252 lane-wall probes, `lw_hour_label_mismatch_domains` = 574 against
+/// `lw_bracketed_domains` = 17,136 — 3.35% of bracketed domain-reads, worst
+/// frame 44 of 68. With the price known, keeping mislabelled hours was no
+/// longer defensible, so the shipped policy is `Refuse`. This test is what
+/// makes any change back a deliberate act rather than a possible one.
 ///
-/// MUTATION: set `HOUR_LABEL_MISMATCH_POLICY` to `Refuse` and this fails.
+/// MUTATION: set `HOUR_LABEL_MISMATCH_POLICY` to `CountOnly` and this fails.
 #[test]
-fn the_shipped_policy_is_count_only_until_a_capture_prices_the_refusal() {
+fn the_shipped_policy_refuses_mislabelled_hours_since_t20_priced_them() {
     assert_eq!(
         HOUR_LABEL_MISMATCH_POLICY,
-        HourLabelMismatchPolicy::CountOnly,
-        "the refusal costs between 4.6% and 35.5% of published domain-hours and \
-         that band has not been narrowed by a capture yet; flip this only with \
-         the measured lw_hour_label_mismatch_brackets / lw_bracket_count ratio \
-         in hand"
+        HourLabelMismatchPolicy::Refuse,
+        "t20 measured the refusal at 3.35% of bracketed domain-reads (574 of \
+         17,136) and the owner's hour-misattribution ruling makes keeping \
+         mislabelled hours a stop condition; reverting to CountOnly re-admits \
+         them and needs an owner decision, not an edit"
     );
 }
