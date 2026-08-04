@@ -35,7 +35,7 @@ struct AuditReport {
     section_e_target_label: TargetLabelSection,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ParseError {
     offset: u64,
     error: String,
@@ -72,6 +72,20 @@ struct ExactInstrument {
     /// a nonzero value here means the numbers above are built from a population
     /// the producer did not describe, and must not be read as a rate.
     partial_frames: u64,
+    /// How many domain-hours each frame mislabelled, as a distribution.
+    ///
+    /// The totals above cannot answer the question the defect is actually
+    /// diagnosed by: 2,005 mislabelled domain-hours is a frame that lost its
+    /// whole sweep 30 times over, or 250 frames that each lost a handful, and
+    /// those have different causes and different fixes. t21 is the second
+    /// shape sharpened -- 62 frames lost exactly 8 (one serial tail), 36 lost
+    /// 17..67, and one lost 67 of 68.
+    mismatched_domain_hours_per_frame: Vec<ValueCount>,
+    /// Frames whose EVERY bracketed domain read outside the label. The sweep
+    /// ran entirely in another hour; nothing in the frame is attributable.
+    wholly_mislabelled_frames: u64,
+    /// Frames that mislabelled some but not all of their bracketed domains.
+    partially_mislabelled_frames: u64,
 }
 
 #[derive(Serialize)]
@@ -149,12 +163,39 @@ struct ClassificationSection {
     notable_frames_suppressed: u64,
 }
 
+/// Every frame, counted by which of the THREE per-frame witnesses it carries.
+///
+/// It was two axes, and the missing one was the only one that can see the
+/// defect this tool is named after. `lw_hour_label_skew_abs` is a frame-START
+/// reading: it fires only when the label was already wrong before the sweep
+/// began, which the producer makes nearly impossible -- the label is claimed
+/// from the latest observed hour a few microseconds earlier. On t21 it is 0 on
+/// all 315 probe-carrying frames, so the whole `label_skew=yes` row was empty
+/// while 98 frames mislabelled 2,005 domain-hours. A Torn gap caught 93 of
+/// those by luck (some OTHER reader happened to straddle the same boundary);
+/// the remaining 5 -- including the worst frame in the capture, which
+/// mislabelled 67 of its 68 domain-hours and tore nothing -- were counted in
+/// `neither`, the same cell as a perfectly clean frame.
+///
+/// So the exact instrument is an axis now, and `mismatch_with_no_other_witness`
+/// states the size of the old blind spot in every report rather than leaving it
+/// to be rediscovered.
 #[derive(Default, Serialize)]
 struct ClassificationTable {
     neither: u64,
     label_skew_only: u64,
     torn_witness_only: u64,
     both: u64,
+    mismatch_only: u64,
+    mismatch_and_torn: u64,
+    mismatch_and_label_skew: u64,
+    mismatch_and_label_skew_and_torn: u64,
+    /// Frames a `label_skew x torn` view alone calls clean while the exact
+    /// per-frame instrument says they mislabelled at least one domain-hour.
+    /// Identical to `mismatch_only` by construction, and named separately
+    /// because that is the number the reader needs, not an inference from a
+    /// cell name.
+    mismatch_with_no_other_witness: u64,
 }
 
 #[derive(Serialize)]
@@ -163,6 +204,12 @@ struct NotableFrame {
     sequence_end: u64,
     label: i32,
     skew_abs: Option<u64>,
+    /// The exact instrument, on the line. A notable frame that is notable
+    /// BECAUSE of it must say so; without these two the reader can only count
+    /// `HourLabelMismatch` gap entries, which is the same number only while the
+    /// producer refuses every mismatch.
+    mismatch_domains: Option<u64>,
+    bracketed_domains: Option<u64>,
     worker_span_us: Option<u64>,
     prewarm_us: Option<u64>,
     gaps: Vec<FrameGap>,
@@ -296,6 +343,9 @@ struct AuditState {
     exact_bracketed_domains: u64,
     exact_unusable_label_frames: u64,
     exact_instrument_partial_frames: u64,
+    exact_mismatch_distribution: BTreeMap<u64, u64>,
+    exact_wholly_mislabelled_frames: u64,
+    exact_partially_mislabelled_frames: u64,
 }
 
 fn main() {
@@ -753,6 +803,11 @@ fn finalize_frame(state: &mut AuditState) {
     // 0". The producer emits the three together, but nothing on the wire forces
     // it to, so the reader requires it and counts a frame that breaks the
     // contract as a parse error rather than folding it in.
+    // Whether the exact instrument says THIS frame mislabelled anything. `None`
+    // when the capture predates the instrument or the probe is incomplete --
+    // which is not `false`, and is why the classification below treats it as
+    // "no witness available" rather than folding it into the clean cell.
+    let mut exact_mismatch = None;
     if let Some(probe) = frame.lane_wall.as_ref() {
         match (
             probe.lw_hour_label_mismatch_domains,
@@ -765,13 +820,28 @@ fn finalize_frame(state: &mut AuditState) {
                     state.exact_mismatch_domains.saturating_add(domains);
                 state.exact_bracketed_domains =
                     state.exact_bracketed_domains.saturating_add(bracketed);
+                *state.exact_mismatch_distribution.entry(domains).or_default() += 1;
                 if domains > 0 {
                     state.exact_mismatch_frames = state.exact_mismatch_frames.saturating_add(1);
+                    // WHOLLY means every bracketed domain, not "a lot". The
+                    // comparison is against this frame's own denominator
+                    // because a frame does not always bracket the same number
+                    // of domains -- a disabled or unscheduled domain holds no
+                    // bracket, so a fixed 68 would misclassify the moment the
+                    // roster changes.
+                    if domains >= bracketed && bracketed > 0 {
+                        state.exact_wholly_mislabelled_frames =
+                            state.exact_wholly_mislabelled_frames.saturating_add(1);
+                    } else {
+                        state.exact_partially_mislabelled_frames =
+                            state.exact_partially_mislabelled_frames.saturating_add(1);
+                    }
                 }
                 if unusable != 0 {
                     state.exact_unusable_label_frames =
                         state.exact_unusable_label_frames.saturating_add(1);
                 }
+                exact_mismatch = Some(domains > 0);
             }
             (None, None, None) => {}
             _ => {
@@ -780,12 +850,20 @@ fn finalize_frame(state: &mut AuditState) {
             }
         }
     }
-    
-    match (label_skew, torn) {
-        (false, false) => state.classification.neither += 1,
-        (true, false) => state.classification.label_skew_only += 1,
-        (false, true) => state.classification.torn_witness_only += 1,
-        (true, true) => state.classification.both += 1,
+    let mismatch = exact_mismatch.unwrap_or(false);
+
+    match (mismatch, label_skew, torn) {
+        (false, false, false) => state.classification.neither += 1,
+        (false, true, false) => state.classification.label_skew_only += 1,
+        (false, false, true) => state.classification.torn_witness_only += 1,
+        (false, true, true) => state.classification.both += 1,
+        (true, false, false) => {
+            state.classification.mismatch_only += 1;
+            state.classification.mismatch_with_no_other_witness += 1;
+        }
+        (true, false, true) => state.classification.mismatch_and_torn += 1,
+        (true, true, false) => state.classification.mismatch_and_label_skew += 1,
+        (true, true, true) => state.classification.mismatch_and_label_skew_and_torn += 1,
     }
     if torn {
         state.torn_frames = state.torn_frames.saturating_add(1);
@@ -808,7 +886,11 @@ fn finalize_frame(state: &mut AuditState) {
         gap_reasons,
     });
 
-    if label_skew || torn {
+    // `mismatch` joins the gate for the reason the axis was added: a frame that
+    // mislabelled 67 of 68 domain-hours and happened to tear nothing was not
+    // listed here at all, so the ONE frame a reader most needs to see was the
+    // one the report omitted.
+    if label_skew || torn || mismatch {
         let notable = NotableFrame {
             sequence_start,
             sequence_end: frame.sequence_end,
@@ -817,6 +899,14 @@ fn finalize_frame(state: &mut AuditState) {
                 .lane_wall
                 .as_ref()
                 .and_then(|probe| probe.lw_hour_label_skew_abs),
+            mismatch_domains: frame
+                .lane_wall
+                .as_ref()
+                .and_then(|probe| probe.lw_hour_label_mismatch_domains),
+            bracketed_domains: frame
+                .lane_wall
+                .as_ref()
+                .and_then(|probe| probe.lw_bracketed_domains),
             worker_span_us: frame
                 .lane_wall
                 .as_ref()
@@ -871,6 +961,13 @@ fn finish_report(input: &Path, mut state: AuditState) -> AuditReport {
                 bracketed_domain_hours: state.exact_bracketed_domains,
                 unusable_label_frames: state.exact_unusable_label_frames,
                 partial_frames: state.exact_instrument_partial_frames,
+                mismatched_domain_hours_per_frame: state
+                    .exact_mismatch_distribution
+                    .into_iter()
+                    .map(|(value, count)| ValueCount { value, count })
+                    .collect(),
+                wholly_mislabelled_frames: state.exact_wholly_mislabelled_frames,
+                partially_mislabelled_frames: state.exact_partially_mislabelled_frames,
             },
         },
         section_b_domain_gaps: GapCensus {
@@ -1009,6 +1106,23 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
         "  frames whose label the calendar refused (rule not applicable): {}",
         e.unusable_label_frames
     )?;
+    writeln!(
+        out,
+        "  wholly mislabelled frames (every bracketed domain): {}",
+        e.wholly_mislabelled_frames
+    )?;
+    writeln!(
+        out,
+        "  partially mislabelled frames: {}",
+        e.partially_mislabelled_frames
+    )?;
+    writeln!(out, "  mislabelled domain-hours per frame -> frames:")?;
+    if e.mismatched_domain_hours_per_frame.is_empty() {
+        writeln!(out, "    (none)")?;
+    }
+    for row in &e.mismatched_domain_hours_per_frame {
+        writeln!(out, "    {} -> {}", row.value, row.count)?;
+    }
     if e.partial_frames != 0 {
         writeln!(
             out,
@@ -1096,21 +1210,45 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
     )?;
 
     let d = &report.section_d_classification;
-    writeln!(out, "\nD. Label-skew x Torn-witness classification")?;
+    writeln!(
+        out,
+        "\nD. Exact-mismatch x Label-skew x Torn-witness classification"
+    )?;
     writeln!(
         out,
         "(skew is |current - label|, so this is a DISAGREEMENT, not a direction)"
     )?;
-    writeln!(out, "                         torn=no  torn=yes")?;
     writeln!(
         out,
-        "label_skew=no   {:>12} {:>9}",
+        "(mismatch is lw_hour_label_mismatch_domains > 0 -- the per-bracket \
+         instrument, which needs no luck to fire)"
+    )?;
+    writeln!(out, "                                      torn=no  torn=yes")?;
+    writeln!(
+        out,
+        "mismatch=no   label_skew=no   {:>12} {:>9}",
         d.table.neither, d.table.torn_witness_only
     )?;
     writeln!(
         out,
-        "label_skew=yes  {:>12} {:>9}",
+        "mismatch=no   label_skew=yes  {:>12} {:>9}",
         d.table.label_skew_only, d.table.both
+    )?;
+    writeln!(
+        out,
+        "mismatch=yes  label_skew=no   {:>12} {:>9}",
+        d.table.mismatch_only, d.table.mismatch_and_torn
+    )?;
+    writeln!(
+        out,
+        "mismatch=yes  label_skew=yes  {:>12} {:>9}",
+        d.table.mismatch_and_label_skew, d.table.mismatch_and_label_skew_and_torn
+    )?;
+    writeln!(
+        out,
+        "frames a label_skew x torn view alone would call clean while they \
+         mislabelled domain-hours: {}",
+        d.table.mismatch_with_no_other_witness
     )?;
     writeln!(out, "notable frames (up to {NOTABLE_FRAME_LIMIT}):")?;
     if d.notable_frames.is_empty() {
@@ -1125,10 +1263,12 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
             .join(",");
         writeln!(
             out,
-            "  seq={}..{} label={} skew_abs={} worker_span_us={} prewarm_us={} gaps={} data={}",
+            "  seq={}..{} label={} mismatch={}/{} skew_abs={} worker_span_us={} prewarm_us={} gaps={} data={}",
             frame.sequence_start,
             frame.sequence_end,
             frame.label,
+            optional_u64(frame.mismatch_domains),
+            optional_u64(frame.bracketed_domains),
             optional_u64(frame.skew_abs),
             optional_u64(frame.worker_span_us),
             optional_u64(frame.prewarm_us),
@@ -1310,6 +1450,201 @@ fn gap_record_detail(gap: DomainGapRecordV1) -> GapRecordDetail {
         queue_depth: gap.queue_depth,
         queue_dropped: gap.queue_dropped,
         outcome_ordinal: gap.outcome_ordinal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compact_contract::diagnostic_channel::{encode_units, DiagUnit};
+    use compact_contract::{
+        COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN,
+        COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_RECORD_MAGIC, COMPACT_RECORD_VERSION,
+    };
+
+    /// A real t21 label, so the calendar admits it and `lw_hour_label_unusable`
+    /// stays 0 -- a rejected label would suppress the very rule under test.
+    const HOUR_A: i32 = 60_831_056;
+    const HOUR_B: i32 = 60_831_057;
+
+    fn record(sequence: u64, hour: i32, domain: u16, rtype: u16, flags: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(COMPACT_RECORD_MAGIC);
+        out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+        out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&sequence.to_le_bytes());
+        out.extend_from_slice(&hour.to_le_bytes());
+        out.extend_from_slice(&domain.to_le_bytes());
+        out.extend_from_slice(&rtype.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn lane_wall_payload(units: &[DiagUnit]) -> Vec<u8> {
+        let mut payload = vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN];
+        payload.extend_from_slice(COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC);
+        payload.extend_from_slice(&COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2.to_le_bytes());
+        payload.extend_from_slice(&encode_units(units).expect("units encode"));
+        payload
+    }
+
+    fn probe_units(exact: Option<(u64, u64)>, skew_abs: u64) -> Vec<DiagUnit> {
+        let mut units = vec![
+            DiagUnit::counter("lw_frames", 1),
+            DiagUnit::counter("lw_worker_span_us", 57_554),
+            DiagUnit::counter("lw_prewarm_us", 23_641),
+            DiagUnit::counter("lw_hour_label_skew_abs", skew_abs),
+            DiagUnit::counter("lw_hour_label_skew_missing", 0),
+        ];
+        if let Some((mismatch, bracketed)) = exact {
+            units.push(DiagUnit::counter("lw_hour_label_mismatch_domains", mismatch));
+            units.push(DiagUnit::counter("lw_bracketed_domains", bracketed));
+            units.push(DiagUnit::counter("lw_hour_label_unusable", 0));
+        }
+        units
+    }
+
+    /// One frame: its lane-wall probe, then FRAME_END. No gap records, so the
+    /// ONLY thing that can make the frame notable is the exact instrument.
+    fn frame(sequence: &mut u64, hour: i32, exact: Option<(u64, u64)>, skew_abs: u64) -> Vec<u8> {
+        let mut out = record(
+            *sequence,
+            hour,
+            RC_PROBE_DOMAIN_ID,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &lane_wall_payload(&probe_units(exact, skew_abs)),
+        );
+        *sequence += 1;
+        out.extend_from_slice(&record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        *sequence += 1;
+        out
+    }
+
+    fn audit(stream: &[u8]) -> AuditReport {
+        let mut state = AuditState::default();
+        scan_stream(&mut &stream[..], &mut state).expect("scan");
+        finish_report(Path::new("synthetic"), state)
+    }
+
+    /// THE REGRESSION. A frame that mislabelled 67 of its 68 domain-hours, tore
+    /// nothing, and started its sweep in its own hour (`skew_abs == 0`, which is
+    /// what t21 measured on all 315 probe-carrying frames) must not land in the
+    /// same cell as a clean frame, and must be listed.
+    ///
+    /// MUTATION RUN: restore the classification to `match (label_skew, torn)`
+    /// and drop `mismatch` from the notable gate -- i.e. the code as it stood
+    /// before this lane. Observed failure:
+    ///   `the mislabelled frame was counted clean: neither=2` (left 2, right 1)
+    /// and, with only the notable gate reverted:
+    ///   `the mislabelled frame was not listed` (left 0, right 1).
+    #[test]
+    fn a_mislabelled_frame_with_no_tear_is_neither_counted_clean_nor_omitted() {
+        let mut sequence = 0u64;
+        let mut stream = frame(&mut sequence, HOUR_A, Some((67, 68)), 0);
+        stream.extend_from_slice(&frame(&mut sequence, HOUR_B, Some((0, 68)), 0));
+        let report = audit(&stream);
+
+        assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
+        assert_eq!(report.section_a_frame_census.total_frames, 2);
+        let table = &report.section_d_classification.table;
+        assert_eq!(
+            table.neither, 1,
+            "the mislabelled frame was counted clean: neither={}",
+            table.neither
+        );
+        assert_eq!(table.mismatch_only, 1);
+        assert_eq!(table.mismatch_with_no_other_witness, 1);
+        assert_eq!(table.torn_witness_only, 0);
+        assert_eq!(table.mismatch_and_torn, 0);
+
+        let notable = &report.section_d_classification.notable_frames;
+        assert_eq!(notable.len(), 1, "the mislabelled frame was not listed");
+        assert_eq!(notable[0].label, HOUR_A);
+        assert_eq!(notable[0].mismatch_domains, Some(67));
+        assert_eq!(notable[0].bracketed_domains, Some(68));
+    }
+
+    /// MUTATION RUN: change `domains >= bracketed` to `domains > bracketed` in
+    /// `finalize_frame`. Observed failure:
+    ///   `assertion `left == right` failed: a frame that mislabelled every
+    ///    bracketed domain was called partial` left: 0 right: 1.
+    #[test]
+    fn wholly_and_partially_mislabelled_frames_are_told_apart() {
+        let mut sequence = 0u64;
+        let mut stream = frame(&mut sequence, HOUR_A, Some((68, 68)), 0);
+        stream.extend_from_slice(&frame(&mut sequence, HOUR_B, Some((8, 68)), 0));
+        let report = audit(&stream);
+        let exact = &report.section_a_frame_census.exact_instrument;
+
+        assert_eq!(
+            exact.wholly_mislabelled_frames, 1,
+            "a frame that mislabelled every bracketed domain was called partial"
+        );
+        assert_eq!(exact.partially_mislabelled_frames, 1);
+        assert_eq!(exact.frames_with_a_mismatch, 2);
+        let distribution: Vec<(u64, u64)> = exact
+            .mismatched_domain_hours_per_frame
+            .iter()
+            .map(|row| (row.value, row.count))
+            .collect();
+        assert_eq!(distribution, vec![(8, 1), (68, 1)]);
+    }
+
+    /// The instrument being ABSENT is not the instrument saying zero. A capture
+    /// from a recorder that predates it must stay in the clean cell rather than
+    /// being reported as mismatch-free on evidence that does not exist.
+    ///
+    /// MUTATION RUN: make `mismatch` default to `true` when the instrument is
+    /// absent (`exact_mismatch.unwrap_or(true)`). Observed failure:
+    ///   `assertion `left == right` failed: a frame with no exact instrument
+    ///    was classified as mismatching` left: 0 right: 1.
+    #[test]
+    fn an_absent_exact_instrument_is_not_read_as_a_mismatch() {
+        let mut sequence = 0u64;
+        let stream = frame(&mut sequence, HOUR_A, None, 0);
+        let report = audit(&stream);
+        let table = &report.section_d_classification.table;
+
+        assert_eq!(
+            table.neither, 1,
+            "a frame with no exact instrument was classified as mismatching"
+        );
+        assert_eq!(table.mismatch_only, 0);
+        assert_eq!(
+            report
+                .section_a_frame_census
+                .exact_instrument
+                .frames_carrying_it,
+            0
+        );
+        assert!(report.section_d_classification.notable_frames.is_empty());
+    }
+
+    /// The old two axes still work and still occupy their own cells -- the fix
+    /// ADDS an axis, and a frame whose skew really is nonzero must not be
+    /// swallowed by the new one.
+    #[test]
+    fn a_nonzero_label_skew_still_has_its_own_cell() {
+        let mut sequence = 0u64;
+        let mut stream = frame(&mut sequence, HOUR_A, Some((0, 68)), 1);
+        stream.extend_from_slice(&frame(&mut sequence, HOUR_B, Some((4, 68)), 1));
+        let report = audit(&stream);
+        let table = &report.section_d_classification.table;
+
+        assert_eq!(table.label_skew_only, 1);
+        assert_eq!(table.mismatch_and_label_skew, 1);
+        assert_eq!(table.mismatch_with_no_other_witness, 0);
+        assert_eq!(table.neither, 0);
     }
 }
 
