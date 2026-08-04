@@ -255,8 +255,8 @@ foreach ($required in @(
     'CAPTURE_READY_ACK_MAGIC',
     'CAPTURE_READY_LEN',
     'CAPTURE_READY_ACK_LEN',
-    'Get-PassiveReadyPayloadSha256',
-    'Get-PassiveReadyAckSha256',
+    'Get-PassiveCaptureReadyPayloadSha256',
+    'Get-PassiveCaptureReadyAckSha256',
     'Assert-PassiveExactPropertySet'
 )) {
     Assert-Policy `
