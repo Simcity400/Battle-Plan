@@ -124,7 +124,17 @@ pub const SO_D65_PARTIAL_WALK_FAILURE: usize = 42;
 /// Sample word: `(reason_code << 32) | discarded_this_frame`, where the reason
 /// code is the LAST reason decided in the frame.
 pub const SO_D55_TERMINAL_RECORD_UNPUBLISHABLE: usize = 43;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 44;
+/// d65 / d66 refused to walk because the build profile the frame is running
+/// against is not the one their offsets were measured against.
+///
+/// NOT a torn read: nothing was read. Every vtable RVA and member offset the
+/// walk would use is unverified for this build, so publishing its rows would
+/// present an unverified read as the domain's answer. The sibling d52 walk over
+/// the same game objects already refuses here. Sample word: the incoming frame
+/// status flags.
+pub const SO_D65_PARTIAL_PROFILE_MISMATCH: usize = 44;
+pub const SO_D66_PARTIAL_PROFILE_MISMATCH: usize = 45;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 46;
 
 /// Unit names, index-aligned with the ids. `<name>` counts introductions
 /// (summed in the recorder); `<name>_sample` (emitted only when a site
@@ -176,6 +186,8 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d48_lane_skipped_resource_rows",
     "so_d65_partial_walk_failure",
     "so_d55_terminal_record_unpublishable",
+    "so_d65_partial_profile_mismatch",
+    "so_d66_partial_profile_mismatch",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -965,6 +977,14 @@ mod tests {
             (
                 SO_D55_TERMINAL_RECORD_UNPUBLISHABLE,
                 "so_d55_terminal_record_unpublishable",
+            ),
+            (
+                SO_D65_PARTIAL_PROFILE_MISMATCH,
+                "so_d65_partial_profile_mismatch",
+            ),
+            (
+                SO_D66_PARTIAL_PROFILE_MISMATCH,
+                "so_d66_partial_profile_mismatch",
             ),
         ];
         for (id, name) in expected {
