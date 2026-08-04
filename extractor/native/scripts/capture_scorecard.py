@@ -98,6 +98,20 @@ def score(manifest):
     observed = int(manifest.get("unique_game_hour_count", 0) or 0)
     skipped_declared = int(manifest.get("skipped_game_hours", 0) or 0)
 
+    def _span(record, start_key, end_key):
+        start, end = record.get(start_key), record.get(end_key)
+        if start is None or end is None or end < start:
+            return 0
+        return end - start + 1
+
+    # Domain-hours, not records. An H4DG range is INCLUSIVE and can be
+    # coalesced across several hours, so a record count understates the loss --
+    # t17 carries 7238 records over 8054 domain-hours.
+    gap_outcome_hours = collections.Counter()
+    for outcome in stream.get("domain_gap_outcomes", []) or []:
+        gap_outcome_hours[outcome.get("reason", "?")] += _span(
+            outcome, "range_start_hour_raw", "range_end_hour_raw")
+
     gap_ledger = collections.Counter(
         gap.get("reason", "?") for gap in stream.get("gaps", []) or []
     )
@@ -237,6 +251,41 @@ def score(manifest):
     artifact = manifest.get("replay_artifact", {}) or {}
     hourly = manifest.get("hourly_requirement", {}) or {}
 
+    # A degraded-frame count on its own says nothing actionable: 505 of 592 is
+    # either one broken domain repeated 505 times or 505 unrelated events, and
+    # those call for opposite responses. Name the offenders and how often each
+    # appears, so the count carries its own explanation.
+    degraded_outcomes = stream.get("frame_degraded_outcomes", []) or []
+    degraded_by_domain = collections.Counter()
+    for frame in degraded_outcomes:
+        for offender in frame.get("domains", []) or []:
+            degraded_by_domain[offender.get("domain_id")] += 1
+    name_by_id = {
+        info.get("domain_id"): name for name, info in per_domain.items()
+    }
+    degraded_detail = ", ".join(
+        f"d{domain_id} {name_by_id.get(domain_id, '?')}={count}"
+        for domain_id, count in degraded_by_domain.most_common()
+    ) or "none"
+    # A domain that offends in EVERY degraded frame is a standing condition, not
+    # an event; separating those says how many frames would still be degraded if
+    # it were fixed.
+    always_degrading = {
+        domain_id for domain_id, count in degraded_by_domain.items()
+        if degraded_outcomes and count == len(degraded_outcomes)
+    }
+    frames_degraded_by_others = sum(
+        1 for frame in degraded_outcomes
+        if {offender.get("domain_id") for offender in frame.get("domains", []) or []}
+        - always_degrading
+    )
+    if always_degrading:
+        degraded_detail += (
+            "; always-degrading: "
+            + ", ".join(f"d{i}" for i in sorted(always_degrading))
+            + f"; {frames_degraded_by_others} of {len(degraded_outcomes)} frames "
+              "would still be degraded without them")
+
     # A production capture must not expect a domain the owner ruled out of
     # capture scope: if it does, some roster path did not get the deschedule and
     # the capture is about to count hundreds of empty frames against a domain
@@ -289,14 +338,120 @@ def score(manifest):
                     f"the manifest records d{extra[0]} {extra[1]} as descheduled but the "
                     "checkout's registry does not")
 
-    # The two gap ledgers describe the same stream and must agree wherever they
-    # share a reason; a divergence means one of them is not counting something.
-    shared = set(gap_ledger) & set(gap_outcomes)
-    ledger_disagreements = {
-        reason: (gap_ledger[reason], gap_outcomes[reason])
-        for reason in sorted(shared)
-        if gap_ledger[reason] != gap_outcomes[reason]
+    # The two ledgers are NOT two counts of the same thing, and comparing them
+    # per-reason for equality -- which this axis used to do -- overstates loss.
+    #
+    # `domain_gap_outcomes` is one entry per H4DG record: a scheduled domain's
+    # own terminal statement that it emitted NO data for those hours. That is
+    # the gap count.
+    #
+    # `gaps` is the host-derived ledger, and `derive_gap_records` builds it as a
+    # SUPERSET: every H4DG projected into it, PLUS whole-clock skipped hours,
+    # PLUS one record per domain-hour that DID emit data and carried a failure
+    # status bit. Those last are annotations on delivered data, not absences.
+    #
+    # On t17 the old axis read `source_unavailable: 4703 vs 501` and invited the
+    # reading that 4202 domain-hours were lost. They were not: all 4202 have a
+    # DOMAIN_DATA record in the stream. The 501 are the real gaps.
+    #
+    # The reasons are NOT the join key: the recorder renames some on the way in
+    # (an H4DG `torn` projects to a ledger `torn_sweep`, `overrun` to
+    # `backpressure`), so subtracting per reason invents a difference where
+    # there is none. Restating that mapping here would be a second copy of the
+    # recorder's table, free to drift from it silently.
+    #
+    # The (hour, domain) PAIR is a sound join key and needs no table. A derived
+    # record is backed by a producer outcome exactly when the pairs it claims
+    # are claimed by an H4DG for the same domain; anything else it claims is
+    # host-derived. The recorder guarantees at most one outcome per domain-hour,
+    # so the split is unambiguous.
+    outcome_pairs = set()
+    for outcome in stream.get("domain_gap_outcomes", []) or []:
+        domain_id = outcome.get("domain_id")
+        start = outcome.get("range_start_hour_raw")
+        end = outcome.get("range_end_hour_raw")
+        if domain_id is None or start is None or end is None or end < start:
+            continue
+        for hour in range(start, end + 1):
+            outcome_pairs.add((hour, domain_id))
+
+    # The host-derived arm is not one thing. `derive_gap_records` raises a
+    # COVERAGE witness when a domain-hour produced no PERF or too few DATA, and
+    # a STATUS witness when it produced its records and flagged them. The first
+    # is an absence the producer never named; the second is delivered data. They
+    # must not share an axis -- counting a coverage shortfall as a delivery is
+    # the same overstatement, pointing the other way, as the equality axis this
+    # replaced.
+    #
+    # The witness names the difference itself, so no reason table is needed: a
+    # coverage witness carries the observed/expected record counts it is
+    # asserting, and arm (c) only ever raises one when something was short.
+    COVERAGE_WITNESSES = {"coverage", "coverage_and_status"}
+
+    claimed_pairs = set()
+    flagged_pairs = set()
+    flagged_by_reason = collections.Counter()
+    host_absent_pairs = set()
+    host_absent_by_reason = collections.Counter()
+    for record in stream.get("gaps", []) or []:
+        start, end = record.get("hour_start"), record.get("hour_end")
+        domains = record.get("domains") or []
+        if start is None or end is None or end < start:
+            continue
+        if not domains:
+            continue  # a global whole-clock hour, not a per-domain outcome
+        witness = record.get("witness") or {}
+        is_absence = witness.get("kind") in COVERAGE_WITNESSES
+        for domain_id in domains:
+            for hour in range(start, end + 1):
+                if (hour, domain_id) in outcome_pairs:
+                    claimed_pairs.add((hour, domain_id))
+                elif is_absence:
+                    host_absent_pairs.add((hour, domain_id))
+                    host_absent_by_reason[record.get("reason", "?")] += 1
+                else:
+                    flagged_pairs.add((hour, domain_id))
+                    flagged_by_reason[record.get("reason", "?")] += 1
+
+    # Every producer outcome must reach the derived ledger. This is the real
+    # reconciliation the old equality axis was reaching for, and unlike it a
+    # nonzero count here is genuine loss: a domain-hour the producer said it
+    # could not fill, that the ledger the replay is graded against never heard
+    # about.
+    unprojected_outcome_hours = len(outcome_pairs - claimed_pairs)
+    flagged_delivered_hours = sum(flagged_by_reason.values())
+    host_absent_hours = sum(host_absent_by_reason.values())
+    outcome_hours = sum(gap_outcome_hours.values())
+
+    # A flagged delivery whose payload was then rejected from the fold has an
+    # envelope and no content. It is counted on the exclusion axis too; said
+    # here so the flagged number is not read as "delivered but usable".
+    excluded_records = (excluded.get("records") or [])
+    excluded_pairs = {
+        (record.get("game_hour_raw"), record.get("domain_id"))
+        for record in excluded_records
     }
+    def _as_id(key):
+        try:
+            return int(key)
+        except (TypeError, ValueError):
+            return None
+
+    excluded_detail = ", ".join(
+        f"d{key} {name_by_id.get(_as_id(key), '?')}={count}"
+        for key, count in sorted(
+            (excluded.get("per_domain") or {}).items(),
+            key=lambda item: (_as_id(item[0]) is None, _as_id(item[0]) or 0, item[0]))
+    ) or "none"
+    if excluded_pairs:
+        also_flagged = len(excluded_pairs & flagged_pairs)
+        also_gapped = len(excluded_pairs & outcome_pairs)
+        excluded_detail += (
+            f"; {len(excluded_pairs)} distinct domain-hours"
+            f" ({also_flagged} also carry a producer failure status,"
+            f" {also_gapped} sit inside a producer gap,"
+            f" {len(excluded_pairs) - also_flagged - also_gapped} are otherwise"
+            " indistinguishable from a clean delivery)")
 
     axes = [
         ("hours the clock advanced but no frame observed", hours_unobserved,
@@ -306,8 +461,10 @@ def score(manifest):
          f"manifest declares skipped_game_hours={skipped_declared}, "
          f"ledger carries {gap_ledger.get('skipped_hour', 0)} skipped_hour "
          f"records covering {skipped_hours_covered} hours"),
-        ("domain-hours with a gap instead of data", sum(gap_outcomes.values()),
-         ", ".join(f"{r}={n}" for r, n in sorted(gap_outcomes.items())) or "none"),
+        ("domain-hours with a gap instead of data", outcome_hours,
+         (", ".join(f"{r}={n}" for r, n in sorted(gap_outcome_hours.items())) or "none")
+         + f"  [{sum(gap_outcomes.values())} H4DG records over inclusive ranges;"
+           f" a coalesced range covers more than one hour]"),
         ("domain-hours no ledger accounts for", unresolved_domain_hours,
          "; ".join(f"{n} short by {v}" if v > 0 else f"{n} over by {-v}"
                    for n, v in sorted(unresolved_by_domain.items()))
@@ -338,27 +495,56 @@ def score(manifest):
         ("descheduled domains that reported data", len(descheduled_but_reported),
          ", ".join(descheduled_but_reported) or "none"),
         ("refused frames", int(stream.get("frame_refused_record_count", 0) or 0), ""),
-        ("degraded frames", int(stream.get("frame_degraded_record_count", 0) or 0), ""),
-        ("records excluded from the seal", int(excluded.get("total_records", 0) or 0), ""),
-        ("gap ledgers disagreeing on a shared reason", len(ledger_disagreements),
-         json.dumps(ledger_disagreements) if ledger_disagreements else "none"),
+        ("degraded frames", int(stream.get("frame_degraded_record_count", 0) or 0),
+         degraded_detail),
+        ("records excluded from the seal", int(excluded.get("total_records", 0) or 0),
+         excluded_detail),
+        ("producer gap domain-hours the derived ledger never claimed",
+         unprojected_outcome_hours,
+         "an H4DG outcome that no derived record covers: the replay is graded "
+         "against a ledger that has not heard of it"),
+        ("domain-hours absent with no producer statement", host_absent_hours,
+         (", ".join(f"{r}={n}" for r, n in sorted(host_absent_by_reason.items())) or "none")
+         + "  [the host derived the absence from missing PERF/DATA; no producer "
+           "said why. Worse than a gap, not better: a named gap is evidence]"),
+        ("domain-hours delivered with a producer failure status",
+         flagged_delivered_hours,
+         (", ".join(f"{r}={n}" for r, n in sorted(flagged_by_reason.items())) or "none")
+         + "  [these DID emit a data record; they are not gaps, and they are "
+           "not clean either. The split is by CANONICAL reason, which is a "
+           "priority order over the status word, not a partition of it: a "
+           "domain-hour carrying both source_unavailable and partial_data is "
+           "counted once, under source_unavailable. Read partial_data as a "
+           "floor, never as the partial-data population]"),
         ("parse errors", len(manifest.get("parse_errors", []) or []), ""),
         ("ordering errors", len(manifest.get("ordering_errors", []) or []), ""),
         ("collector control errors",
          len(manifest.get("collector_control_errors", []) or []), ""),
         ("domain coverage errors",
          len((stream.get("domain_coverage", {}) or {}).get("errors", []) or []), ""),
-        ("replay gate problems", len(artifact.get("gate_problems", []) or []), ""),
-        ("hourly requirement problems", len(hourly.get("problems", []) or []), ""),
+        ("replay gate problems", len(artifact.get("gate_problems", []) or []),
+         ", ".join(artifact.get("gate_problems", []) or []) or "none"),
+        # `hourly_requirement.problems` is the WHOLE replay gate despite its
+        # name -- `requested_game_hours` governs exactly one of its checks. The
+        # old label said "hourly requirement problems", which sent a reader
+        # after the hour floor for a failure that had nothing to do with it.
+        ("replay gate problems as sealed under hourly_requirement",
+         len(hourly.get("problems", []) or []),
+         ", ".join(hourly.get("problems", []) or []) or "none"),
     ]
 
     # A recovery replay is a failed seal wearing a replay's name.
     if artifact.get("recovery"):
         axes.append(("replay is a recovery artifact, not a promotable one", 1, ""))
-    # An hourly requirement of zero hours passes without asserting anything.
+    # The hour floor asserts nothing at zero. Stated as vacuity, not as a pass:
+    # the old wording claimed the requirement "passed" without ever reading
+    # `met`, and printed that on t17 while `met` was false.
     if hourly.get("required") and not int(hourly.get("requested_game_hours", 0) or 0):
-        axes.append(("hourly requirement passed with zero hours requested", 1,
-                     "the check is vacuous as configured"))
+        axes.append(("game-hour floor requested was zero, so it asserts nothing", 1,
+                     "--min-game-hours 0 cannot distinguish a capture that "
+                     "advanced hundreds of game hours from one whose clock "
+                     "never moved; it is not what failed this run, and "
+                     f"hourly_requirement.met is {hourly.get('met')}"))
 
     return axes
 
