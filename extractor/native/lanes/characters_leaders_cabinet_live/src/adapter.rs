@@ -4,6 +4,7 @@ use crate::domain47_characters_leaders_cabinet_live as compact;
 use crate::extractor::{
     advisor_bucket, read_active_ruler_from_country, read_advisor_raw_fields,
     read_character_raw_fields, read_unit_leader_skill, read_unit_leader_trait_vector,
+    read_vtable_and_character_ptr, CCOUNTRY_LEADER_RAW_FIELDS_SPAN,
     AdvisorRecord, CharacterPortraitRecord, CharacterRecord, CountryLeaderRoleRecord, ExtractError,
     LaneFrame, LaneMemory, ResolvedTypeRoots, UnitLeaderRecord, UnitLeaderTraitRecord,
     CCOUNTRY_LEADER_CHARACTER_PTR_OFF, CUNIT_LEADER_CHARACTER_ID_COPY_OFF, CUNIT_LEADER_ID_OFF,
@@ -235,8 +236,25 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
         .map(|row| (row.trait_addr, row.token.as_str()))
         .collect::<BTreeMap<_, _>>();
 
+    // `known_characters` exists for ONE consumer: the portrait filter at the
+    // end of this function, which admits a portrait row only for a character
+    // some earlier loop saw. Every other loop only ever writes to it. When
+    // there are no portrait inputs the set is built and then never read, so
+    // the ~10k inserts a frame are pure waste; skipping them when the sole
+    // reader has nothing to read is exactly equivalent. (The shared
+    // collector never populates portraits — see
+    // `NativeRootCache::shared_collector_excluded_root_count` — but the
+    // fixture and benchmark entry points do, so this is a guard on the
+    // input, never an assumption that portraits are always empty.)
+    let track_known_characters = !input.portraits.is_empty();
     let mut known_characters = BTreeSet::new();
-    let mut character_identity = BTreeMap::<(u32, u32), (Option<String>, Option<String>)>::new();
+    // Index INTO `frame.characters`, not a second copy of every character's
+    // name and token. The active-ruler loop below backfills an absent ruler
+    // name/token from the character row of the same identity; it needs at
+    // most one identity per country, and there are ~171 countries against
+    // ~5_200 characters. Cloning both strings for every character to serve
+    // that lookup was two heap allocations per character per frame.
+    let mut character_identity = BTreeMap::<(u32, u32), usize>::new();
     let mut characters_by_id = BTreeMap::<u32, CharacterRecord>::new();
     let mut ambiguous_character_ids = BTreeSet::new();
     stats.character_roots_seen = input.characters.len().min(u32::MAX as usize) as u32;
@@ -289,10 +307,16 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
         }
     }
     frame.characters.extend(characters_by_id.into_values());
-    for row in &frame.characters {
+    for (index, row) in frame.characters.iter().enumerate() {
         let key = (row.country_tag_db_id, row.char_id);
-        known_characters.insert(key);
-        character_identity.insert(key, (row.name.clone(), row.token.clone()));
+        if track_known_characters {
+            known_characters.insert(key);
+        }
+        // `characters_by_id` is keyed by char_id, so each char_id occurs
+        // once in `frame.characters` and this key is unique — the map has
+        // no overwrite case to preserve. `frame.characters` is not mutated
+        // again in this function, so the index stays valid at the read.
+        character_identity.insert(key, index);
     }
     stats.character_rows = frame.characters.len().min(u32::MAX as usize) as u32;
 
@@ -300,7 +324,9 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     for root in input.unit_leaders {
         match read_unit_leader(mem, roots, root, &trait_tokens) {
             Ok((leader, traits, missing_trait_tokens)) => {
-                known_characters.insert((leader.country_tag_db_id, leader.char_id));
+                if track_known_characters {
+                    known_characters.insert((leader.country_tag_db_id, leader.char_id));
+                }
                 frame.unit_leader_traits.extend(traits);
                 frame.unit_leaders.push(leader);
                 stats.missing_trait_tokens = stats
@@ -324,7 +350,9 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     for root in input.country_leader_roles {
         match read_country_leader_role(mem, roots, root) {
             Ok(row) => {
-                known_characters.insert((row.country_tag_db_id, row.char_id));
+                if track_known_characters {
+                    known_characters.insert((row.country_tag_db_id, row.char_id));
+                }
                 frame.country_leader_roles.push(row);
             }
             Err(first) => {
@@ -351,17 +379,21 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
             root.ruler_token.clone(),
         ) {
             Ok(mut row) => {
-                if let Some((name, token)) =
-                    character_identity.get(&(row.country_tag_db_id, row.char_id))
+                if let Some(index) = character_identity
+                    .get(&(row.country_tag_db_id, row.char_id))
+                    .copied()
                 {
+                    let identity = &frame.characters[index];
                     if row.name.is_none() {
-                        row.name = name.clone();
+                        row.name = identity.name.clone();
                     }
                     if row.token.is_none() {
-                        row.token = token.clone();
+                        row.token = identity.token.clone();
                     }
                 }
-                known_characters.insert((row.country_tag_db_id, row.char_id));
+                if track_known_characters {
+                    known_characters.insert((row.country_tag_db_id, row.char_id));
+                }
                 frame.active_rulers.push(row);
             }
             Err(_) => {
@@ -376,7 +408,9 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     for root in input.advisors {
         match read_advisor_raw_fields(mem, roots, root.advisor_addr) {
             Ok(raw) => {
-                known_characters.insert((raw.country_tag_db_id, raw.char_id));
+                if track_known_characters {
+                    known_characters.insert((raw.country_tag_db_id, raw.char_id));
+                }
                 let bucket = advisor_bucket(
                     root.slot.as_deref(),
                     root.ledger.as_deref(),
@@ -483,15 +517,11 @@ fn read_country_leader_role<M: LaneMemory>(
     roots: &ResolvedTypeRoots,
     root: &CountryLeaderRoleRoot,
 ) -> Result<CountryLeaderRoleRecord, ExtractError> {
-    require_vtable(
+    let character_addr = read_vtable_and_character_ptr::<M, CCOUNTRY_LEADER_RAW_FIELDS_SPAN>(
         mem,
         root.country_leader_addr,
         roots.ccountry_leader_vtable,
         "CCountryLeader",
-    )?;
-    let character_addr = read_nonzero_u64(
-        mem,
-        root.country_leader_addr,
         CCOUNTRY_LEADER_CHARACTER_PTR_OFF,
         "CCountryLeader.character",
     )?;

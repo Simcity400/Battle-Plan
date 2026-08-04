@@ -410,6 +410,43 @@ pub trait LaneMemory {
         }
         Some(out)
     }
+
+    /// Copy an object body of `N` bytes in ONE guarded call, or report that
+    /// it could not be done in one. Same name and same contract as the
+    /// `read_object_window` the collector already implements for the other
+    /// lanes that took this reduction.
+    ///
+    /// This is deliberately NOT [`LaneMemory::read_array`]. `read_array`
+    /// falls back to a BYTE-BY-BYTE loop, and byte-by-byte is strictly MORE
+    /// permissive than the scalar reads it would be replacing: a range that
+    /// straddles two regions is refused by an eight-byte pointer read and
+    /// accepted a byte at a time. Applying that fallback at object width
+    /// would start admitting rows the field-by-field reader rejects, which
+    /// is a change to WHAT is captured.
+    ///
+    /// So the contract here is the opposite: an implementation returns
+    /// `Some` only when one whole-range guarded copy succeeded, and `None`
+    /// otherwise, and EVERY caller must fall back to its own field-by-field
+    /// path on `None`. That makes the fast path a pure cost reduction:
+    ///
+    ///  * `Some(buf)` means the whole `[addr, addr+N)` range passed the same
+    ///    region gate a scalar read of any field inside it would have
+    ///    passed, and one confirmed region therefore contains every field.
+    ///    Each field decoded out of `buf` is the byte-identical value the
+    ///    field-by-field reader would have produced, and all fields are
+    ///    captured at ONE instant instead of N separately-timed ones, so
+    ///    the tearing window is narrowed and never widened.
+    ///  * `None` means the caller runs its original reads, unchanged.
+    ///
+    /// NOTHING IS RETAINED. The buffer is decoded and dropped inside the
+    /// same read of the same object in the same frame, so no value read
+    /// through it can outlive the hour it was read in.
+    ///
+    /// The default is `None` so an implementation with no bulk primitive
+    /// keeps its existing behaviour with no opt-out needed.
+    fn read_object_window<const N: usize>(&self, _addr: u64) -> Option<[u8; N]> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -537,11 +574,74 @@ pub fn validate_registry_assignment(registry_json: &str) -> Result<(), ExtractEr
     Ok(())
 }
 
+/// Bytes of a `CCharacter` body this reader needs: through the last field it
+/// reads (`unit_leader_ptr` at `0xA8`, eight bytes wide) and not one byte
+/// further. Reading only through the last needed field is what keeps the
+/// one-call form from failing where the field-by-field form would have
+/// succeeded; a padded C struct size would gate on bytes no caller reads.
+pub const CCHARACTER_RAW_FIELDS_SPAN: usize =
+    CCHARACTER_UNIT_LEADER_PTR_OFF as usize + core::mem::size_of::<u64>();
+
+/// Decode [`CharacterRawFields`] out of an already-copied `CCharacter` body.
+///
+/// Field for field, check for check, and error for error this is the tail of
+/// [`read_character_raw_fields`] with the reads replaced by slices of `body`.
+/// It cannot produce `MissingRead`: the copy that produced `body` already
+/// proved every one of these bytes readable.
+fn character_raw_fields_from_body(
+    roots: &ResolvedTypeRoots,
+    character_addr: u64,
+    body: &[u8; CCHARACTER_RAW_FIELDS_SPAN],
+) -> Result<CharacterRawFields, ExtractError> {
+    let at_u32 = |off: u64| -> u32 {
+        let off = off as usize;
+        u32::from_le_bytes(body[off..off + 4].try_into().expect("4 bytes in span"))
+    };
+    let at_u64 = |off: u64| -> u64 {
+        let off = off as usize;
+        u64::from_le_bytes(body[off..off + 8].try_into().expect("8 bytes in span"))
+    };
+    let observed_vtable = at_u64(0);
+    if observed_vtable != roots.ccharacter_vtable {
+        return Err(ExtractError::BadVtable {
+            addr: character_addr,
+            field: "CCharacter",
+            expected: roots.ccharacter_vtable,
+            observed: observed_vtable,
+        });
+    }
+    let observed_type = at_u32(CCHARACTER_TYPE_OFF);
+    if observed_type != CCHARACTER_TYPE_ID {
+        return Err(ExtractError::BadTypeId {
+            // The field-by-field reader reports the address it READ, which
+            // for the type id is the character base plus its offset.
+            addr: checked_add(character_addr, CCHARACTER_TYPE_OFF, "CCharacter.type")?,
+            field: "CCharacter.type",
+            expected: CCHARACTER_TYPE_ID,
+            observed: observed_type,
+        });
+    }
+    Ok(CharacterRawFields {
+        character_addr,
+        country_tag_db_id: at_u32(CCHARACTER_COUNTRY_TAG_DB_ID_OFF),
+        char_id: at_u32(CCHARACTER_ID_OFF),
+        unit_leader_ptr: at_u64(CCHARACTER_UNIT_LEADER_PTR_OFF),
+    })
+}
+
 pub fn read_character_raw_fields<M: LaneMemory>(
     mem: &M,
     roots: &ResolvedTypeRoots,
     character_addr: u64,
 ) -> Result<CharacterRawFields, ExtractError> {
+    // One guarded copy of the body instead of five separately-gated field
+    // reads. `read_object_window` returns `None` unless the WHOLE span
+    // passed the same region gate, and the field-by-field path below then
+    // runs exactly as it always did, so this is a cost reduction with no
+    // reachable change in outcome. See `LaneMemory::read_object_window`.
+    if let Some(body) = mem.read_object_window::<CCHARACTER_RAW_FIELDS_SPAN>(character_addr) {
+        return character_raw_fields_from_body(roots, character_addr, &body);
+    }
     require_vtable(mem, character_addr, roots.ccharacter_vtable, "CCharacter")?;
     require_type_id(
         mem,
@@ -570,15 +670,60 @@ pub fn read_character_raw_fields<M: LaneMemory>(
     })
 }
 
+/// Bytes of a `CAdvisor` body this reader needs: through its character
+/// pointer at `0x10`, and no further.
+pub const CADVISOR_RAW_FIELDS_SPAN: usize =
+    CADVISOR_CHARACTER_PTR_OFF as usize + core::mem::size_of::<u64>();
+
+/// Bytes of a `CCountryLeader` body the role reader needs: through its
+/// character pointer at `0x08`, and no further.
+pub const CCOUNTRY_LEADER_RAW_FIELDS_SPAN: usize =
+    CCOUNTRY_LEADER_CHARACTER_PTR_OFF as usize + core::mem::size_of::<u64>();
+
+/// Shared prologue for the two role objects that are nothing but a vtable
+/// and a pointer to the character they describe: `CAdvisor` and
+/// `CCountryLeader`. Both fail closed on either field, so both may take the
+/// one-call form, and both fall back to the field-by-field reads when the
+/// body could not be copied in one call.
+pub(crate) fn read_vtable_and_character_ptr<M: LaneMemory, const N: usize>(
+    mem: &M,
+    addr: u64,
+    expected_vtable: u64,
+    vtable_field: &'static str,
+    ptr_off: u64,
+    ptr_field: &'static str,
+) -> Result<u64, ExtractError> {
+    if let Some(body) = mem.read_object_window::<N>(addr) {
+        let observed = u64::from_le_bytes(body[..8].try_into().expect("8 bytes in span"));
+        if observed != expected_vtable {
+            return Err(ExtractError::BadVtable {
+                addr,
+                field: vtable_field,
+                expected: expected_vtable,
+                observed,
+            });
+        }
+        let off = ptr_off as usize;
+        let value = u64::from_le_bytes(body[off..off + 8].try_into().expect("8 bytes in span"));
+        if value == 0 {
+            return Err(ExtractError::NullPointer(ptr_field));
+        }
+        return Ok(value);
+    }
+    require_vtable(mem, addr, expected_vtable, vtable_field)?;
+    read_nonzero_u64(mem, addr, ptr_off, ptr_field)
+}
+
 pub fn read_advisor_raw_fields<M: LaneMemory>(
     mem: &M,
     roots: &ResolvedTypeRoots,
     advisor_addr: u64,
 ) -> Result<AdvisorRawFields, ExtractError> {
-    require_vtable(mem, advisor_addr, roots.cadvisor_vtable, "CAdvisor")?;
-    let character_addr = read_nonzero_u64(
+    let character_addr = read_vtable_and_character_ptr::<M, CADVISOR_RAW_FIELDS_SPAN>(
         mem,
         advisor_addr,
+        roots.cadvisor_vtable,
+        "CAdvisor",
         CADVISOR_CHARACTER_PTR_OFF,
         "CAdvisor.character",
     )?;
