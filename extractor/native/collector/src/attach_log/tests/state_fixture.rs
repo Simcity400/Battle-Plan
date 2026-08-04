@@ -743,6 +743,14 @@ pub(super) fn fixture_game_hour_raw() -> i32 {
 /// the d29 emission site. Verified by mutation, see the lane report.
 #[test]
 fn populated_state_makes_the_ships_domain_emit_domain_data_rows_offline() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     let (_arena, state, _image) = naval_frame_fixture();
     let control = compact_control_scheduling(&[RAW_SHIPS_DOMAIN]);
     let outcome = drive_compact_frame(
@@ -880,6 +888,14 @@ fn populated_state_makes_the_ships_domain_emit_domain_data_rows_offline() {
 /// requires it), typed source-unavailable, with no rows.
 #[test]
 fn a_state_whose_build_profile_is_unverified_makes_d29_typed_source_unavailable() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     use compact_contract::build_profile as p;
 
     let mut fixture =
@@ -930,6 +946,14 @@ fn a_state_whose_build_profile_is_unverified_makes_d29_typed_source_unavailable(
 /// of concluding the domain is broken.
 #[test]
 fn without_a_readable_module_image_every_domain_record_becomes_a_typed_clock_gap() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     use compact_contract::domain_gap::{DomainGapReason, DomainGapRecordV1};
 
     // The UNBOUND arena fixture: staged world, unmapped module base.
@@ -972,6 +996,14 @@ fn without_a_readable_module_image_every_domain_record_becomes_a_typed_clock_gap
 /// d57 game-speed row push. Verified by mutation, see the lane report.
 #[test]
 fn synthetic_module_image_lets_domain57_read_game_speed_from_base_relative_memory() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     use compact_contract::build_profile as p;
 
     const GAME_STATE_AT: usize = 0x1000;
@@ -1033,6 +1065,14 @@ fn synthetic_module_image_lets_domain57_read_game_speed_from_base_relative_memor
 /// speed of 0, and `staged_speed == 0` is one of the cases it covers.
 #[test]
 fn an_out_of_range_speed_word_makes_domain57_fail_closed_not_read_zero() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     use compact_contract::build_profile as p;
 
     const GAME_STATE_AT: usize = 0x1000;
@@ -1144,6 +1184,14 @@ fn staged_profile_sentinels_satisfy_the_shipped_signature_gate() {
 /// either lane-wall unit.
 #[test]
 fn a_staged_date_root_is_read_by_the_frames_own_acceptance_skew_probe() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     use compact_contract::build_profile as p;
 
     const GAME_STATE_AT: usize = 0x100;
@@ -1208,6 +1256,14 @@ fn a_staged_date_root_is_read_by_the_frames_own_acceptance_skew_probe() {
 /// stamp at the top of the frame.
 #[test]
 fn the_fixtures_country_roster_decides_the_frames_no_scalar_source_bit() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     use compact_contract::build_profile as p;
 
     let staged_rvas = [p::DOMAIN57_CGAMESTATE_SINGLETON_RVA];
@@ -1260,6 +1316,14 @@ fn the_fixtures_country_roster_decides_the_frames_no_scalar_source_bit() {
 /// here first.
 #[test]
 fn a_driven_frame_records_each_workers_spawn_to_return_wall_and_outcome() {
+    // This test reaches the process-global bound-trip registry (a reservation
+    // through `drive_compact_frame`, or a recorded trip). The registry has ONE
+    // reservation slot and a drain resets EVERY counter, so an unguarded test
+    // racing a guarded one is a collision or a stolen count, not a stale read.
+    // Taken FIRST so it drops LAST, after any tracker or `FrameOutcome` that
+    // still owns the reservation. See
+    // `compact_contract::bound_trips::lock_registry_for_tests`.
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     let (_arena, state, _image) = naval_frame_fixture();
     let control = compact_control_scheduling(&[RAW_SHIPS_DOMAIN, RAW_OOB_COMMAND_DOMAIN]);
     let outcome = drive_compact_frame(
