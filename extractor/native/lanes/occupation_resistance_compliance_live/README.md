@@ -28,24 +28,42 @@ The live proof module validates this root chain on build
 - `COccupationLaw` vtable `module+0x2928218`; law id string at `+0x10`
 - `CCountry + 0xFD8 -> CCountryCollaborationStatus*`
 - `CCountryCollaborationStatus` vtable `module+0x29A5D58`
-- `CCountryOccupationData` vtable `module+0x296DD00`, reachable from
-  `CCountryOccupationStatus` bounded graph
+- `CCountryOccupationStatus + 0x48` is a `pdx_robin_hood_table` of
+  `CCountryOccupationData*`, keyed by occupied tag-db id
+- `CCountryOccupationData` vtable `module+0x296DD00`, reached from a LIVE bucket
+  of that table
 - `CCountryOccupationData + 0x08 -> CCountryOccupationStatus*` parent
 - `CCountryOccupationData + 0x10 -> occupied/original tag_db_id`
-- `CCountryOccupationData + 0x20` points to a state-list container with
-  `CState*` entries
-- `CCountryOccupationData + 0xB0` points to a law-list container with
-  `COccupationLaw*` entries
-- `CCountryOccupationData + 0xD8` points to a garrison-list container with
-  `CStateGarrisonData*` entries
+- `CCountryOccupationData + 0x20`, `+0xB0` and `+0xD8` are further
+  `pdx_robin_hood_table`s (states, `COccupationLaw*`, `CStateGarrisonData*`);
+  this lane reads only `+0xD8`
 - `CStateGarrisonData` vtable `module+0x296DCB0`
 - `CStateGarrisonData + 0x50 -> CState*`
 - `CStateGarrisonData + 0x58 -> CCountryOccupationData*`
-- Per-state occupation-law assignments are classified for rows where sibling
-  `CCountryOccupationData + 0xB0` and `+0xD8` containers carry a
-  `COccupationLaw*` and a `CStateGarrisonData*` at the same entry offset. The
-  law key is the `CStateGarrisonData + 0x50 -> CState` join; the law value is
-  the `COccupationLaw` id string at `+0x10`.
+
+Both containers this lane walks are enumerated by the shared
+`compact_contract::occupation_robin_hood` reader under the geometry declared in
+`compact_contract::build_profile` (`DOMAIN66_ROBIN_HOOD_*`): header
+`{u64 buckets, u32 count, u32 capacity, u8 max_distance}`, buckets of `0x18`
+with `_DistancePlus1 @+0x04`, `u32 key @+0x08`, `value @+0x10`, and an array
+`capacity + max_distance + 1` buckets long.
+
+Two things follow, and both are load-bearing:
+
+- `_DistancePlus1` is the ONLY occupancy witness. The engine empties a bucket by
+  `*pcVar6 = '\0'`) and leaves the freed record pointer in the value slot. A
+  freed record keeps its vtable and its back-refs, so a walk that reads value
+  slots without consulting the occupancy byte publishes state for occupations
+  the engine has destroyed.
+- Bucket index is a function of the key's hash and its probe distance, so the
+  same index in two different tables is NOT the same key. Any pairing of the
+  `+0xB0` and `+0xD8` tables must join on the key, never on the slot.
+
+The per-state occupation law this lane emits is the occupying country's DEFAULT
+law (`CCountryOccupationStatus + 0x118 -> COccupationLaw`, id string at `+0x10`),
+badged `ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN` so a consumer can tell it apart from
+a per-state override. Per-state law overrides from `+0xB0` are NOT emitted here;
+domain 66 owns that join, and it joins on the bucket key.
 - `CCountryCollaborationStatus + 0x28/+0x34` is the bounded relation-pointer
   array/count; `+0x40` is the owning `CCountry*`; `+0x48/+0x54` is the
   reciprocal incoming-owner tag-id array/count.
