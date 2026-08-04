@@ -4,13 +4,24 @@
 //! fired. Measured over `runs/live_unlock/t19/collector_stream.bin` (4.78 GB,
 //! 691 game-hours, 67 domains): 474 D41 `DOMAIN_DATA` records, mean 1.46 MB,
 //! 692 MB total; `PARTIAL_DATA` set on 474 of 474 and `DELTA_DATA` on none. The
-//! cause is a single country whose project pool is unreadable
-//! (`invalid_project_pool_countries = 1`, byte-identical in every hour), which
-//! is enough to put `PARTIAL_DATA` — a member of `COMPACT_STATUS_FAILURE_MASK` —
-//! on every record and send `compact_projects_apply_emit_mode` down its
-//! failure return before any diff is attempted. A long-window LZMA measurement
-//! over the same records puts D41's actual information content at about
-//! 0.26 KB per game-hour.
+//! cause was a single country whose FACILITY walk was refused
+//! (`invalid_facility_countries = 1` with
+//! `invalid_facility_candidate_vtable_read_fail = 1`, byte-identical in every
+//! hour — NOT the project pool, whose counters are all 0 in every record),
+//! which is enough to put `PARTIAL_DATA` — a member of
+//! `COMPACT_STATUS_FAILURE_MASK` — on every record and send
+//! `compact_projects_apply_emit_mode` down its failure return before any diff
+//! is attempted. A long-window LZMA measurement over the same records puts
+//! D41's actual information content at about 0.26 KB per game-hour.
+//!
+//! That root is repaired: the facility walk is now bounded by the engine's own
+//! element count (`PROJECT_PROGRAM_STATUS_OFF_PROGRAMS_COUNT`) instead of
+//! guessing the end of the array, so a stale slot past the end can no longer
+//! refuse a country. The `fixture` tests for that live beside the other
+//! facility-walk tests in `tests.rs`. The `DeltaPartial` gate below is
+//! unaffected and still governs the mode, which remains off — with a clean
+//! read the ordinary `Delta` path carries the domain, as it does in t21
+//! (157 of 256 records delta, keyframe 1,458,417 B vs delta 420 B).
 //!
 //! These tests pin what `DeltaPartial` must preserve to be enabled: the rows an
 //! hour decodes to, exactly, for every hour. Reconstruction here mirrors the
@@ -364,10 +375,97 @@ fn default_delta_mode_still_refuses_to_patch_a_partial_read() {
         );
         assert_eq!(encoded_len(&emitted), source_len);
         assert!(
-            tracker.is_empty(),
+            !tracker.baseline_seeded,
             "hour {hour}: a refused partial read must not seed the baseline"
         );
     }
+}
+
+/// An ALL-EMPTY first read is still a baseline, and it seeds exactly once.
+///
+/// The sentinel has to be `baseline_seeded`, not emptiness of the row maps,
+/// because an empty row set is a legitimate thing to have pinned and emptiness
+/// cannot tell "nothing pinned yet" from "an empty set is pinned". With
+/// emptiness as the sentinel every read taken while the domain has no rows
+/// re-seeds and re-emits a keyframe, and the producer's seed count drifts out
+/// of lockstep with the fold's `delta_baselines_seen`.
+///
+/// MUTATION: restore `let baseline = tracker.is_empty();` (and the
+/// `CompactProjectsTracker::is_empty` helper) and this fails on hour 1 —
+/// observed verbatim:
+///   "an empty baseline is still a baseline: hour 1 must patch, not re-seed"
+#[test]
+fn an_all_empty_first_read_seeds_the_baseline_exactly_once() {
+    let mut tracker = CompactProjectsTracker::default();
+    let first = compact_projects_apply_emit_mode(
+        read_with(Vec::new(), Vec::new(), Vec::new(), 0),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_eq!(
+        first.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "hour 0 is the keyframe"
+    );
+    assert!(tracker.baseline_seeded, "hour 0 seeds the pin");
+
+    for hour in 1..4u32 {
+        let emitted = compact_projects_apply_emit_mode(
+            read_with(Vec::new(), Vec::new(), Vec::new(), 0),
+            D41EmitMode::Delta,
+            &mut tracker,
+        );
+        assert_ne!(
+            emitted.status_flags & COMPACT_STATUS_DELTA_DATA,
+            0,
+            "an empty baseline is still a baseline: hour {hour} must patch, not re-seed"
+        );
+    }
+}
+
+/// A domain that empties out MID-CAPTURE must not re-seed either.
+///
+/// This is the expensive half of the same defect and it is not a first-frame
+/// concern: once every row is tombstoned the tracker's maps are empty again, so
+/// an emptiness sentinel reads "no baseline" and the next non-empty read emits
+/// a whole keyframe — 1.46 MB on d41's t19 measurements — instead of a patch.
+///
+/// MUTATION: restore `let baseline = tracker.is_empty();` and this fails on the
+/// third read — observed verbatim:
+///   "a domain that emptied out has a pinned baseline: this must patch"
+#[test]
+fn a_domain_that_empties_out_mid_capture_does_not_re_seed() {
+    let mut tracker = CompactProjectsTracker::default();
+    let seeded = compact_projects_apply_emit_mode(
+        read_with(vec![facility(1, 10, 0)], Vec::new(), Vec::new(), 0),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_eq!(seeded.status_flags & COMPACT_STATUS_DELTA_DATA, 0);
+
+    // Every row goes away: the patch tombstones it and the tracker's maps are
+    // empty once more.
+    let emptied = compact_projects_apply_emit_mode(
+        read_with(Vec::new(), Vec::new(), Vec::new(), 0),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_ne!(emptied.status_flags & COMPACT_STATUS_DELTA_DATA, 0);
+    assert_eq!(emptied.facilities.len(), 1, "the removal ships as a tombstone");
+    assert!(emptied.facilities[0].deleted);
+    assert!(tracker.facilities.is_empty(), "the pin is now an empty set");
+    assert!(tracker.baseline_seeded, "but it is still a pin");
+
+    let returned = compact_projects_apply_emit_mode(
+        read_with(vec![facility(1, 10, 0)], Vec::new(), Vec::new(), 0),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_ne!(
+        returned.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "a domain that emptied out has a pinned baseline: this must patch"
+    );
 }
 
 /// A clean read still advances the pin, and the deletions it proves still ship

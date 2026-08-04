@@ -215,7 +215,7 @@ the largest domains fail one of them today.
 | d42, d46 | 100% of t19 records | working as designed |
 | d20, d22, d23, d24, d26, d44, d52 | 38–40% | the rest are keyframes forced by rejected brackets and silent readers at speed five |
 | d27, d28, d51 | 19–31% | as above |
-| d41 `projects_live` | **0 of 474** | 692 MB, second-largest domain. `PARTIAL_DATA` on every record; see §6 |
+| d41 `projects_live` | **0 of 474** in t19, **157 of 256** in t21 | 692 MB in t19, `PARTIAL_DATA` on every record; one country's facility walk, since repaired. See §6 |
 | d43 | **0 of 457** | 189 MB, and `SOURCE_UNAVAILABLE` on every record — a completeness problem, not an encoding one |
 | d45, d55, d11, d12, d29, d37, d32 | 0% | not yet assessed against §4 |
 | d53, d48, d91, d93, d83 | not measured here | their payloads do not use the shared 20-byte data header, so the scan below cannot read their status word. d53 and d48 both have partial-delta implemented; d53's is off because of §4.5 |
@@ -225,27 +225,63 @@ payload offset 16, which is the shared `DOMAIN_DATA` header layout (`elapsed_wal
 `row_count` u32, `changed_rows` u32, `status_flags` u32). Domains with their own payload envelope
 are excluded rather than guessed at; a status word read at the wrong offset is not a measurement.
 
-## 6. The open question this design cannot answer
+## 6. What refused d41, and what fixed it
 
-**d41 is `PARTIAL_DATA` in 474 of 474 t19 records because of one country.** The payload counters
-are byte-identical in every hour: `invalid_project_pool_countries = 1`,
-`invalid_facility_countries = 0`, `invalid_program_status_countries = 0`, with 27/27 facilities
-and 153/153 scientists read. One unreadable project pool out of the country roster sets
-`PARTIAL_DATA` on the whole domain, and because domain 41 has no entry in
-`COMPACT_EXPECTED_PARTIAL_TOLERANCES`, `handle_compact_failure` marks the D41 leaf unknown for
-that hour and folds nothing.
+**d41 is `PARTIAL_DATA` in 474 of 474 t19 records because of one country.** That much was right.
+The cause named in the first draft of this section was not, and the correction matters because it
+moved the repair from a domain that was not broken to one that was.
 
-So all 692 MB of d41 in t19 is carried, retained, and then discarded. The encoding question is
-downstream of that, and there are two ways out, which are not the same decision:
+The counters are byte-identical in all 474 records, read straight off
+`runs/live_unlock/t19/collector_stream.bin` at the offsets
+`recorder_host/src/domain_data_authority.rs` already parses:
 
-* **Fix the root.** One country's pool is unreadable in a fixed, reproducible way. If that read is
-  repaired the domain goes clean, and the delta path that already exists fires by itself with no
-  new code at all.
-* **Tolerate the partial.** Give d41 an entry in `COMPACT_EXPECTED_PARTIAL_TOLERANCES` with a
-  reason that states exactly what is unknown, as d26/d27/d28/d54 have. That admits the hours,
-  and `DeltaPartial` (§3.1) then makes them cheap.
+| Counter | t19, all 474 records |
+|---|---|
+| `invalid_facility_countries` | **1** |
+| `invalid_facility_candidate_vtable_read_fail` | **1** |
+| `invalid_project_pool_countries` | 0 |
+| `invalid_program_status_countries` | 0 |
+| every other `root_reasons` field | 0 |
+| `facility_count` / `scientist_count` | 27 / 153 |
 
-The second is only sound with a per-country identity for what was missed; a counter of `1` names
-no country, and "exclude and account" needs the identity to account with.
+The refusal is in the **facility** walk, not the project pool. (`facility_count = 27` and
+`scientist_count = 153` are what confirm the offset mapping: they match the counts reported
+independently for this capture.)
 
-Until one of those lands, `D41EmitMode::DeltaPartial` exists, is tested, and is off.
+**The mechanism.** The facility container hangs off `CProgramStatus+0x20`. Our walk had no count
+for it: it ran to a fixed cap of 64 slots and inferred the end of the array from the first slot
+that did not look like a facility — zero, outside the heap range, or a vtable mismatch. All three
+of those tests can only fire on memory *past the end*, where the bytes are whatever the previous
+larger occupant left. So the outcome depended on stale capacity: harmless when the stale word was
+zero or obviously foreign, fatal when it happened to be a heap-aligned address that is not mapped,
+which fails the read and refuses the country.
+
+artifacts hash-verified) each bound the walk with the i32 at `CProgramStatus+0x2C`:
+element — the facility's unread-prototype-rewards field — which is what identifies the elements.
+Bounding our walk by that count is the fix; the constant carries the decompilation and two
+corroborations.
+
+**t21 is the control.** The same decode over `runs/live_unlock/t21` shows every invalid counter at
+**0** across all 256 records, and `DELTA_DATA` already set on 157 of them — keyframe 1,458,417
+bytes, delta 420 bytes. So the delta path was never the problem: it fires by itself the moment a
+read comes back clean, exactly as §3.1 says. t21 also carries one fewer facility than t19 (26 vs
+27), which is why the same code was clean there — the defect is state-dependent, not a structural
+singleton, and it can recur.
+
+That leaves the second option, which is **not** being taken:
+
+* **Tolerate the partial.** Giving d41 an entry in `COMPACT_EXPECTED_PARTIAL_TOLERANCES` would
+  admit the hours and let `DeltaPartial` (§3.1) make them cheap. It was rejected: it papers over a
+  reader defect rather than fixing it, and it is only sound with a per-country identity for what
+  was missed. A counter of `1` names no country, and "exclude and account" needs an identity to
+  account with.
+
+That identity now exists regardless. A refused facility or pool root latches the country and the
+guard into `d41_facility_failure_stage` / `_tag_db_id` / `_slot_index` / `_count_sample` and
+`d41_pool_root_failure_stage` / `_tag_db_id`. The stage word is the presence witness — 0 means
+nothing refused, and the other words must not be read when it is 0. `_slot_index` against
+`_count_sample` is what decides, without a second capture, whether a future refusal is a read that
+ran off the end or a live facility that genuinely could not be read.
+
+`D41EmitMode::DeltaPartial` still exists, is tested, and is off. With the root repaired the
+ordinary `Delta` path is what carries d41, as it already does in t21.
