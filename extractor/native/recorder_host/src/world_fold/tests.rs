@@ -22618,6 +22618,123 @@ fn d43_fold_refuses_a_legacy_mtrr_v1_trailer_that_claims_eight() {
     assert!(error.contains("MTRR header shape is invalid"), "{error}");
 }
 
+// --- D43 MTRR: bytes carved out of live capture t17 -------------------------
+//
+// Both fixtures below are made of rows the COLLECTOR actually wrote in
+// `runs/live_unlock/t17/collector_stream.bin`. Three countries were selected
+// out of that capture's 439 and their 64-byte rows copied verbatim; only the
+// 32-byte trailer header is rebuilt, because the counts have to describe the
+// reduced set. The v3 identity block is copied byte-for-byte.
+//
+// `..._sparse_v3` is the shape t17 shipped: country tag 1 is missing its oil
+// row, so 20 rows are present where the header's 3 x 7 cross product demands
+// 21. All 484 of that capture's D43 records had exactly this defect and every
+// reader refused all of them, so the domain produced nothing.
+//
+// `..._dense_v4` is the same real rows with that one absent row restored in the
+// shape the fixed producer now emits: the row is present and states that its
+// needed-trio was not observed.
+const D43_T17_MTRR_SPARSE_V3: &[u8] =
+    include_bytes!("../../../fixtures/d43_t17/mtrr_t17_sparse_v3.bin");
+const D43_T17_MTRR_DENSE_V4: &[u8] =
+    include_bytes!("../../../fixtures/d43_t17/mtrr_t17_dense_v4.bin");
+
+/// The t17 defect, reproduced from the capture's own bytes.
+///
+/// This is the refusal that cost the capture its whole market/resource domain.
+/// It stays a refusal: a v3 trailer whose rows do not fill its stated cross
+/// product is genuinely unreadable, and admitting it would make truncation
+/// valid syntax. The fix is at the producer, which no longer emits this shape.
+#[test]
+fn d43_fold_refuses_the_sparse_mtrr_live_capture_t17_actually_emitted() {
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    payload.extend_from_slice(D43_T17_MTRR_SPARSE_V3);
+
+    let error = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect_err("a trailer 46 rows short of its own cross product is not readable");
+    assert!(error.contains("MTRR header shape is invalid"), "{error}");
+}
+
+/// The same real rows, with the absent oil row stated rather than dropped.
+///
+/// The six fields that WERE measured for country 1 are published as the
+/// collector recorded them, and the three that were not are `null` -- never
+/// `0`. A need of zero and an unmeasured need are different facts about the
+/// hour, and only one of them was observed.
+#[test]
+fn d43_fold_publishes_t17_rows_and_nulls_the_needed_trio_it_never_observed() {
+    let mut payload = d43_empty_payload();
+    payload[16..20].copy_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
+    payload.extend_from_slice(D43_T17_MTRR_DENSE_V4);
+
+    // The tag->name mapping is not carried in an MTRR trailer, so these names
+    // are the test's own; the tag_db_ids 1, 6 and 9 are t17's.
+    let snap = chunk1_one_snapshot(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "AAA"), (6, "BBB"), (9, "CCC")]),
+        ),
+        (43, payload),
+    ]);
+
+    let trade = &snap["countries"]["AAA"]["economy"]["resource_trade"];
+    let rows = trade["resource_rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 7, "the cross product is dense again");
+
+    // Slot 0 is the row t17 could not derive.
+    assert_eq!(rows[0]["resource"], json!("oil"));
+    assert_eq!(rows[0]["needed_type"], json!("unavailable"));
+    assert_eq!(rows[0]["needed_observed"], json!(false));
+    assert_eq!(rows[0]["needed"], Value::Null);
+    assert_eq!(rows[0]["needed_current"], Value::Null);
+    assert_eq!(rows[0]["needed_max"], Value::Null);
+
+    // Slot 1 is aluminium, and these are the numbers the collector measured for
+    // country 1 in t17. They survived the frame the old producer threw away.
+    assert_eq!(rows[1]["resource"], json!("aluminium"));
+    // Absent, not `true`: the marker appears only on the row whose trio was not
+    // observed, so no v1/v2/v3 snapshot gains a member it never had.
+    assert!(
+        rows[1].get("needed_observed").is_none(),
+        "an observed row carries no unobserved marker"
+    );
+    assert_eq!(rows[1]["balance"], json!(47.0));
+    assert_eq!(rows[1]["produced"], json!(263.0));
+    assert_eq!(rows[1]["exported"], json!(-40.0));
+    assert_eq!(rows[1]["needed"], json!(47.0));
+
+    // The set is complete in slots but not in values, and says so.
+    assert_eq!(trade["resource_rows_complete"], json!(false));
+
+    // A country whose oil row WAS derived is untouched and still complete.
+    let intact = &snap["countries"]["BBB"]["economy"]["resource_trade"];
+    assert_eq!(intact["resource_rows_complete"], json!(true));
+    assert!(intact["resource_rows"][0].get("needed_observed").is_none());
+    assert!(intact["resource_rows"][0]["needed_current"].is_number());
+}
+
+/// The version is what stops an unobserved trio being read as data.
+///
+/// The same real bytes stamped v3 -- the version that has no unobserved-needed
+/// type -- are refused rather than read under a grammar that would publish the
+/// zeroed trio as measured zeros.
+#[test]
+fn d43_fold_refuses_an_unobserved_needed_trio_stamped_under_version_three() {
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    let mut trailer = D43_T17_MTRR_DENSE_V4.to_vec();
+    trailer[4..6].copy_from_slice(&MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&trailer);
+
+    let error = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect_err("v3 defines no unobserved needed trio");
+    assert!(
+        error.contains("states an unobserved needed trio under version 3"),
+        "{error}"
+    );
+}
+
 /// The refusal RETARGETED, not deleted.
 ///
 /// An `MTRR` **v2** stream states a width and no identity. It is still the case

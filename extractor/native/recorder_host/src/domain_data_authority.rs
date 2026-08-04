@@ -344,6 +344,11 @@ pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION: u16 = 1;
 /// fixed-stride block between the header and the rows.
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION: u16 = 2;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 3;
+/// v4 is v3 plus one extra admitted ROW shape: an oil row whose needed-trio
+/// could not be derived states that instead of being omitted. The header shape
+/// -- including the dense `row_count == country_count * resource_count`
+/// invariant this authority checks -- is byte-identical to v3.
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION: u16 = 4;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
 /// One `MTRR` v3 identity entry.
@@ -11356,6 +11361,7 @@ fn decode_compact_market_trade_data_payload(
                     COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
                     COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
                     COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION,
                 ],
                 COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN,
                 COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN,
@@ -11972,11 +11978,15 @@ fn decode_compact_market_trade_sized_trailer(
         } else {
             (1..=COMPACT_MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count)
         };
-        // `+28` is reserved zero in v1/v2 and the identity stride in v3. The
-        // VERSION selects the reading, never the value -- which is what stops
-        // an older decoder from sizing a v3 trailer as though the identity
-        // block were rows.
-        let carries_identity = version == COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION;
+        // `+28` is reserved zero in v1/v2 and the identity stride in v3 and v4.
+        // The VERSION selects the reading, never the value -- which is what
+        // stops an older decoder from sizing an identity-bearing trailer as
+        // though the identity block were rows.
+        let carries_identity = matches!(
+            version,
+            COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION
+                | COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION
+        );
         let identity_field_valid = if carries_identity {
             reserved1 == COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE
         } else {

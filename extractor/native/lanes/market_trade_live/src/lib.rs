@@ -73,6 +73,11 @@ pub const MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
 pub const MARKET_TRADE_RESOURCE_ROW_LEGACY_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_RESOURCE_ROW_COUNT_ONLY_SCHEMA_VERSION: u16 = 2;
 pub const MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION: u16 = 3;
+/// v4 is v3 plus one extra admitted ROW shape: an oil row whose needed-trio the
+/// producer could not derive states that, instead of being dropped and leaving
+/// the trailer's dense `country_count * resource_count` cross product short --
+/// which is what made every D43 record of live capture t17 unreadable.
+pub const MARKET_TRADE_RESOURCE_ROW_NEEDED_UNAVAILABLE_SCHEMA_VERSION: u16 = 4;
 pub const MARKET_TRADE_RESOURCE_ROW_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
 /// One `MTRR` v3 identity entry: `u16 token_len` then the token bytes,
@@ -90,8 +95,12 @@ pub const MAX_STRATEGIC_RESOURCE_COUNT: u32 =
 pub const MARKET_TRADE_RESOURCE_NEEDED_SURPLUS: u32 = 1;
 pub const MARKET_TRADE_RESOURCE_NEEDED_DEFICIT: u32 = 2;
 pub const MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX: u32 = 3;
+/// The oil row's needed-trio was not observed. `v4` only; the trio is zeroed on
+/// the wire and every reader must treat it as absent rather than as `0`.
+pub const MARKET_TRADE_RESOURCE_NEEDED_UNAVAILABLE: u32 = 4;
 pub const MARKET_TRADE_RESOURCE_FLAG_CURRENT: u32 = 1;
 pub const MARKET_TRADE_RESOURCE_FLAG_MAX: u32 = 1 << 1;
+pub const MARKET_TRADE_RESOURCE_FLAG_NEEDED_UNAVAILABLE: u32 = 1 << 2;
 pub const MARKET_TRADE_RESOURCE_FLAGS_KNOWN: u32 =
     MARKET_TRADE_RESOURCE_FLAG_CURRENT | MARKET_TRADE_RESOURCE_FLAG_MAX;
 pub const MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
@@ -1838,14 +1847,28 @@ fn decode_resource_row_trailer(
             resource_count == MARKET_TRADE_FIXED7_RESOURCE_COUNT
         }
         MARKET_TRADE_RESOURCE_ROW_COUNT_ONLY_SCHEMA_VERSION
-        | MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION => {
+        | MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION
+        | MARKET_TRADE_RESOURCE_ROW_NEEDED_UNAVAILABLE_SCHEMA_VERSION => {
             (1..=MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count)
         }
         _ => false,
     };
-    // `+28` is reserved zero in v1/v2 and the identity stride in v3. The
+    // Only v4 defines an unobserved needed-trio; under every earlier version the
+    // bit and the type are unknown vocabulary and the row is refused.
+    let admits_needed_unavailable =
+        version == MARKET_TRADE_RESOURCE_ROW_NEEDED_UNAVAILABLE_SCHEMA_VERSION;
+    let known_flags = if admits_needed_unavailable {
+        MARKET_TRADE_RESOURCE_FLAGS_KNOWN | MARKET_TRADE_RESOURCE_FLAG_NEEDED_UNAVAILABLE
+    } else {
+        MARKET_TRADE_RESOURCE_FLAGS_KNOWN
+    };
+    // `+28` is reserved zero in v1/v2 and the identity stride in v3 and v4. The
     // VERSION selects the reading; the value never does.
-    let carries_identity = version == MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION;
+    let carries_identity = matches!(
+        version,
+        MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION
+            | MARKET_TRADE_RESOURCE_ROW_NEEDED_UNAVAILABLE_SCHEMA_VERSION
+    );
     let identity_field_valid = if carries_identity {
         reserved1 == STRATEGIC_RESOURCE_IDENTITY_STRIDE as u32
     } else {
@@ -1930,7 +1953,7 @@ fn decode_resource_row_trailer(
         if row.resource_index >= resource_count
             || row.visible_order >= resource_count
             || row.descriptor_db_index == 0
-            || row.flags & !MARKET_TRADE_RESOURCE_FLAGS_KNOWN != 0
+            || row.flags & !known_flags != 0
             || reserved != 0
         {
             summary.parse_errors.push(format!(
@@ -1938,7 +1961,25 @@ fn decode_resource_row_trailer(
             ));
         }
         let oil = row.resource_index == 0;
-        if (oil
+        // The oil slot's needed-trio is either derived or explicitly unobserved.
+        // The unobserved shape is checked EXACTLY -- type, flags and all three
+        // zeroed fields -- so a zeroed trio can never pass as a derived one.
+        let needed_unavailable = oil
+            && admits_needed_unavailable
+            && (row.needed_type == MARKET_TRADE_RESOURCE_NEEDED_UNAVAILABLE
+                || row.flags & MARKET_TRADE_RESOURCE_FLAG_NEEDED_UNAVAILABLE != 0);
+        if needed_unavailable {
+            if row.needed_type != MARKET_TRADE_RESOURCE_NEEDED_UNAVAILABLE
+                || row.flags != MARKET_TRADE_RESOURCE_FLAG_NEEDED_UNAVAILABLE
+                || row.needed != 0
+                || row.needed_current != 0
+                || row.needed_max != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: MTRR row {row_index} has inconsistent unobserved-needed semantics"
+                ));
+            }
+        } else if (oil
             && (row.needed_type != MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX
                 || row.flags != MARKET_TRADE_RESOURCE_FLAGS_KNOWN
                 || row.needed != row.needed_current))
