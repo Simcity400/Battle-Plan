@@ -352,16 +352,24 @@ fn d65_and_d66_reader_failures_declare_their_own_outcome() {
 }
 
 /// The behavioural test above proves the classification is right once the emit
-/// site records the outcome. This proves the emit site still does — the two
-/// domains are off `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`, so a deleted call is
-/// not a lost diagnostic, it is a refused frame.
+/// site records the outcome. This proves the emit sites still do — every domain
+/// here is off `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`, so a deleted call is not a
+/// lost diagnostic, it is a refused frame.
+///
+/// D18 joined the list when its CIM1 membership sub-statuses started reaching
+/// the published PERF word. Before that, `runs/live_unlock/t21` delivered 282
+/// d18 hours whose cores read had failed, whose PERF word was `0x0`, and which
+/// the frame's `H4FD` notice therefore never named — while the host ledger
+/// recorded 282 source-unavailable domain-hours for the same domain from the
+/// same capture.
 ///
 /// Production change that makes this fail: dropping the
-/// `record_reader_status_outcome` call from either D65's or D66's emit block in
-/// `build_compact_extraction_gate_records`, or pointing one of them at a
-/// different domain.
+/// `record_reader_status_outcome` call from D18's, D65's or D66's emit block in
+/// `build_compact_extraction_gate_records`, pointing one of them at a different
+/// domain, or adding a fourth site without deciding whether the domain it
+/// speaks for belongs off `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`.
 #[test]
-fn d65_and_d66_emit_sites_route_their_status_word_through_the_ledger() {
+fn d18_d65_and_d66_emit_sites_route_their_status_word_through_the_ledger() {
     const SOURCE: &str = include_str!("../attach_log.rs");
     let lines: Vec<&str> = SOURCE.lines().collect();
     let start = lines
@@ -395,10 +403,11 @@ fn d65_and_d66_emit_sites_route_their_status_word_through_the_ledger() {
     assert_eq!(
         routed,
         vec![
+            "COMPACT_DOMAIN_COUNTRY_IDENTITY",
             "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
             "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
         ],
-        "D65 and D66 publish a reader-computed status word and must substantiate it"
+        "D18, D65 and D66 publish a reader-computed status word and must substantiate it"
     );
 }
 
