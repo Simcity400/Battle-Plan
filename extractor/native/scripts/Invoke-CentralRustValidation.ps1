@@ -526,6 +526,20 @@ try {
         Invoke-Checked -Program "python" -Arguments @($worldFoldCitationTests)
         Invoke-Checked -Program "python" -Arguments @($captureScorecardTests)
         Invoke-Checked -Program "python" -Arguments @($clockBaselineSummaryTests)
+        # Runs in EVERY mode, not only Final/Release: this gate sat red for a
+        # week (a 2026-07-29 rename landed with a stale required-substring in
+        # the same commit) because nothing lighter than Final ever executed
+        # it. It costs seconds. The Final/Release path below re-checks the
+        # returned authority object; here an exit or schema failure is enough.
+        $passivePolicyEveryMode = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $passiveCapturePolicyTest)
+        if ($LASTEXITCODE -ne 0) {
+            throw "passive capture-policy source tests exited with code $LASTEXITCODE"
+        }
+        $passivePolicyEveryModeResult = (($passivePolicyEveryMode -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+        if ([string]$passivePolicyEveryModeResult.Schema -cne 'hoi4-passive-capture-policy-test-v1' -or
+            [string]$passivePolicyEveryModeResult.Status -cne 'pass') {
+            throw "passive capture-policy source tests returned no authority"
+        }
         Invoke-Checked -Program "python" -Arguments @(
             $worldFoldCitationVerifier,
             "--repo-root",
