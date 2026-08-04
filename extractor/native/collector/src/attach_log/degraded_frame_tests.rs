@@ -479,8 +479,52 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
         "the panic outcome must still agree with the published word"
     );
 
-    // A bit the FRAME contributed is not this reader's to diagnose, and
-    // claiming it would derive a word the record does not carry.
+    // A frame-scoped bit the derivation CAN reproduce is declared, with the
+    // authority pointing at the frame rather than at this domain: the read
+    // completed, and the record is an offender anyway.
+    for (frame_bit, expected_predicate) in [
+        (
+            COMPACT_STATUS_NO_CLOCK,
+            compact_contract::domain_outcome::READ_PREDICATE_FRAME_HOUR_READABLE,
+        ),
+        (
+            COMPACT_STATUS_CONTROL_INVALID,
+            compact_contract::domain_outcome::READ_PREDICATE_READ_AUTHORITY_VALID,
+        ),
+    ] {
+        let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        let published = record_reader_status_outcome(
+            &mut outcomes,
+            domain_id,
+            frame_bit,
+            frame_bit,
+            || "the reader did not fail".to_string(),
+            Vec::new(),
+        );
+        assert_eq!(published, frame_bit);
+        let outcome = outcomes
+            .get(domain_id)
+            .unwrap_or_else(|| panic!("frame bit {frame_bit:#010x} recorded no outcome"));
+        assert!(outcome.is_failure());
+        assert_eq!(outcome.predicate.code.get(), expected_predicate);
+        assert_eq!(
+            outcome.authority,
+            compact_contract::diagnostic_channel::Authority::OtherDomain(
+                compact_contract::COMPACT_DOMAIN_FRAME
+            ),
+            "an inherited frame bit is not this domain's fault"
+        );
+        assert!(outcome.audit_published_status(frame_bit).is_ok());
+        assert!(
+            !outcome.reason.contains("the reader did not fail"),
+            "the reader's reason must not be attached to a fault it did not have"
+        );
+    }
+
+    // A frame-scoped bit no `DomainOutcome` field can derive is NOT claimed:
+    // an outcome that cannot reproduce it would make the record and the
+    // diagnosis disagree. Both readers refuse before this can happen; see
+    // `d65_and_d66_refuse_a_profile_mismatch_with_a_bit_of_their_own`.
     let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
     let published = record_reader_status_outcome(
         &mut outcomes,
@@ -492,6 +536,73 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
     );
     assert_eq!(published, COMPACT_STATUS_PROFILE_MISMATCH);
     assert!(outcomes.get(domain_id).is_none());
+}
+
+/// The safety argument for taking D65 and D66 off
+/// `PARTIALLY_MIGRATED_OUTCOME_DOMAINS` has to cover the FRAME's bits too: a
+/// domain whose read succeeded still publishes a failing word if the frame's
+/// prologue put a failure bit in the base, and with no outcome behind it that
+/// is the `MigratedButSilent` finding that refuses the hour.
+///
+/// This walks all five declared frame-scoped writes and pins how each is
+/// covered. `PROFILE_MISMATCH` is the one that needs a producer change: both
+/// readers now refuse it rather than walk offsets measured against a different
+/// build, which gives the emit site a bit of the domain's OWN to substantiate.
+///
+/// Production change that makes this fail: removing either reader's
+/// profile-mismatch refusal, or adding a sixth frame-scoped base status write
+/// whose bit neither the derivation nor a reader accounts for.
+#[test]
+fn d65_and_d66_refuse_a_profile_mismatch_with_a_bit_of_their_own() {
+    let state = super::tests::empty_collector_state();
+    let d66 = read_compact_occupation_state_extras(&state, COMPACT_STATUS_PROFILE_MISMATCH);
+    assert!(d66.rows.is_empty());
+    assert_ne!(d66.status_flags & COMPACT_STATUS_PARTIAL_DATA, 0);
+    assert_eq!(
+        d66.first_failure.map(|failure| failure.kind),
+        Some(CompactOccupationExtrasFailureKind::ProfileMismatch)
+    );
+
+    let d65 = read_compact_special_project_programs(&state, COMPACT_STATUS_PROFILE_MISMATCH);
+    assert!(d65.rows.is_empty());
+    assert_ne!(d65.status_flags & COMPACT_STATUS_PARTIAL_DATA, 0);
+    assert_eq!(
+        d65.first_failure.map(|failure| failure.reason),
+        Some(CompactSpecialProjectProgramFailureReason::ProfileMismatch)
+    );
+
+    // And the bit they added is one the emit site can substantiate, so the
+    // record reaches the completeness walk Declared rather than silent.
+    for (domain_id, status) in [
+        (COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE, d66.status_flags),
+        (COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE, d65.status_flags),
+    ] {
+        let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        record_read_succeeded(
+            &mut outcomes,
+            domain_id,
+            compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+        );
+        let published = record_reader_status_outcome(
+            &mut outcomes,
+            domain_id,
+            COMPACT_STATUS_PROFILE_MISMATCH,
+            status,
+            || "the walk refused an unverified build profile".to_string(),
+            Vec::new(),
+        );
+        assert_eq!(published, status);
+        let (records, _) = assembled_frame(&[(domain_id, published)]);
+        let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
+        assert!(
+            findings.iter().all(|finding| finding.frame_finding.is_none()),
+            "domain {domain_id} under a profile mismatch became a frame fault: {:?}",
+            findings
+                .iter()
+                .map(|finding| &finding.text)
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// The complementary guard: this patch must not globally downgrade a bypassed
