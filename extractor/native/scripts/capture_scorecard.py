@@ -202,6 +202,28 @@ def score(manifest):
         if int(info.get("row_count_total", 0) or 0) == 0
     )
 
+    # A domain that produced nothing has almost always SAID why, once per
+    # frame, in its degraded record -- and naming the domain without its reason
+    # is what sent a whole lane after an answer the manifest already carried.
+    # Report the dominant reason beside each name so this file answers "why is
+    # it empty" without a second tool.
+    reason_by_domain = collections.defaultdict(collections.Counter)
+    for frame in stream.get("frame_degraded_outcomes", []) or []:
+        for entry in frame.get("domains", []) or []:
+            reason = (entry.get("reason") or "").strip()
+            if reason:
+                reason_by_domain[entry.get("domain_id")][reason] += 1
+
+    def with_reason(name):
+        info = per_domain.get(name) or {}
+        counts = reason_by_domain.get(info.get("domain_id"))
+        if not counts:
+            return name
+        reason, hits = counts.most_common(1)[0]
+        # The reasons carry per-frame values, so the leading clause is the
+        # stable part; the tail is a sample and would differ every frame.
+        return f"{name} [{hits}x {reason[:110]}]"
+
     # Producers that counted what they threw away. Any nonzero counter here is
     # data the reader saw and did not record.
     dropped = {}
@@ -306,7 +328,7 @@ def score(manifest):
         ("domains that produced no data record", len(zero_records),
          ", ".join(zero_records) or "none"),
         ("domains that produced no rows", len(zero_rows),
-         ", ".join(zero_rows) or "none"),
+         chr(10).join(with_reason(n) for n in zero_rows) or "none"),
         ("domains reporting dropped or incomplete events", len(dropped),
          "; ".join(f"{n} {json.dumps(p)}" for n, p in sorted(dropped.items())) or "none"),
         ("faults in the deliberately-not-scheduled record", len(record_faults),
@@ -372,7 +394,10 @@ def main():
         mark = " " if count == 0 else "!"
         print(f"{mark} {axis:{width}s} {count}")
         if detail and count:
-            print(f"  {'':{width}s}   {detail}")
+            # A multi-line detail (one entry per line) must keep the detail
+            # column, or the continuation lines read as separate axes.
+            pad = chr(10) + f"  {'':{width}s}   "
+            print(f"  {'':{width}s}   {detail.replace(chr(10), pad)}")
 
     # Printed unconditionally, and outside the axis table, because a clean
     # scorecard must still say what it was not asked to capture. A capture that
