@@ -543,7 +543,11 @@ pub const COMPACT_SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 =
     supply44::domain44_contract::BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE;
 pub const COMPACT_SUPPLY_BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE: i32 =
     supply44::domain44_contract::BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE;
-pub const COMPACT_SUPPLY_MAX_PROVINCE_ID: u32 = 13_413;
+// Respelling the number here is exactly the split-brain the comment below
+// warns about: the vanilla province count was written out in full in three
+// places, so raising the one home would have left this authority still
+// discarding every row a mod's provinces produce.
+pub const COMPACT_SUPPLY_MAX_PROVINCE_ID: u32 = supply44::MAX_PROVINCE_ID;
 // The supply admission bounds have one home in `domain44_contract`; respelling
 // them here is what let this authority and the lane gate drift apart.
 pub const COMPACT_SUPPLY_MAX_STATE_ID: u32 = supply44::domain44_contract::MAX_STATE_ID;

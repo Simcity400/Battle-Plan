@@ -40,8 +40,8 @@ pub const BOUND_TRIP_FACTION_MEMBERS: usize = 7;
 /// never a database id. Its own id is what keeps the two readable apart in a
 /// capture.
 pub const BOUND_TRIP_COUNTRY_LINK_INDEX: usize = 8;
-/// A province id was refused by the supply family's
-/// `SUPPLY_MAX_PROVINCE_ID` ceiling (13_413).
+/// A province id, or a province-array length, was refused by the supply
+/// family's ceiling.
 ///
 /// Unlike every id above it, this one did not exist because the site was
 /// already attributed and merely needed a name: the five collector sites and
@@ -50,21 +50,23 @@ pub const BOUND_TRIP_COUNTRY_LINK_INDEX: usize = 8;
 /// capture that lost rows there was indistinguishable from one that had none,
 /// which is the CLAMP-DROP shape this registry exists to end.
 ///
-/// It is worth naming because the bound has no headroom at all.
-/// `runs/live_unlock/t15` (3.02 GB, 555 hours, unmodded) puts the observed
-/// maximum at exactly 13_413 in all four province-id fields — `d20.location`
-/// and d44's province, division-join and csupply ids — so the ceiling is the
-/// vanilla province count with the margin set to zero. Nothing was lost in
-/// that capture, and one added province is enough to start losing rows.
+/// It was worth naming because the bound had no headroom at all. The ceiling
+/// was 13_413 — the VANILLA PROVINCE COUNT — and `runs/live_unlock/t15`
+/// (3.02 GB, 555 hours, unmodded) put the observed maximum at exactly 13_413 in
+/// all four province-id fields (`d20.location` and d44's province,
+/// division-join and csupply ids). Nothing was lost in that capture, and one
+/// added province was enough to start losing rows; the collector additionally
+/// admitted the CSupply province-input arrays only on the exact vanilla length,
+/// so a modded map lost that whole row family rather than its tail.
 ///
-/// The bound itself is NOT changed here, because
-/// `portable_admission::SUPPLY_MAX_PROVINCE_ID` is re-applied by replay across
-/// the workspace boundary and replay cannot read a gamestate: widening only
-/// the producer would emit ids replay then refuses with a parse error, which
-/// discards the whole RECORD rather than the row. The engine quantity that
-/// closes it is the live province count the collector already reads at
-/// `CGameState + 0x2BC` (`CGAMESTATE_CPROVINCE_COUNT`); carrying it on the
-/// wire is what lets both sides bound against it.
+/// Both sides now bound against something the engine decides. The producer's
+/// ceiling is the engine's own province-array length minus its vacant slot (see
+/// the collector's `supply_province` module), which follows a mod's map with no
+/// table for us to keep; replay cannot read a gamestate, so
+/// `portable_admission::SUPPLY_MAX_PROVINCE_ID` is now the REPRESENTATION
+/// envelope rather than a content count. This id therefore fires for two
+/// things, and the raw sample says which: an id past the ceiling in force, and
+/// a province-array length past the sanity envelope (a torn read).
 pub const BOUND_TRIP_SUPPLY_PROVINCE_ID: usize = 9;
 pub const BOUND_TRIP_ID_COUNT: usize = 10;
 

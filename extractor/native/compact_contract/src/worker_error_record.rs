@@ -33,7 +33,27 @@ pub const LEN_FIELD_WIDTH: usize = 8;
 pub const SUM_FIELD_WIDTH: usize = 8;
 /// Longest error text kept in one record. Bounding the record keeps the append
 /// a single small write, which is what makes interleaving unlikely at all.
+///
+/// This is a bound on ONE RECORD, and deliberately not a bound on one ERROR:
+/// see [`format_records`], which splits a long error across several records
+/// rather than destroying its tail.
 pub const RECORD_TEXT_LIMIT: usize = 3072;
+
+/// The most records one error may be split across by [`format_records`].
+///
+/// The largest producer is the collector's `frame_degraded` summary, which
+/// names every domain that went unknown for an hour with that domain's own
+/// typed reason. Its worst case is bounded by the wire record it mirrors:
+/// `frame_degraded::FRAME_DEGRADED_MAX_REASON_LEN` (512) per domain plus the
+/// `d<id>:0x........[]` framing and a separator, so roughly 530 bytes per
+/// degraded domain. At the 73-domain scheduled roster that is under 39 KB --
+/// thirteen records -- and this cap leaves it a fivefold margin while still
+/// refusing an absurd one.
+///
+/// Exceeding it is not silent. Every chunk is labelled `i/n` with the TRUE
+/// `n`, so a reader that receives fewer records than `n` can see exactly how
+/// many were dropped, and by how much the cap was passed.
+pub const MAX_RECORD_CHUNKS: usize = 64;
 
 /// FNV-1a over the body bytes, folded to 32 bits.
 ///
@@ -69,6 +89,81 @@ pub fn format_record(pid: u32, creation_filetime: u64, phase: &str, error: &str)
         len_width = LEN_FIELD_WIDTH,
         sum_width = SUM_FIELD_WIDTH,
     )
+}
+
+/// Byte length this character contributes to a `{:?}` rendering of the string
+/// containing it.
+///
+/// `char::escape_debug` is a strict UPPER bound on what `str`'s own `Debug`
+/// spells for the same character: `str` escapes grapheme-extended characters
+/// only in leading position and never escapes `'`, while this escapes both
+/// unconditionally. Over-estimating is the safe direction -- it makes a chunk
+/// slightly shorter than it had to be -- and under-estimating would silently
+/// hand `format_record` a chunk it then truncates, which is the whole defect
+/// this splitter exists to remove.
+fn debug_escaped_len(character: char) -> usize {
+    character.escape_debug().map(char::len_utf8).sum()
+}
+
+/// Split one error into the largest pieces that each still render inside
+/// [`RECORD_TEXT_LIMIT`] once `{:?}`-escaped.
+///
+/// Splits on CHARACTER boundaries of the raw text, never inside an escape
+/// sequence: each piece is independently valid UTF-8 and is escaped on its own,
+/// so no piece can end mid-`\u{...}`.
+fn split_error_text(error: &str) -> Vec<&str> {
+    // Two bytes of the budget always go to the surrounding quotes.
+    let budget = RECORD_TEXT_LIMIT.saturating_sub(2);
+    let mut pieces = Vec::new();
+    let mut start = 0usize;
+    let mut used = 0usize;
+    for (index, character) in error.char_indices() {
+        let cost = debug_escaped_len(character);
+        if used != 0 && used + cost > budget {
+            pieces.push(&error[start..index]);
+            start = index;
+            used = 0;
+        }
+        used += cost;
+    }
+    // The tail, and the empty error: an empty piece is still a record, because
+    // "this phase failed and said nothing" is itself the report.
+    pieces.push(&error[start..]);
+    pieces
+}
+
+/// Build every record needed to carry one error, in order.
+///
+/// A single-record error is byte-identical to [`format_record`], phase and all.
+/// A longer one is CHUNKED rather than cut: each record carries `phase#i/n` and
+/// its own share of the text, so the reason a degraded frame gives survives to
+/// whoever reads the log instead of ending at an arbitrary buffer size. Each
+/// record is still one small self-validating append, which is the property the
+/// per-record bound exists to protect.
+pub fn format_records(
+    pid: u32,
+    creation_filetime: u64,
+    phase: &str,
+    error: &str,
+) -> Vec<String> {
+    let pieces = split_error_text(error);
+    let total = pieces.len();
+    if total <= 1 {
+        return vec![format_record(pid, creation_filetime, phase, error)];
+    }
+    pieces
+        .iter()
+        .take(MAX_RECORD_CHUNKS)
+        .enumerate()
+        .map(|(index, piece)| {
+            format_record(
+                pid,
+                creation_filetime,
+                &format!("{phase}#{}/{total}", index + 1),
+                piece,
+            )
+        })
+        .collect()
 }
 
 /// The header a record written by this exact process instance must open with.
@@ -216,6 +311,163 @@ mod tests {
         assert!(
             owned_body(&line, &header, &suffix).is_none(),
             "a raw body shorter than declared must be rejected before any lossy conversion"
+        );
+    }
+
+    /// The defect: an error longer than one record used to lose everything
+    /// past the bound, permanently. `format_records` splits instead, and the
+    /// concatenated pieces are the WHOLE original error.
+    ///
+    /// Production change that makes this fail: `format_records` falling back to
+    /// the single truncating `format_record` for a long error, or
+    /// `split_error_text` dropping a piece.
+    #[test]
+    fn a_long_error_survives_whole_across_records() {
+        // Long enough to need several records, and not a round multiple of the
+        // budget, so an off-by-one in the tail cannot hide.
+        let error = format!(
+            "hour 60831436 published with degraded domains: {}",
+            (0..40)
+                .map(|domain| format!("d{domain}:0x00000004[{}]", "R".repeat(500)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let records = format_records(4321, 77, "frame_degraded", &error);
+        assert!(
+            records.len() > 1,
+            "an error this size must not fit one record, got {} record(s)",
+            records.len()
+        );
+
+        let header = owned_header(4321, 77);
+        let suffix = owned_suffix(4321);
+        let mut recovered = String::new();
+        for (index, record) in records.iter().enumerate() {
+            let line = record.strip_suffix('\n').expect("record ends with a newline");
+            // Every chunk is a COMPLETE record in its own right: the reader
+            // validates each independently, so a lost or interleaved chunk
+            // costs that chunk and nothing else.
+            let body = owned_body(line.as_bytes(), &header, &suffix)
+                .expect("each chunk must be an intact owned record");
+            let body = String::from_utf8(body.to_vec()).expect("chunk body is UTF-8");
+            let expected_phase = format!("phase=frame_degraded#{}/{} error=", index + 1, records.len());
+            assert!(
+                body.starts_with(&expected_phase),
+                "chunk {} must name its position, got {body:.80}",
+                index + 1
+            );
+            let text = body
+                .strip_prefix(&expected_phase)
+                .and_then(|rest| rest.strip_suffix(&format!(" {suffix}")))
+                .expect("chunk body is phase + debug text + stamp");
+            assert!(
+                !text.ends_with("...\""),
+                "chunk {} was truncated by format_record, so the split budget is wrong",
+                index + 1
+            );
+            // Undo the `{:?}` rendering the same way the writer applied it.
+            recovered.push_str(&unescape_debug(text));
+        }
+        assert_eq!(
+            recovered, error,
+            "the concatenated chunks must be the whole original error"
+        );
+    }
+
+    /// Minimal inverse of `{:?}` for the escapes this text can contain.
+    fn unescape_debug(text: &str) -> String {
+        let inner = text
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("debug text is quoted");
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(character) = chars.next() {
+            if character != '\\' {
+                out.push(character);
+                continue;
+            }
+            match chars.next().expect("escape has a body") {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                '\\' => out.push('\\'),
+                '"' => out.push('"'),
+                '\'' => out.push('\''),
+                other => panic!("unexpected escape \\{other}"),
+            }
+        }
+        out
+    }
+
+    /// No chunk may exceed the per-record bound, whatever the text is made of.
+    ///
+    /// The budget is computed from `char::escape_debug`, so a character whose
+    /// escaped form is far longer than its raw form is exactly what would break
+    /// a byte-counting splitter.
+    ///
+    /// Production change that makes this fail: `split_error_text` measuring raw
+    /// byte length instead of escaped length.
+    #[test]
+    fn no_chunk_exceeds_the_single_record_bound() {
+        for error in [
+            "\u{7}".repeat(RECORD_TEXT_LIMIT), // escapes to \u{7}, 6 bytes each
+            "\"\\\n\t".repeat(RECORD_TEXT_LIMIT / 2), // two bytes each
+            "é".repeat(RECORD_TEXT_LIMIT),    // two raw bytes, one escaped char
+            "A".repeat(RECORD_TEXT_LIMIT * 3),
+        ] {
+            for record in format_records(4321, 77, "capture", &error) {
+                let line = record.strip_suffix('\n').expect("newline");
+                let body = owned_body(
+                    line.as_bytes(),
+                    &owned_header(4321, 77),
+                    &owned_suffix(4321),
+                )
+                .expect("intact record");
+                let body = String::from_utf8_lossy(body);
+                assert!(
+                    !body.contains("...\""),
+                    "a chunk was truncated by format_record: {body:.120}"
+                );
+                assert!(
+                    body.len() <= RECORD_TEXT_LIMIT + 128,
+                    "chunk body is {} byte(s), past the per-record bound",
+                    body.len()
+                );
+            }
+        }
+    }
+
+    /// A short error is still exactly one record, with its phase untouched.
+    /// The chunk labelling must not appear on the overwhelmingly common case.
+    #[test]
+    fn a_short_error_is_one_unlabelled_record() {
+        let records = format_records(4321, 77, "capture", "something broke");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0], format_record(4321, 77, "capture", "something broke"));
+        assert!(records[0].contains("phase=capture error="), "{}", records[0]);
+    }
+
+    /// An error past the chunk cap loses records, but says so: `n` is the
+    /// count that was NEEDED, so the shortfall is arithmetic, not a guess.
+    ///
+    /// Production change that makes this fail: labelling chunks `i/emitted`
+    /// instead of `i/total`.
+    #[test]
+    fn passing_the_chunk_cap_is_countable_from_the_records_themselves() {
+        let error = "A".repeat(RECORD_TEXT_LIMIT * (MAX_RECORD_CHUNKS + 7));
+        let records = format_records(4321, 77, "capture", &error);
+        assert_eq!(records.len(), MAX_RECORD_CHUNKS, "the cap bounds what is emitted");
+        let declared: usize = records[0]
+            .split("phase=capture#1/")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .expect("the first chunk declares the total")
+            .parse()
+            .expect("the total is a number");
+        assert!(
+            declared > MAX_RECORD_CHUNKS,
+            "the declared total must be the count NEEDED ({declared}), not the count emitted"
         );
     }
 

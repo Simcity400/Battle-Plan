@@ -119,13 +119,36 @@ fn the_shared_admission_bounds_hold_their_exact_documented_values() {
     assert_eq!(portable_admission::RAW_DATE_MIN, 60_005_999);
     assert_eq!(portable_admission::RAW_DATE_MAX, 63_071_999);
     assert_eq!(portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID, 2_048);
-    assert_eq!(portable_admission::SUPPLY_MAX_PROVINCE_ID, 13_413);
+    assert_eq!(portable_admission::SUPPLY_MAX_PROVINCE_ID, 65_535);
     assert_eq!(
         portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID,
         100_000
     );
     assert_eq!(portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_EVENTS, 65_536);
     assert_eq!(portable_admission::MAX_FRD_DIRECT_TRANSITIONS, 1_000_000);
+}
+
+/// The supply family's province ceiling and the shared build profile's must be
+/// the SAME envelope.
+///
+/// They are two spellings of one question -- "what is the largest province id
+/// this build can represent" -- reached by two paths that cannot import each
+/// other: `portable_admission` sits below `compact_contract` and is depended on
+/// by a second workspace, so nothing in the type system makes them agree. They
+/// disagreed for as long as the supply one was the vanilla province count, and
+/// domain 44 dropped rows domain 30's construction lane admitted from the same
+/// map.
+///
+/// Pinned as an equality AND to the literal: the equality catches a drift, and
+/// the literal catches both moving together to a number nobody chose.
+#[test]
+fn the_supply_province_ceiling_is_the_shared_province_envelope() {
+    assert_eq!(
+        portable_admission::SUPPLY_MAX_PROVINCE_ID,
+        compact_contract::build_profile::MAX_PROVINCE_ID,
+        "one build cannot have two largest province ids"
+    );
+    assert_eq!(compact_contract::build_profile::MAX_PROVINCE_ID, 65_535);
 }
 
 /// The calendar window is closed at BOTH ends. A copy that spells the upper

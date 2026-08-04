@@ -1118,3 +1118,71 @@ fn a_notice_that_cannot_be_spliced_fails_closed() {
     )
     .is_err());
 }
+
+/// The degraded summary the capture loop writes to `collector_worker_error.log`
+/// must reach the operator WHOLE.
+///
+/// This is the artifact a human reads when a capture publishes an hour with
+/// domains marked unknown, and it carries one typed reason per degraded domain.
+/// A single worker-error record bounds its text at `RECORD_TEXT_LIMIT`; the
+/// summary for a fully degraded roster is an order of magnitude past that, so
+/// the record used to end mid-domain and every reason after the cut was
+/// destroyed -- exactly when the run most needed diagnosing.
+///
+/// Production change that makes this fail: `attach_worker_error_record_bytes`
+/// calling the single-record `format_record` instead of `format_records`.
+#[test]
+fn a_full_roster_degraded_summary_reaches_the_log_whole() {
+    use compact_contract::worker_error_record as record_format;
+
+    // The shape the capture loop builds, at the scheduled roster's size, with
+    // each reason at the wire's own per-domain bound.
+    let reason_len = compact_contract::frame_degraded::FRAME_DEGRADED_MAX_REASON_LEN;
+    let last_domain = 99u16;
+    let summary = (0..73u16)
+        .map(|index| {
+            let domain = if index == 72 { last_domain } else { index };
+            // ASCII only, so the text appears verbatim in a `{:?}` rendering
+            // and this test is not measuring the escape rules.
+            format!(
+                "d{domain}:{:#010x}[{}]",
+                COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                "Z".repeat(reason_len)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = format!("hour {TEST_HOUR} published with degraded domains: {summary}");
+
+    let records = attach_worker_error_record_bytes("frame_degraded", &text);
+    assert!(
+        records.len() > 1,
+        "a full-roster summary must not be squeezed into one record"
+    );
+
+    // Every record is independently intact and attributable to this process,
+    // which is what lets the host read them at all.
+    let pid = unsafe { GetCurrentProcessId() };
+    let creation = current_process_creation_filetime().unwrap_or(0);
+    let header = record_format::owned_header(pid, creation);
+    let suffix = record_format::owned_suffix(pid);
+    let mut carried = String::new();
+    for record in &records {
+        let line = record.strip_suffix('\n').expect("record ends with a newline");
+        let body = record_format::owned_body(line.as_bytes(), &header, &suffix)
+            .expect("every chunk must be an intact record the host can own");
+        carried.push_str(&String::from_utf8_lossy(body));
+    }
+
+    // The LAST degraded domain's reason is the one a truncating writer loses.
+    let tail = format!("d{last_domain}:{:#010x}[", COMPACT_STATUS_SOURCE_UNAVAILABLE);
+    assert!(
+        carried.contains(&tail),
+        "the last degraded domain's reason must survive to the log"
+    );
+    assert!(
+        !record_format::format_record(pid, creation, "frame_degraded", &text).contains(&tail),
+        "the fixture must be large enough that a single record WOULD have lost the tail; \
+         otherwise this test cannot fail"
+    );
+}
