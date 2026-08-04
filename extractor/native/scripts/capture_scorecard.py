@@ -25,6 +25,65 @@ import sys
 # reader. Kept separate because they reconcile against `skipped_game_hours`.
 SKIPPED_HOUR_REASONS = {"skipped_hour"}
 
+# The v1 failure vocabulary, by bit, from
+# `compact_contract/src/status_flags_base.rs`. Named here rather than imported
+# because this script reads a sealed manifest and must run against a manifest
+# from any checkout; a name this table does not know is printed as its bit so
+# an added flag is still visible.
+FAILURE_STATUS_NAMES = (
+    (1 << 0, "state_unavailable"),
+    (1 << 1, "profile_mismatch"),
+    (1 << 2, "no_clock"),
+    (1 << 3, "no_scalar_source"),
+    (1 << 6, "worker_panic"),
+    (1 << 7, "bridge_unavailable"),
+    (1 << 8, "source_unavailable"),
+    (1 << 9, "partial_data"),
+    (1 << 12, "control_invalid"),
+)
+
+
+FAILURE_STATUS_MASK = 0
+for _bit, _name in FAILURE_STATUS_NAMES:
+    FAILURE_STATUS_MASK |= _bit
+
+
+def residual_failure_status(info):
+    """The domain's residual failure word, from whichever field carries it.
+
+    `effective_failure_status_flags_or` is the word the promotion gate reads
+    and the one to prefer: it has already had the lane-local status vocabulary
+    (d49/d51/d53/d60/d99 badge bits, which are semantics, not failures)
+    stripped. It was added late, so a manifest sealed before it exists carries
+    only `status_flags_or` -- and on run batch3/deepwar_b that is exactly where
+    d81's `768` (source_unavailable|partial_data) lives. Falling back to it
+    masked to the failure vocabulary is what lets this axis score the captures
+    that motivated it instead of only future ones.
+
+    A PRESENT zero is a clean domain and must not fall back; only an absent
+    field does. That is why this tests for None rather than for falsiness.
+    """
+    effective = info.get("effective_failure_status_flags_or")
+    if effective is not None:
+        return int(effective or 0)
+    return int(info.get("status_flags_or", 0) or 0) & FAILURE_STATUS_MASK
+
+
+def failure_status_names(flags):
+    """Spell a residual failure-status word, keeping unknown bits visible."""
+    flags = int(flags or 0)
+    if not flags:
+        return ""
+    names = []
+    remaining = flags
+    for bit, name in FAILURE_STATUS_NAMES:
+        if flags & bit:
+            names.append(name)
+            remaining &= ~bit
+    if remaining:
+        names.append(f"unknown_bits=0x{remaining:x}")
+    return "|".join(names)
+
 
 def load_manifest(run_dir):
     for name in ("native_session_manifest.json", "session_manifest.json"):
@@ -453,6 +512,68 @@ def score(manifest):
             f" {len(excluded_pairs) - also_flagged - also_gapped} are otherwise"
             " indistinguishable from a clean delivery)")
 
+    # COVERED-BY-DATA is not COVERED-BY-EXPLANATION, and the coverage gate
+    # cannot tell them apart.
+    #
+    # `compact_domain_coverage_errors_with_gaps` asks one question per
+    # scheduled domain-hour: did a PERF record arrive, and where the domain
+    # requires one, a DATA record. d81 answers yes for every one of its 318
+    # hours and carries no rail state in any of them -- every record is a
+    # SOURCE_UNAVAILABLE envelope whose payload is empty. `domain_coverage.ok`
+    # is therefore true, and a reader who stops at that word reads the capture
+    # as covering d81. The hours ARE accounted; what they are accounted BY is
+    # an explanation, not data, and only one of those is the thing the capture
+    # was run to collect.
+    #
+    # Both facts have to be printed, because a domain carrying no rows is two
+    # different situations that call for opposite responses. A domain can be
+    # legitimately empty for a whole capture -- no nuclear strike was ever
+    # made, so d24 has nothing to say and says it cleanly. That is not the d81
+    # shape. The residual failure-status word is exactly what separates them:
+    # d81's hours carry `source_unavailable`, the empty-but-clean domain's
+    # carry nothing. So the axis COUNTS only the domains whose emptiness is a
+    # named failure, and prints the clean-empty ones beside it as context that
+    # must never silently become a miss.
+    #
+    # Derived here from `per_domain` rather than read from a manifest field so
+    # that it also scores captures sealed before the recorder published its own
+    # split -- t23 included.
+    explanation_only = []
+    empty_but_clean = []
+    for name in expected:
+        info = per_domain.get(name)
+        if info is None:
+            # "expected domains with no per-domain record" already owns this;
+            # counting it twice would double-report one absence.
+            continue
+        if int(info.get("row_count_total", 0) or 0):
+            continue
+        domain_id = info.get("domain_id")
+        data_records = int(info.get("data_record_count", 0) or 0)
+        gap_records = gaps_by_id.get(domain_id, 0)
+        if not data_records and not gap_records:
+            # Nothing accounts for these hours at all. That is a strictly worse
+            # condition and the reconciliation axis above is what names it.
+            continue
+        failure = residual_failure_status(info)
+        entry = (name, domain_id, data_records, gap_records, failure)
+        (explanation_only if failure else empty_but_clean).append(entry)
+
+    def _coverage_line(entry):
+        name, domain_id, data_records, gap_records, failure = entry
+        return (f"{name} [d{domain_id}: {data_records} data records, "
+                f"{gap_records} gap records, 0 rows in the whole capture, "
+                f"status={failure_status_names(failure) or 'clean'}]")
+
+    coverage_detail = (
+        chr(10).join(_coverage_line(e) for e in sorted(explanation_only))
+        or "none")
+    if empty_but_clean:
+        coverage_detail += chr(10) + (
+            "carried no rows either, but with no failure status, so this is "
+            "read as nothing to report rather than nothing read: "
+            + ", ".join(f"{e[0]} (d{e[1]})" for e in sorted(empty_but_clean)))
+
     axes = [
         ("hours the clock advanced but no frame observed", hours_unobserved,
          f"{observed} observed of {span_hours} in span "
@@ -486,6 +607,8 @@ def score(manifest):
          ", ".join(zero_records) or "none"),
         ("domains that produced no rows", len(zero_rows),
          chr(10).join(with_reason(n) for n in zero_rows) or "none"),
+        ("scheduled domains covered only by an explanation, never by data",
+         len(explanation_only), coverage_detail),
         ("domains reporting dropped or incomplete events", len(dropped),
          "; ".join(f"{n} {json.dumps(p)}" for n, p in sorted(dropped.items())) or "none"),
         ("faults in the deliberately-not-scheduled record", len(record_faults),

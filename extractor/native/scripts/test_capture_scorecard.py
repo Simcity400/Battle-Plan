@@ -291,5 +291,194 @@ class HourFloorVacuity(unittest.TestCase):
             axis(book, self.VACUOUS)
 
 
+SOURCE_UNAVAILABLE = 1 << 8
+PARTIAL_DATA = 1 << 9
+
+
+def covered(domain_ids, per_domain, frames=4, gaps=()):
+    """A manifest carrying only what the coverage-semantics axis reads."""
+    return {
+        "compact_stream": {
+            "frame_end_record_count": frames,
+            "expected_domains": [f"d{i}" for i in domain_ids],
+            "per_domain": per_domain,
+            "domain_gap_outcomes": list(gaps),
+            "gaps": [],
+            "frame_degraded_outcomes": [],
+        },
+        "hourly_requirement": {},
+        "replay_artifact": {},
+    }
+
+
+def domain(domain_id, *, data_records, rows, failure=0, gap_records=None):
+    return {
+        "domain_id": domain_id,
+        "data_record_count": data_records,
+        "gap_record_count": gap_records,
+        "row_count_total": rows,
+        "effective_failure_status_flags_or": failure,
+    }
+
+
+class CoverageSemantics(unittest.TestCase):
+    """Covered-by-data must not read the same as covered-by-explanation.
+
+    The recorder's coverage gate asks only whether the records arrived. d81
+    delivers a SOURCE_UNAVAILABLE envelope for every one of its scheduled
+    hours, so the gate reports `domain_coverage.ok` while the domain has never
+    once carried rail state.
+    """
+
+    AXIS = "scheduled domains covered only by an explanation, never by data"
+
+    def test_the_d81_shape_is_a_miss_and_names_its_status(self):
+        book = covered(
+            (81, 10),
+            {
+                "d81": domain(81, data_records=4, rows=0,
+                              failure=SOURCE_UNAVAILABLE | PARTIAL_DATA),
+                "d10": domain(10, data_records=4, rows=17),
+            },
+        )
+        count, detail = axis(book, self.AXIS)
+        self.assertEqual(count, 1)
+        self.assertIn("d81", detail)
+        self.assertIn("source_unavailable", detail)
+        self.assertIn("partial_data", detail)
+        self.assertIn("4 data records", detail)
+        self.assertIn("0 rows", detail)
+        self.assertNotIn("d10", detail)
+
+    def test_a_domain_carrying_rows_is_covered_by_data(self):
+        book = covered((10,), {"d10": domain(10, data_records=4, rows=1)})
+        self.assertEqual(axis(book, self.AXIS)[0], 0)
+
+    def test_an_empty_domain_with_no_failure_status_is_not_a_miss(self):
+        """Nothing to report is not the same as nothing read.
+
+        A capture in which no nuclear strike ever happened leaves d24 empty and
+        clean. Counting that as a coverage miss would make the axis fire on
+        every ordinary capture, and an axis that always fires is not read.
+        """
+        book = covered(
+            (24, 10),
+            {
+                "d24": domain(24, data_records=4, rows=0),
+                "d10": domain(10, data_records=4, rows=3),
+            },
+        )
+        count, detail = axis(book, self.AXIS)
+        self.assertEqual(count, 0)
+        self.assertIn(
+            "d24", detail,
+            "a clean-empty domain must still be printed, not silently dropped")
+
+    def test_a_domain_nothing_accounts_for_is_left_to_the_reconciliation_axis(self):
+        """No data record and no gap is a worse condition with its own axis.
+
+        Counting it here as well would report one absence twice and make the
+        two axes disagree about the same domain.
+
+        The fixture carries a FAILURE STATUS deliberately. Without one the
+        domain sorts into the clean-empty bucket whether the guard exists or
+        not, and the test passes for the wrong reason -- it did, until a
+        mutation that deleted the guard survived it.
+        """
+        book = covered(
+            (81,),
+            {"d81": domain(81, data_records=0, rows=0,
+                           failure=SOURCE_UNAVAILABLE)},
+        )
+        count, detail = axis(book, self.AXIS)
+        self.assertEqual(
+            count, 0,
+            "an unaccounted domain-hour belongs to the reconciliation axis; "
+            "counting it here reports one absence twice")
+        self.assertNotIn("d81", detail)
+
+    def test_hours_accounted_only_by_gap_records_still_count_as_explanation(self):
+        """A domain that emitted no data at all, only gaps, is the same miss.
+
+        The count printed is RECORDS, matching `per_domain.gap_record_count`:
+        one H4DG covers the inclusive range 1..4, so four hours arrive as one
+        record. The hours those ranges cover are counted by the gap axes above,
+        and restating them here under a "records" label is how the two reports
+        come to disagree about one ledger.
+        """
+        book = covered(
+            (81,),
+            {"d81": domain(81, data_records=0, rows=0,
+                           failure=SOURCE_UNAVAILABLE)},
+            gaps=[outcome(81, 1, 4, "source_unavailable")],
+        )
+        count, detail = axis(book, self.AXIS)
+        self.assertEqual(count, 1)
+        self.assertIn("1 gap records", detail)
+        self.assertIn("0 data records", detail)
+
+    def test_an_expected_domain_with_no_per_domain_record_is_not_double_counted(self):
+        book = covered((81,), {})
+        self.assertEqual(axis(book, self.AXIS)[0], 0)
+        self.assertEqual(
+            axis(book, "expected domains with no per-domain record")[0], 1)
+
+
+class ResidualFailureStatus(unittest.TestCase):
+    """The word lives in a different field depending on when the seal was cut."""
+
+    def test_the_effective_word_is_preferred(self):
+        self.assertEqual(
+            SCORECARD.residual_failure_status({
+                "effective_failure_status_flags_or": SOURCE_UNAVAILABLE,
+                "status_flags_or": SOURCE_UNAVAILABLE | PARTIAL_DATA,
+            }),
+            SOURCE_UNAVAILABLE)
+
+    def test_a_present_zero_does_not_fall_back(self):
+        """A domain the recorder judged clean must stay clean.
+
+        Falling back on falsiness rather than on absence would resurrect a
+        lane-local badge bit as a failure and report an ordinary domain as a
+        coverage miss.
+        """
+        self.assertEqual(
+            SCORECARD.residual_failure_status({
+                "effective_failure_status_flags_or": 0,
+                "status_flags_or": SOURCE_UNAVAILABLE,
+            }),
+            0)
+
+    def test_an_older_manifest_falls_back_to_status_flags_or(self):
+        """The batch3/deepwar_b d81 shape: 750 data records, 0 rows, 768."""
+        self.assertEqual(
+            SCORECARD.residual_failure_status({"status_flags_or": 768}),
+            SOURCE_UNAVAILABLE | PARTIAL_DATA)
+
+    def test_the_fallback_strips_bits_outside_the_failure_vocabulary(self):
+        """d49/d51/d53/d60/d99 badge bits are semantics, not failures."""
+        self.assertEqual(
+            SCORECARD.residual_failure_status({
+                "status_flags_or": SOURCE_UNAVAILABLE | (1 << 16) | (1 << 17),
+            }),
+            SOURCE_UNAVAILABLE)
+
+
+class FailureStatusNames(unittest.TestCase):
+    def test_known_bits_are_spelled(self):
+        self.assertEqual(
+            SCORECARD.failure_status_names(SOURCE_UNAVAILABLE | PARTIAL_DATA),
+            "source_unavailable|partial_data")
+
+    def test_a_clean_word_spells_nothing(self):
+        self.assertEqual(SCORECARD.failure_status_names(0), "")
+
+    def test_an_unknown_bit_stays_visible(self):
+        """A flag added to the crate must not vanish from the report."""
+        spelled = SCORECARD.failure_status_names(SOURCE_UNAVAILABLE | (1 << 20))
+        self.assertIn("source_unavailable", spelled)
+        self.assertIn("unknown_bits=0x100000", spelled)
+
+
 if __name__ == "__main__":
     unittest.main()
