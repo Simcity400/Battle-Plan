@@ -274,26 +274,29 @@ fn a_worker_success_does_not_turn_a_partially_migrated_domain_failure_into_a_fra
     }
 }
 
-/// Regression for live_unlock/t9 and t10. D65 and D66 currently migrate only
-/// their worker-join boundary: a normal join records `worker_completed`, while
-/// failures discovered inside either reader still reach PERF only through the
-/// legacy diagnostic/status channel. Treating that successful join as proof
-/// that the ordinary failure site is migrated creates a frame-level
-/// `migrated_site_published_outcome` finding and refuses every other domain in
-/// the hour.
+/// Closes live_unlock/t9 and t10. D65 and D66 used to migrate only their
+/// worker-join boundary: a normal join recorded `worker_completed` while a
+/// failure found inside either reader reached PERF through the legacy
+/// status/diagnostic channel alone, so the frame saw a failing record with only
+/// a success behind it. Their emit sites now run `record_reader_status_outcome`
+/// over whatever bits the read added to the frame's base, so the deciding
+/// failure IS in the ledger and the walk classifies it `Declared` — a
+/// per-domain degradation carrying a real predicate, not the reserved
+/// `undeclared` and not a frame fault.
 ///
-/// Production change that makes this fail: removing D65 or D66 from
-/// `PARTIALLY_MIGRATED_OUTCOME_DOMAINS` before all of that reader's internal
-/// non-clean return paths record a failure outcome.
+/// Production change that makes this fail: dropping the
+/// `record_reader_status_outcome` call from either emit site (the domains are
+/// no longer excepted, so the walk reports `migrated_site_published_outcome`
+/// and refuses the frame), or putting either domain back on the exception list.
 #[test]
-fn d65_and_d66_internal_read_failures_remain_domain_degradations_until_sites_are_migrated() {
+fn d65_and_d66_reader_failures_declare_their_own_outcome() {
     for domain_id in [
         COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE,
         COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE,
     ] {
         assert!(
-            PARTIALLY_MIGRATED_OUTCOME_DOMAINS.contains(&domain_id),
-            "domain {domain_id} has only worker-boundary outcome migration"
+            !PARTIALLY_MIGRATED_OUTCOME_DOMAINS.contains(&domain_id),
+            "domain {domain_id} no longer needs the partial-migration exception"
         );
         let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
         record_read_succeeded(
@@ -301,22 +304,167 @@ fn d65_and_d66_internal_read_failures_remain_domain_degradations_until_sites_are
             domain_id,
             compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
         );
-        let (records, _) = assembled_frame(&[(domain_id, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
+        // Exactly what the emit site does: the frame base was clean and the
+        // read came back with SOURCE_UNAVAILABLE | PARTIAL_DATA on it.
+        let published = record_reader_status_outcome(
+            &mut outcomes,
+            domain_id,
+            0,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            || format!("domain {domain_id} walk refused at a guard"),
+            Vec::new(),
+        );
+        assert_eq!(
+            published,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            "the published word must be the derived word"
+        );
+        let (records, _) = assembled_frame(&[(domain_id, published)]);
         let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
 
         assert!(
             findings.iter().all(|finding| finding.frame_finding.is_none()),
-            "domain {domain_id} internal read failure became a frame fault: {:?}",
-            findings.iter().map(|finding| &finding.text).collect::<Vec<_>>()
+            "domain {domain_id} reader failure became a frame fault: {:?}",
+            findings
+                .iter()
+                .map(|finding| &finding.text)
+                .collect::<Vec<_>>()
         );
-        let FrameCompletenessVerdict::Degraded(degraded) =
-            classify_frame_completeness(&findings)
+        let FrameCompletenessVerdict::Degraded(degraded) = classify_frame_completeness(&findings)
         else {
-            panic!("domain {domain_id} internal read failure must degrade only that domain");
+            panic!("domain {domain_id} reader failure must degrade only that domain");
         };
         assert_eq!(degraded.len(), 1);
         assert_eq!(degraded[0].domain_id, domain_id);
+        assert!(
+            !degraded[0]
+                .reason
+                .contains(compact_contract::diagnostic_channel::PREDICATE_UNDECLARED_NAME),
+            "domain {domain_id} still reaches the record undeclared: {}",
+            degraded[0].reason
+        );
+        assert!(
+            degraded[0].reason.contains("walk refused at a guard"),
+            "domain {domain_id} lost the producer's reason: {}",
+            degraded[0].reason
+        );
     }
+}
+
+/// The behavioural test above proves the classification is right once the emit
+/// site records the outcome. This proves the emit site still does — the two
+/// domains are off `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`, so a deleted call is
+/// not a lost diagnostic, it is a refused frame.
+///
+/// Production change that makes this fail: dropping the
+/// `record_reader_status_outcome` call from either D65's or D66's emit block in
+/// `build_compact_extraction_gate_records`, or pointing one of them at a
+/// different domain.
+#[test]
+fn d65_and_d66_emit_sites_route_their_status_word_through_the_ledger() {
+    const SOURCE: &str = include_str!("../attach_log.rs");
+    let lines: Vec<&str> = SOURCE.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("fn build_compact_extraction_gate_records("))
+        .expect("the gate function is in this file");
+    let end = start
+        + 1
+        + lines[start + 1..]
+            .iter()
+            .position(|line| *line == "}")
+            .expect("the gate function ends at a column-zero brace");
+
+    let mut routed: Vec<&str> = Vec::new();
+    for (offset, line) in lines[start..end].iter().enumerate() {
+        if !line
+            .trim()
+            .starts_with("read.status_flags = record_reader_status_outcome(")
+        {
+            continue;
+        }
+        // The ledger argument is first, the domain constant second.
+        let domain = lines[start + offset + 1..(start + offset + 5).min(end)]
+            .iter()
+            .map(|line| line.trim().trim_end_matches(','))
+            .find(|line| line.starts_with("COMPACT_DOMAIN_"))
+            .expect("the call names the domain it speaks for");
+        routed.push(domain);
+    }
+    routed.sort_unstable();
+    assert_eq!(
+        routed,
+        vec![
+            "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
+            "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
+        ],
+        "D65 and D66 publish a reader-computed status word and must substantiate it"
+    );
+}
+
+/// `record_reader_status_outcome` has to be TOTAL over the failure bits it
+/// speaks for, because that totality is the whole safety argument for taking
+/// D65 and D66 off `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`: no enumeration of the
+/// readers' guards is being trusted, only the claim that every bit a reader can
+/// add is named here and derives back to the same word.
+///
+/// Production change that makes this fail: adding a bit to
+/// `READER_OWNED_FAILURE_BITS` without teaching the mapping to reproduce it, or
+/// letting a non-failing outcome be recorded for a failing word.
+#[test]
+fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
+    let domain_id = COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE;
+    let mut bit = 1u32;
+    let mut covered = 0u32;
+    while bit != 0 {
+        if READER_OWNED_FAILURE_BITS & bit != 0 {
+            let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+            let published =
+                record_reader_status_outcome(&mut outcomes, domain_id, 0, bit, String::new, Vec::new());
+            assert_eq!(published, bit, "bit {bit:#010x} was not derived back");
+            let outcome = outcomes
+                .get(domain_id)
+                .unwrap_or_else(|| panic!("bit {bit:#010x} recorded no outcome"));
+            assert!(
+                outcome.is_failure(),
+                "bit {bit:#010x} recorded a non-failure outcome, which the walk reads as silence"
+            );
+            assert_eq!(
+                outcome.own_bits(),
+                bit,
+                "bit {bit:#010x} derives to a different word than the reader published"
+            );
+            covered |= bit;
+        }
+        bit <<= 1;
+    }
+    assert_eq!(covered, READER_OWNED_FAILURE_BITS);
+
+    // A clean read records nothing and leaves the join's success standing.
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    record_read_succeeded(
+        &mut outcomes,
+        domain_id,
+        compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+    );
+    let published =
+        record_reader_status_outcome(&mut outcomes, domain_id, 0, 0, String::new, Vec::new());
+    assert_eq!(published, 0);
+    assert!(!outcomes.get(domain_id).expect("success stands").is_failure());
+
+    // A bit the FRAME contributed is not this reader's to diagnose, and
+    // claiming it would derive a word the record does not carry.
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    let published = record_reader_status_outcome(
+        &mut outcomes,
+        domain_id,
+        COMPACT_STATUS_PROFILE_MISMATCH,
+        COMPACT_STATUS_PROFILE_MISMATCH,
+        String::new,
+        Vec::new(),
+    );
+    assert_eq!(published, COMPACT_STATUS_PROFILE_MISMATCH);
+    assert!(outcomes.get(domain_id).is_none());
 }
 
 /// The complementary guard: this patch must not globally downgrade a bypassed
