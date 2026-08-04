@@ -867,7 +867,29 @@ function Test-PassiveCaptureReadyReceipt {
         [Parameter(Mandatory = $true)][uint32]$SchedulerWorkerCount,
         [Parameter(Mandatory = $true)][string]$CollectorControlPath,
         [ValidateNotNullOrEmpty()]
-        [string]$CollectorBuildProfileId = 'vanilla_latest_2026_06_30'
+        [string]$CollectorBuildProfileId = 'vanilla_latest_2026_06_30',
+        # Receives the CUSTODY authority even when the receipt is refused.
+        #
+        # Two different questions are answered from one receipt, and conflating
+        # them stranded a capture. "Is this capture gradeable?" fails on a
+        # partial hook roster, a wrong domain count, a stale clock. "Does this
+        # receipt bind a named collector to THIS process, so its later teardown
+        # record can be believed?" fails only on identity: schema, pid, epoch,
+        # session, capture, the digest chain, the canonical allowlist.
+        #
+        # Run t20 failed the first (active_hook_count=51 of 55) and passed the
+        # second. The function threw, the caller's READY authority stayed $null,
+        # and the recorder's teardown receipt -- which proved all 55 pinned
+        # sites restored to their baseline digest -- was then refused for want
+        # of an authority that had in fact been established. The graded window
+        # never closed, so the settings guard stayed applied and the game was left
+        # running for an operator to sort out by hand.
+        #
+        # Writing custody out through a [ref] rather than returning it keeps the
+        # refusal a THROW: no caller can accidentally treat a refused receipt as
+        # an admitted one, because the only value this function ever returns is
+        # an admitted authority.
+        [ref]$CustodyAuthorityOut = $null
     )
 
     if ($ScheduledDomainNames.Count -eq 0) {
@@ -1040,7 +1062,15 @@ function Test-PassiveCaptureReadyReceipt {
     # function assigning to `$script:`-scoped state would write a DIFFERENT
     # variable from the local this function later tests, so the guard would
     # collect nothing and admit every receipt -- a guard that cannot fail.
-    $admissionFailures = [Collections.Generic.List[string]]::new()
+    #
+    # TWO accumulators, one per question (see -CustodyAuthorityOut above).
+    # $custodyFailures holds the clauses that decide whether this receipt names
+    # THIS collector in THIS process at all; $gradingFailures holds the clauses
+    # that decide whether the capture it opens is worth grading. Any failure in
+    # either still refuses the receipt -- the admission decision is unchanged.
+    # The split only decides whether custody survives the refusal.
+    $custodyFailures = [Collections.Generic.List[string]]::new()
+    $gradingFailures = [Collections.Generic.List[string]]::new()
     function Add-PassiveAdmissionFailure {
         param(
             [Parameter(Mandatory = $true)]
@@ -1064,59 +1094,76 @@ function Test-PassiveCaptureReadyReceipt {
         }
     }
 
-    Add-PassiveAdmissionFailure $admissionFailures 'schema' `
+    Add-PassiveAdmissionFailure $custodyFailures 'schema' `
         ($ready.schema -isnot [string] -or
             [string]$ready.schema -cne 'hoi4-capture-ready-v2') `
         'hoi4-capture-ready-v2' $ready.schema
-    Add-PassiveAdmissionFailure $admissionFailures 'status' `
+    Add-PassiveAdmissionFailure $custodyFailures 'status' `
         ($ready.status -isnot [string] -or [string]$ready.status -cne 'ready') `
         'ready' $ready.status
-    Add-PassiveAdmissionFailure $admissionFailures 'capture_policy' `
+    Add-PassiveAdmissionFailure $custodyFailures 'capture_policy' `
         ($ready.capture_policy -isnot [string] -or
             [string]$ready.capture_policy -cne 'passive-observer-only') `
         'passive-observer-only' $ready.capture_policy
-    Add-PassiveAdmissionFailure $admissionFailures 'pid' `
+    Add-PassiveAdmissionFailure $custodyFailures 'pid' `
         ($receiptPid -ne $TargetPid) $TargetPid $receiptPid
-    Add-PassiveAdmissionFailure $admissionFailures 'process_creation_filetime_utc' `
+    Add-PassiveAdmissionFailure $custodyFailures 'process_creation_filetime_utc' `
         ($creation -ne $TargetCreationFiletimeUtc) `
         $TargetCreationFiletimeUtc $creation
-    Add-PassiveAdmissionFailure $admissionFailures 'session_id' `
+    Add-PassiveAdmissionFailure $custodyFailures 'session_id' `
         ($ready.session_id -isnot [string] -or
             [string]$ready.session_id -cne $SessionId) `
         $SessionId $ready.session_id
-    Add-PassiveAdmissionFailure $admissionFailures 'capture_id' `
+    Add-PassiveAdmissionFailure $custodyFailures 'capture_id' `
         ($ready.capture_id -isnot [string] -or
             [string]$ready.capture_id -cne $CaptureId) `
         $CaptureId $ready.capture_id
-    Add-PassiveAdmissionFailure $admissionFailures 'requested_duration_ms' `
+    # Custody, not grading: the requested duration is one of the fields hashed
+    # into host_binding_sha256 below, so a receipt that disagrees with the
+    # harness here cannot bind to this host at all.
+    Add-PassiveAdmissionFailure $custodyFailures 'requested_duration_ms' `
         ($duration -ne $RequestedDurationMs) $RequestedDurationMs $duration
-    Add-PassiveAdmissionFailure $admissionFailures 'readiness_flags' `
+    Add-PassiveAdmissionFailure $gradingFailures 'readiness_flags' `
         ($flags -ne 255) 255 $flags
-    Add-PassiveAdmissionFailure $admissionFailures 'validated_domain_count' `
+    Add-PassiveAdmissionFailure $gradingFailures 'validated_domain_count' `
         ($domainCount -ne [uint32]$ScheduledDomainNames.Count) `
         ([uint32]$ScheduledDomainNames.Count) $domainCount
-    Add-PassiveAdmissionFailure $admissionFailures 'scheduler_queue_capacity' `
+    Add-PassiveAdmissionFailure $gradingFailures 'scheduler_queue_capacity' `
         ($queueCapacity -ne $SchedulerQueueCapacity) `
         $SchedulerQueueCapacity $queueCapacity
-    Add-PassiveAdmissionFailure $admissionFailures 'scheduler_worker_count' `
+    Add-PassiveAdmissionFailure $gradingFailures 'scheduler_worker_count' `
         ($workerCount -ne $SchedulerWorkerCount) `
         $SchedulerWorkerCount $workerCount
-    Add-PassiveAdmissionFailure $admissionFailures 'allowed_hook_count' `
+    # Custody: this is the recorder saying which roster it was WILLING to
+    # install, and the teardown record has to restore exactly that many pinned
+    # sites. A recorder working from a different allowlist is a different
+    # collector and its teardown record is not about the same sites.
+    Add-PassiveAdmissionFailure $custodyFailures 'allowed_hook_count' `
         ($allowedHookCount -ne [uint32]$hookAuthority.Count) `
         ([uint32]$hookAuthority.Count) $allowedHookCount
-    Add-PassiveAdmissionFailure $admissionFailures 'active_hook_count' `
+    # Grading, and this is the clause that ended t20 at 51 of 55. A partial
+    # roster means the capture cannot be graded -- domains behind the four
+    # missing hooks are silent, not empty. It says nothing about custody: the
+    # collector still pinned, and must still restore, all $allowedHookCount
+    # sites, which is what the teardown record is checked against.
+    Add-PassiveAdmissionFailure $gradingFailures 'active_hook_count' `
         ($activeHookCount -ne $allowedHookCount) $allowedHookCount $activeHookCount
-    Add-PassiveAdmissionFailure $admissionFailures 'clock_hour_raw' `
+    # More live hooks than the allowlist permits is the one direction that IS a
+    # custody fact: the collector instrumented something no roster declared, so
+    # nothing bounds what its teardown has to put back.
+    Add-PassiveAdmissionFailure $custodyFailures 'active_hook_count exceeds the allowlist' `
+        ($activeHookCount -gt $allowedHookCount) "<= $allowedHookCount" $activeHookCount
+    Add-PassiveAdmissionFailure $gradingFailures 'clock_hour_raw' `
         ($clockHourRaw -lt 60005999 -or $clockHourRaw -gt 63071999) `
         '60005999..63071999' $clockHourRaw
-    Add-PassiveAdmissionFailure $admissionFailures 'clock_observation_ordinal' `
+    Add-PassiveAdmissionFailure $gradingFailures 'clock_observation_ordinal' `
         ($clockObservationOrdinal -eq [uint64]::MaxValue) `
         'not u64::MAX' $clockObservationOrdinal
-    Add-PassiveAdmissionFailure $admissionFailures 'host_validated' `
+    Add-PassiveAdmissionFailure $custodyFailures 'host_validated' `
         ($ready.host_validated -isnot [bool] -or
             -not [bool]$ready.host_validated) `
         $true $ready.host_validated
-    Add-PassiveAdmissionFailure $admissionFailures 'target_executable_sha256 is the pinned a729 build' `
+    Add-PassiveAdmissionFailure $custodyFailures 'target_executable_sha256 is the pinned a729 build' `
         ($TargetExecutableSha256 -cne
             '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') `
         '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad' `
@@ -1139,22 +1186,20 @@ function Test-PassiveCaptureReadyReceipt {
         'ready_ack_sha256'               = $expectedReadyAckSha
         'host_binding_sha256'            = $expectedHostBindingSha
     }
+    # Every digest is custody: the chain is what ties this receipt to this
+    # process, this collector build, this pipe and this host.
     foreach ($clause in $digestClauses.GetEnumerator()) {
         $observed = [string]$ready.PSObject.Properties[$clause.Key].Value
-        Add-PassiveAdmissionFailure $admissionFailures $clause.Key `
+        Add-PassiveAdmissionFailure $custodyFailures $clause.Key `
             ($observed -cne [string]$clause.Value) `
             ([string]$clause.Value) $observed
     }
 
-    if ($admissionFailures.Count -ne 0) {
-        throw (
-            "CaptureReadyV2 failed passive admission on " +
-            "$($admissionFailures.Count) clause(s): " +
-            ($admissionFailures -join '; ')
-        )
-    }
-
-    return [pscustomobject]@{
+    $admissionFailures = [Collections.Generic.List[string]]::new()
+    $admissionFailures.AddRange($custodyFailures)
+    $admissionFailures.AddRange($gradingFailures)
+    $captureAdmitted = ($admissionFailures.Count -eq 0)
+    $authority = [pscustomobject]@{
         Schema = 'hoi4-passive-lifecycle-ready-authority-v1'
         ReceiptPath = [IO.Path]::GetFullPath($readyPath)
         ReceiptSha256 = (
@@ -1173,7 +1218,36 @@ function Test-PassiveCaptureReadyReceipt {
         HookAllowlistSha256 = [string]$hookAuthority.Sha256
         AllowedHookCount = [uint32]$allowedHookCount
         ActiveHookCount = [uint32]$activeHookCount
+        # $true only on the value this function RETURNS. A custody authority
+        # handed out through -CustodyAuthorityOut always carries $false, so a
+        # consumer that reads it can never mistake a refused capture for an
+        # admitted one.
+        CaptureAdmitted = $captureAdmitted
+        AdmissionFailures = [string[]]$admissionFailures.ToArray()
     }
+
+    # Publish custody BEFORE the refusal. The whole point is that the caller
+    # still knows which collector is in which process when the capture itself
+    # is refused; publishing after the throw would publish nothing.
+    if ($custodyFailures.Count -eq 0 -and $null -ne $CustodyAuthorityOut) {
+        $CustodyAuthorityOut.Value = $authority
+    }
+
+    if ($admissionFailures.Count -ne 0) {
+        $custodyNote = if ($custodyFailures.Count -eq 0) {
+            'READY custody is established, so the collector teardown receipt remains admissible'
+        } else {
+            'READY custody is NOT established'
+        }
+        throw (
+            "CaptureReadyV2 failed passive admission on " +
+            "$($admissionFailures.Count) clause(s): " +
+            ($admissionFailures -join '; ') +
+            ". $custodyNote."
+        )
+    }
+
+    return $authority
 }
 
 function Test-PassiveCaptureTeardownReceipt {
@@ -1192,9 +1266,23 @@ function Test-PassiveCaptureTeardownReceipt {
         throw 'Teardown verification requires admitted READY authority.'
     }
     $expectedHookCount = [uint32]$ReadyAuthority.ExpectedHookCount
+    # The roster this teardown has to account for is the ALLOWED one, and it has
+    # to be the canonical roster. How many of those hooks actually took is not a
+    # custody fact and is deliberately not required to be all of them: the
+    # collector pins every allowed site whether or not its detour installed, so
+    # `pinned_hook_site_count` below is still checked against the full roster
+    # and `pinned_hook_site_restored_sha256` still has to equal the baseline
+    # over all of them. Requiring ActiveHookCount == expected here refused the
+    # t20 teardown record -- which proved all 55 sites restored -- purely
+    # because 51 of 55 detours installed, and that left a real hook-custody
+    # question unanswerable on a run that had in fact answered it.
+    #
+    # The other direction stays fatal: more live hooks than the allowlist
+    # permits means something outside the roster was instrumented, and nothing
+    # then bounds what the teardown had to put back.
     if ($expectedHookCount -eq 0 -or
         [uint32]$ReadyAuthority.AllowedHookCount -ne $expectedHookCount -or
-        [uint32]$ReadyAuthority.ActiveHookCount -ne $expectedHookCount) {
+        [uint32]$ReadyAuthority.ActiveHookCount -gt $expectedHookCount) {
         throw 'Teardown verification requires canonical hook-roster READY authority.'
     }
     $teardownPath = Join-Path $RunDir 'CAPTURE_TEARDOWN_V1.json'

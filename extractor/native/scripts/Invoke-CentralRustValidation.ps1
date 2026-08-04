@@ -79,6 +79,7 @@ $portablePackageReceiptPath = Join-Path $targetDir "release\hoi4-portable-packag
 $worldFoldCitationVerifier = Join-Path $PSScriptRoot "verify_world_fold_citations.py"
 $worldFoldCitationTests = Join-Path $PSScriptRoot "test_verify_world_fold_citations.py"
 $captureScorecardTests = Join-Path $PSScriptRoot "test_capture_scorecard.py"
+$clockBaselineSummaryTests = Join-Path $PSScriptRoot "test_clock_baseline_summary.py"
 $c07TreeLibraryGenerator = Join-Path $repoRoot "replay_interface\re_evidence\rendering_laws\C07\build_c07_portable_tree_library.py"
 $c07TreeLibraryPinSource = Join-Path $repoRoot "portable_replay\native\render_stream\src\c07_tree_content_hashes.rs"
 $expectedRustVersion = "1.96.0"
@@ -524,6 +525,7 @@ try {
         # force an explicit review of every wire-format transcription it backs.
         Invoke-Checked -Program "python" -Arguments @($worldFoldCitationTests)
         Invoke-Checked -Program "python" -Arguments @($captureScorecardTests)
+        Invoke-Checked -Program "python" -Arguments @($clockBaselineSummaryTests)
         Invoke-Checked -Program "python" -Arguments @(
             $worldFoldCitationVerifier,
             "--repo-root",

@@ -916,6 +916,10 @@ $readOnlyObserver = Join-Path $scriptDir 'Read-Hoi4GameState.ps1'
 # harness records observations; this decides what they mean.
 $passiveClockWitnessTool = Join-Path $releaseRoot 'passive_clock_witness.exe'
 $streamReport = Join-Path $scriptDir 'report_raw_capture.py'
+# The paired free-run / with-collector rate summary. Deliberately NOT in the
+# required-path list below: a missing summary must never stop a capture, and
+# cleanup tests for it before calling it.
+$clockBaselineSummary = Join-Path $scriptDir 'clock_baseline_summary.py'
 $gameDefsOut = Join-Path $repoRoot 'extractor\game_defs\out'
 # Get-Command can return several python.exe entries (real install plus the
 # WindowsApps stub); take the first rather than joining them into one string.
@@ -1038,10 +1042,23 @@ $readyAckSha256 = $null
 $readySessionIdSha256 = $null
 $readyPipeTokenSha256 = $null
 $sharedReadyAuthority = $null
+# The custody half of the same receipt, published by the verifier even when it
+# refuses the capture. See -CustodyAuthorityOut in PassiveCapture.Lifecycle.ps1:
+# a refused READY still identifies which collector is instrumenting which
+# process, and that is the whole basis on which the recorder's later teardown
+# record can be believed. Holding only $sharedReadyAuthority is what stranded
+# t20's game and settings guard behind an authority that had been established
+# and then discarded.
+$sharedReadyCustodyAuthority = $null
 $sharedTeardownAuthority = $null
 $gradedWindowStarted = $false
 $clientDrivingOptInSuspended = $null
 $recorderDeadline = $null
+# Declared with the deadline it belongs to: cleanup reports the budget it waited
+# out, and under StrictMode reading it on a route that threw between
+# Start-Process and the budget assignment would itself be a terminating error
+# inside the cleanup.
+$recorderBudgetSeconds = 0
 $scriptExitCode = 1
 # Set only by the raw-capture report's UNDEFINED-STATUS-BIT verdict (exit 2).
 # Declared here so the teardown path can read it whatever happened upstream.
@@ -1055,6 +1072,12 @@ $settleControlPath = Join-Path $OutDir 'settle_control.jsonl'
 # tick-held intervals. A consumer averaging a rate over the capture must divide
 # by active time, and a paused world is not slow -- it is stopped, on purpose.
 $passiveClockIntervalsPath = Join-Path $OutDir 'PASSIVE_CLOCK_INTERVALS_V2.json'
+# What the run knows about its own witness stream, so cleanup can say why the
+# stream ends where it does. Sampling stops for exactly one reason -- the
+# harness stopped asking -- and the artifacts never said so.
+$passiveWitnessSampleCount = 0
+$passiveWitnessLastPhase = 'none'
+$harnessAbortReason = $null
 
 function Write-PassiveWitnessSample {
     param(
@@ -1114,6 +1137,8 @@ function Write-PassiveWitnessSample {
     # confidently wrong diagnoses of run 20260730-postmerge-04 came from that.
     ($sample | ConvertTo-Json -Compress -Depth 8) |
         Add-Content -LiteralPath $passiveWitnessPath -Encoding UTF8
+    $script:passiveWitnessSampleCount = $script:passiveWitnessSampleCount + 1
+    $script:passiveWitnessLastPhase = $Phase
     Write-Host (
         "phase=passive_witness witness_phase=$Phase speed=$($state.Speed) " +
         "paused=$($state.Paused) pause_forced=$($state.PauseForced) " +
@@ -1160,7 +1185,17 @@ function Assert-PassiveWitnessVerdict {
 }
 
 function Confirm-CollectorTeardownReceipt {
-    if ($null -eq $sharedReadyAuthority) {
+    # An admitted READY is preferred, but a CUSTODY-only READY is enough to
+    # decide the only question this function asks: did the collector give the
+    # client's code back. Refusing to ask it because the capture was refused
+    # does not make the client safer -- it makes the hooks unaccounted for,
+    # holds the graded window open, and leaves the settings guard applied and
+    # the game running for a human to reason about from receipts by hand.
+    $authority = $sharedReadyAuthority
+    if ($null -eq $authority) {
+        $authority = $sharedReadyCustodyAuthority
+    }
+    if ($null -eq $authority) {
         throw 'Collector teardown cannot be admitted without shared READY authority.'
     }
     $script:sharedTeardownAuthority = Test-PassiveCaptureTeardownReceipt `
@@ -1169,7 +1204,14 @@ function Confirm-CollectorTeardownReceipt {
         -TargetCreationFiletimeUtc $gameCreationFiletimeUtc `
         -SessionId $sessionId `
         -CaptureId $captureId `
-        -ReadyAuthority $sharedReadyAuthority
+        -ReadyAuthority $authority
+    if (-not [bool]$authority.CaptureAdmitted) {
+        Write-Host (
+            'phase=teardown_admitted_on_custody_only ' +
+            "ready_admission_failures=$($authority.AdmissionFailures.Count) " +
+            'note=hook_custody_is_settled_the_capture_is_still_refused'
+        )
+    }
     return $true
 }
 
@@ -1999,6 +2041,26 @@ while ($true) {
     Start-Sleep -Milliseconds 250
 }
 
+# Re-anchor the recorder budget on READY.
+#
+# `-RecorderOverheadSeconds` is documented as startup + finalize headroom ON TOP
+# of `-DurationSeconds`, but the deadline was taken at Start-Process while the
+# recorder's own `--duration-s` clock starts here, when it publishes READY.
+# Everything in between -- process start, injection, hook installation, the
+# authenticated handshake -- was therefore silently subtracted from the headroom
+# left to seal the stream. t20 spent 24.6 s reaching READY on a run whose fold
+# took ~4 minutes to turn 2.46 GB into a 770 MB replay, so the margin an
+# operator asked for and the margin they got were not the same number.
+#
+# Only ever extends: the launch anchor stays in force until READY, so a recorder
+# that never gets there is still bounded by it, and the bound never moves
+# backwards. Total exposure remains -InjectionReadyTimeoutSeconds + the budget.
+$recorderReadyDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
+if ($recorderReadyDeadline -gt $recorderDeadline) {
+    $recorderDeadline = $recorderReadyDeadline
+}
+Write-Host "phase=recorder_budget_anchored_at_ready budget_s=$recorderBudgetSeconds duration_s=$DurationSeconds overhead_s=$RecorderOverheadSeconds deadline_utc=$($recorderDeadline.ToString('o'))"
+
 $expectedDurationMilliseconds = [uint32](
     [decimal]::Parse(
         $durationArg,
@@ -2019,7 +2081,8 @@ $sharedReadyAuthority = Test-PassiveCaptureReadyReceipt `
     -SchedulerPollMs ([uint32]$SchedulerPollMilliseconds) `
     -SchedulerQueueCapacity ([uint32]$SchedulerQueueCapacity) `
     -SchedulerWorkerCount ([uint32]$ReaderConcurrency) `
-    -CollectorControlPath $collectorControlPath
+    -CollectorControlPath $collectorControlPath `
+    -CustodyAuthorityOut ([ref]$sharedReadyCustodyAuthority)
 $readyReceiptSha256 = [string]$sharedReadyAuthority.ReceiptSha256
 $readyPayloadSha256 = [string]$sharedReadyAuthority.ReadyPayloadSha256
 $readyPublicReceiptCoreSha256 = [string]$sharedReadyAuthority.PublicReceiptCoreSha256
@@ -2128,12 +2191,24 @@ if (-not (Test-Path -LiteralPath $collectorTeardownReceiptPath -PathType Leaf)) 
 }
 [void](Confirm-CollectorTeardownReceipt)
 $collectorTeardownAuthenticated = $true
+# The post-teardown observation is EVIDENCE, and it must not be able to hold the
+# window open. Write-PassiveWitnessSample asks the verdict authority, which
+# throws on a stall -- and a throw here jumps past `$gradedWindowStarted =
+# $false` with the teardown already authenticated, so the cleanup branch that
+# closes the window is skipped (it only fires when teardown is NOT
+# authenticated) and the settings guard is never restored. What closes this
+# window is the teardown record, which has just been admitted; a slow frame
+# afterwards is not a hook still being installed.
 if ($null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
-    [void](Write-PassiveWitnessSample `
-        -Phase 'post_teardown' `
-        -TargetProcessId $gamePid `
-        -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
-        -ExpectedSpeed $Speed)
+    try {
+        [void](Write-PassiveWitnessSample `
+            -Phase 'post_teardown' `
+            -TargetProcessId $gamePid `
+            -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+            -ExpectedSpeed $Speed)
+    } catch {
+        Write-Host "phase=post_teardown_witness_skipped reason=$(($_.Exception.Message -replace '\s+', ' ').Trim())"
+    }
 }
 $gradedWindowStarted = $false
 Write-Host "phase=teardown_authenticated pid=$gamePid receipt=$collectorTeardownReceiptPath"
@@ -2268,6 +2343,14 @@ if ($null -eq $recorderExit) {
 }
 $captureSucceeded = ([int]$recorderExit -eq 0 -and -not $gameDied)
 $scriptExitCode = [int]$recorderExit
+} catch {
+    # RECORD, then rethrow unchanged. This block exists so cleanup can name the
+    # reason the run stopped next to the artifacts that stop with it -- the
+    # witness stream above all, whose truncation was twice read as an
+    # instrument failure. A bare `throw` inside `catch` rethrows the current
+    # exception, so every route out of this script is exactly what it was.
+    $harnessAbortReason = ($_.Exception.Message -replace '\s+', ' ').Trim()
+    throw
 } finally {
     $cleanupFatalMessage = $null
     # The whole cleanup body is wrapped so the compact-status arbitration point
@@ -2285,18 +2368,46 @@ $scriptExitCode = [int]$recorderExit
         try {
             $recorderProcess.Refresh()
             $nextPassiveCleanupNotice = [DateTime]::UtcNow
+            # The progress line used to name only the PID, so the two ways this
+            # loop can end -- the recorder finished, or the budget ran out --
+            # looked identical from the transcript and a run that waited its
+            # full budget and then some was read as one that gave up early.
+            # Print what the capture wait prints: how much budget is left.
             while (-not $recorderProcess.HasExited -and
                 $null -ne $recorderDeadline -and
                 [DateTime]::UtcNow -lt $recorderDeadline) {
                 if ([DateTime]::UtcNow -ge $nextPassiveCleanupNotice) {
-                    Write-Host "phase=passive_recorder_finalize_wait recorder_pid=$($recorderProcess.Id)"
+                    $finalizeRemaining = [Math]::Max(
+                        0,
+                        [Math]::Ceiling(($recorderDeadline - [DateTime]::UtcNow).TotalSeconds)
+                    )
+                    Write-Host "phase=passive_recorder_finalize_wait recorder_pid=$($recorderProcess.Id) remaining_budget_s=$finalizeRemaining"
                     $nextPassiveCleanupNotice = [DateTime]::UtcNow.AddSeconds(10)
                 }
                 [void]$recorderProcess.WaitForExit(500)
                 $recorderProcess.Refresh()
             }
             if (-not $recorderProcess.HasExited) {
+                Write-Host "phase=passive_recorder_finalize_wait_end reason=budget_exhausted recorder_pid=$($recorderProcess.Id) budget_s=$recorderBudgetSeconds"
                 Write-SettingsGuardNonThrowingWarning -Message "collector_record PID $($recorderProcess.Id) remains live after its bounded natural-stop budget. The harness will not terminate it after injection; this attempt is unresolved until CAPTURE_TEARDOWN_V1.json authenticates cleanup."
+            } else {
+                Write-Host "phase=passive_recorder_finalize_wait_end reason=recorder_exited recorder_pid=$($recorderProcess.Id)"
+                # The teardown record is published before the fold, so by the
+                # time the recorder exits it is normally long since on disk.
+                # "Normally" is not a guarantee, and the admission below is a
+                # bare Test-Path: a receipt still being flushed at that instant
+                # would be treated exactly like one that was never written, and
+                # strand the window for a run that had proved its hooks gone.
+                # Wait for it, bounded by whatever budget is left.
+                $finalizeReceiptDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                if ($null -ne $recorderDeadline -and
+                    $finalizeReceiptDeadline -gt $recorderDeadline) {
+                    $finalizeReceiptDeadline = $recorderDeadline
+                }
+                while (-not (Test-Path -LiteralPath $collectorTeardownReceiptPath -PathType Leaf) -and
+                    [DateTime]::UtcNow -lt $finalizeReceiptDeadline) {
+                    Start-Sleep -Milliseconds 250
+                }
             }
         } catch {
             $cleanupFatalMessage = "Could not observe recorder PID $($recorderProcess.Id) during passive cleanup: $($_.Exception.Message)"
@@ -2309,12 +2420,19 @@ $scriptExitCode = [int]$recorderExit
         try {
             [void](Confirm-CollectorTeardownReceipt)
             $collectorTeardownAuthenticated = $true
+            # Same reason as the main path above: an evidence observation may
+            # not be the thing that decides whether the window closes. Here it
+            # is worse, because this whole block is the last chance to close it.
             if ($null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
-                [void](Write-PassiveWitnessSample `
-                    -Phase 'post_teardown' `
-                    -TargetProcessId $gamePid `
-                    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
-                    -ExpectedSpeed $Speed)
+                try {
+                    [void](Write-PassiveWitnessSample `
+                        -Phase 'post_teardown' `
+                        -TargetProcessId $gamePid `
+                        -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+                        -ExpectedSpeed $Speed)
+                } catch {
+                    Write-Host "phase=cleanup_post_teardown_witness_skipped reason=$(($_.Exception.Message -replace '\s+', ' ').Trim())"
+                }
             }
             $gradedWindowStarted = $false
             Write-Host "phase=cleanup_teardown_authenticated pid=$gamePid receipt=$collectorTeardownReceiptPath"
@@ -2328,6 +2446,87 @@ $scriptExitCode = [int]$recorderExit
         $null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
         Write-SettingsGuardNonThrowingWarning -Message "Reused the game PID $gamePid survived capture without an authenticated teardown receipt. The harness made no client-state change and will not stop or otherwise drive the user-owned process."
     }
+
+    # --- what the witness stream means, on EVERY route out ---------------------
+    #
+    # PASSIVE_CLOCK_INTERVALS_V2.json is written by the verdict authority, and
+    # the harness only invokes that authority when it takes a sample. So a run
+    # that stopped between two samples leaves the intervals file frozen at the
+    # last verdict, and the artifact then reads as though the clock witness
+    # itself had died: t20's "samples=5, wall_clock_ms=23934" was diagnosed that
+    # way twice. Nothing died. passive_clock_witness.exe is a one-shot reader of
+    # the whole witness JSONL, not a daemon; it stops being run when the harness
+    # stops taking samples, and t20 stopped taking samples because it refused a
+    # READY receipt at 23.9 s.
+    #
+    # Two things fix that permanently: regenerate the report over every sample
+    # the run actually took, and SAY why the stream ends there. Both are
+    # reporting, so neither may change what the harness does -- the tool runs
+    # with -AllowNonzeroExit and the whole block is non-throwing.
+    $witnessStopReason = $harnessAbortReason
+    if ([string]::IsNullOrWhiteSpace($witnessStopReason)) {
+        $witnessStopReason = 'run_completed'
+    }
+    Write-Host (
+        "phase=passive_witness_stopped samples=$passiveWitnessSampleCount " +
+        "last_phase=$passiveWitnessLastPhase reason=$witnessStopReason"
+    )
+    if ($passiveWitnessSampleCount -gt 0 -and
+        (Test-Path -LiteralPath $passiveWitnessPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $passiveClockWitnessTool -PathType Leaf)) {
+        try {
+            $finalIntervalsResult = Invoke-BoundedNativeCapture `
+                -FilePath $passiveClockWitnessTool `
+                -Arguments @(
+                    '--witness', $passiveWitnessPath,
+                    '--intervals-out', $passiveClockIntervalsPath,
+                    '--stall-samples', "$StallEscalationSamples",
+                    '--stall-span-ms', "$($StallEscalationSeconds * 1000)"
+                ) `
+                -TimeoutSeconds 30 `
+                -Purpose 'passive witness final interval report' `
+                -AllowNonzeroExit
+            if (-not [string]::IsNullOrWhiteSpace($finalIntervalsResult.Stdout)) {
+                Write-Host $finalIntervalsResult.Stdout.Trim()
+            }
+            if (-not [string]::IsNullOrWhiteSpace($finalIntervalsResult.Stderr)) {
+                Write-Host $finalIntervalsResult.Stderr.Trim()
+            }
+            Write-Host "phase=passive_witness_intervals_final exit=$([int]$finalIntervalsResult.ExitCode) path=$passiveClockIntervalsPath"
+        } catch {
+            Write-Host "phase=passive_witness_intervals_final_failed reason=$(($_.Exception.Message -replace '\s+', ' ').Trim())"
+        }
+    }
+
+    # --- the free-run denominator, printed rather than hand-derived ------------
+    #
+    # Loss is with_collector / free_run, and the free-run term is the paired
+    # settle control this run already recorded in settle_control.jsonl -- same
+    # process, same save, same speed, no collector. It was written and then left
+    # for an operator to aggregate by hand against the witness, which is how
+    # rates got quoted with no denominator at all. Compute both here, on every
+    # route out, including the routes where the capture was refused: a refused
+    # capture still measured a free-run baseline, and that is exactly the number
+    # the next attempt is planned from.
+    if (Test-Path -LiteralPath $clockBaselineSummary -PathType Leaf) {
+        try {
+            $baselineResult = Invoke-BoundedNativeCapture `
+                -FilePath $pythonExe `
+                -Arguments @($clockBaselineSummary, '--run-dir', $OutDir) `
+                -TimeoutSeconds 60 `
+                -Purpose 'clock baseline summary' `
+                -AllowNonzeroExit
+            if (-not [string]::IsNullOrWhiteSpace($baselineResult.Stdout)) {
+                Write-Host $baselineResult.Stdout.TrimEnd()
+            }
+            if (-not [string]::IsNullOrWhiteSpace($baselineResult.Stderr)) {
+                Write-Host $baselineResult.Stderr.TrimEnd()
+            }
+        } catch {
+            Write-Host "phase=clock_baseline_failed reason=$(($_.Exception.Message -replace '\s+', ' ').Trim())"
+        }
+    }
+
     # A failure between the graded boundary and the recorder starting leaves the
     # window open with nothing in it: no recorder, no injection, no hook custody
     # to authenticate. Holding it open then serves no purpose and does real
