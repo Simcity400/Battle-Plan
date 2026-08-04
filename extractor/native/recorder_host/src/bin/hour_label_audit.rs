@@ -196,6 +196,19 @@ struct ClassificationTable {
     /// because that is the number the reader needs, not an inference from a
     /// cell name.
     mismatch_with_no_other_witness: u64,
+    /// Frames the exact instrument CANNOT SPEAK FOR, split by the other two
+    /// axes. `mismatch` is a three-valued thing -- yes, no, and no witness --
+    /// and the eight cells above only have room for two of them, so an
+    /// uninstrumented frame used to be flattened into the `mismatch=no` row and
+    /// counted beside frames that were actually checked and found clean. On t21
+    /// that put 3 probe-less frames in `neither`: 315 frames carried the
+    /// instrument and 98 of them mismatched, so 217 frames were checked clean
+    /// while the cell read 220. The unknown population is reported here instead
+    /// so the `mismatch=no` row means "checked, and clean".
+    mismatch_unknown_neither: u64,
+    mismatch_unknown_label_skew_only: u64,
+    mismatch_unknown_torn_witness_only: u64,
+    mismatch_unknown_both: u64,
 }
 
 #[derive(Serialize)]
@@ -850,20 +863,30 @@ fn finalize_frame(state: &mut AuditState) {
             }
         }
     }
-    let mismatch = exact_mismatch.unwrap_or(false);
-
-    match (mismatch, label_skew, torn) {
-        (false, false, false) => state.classification.neither += 1,
-        (false, true, false) => state.classification.label_skew_only += 1,
-        (false, false, true) => state.classification.torn_witness_only += 1,
-        (false, true, true) => state.classification.both += 1,
-        (true, false, false) => {
+    // `None` STAYS `None` HERE. `exact_mismatch.unwrap_or(false)` was the whole
+    // defect: it turned "this frame carries no exact instrument, or carries an
+    // incomplete one" into "this frame was checked and mislabelled nothing", and
+    // the `(false, false, false)` arm then filed it under `neither` -- the
+    // clean cell. The comment thirty lines above already said `None` "is not
+    // `false`"; the code disagreed. An uncheckable frame goes to the unknown
+    // row, where it cannot inflate the clean count the refusal policy was
+    // priced against.
+    match (exact_mismatch, label_skew, torn) {
+        (Some(false), false, false) => state.classification.neither += 1,
+        (Some(false), true, false) => state.classification.label_skew_only += 1,
+        (Some(false), false, true) => state.classification.torn_witness_only += 1,
+        (Some(false), true, true) => state.classification.both += 1,
+        (Some(true), false, false) => {
             state.classification.mismatch_only += 1;
             state.classification.mismatch_with_no_other_witness += 1;
         }
-        (true, false, true) => state.classification.mismatch_and_torn += 1,
-        (true, true, false) => state.classification.mismatch_and_label_skew += 1,
-        (true, true, true) => state.classification.mismatch_and_label_skew_and_torn += 1,
+        (Some(true), false, true) => state.classification.mismatch_and_torn += 1,
+        (Some(true), true, false) => state.classification.mismatch_and_label_skew += 1,
+        (Some(true), true, true) => state.classification.mismatch_and_label_skew_and_torn += 1,
+        (None, false, false) => state.classification.mismatch_unknown_neither += 1,
+        (None, true, false) => state.classification.mismatch_unknown_label_skew_only += 1,
+        (None, false, true) => state.classification.mismatch_unknown_torn_witness_only += 1,
+        (None, true, true) => state.classification.mismatch_unknown_both += 1,
     }
     if torn {
         state.torn_frames = state.torn_frames.saturating_add(1);
@@ -890,7 +913,7 @@ fn finalize_frame(state: &mut AuditState) {
     // mislabelled 67 of 68 domain-hours and happened to tear nothing was not
     // listed here at all, so the ONE frame a reader most needs to see was the
     // one the report omitted.
-    if label_skew || torn || mismatch {
+    if label_skew || torn || exact_mismatch == Some(true) {
         let notable = NotableFrame {
             sequence_start,
             sequence_end: frame.sequence_end,
@@ -1246,6 +1269,16 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
     )?;
     writeln!(
         out,
+        "mismatch=unknown             {:>12} {:>9}",
+        d.table.mismatch_unknown_neither, d.table.mismatch_unknown_torn_witness_only
+    )?;
+    writeln!(
+        out,
+        "  (label_skew=yes)           {:>12} {:>9}",
+        d.table.mismatch_unknown_label_skew_only, d.table.mismatch_unknown_both
+    )?;
+    writeln!(
+        out,
         "frames a label_skew x torn view alone would call clean while they \
          mislabelled domain-hours: {}",
         d.table.mismatch_with_no_other_witness
@@ -1574,6 +1607,61 @@ mod tests {
         assert_eq!(notable[0].bracketed_domains, Some(68));
     }
 
+    /// A frame the exact instrument cannot speak for is UNKNOWN, not clean.
+    ///
+    /// This is the t21 discrepancy in miniature: that capture had 318 frames,
+    /// 315 carrying the instrument and 98 of those mismatching, so 217 frames
+    /// were checked and clean -- yet `neither` read 220, because the 3
+    /// probe-less frames were folded into the clean cell by
+    /// `exact_mismatch.unwrap_or(false)`. The clean cell is what the refusal
+    /// policy's price is read against, so padding it understates the loss.
+    ///
+    /// MUTATION RUN: restore `let mismatch = exact_mismatch.unwrap_or(false);`
+    /// and match on `(mismatch, label_skew, torn)`. Observed failure:
+    ///   `an uninstrumented frame was counted as checked-and-clean: neither=2`
+    ///   (left 2, right 1).
+    #[test]
+    fn a_frame_without_the_exact_instrument_is_unknown_not_clean() {
+        let mut sequence = 0u64;
+        // One frame that WAS checked and found clean.
+        let mut stream = frame(&mut sequence, HOUR_A, Some((0, 68)), 0);
+        // One frame carrying no exact instrument at all: nothing checked it.
+        stream.extend_from_slice(&frame(&mut sequence, HOUR_B, None, 0));
+        let report = audit(&stream);
+
+        assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
+        assert_eq!(report.section_a_frame_census.total_frames, 2);
+        let table = &report.section_d_classification.table;
+        assert_eq!(
+            table.neither, 1,
+            "an uninstrumented frame was counted as checked-and-clean: neither={}",
+            table.neither
+        );
+        assert_eq!(
+            table.mismatch_unknown_neither, 1,
+            "the uninstrumented frame was not reported as unknown"
+        );
+        assert_eq!(table.mismatch_only, 0);
+        assert_eq!(table.torn_witness_only, 0);
+        // Every frame is still accounted for exactly once.
+        assert_eq!(
+            table.neither
+                + table.label_skew_only
+                + table.torn_witness_only
+                + table.both
+                + table.mismatch_only
+                + table.mismatch_and_torn
+                + table.mismatch_and_label_skew
+                + table.mismatch_and_label_skew_and_torn
+                + table.mismatch_unknown_neither
+                + table.mismatch_unknown_label_skew_only
+                + table.mismatch_unknown_torn_witness_only
+                + table.mismatch_unknown_both,
+            report.section_a_frame_census.total_frames,
+            "the classification cells no longer partition the frames"
+        );
+    }
+
     /// MUTATION RUN: change `domains >= bracketed` to `domains > bracketed` in
     /// `finalize_frame`. Observed failure:
     ///   `assertion `left == right` failed: a frame that mislabelled every
@@ -1600,12 +1688,20 @@ mod tests {
         assert_eq!(distribution, vec![(8, 1), (68, 1)]);
     }
 
-    /// The instrument being ABSENT is not the instrument saying zero. A capture
-    /// from a recorder that predates it must stay in the clean cell rather than
-    /// being reported as mismatch-free on evidence that does not exist.
+    /// The instrument being ABSENT is not the instrument saying zero -- and it
+    /// is not the instrument saying one either. A capture from a recorder that
+    /// predates the instrument must be reported as UNCHECKED.
+    ///
+    /// This test asserted `neither == 1` when it was written, i.e. it pinned the
+    /// absent frame into the CLEAN cell. That was the same conflation from the
+    /// other side: "no evidence" was being reported as "evidence of no
+    /// mismatch", which is what let 3 probe-less t21 frames pad `neither` from
+    /// 217 to 220. The claim the test exists to make -- absent is not a
+    /// mismatch -- is unchanged and is asserted below.
     ///
     /// MUTATION RUN: make `mismatch` default to `true` when the instrument is
-    /// absent (`exact_mismatch.unwrap_or(true)`). Observed failure:
+    /// absent (`exact_mismatch.unwrap_or(true)` with the old two-valued match).
+    /// Observed failure:
     ///   `assertion `left == right` failed: a frame with no exact instrument
     ///    was classified as mismatching` left: 0 right: 1.
     #[test]
@@ -1616,8 +1712,12 @@ mod tests {
         let table = &report.section_d_classification.table;
 
         assert_eq!(
-            table.neither, 1,
+            table.mismatch_unknown_neither, 1,
             "a frame with no exact instrument was classified as mismatching"
+        );
+        assert_eq!(
+            table.neither, 0,
+            "a frame with no exact instrument was counted as checked-and-clean"
         );
         assert_eq!(table.mismatch_only, 0);
         assert_eq!(

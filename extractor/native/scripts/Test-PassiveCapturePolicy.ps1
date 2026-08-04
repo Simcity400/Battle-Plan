@@ -222,6 +222,42 @@ Assert-Policy `
 Assert-Policy `
     -Condition ($production -match 'phase\s*=\s*\$Phase') `
     -Message 'Production speed/pause monitor rows do not identify their lifecycle phase.'
+# FUNCTIONS ARE CHECKED AS DEFINITIONS, NOT AS SUBSTRINGS. The `$required`
+# list below is a substring census, and a substring census cannot tell a
+# function's DEFINITION from a CALL to it. Every name here is also called
+# inside the same file (`Get-PassiveCaptureReadyPayloadSha256` is defined at
+# ~line 540 and called at ~line 1023, and so on), so deleting or misspelling a
+# definition while leaving one call standing satisfied the substring gate --
+# the gate would have gone green on a lifecycle that cannot run. That is the
+# same class of miss that left this gate red for a week (see 8a7b0e9f), only
+# inverted, so it is checked with the parser rather than with `IndexOf`.
+$lifecycleParseErrors = $null
+$lifecycleTokens = $null
+$lifecycleAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $lifecyclePath,
+    [ref]$lifecycleTokens,
+    [ref]$lifecycleParseErrors
+)
+Assert-Policy `
+    -Condition ($null -ne $lifecycleAst -and $lifecycleParseErrors.Count -eq 0) `
+    -Message "Shared passive lifecycle verifier does not parse: $(($lifecycleParseErrors | ForEach-Object { $_.Message }) -join '; ')"
+$lifecycleDefinedFunctions = @(
+    $lifecycleAst.FindAll(
+        { param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] },
+        $true
+    ) | ForEach-Object { $_.Name }
+)
+foreach ($requiredFunction in @(
+    'Get-PassivePinnedHookAllowlistAuthorityFromSource',
+    'Get-PassiveCaptureReadyPayloadSha256',
+    'Get-PassiveCaptureReadyAckSha256',
+    'Assert-PassiveReadySourceContractParity',
+    'Assert-PassiveExactPropertySet'
+)) {
+    Assert-Policy `
+        -Condition ($lifecycleDefinedFunctions -ccontains $requiredFunction) `
+        -Message "Shared passive lifecycle verifier does not DEFINE function '$requiredFunction' (a call site alone is not a definition)."
+}
 foreach ($required in @(
     'hoi4-capture-ready-v2',
     'hoi4-capture-teardown-v2',
@@ -278,7 +314,18 @@ foreach ($retired in @(
         -Message "Shared passive lifecycle verifier still contains retired READY dialect '$retired'."
 }
 
-[pscustomobject]@{
+# EMITTED AS JSON, NOT AS AN OBJECT, AND THAT IS LOAD-BEARING. Every consumer
+# runs this file in a CHILD `powershell.exe -File` and pipes the child's stdout
+# through `ConvertFrom-Json` (Invoke-CentralRustValidation.ps1, both the
+# every-mode gate and the Final/Release gate). A bare `[pscustomobject]` reaching
+# a child process's stdout is rendered by the default FORMATTER -- `Schema     :
+# hoi4-passive-capture-policy-test-v1` and so on -- which `ConvertFrom-Json`
+# rejects with `Invalid JSON primitive: Schema.`. Both gates therefore threw
+# "returned no authority" on a PASSING policy run: the authority object was
+# produced, formatted, and then unparseable. Serialising here is the single
+# point that makes every `ConvertFrom-Json` consumer read what this file
+# actually asserts.
+([pscustomobject]@{
     Schema = 'hoi4-passive-capture-policy-test-v1'
     Status = 'pass'
     Harness = $harnessPath
@@ -286,4 +333,4 @@ foreach ($retired in @(
     Driver = $driverPath
     Production = $productionPath
     Lifecycle = $lifecyclePath
-}
+} | ConvertTo-Json -Depth 4 -Compress)

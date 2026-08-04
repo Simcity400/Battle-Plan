@@ -49,28 +49,46 @@ WITH_COLLECTOR_PHASES = ("capture",)
 
 
 def read_jsonl(path):
-    """Every JSON object in a JSONL file, or [] when the file is absent.
+    """`(rows, problems)` for a JSONL file, or `([], [])` when it is absent.
 
     Absence is normal: a run that failed before settle has no control file, and
-    a run that failed before attach has no witness file. Tolerating a trailing
-    partial line matters too -- the harness appends these one sample at a time
-    and can be killed mid-write.
+    a run that failed before attach has no witness file.
+
+    EXACTLY ONE malformed line is tolerated: an unterminated FINAL one. That is
+    the shape a kill produces -- the harness appends one sample at a time, so an
+    interrupted write can only ever truncate the line it was writing, and that
+    line has no newline after it. Any OTHER unparseable line is damage the
+    append pattern cannot produce, and swallowing it would drop samples out of
+    the numerator or the denominator and still print a confident rate. Those are
+    named as problems instead, which is what makes `main` exit nonzero: a rate
+    computed from a file we could not fully read is not a measurement.
     """
     if not os.path.isfile(path):
-        return []
+        return [], []
     rows = []
+    problems = []
     # utf-8-sig: PowerShell's Add-Content -Encoding UTF8 writes a BOM on the
     # first line under Windows PowerShell 5.1.
     with open(path, encoding="utf-8-sig") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
+        raw_lines = handle.readlines()
+    terminated = (not raw_lines) or raw_lines[-1].endswith("\n")
+    last_index = len(raw_lines) - 1
+    for index, raw in enumerate(raw_lines):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except ValueError as error:
+            if index == last_index and not terminated:
                 continue
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                continue
-    return rows
+            problems.append(
+                "{} line {} is not JSON ({}); this file was read incompletely, "
+                "so any rate derived from it is missing samples".format(
+                    os.path.basename(path), index + 1, error
+                )
+            )
+    return rows, problems
 
 
 def paused_in_sample(row):
@@ -122,15 +140,14 @@ def aggregate(rows, label):
 
 
 def summarize(run_dir):
-    settle = [
-        row
-        for row in read_jsonl(os.path.join(run_dir, SETTLE_FILE))
-        if row.get("phase") == "settle_no_collector"
-    ]
+    settle_rows, read_problems = read_jsonl(os.path.join(run_dir, SETTLE_FILE))
+    witness_rows, witness_read_problems = read_jsonl(
+        os.path.join(run_dir, WITNESS_FILE)
+    )
+    read_problems = read_problems + witness_read_problems
+    settle = [row for row in settle_rows if row.get("phase") == "settle_no_collector"]
     witness = [
-        row
-        for row in read_jsonl(os.path.join(run_dir, WITNESS_FILE))
-        if row.get("phase") in WITH_COLLECTOR_PHASES
+        row for row in witness_rows if row.get("phase") in WITH_COLLECTOR_PHASES
     ]
     free_run = aggregate(settle, "free_run")
     with_collector = aggregate(witness, "with_collector")
@@ -141,7 +158,7 @@ def summarize(run_dir):
         retained = with_collector["hours_per_second"] / free_run["hours_per_second"]
         loss = 1.0 - retained
 
-    problems = []
+    problems = list(read_problems)
     if free_run["hours_per_second"] is None:
         problems.append(
             "no free-run denominator: settle_control.jsonl has no unpaused "
@@ -219,10 +236,21 @@ def main(argv=None):
         # Best effort. The summary already went to the transcript, and a run
         # directory that cannot be written to must not turn reporting into a
         # failure.
+        receipt = os.path.join(args.run_dir, RECEIPT_NAME)
         try:
-            receipt = os.path.join(args.run_dir, RECEIPT_NAME)
-            with open(receipt, "w", encoding="utf-8") as handle:
+            # "x", NOT "w". A run directory is evidence: once a capture has
+            # published its receipt, re-running this tool over the same run must
+            # not silently replace the number that run was judged on. Truncating
+            # mode made `clock_baseline_summary.py --run-dir runs/live_unlock/t22`
+            # -- an ordinary read of an old run -- an overwrite of that run's
+            # receipt.
+            with open(receipt, "x", encoding="utf-8") as handle:
                 json.dump(summary, handle, indent=2, sort_keys=True)
+        except FileExistsError:
+            sys.stderr.write(
+                "phase=clock_baseline_problem detail=receipt already exists and "
+                f"was NOT overwritten: {receipt}\n"
+            )
         except OSError as error:
             sys.stderr.write(
                 f"phase=clock_baseline_problem detail=cannot write receipt: {error}\n"

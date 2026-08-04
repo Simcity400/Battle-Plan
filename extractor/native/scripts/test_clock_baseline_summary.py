@@ -237,6 +237,44 @@ class ClockBaselineSummaryTests(unittest.TestCase):
         self.assertEqual(summary["free_run"]["samples"], 2)
         self.assertAlmostEqual(summary["free_run"]["hours_per_second"], 10.0, places=6)
 
+    def test_a_malformed_interior_line_is_named_not_swallowed(self):
+        """A kill can only truncate the LAST line; anything else is real damage.
+
+        Red if `read_jsonl` goes back to `except ValueError: continue` for every
+        line: the interior sample would vanish from the denominator and the tool
+        would print a confident 10.0 hours/second and exit 0.
+        """
+        run = RunDir(settle=[settle_sample(1, 100), settle_sample(1, 100)])
+        self.addCleanup(run.close)
+        path = run.path / "settle_control.jsonl"
+        good = path.read_text("utf-8-sig").splitlines()
+        path.write_text(
+            good[0] + "\n" + '{"phase": "settle_no_col' + "\n" + good[1] + "\n",
+            encoding="utf-8",
+        )
+        summary = run.summary()
+        self.assertEqual(summary["free_run"]["samples"], 2)
+        self.assertTrue(
+            any("line 2 is not JSON" in problem for problem in summary["problems"]),
+            summary["problems"],
+        )
+        self.assertEqual(BASELINE.main(["--run-dir", str(run.path), "--no-receipt"]), 1)
+
+    def test_an_existing_receipt_is_not_overwritten(self):
+        """A run directory is evidence; re-reading it must not rewrite it.
+
+        Red if the receipt is opened `"w"` again: the sentinel below is replaced
+        by a fresh summary.
+        """
+        run = RunDir(settle=[settle_sample(1, 100)], witness=[witness_sample(1, 200)])
+        self.addCleanup(run.close)
+        receipt = run.path / BASELINE.RECEIPT_NAME
+        receipt.write_text('{"schema": "already-published"}', encoding="utf-8")
+        self.assertEqual(BASELINE.main(["--run-dir", str(run.path)]), 0)
+        self.assertEqual(
+            json.loads(receipt.read_text("utf-8"))["schema"], "already-published"
+        )
+
     def test_the_transcript_line_carries_both_terms_and_the_ratio(self):
         """The whole point is that no operator hand-derives these.
 

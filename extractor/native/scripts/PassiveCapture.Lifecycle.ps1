@@ -355,11 +355,18 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
         -ContractSource $ContractSource -MacroName 'pinned_rva'
     $importPattern =
         'pinned_import!\(\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"([0-9a-f]{64})"\s*\)'
+    # How many IMPORT SLOTS the canonical roster declares. Derived here, from
+    # the same roster text the digest is built from, because the teardown
+    # receipt now carries a verified-import-slot count and a count is only a
+    # check if something independent knows what it should be. Two is the
+    # current answer; nothing below assumes that.
+    $importSlotCount = 0
     foreach ($match in [regex]::Matches(
         $rosterSource,
         $importPattern,
         [Text.RegularExpressions.RegexOptions]::Singleline
     )) {
+        $importSlotCount++
         $identitySha = Get-PassiveNamedValueSha256 `
             'battle-plan.capture_ready.hook_identity.v1' `
             $match.Groups[1].Value
@@ -494,8 +501,12 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
     foreach ($entry in $ordered) {
         $preimage.AddRange([byte[]]$entry.Bytes)
     }
+    if ($importSlotCount -eq 0) {
+        throw 'Pinned production hook source roster declares no import-slot specs.'
+    }
     return [pscustomobject]@{
         Count = [uint16]$expectedCount
+        ImportSlotCount = [uint16]$importSlotCount
         Sha256 = Get-PassiveBytesSha256 $preimage.ToArray()
         LogicalNames = $logicalNames
     }
@@ -1215,6 +1226,7 @@ function Test-PassiveCaptureReadyReceipt {
         CollectorDllSha256 = [string]$ready.collector_dll_sha256
         TargetExecutableSha256 = [string]$ready.target_executable_sha256
         ExpectedHookCount = [uint32]$hookAuthority.Count
+        ExpectedImportSlotCount = [uint32]$hookAuthority.ImportSlotCount
         HookAllowlistSha256 = [string]$hookAuthority.Sha256
         AllowedHookCount = [uint32]$allowedHookCount
         ActiveHookCount = [uint32]$activeHookCount
@@ -1323,6 +1335,20 @@ function Test-PassiveCaptureTeardownReceipt {
     $pinnedHookSiteCount = ConvertTo-PassiveReceiptInteger `
         $teardown.pinned_hook_site_count u32 `
         'teardown.pinned_hook_site_count'
+    # ADMITTING A PROPERTY IS NOT CHECKING IT. `pinned_hook_import_slot_count`
+    # was added to $teardownProperties so the exact-property pin would stop
+    # refusing the receipt, and then nothing read it: a receipt claiming ZERO
+    # verified import slots -- i.e. that the IAT verification lane AS added
+    # never ran -- passed teardown verification and returned custody authority.
+    # It is the count of the ONLY thing the ImportExport primitive mutates, so
+    # it is checked against the canonical roster like every other count here.
+    $pinnedHookImportSlotCount = ConvertTo-PassiveReceiptInteger `
+        $teardown.pinned_hook_import_slot_count u32 `
+        'teardown.pinned_hook_import_slot_count'
+    $expectedImportSlotCount = [uint32]$ReadyAuthority.ExpectedImportSlotCount
+    if ($expectedImportSlotCount -eq 0) {
+        throw 'Teardown verification requires a canonical import-slot count.'
+    }
     if ($teardown.schema -isnot [string] -or
         [string]$teardown.schema -cne 'hoi4-capture-teardown-v2' -or
         $teardown.status -isnot [string] -or
@@ -1364,6 +1390,7 @@ function Test-PassiveCaptureTeardownReceipt {
         $teardown.pinned_hook_sites_restored -isnot [bool] -or
         -not [bool]$teardown.pinned_hook_sites_restored -or
         $pinnedHookSiteCount -ne $expectedHookCount -or
+        $pinnedHookImportSlotCount -ne $expectedImportSlotCount -or
         $teardown.pinned_hook_site_baseline_sha256 -isnot [string] -or
         [string]$teardown.pinned_hook_site_baseline_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         $teardown.pinned_hook_site_restored_sha256 -isnot [string] -or
