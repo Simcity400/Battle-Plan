@@ -452,6 +452,33 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
     assert_eq!(published, 0);
     assert!(!outcomes.get(domain_id).expect("success stands").is_failure());
 
+    // A panicked worker is already diagnosed, and its panic message is the only
+    // artefact naming the cause. Deriving a second failure from the stand-in
+    // read's bits would displace it with a restatement of those bits.
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    record_worker_panic_outcome(&mut outcomes, domain_id, &"the walk tripped an assert");
+    let panic_status = COMPACT_STATUS_WORKER_PANIC | COMPACT_STATUS_PARTIAL_DATA;
+    let published = record_reader_status_outcome(
+        &mut outcomes,
+        domain_id,
+        0,
+        panic_status,
+        || "a restatement of the bits".to_string(),
+        Vec::new(),
+    );
+    assert_eq!(published, panic_status);
+    let outcome = outcomes.get(domain_id).expect("the panic outcome stands");
+    assert!(outcome.is_failure());
+    assert!(
+        outcome.reason.contains("the walk tripped an assert"),
+        "the panic message was displaced: {}",
+        outcome.reason
+    );
+    assert!(
+        outcome.audit_published_status(panic_status).is_ok(),
+        "the panic outcome must still agree with the published word"
+    );
+
     // A bit the FRAME contributed is not this reader's to diagnose, and
     // claiming it would derive a word the record does not carry.
     let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
