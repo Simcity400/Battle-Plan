@@ -63,12 +63,16 @@ pub enum PayloadError {
     InvalidGameHour(i32),
     /// The active hook count exceeded the authenticated allowlist count.
     HookCountExceedsAllowlist { active: u16, allowed: u16 },
-    /// Full-production READY did not report the exact installed pinned roster.
-    ProductionHookRosterMismatch {
-        active: u16,
-        allowed: u16,
-        required: u16,
-    },
+    /// READY declared a pinned production roster of a different SIZE than this
+    /// build's [`crate::passive_ready::PINNED_PRODUCTION_HOOK_SPECS_V1`].
+    ///
+    /// `allowed_hook_count` is restated by the producer straight from its own
+    /// compiled `PINNED_PRODUCTION_HOOK_COUNT_V1`, so a disagreement here is
+    /// never an install outcome: the two sides were built from different
+    /// revisions of the pinned contract. This is called out separately from
+    /// [`Self::HookCountExceedsAllowlist`] because the remedy is completely
+    /// different -- rebuild the collector, do not investigate hooks.
+    ProductionHookContractSkew { declared: u16, required: u16 },
     /// A zero-based ordinal reached the reserved terminal value.
     ExhaustedOrdinal(&'static str),
     /// HMAC-SHA256 requires a nonempty, unpredictable per-attach token.
@@ -121,13 +125,13 @@ impl core::fmt::Display for PayloadError {
                 f,
                 "capture-ready active hook count {active} exceeds allowlist count {allowed}"
             ),
-            Self::ProductionHookRosterMismatch {
-                active,
-                allowed,
-                required,
-            } => write!(
+            Self::ProductionHookContractSkew { declared, required } => write!(
                 f,
-                "capture-ready hook roster active={active} allowed={allowed} is not exact production roster {required}"
+                "capture-ready collector declares a pinned production hook roster of {declared}, \
+                 but this build's pinned contract has {required}; the loaded collector DLL was \
+                 built from a different revision of PINNED_PRODUCTION_HOOK_SPECS_V1 -- rebuild \
+                 collector.dll against this source tree (this is a build-freshness fault, not a \
+                 hook install failure)"
             ),
             Self::ExhaustedOrdinal(field) => {
                 write!(f, "capture-ready ordinal {field} is exhausted")
@@ -697,13 +701,32 @@ fn validate_ready(value: &CaptureReadyV2) -> Result<(), PayloadError> {
         "scheduler_worker_count",
         u64::from(value.scheduler_worker_count),
     )?;
-    if value.allowed_hook_count != crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1
-        || value.active_hook_count != value.allowed_hook_count
-    {
-        return Err(PayloadError::ProductionHookRosterMismatch {
+    // Two DIFFERENT questions, which used to share one `||` and one message.
+    //
+    // `allowed_hook_count` is the producer restating its own compiled
+    // `PINNED_PRODUCTION_HOOK_COUNT_V1`, so it can only disagree with ours if
+    // the two binaries were built from different revisions of the pinned
+    // contract. That is a build fault and it names itself.
+    if value.allowed_hook_count != crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1 {
+        return Err(PayloadError::ProductionHookContractSkew {
+            declared: value.allowed_hook_count,
+            required: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
+        });
+    }
+    // `active_hook_count` is counted from the install outcomes, so under
+    // install isolation it is legitimately LESS than the allowlist when a
+    // non-mandatory gameplay producer failed to patch. Whether that voids the
+    // capture is answered in exactly one place -- `HookAllowlistEntryV1::
+    // mandatory`, enforced by `hook_install_outcomes_preimage`, which refuses
+    // any outcome roster whose mandatory entries are not `Installed`. Refusing
+    // `active < allowed` here was a second, undeclared answer to that same
+    // question, and it answered it the other way: it aborted all 73 domains
+    // over one domain's producer. What remains refused is a count ABOVE the
+    // allowlist, which no isolation story can explain.
+    if value.active_hook_count > value.allowed_hook_count {
+        return Err(PayloadError::HookCountExceedsAllowlist {
             active: value.active_hook_count,
             allowed: value.allowed_hook_count,
-            required: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
         });
     }
     if crate::calendar::hour_index_from_raw(value.clock_hour_raw).is_none() {
@@ -1414,22 +1437,55 @@ mod tests {
         value.active_hook_count = value.allowed_hook_count + 1;
         assert_eq!(
             value.encode_authenticated(token),
-            Err(PayloadError::ProductionHookRosterMismatch {
+            Err(PayloadError::HookCountExceedsAllowlist {
                 active: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1 + 1,
                 allowed: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
-                required: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
             })
         );
+        // A collector built from a different revision of the pinned contract
+        // restates ITS OWN roster size here. This is the exact shape live run
+        // t16 hit (a collector.dll built before fourteen specs were pinned
+        // reported allowed=41 against a required 55), and it must name the
+        // build fault rather than read as a hook install failure.
         value.active_hook_count = 0;
         value.allowed_hook_count = 0;
         assert_eq!(
             value.encode_authenticated(token),
-            Err(PayloadError::ProductionHookRosterMismatch {
-                active: 0,
-                allowed: 0,
+            Err(PayloadError::ProductionHookContractSkew {
+                declared: 0,
                 required: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
             })
         );
+        let mut stale_collector = ready_fields();
+        stale_collector.allowed_hook_count =
+            crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1 - 14;
+        stale_collector.active_hook_count = stale_collector.allowed_hook_count;
+        let skew = stale_collector
+            .encode_authenticated(token)
+            .expect_err("a collector declaring a shorter pinned roster must be refused");
+        assert_eq!(
+            skew,
+            PayloadError::ProductionHookContractSkew {
+                declared: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1 - 14,
+                required: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
+            }
+        );
+        let rendered = skew.to_string();
+        assert!(
+            rendered.contains("rebuild") && rendered.contains("collector.dll"),
+            "contract skew must tell the reader to rebuild the collector, got: {rendered}"
+        );
+
+        // Install isolation: a non-mandatory gameplay producer that failed to
+        // patch lowers the active count, and that is a capture worth having.
+        // `HookAllowlistEntryV1::mandatory` is the one place that decides
+        // whether a hook failing voids the capture, and it is enforced by
+        // `hook_install_outcomes_preimage`, not by this count.
+        let mut degraded = ready_fields();
+        degraded.active_hook_count = degraded.allowed_hook_count - 1;
+        degraded
+            .encode_authenticated(token)
+            .expect("a capture that lost one non-mandatory producer must still be admissible");
 
         let mut exhausted_clock = ready_fields();
         exhausted_clock.clock_observation_ordinal = u64::MAX;
