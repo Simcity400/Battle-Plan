@@ -173,9 +173,14 @@ def score(manifest):
         declared = info.get("gap_record_count")
         if declared is None:
             continue
-        observed = gaps_by_id.get(info.get("domain_id"), 0)
-        if int(declared) != observed:
-            gap_count_disagreements[name] = (int(declared), observed)
+        # NOT `observed` -- that name holds unique_game_hour_count, and
+        # rebinding it here left the hours axis explaining itself with the
+        # last domain's gap count ("89 observed of 594") while its headline
+        # number, computed earlier, was right. A shadowed name in a report is
+        # a wrong report.
+        counted = gaps_by_id.get(info.get("domain_id"), 0)
+        if int(declared) != counted:
+            gap_count_disagreements[name] = (int(declared), counted)
 
     # A domain can be absent from `per_domain` and still be emitting gaps, so
     # name both shapes: it is the shape the per-domain report cannot see.
