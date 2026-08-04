@@ -1429,6 +1429,11 @@ pub const STATEFUL_UNIT_PREFIXES: &[&str] = &[
     // `*_mask` names on the bitwise side without needing an entry each.
     "d85_",
     "d97_",
+    // D95's spotted-unit observer, for the same reason. Its per-arm census
+    // lives in the process-global `LatestFrames` and its site-entry counts in
+    // `SITE_ENTRIES` statics; neither is reset between frames, so an
+    // unregistered sibling here must be `Undeclared` rather than summed.
+    "d95_",
 ];
 
 /// Name suffixes whose value is a raw OBSERVATION rather than a quantity: a
@@ -1655,6 +1660,32 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "d85_hook_installed",
     "d97_refresh_observed_total",
     "d97_hook_installed",
+    // D95's per-arm census and hook-entry counts. Every one of these is a
+    // PROCESS-LIFETIME total read out of `LatestFrames::census` or the
+    // `SITE_ENTRIES` statics, published as its absolute value each frame --
+    // the same shape as `d85_callback_count` directly above, and summing them
+    // over a 316-hour capture would multiply each by ~316.
+    "d95_hooks_installed",
+    "d95_site_entries_intel_getter",
+    "d95_site_entries_land_frame",
+    "d95_site_entries_land_eligibility",
+    "d95_site_entries_taskforce_frame",
+    "d95_land_candidates_seen",
+    "d95_land_rejected_unreadable_handle",
+    "d95_land_rejected_below_intel_threshold",
+    "d95_land_rejected_by_eligibility",
+    "d95_land_rejected_taskforce_state",
+    "d95_land_abandoned_pending",
+    "d95_land_admitted",
+    "d95_land_frames_without_enumeration",
+    "d95_taskforce_candidates_seen",
+    "d95_taskforce_rejected_unreadable_handle",
+    "d95_taskforce_rejected_below_intel_threshold",
+    "d95_taskforce_rejected_by_eligibility",
+    "d95_taskforce_rejected_taskforce_state",
+    "d95_taskforce_abandoned_pending",
+    "d95_taskforce_admitted",
+    "d95_taskforce_frames_without_enumeration",
 ];
 
 /// Domain 61 publishes one unit per pinned engine channel, named

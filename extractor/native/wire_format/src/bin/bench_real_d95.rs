@@ -1560,6 +1560,8 @@ mod tests {
             pov_country_id: pov,
             land_frame_sequence: land.0,
             taskforce_frame_sequence: taskforces.0,
+            land_frame_hour_raw: None,
+            taskforce_frame_hour_raw: None,
             land: rows(land.1),
             taskforces: rows(taskforces.1),
         }

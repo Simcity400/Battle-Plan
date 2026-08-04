@@ -246,6 +246,197 @@ impl SelectedDesignerErrorScope {
     }
 }
 
+/// Every way one d85 callback can fail to capture an observation, as a value
+/// with a stable code.
+///
+/// # Why the text alone was not enough
+///
+/// t25 ran 696 d85 callbacks. Every single one failed --
+/// `d85_error_callback_ordinal` equals `d85_callback_count` at all 316 hours,
+/// and `d85_observed_families` is 0 throughout -- and the latched scope mask
+/// says all 696 were the Division site. The capture therefore proves that the
+/// hook is installed, that the engine calls it, and that the CAPTURE inside the
+/// callback is what fails; and it cannot say which of the eleven Division arms
+/// did it, because the only thing that knew was a `String` that never left the
+/// process.
+///
+/// A `u64` diagnostic unit cannot carry a sentence, so the reason gets a
+/// number. [`Self::code`] is that number and it is frozen by test: a capture
+/// that reports `d85_latched_error_reason_code = 308` says "the selected
+/// division template pointer was null" without anyone attaching a debugger,
+/// which for a passive recorder is the difference between a defect and a
+/// mystery.
+///
+/// [`Display`] reproduces the exact sentences the observer published before
+/// this type existed, so the reason strings on the wire are unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectedDesignerFailure {
+    /// The pinned module base is not published, so no RVA can be resolved.
+    ModuleBaseUnavailable,
+    /// The d78 designer-refresh prerequisite reported its own failure.
+    D78Controller(String),
+    EquipmentNoActiveControllerSnapshot,
+    EquipmentControllerViewDiffers,
+    EquipmentViewModeUnreadable,
+    EquipmentVariantDefinitionNull,
+    EquipmentSelectionAbsentFromOrder,
+    EquipmentAutodesignBoundaryNotCrossed,
+    DivisionNullView,
+    DivisionHandlerNull,
+    DivisionRowPoolUsedUnreadable,
+    DivisionRowPoolUsedOutOfBounds,
+    DivisionRowPoolDataNull,
+    DivisionRowNull(usize),
+    DivisionRowTemplateNull(usize),
+    DivisionSelectedTemplateNull,
+    DivisionOrderChangedDuringCapture,
+    DivisionSelectedAbsentFromOrder,
+    DivisionTransactionDidNotCommitTemplate,
+    DivisionNoViewHandlerJoin,
+    VariantUpgradeNullWindow,
+    VariantUpgradeNestedViewNull,
+    VariantUpgradeTransactionMismatch,
+    IdentityPointerNull,
+    IdentityChangedDuringCapture,
+    IdentityVtableGate,
+    IdentityObjectTypeUnreadable,
+    IdentityStableIdUnreadableOrZero,
+    IdentityObjectTypeDisagreesWithFamily,
+    ClassifierDisagreesWithMode(i32),
+}
+
+impl SelectedDesignerFailure {
+    /// The stable wire code for this reason. Never reused, never renumbered:
+    /// a capture recorded today has to stay readable against a later build.
+    ///
+    /// Zero is reserved for "no live failure", so no variant may take it.
+    pub fn code(&self) -> u64 {
+        match self {
+            Self::ModuleBaseUnavailable => 101,
+            Self::D78Controller(_) => 102,
+            Self::EquipmentNoActiveControllerSnapshot => 201,
+            Self::EquipmentControllerViewDiffers => 202,
+            Self::EquipmentViewModeUnreadable => 203,
+            Self::EquipmentVariantDefinitionNull => 204,
+            Self::EquipmentSelectionAbsentFromOrder => 205,
+            Self::EquipmentAutodesignBoundaryNotCrossed => 206,
+            Self::DivisionNullView => 301,
+            Self::DivisionHandlerNull => 302,
+            Self::DivisionRowPoolUsedUnreadable => 303,
+            Self::DivisionRowPoolUsedOutOfBounds => 304,
+            Self::DivisionRowPoolDataNull => 305,
+            Self::DivisionRowNull(_) => 306,
+            Self::DivisionRowTemplateNull(_) => 307,
+            Self::DivisionSelectedTemplateNull => 308,
+            Self::DivisionOrderChangedDuringCapture => 309,
+            Self::DivisionSelectedAbsentFromOrder => 310,
+            Self::DivisionTransactionDidNotCommitTemplate => 311,
+            Self::DivisionNoViewHandlerJoin => 312,
+            Self::VariantUpgradeNullWindow => 401,
+            Self::VariantUpgradeNestedViewNull => 402,
+            Self::VariantUpgradeTransactionMismatch => 403,
+            Self::IdentityPointerNull => 501,
+            Self::IdentityChangedDuringCapture => 502,
+            Self::IdentityVtableGate => 503,
+            Self::IdentityObjectTypeUnreadable => 504,
+            Self::IdentityStableIdUnreadableOrZero => 505,
+            Self::IdentityObjectTypeDisagreesWithFamily => 506,
+            Self::ClassifierDisagreesWithMode(_) => 507,
+        }
+    }
+}
+
+impl std::fmt::Display for SelectedDesignerFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ModuleBaseUnavailable => {
+                formatter.write_str("A40 exact-a729 module base is unavailable")
+            }
+            Self::D78Controller(message) => formatter.write_str(message),
+            Self::EquipmentNoActiveControllerSnapshot => formatter
+                .write_str("A40 equipment selection has no active d78 controller snapshot"),
+            Self::EquipmentControllerViewDiffers => {
+                formatter.write_str("A40 equipment selection and d78 controller view differ")
+            }
+            Self::EquipmentViewModeUnreadable => {
+                formatter.write_str("A40 equipment view mode unreadable")
+            }
+            Self::EquipmentVariantDefinitionNull => {
+                formatter.write_str("A40 selected variant definition is null/unreadable")
+            }
+            Self::EquipmentSelectionAbsentFromOrder => {
+                formatter.write_str("A40 selected variant is absent from the exact d78 order")
+            }
+            Self::EquipmentAutodesignBoundaryNotCrossed => formatter.write_str(
+                "A40 equipment selection did not cross the exact successful auto-design boundary",
+            ),
+            Self::DivisionNullView => formatter.write_str("A40 division order supplied null view"),
+            Self::DivisionHandlerNull => {
+                formatter.write_str("A40 division handler is null/unreadable")
+            }
+            Self::DivisionRowPoolUsedUnreadable => {
+                formatter.write_str("A40 division row-pool used count unreadable")
+            }
+            Self::DivisionRowPoolUsedOutOfBounds => {
+                formatter.write_str("A40 division row-pool used count is empty/out of bounds")
+            }
+            Self::DivisionRowPoolDataNull => {
+                formatter.write_str("A40 division row-pool data is null/unreadable")
+            }
+            Self::DivisionRowNull(index) => {
+                write!(formatter, "A40 division row {index} is null/unreadable")
+            }
+            Self::DivisionRowTemplateNull(index) => {
+                write!(formatter, "A40 division row {index} template is null/unreadable")
+            }
+            Self::DivisionSelectedTemplateNull => {
+                formatter.write_str("A40 division selected template is null/unreadable")
+            }
+            Self::DivisionOrderChangedDuringCapture => {
+                formatter.write_str("A40 division order/selection changed during capture")
+            }
+            Self::DivisionSelectedAbsentFromOrder => formatter
+                .write_str("A40 selected division template is absent from controller order"),
+            Self::DivisionTransactionDidNotCommitTemplate => formatter
+                .write_str("A40 division selection transaction did not commit the requested template"),
+            Self::DivisionNoViewHandlerJoin => {
+                formatter.write_str("A40 division selection has no authenticated view/handler join")
+            }
+            Self::VariantUpgradeNullWindow => {
+                formatter.write_str("A40 variant-upgrade selection supplied null window")
+            }
+            Self::VariantUpgradeNestedViewNull => {
+                formatter.write_str("A40 variant-upgrade nested view is null/unreadable")
+            }
+            Self::VariantUpgradeTransactionMismatch => formatter.write_str(
+                "A40 variant-upgrade transaction did not commit one identical source variant",
+            ),
+            Self::IdentityPointerNull => {
+                formatter.write_str("A40 selected object pointer is null")
+            }
+            Self::IdentityChangedDuringCapture => {
+                formatter.write_str("A40 selected object identity changed during capture")
+            }
+            Self::IdentityVtableGate => {
+                formatter.write_str("A40 selected object failed exact vtable gate")
+            }
+            Self::IdentityObjectTypeUnreadable => {
+                formatter.write_str("A40 selected object type unreadable")
+            }
+            Self::IdentityStableIdUnreadableOrZero => {
+                formatter.write_str("A40 selected object stable id unreadable/zero")
+            }
+            Self::IdentityObjectTypeDisagreesWithFamily => {
+                formatter.write_str("A40 selected object type disagrees with owner family")
+            }
+            Self::ClassifierDisagreesWithMode(mode) => write!(
+                formatter,
+                "A40 mode {mode} and exact equipment-definition classifiers disagree"
+            ),
+        }
+    }
+}
+
 /// A failure, and WHEN it happened.
 ///
 /// The ordinal is the value of `callback_count` at the callback that produced
@@ -254,8 +445,14 @@ impl SelectedDesignerErrorScope {
 /// serve?" instead of "has anything ever failed?".
 #[derive(Clone, Debug)]
 struct LatchedError {
-    message: String,
+    reason: SelectedDesignerFailure,
     callback_ordinal: u64,
+}
+
+impl LatchedError {
+    fn message(&self) -> String {
+        self.reason.to_string()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -342,6 +539,17 @@ pub struct HookDiagnostics {
     /// Which sites currently hold a failure, as
     /// [`SelectedDesignerErrorScope::bit`] flags.
     pub latched_error_scope_mask: u64,
+    /// [`SelectedDesignerFailure::code`] of [`Self::current_error`], and `0`
+    /// when no site holds a failure.
+    ///
+    /// The unit lane AI's H1 stops one step short of. `error_callback_ordinal`
+    /// says the observer is failing FRESH on every callback;
+    /// `latched_error_scope_mask` says WHICH site; this says WHY, which is the
+    /// only one of the three that names something to fix. t25 latched 696
+    /// consecutive Division-site failures and nothing on the wire could tell
+    /// "the row pool was empty" from "nothing was selected" from "the vtable
+    /// gate refused a row".
+    pub latched_error_reason_code: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -375,7 +583,7 @@ impl ExactSelectedDesignerIdentitySource for ExactA729SelectedDesignerSource {
             None => {
                 return Err(state
                     .blocking_error(family, None)
-                    .map(|error| error.message.clone())
+                    .map(LatchedError::message)
                     .unwrap_or_else(|| {
                         format!("A40 has not observed a complete {family:?} selection")
                     }))
@@ -384,7 +592,7 @@ impl ExactSelectedDesignerIdentitySource for ExactA729SelectedDesignerSource {
         // Only a failure at THIS family's own site, and only one newer than the
         // observation itself, can invalidate it.
         if let Some(error) = state.blocking_error(family, Some(observed.callback_ordinal)) {
-            return Err(error.message.clone());
+            return Err(error.message());
         }
         Ok(frame_from_observed(frame_hour, observed.clone()))
     }
@@ -719,9 +927,10 @@ pub fn diagnostics() -> HookDiagnostics {
         callback_count: state.callback_count,
         variant_upgrade_selection_count: state.variant_upgrade_selection_count,
         available_families: state.latest.keys().copied().collect(),
-        current_error: newest.map(|error| error.message.clone()),
+        current_error: newest.map(LatchedError::message),
         error_callback_ordinal: newest.map(|error| error.callback_ordinal).unwrap_or(0),
         latched_error_scope_mask: state.latched_error_scope_mask(),
+        latched_error_reason_code: newest.map(|error| error.reason.code()).unwrap_or(0),
     }
 }
 
@@ -794,7 +1003,7 @@ pub fn encode_latest(
             return Err(SelectedDesignerError::Source(
                 state
                     .newest_error()
-                    .map(|error| error.message.clone())
+                    .map(LatchedError::message)
                     .unwrap_or_else(|| {
                         "A40 has not observed a complete selected-designer transition".into()
                     }),
@@ -802,7 +1011,7 @@ pub fn encode_latest(
         };
         if let Some(error) = state.blocking_error(observed.family, Some(observed.callback_ordinal))
         {
-            return Err(SelectedDesignerError::Source(error.message.clone()));
+            return Err(SelectedDesignerError::Source(error.message()));
         }
         observed.clone()
     };
@@ -857,7 +1066,7 @@ pub fn drain_fixture_payload(
                 if let Some(error) =
                     state.blocking_error(family, Some(observed.callback_ordinal))
                 {
-                    return Err(SelectedDesignerError::Source(error.message.clone()));
+                    return Err(SelectedDesignerError::Source(error.message()));
                 }
                 state
                     .latest
@@ -868,7 +1077,7 @@ pub fn drain_fixture_payload(
                 return Err(SelectedDesignerError::Source(
                     state
                         .blocking_error(family, None)
-                        .map(|error| error.message.clone())
+                        .map(LatchedError::message)
                         .unwrap_or_else(|| {
                             format!("A40 has no undrained {family:?} selection")
                         }),
@@ -970,7 +1179,7 @@ unsafe extern "system" fn hook_equipment_selection(view: usize, variant: usize) 
         } else {
             publish_error(
                 SelectedDesignerErrorScope::EquipmentDesigner,
-                "A40 equipment selection did not cross the exact successful auto-design boundary",
+                SelectedDesignerFailure::EquipmentAutodesignBoundaryNotCrossed,
             );
         }
     }
@@ -1029,11 +1238,11 @@ unsafe extern "system" fn hook_division_selection(handler: usize, template: usiz
             }
             Some(_) => publish_error(
                 SelectedDesignerErrorScope::Division,
-                "A40 division selection transaction did not commit the requested template",
+                SelectedDesignerFailure::DivisionTransactionDidNotCommitTemplate,
             ),
             None => publish_error(
                 SelectedDesignerErrorScope::Division,
-                "A40 division selection has no authenticated view/handler join",
+                SelectedDesignerFailure::DivisionNoViewHandlerJoin,
             ),
         }
     }
@@ -1076,22 +1285,23 @@ unsafe fn call_one_arg_original(slot: &AtomicUsize, a: usize) {
 fn capture_equipment_selection(
     view: usize,
     variant: usize,
-) -> Result<ObservedSelection, String> {
+) -> Result<ObservedSelection, SelectedDesignerFailure> {
     let base = module_base()?;
-    let designer = crate::a729_hook::latest_active_role_root()?
-        .ok_or("A40 equipment selection has no active d78 controller snapshot")?;
+    let designer = crate::a729_hook::latest_active_role_root()
+        .map_err(SelectedDesignerFailure::D78Controller)?
+        .ok_or(SelectedDesignerFailure::EquipmentNoActiveControllerSnapshot)?;
     if designer.view_ptr != view {
-        return Err("A40 equipment selection and d78 controller view differ".into());
+        return Err(SelectedDesignerFailure::EquipmentControllerViewDiffers);
     }
     let selected_design = read_identity(
         variant,
         EQUIPMENT_VARIANT_VTABLE_RVA,
         EQUIPMENT_VARIANT_TYPE,
     )?;
-    let mode = read_i32(view + VIEW_MODE).ok_or("A40 equipment view mode unreadable")?;
+    let mode = read_i32(view + VIEW_MODE).ok_or(SelectedDesignerFailure::EquipmentViewModeUnreadable)?;
     let definition = read_usize(variant + VARIANT_DEFINITION)
         .filter(|pointer| *pointer != 0)
-        .ok_or("A40 selected variant definition is null/unreadable")?;
+        .ok_or(SelectedDesignerFailure::EquipmentVariantDefinitionNull)?;
     let (owner, family) = classify_variant(base, mode, definition)?;
     let ordered_designs = designer
         .context
@@ -1103,7 +1313,7 @@ fn capture_equipment_selection(
         })
         .collect::<Vec<_>>();
     if !ordered_designs.contains(&selected_design) {
-        return Err("A40 selected variant is absent from the exact d78 order".into());
+        return Err(SelectedDesignerFailure::EquipmentSelectionAbsentFromOrder);
     }
     Ok(ObservedSelection {
         transition_sequence: 0,
@@ -1119,30 +1329,32 @@ fn capture_equipment_selection(
     })
 }
 
-fn capture_division_selection(view: usize) -> Result<ObservedSelection, String> {
+fn capture_division_selection(
+    view: usize,
+) -> Result<ObservedSelection, SelectedDesignerFailure> {
     module_base()?;
     if view == 0 {
-        return Err("A40 division order supplied null view".into());
+        return Err(SelectedDesignerFailure::DivisionNullView);
     }
     let handler = read_usize(view + DIVISION_HANDLER)
         .filter(|pointer| *pointer != 0)
-        .ok_or("A40 division handler is null/unreadable")?;
+        .ok_or(SelectedDesignerFailure::DivisionHandlerNull)?;
     let used = read_u32(view + DIVISION_ROW_POOL_USED)
-        .ok_or("A40 division row-pool used count unreadable")? as usize;
+        .ok_or(SelectedDesignerFailure::DivisionRowPoolUsedUnreadable)? as usize;
     if used == 0 || used > MAX_ORDERED_DESIGNS {
-        return Err("A40 division row-pool used count is empty/out of bounds".into());
+        return Err(SelectedDesignerFailure::DivisionRowPoolUsedOutOfBounds);
     }
     let data = read_usize(view + DIVISION_ROW_POOL_DATA)
         .filter(|pointer| *pointer != 0)
-        .ok_or("A40 division row-pool data is null/unreadable")?;
+        .ok_or(SelectedDesignerFailure::DivisionRowPoolDataNull)?;
     let mut ordered_designs = Vec::with_capacity(used);
     for index in 0..used {
         let row = read_usize(data + index * mem::size_of::<usize>())
             .filter(|pointer| *pointer != 0)
-            .ok_or_else(|| format!("A40 division row {index} is null/unreadable"))?;
+            .ok_or(SelectedDesignerFailure::DivisionRowNull(index))?;
         let template = read_usize(row + DIVISION_ROW_TEMPLATE)
             .filter(|pointer| *pointer != 0)
-            .ok_or_else(|| format!("A40 division row {index} template is null/unreadable"))?;
+            .ok_or(SelectedDesignerFailure::DivisionRowTemplateNull(index))?;
         ordered_designs.push(read_identity(
             template,
             DIVISION_TEMPLATE_VTABLE_RVA,
@@ -1151,7 +1363,7 @@ fn capture_division_selection(view: usize) -> Result<ObservedSelection, String> 
     }
     let selected = read_usize(handler + DIVISION_HANDLER_SELECTED)
         .filter(|pointer| *pointer != 0)
-        .ok_or("A40 division selected template is null/unreadable")?;
+        .ok_or(SelectedDesignerFailure::DivisionSelectedTemplateNull)?;
     let selected_design = read_identity(
         selected,
         DIVISION_TEMPLATE_VTABLE_RVA,
@@ -1161,10 +1373,10 @@ fn capture_division_selection(view: usize) -> Result<ObservedSelection, String> 
         || read_u32(view + DIVISION_ROW_POOL_USED) != Some(used as u32)
         || read_usize(handler + DIVISION_HANDLER_SELECTED) != Some(selected)
     {
-        return Err("A40 division order/selection changed during capture".into());
+        return Err(SelectedDesignerFailure::DivisionOrderChangedDuringCapture);
     }
     if !ordered_designs.contains(&selected_design) {
-        return Err("A40 selected division template is absent from controller order".into());
+        return Err(SelectedDesignerFailure::DivisionSelectedAbsentFromOrder);
     }
     if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
         state.division_views_by_handler.insert(handler, view);
@@ -1185,20 +1397,17 @@ fn capture_division_selection(view: usize) -> Result<ObservedSelection, String> 
 fn capture_variant_upgrade_selection(
     window: usize,
     variant: usize,
-) -> Result<ObservedSelection, String> {
+) -> Result<ObservedSelection, SelectedDesignerFailure> {
     if window == 0 {
-        return Err("A40 variant-upgrade selection supplied null window".into());
+        return Err(SelectedDesignerFailure::VariantUpgradeNullWindow);
     }
     let nested_view = read_usize(window + VARIANT_UPGRADE_NESTED_VIEW)
         .filter(|pointer| *pointer != 0)
-        .ok_or("A40 variant-upgrade nested view is null/unreadable")?;
+        .ok_or(SelectedDesignerFailure::VariantUpgradeNestedViewNull)?;
     if read_usize(nested_view + VARIANT_UPGRADE_NESTED_SELECTED) != Some(variant)
         || read_usize(window + VARIANT_UPGRADE_WINDOW_SELECTED) != Some(variant)
     {
-        return Err(
-            "A40 variant-upgrade transaction did not commit one identical source variant"
-                .into(),
-        );
+        return Err(SelectedDesignerFailure::VariantUpgradeTransactionMismatch);
     }
     let selected_design = read_identity(
         variant,
@@ -1228,7 +1437,7 @@ fn classify_variant(
     base: usize,
     mode: i32,
     definition: usize,
-) -> Result<(SelectedDesignerOwner, SelectedDesignerFamily), String> {
+) -> Result<(SelectedDesignerOwner, SelectedDesignerFamily), SelectedDesignerFailure> {
     let predicate = |rva: u32| unsafe {
         let function: PredicateFn = mem::transmute(base + rva as usize);
         function(definition) != 0
@@ -1250,9 +1459,7 @@ fn classify_variant(
             SelectedDesignerOwner::PlaneDesignerMode2,
             SelectedDesignerFamily::Plane,
         )),
-        _ => Err(format!(
-            "A40 mode {mode} and exact equipment-definition classifiers disagree"
-        )),
+        _ => Err(SelectedDesignerFailure::ClassifierDisagreesWithMode(mode)),
     }
 }
 
@@ -1260,7 +1467,10 @@ fn classify_variant(
 ///
 /// `scope` is the SITE's, not the result's: a failure has no family to speak
 /// for, and a success clears only the site that just proved itself working.
-fn publish_result(scope: SelectedDesignerErrorScope, result: Result<ObservedSelection, String>) {
+fn publish_result(
+    scope: SelectedDesignerErrorScope,
+    result: Result<ObservedSelection, SelectedDesignerFailure>,
+) {
     let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
     };
@@ -1275,11 +1485,11 @@ fn publish_result(scope: SelectedDesignerErrorScope, result: Result<ObservedSele
             state.latest.insert(observed.family, observed);
             state.errors.remove(&scope);
         }
-        Err(message) => {
+        Err(reason) => {
             state.errors.insert(
                 scope,
                 LatchedError {
-                    message,
+                    reason,
                     callback_ordinal,
                 },
             );
@@ -1287,24 +1497,24 @@ fn publish_result(scope: SelectedDesignerErrorScope, result: Result<ObservedSele
     }
 }
 
-fn publish_error(scope: SelectedDesignerErrorScope, error: impl Into<String>) {
+fn publish_error(scope: SelectedDesignerErrorScope, reason: SelectedDesignerFailure) {
     if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
         state.callback_count = state.callback_count.saturating_add(1);
         let callback_ordinal = state.callback_count;
         state.errors.insert(
             scope,
             LatchedError {
-                message: error.into(),
+                reason,
                 callback_ordinal,
             },
         );
     }
 }
 
-fn module_base() -> Result<usize, String> {
+fn module_base() -> Result<usize, SelectedDesignerFailure> {
     let base = MODULE_BASE.load(Ordering::Acquire);
     if base == 0 {
-        Err("A40 exact-a729 module base is unavailable".into())
+        Err(SelectedDesignerFailure::ModuleBaseUnavailable)
     } else {
         Ok(base)
     }
@@ -1314,10 +1524,10 @@ fn read_identity(
     pointer: usize,
     expected_vtable_rva: usize,
     expected_type: u32,
-) -> Result<StableDesignIdentity, String> {
+) -> Result<StableDesignIdentity, SelectedDesignerFailure> {
     let base = module_base()?;
     if pointer == 0 {
-        return Err("A40 selected object pointer is null".into());
+        return Err(SelectedDesignerFailure::IdentityPointerNull);
     }
     let first = (
         read_usize(pointer),
@@ -1330,18 +1540,18 @@ fn read_identity(
         read_u32(pointer + STABLE_ID),
     );
     if first != second {
-        return Err("A40 selected object identity changed during capture".into());
+        return Err(SelectedDesignerFailure::IdentityChangedDuringCapture);
     }
     let (vtable, object_type, stable_id) = first;
     if vtable != Some(base + expected_vtable_rva) {
-        return Err("A40 selected object failed exact vtable gate".into());
+        return Err(SelectedDesignerFailure::IdentityVtableGate);
     }
-    let object_type = object_type.ok_or("A40 selected object type unreadable")?;
+    let object_type = object_type.ok_or(SelectedDesignerFailure::IdentityObjectTypeUnreadable)?;
     let stable_id = stable_id
         .filter(|id| *id != 0)
-        .ok_or("A40 selected object stable id unreadable/zero")?;
+        .ok_or(SelectedDesignerFailure::IdentityStableIdUnreadableOrZero)?;
     if object_type != expected_type {
-        return Err("A40 selected object type disagrees with owner family".into());
+        return Err(SelectedDesignerFailure::IdentityObjectTypeDisagreesWithFamily);
     }
     Ok(StableDesignIdentity {
         object_type,
@@ -1509,7 +1719,7 @@ mod tests {
         state.errors.insert(
             SelectedDesignerErrorScope::Division,
             LatchedError {
-                message: "old campaign".into(),
+                reason: SelectedDesignerFailure::DivisionNullView,
                 callback_ordinal: 9,
             },
         );
@@ -1550,7 +1760,7 @@ mod tests {
         state.errors.insert(
             scope,
             LatchedError {
-                message: format!("{scope:?} failed at {callback_ordinal}"),
+                reason: SelectedDesignerFailure::DivisionNullView,
                 callback_ordinal,
             },
         );
@@ -1675,29 +1885,99 @@ mod tests {
         assert_eq!(bits.len(), 3, "each site needs its own mask bit");
     }
 
+    /// Serialises the tests that drive the PROCESS-GLOBAL [`STATE`] through the
+    /// production publish path. Two of them clear it and assert on what is
+    /// left, so running them concurrently is a collision, not a stale read.
+    static GLOBAL_HOOK_STATE_TESTS: Mutex<()> = Mutex::new(());
+
+    fn lock_global_hook_state() -> std::sync::MutexGuard<'static, ()> {
+        // A panic in one of these tests poisons the guard; the next test still
+        // resets the state it is about to use, so the poison carries no
+        // information worth failing a second test over.
+        GLOBAL_HOOK_STATE_TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn reset_global_hook_state() {
+        let state = STATE.get_or_init(|| Mutex::new(HookState::default()));
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *state = HookState::default();
+    }
+
     /// Law: a site's own success clears only that site.
     ///
-    /// MUTATION: change `state.errors.remove(&scope)` in `publish_result` back
-    /// to `state.errors.clear()`. OBSERVED: this fails -- an equipment success
-    /// would silently declare the division site healthy, which is the same
-    /// cross-site claim the latch made in the other direction.
+    /// # Why this test was rebuilt (lane AU)
+    ///
+    /// It used to build a local `HookState`, call
+    /// `state.errors.remove(&EquipmentDesigner)` ITSELF, and then assert the
+    /// division entry survived -- which is a test that `BTreeMap::remove`
+    /// removes one key. Its own documented mutation (`state.errors.remove`
+    /// becoming `state.errors.clear()` inside `publish_result`) could not fail
+    /// it, because it never called `publish_result`. It now drives the real
+    /// publish path, so the clearing rule under test is the production one.
+    ///
+    /// MUTATION RUN: change `state.errors.remove(&scope)` in `publish_result`
+    /// to `state.errors.clear()`. OBSERVED: FAILED, mask 0 against 2 -- an
+    /// equipment success declares the division site healthy, which is the same
+    /// cross-site claim the old global latch made in the other direction.
     #[test]
     fn a_success_clears_only_its_own_site() {
-        let mut state = HookState::default();
-        latched(&mut state, SelectedDesignerErrorScope::Division, 1);
-        latched(&mut state, SelectedDesignerErrorScope::EquipmentDesigner, 2);
+        let _serial = lock_global_hook_state();
+        reset_global_hook_state();
 
-        // What `publish_result`'s Ok arm does, applied directly: this test is
-        // about the CLEARING RULE, and the callbacks it lives in cannot run
-        // without a patched hoi4.exe.
-        state
-            .errors
-            .remove(&SelectedDesignerErrorScope::EquipmentDesigner);
-
-        assert_eq!(
-            state.latched_error_scope_mask(),
-            SelectedDesignerErrorScope::Division.bit()
+        publish_error(
+            SelectedDesignerErrorScope::Division,
+            SelectedDesignerFailure::DivisionSelectedTemplateNull,
         );
+        publish_error(
+            SelectedDesignerErrorScope::EquipmentDesigner,
+            SelectedDesignerFailure::EquipmentAutodesignBoundaryNotCrossed,
+        );
+        assert_eq!(
+            diagnostics().latched_error_scope_mask,
+            SelectedDesignerErrorScope::Division.bit()
+                | SelectedDesignerErrorScope::EquipmentDesigner.bit(),
+            "both sites hold a failure before the success"
+        );
+
+        // The equipment site proves itself working. That is a statement about
+        // the equipment site and about nothing else.
+        publish_result(
+            SelectedDesignerErrorScope::EquipmentDesigner,
+            Ok(observed(SelectedDesignerFamily::Tank, 0, 0)),
+        );
+
+        let after = diagnostics();
+        assert_eq!(
+            after.latched_error_scope_mask,
+            SelectedDesignerErrorScope::Division.bit(),
+            "a success at one site must not declare another site healthy"
+        );
+        assert_eq!(
+            after.latched_error_reason_code,
+            SelectedDesignerFailure::DivisionSelectedTemplateNull.code(),
+            "the division failure is still the live one, with its own reason"
+        );
+        assert_eq!(
+            after.available_families,
+            vec![SelectedDesignerFamily::Tank],
+            "and the success committed its observation"
+        );
+
+        // A success at the division site clears the last live failure.
+        publish_result(
+            SelectedDesignerErrorScope::Division,
+            Ok(observed(SelectedDesignerFamily::Division, 0, 0)),
+        );
+        let cleared = diagnostics();
+        assert_eq!(cleared.latched_error_scope_mask, 0);
+        assert_eq!(cleared.latched_error_reason_code, 0);
+        assert_eq!(cleared.current_error, None);
+
+        reset_global_hook_state();
     }
 
     /// Law: the diagnostics publish the newest failure's ordinal, which is what
@@ -1720,6 +2000,363 @@ mod tests {
             state.latched_error_scope_mask(),
             SelectedDesignerErrorScope::Division.bit()
                 | SelectedDesignerErrorScope::VariantUpgrade.bit()
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Lane AU: naming the arm a callback failed at.
+    // -----------------------------------------------------------------
+
+    /// Every reason this observer can hold, with its frozen wire code and the
+    /// exact sentence it publishes.
+    fn every_failure() -> Vec<SelectedDesignerFailure> {
+        use SelectedDesignerFailure as Failure;
+        vec![
+            Failure::ModuleBaseUnavailable,
+            Failure::D78Controller("d78 said so".into()),
+            Failure::EquipmentNoActiveControllerSnapshot,
+            Failure::EquipmentControllerViewDiffers,
+            Failure::EquipmentViewModeUnreadable,
+            Failure::EquipmentVariantDefinitionNull,
+            Failure::EquipmentSelectionAbsentFromOrder,
+            Failure::EquipmentAutodesignBoundaryNotCrossed,
+            Failure::DivisionNullView,
+            Failure::DivisionHandlerNull,
+            Failure::DivisionRowPoolUsedUnreadable,
+            Failure::DivisionRowPoolUsedOutOfBounds,
+            Failure::DivisionRowPoolDataNull,
+            Failure::DivisionRowNull(3),
+            Failure::DivisionRowTemplateNull(3),
+            Failure::DivisionSelectedTemplateNull,
+            Failure::DivisionOrderChangedDuringCapture,
+            Failure::DivisionSelectedAbsentFromOrder,
+            Failure::DivisionTransactionDidNotCommitTemplate,
+            Failure::DivisionNoViewHandlerJoin,
+            Failure::VariantUpgradeNullWindow,
+            Failure::VariantUpgradeNestedViewNull,
+            Failure::VariantUpgradeTransactionMismatch,
+            Failure::IdentityPointerNull,
+            Failure::IdentityChangedDuringCapture,
+            Failure::IdentityVtableGate,
+            Failure::IdentityObjectTypeUnreadable,
+            Failure::IdentityStableIdUnreadableOrZero,
+            Failure::IdentityObjectTypeDisagreesWithFamily,
+            Failure::ClassifierDisagreesWithMode(2),
+        ]
+    }
+
+    /// Law: the reason codes are a dictionary -- distinct, never zero, and
+    /// frozen.
+    ///
+    /// A capture recorded today has to stay readable against a later build, so
+    /// a code may never be reused for a different reason and may never be
+    /// renumbered. Zero is reserved for "no site holds a failure", which is how
+    /// the collector publishes the unit when there is nothing latched.
+    ///
+    /// MUTATION RUN: give `DivisionSelectedTemplateNull` code 304, the code
+    /// `DivisionRowPoolUsedOutOfBounds` already holds -- i.e. exactly the edit
+    /// that would make a capture reporting 304 ambiguous between "the row pool
+    /// was empty" and "nothing was selected".
+    /// OBSERVED: FAILED, `code 304 is used by two reasons`.
+    #[test]
+    fn every_failure_reason_has_a_distinct_nonzero_frozen_code() {
+        let mut seen: BTreeMap<u64, String> = BTreeMap::new();
+        for failure in every_failure() {
+            let code = failure.code();
+            assert_ne!(
+                code, 0,
+                "zero is reserved for no-live-failure: {failure:?}"
+            );
+            if let Some(previous) = seen.insert(code, format!("{failure:?}")) {
+                panic!("code {code} is used by two reasons: {previous} and {failure:?}");
+            }
+        }
+        // The frozen half. A renamed variant is free; a renumbered one is not.
+        for (code, expected) in [
+            (101u64, "A40 exact-a729 module base is unavailable"),
+            (301, "A40 division order supplied null view"),
+            (302, "A40 division handler is null/unreadable"),
+            (304, "A40 division row-pool used count is empty/out of bounds"),
+            (305, "A40 division row-pool data is null/unreadable"),
+            (308, "A40 division selected template is null/unreadable"),
+            (310, "A40 selected division template is absent from controller order"),
+            (312, "A40 division selection has no authenticated view/handler join"),
+            (503, "A40 selected object failed exact vtable gate"),
+            (505, "A40 selected object stable id unreadable/zero"),
+            (506, "A40 selected object type disagrees with owner family"),
+        ] {
+            let failure = every_failure()
+                .into_iter()
+                .find(|failure| failure.code() == code)
+                .unwrap_or_else(|| panic!("code {code} must still exist"));
+            assert_eq!(failure.to_string(), expected, "code {code}");
+        }
+    }
+
+    /// A staged division-designer view, in this process's own memory.
+    ///
+    /// The observer reads through `ReadProcessMemory(GetCurrentProcess(), ..)`,
+    /// so an ordinary allocation IS a readable engine structure as far as it is
+    /// concerned. `MODULE_BASE` is then chosen so that
+    /// `base + DIVISION_TEMPLATE_VTABLE_RVA` lands on a word inside the arena,
+    /// which is what lets the exact vtable gate pass or fail on demand without
+    /// a 43 MB image.
+    struct DivisionFixture {
+        words: Vec<u64>,
+    }
+
+    impl DivisionFixture {
+        const VIEW: usize = 0x0000;
+        const HANDLER: usize = 0x3000;
+        const ROW_POOL: usize = 0x4000;
+        const ROW0: usize = 0x4100;
+        const ROW1: usize = 0x4800;
+        const TEMPLATE0: usize = 0x4F00;
+        const TEMPLATE1: usize = 0x4F40;
+        const VTABLE: usize = 0x4F80;
+        /// A well-formed template that is deliberately NOT in the row pool.
+        const OUTSIDER: usize = 0x5000;
+
+        fn new() -> Self {
+            let mut fixture = Self {
+                words: vec![0u64; 0x6000 / 8],
+            };
+            let vtable = fixture.at(Self::VTABLE);
+            let handler = fixture.at(Self::HANDLER);
+            let pool = fixture.at(Self::ROW_POOL);
+            let row0 = fixture.at(Self::ROW0);
+            let row1 = fixture.at(Self::ROW1);
+            let template0 = fixture.at(Self::TEMPLATE0);
+            let template1 = fixture.at(Self::TEMPLATE1);
+
+            fixture.write_usize(Self::VIEW + DIVISION_HANDLER, handler);
+            fixture.write_usize(Self::VIEW + DIVISION_ROW_POOL_DATA, pool);
+            fixture.write_u32(Self::VIEW + DIVISION_ROW_POOL_USED, 2);
+            fixture.write_usize(Self::ROW_POOL, row0);
+            fixture.write_usize(Self::ROW_POOL + 8, row1);
+            fixture.write_usize(Self::ROW0 + DIVISION_ROW_TEMPLATE, template0);
+            fixture.write_usize(Self::ROW1 + DIVISION_ROW_TEMPLATE, template1);
+            for (template, stable_id) in [(Self::TEMPLATE0, 11u32), (Self::TEMPLATE1, 12)] {
+                fixture.write_usize(template, vtable);
+                fixture.write_u32(template + OBJECT_TYPE, REFERENCED_DIVISION_TEMPLATE_TYPE);
+                fixture.write_u32(template + STABLE_ID, stable_id);
+            }
+            fixture.write_usize(Self::HANDLER + DIVISION_HANDLER_SELECTED, template0);
+            fixture
+        }
+
+        fn at(&self, offset: usize) -> usize {
+            self.words.as_ptr() as usize + offset
+        }
+
+        fn write_usize(&mut self, offset: usize, value: usize) {
+            assert_eq!(offset % 8, 0, "staged pointers stay word aligned");
+            self.words[offset / 8] = value as u64;
+        }
+
+        fn write_u32(&mut self, offset: usize, value: u32) {
+            let word = offset / 8;
+            let shift = (offset % 8) * 8;
+            let mask = !(0xffff_ffffu64 << shift);
+            self.words[word] = (self.words[word] & mask) | ((value as u64) << shift);
+        }
+
+        /// The module base under which this arena's staged vtable satisfies the
+        /// observer's exact gate.
+        fn module_base(&self) -> usize {
+            self.at(Self::VTABLE)
+                .wrapping_sub(DIVISION_TEMPLATE_VTABLE_RVA)
+        }
+
+        fn view(&self) -> usize {
+            self.at(Self::VIEW)
+        }
+    }
+
+    /// Law: every arm of the division capture names ITSELF on the wire.
+    ///
+    /// # The defect this closes
+    ///
+    /// t25 ran 696 d85 callbacks. All 696 failed -- `d85_error_callback_ordinal`
+    /// equals `d85_callback_count` at every one of the 316 hours -- and all 696
+    /// were the Division site, because `d85_latched_error_scope_mask` is 2
+    /// throughout. So the capture proves the hook is installed, that the engine
+    /// calls it, and that the CAPTURE is what fails. It cannot say which arm,
+    /// because the only thing that knew was a `String` that never left the
+    /// process.
+    ///
+    /// The table below is that missing sentence, one row per arm, checked
+    /// against a staged view rather than asserted.
+    ///
+    /// MUTATION RUN: in `capture_division_selection`, drop the
+    /// `.filter(|pointer| *pointer != 0)` from the selected-template read, so a
+    /// null selection is captured instead of refused.
+    /// OBSERVED: FAILED, `a null selected template must refuse` -- the arm
+    /// falls through to the vtable gate and reports 503 instead of 308.
+    #[test]
+    fn every_division_capture_arm_reports_its_own_reason_code() {
+        let fixture = DivisionFixture::new();
+        let previous_base = MODULE_BASE.swap(fixture.module_base(), Ordering::AcqRel);
+
+        // A fully staged view is captured, so every refusal below is about the
+        // one field that case perturbs and nothing else.
+        let captured = capture_division_selection(fixture.view())
+            .expect("a fully staged division view is capturable");
+        assert_eq!(captured.family, SelectedDesignerFamily::Division);
+        assert_eq!(captured.ordered_designs.len(), 2);
+        assert_eq!(captured.selected_design.stable_id, 11);
+
+        let mut failures: Vec<(&str, u64)> = Vec::new();
+        let mut case = |label: &'static str, edit: &dyn Fn(&mut DivisionFixture)| {
+            let mut perturbed = DivisionFixture::new();
+            edit(&mut perturbed);
+            let base = MODULE_BASE.swap(perturbed.module_base(), Ordering::AcqRel);
+            let outcome = capture_division_selection(perturbed.view());
+            MODULE_BASE.store(base, Ordering::Release);
+            failures.push((
+                label,
+                outcome.err().map(|failure| failure.code()).unwrap_or(0),
+            ));
+        };
+
+        case("null handler", &|fixture| {
+            fixture.write_usize(DivisionFixture::VIEW + DIVISION_HANDLER, 0)
+        });
+        case("empty row pool", &|fixture| {
+            fixture.write_u32(DivisionFixture::VIEW + DIVISION_ROW_POOL_USED, 0)
+        });
+        case("row pool used out of bounds", &|fixture| {
+            fixture.write_u32(
+                DivisionFixture::VIEW + DIVISION_ROW_POOL_USED,
+                MAX_ORDERED_DESIGNS as u32 + 1,
+            )
+        });
+        case("null row pool data", &|fixture| {
+            fixture.write_usize(DivisionFixture::VIEW + DIVISION_ROW_POOL_DATA, 0)
+        });
+        case("null row", &|fixture| {
+            fixture.write_usize(DivisionFixture::ROW_POOL + 8, 0)
+        });
+        case("null row template", &|fixture| {
+            fixture.write_usize(DivisionFixture::ROW1 + DIVISION_ROW_TEMPLATE, 0)
+        });
+        case("template fails the vtable gate", &|fixture| {
+            let wrong = fixture.at(DivisionFixture::VTABLE) + 8;
+            fixture.write_usize(DivisionFixture::TEMPLATE1, wrong)
+        });
+        case("template stable id is zero", &|fixture| {
+            fixture.write_u32(DivisionFixture::TEMPLATE1 + STABLE_ID, 0)
+        });
+        case("template object type disagrees", &|fixture| {
+            fixture.write_u32(
+                DivisionFixture::TEMPLATE1 + OBJECT_TYPE,
+                REFERENCED_DIVISION_TEMPLATE_TYPE + 1,
+            )
+        });
+        case("nothing is selected", &|fixture| {
+            fixture.write_usize(DivisionFixture::HANDLER + DIVISION_HANDLER_SELECTED, 0)
+        });
+        case("the selection is absent from the order", &|fixture| {
+            let outsider = fixture.at(DivisionFixture::OUTSIDER);
+            let vtable = fixture.at(DivisionFixture::VTABLE);
+            fixture.write_usize(DivisionFixture::OUTSIDER, vtable);
+            fixture.write_u32(
+                DivisionFixture::OUTSIDER + OBJECT_TYPE,
+                REFERENCED_DIVISION_TEMPLATE_TYPE,
+            );
+            fixture.write_u32(DivisionFixture::OUTSIDER + STABLE_ID, 99);
+            fixture.write_usize(DivisionFixture::HANDLER + DIVISION_HANDLER_SELECTED, outsider)
+        });
+
+        // A null view, under a module base that IS published, so this reports
+        // the view rather than the base.
+        let null_view = capture_division_selection(0)
+            .err()
+            .map(|failure| failure.code());
+        // And with no module base at all, every arm answers 101 -- the reason
+        // the observer publishes when it has nothing to resolve RVAs against.
+        MODULE_BASE.store(0, Ordering::Release);
+        let unbound = capture_division_selection(fixture.view())
+            .err()
+            .map(|failure| failure.code());
+        MODULE_BASE.store(previous_base, Ordering::Release);
+
+        assert_eq!(
+            null_view,
+            Some(SelectedDesignerFailure::DivisionNullView.code()),
+            "a null view is its own reason, not a row-pool complaint"
+        );
+        assert_eq!(
+            unbound,
+            Some(SelectedDesignerFailure::ModuleBaseUnavailable.code()),
+            "an unbound module base is its own reason, not a division defect"
+        );
+
+        let expected = [
+            ("null handler", 302u64),
+            ("empty row pool", 304),
+            ("row pool used out of bounds", 304),
+            ("null row pool data", 305),
+            ("null row", 306),
+            ("null row template", 307),
+            ("template fails the vtable gate", 503),
+            ("template stable id is zero", 505),
+            ("template object type disagrees", 506),
+            ("nothing is selected", 308),
+            ("the selection is absent from the order", 310),
+        ];
+        assert_eq!(failures.len(), expected.len());
+        for ((label, actual), (expected_label, expected_code)) in
+            failures.iter().zip(expected.iter())
+        {
+            assert_eq!(label, expected_label);
+            assert_eq!(
+                actual, expected_code,
+                "{label}: a null selected template must refuse under its own code"
+            );
+        }
+    }
+
+    /// Law: the latched reason reaches `diagnostics()`, which is what the
+    /// collector puts on the wire.
+    ///
+    /// Without this the enum is a private nicety and a capture still cannot
+    /// name the arm.
+    ///
+    /// MUTATION RUN: publish `0` for `latched_error_reason_code` in
+    /// `diagnostics()`. OBSERVED: FAILED, the reason code is 0 where 308 is
+    /// expected.
+    #[test]
+    fn the_latched_reason_code_reaches_the_published_diagnostics() {
+        let _serial = lock_global_hook_state();
+        reset_global_hook_state();
+        assert_eq!(diagnostics().latched_error_reason_code, 0);
+
+        publish_error(
+            SelectedDesignerErrorScope::Division,
+            SelectedDesignerFailure::DivisionSelectedTemplateNull,
+        );
+        let after = diagnostics();
+        assert_eq!(after.latched_error_reason_code, 308);
+        assert_eq!(
+            after.current_error.as_deref(),
+            Some("A40 division selected template is null/unreadable"),
+            "the code and the sentence must describe the same failure"
+        );
+        assert_eq!(after.error_callback_ordinal, after.callback_count);
+
+        // The NEWEST failure is the one published, exactly as the ordinal is.
+        publish_error(
+            SelectedDesignerErrorScope::VariantUpgrade,
+            SelectedDesignerFailure::VariantUpgradeNullWindow,
+        );
+        assert_eq!(diagnostics().latched_error_reason_code, 401);
+
+        reset_global_hook_state();
+        assert_eq!(
+            diagnostics().latched_error_reason_code,
+            0,
+            "a campaign reset leaves nothing latched, and the unit says so"
         );
     }
 }

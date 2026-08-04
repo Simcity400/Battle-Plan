@@ -17142,6 +17142,24 @@ fn decode_compact_pov_spotted_units_data_payload(
         "pov_spotted_taskforce_complete_frames",
         usize::from(decoded.taskforce_frame_sequence.is_some()),
     );
+    // How many of the frames delivered carry the hour their PRODUCER observed
+    // at, rather than only the hour the collector drained them in. A frame is
+    // retained and re-served until its producer replaces it, so without this
+    // word a consumer cannot tell state standing since an earlier hour from
+    // state observed in the labelled one -- and a capture whose coverage of
+    // this fact is partial has to be able to say so.
+    add_compact_domain_data_unit(
+        summary,
+        spotted95::DOMAIN_ID,
+        "pov_spotted_land_producer_hour_frames",
+        usize::from(decoded.land_frame_hour_raw.is_some()),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        spotted95::DOMAIN_ID,
+        "pov_spotted_taskforce_producer_hour_frames",
+        usize::from(decoded.taskforce_frame_hour_raw.is_some()),
+    );
 }
 
 pub fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
