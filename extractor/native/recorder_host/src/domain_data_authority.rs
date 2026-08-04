@@ -14098,10 +14098,25 @@ fn decode_compact_peace_conference_data_payload(
             return;
         }
     };
-    let frame_rows = usize::from(decoded.observation.is_some());
+    // A measured zero is an ANSWER but not a ROW: the hour looked at the
+    // engine's peace-conference container and there was nothing in it to
+    // describe. Counting it here would inflate `data_rows_total` by one per
+    // peaceful hour -- which is nearly every hour of a campaign -- and make
+    // d97 look like the busiest domain in the capture.
+    let frame_rows = usize::from(matches!(
+        decoded.observation,
+        Some(
+            peace97::PeaceConferenceObservation::Inactive { .. }
+                | peace97::PeaceConferenceObservation::Active(_)
+        )
+    ));
     let active_rows = usize::from(matches!(
         decoded.observation,
         Some(peace97::PeaceConferenceObservation::Active(_))
+    ));
+    let no_conference_frames = usize::from(matches!(
+        decoded.observation,
+        Some(peace97::PeaceConferenceObservation::NoConferenceInProgress)
     ));
     if let Some(domain) = summary.per_domain.get_mut(&peace97::DOMAIN_ID) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(frame_rows as u64);
@@ -14117,6 +14132,15 @@ fn decode_compact_peace_conference_data_payload(
         peace97::DOMAIN_ID,
         "peace_conference_active_frames",
         active_rows,
+    );
+    // Published so a capture can state the shape of d97's hours instead of
+    // leaving "no rows" to be read as "no answer". Per-frame by construction:
+    // its value is computed from the payload of the frame it rides in.
+    add_compact_domain_data_unit(
+        summary,
+        peace97::DOMAIN_ID,
+        "peace_conference_no_conference_frames",
+        no_conference_frames,
     );
 }
 

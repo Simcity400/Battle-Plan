@@ -540,22 +540,112 @@ pub fn install() -> Result<InstalledHookAddresses, String> {
     install_for_evidence()
 }
 
-/// Materialize the latest exact refresh as a pointer-free PCS1 frame. An
-/// all-zero reference observed at the refresh boundary is exact inactive.
-pub fn production_payload(
+/// Which of D97's three answers this hour produced.
+///
+/// Kept as a type rather than left implicit in the payload bytes because the
+/// collector has to record a DIFFERENT domain outcome for each: a published
+/// refresh is a success, a measured zero is `measured_empty`, and neither is
+/// the other. Before this existed the lane returned `Result<Vec<u8>, String>`
+/// and the collector had exactly two outcomes to choose from, so the one world
+/// state d97 spends nearly all of its hours in had to be reported as a
+/// failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeaceProductionOutcome {
+    /// A window refresh boundary was observed and published. `active` is the
+    /// engine's own answer at that boundary.
+    RefreshPublished { active: bool },
+    /// The engine's peace-conference container was read whole and held
+    /// nothing. A measurement, not a failure.
+    NoConferenceInProgress,
+}
+
+/// One hour's D97 answer: the bytes, the status word they must be published
+/// under, and which answer it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeaceProductionRead {
+    pub payload: Vec<u8>,
+    /// Fixed by the answer, not by the caller: a measured zero carries exactly
+    /// [`crate::peace_conference_live::MEASURED_EMPTY_STATUS`] and a published
+    /// refresh carries the caller's clean word.
+    pub status_flags: u32,
+    pub row_count: u32,
+    pub outcome: PeaceProductionOutcome,
+    /// The engine container's element count, when this hour read it.
+    ///
+    /// `None` for an hour answered from a pending refresh: the presence read
+    /// does not run then, and reporting a zero would be inventing an
+    /// observation nobody made.
+    pub conference_count: Option<u32>,
+}
+
+/// A D97 hour that produced no answer, and what it saw on the way.
+///
+/// The count rides the FAILURE deliberately. The one failure this lane can now
+/// report -- a conference in progress that the window observer never saw -- is
+/// the case where the count is the deciding fact, and a `String` return would
+/// have left it recoverable only by parsing the reason text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeaceProductionFailure {
+    pub message: String,
+    pub conference_count: Option<u32>,
+}
+
+impl PeaceProductionFailure {
+    fn unseen(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            conference_count: None,
+        }
+    }
+}
+
+impl std::fmt::Display for PeaceProductionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Materialize this hour's D97 answer.
+///
+/// Two sources, in priority order, and the order is the point:
+///
+/// 1. A pending window refresh, if the observer holds one. This is the richer
+///    answer -- it carries the engine's portable registered reference, the
+///    conference turn and the completion flag -- and it CONSUMES: see
+///    `a_production_payload_consumes_the_refresh_it_published`.
+/// 2. Otherwise the game state's own peace-conference container. Empty is a
+///    measured zero; non-empty with no refresh is a real miss and says so.
+///
+/// The refresh is taken first because a refresh that exists is strictly more
+/// informative than a count, and because the take must happen on the hour the
+/// bracket survives (lane AO's reorder). The presence read runs only when
+/// there was no refresh to take, so it can never mask one.
+pub fn production_read(
+    module_base: usize,
     frame_hour: u64,
     elapsed_wall_ms: u64,
     status_flags: u32,
-) -> Result<Vec<u8>, String> {
-    let mut state = STATE
-        .get()
-        .ok_or("A40 peace production hook state is not initialized")?
-        .lock()
-        .map_err(|_| "A40 peace production hook state mutex poisoned")?;
-    let latest = state
-        .latest_refresh
-        .take()
-        .ok_or("A40 peace refresh was not observed")?;
+) -> Result<PeaceProductionRead, PeaceProductionFailure> {
+    let latest = match STATE.get() {
+        // The observer was never installed, so its state was never created and
+        // there is no refresh to take. That is a fact about the hook, not a
+        // failure of this read -- and it is the state EVERY passive product
+        // capture runs in, because the collector gates the A40 peace install
+        // behind `!passive_product_capture`. Refusing here (which is what an
+        // `ok_or` did) meant the presence read below was unreachable in
+        // exactly the mode this lane exists to fix.
+        None => None,
+        Some(state) => {
+            let mut state = state.lock().map_err(|_| {
+                PeaceProductionFailure::unseen("A40 peace production hook state mutex poisoned")
+            })?;
+            state.latest_refresh.take()
+        }
+    };
+    let Some(latest) = latest else {
+        return no_refresh_answer(module_base, frame_hour, elapsed_wall_ms);
+    };
+    let active = latest.observation.is_some();
     let observation = match latest.observation {
         None => PeaceConferenceObservation::Inactive {
             refresh_sequence: latest.refresh_sequence,
@@ -571,13 +661,75 @@ pub fn production_payload(
             })
         }
     };
-    crate::peace_conference_live::encode_payload(&PeaceConferenceTransportFrame {
+    let payload = crate::peace_conference_live::encode_payload(&PeaceConferenceTransportFrame {
         frame_hour,
         elapsed_wall_ms,
         status_flags,
         observation: Some(observation),
     })
-    .map_err(|error| format!("A40 peace PCS1 encode failed: {error:?}"))
+    .map_err(|error| {
+        PeaceProductionFailure::unseen(format!("A40 peace PCS1 encode failed: {error:?}"))
+    })?;
+    Ok(PeaceProductionRead {
+        payload,
+        status_flags,
+        row_count: 1,
+        outcome: PeaceProductionOutcome::RefreshPublished { active },
+        conference_count: None,
+    })
+}
+
+/// The hour had no window refresh to publish. Ask the engine whether that is
+/// because there is no conference, or because the observer missed one.
+fn no_refresh_answer(
+    module_base: usize,
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+) -> Result<PeaceProductionRead, PeaceProductionFailure> {
+    let presence = crate::peace_conference_presence::observe(module_base)
+        .map_err(PeaceProductionFailure::unseen)?;
+    if presence.conference_in_progress() {
+        // The one case that is still a genuine failure, and it now names
+        // itself. The old wire said "A40 peace refresh was not observed" for
+        // this AND for the peaceful world, so a capture could not tell a
+        // missed conference from no conference at all.
+        return Err(PeaceProductionFailure {
+            message: format!(
+                "A40 peace conference is in progress ({} in the game state) but no window \
+                 refresh was observed",
+                presence.conference_count
+            ),
+            conference_count: Some(presence.conference_count),
+        });
+    }
+    let payload =
+        crate::peace_conference_live::encode_no_conference_in_progress(frame_hour, elapsed_wall_ms)
+            .map_err(|error| {
+                PeaceProductionFailure::unseen(format!(
+                    "A40 peace PCS1 measured-empty encode failed: {error:?}"
+                ))
+            })?;
+    Ok(PeaceProductionRead {
+        payload,
+        status_flags: crate::peace_conference_live::MEASURED_EMPTY_STATUS,
+        row_count: 0,
+        outcome: PeaceProductionOutcome::NoConferenceInProgress,
+        conference_count: Some(presence.conference_count),
+    })
+}
+
+/// How many window refresh boundaries this observer has taken custody of.
+///
+/// Lane AI's H2 asks a capture to separate "the hook is installed and the world
+/// is quiet" from "the hook is on the wrong function". This is the counter that
+/// answers it: in a capture that CONTAINS a conference, a zero here means the
+/// detour never saw the refresh.
+pub fn refresh_observed_total() -> u64 {
+    STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .map(|state| state.next_refresh_sequence)
+        .unwrap_or(0)
 }
 
 /// Drop any process-local conference refresh identity at a campaign boundary.
@@ -1207,43 +1359,238 @@ mod tests {
     /// a record that survives.
     ///
     /// Mutation proof: replace `.take()` with `.as_ref().copied()` in
-    /// `production_payload`. The second call then succeeds and this fails on
-    /// `a consumed refresh must not be served twice` -- and d97 would silently
-    /// republish one engine refresh under every subsequent hour's label.
+    /// `production_read`. The second call then republishes the same refresh
+    /// and this fails on `a consumed refresh must not be served twice` -- and
+    /// d97 would silently republish one engine refresh under every subsequent
+    /// hour's label.
+    ///
+    /// The second call is made with a null module base ON PURPOSE. That is the
+    /// one input for which the presence read is guaranteed to refuse, so the
+    /// assertion isolates the consume law from whatever the host process
+    /// happens to have at the a729 singleton RVA.
     #[test]
     fn a_production_payload_consumes_the_refresh_it_published() {
         let _lifecycle = HOOK_LIFECYCLE_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        {
-            let mut state = STATE
-                .get_or_init(|| Mutex::new(HookState::default()))
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            *state = HookState::default();
-            state.latest_refresh = Some(LatestRefresh {
-                refresh_sequence: 4,
-                refresh_epoch: 1,
-                observation: None,
-            });
-        }
+        stage_refresh(Some(LatestRefresh {
+            refresh_sequence: 4,
+            refresh_epoch: 1,
+            observation: None,
+        }));
 
-        let published = production_payload(9, 7, 0).expect("the staged refresh publishes");
-        assert!(!published.is_empty());
+        let published = production_read(0, 9, 7, 0).expect("the staged refresh publishes");
+        assert!(!published.payload.is_empty());
+        assert_eq!(
+            published.outcome,
+            PeaceProductionOutcome::RefreshPublished { active: false }
+        );
+        assert_eq!(published.row_count, 1);
 
         assert_eq!(
-            production_payload(10, 8, 0),
-            Err("A40 peace refresh was not observed".to_string()),
+            production_read(0, 10, 8, 0).map(|read| read.outcome),
+            Err(PeaceProductionFailure::unseen(
+                "A40 peace presence read has no module base"
+            )),
             "a consumed refresh must not be served twice"
         );
 
-        {
-            let mut state = STATE
-                .get()
-                .expect("state was initialised above")
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            *state = HookState::default();
+        stage_refresh(None);
+    }
+
+    fn stage_refresh(refresh: Option<LatestRefresh>) {
+        let mut state = STATE
+            .get_or_init(|| Mutex::new(HookState::default()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *state = HookState::default();
+        state.latest_refresh = refresh;
+    }
+
+    /// A container staged in this process's own memory, so the presence read
+    /// can be driven offline against both of its answers.
+    ///
+    /// The layout is the engine's, not an invention: `[singleton slot]` at
+    /// `module_base + GAME_STATE_SINGLETON_RVA` holds a pointer to a
+    /// CGameState whose `+0x4E0` container carries the element array at `+0x08`
+    /// and the live count at `+0x14`.
+    struct StagedGameState {
+        // Boxed so the addresses stay put while the read runs.
+        image: Box<[u8]>,
+        game_state: Box<[u8]>,
+        _elements: Box<[u64]>,
+    }
+
+    impl StagedGameState {
+        fn new(conference_count: i32) -> Self {
+            let mut elements = vec![0u64; 8].into_boxed_slice();
+            elements[0] = 0xDEAD_BEEF;
+            let container = crate::peace_conference_presence::PEACE_CONFERENCE_CONTAINER_OFFSET;
+            let mut game_state = vec![0u8; container + 0x40].into_boxed_slice();
+            let data_at = container + crate::peace_conference_presence::CONTAINER_DATA_OFFSET;
+            let count_at = container + crate::peace_conference_presence::CONTAINER_COUNT_OFFSET;
+            let data_ptr = if conference_count == 0 {
+                0u64
+            } else {
+                elements.as_ptr() as u64
+            };
+            game_state[data_at..data_at + 8].copy_from_slice(&data_ptr.to_le_bytes());
+            game_state[count_at..count_at + 4]
+                .copy_from_slice(&conference_count.to_le_bytes());
+            let mut image =
+                vec![0u8; crate::peace_conference_presence::GAME_STATE_SINGLETON_RVA + 0x20]
+                    .into_boxed_slice();
+            let slot = crate::peace_conference_presence::GAME_STATE_SINGLETON_RVA;
+            image[slot..slot + 8]
+                .copy_from_slice(&(game_state.as_ptr() as u64).to_le_bytes());
+            Self {
+                image,
+                game_state,
+                _elements: elements,
+            }
         }
+
+        fn module_base(&self) -> usize {
+            self.image.as_ptr() as usize
+        }
+
+        fn set_count(&mut self, count: i32) {
+            let at = crate::peace_conference_presence::PEACE_CONFERENCE_CONTAINER_OFFSET
+                + crate::peace_conference_presence::CONTAINER_COUNT_OFFSET;
+            self.game_state[at..at + 4].copy_from_slice(&count.to_le_bytes());
+        }
+    }
+
+    /// THE d97 defect, closed. With no refresh pending and no conference in
+    /// the game state, the hour publishes a measured zero rather than
+    /// `source_unavailable`.
+    ///
+    /// Mutation proof: delete the `no_refresh_answer` call and restore
+    /// `.ok_or("A40 peace refresh was not observed")?`. This fails with that
+    /// exact string -- which is the reason 100% of d97's delivered hours in
+    /// t18..t23 carried.
+    #[test]
+    fn a_quiet_world_publishes_a_measured_zero_not_a_refusal() {
+        let _lifecycle = HOOK_LIFECYCLE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stage_refresh(None);
+        let staged = StagedGameState::new(0);
+
+        let read = production_read(staged.module_base(), 11, 5, 0)
+            .expect("an empty container is an answer, not a failure");
+
+        assert_eq!(read.outcome, PeaceProductionOutcome::NoConferenceInProgress);
+        assert_eq!(read.row_count, 0, "a measured zero carries no rows");
+        assert_eq!(read.conference_count, Some(0), "the zero is an OBSERVED zero");
+        assert_eq!(
+            read.status_flags,
+            crate::peace_conference_live::MEASURED_EMPTY_STATUS
+        );
+        assert_eq!(
+            read.status_flags & compact_contract::COMPACT_STATUS_FAILURE_MASK,
+            0,
+            "a measured zero must not reach any consumer's failure classification"
+        );
+        let decoded = crate::peace_conference_live::decode_payload(&read.payload)
+            .expect("the measured-empty payload decodes");
+        assert_eq!(
+            decoded.observation,
+            Some(crate::peace_conference_live::PeaceConferenceObservation::NoConferenceInProgress)
+        );
+    }
+
+    /// The other half, and the reason the presence read is not merely a way to
+    /// stop reporting failures: a conference that IS in progress with no
+    /// refresh observed is still a miss, and it now names itself.
+    ///
+    /// Mutation proof: make `no_refresh_answer` publish the measured zero
+    /// unconditionally. This fails, and d97 would report a peaceful world
+    /// during a live peace conference -- a fabricated answer, strictly worse
+    /// than the refusal it replaced.
+    #[test]
+    fn a_live_conference_with_no_refresh_is_still_a_miss() {
+        let _lifecycle = HOOK_LIFECYCLE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stage_refresh(None);
+        let mut staged = StagedGameState::new(1);
+        staged.set_count(3);
+
+        let failure = production_read(staged.module_base(), 12, 5, 0)
+            .expect_err("a conference the observer never saw is a miss");
+        assert!(
+            failure.message.contains("in progress (3 in the game state)"),
+            "the miss must name what it saw: {failure}"
+        );
+        assert_eq!(
+            failure.conference_count,
+            Some(3),
+            "the deciding fact must survive the failure as a number, not only as prose"
+        );
+    }
+
+    /// Law: an unreadable source is never a measured zero.
+    ///
+    /// A count word that cannot be believed must refuse. Mutation proof: drop
+    /// the `MAX_PLAUSIBLE_CONFERENCES` bound in `peace_conference_presence`
+    /// and this fails -- a garbage count would be published as a live-
+    /// conference miss, or, with the sign check also gone, as a peaceful
+    /// world.
+    #[test]
+    fn an_implausible_container_count_refuses() {
+        let _lifecycle = HOOK_LIFECYCLE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stage_refresh(None);
+        let mut staged = StagedGameState::new(1);
+        staged.set_count(-4);
+        let failure = production_read(staged.module_base(), 13, 5, 0)
+            .expect_err("a negative count is not a world");
+        assert!(failure.message.contains("out of bounds"), "{failure}");
+        assert_eq!(failure.conference_count, None, "an unbelievable count is not a count");
+
+        staged.set_count(
+            crate::peace_conference_presence::MAX_PLAUSIBLE_CONFERENCES as i32 + 1,
+        );
+        let failure = production_read(staged.module_base(), 14, 5, 0)
+            .expect_err("an absurd count is not a world");
+        assert!(failure.message.contains("out of bounds"), "{failure}");
+    }
+
+    /// Law: a pending refresh always wins over the presence read.
+    ///
+    /// The refresh is the richer answer and the only one that carries the
+    /// engine's portable reference. Mutation proof: swap the order in
+    /// `production_read` so the presence read runs first. This fails: the
+    /// staged ACTIVE refresh would be replaced by a measured zero and its
+    /// conference reference would never reach the wire.
+    #[test]
+    fn a_pending_refresh_outranks_a_quiet_container() {
+        let _lifecycle = HOOK_LIFECYCLE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stage_refresh(Some(LatestRefresh {
+            refresh_sequence: 2,
+            refresh_epoch: 1,
+            observation: Some((
+                PeaceConferenceReference {
+                    object_type: 53,
+                    object_id: 9,
+                },
+                4,
+                false,
+            )),
+        }));
+        let staged = StagedGameState::new(0);
+
+        let read = production_read(staged.module_base(), 15, 5, 0)
+            .expect("the staged refresh publishes");
+        assert_eq!(
+            read.outcome,
+            PeaceProductionOutcome::RefreshPublished { active: true }
+        );
+        assert_eq!(read.status_flags, 0);
+        stage_refresh(None);
     }
 }

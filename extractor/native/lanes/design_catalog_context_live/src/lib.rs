@@ -11,6 +11,8 @@ pub mod a729_hook;
 #[cfg(windows)]
 pub mod a40_peace_evidence;
 pub mod peace_conference_live;
+#[cfg(windows)]
+pub mod peace_conference_presence;
 pub mod selected_designer_identity;
 
 pub const DOMAIN_ID: u16 = 78;

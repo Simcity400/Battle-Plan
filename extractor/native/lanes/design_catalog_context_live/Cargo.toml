@@ -7,6 +7,13 @@ edition = "2021"
 name = "design_catalog_context_live_lane"
 path = "src/lib.rs"
 
+[dependencies]
+# D97's PCS1 carrier names the status word the contract reserves for a
+# MEASURED zero (`COMPACT_STATUS_SOURCE_EMPTY`). Restating the bit locally
+# would be a second table of the same constant, which is exactly the drift
+# `harness-authority-drift` names; the carrier reads the one authority.
+compact_contract = { path = "../../compact_contract" }
+
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }
 minhook = "0.9.0"

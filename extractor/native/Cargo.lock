@@ -332,6 +332,7 @@ dependencies = [
 name = "design_catalog_context_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "inline_detour",
  "minhook",
  "production_hook_receipt",

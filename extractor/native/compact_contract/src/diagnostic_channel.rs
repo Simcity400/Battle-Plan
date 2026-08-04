@@ -1419,6 +1419,16 @@ pub const STATEFUL_UNIT_PREFIXES: &[&str] = &[
     // Domain 86's `current_complete_snapshot` clones the complete writer
     // history every frame.
     "sunk_ship_",
+    // The two A40 observers. EVERY unit either domain publishes is read out
+    // of a process-global `HookState` that survives the frame -- callback
+    // totals, refresh sequences, latching install flags, the ordinal of a
+    // latched failure -- so a new sibling here is producer-retained until
+    // somebody says otherwise, and `PerFrame` would silently sum it. The
+    // suffix rules still run first, which is what keeps
+    // `d85_error_labelling_ordinal`-shaped names on the `LastValue` side and
+    // `*_mask` names on the bitwise side without needing an entry each.
+    "d85_",
+    "d97_",
 ];
 
 /// Name suffixes whose value is a raw OBSERVATION rather than a quantity: a
@@ -1629,6 +1639,22 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "capwar60_sweep_stale_frames",
     // Process-global monotonic publication sequence shared by d49/d50.
     "h_convoy_resolver_publication_sequence",
+    // --- A40: the two selected-designer / peace-conference observers -------
+    // Both hooks keep their counters in process-global `HookState`, reset only
+    // at install or at an authenticated campaign boundary, and publish the
+    // ABSOLUTE value every frame. This is the exact shape that produced the
+    // 19,470: `d85_callback_count` on a 400-frame capture with 10 real
+    // callbacks would be published as ~4,000 if it were summed.
+    //
+    // `*_hook_installed` are latching session booleans -- and in a passive
+    // product capture they are latched at ZERO, because the collector gates
+    // both A40 installs behind `!passive_product_capture`. MAX is what makes
+    // "was this observer ever patched in" answerable from the manifest.
+    "d85_callback_count",
+    "d85_variant_upgrade_selection_count",
+    "d85_hook_installed",
+    "d97_refresh_observed_total",
+    "d97_hook_installed",
 ];
 
 /// Domain 61 publishes one unit per pinned engine channel, named
@@ -1697,6 +1723,16 @@ pub const GAUGE_UNITS: &[&str] = &[
     "d43_contract_scope_countries",
     "d43_contract_snapshot_countries",
     "d43_contract_outer_count",
+    // How many peace conferences the engine's own container held at the
+    // instant D97 read it. A LEVEL, and one that spends nearly every hour of a
+    // campaign at zero: it is what separates D97's measured zero from a
+    // conference the window observer missed. Summing it would report a single
+    // three-turn conference as hundreds of conferences.
+    "d97_conference_count",
+    // How many designer families D85 currently holds a committed observation
+    // for. Bounded by six, and a level rather than a total: the map is
+    // overwritten in place by each new selection.
+    "d85_observed_families",
 ];
 
 /// The OUTSIDE-BUILD frame segments: where the sweep thread spends the wall
