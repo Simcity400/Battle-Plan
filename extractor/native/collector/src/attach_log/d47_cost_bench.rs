@@ -119,6 +119,35 @@ impl BenchArena {
         }
     }
 
+    /// An arena guaranteed to sit inside `[HEAP_LO, HEAP_HI)`.
+    ///
+    /// The politics chain gates every pointer through
+    /// `is_map_control_heap_pointer`, so a fixture the allocator happened to
+    /// place outside that window would be refused before a single field was
+    /// read and every measurement would be of the refusal. Same fixed-base
+    /// retry loop `critical_path_tests` uses.
+    fn in_heap_window(size: usize) -> BenchArena {
+        for slot in 0..64usize {
+            let want = (HEAP_LO + 0x4000_0000 + slot * size.next_power_of_two()) as *mut c_void;
+            let got = unsafe {
+                VirtualAlloc(
+                    want,
+                    size,
+                    BENCH_MEM_RESERVE | BENCH_MEM_COMMIT_FLAG,
+                    BENCH_PAGE_READWRITE,
+                )
+            };
+            if !got.is_null() {
+                assert!(is_map_control_heap_pointer(got as usize));
+                return BenchArena {
+                    base: got as usize,
+                    size,
+                };
+            }
+        }
+        panic!("could not reserve a bench arena inside the heap window");
+    }
+
     fn put_u32(&self, addr: usize, value: u32) {
         assert!(addr >= self.base && addr + 4 <= self.base + self.size);
         unsafe { std::ptr::write_unaligned(addr as *mut u32, value) };
@@ -724,6 +753,407 @@ fn d47_token_pointer_is_captured_after_the_name_read_not_before() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The prewarm's OTHER string readers (lane X, 2026-08-04).
+//
+// Lane Q gave the ~13_405 censused `CCharacter` bodies the one-snapshot-per-
+// string treatment. The rest of the prewarm's adopted objects — ~534
+// `CUnitLeader`, ~3_358 `CAdvisor` and the `CUnitLeaderTrait` definitions —
+// still read their strings by address, and the advisor probe was the worst of
+// them: it read the idea token's 32-byte header as FOUR separate guarded
+// `read_u64`s and then `read_msvc_string` re-read two or three of the same
+// words. The country-leader roles are not in this list because they read no
+// strings at all (`name: None, token: None`).
+// ---------------------------------------------------------------------------
+
+/// `domain47_prewarm_advisor_root_count` / `domain47_prewarm_ran` at t15.
+const T15_TAIL_ADVISORS: usize = T15_FRAME_ADVISORS;
+const T15_TAIL_UNIT_LEADERS: usize = T15_FRAME_UNIT_LEADERS;
+const T15_TAIL_TRAITS: usize = T15_FRAME_TRAIT_TOKENS;
+
+const TAIL_ADVISOR_STRIDE: usize = 0x200;
+const TAIL_UNIT_LEADER_STRIDE: usize = 0x200;
+const TAIL_TRAIT_STRIDE: usize = 0x100;
+
+struct TailBenchWorld {
+    _arena: BenchArena,
+    advisors: Vec<usize>,
+    unit_leaders: Vec<usize>,
+    traits: Vec<usize>,
+}
+
+fn tail_bench_world() -> TailBenchWorld {
+    let advisor_bytes = T15_TAIL_ADVISORS * TAIL_ADVISOR_STRIDE;
+    let leader_bytes = T15_TAIL_UNIT_LEADERS * TAIL_UNIT_LEADER_STRIDE;
+    let trait_bytes = T15_TAIL_TRAITS * TAIL_TRAIT_STRIDE;
+    let arena = BenchArena::new(advisor_bytes + leader_bytes + trait_bytes + 0x10000);
+    let advisor_base = arena.base;
+    let leader_base = advisor_base + advisor_bytes;
+    let trait_base = leader_base + leader_bytes;
+
+    // Half SSO, half heap-backed, as the live mix is.
+    let token_for = |idx: usize, kind: &str| {
+        if idx % 2 == 0 {
+            format!("{kind}_{idx}")
+        } else {
+            format!("GER_a_rather_longer_{kind}_token_{idx}")
+        }
+    };
+
+    let mut advisors = Vec::with_capacity(T15_TAIL_ADVISORS);
+    for idx in 0..T15_TAIL_ADVISORS {
+        let addr = advisor_base + idx * TAIL_ADVISOR_STRIDE;
+        arena.put_u64(addr, BENCH_CADVISOR_VTABLE);
+        arena.put_msvc_string(
+            addr + domain47::extractor::CADVISOR_IDEA_TOKEN_OFF as usize,
+            addr + 0x100,
+            &token_for(idx, "idea"),
+        );
+        arena.put_msvc_string(
+            addr + domain47::extractor::CADVISOR_SLOT_OFF as usize,
+            addr + 0x180,
+            &token_for(idx, "slot"),
+        );
+        advisors.push(addr);
+    }
+
+    let mut unit_leaders = Vec::with_capacity(T15_TAIL_UNIT_LEADERS);
+    for idx in 0..T15_TAIL_UNIT_LEADERS {
+        let addr = leader_base + idx * TAIL_UNIT_LEADER_STRIDE;
+        arena.put_msvc_string(
+            addr + domain47::extractor::CUNIT_LEADER_TOKEN_OFF as usize,
+            addr + 0x100,
+            &token_for(idx, "leader"),
+        );
+        arena.put_msvc_string(
+            addr + domain47::extractor::CUNIT_LEADER_NAME_OFF as usize,
+            addr + 0x180,
+            &token_for(idx, "Leader Name"),
+        );
+        unit_leaders.push(addr);
+    }
+
+    let mut traits = Vec::with_capacity(T15_TAIL_TRAITS);
+    for idx in 0..T15_TAIL_TRAITS {
+        let addr = trait_base + idx * TAIL_TRAIT_STRIDE;
+        arena.put_msvc_string(
+            addr + domain47::extractor::CUNIT_LEADER_TRAIT_TOKEN_OFF as usize,
+            addr + 0x80,
+            &token_for(idx, "trait"),
+        );
+        traits.push(addr);
+    }
+
+    TailBenchWorld {
+        _arena: arena,
+        advisors,
+        unit_leaders,
+        traits,
+    }
+}
+
+/// The three loop bodies AS THEY WERE: by-address string reads throughout, and
+/// the advisor's header read one guarded word at a time.
+fn tail_loop_legacy(world: &TailBenchWorld) -> usize {
+    let mut sink = 0usize;
+    for addr in &world.unit_leaders {
+        let name = domain47_read_msvc_display_string(
+            addr + domain47::extractor::CUNIT_LEADER_NAME_OFF as usize,
+            160,
+        );
+        let token =
+            read_msvc_string(addr + domain47::extractor::CUNIT_LEADER_TOKEN_OFF as usize, 160);
+        sink += name.map_or(0, |v| v.len()) + token.map_or(0, |v| v.len());
+    }
+    for addr in &world.advisors {
+        let token_off = addr + domain47::extractor::CADVISOR_IDEA_TOKEN_OFF as usize;
+        let header = (
+            read_u64(token_off).unwrap_or(u64::MAX),
+            read_u64(token_off + 0x08).unwrap_or(u64::MAX),
+            read_u64(token_off + 0x10).unwrap_or(u64::MAX),
+            read_u64(token_off + 0x18).unwrap_or(u64::MAX),
+        );
+        let idea_token = read_msvc_string(token_off, 160);
+        let slot = read_msvc_string(addr + domain47::extractor::CADVISOR_SLOT_OFF as usize, 160);
+        sink += (header.0 != u64::MAX) as usize
+            + idea_token.map_or(0, |v| v.len())
+            + slot.map_or(0, |v| v.len());
+    }
+    for addr in &world.traits {
+        let first = read_msvc_string(
+            addr + domain47::extractor::CUNIT_LEADER_TRAIT_TOKEN_OFF as usize,
+            160,
+        );
+        let second = read_msvc_string(
+            addr + domain47::extractor::CUNIT_LEADER_TRAIT_TOKEN_OFF as usize,
+            160,
+        );
+        sink += (first == second) as usize + first.map_or(0, |v| v.len());
+    }
+    sink
+}
+
+/// The same three loop bodies as they are now, through the production helpers.
+fn tail_loop_now(world: &TailBenchWorld) -> usize {
+    let roots = ResolvedTypeRoots {
+        cadvisor_vtable: BENCH_CADVISOR_VTABLE,
+        ..ResolvedTypeRoots::default()
+    };
+    let mut sink = 0usize;
+    for addr in &world.unit_leaders {
+        let (name, token) = domain47_unit_leader_root_strings(*addr);
+        sink += name.map_or(0, |v| v.len()) + token.map_or(0, |v| v.len());
+    }
+    for addr in &world.advisors {
+        let probe = domain47_probe_advisor(&Domain47InProcessMemory, &roots, *addr as u64);
+        sink += probe.token_header.is_some() as usize
+            + probe.idea_token.map_or(0, |v| v.len())
+            + probe.slot.map_or(0, |v| v.len());
+    }
+    for addr in &world.traits {
+        let stable = domain47_trait_token_stable(*addr);
+        sink += stable.is_some() as usize + stable.flatten().map_or(0, |v| v.len());
+    }
+    sink
+}
+
+/// In-process, run-by-run interleaved A/B of the prewarm's non-character
+/// string readers.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_prewarm_tail_ab() {
+    let world = tail_bench_world();
+    // Both arms must actually resolve their strings, or this measures two
+    // refusal paths against each other.
+    page_cache_new_frame();
+    let legacy_sink = tail_loop_legacy(&world);
+    page_cache_new_frame();
+    let now_sink = tail_loop_now(&world);
+    assert!(legacy_sink > 0 && now_sink > 0, "fixture resolved nothing");
+    // The two arms must read the SAME strings, not merely both read something:
+    // an arm whose readers all refuse is fast and worthless.
+    assert_eq!(
+        legacy_sink, now_sink,
+        "the two arms did not resolve the same strings"
+    );
+
+    let (legacy, now) =
+        time_us_median_ab(5, || tail_loop_legacy(&world), || tail_loop_now(&world));
+    println!(
+        "d47_cost AB prewarm_tail: legacy {legacy:.1} us -> snapshot {now:.1} us ({:+.1}%) over \
+         {T15_TAIL_UNIT_LEADERS} leaders + {T15_TAIL_ADVISORS} advisors + {T15_TAIL_TRAITS} traits",
+        (now - legacy) / legacy * 100.0
+    );
+}
+
+/// A `CUnitLeader` / `CUnitLeaderTrait` / `CAdvisor` body with two heap-backed
+/// strings, laid out so a test can free-and-recycle either buffer.
+///
+/// `first_off` / `second_off` are the two `std::string` offsets, in the order
+/// the reader visits them.
+struct RecycleFixture {
+    arena: BenchArena,
+    object: usize,
+    first_off: usize,
+    second_off: usize,
+    first_buffer: usize,
+    second_old_buffer: usize,
+    second_new_buffer: usize,
+}
+
+/// Same length as the token the stale header describes, and all printable, so
+/// every validity check the reader makes — size, capacity, NUL, ASCII, UTF-8,
+/// length — passes on the recycled bytes. That is what makes the hazard
+/// silent: the wrong answer is well-formed, not absent.
+const RECYCLED_SECOND: &str = "SOV_unrelated_othr_token";
+const ORIGINAL_SECOND: &str = "GER_original_token_value";
+const LIVE_SECOND: &str = "GER_NEW_TOKEN_VALUE_here";
+const ORIGINAL_FIRST: &str = "A Rather Longer First String";
+
+impl RecycleFixture {
+    fn new(first_off: usize, second_off: usize) -> RecycleFixture {
+        let arena = BenchArena::new(0x8000);
+        let object = arena.base;
+        let first_buffer = arena.base + 0x1000;
+        let second_old_buffer = arena.base + 0x2000;
+        let second_new_buffer = arena.base + 0x3000;
+        arena.put_msvc_string(object + first_off, first_buffer, ORIGINAL_FIRST);
+        arena.put_msvc_string(object + second_off, second_old_buffer, ORIGINAL_SECOND);
+        RecycleFixture {
+            arena,
+            object,
+            first_off,
+            second_off,
+            first_buffer,
+            second_old_buffer,
+            second_new_buffer,
+        }
+    }
+
+    /// The engine repoints the SECOND string at a new buffer, and the
+    /// allocator hands the old one to something else holding printable bytes.
+    fn recycle_second(&self) {
+        self.arena
+            .put_msvc_string(self.object + self.second_off, self.second_new_buffer, LIVE_SECOND);
+        assert_eq!(RECYCLED_SECOND.len(), ORIGINAL_SECOND.len());
+        self.arena.put_bytes(self.second_old_buffer, RECYCLED_SECOND.as_bytes());
+        self.arena
+            .put_bytes(self.second_old_buffer + RECYCLED_SECOND.len(), &[0u8]);
+    }
+
+    /// The same, for the FIRST string — used where the two reads are of one
+    /// string rather than two.
+    fn recycle_first(&self, replacement: &str) {
+        let new_buffer = self.arena.base + 0x4000;
+        self.arena
+            .put_msvc_string(self.object + self.first_off, new_buffer, replacement);
+        // The recycled bytes are read through the STALE header, so they must
+        // be exactly as long as the string that header describes — otherwise
+        // the length check rejects them and the hazard stops being silent.
+        assert_eq!(RECYCLED_FIRST.len(), ORIGINAL_FIRST.len());
+        self.arena.put_bytes(self.first_buffer, RECYCLED_FIRST.as_bytes());
+        self.arena
+            .put_bytes(self.first_buffer + RECYCLED_FIRST.len(), &[0u8]);
+    }
+}
+
+const RECYCLED_FIRST: &str = "A Rather Longer Other String";
+
+/// A unit leader's token pointer must be captured after the NAME read, not
+/// before it — the same hazard `d47_token_pointer_is_captured_after_the_name_read_not_before`
+/// pins for character roots, now that unit leaders take the same treatment.
+///
+/// MUTATION: in `domain47_unit_leader_root_strings_with_between`, hoist the
+/// token's `ObjectSnapshot` above the `between()` call — i.e. inline
+/// `domain47_snapshot_msvc_token` and capture both headers up front. The token
+/// then follows the dead pointer and this fails with `Some(RECYCLED_SECOND)`.
+#[test]
+fn d47_unit_leader_token_pointer_is_captured_after_the_name_read() {
+    let fixture = RecycleFixture::new(
+        domain47::extractor::CUNIT_LEADER_NAME_OFF as usize,
+        domain47::extractor::CUNIT_LEADER_TOKEN_OFF as usize,
+    );
+    page_cache_new_frame();
+    let (name, token) =
+        domain47_unit_leader_root_strings_with_between(fixture.object, || fixture.recycle_second());
+    assert_eq!(name.as_deref(), Some(ORIGINAL_FIRST));
+    assert_eq!(
+        token.as_deref(),
+        Some(LIVE_SECOND),
+        "the token must come from the pointer that was live when it was followed"
+    );
+}
+
+/// An advisor's SLOT pointer must be captured after the idea token has been
+/// read, not before it.
+///
+/// MUTATION: in `domain47_probe_advisor_with_between`, move the `between()`
+/// call below the slot read (i.e. capture the slot's header while the idea
+/// token is still being read). The slot then follows the dead pointer and this
+/// fails with `Some(RECYCLED_SECOND)`.
+#[test]
+fn d47_advisor_slot_pointer_is_captured_after_the_idea_token_read() {
+    let fixture = RecycleFixture::new(
+        domain47::extractor::CADVISOR_IDEA_TOKEN_OFF as usize,
+        domain47::extractor::CADVISOR_SLOT_OFF as usize,
+    );
+    // A CAdvisor body whose character chain is absent: this test is about the
+    // two strings, and `domain47_probe_advisor` reads them whatever the chain
+    // does.
+    let roots = ResolvedTypeRoots::default();
+    page_cache_new_frame();
+    let probe = domain47_probe_advisor_with_between(
+        &Domain47InProcessMemory,
+        &roots,
+        fixture.object as u64,
+        || fixture.recycle_second(),
+    );
+    assert_eq!(probe.idea_token.as_deref(), Some(ORIGINAL_FIRST));
+    assert_eq!(
+        probe.slot.as_deref(),
+        Some(LIVE_SECOND),
+        "the slot must come from the pointer that was live when it was followed"
+    );
+}
+
+/// A trait definition's token is read TWICE and the two must agree. Each read
+/// needs its OWN header: serving both from one snapshot would compare a value
+/// with itself, and the tear check could never fail.
+///
+/// MUTATION: in `domain47_trait_token_stable_with_between`, replace the second
+/// `domain47_snapshot_msvc_token(...)` with `first.clone()` — the check
+/// becomes `first == first`, the mutated string is accepted, and this fails
+/// because it expects a refusal.
+#[test]
+fn d47_trait_token_tear_check_uses_two_independent_observations() {
+    let fixture = RecycleFixture::new(
+        domain47::extractor::CUNIT_LEADER_TRAIT_TOKEN_OFF as usize,
+        // Unused by this site; point it somewhere harmless inside the body.
+        domain47::extractor::CUNIT_LEADER_TRAIT_TOKEN_OFF as usize + 0x40,
+    );
+    // CONTROL: undisturbed, the two observations agree and the token reads.
+    page_cache_new_frame();
+    assert_eq!(
+        domain47_trait_token_stable(fixture.object),
+        Some(Some(ORIGINAL_FIRST.to_string())),
+        "control read must succeed, or the refusal below proves nothing"
+    );
+
+    // The definition's token changes between the two observations.
+    page_cache_new_frame();
+    let torn = domain47_trait_token_stable_with_between(fixture.object, || {
+        fixture.recycle_first("A Rather Longer Live String")
+    });
+    assert_eq!(
+        torn, None,
+        "a token that changed between the two observations must be reported TORN"
+    );
+}
+
+/// The three new snapshot-served sites must return exactly what the
+/// by-address readers they replaced return — both string forms.
+///
+/// MUTATION: in `domain47_snapshot_msvc_token`, pass `None` for the snapshot
+/// and it still passes (the fallback IS the by-address reader). Instead: in
+/// `read_msvc_string_with_snapshot`, take the SSO branch unconditionally (drop
+/// the `cap < 16` test) — heap-backed strings come back wrong and this fails.
+#[test]
+fn d47_snapshot_helpers_match_the_by_address_readers() {
+    let arena = BenchArena::new(0x8000);
+    let heap = arena.base + 0x4000;
+    let mut sso = 0usize;
+    let mut heap_backed = 0usize;
+    for (idx, text) in [
+        "short",
+        "A Rather Longer String That Cannot Be Inline",
+        "x",
+        "GER_character_token_12345678",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let addr = arena.base + idx * 0x40;
+        arena.put_msvc_string(addr, heap + idx * 0x80, text);
+        page_cache_new_frame();
+        assert_eq!(
+            domain47_snapshot_msvc_token(addr, DOMAIN47_CCHARACTER_STRING_MAX_LEN),
+            read_msvc_string(addr, DOMAIN47_CCHARACTER_STRING_MAX_LEN),
+            "token at {addr:#x}"
+        );
+        assert_eq!(
+            domain47_snapshot_msvc_display_string(addr, DOMAIN47_CCHARACTER_STRING_MAX_LEN),
+            domain47_read_msvc_display_string(addr, DOMAIN47_CCHARACTER_STRING_MAX_LEN),
+            "display string at {addr:#x}"
+        );
+        if text.len() < 16 {
+            sso += 1;
+        } else {
+            heap_backed += 1;
+        }
+    }
+    assert!(sso > 0 && heap_backed > 0, "covered only one string form");
+}
+
 /// The prewarm's snapshot-served `(name, token)` pair must equal what the
 /// by-address readers return, for BOTH string forms — the fixture writes
 /// short (SSO, characters inside the body) and long (heap-backed, characters
@@ -938,4 +1368,1011 @@ fn d47_cost_frame_walk_by_family() {
         });
         println!("d47_cost frame_walk/{name}: {us:.1} us/frame sink={sink}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// The country-politics half of d47's critical span (lane X, 2026-08-04).
+//
+// `domain47_country_politics_roots` walks every country in the authoritative
+// roster once per frame. Before this lane it took TWO complete
+// `Domain47CountryPoliticsSnapshot`s per country and compared them for the
+// tear check, and each of those walked the country's whole active-idea vector
+// — per entry a heap-pointer gate, a vtable read, a
+// `read_stable_msvc_string_snapshot` (itself two full string reads) and a
+// global `IDEA_TOKEN_CACHE` mutex. Every idea token was therefore read FOUR
+// times per country per frame.
+//
+// The fixture below is the shape `critical_path_tests` already uses for the
+// politics chain, replicated across the whole roster and given a real
+// active-idea vector. It lives inside `[HEAP_LO, HEAP_HI)` because every
+// pointer in this chain is gated on that window.
+// ---------------------------------------------------------------------------
+
+/// Countries in the authoritative roster. The lane's own live evidence (see
+/// `CPOLITICAL_PARTY_LEADER_VEC_OFF` in the extractor) records 437 countries
+/// probed on build 870ebf.
+const T15_POLITICS_COUNTRIES: usize = 437;
+/// Active ideas per country: national spirits, the active laws, idea groups
+/// and the appointed advisor ideas. This is the one number here that is an
+/// ESTIMATE rather than a measurement — no t15 manifest field records it. The
+/// A/B RATIO is what transfers and both arms scale with this, so the estimate
+/// moves the absolute microseconds and not the conclusion.
+const T15_IDEAS_PER_COUNTRY: usize = 12;
+/// Distinct tokens per country. The fixture repeats one token from a SECOND
+/// idea object so the `dedup` in `domain47_compose_politics_snapshot` has
+/// something to remove — with every token distinct it would be unobservable.
+const T15_DISTINCT_IDEAS_PER_COUNTRY: usize = T15_IDEAS_PER_COUNTRY - 1;
+
+const POLITICS_COUNTRY_STRIDE: usize = 0x2000;
+/// Room for the idea body (its vtable and the 32-byte `std::string` at
+/// `IDEA_ID`, i.e. through `0x38`) AND a separate block for a heap-backed
+/// token's characters. They must not overlap: a heap string's bytes written
+/// inside its own header get overwritten by the size and capacity words, and
+/// the reader then refuses the token — which would have made both arms measure
+/// the refusal path.
+const POLITICS_IDEA_STRIDE: usize = 0x80;
+const POLITICS_IDEA_TOKEN_BYTES: usize = 0x40;
+
+struct PoliticsBenchWorld {
+    arena: BenchArena,
+    module_base: usize,
+    country_vtable: usize,
+    rows: Vec<CountryObjectRow>,
+    /// Unused arena space after the last country, for objects a test must
+    /// build that are deliberately NOT part of any country's vector.
+    spare: usize,
+}
+
+fn politics_bench_world() -> PoliticsBenchWorld {
+    let size = T15_POLITICS_COUNTRIES * POLITICS_COUNTRY_STRIDE + 0x10000;
+    let arena = BenchArena::in_heap_window(size);
+    let base = arena.base;
+    // The politics reader derives `module_base` by subtracting
+    // `COUNTRY_VTABLE_RVA` from the country vtable and then only uses it to
+    // form other vtable constants, which are compared against stored values.
+    // So the fixture's own base serves, exactly as in `critical_path_tests`.
+    let module_base = base;
+    let country_vtable = module_base + COUNTRY_VTABLE_RVA;
+    let status_vtable = module_base + POLITICAL_STATUS_VTABLE_RVA;
+    let party_vtable = module_base + POLITICAL_PARTY_VTABLE_RVA;
+    let group_vtable = module_base + IDEOLOGY_GROUP_VTABLE_RVA;
+    let leader_vtable = module_base + COUNTRY_LEADER_VTABLE_RVA;
+    let character_vtable = module_base + POLITICS_CHARACTER_VTABLE_RVA;
+    let idea_vtable_primary = module_base + IDEA_VTABLE_RVA_PRIMARY;
+    let idea_vtable_secondary = module_base + IDEA_VTABLE_RVA_SECONDARY;
+
+    // Fixture-local offsets within one country's slot.
+    const COUNTRY: usize = 0x0000;
+    const STATUS: usize = 0x0200;
+    const PARTY: usize = 0x0400;
+    const GROUP: usize = 0x0600;
+    const GROUP_TOKEN_BYTES: usize = 0x0700;
+    const LEADER_VEC: usize = 0x0800;
+    const COUNTRY_LEADER: usize = 0x0900;
+    const CHARACTER: usize = 0x0A00;
+    const RULER_NAME_BYTES: usize = 0x0C00;
+    const RULER_TOKEN_BYTES: usize = 0x0D00;
+    const IDEA_PTRS: usize = 0x0E00;
+    const IDEAS: usize = 0x1000;
+
+    let mut rows = Vec::with_capacity(T15_POLITICS_COUNTRIES);
+    for idx in 0..T15_POLITICS_COUNTRIES {
+        let slot = base + idx * POLITICS_COUNTRY_STRIDE;
+        let tag_db_id = (idx + 1) as u32;
+        arena.put_u64(slot + COUNTRY, country_vtable as u64);
+        arena.put_u32(slot + COUNTRY + OBJ_TAG_DB_ID, tag_db_id);
+        arena.put_u64(slot + COUNTRY + OBJ_POLITICAL_STATUS, (slot + STATUS) as u64);
+        arena.put_u64(slot + STATUS, status_vtable as u64);
+        arena.put_u64(
+            slot + STATUS + POLITICAL_STATUS_COUNTRY_BACKLINK,
+            (slot + COUNTRY) as u64,
+        );
+        arena.put_u64(
+            slot + STATUS + POLITICAL_STATUS_RULING_PARTY,
+            (slot + PARTY) as u64,
+        );
+        arena.put_u64(slot + PARTY, party_vtable as u64);
+        arena.put_u64(
+            slot + PARTY + POLITICAL_PARTY_IDEOLOGY_GROUP,
+            (slot + GROUP) as u64,
+        );
+        arena.put_u64(slot + GROUP, group_vtable as u64);
+        arena.put_msvc_string(
+            slot + GROUP + IDEOLOGY_GROUP_ID,
+            slot + GROUP_TOKEN_BYTES,
+            "democratic",
+        );
+
+        // Singleton ruling-party leader vector: {data, packed size|capacity}.
+        arena.put_u64(
+            slot + PARTY + POLITICAL_PARTY_LEADER_VEC,
+            (slot + LEADER_VEC) as u64,
+        );
+        arena.put_u64(
+            slot + PARTY + POLITICAL_PARTY_LEADER_VEC + 8,
+            (1u64 << 32) | 1u64,
+        );
+        arena.put_u64(slot + LEADER_VEC, (slot + COUNTRY_LEADER) as u64);
+        arena.put_u64(slot + COUNTRY_LEADER, leader_vtable as u64);
+        arena.put_u64(
+            slot + COUNTRY_LEADER + COUNTRY_LEADER_CHARACTER_PTR,
+            (slot + CHARACTER) as u64,
+        );
+        arena.put_u64(slot + CHARACTER, character_vtable as u64);
+        arena.put_u32(
+            slot + CHARACTER + POLITICS_CHARACTER_OFF_TYPE,
+            POLITICS_CHARACTER_TYPE,
+        );
+        arena.put_u32(
+            slot + CHARACTER + POLITICS_CHARACTER_OFF_ID,
+            1000 + idx as u32,
+        );
+        // Per-country ruler strings. Identical strings across countries would
+        // make a test that repoints one country's ruling party at another's
+        // observe no change at all, and the cross-half coherence check would
+        // look broken when it was merely being asked about two equal values.
+        arena.put_msvc_string(
+            slot + CHARACTER + POLITICS_CHARACTER_OFF_DISPLAY,
+            slot + RULER_NAME_BYTES,
+            &format!("A Rather Longer Ruler Name {idx}"),
+        );
+        arena.put_msvc_string(
+            slot + CHARACTER + POLITICS_CHARACTER_OFF_TOKEN,
+            slot + RULER_TOKEN_BYTES,
+            &format!("ENG_ruler_token_{idx}"),
+        );
+
+        // The active-idea vector: data @ +0x50, capacity @ +0x58, size @ +0x5C.
+        arena.put_u64(
+            slot + STATUS + POLITICAL_STATUS_IDEAS_DATA,
+            (slot + IDEA_PTRS) as u64,
+        );
+        // Capacity is deliberately NOT equal to size. With `cap == size` any
+        // check that confuses the two, or hashes them in the wrong order, is
+        // invisible.
+        arena.put_u32(
+            slot + STATUS + POLITICAL_STATUS_IDEAS_CAP,
+            (T15_IDEAS_PER_COUNTRY + 4) as u32,
+        );
+        arena.put_u32(
+            slot + STATUS + POLITICAL_STATUS_IDEAS_SIZE,
+            T15_IDEAS_PER_COUNTRY as u32,
+        );
+        for entry in 0..T15_IDEAS_PER_COUNTRY {
+            let idea = slot + IDEAS + entry * POLITICS_IDEA_STRIDE;
+            arena.put_u64(slot + IDEA_PTRS + entry * 8, idea as u64);
+            // Both accepted idea vtables occur, as they do on the live heap.
+            arena.put_u64(
+                idea,
+                if entry % 3 == 2 {
+                    idea_vtable_secondary as u64
+                } else {
+                    idea_vtable_primary as u64
+                },
+            );
+            // Half SSO, half heap-backed: the live mix of short law tokens and
+            // long "COUNTRY_advisor_name" idea tokens. The last entry repeats
+            // the first one's token from a DIFFERENT idea object, so the
+            // `dedup` in `domain47_compose_politics_snapshot` actually has
+            // something to remove — with all tokens distinct it would be
+            // unobservable.
+            let token = if entry + 1 == T15_IDEAS_PER_COUNTRY {
+                "law_0".to_string()
+            } else if entry % 2 == 0 {
+                format!("law_{entry}")
+            } else {
+                format!("ENG_long_idea_token_{idx}_{entry}")
+            };
+            arena.put_msvc_string(idea + IDEA_ID, idea + POLITICS_IDEA_TOKEN_BYTES, &token);
+        }
+
+        rows.push(politics_bench_country_row(slot + COUNTRY, tag_db_id));
+    }
+
+    let spare = base + T15_POLITICS_COUNTRIES * POLITICS_COUNTRY_STRIDE;
+    PoliticsBenchWorld {
+        arena,
+        module_base,
+        country_vtable,
+        rows,
+        spare,
+    }
+}
+
+/// D47 reads exactly two fields off a `CountryObjectRow` — `object_ptr` and
+/// `tag_db_id`. Everything else is absent here, as it is on that path.
+fn politics_bench_country_row(object_ptr: usize, tag_db_id: u32) -> CountryObjectRow {
+    CountryObjectRow {
+        tag: format!("C{tag_db_id:03}"),
+        tag_db_id,
+        name: None,
+        object_ptr,
+        record_ptr: None,
+        original_capital: None,
+        original_tag: None,
+        templates_locked: None,
+        reserved_dynamic_country: None,
+        stability: None,
+        war_support: None,
+        political_power: None,
+        command_power: None,
+        num_ships: None,
+        manpower_pool: None,
+        convoys: None,
+        misc: None,
+        fuel: None,
+        production: None,
+        focus: None,
+        research: None,
+        politics: None,
+        politics_residuals: None,
+        decisions: None,
+        diplomacy: None,
+    }
+}
+
+/// The status vtable the bracketed reader resolves each country's political
+/// status against.
+fn politics_status_vtable(world: &PoliticsBenchWorld) -> usize {
+    world.module_base + POLITICAL_STATUS_VTABLE_RVA
+}
+
+/// Read a country's idea vector the way production does — starting from the
+/// COUNTRY, so the political-status root is re-resolved by each observation.
+fn politics_bracketed_ideas(world: &PoliticsBenchWorld, index: usize) -> Option<Vec<String>> {
+    domain47_read_active_ideas_bracketed(
+        world.rows[index].object_ptr,
+        politics_status_vtable(world),
+        world.module_base + IDEA_VTABLE_RVA_PRIMARY,
+        world.module_base + IDEA_VTABLE_RVA_SECONDARY,
+    )
+}
+
+fn politics_status_ptrs(world: &PoliticsBenchWorld) -> Vec<usize> {
+    world
+        .rows
+        .iter()
+        .map(|row| {
+            validated_political_status_ptr(
+                row.object_ptr,
+                world.module_base + POLITICAL_STATUS_VTABLE_RVA,
+            )
+            .expect("fixture status pointer must validate")
+        })
+        .collect()
+}
+
+/// The per-country body of `domain47_country_politics_roots` AS IT WAS: two
+/// complete snapshots, compared whole.
+fn politics_walk_legacy(world: &PoliticsBenchWorld) -> usize {
+    let mut sink = 0usize;
+    for expected in &world.rows {
+        let first =
+            domain47_country_politics_snapshot(world.module_base, world.country_vtable, expected);
+        let second =
+            domain47_country_politics_snapshot(world.module_base, world.country_vtable, expected);
+        if let Some(snapshot) = first.filter(|first| Some(first) == second.as_ref()) {
+            sink += snapshot.active_idea_tokens.len();
+        }
+    }
+    sink
+}
+
+/// The per-country body as it is now: the cheap identity half still observed
+/// twice and compared, the expensive idea half walked ONCE under its own
+/// structural bracket.
+fn politics_walk_now(world: &PoliticsBenchWorld) -> usize {
+    let mut sink = 0usize;
+    for expected in &world.rows {
+        if let Some(snapshot) =
+            domain47_country_politics_row(world.module_base, world.country_vtable, expected)
+        {
+            sink += snapshot.active_idea_tokens.len();
+        }
+    }
+    sink
+}
+
+/// In-process, run-by-run interleaved A/B of the whole country-politics walk.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_country_politics_ab() {
+    let world = politics_bench_world();
+    // Both arms count POST-dedup tokens, because that is what the composed
+    // snapshot carries.
+    let expected_tokens = T15_POLITICS_COUNTRIES * T15_DISTINCT_IDEAS_PER_COUNTRY;
+    // A fixture that resolved nothing would make both arms measure the
+    // rejection path, and the comparison would be of two refusals.
+    page_cache_new_frame();
+    assert_eq!(
+        politics_walk_legacy(&world),
+        expected_tokens,
+        "legacy arm did not resolve every country's ideas"
+    );
+    page_cache_new_frame();
+    assert_eq!(
+        politics_walk_now(&world),
+        expected_tokens,
+        "current arm did not resolve every country's ideas"
+    );
+
+    let (legacy, now) = time_us_median_ab(
+        5,
+        || politics_walk_legacy(&world),
+        || politics_walk_now(&world),
+    );
+    println!(
+        "d47_cost AB country_politics: legacy {legacy:.1} us -> now {now:.1} us ({:+.1}%) \
+         over {T15_POLITICS_COUNTRIES} countries x {T15_IDEAS_PER_COUNTRY} ideas",
+        (now - legacy) / legacy * 100.0
+    );
+}
+
+/// What the bracket COSTS, measured against the cheapest thing that produces
+/// the same tokens.
+///
+/// These two arms are NOT equivalent and the comparison is not a win/loss:
+/// `read_active_ideas` walks the vector once and is not bracketed at all,
+/// while `domain47_read_active_ideas_bracketed` takes two full observations
+/// and compares them. The bracketed arm therefore reads roughly twice the
+/// bytes and is expected to be SLOWER here. What this number is good for is
+/// pricing the bracket — the safety the country walk buys by not trusting a
+/// single pass — separately from the decode-and-mutex saving, which is what
+/// `d47_cost_country_politics_ab` actually measures against the form that
+/// shipped.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_idea_walk_cache_vs_bracket_ab() {
+    let world = politics_bench_world();
+    let status_ptrs = politics_status_ptrs(&world);
+    let object_ptrs: Vec<usize> = world.rows.iter().map(|row| row.object_ptr).collect();
+    let status_vtable = politics_status_vtable(&world);
+    let vt1 = world.module_base + IDEA_VTABLE_RVA_PRIMARY;
+    let vt2 = world.module_base + IDEA_VTABLE_RVA_SECONDARY;
+    let expected_tokens = T15_POLITICS_COUNTRIES * T15_IDEAS_PER_COUNTRY;
+
+    let cached = || {
+        let mut sink = 0usize;
+        for status_ptr in &status_ptrs {
+            sink += read_active_ideas(*status_ptr, vt1, vt2).map_or(0, |v| v.len());
+        }
+        sink
+    };
+    let bracketed = || {
+        let mut sink = 0usize;
+        for object_ptr in &object_ptrs {
+            sink +=
+                domain47_read_active_ideas_bracketed(*object_ptr, status_vtable, vt1, vt2)
+                    .map_or(0, |v| v.len());
+        }
+        sink
+    };
+    page_cache_new_frame();
+    assert_eq!(cached(), expected_tokens);
+    page_cache_new_frame();
+    assert_eq!(bracketed(), expected_tokens);
+
+    let (cached_us, bracketed_us) = time_us_median_ab(5, cached, bracketed);
+    println!(
+        "d47_cost AB idea_walk: cached+unbracketed {cached_us:.1} us -> uncached+bracketed \
+         {bracketed_us:.1} us ({:+.1}%)",
+        (bracketed_us - cached_us) / cached_us * 100.0
+    );
+}
+
+/// The restructured country walk must produce the SAME snapshot the two full
+/// snapshots produced — every country, every field.
+///
+/// MUTATION: drop the `.sort()` or the `.dedup()` from
+/// `domain47_compose_politics_snapshot`, or make
+/// `domain47_read_active_ideas_bracketed_with_between` walk `size - 1`
+/// entries — the per-country equality fails.
+#[test]
+fn d47_bracketed_country_politics_matches_the_double_snapshot() {
+    let world = politics_bench_world();
+    page_cache_new_frame();
+    let mut compared = 0usize;
+    for expected in &world.rows {
+        let legacy =
+            domain47_country_politics_snapshot(world.module_base, world.country_vtable, expected)
+                .expect("fixture country must resolve on the legacy path");
+        let identity = domain47_country_identity_snapshot(world.country_vtable, expected)
+            .expect("fixture country must resolve its identity");
+        let tokens = domain47_active_idea_tokens_bracketed(world.module_base, expected.object_ptr)
+            .expect("fixture country must resolve its ideas");
+        let now = domain47_compose_politics_snapshot(identity, tokens);
+        assert_eq!(legacy, now, "country {} diverged", expected.tag_db_id);
+        // Non-vacuity: this country carried all four value families, so the
+        // equality is not an equality of four `None`s and an empty vector.
+        assert_eq!(
+            legacy.active_idea_tokens.len(),
+            T15_DISTINCT_IDEAS_PER_COUNTRY,
+            "the fixture must exercise dedup"
+        );
+        // Sorted order asserted INDEPENDENTLY. Both sides of the equality
+        // above run through the same `domain47_compose_politics_snapshot`, so
+        // dropping its `.sort()` would move both together and the equality
+        // would not notice (Codex round 4, finding 3). The dedup is covered by
+        // the count above for the same reason it needs covering separately.
+        let mut sorted = now.active_idea_tokens.clone();
+        sorted.sort();
+        assert_eq!(
+            now.active_idea_tokens, sorted,
+            "the emitted token list must be sorted"
+        );
+        assert_eq!(legacy.ruling_party.as_deref(), Some("democratic"));
+        assert!(legacy.ruler_name.is_some());
+        assert!(legacy.ruler_token.is_some());
+        compared += 1;
+    }
+    assert_eq!(compared, T15_POLITICS_COUNTRIES);
+}
+
+/// A country repointed at a DIFFERENT political-status object between the two
+/// observations must be refused, not read twice from the first one.
+///
+/// This is the hazard of resolving `validated_political_status_ptr` once and
+/// handing the resolved pointer to both observations. The victim status object
+/// is fully valid and carries a different idea vector, and — the point of the
+/// fixture — the ruler strings on both sides are made IDENTICAL, so the
+/// identity bracket compares equal by value and cannot notice. Only an
+/// observation that re-resolves the root from the country can.
+///
+/// MUTATION: make `domain47_observe_active_ideas` resolve the status root ONCE
+/// and reuse it for both observations — which is what this code did before
+/// Codex round 4. Both observations then read the ORIGINAL status object,
+/// agree, and the stale idea list is published; this fails.
+///
+/// NOT a mutation this catches, stated so the claim above is not read as more
+/// than it is: removing `status_ptr` from `Domain47IdeaObservation`'s equality
+/// leaves this GREEN, because the two status objects also carry different idea
+/// vectors and the header and entries differ anyway. The field earns its place
+/// only where two status objects carry IDENTICAL vectors — in which case the
+/// tokens published would have been the same either way. Re-resolving the root
+/// per observation is the load-bearing property here; carrying it in the
+/// comparison is belt-and-braces.
+#[test]
+fn d47_idea_walk_refuses_a_country_repointed_at_another_status_object() {
+    let world = politics_bench_world();
+    let vt1 = world.module_base + IDEA_VTABLE_RVA_PRIMARY;
+    let vt2 = world.module_base + IDEA_VTABLE_RVA_SECONDARY;
+    let country = world.rows[0].object_ptr;
+    let victim_status = politics_status_ptrs(&world)[1];
+    let own_status = politics_status_ptrs(&world)[0];
+    assert_ne!(own_status, victim_status);
+
+    // Make the two countries' ruler strings identical, so the identity
+    // bracket sees no change and the ONLY thing that can refuse this is the
+    // re-resolved status root.
+    let victim_slot = world.arena.base + POLITICS_COUNTRY_STRIDE;
+    world.arena.put_msvc_string(
+        victim_slot + 0x0A00 + POLITICS_CHARACTER_OFF_DISPLAY,
+        victim_slot + 0x0C00,
+        "A Rather Longer Ruler Name 0",
+    );
+    world.arena.put_msvc_string(
+        victim_slot + 0x0A00 + POLITICS_CHARACTER_OFF_TOKEN,
+        victim_slot + 0x0D00,
+        "ENG_ruler_token_0",
+    );
+    // CONTROL — taken BEFORE the victim's backlink is rewritten, because that
+    // rewrite is what stops the victim resolving as its own country.
+    page_cache_new_frame();
+    let control = politics_bracketed_ideas(&world, 0).expect("control walk must succeed");
+    assert_eq!(control.len(), T15_IDEAS_PER_COUNTRY);
+    let victim_tokens = politics_bracketed_ideas(&world, 1).expect("victim must resolve");
+    assert_ne!(
+        control, victim_tokens,
+        "the two countries must carry DIFFERENT idea lists, or the swap is invisible"
+    );
+
+    // The victim status must back-link to OUR country, or the re-resolved root
+    // would be rejected by `validated_political_status_ptr`'s backlink check
+    // rather than by the observation comparison, and the test would pass for
+    // the wrong reason.
+    world
+        .arena
+        .put_u64(victim_status + POLITICAL_STATUS_COUNTRY_BACKLINK, country as u64);
+    page_cache_new_frame();
+    assert_eq!(
+        validated_political_status_ptr(country, politics_status_vtable(&world)),
+        Some(own_status),
+        "the country must still resolve its OWN status before the swap"
+    );
+
+    // The country is repointed at the victim's status object between the two
+    // observations.
+    page_cache_new_frame();
+    let torn = domain47_read_active_ideas_bracketed_with_between(
+        country,
+        politics_status_vtable(&world),
+        vt1,
+        vt2,
+        || {
+            world
+                .arena
+                .put_u64(country + OBJ_POLITICAL_STATUS, victim_status as u64)
+        },
+    );
+    assert!(
+        torn.is_none(),
+        "a country repointed at another status object must be refused, not read \
+         twice from the first one: {torn:?}"
+    );
+
+    world
+        .arena
+        .put_u64(country + OBJ_POLITICAL_STATUS, own_status as u64);
+    page_cache_new_frame();
+    assert!(politics_bracketed_ideas(&world, 0).is_some());
+}
+
+/// A country whose RULER changed while its ideas were being read must be
+/// refused, not published as an old ruler beside new ideas.
+///
+/// The ruler is repointed after the first observation reads the ideas, and
+/// restored before the second observation reads its ruler. Neither observation
+/// is internally coherent with the other, so the row must be refused.
+///
+/// MUTATION: drop `identity` from `Domain47CountryObservation`'s equality (or
+/// compare only `ideas`). The two observations then agree on the ideas, the
+/// mismatched ruler is published, and this fails.
+#[test]
+fn d47_country_row_refuses_a_ruler_that_changed_during_the_idea_walk() {
+    let world = politics_bench_world();
+    let expected = &world.rows[0];
+
+    // CONTROL: undisturbed, the row resolves with all four value families.
+    page_cache_new_frame();
+    let control = domain47_country_politics_row(world.module_base, world.country_vtable, expected)
+        .expect("control row must resolve");
+    assert_eq!(control.ruling_party.as_deref(), Some("democratic"));
+    assert_eq!(control.ruler_token.as_deref(), Some("ENG_ruler_token_0"));
+    assert!(control.ruler_name.is_some());
+    assert_eq!(
+        control.active_idea_tokens.len(),
+        T15_DISTINCT_IDEAS_PER_COUNTRY
+    );
+
+    // The country's ruling party is repointed at ANOTHER country's party after
+    // the first observation has read the ruler and before it reads the ideas.
+    // Everything the reader touches stays well-formed; only comparing the two
+    // halves as ONE value can notice.
+    let status = world.arena.base + 0x0200;
+    let victim_party = world.arena.base + POLITICS_COUNTRY_STRIDE + 0x0400;
+    let original = read_u64(status + POLITICAL_STATUS_RULING_PARTY).expect("party ptr must read");
+    assert_ne!(original as usize, victim_party);
+
+    page_cache_new_frame();
+    let torn = domain47_country_politics_row_with_between(
+        world.module_base,
+        world.country_vtable,
+        expected,
+        // After the first observation's ideas, before its ruler: move to the
+        // other country's party.
+        || {
+            world
+                .arena
+                .put_u64(status + POLITICAL_STATUS_RULING_PARTY, victim_party as u64)
+        },
+        // Between the observations: move back, so the second observation reads
+        // the original ruler and the two disagree.
+        || {
+            world
+                .arena
+                .put_u64(status + POLITICAL_STATUS_RULING_PARTY, original)
+        },
+    );
+    assert!(
+        torn.is_none(),
+        "a country whose ruler changed across the idea walk must be refused: {torn:?}"
+    );
+
+    // Restore, and confirm the fixture resolves again.
+    world
+        .arena
+        .put_u64(status + POLITICAL_STATUS_RULING_PARTY, original);
+    page_cache_new_frame();
+    assert!(
+        domain47_country_politics_row(world.module_base, world.country_vtable, expected).is_some()
+    );
+}
+
+/// A country that moves to a different political-status object and MOVES BACK
+/// must be refused — the cross-half ABA that Codex round 5 found.
+///
+/// The sequence, using both seams:
+///  1. the first observation reads `A`'s tag and `A`'s ideas;
+///  2. `mid_first` moves the country to a different valid status `B`, carrying
+///     a different ruler and different ideas;
+///  3. that same observation reads `B`'s ruler;
+///  4. `between` moves the country back to `A`;
+///  5. the second observation reads `A`'s ideas and `A`'s ruler.
+///
+/// The two observations differ, so the row is refused. Under the structure
+/// this replaced — an identity pair and an idea pair confirmed INDEPENDENTLY —
+/// each pair agreed with itself and the row published one status object's
+/// ruler beside the other's ideas.
+///
+/// WHAT NO VERSION OF THIS CAN GUARANTEE, stated so the test is not read as
+/// proving more than it does: observing twice and comparing cannot rule out an
+/// adversarial REPEATING schedule. A writer that reproduces the same
+/// interleaving during both observations yields two identical observations of
+/// a combination that never existed, and no bounded number of reads closes
+/// that — the two full snapshots this work replaced could be fooled the same
+/// way. The property actually defended is narrower and checkable: this reader
+/// reads in the ORIGINAL's order, so any schedule that fools it would have
+/// fooled the original, and the four documented narrowings then reject strictly
+/// more. Acceptance is a subset of the original's, not an absolute.
+///
+/// MUTATION: in `domain47_country_politics_row_with_between`, replace the two
+/// whole-country observations with the nested form — one identity read, then
+/// `domain47_read_active_ideas_bracketed_with_between` for the ideas, then a
+/// second identity read compared only against the first. This publishes and
+/// the test fails.
+#[test]
+fn d47_country_row_refuses_a_status_root_that_returned() {
+    let world = politics_bench_world();
+    let expected = &world.rows[0];
+    let country = expected.object_ptr;
+    let own_status = politics_status_ptrs(&world)[0];
+    let victim_status = politics_status_ptrs(&world)[1];
+
+    // CONTROL, taken before the victim's backlink is rewritten.
+    page_cache_new_frame();
+    let control = domain47_country_politics_row(world.module_base, world.country_vtable, expected)
+        .expect("control row must resolve");
+    let victim_ideas = politics_bracketed_ideas(&world, 1).expect("victim must resolve");
+    assert_ne!(
+        control.active_idea_tokens, victim_ideas,
+        "the two status objects must carry DIFFERENT ideas, or the swap is invisible"
+    );
+
+    // The victim status must back-link to OUR country, or it would be rejected
+    // by the backlink check and the test would pass for the wrong reason.
+    world
+        .arena
+        .put_u64(victim_status + POLITICAL_STATUS_COUNTRY_BACKLINK, country as u64);
+
+    page_cache_new_frame();
+    let torn = domain47_country_politics_row_with_between(
+        world.module_base,
+        world.country_vtable,
+        expected,
+        // 2. after the first observation's ruler read: move to B.
+        || {
+            world
+                .arena
+                .put_u64(country + OBJ_POLITICAL_STATUS, victim_status as u64)
+        },
+        // 4. between the observations: move back to A.
+        || {
+            world
+                .arena
+                .put_u64(country + OBJ_POLITICAL_STATUS, own_status as u64)
+        },
+    );
+    assert!(
+        torn.is_none(),
+        "a country whose status root moved and returned must be refused: {torn:?}"
+    );
+
+    page_cache_new_frame();
+    assert!(
+        domain47_country_politics_row(world.module_base, world.country_vtable, expected).is_some(),
+        "the restored fixture must resolve again"
+    );
+}
+
+/// The mutex-free token decode must return exactly what the shared cached
+/// reader returns — for both string forms, both accepted idea vtables, and the
+/// refusals.
+///
+/// MUTATION: drop the `is_script_token(&token)` validation from
+/// `domain47_idea_token`, or drop its vtable check — the refusal cases below
+/// start returning `Some` while `cached_idea_token` still returns `None`.
+#[test]
+fn d47_uncached_idea_token_matches_the_cached_reader() {
+    let world = politics_bench_world();
+    let vt1 = world.module_base + IDEA_VTABLE_RVA_PRIMARY;
+    let vt2 = world.module_base + IDEA_VTABLE_RVA_SECONDARY;
+    page_cache_new_frame();
+
+    let mut sso = 0usize;
+    let mut heap = 0usize;
+    let mut first_idea = None;
+    for status_ptr in politics_status_ptrs(&world) {
+        let (data, size, _cap) =
+            politics_ideas_header(status_ptr, None).expect("fixture ideas header must read");
+        for index in 0..size as usize {
+            let idea_ptr = politics_idea_ptr_at(data, index, None).expect("idea pointer must read");
+            first_idea.get_or_insert(idea_ptr);
+            let cached = cached_idea_token(idea_ptr, vt1, vt2);
+            let uncached = domain47_idea_token(idea_ptr, vt1, vt2);
+            assert_eq!(cached, uncached, "idea at {idea_ptr:#x}");
+            match cached.as_deref() {
+                Some(token) if token.len() < 16 => sso += 1,
+                Some(_) => heap += 1,
+                None => panic!("fixture idea at {idea_ptr:#x} did not read"),
+            }
+        }
+    }
+    assert!(sso > 0 && heap > 0, "fixture covered only one string form");
+
+    // The refusals must agree too, or the equality above only proves the two
+    // agree when everything is well-formed.
+    let sample = first_idea.expect("fixture had at least one idea");
+    let wrong_vtable = world.module_base + IDEA_VTABLE_RVA_PRIMARY + 0x1000;
+    assert_eq!(
+        cached_idea_token(sample, wrong_vtable, wrong_vtable),
+        None,
+        "a vtable mismatch must be refused by the cached reader"
+    );
+    assert_eq!(
+        domain47_idea_token(sample, wrong_vtable, wrong_vtable),
+        None,
+        "a vtable mismatch must be refused identically"
+    );
+    // A pointer outside `[HEAP_LO, HEAP_HI)`.
+    assert_eq!(cached_idea_token(0x1000, vt1, vt2), None);
+    assert_eq!(domain47_idea_token(0x1000, vt1, vt2), None);
+
+    // A READABLE idea whose id string is not a valid script token. Without
+    // this, dropping `is_script_token` from `domain47_idea_token` would leave
+    // this test green and the refusal equivalence would be half-proven.
+    // It is built in spare arena space, deliberately outside every country's
+    // vector, so it cannot make the walk fixtures refuse.
+    let invalid = world.spare;
+    world.arena.put_u64(invalid, vt1 as u64);
+    world
+        .arena
+        .put_msvc_string(invalid + IDEA_ID, invalid + 0x40, "not a script token!");
+    page_cache_new_frame();
+    assert!(
+        read_msvc_string_snapshot_once(invalid + IDEA_ID, MAX_POLITICS_TOKEN_LEN).is_some(),
+        "the invalid-token fixture must be READABLE, or it proves nothing about the validator"
+    );
+    assert_eq!(
+        cached_idea_token(invalid, vt1, vt2),
+        None,
+        "the cached reader must refuse a non-script token"
+    );
+    assert_eq!(
+        domain47_idea_token(invalid, vt1, vt2),
+        None,
+        "an invalid token must be refused identically"
+    );
+
+    // AND THE PRODUCTION READER MUST REFUSE IT TOO. Everything above compares
+    // two reference helpers; `domain47_read_active_ideas_bracketed` defers the
+    // decode and the validation to its own tail, and that tail is what
+    // production actually runs. Without this, removing `is_script_token` from
+    // the production decode — or its pointer and vtable gates — would leave
+    // this test green (Codex round 3, finding 2).
+    let status_ptr = politics_status_ptrs(&world)[0];
+    let (data, _size, _cap) = politics_ideas_header(status_ptr, None).expect("header must read");
+    let original = politics_idea_ptr_at(data, 0, None).expect("idea pointer must read");
+    page_cache_new_frame();
+    assert!(
+        politics_bracketed_ideas(&world, 0).is_some(),
+        "control walk must succeed, or the refusal below proves nothing"
+    );
+
+    // An idea object that reads fine but carries the WRONG VTABLE.
+    let wrong_vtable_idea = world.spare + 0x200;
+    world.arena.put_u64(wrong_vtable_idea, (vt1 + 0x1000) as u64);
+    world
+        .arena
+        .put_msvc_string(wrong_vtable_idea + IDEA_ID, wrong_vtable_idea + 0x40, "law_9");
+
+    // An idea object that is COMPLETELY VALID except that its address fails
+    // `is_map_control_heap_pointer`, because it is not 8-aligned. It has to be
+    // valid in every other respect, or a downstream gate would refuse it and
+    // deleting the heap gate would still look like a pass — which is what the
+    // previous version of this fixture got wrong: it used the unmapped address
+    // 0x1000, so the vtable READ failed and the heap gate was never the reason.
+    let unaligned_idea = world.spare + 0x401;
+    assert!(
+        !is_map_control_heap_pointer(unaligned_idea),
+        "the fixture must actually fail the heap gate"
+    );
+    world.arena.put_u64(unaligned_idea, vt1 as u64);
+    world
+        .arena
+        .put_msvc_string(unaligned_idea + IDEA_ID, unaligned_idea + 0x40, "law_7");
+    page_cache_new_frame();
+    assert_eq!(
+        read_u64(unaligned_idea).map(|v| v as usize),
+        Some(vt1),
+        "the fixture must be READABLE, or the heap gate is not what refuses it"
+    );
+    assert!(
+        read_msvc_string_snapshot_once(unaligned_idea + IDEA_ID, MAX_POLITICS_TOKEN_LEN).is_some(),
+        "the fixture's token must be readable too"
+    );
+
+    // An idea whose id string is not valid UTF-8.
+    //
+    // SCOPE, stated honestly: this pins the REFUSAL, not which check performs
+    // it. `is_script_token` accepts only ASCII alphanumerics and `_-.:`, and
+    // every ASCII sequence is valid UTF-8, so no input can fail the UTF-8
+    // conversion while passing the validator. The two checks are therefore not
+    // independently observable by outcome, and no test can attribute this
+    // refusal to one of them.
+    let non_utf8_idea = world.spare + 0x600;
+    world.arena.put_u64(non_utf8_idea, vt1 as u64);
+    // Long enough to be HEAP-backed. A short token takes the inline (SSO)
+    // representation and its characters live in the header itself, so
+    // overwriting the heap block would leave the token untouched — which is
+    // exactly what the first version of this fixture did.
+    world.arena.put_msvc_string(
+        non_utf8_idea + IDEA_ID,
+        non_utf8_idea + 0x40,
+        "law_that_is_long_enough",
+    );
+    world
+        .arena
+        .put_bytes(non_utf8_idea + 0x40, &[0xFF, 0xFE, 0xFD, 0xFC, 0xFB]);
+    page_cache_new_frame();
+    assert!(
+        read_msvc_string_snapshot_once(non_utf8_idea + IDEA_ID, MAX_POLITICS_TOKEN_LEN)
+            .is_some_and(|s| String::from_utf8(s.bytes).is_err()),
+        "the fixture's token must READ but not be valid UTF-8"
+    );
+
+    for (case, entry) in [
+        ("a readable but non-script token", invalid),
+        ("an idea whose vtable is not an accepted one", wrong_vtable_idea),
+        ("a valid idea at an address that fails the heap gate", unaligned_idea),
+        ("an id string that is not valid UTF-8", non_utf8_idea),
+    ] {
+        world.arena.put_u64(data, entry as u64);
+        page_cache_new_frame();
+        assert!(
+            politics_bracketed_ideas(&world, 0).is_none(),
+            "production must refuse a vector containing {case}"
+        );
+    }
+
+    world.arena.put_u64(data, original as u64);
+    page_cache_new_frame();
+    assert!(
+        politics_bracketed_ideas(&world, 0).is_some(),
+        "restored fixture must walk cleanly again"
+    );
+}
+
+/// An idea's id string rewritten IN PLACE between the two observations —
+/// same pointer, same vtable, same length — must be refused.
+///
+/// This is the class the second review round found a pointer-and-vtable-only
+/// bracket admits. Every per-entry check passes on both the old and the new
+/// bytes; only a comparison that includes the string CONTENT can see it. With
+/// a structural-only bracket the walk publishes a list mixing one entry read
+/// before the rewrite with another read after it — a combination that never
+/// existed in the engine, well-formed and unflagged.
+///
+/// MUTATION: in `Domain47IdeaEntry`, drop the `string` field from the derived
+/// `PartialEq` (or compare only `idea_ptr` and `vtable` in
+/// `domain47_read_active_ideas_bracketed_with_between`). The rewritten token
+/// is then accepted and this fails.
+#[test]
+fn d47_idea_walk_refuses_an_id_string_rewritten_in_place() {
+    let world = politics_bench_world();
+    let vt1 = world.module_base + IDEA_VTABLE_RVA_PRIMARY;
+    let vt2 = world.module_base + IDEA_VTABLE_RVA_SECONDARY;
+    let status_ptr = politics_status_ptrs(&world)[0];
+    let (data, _size, _cap) = politics_ideas_header(status_ptr, None).expect("header must read");
+    let idea_ptr = politics_idea_ptr_at(data, 0, None).expect("idea pointer must read");
+
+    // CONTROL.
+    page_cache_new_frame();
+    let before = politics_bracketed_ideas(&world, 0).expect("control walk must succeed");
+    assert_eq!(before.len(), T15_IDEAS_PER_COUNTRY);
+    let original = before[0].clone();
+
+    // Rewrite the id string's characters in place, same length, still a valid
+    // script token, leaving the pointer, the vtable, the size and the capacity
+    // untouched. Nothing structural changes.
+    let rewritten: String = original
+        .chars()
+        .map(|c| if c == 'l' { 'x' } else { c })
+        .collect();
+    assert_eq!(rewritten.len(), original.len());
+    assert_ne!(rewritten, original);
+    let chars_addr = {
+        let snapshot = read_msvc_string_snapshot_once(idea_ptr + IDEA_ID, MAX_POLITICS_TOKEN_LEN)
+            .expect("string snapshot must read");
+        snapshot.chars_addr
+    };
+    page_cache_new_frame();
+    let torn = domain47_read_active_ideas_bracketed_with_between(
+        world.rows[0].object_ptr,
+        politics_status_vtable(&world),
+        vt1,
+        vt2,
+        || unsafe {
+        std::ptr::copy_nonoverlapping(
+            rewritten.as_ptr(),
+            chars_addr as *mut u8,
+            rewritten.len(),
+        );
+    },
+    );
+    assert!(
+        torn.is_none(),
+        "an id string rewritten between the observations must be refused: {torn:?}"
+    );
+}
+
+/// A vector entry repointed between the two observations must be REFUSED.
+///
+/// The substituted entry is another live country's idea: correctly typed, in
+/// the heap window, and decoding to a perfectly valid token. Nothing in the
+/// per-entry path can object to it. Without the observation comparison the
+/// reader would return a clean, well-formed token list describing a version of
+/// the vector that no longer exists — the silently-wrong-data outcome, not an
+/// absence.
+///
+/// MUTATION: in `domain47_read_active_ideas_bracketed_with_between`, drop the
+/// `if opening != closing { return None; }` test. The torn read is then
+/// accepted and the `is_none()` assertion fails. Dropping the `between()`
+/// invocation instead means the mutation never fires between the observations,
+/// the read succeeds, and the same assertion fails.
+#[test]
+fn d47_bracketed_idea_walk_refuses_a_vector_that_moved_under_it() {
+    let world = politics_bench_world();
+    let vt1 = world.module_base + IDEA_VTABLE_RVA_PRIMARY;
+    let vt2 = world.module_base + IDEA_VTABLE_RVA_SECONDARY;
+    let status_ptrs = politics_status_ptrs(&world);
+    let status_ptr = status_ptrs[0];
+    let victim_status = status_ptrs[1];
+    let (data, _size, _cap) = politics_ideas_header(status_ptr, None).expect("header must read");
+    let (victim_data, _s, _c) =
+        politics_ideas_header(victim_status, None).expect("victim header must read");
+
+    // CONTROL: undisturbed, the walk succeeds and returns every entry. Without
+    // this the refusal below could be a fixture that never worked at all.
+    page_cache_new_frame();
+    assert_eq!(
+        politics_bracketed_ideas(&world, 0).map(|v| v.len()),
+        Some(T15_IDEAS_PER_COUNTRY),
+        "control walk must succeed"
+    );
+
+    // Entry 0 — the one `between` fires immediately after, so it has already
+    // been decoded and its pointer already folded into the opening hash.
+    let original = politics_idea_ptr_at(data, 0, None).expect("idea pointer must read");
+    let replacement =
+        politics_idea_ptr_at(victim_data, 0, None).expect("victim idea pointer must read");
+    assert_ne!(original, replacement);
+    assert!(
+        domain47_idea_token(replacement, vt1, vt2).is_some(),
+        "the substituted idea must itself be well-formed, or the per-entry \
+         path would reject it and the bracket would prove nothing"
+    );
+
+    page_cache_new_frame();
+    let torn = domain47_read_active_ideas_bracketed_with_between(
+        world.rows[0].object_ptr,
+        politics_status_vtable(&world),
+        vt1,
+        vt2,
+        || unsafe { std::ptr::write_unaligned(data as *mut u64, replacement as u64) },
+    );
+    assert!(
+        torn.is_none(),
+        "an entry repointed after the walk read it must be refused, not published: {torn:?}"
+    );
+
+    // Restore, and confirm the fixture walks cleanly again — so the refusal
+    // above was the mutation and not a fixture the test broke permanently.
+    unsafe {
+        std::ptr::write_unaligned(data as *mut u64, original as u64);
+    }
+    page_cache_new_frame();
+    assert_eq!(
+        politics_bracketed_ideas(&world, 0).map(|v| v.len()),
+        Some(T15_IDEAS_PER_COUNTRY),
+    );
 }
