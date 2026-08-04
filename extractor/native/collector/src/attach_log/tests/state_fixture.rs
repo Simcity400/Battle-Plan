@@ -1873,3 +1873,527 @@ fn a_frame_whose_label_the_calendar_refuses_says_the_rule_did_not_apply() {
     );
 }
 
+// ---------------------------------------------------------------------
+// Domain 43 -- market_trade_live's purchase-contract census
+// ---------------------------------------------------------------------
+
+/// Heap layout of [`market_trade_frame_fixture`]. Named rather than inline so
+/// the two contract objects and their four sub-buffers cannot silently overlap
+/// as the fixture grows.
+mod d43_at {
+    pub(super) const GAME_STATE: usize = 0x0_0000;
+    pub(super) const MANAGER: usize = 0x0_1000;
+    /// The two per-country outer tables, each `OUTER_COUNT` inline
+    /// `{begin, cap, count}` headers at `MARKET_CONTRACT_VECTOR_STRIDE`.
+    pub(super) const OUTER_TABLE_0: usize = 0x0_2000;
+    pub(super) const OUTER_TABLE_1: usize = 0x0_2100;
+    /// Pointer arrays of contract pointers, one per directional table.
+    pub(super) const INNER_BODY_0: usize = 0x0_3000;
+    pub(super) const INNER_BODY_1: usize = 0x0_3100;
+    pub(super) const COUNTRY_1: usize = 0x0_4000;
+    pub(super) const COUNTRY_2: usize = 0x0_6000;
+    pub(super) const MARKET_STATUS_1: usize = 0x0_8000;
+    pub(super) const MARKET_STATUS_2: usize = 0x0_8100;
+    pub(super) const CONTRACT_1: usize = 0x0_9000;
+    pub(super) const CONTRACT_2: usize = 0x0_9400;
+    pub(super) const EQUIPMENT_SUBBUF_1: usize = 0x0_A000;
+    pub(super) const DELIVERY_SUBBUF_1: usize = 0x0_A100;
+    pub(super) const EQUIPMENT_SUBBUF_2: usize = 0x0_A200;
+    pub(super) const DELIVERY_SUBBUF_2: usize = 0x0_A300;
+    pub(super) const VARIANT_EQUIPMENT: usize = 0x0_B000;
+    pub(super) const VARIANT_DELIVERY: usize = 0x0_B100;
+    pub(super) const HEAP_LEN: usize = 0x1_0000;
+
+    pub(super) const OUTER_COUNT: i32 = 2;
+    pub(super) const CONTRACT_1_ID: u32 = 7001;
+    pub(super) const CONTRACT_2_ID: u32 = 7002;
+    pub(super) const EQUIPMENT_VARIANT_ID: u32 = 4242;
+    /// Read back out of the delivery sub-buffer as the contract's amount.
+    pub(super) const DELIVERY_AMOUNT_RAW: i32 = 250_000;
+    pub(super) const DELIVERY_VARIANT_ID: u32 = 4243;
+}
+
+/// A world in which d43's rooted purchase-contract census SUCCEEDS: a
+/// CGameState with a market manager, two countries whose
+/// `CEquipmentMarketStatus` wrappers corroborate that manager, both
+/// directional manager tables, and two purchase contracts each holding the
+/// seller AND buyer membership the census requires.
+///
+/// Staged because the contract family is the one d43 family with no offline
+/// coverage at all. Live captures t19/t20/t21 published it empty on every
+/// frame — 294 records in t21, `observed_contract_rows = 0` — while the
+/// resource families in the same payload published 439 countries' worth of
+/// rows. With no fixture, "the walk is broken" and "the walk is fine and the
+/// live world tripped one of its ~20 guards" were indistinguishable offline.
+/// This fixture settles that half: it proves the walk and the emission chain
+/// behind it produce rows when the world has the shape the census describes.
+///
+/// What it deliberately does NOT prove is the constants (staging writes
+/// through the same `build_profile`/`offsets` values the reader then reads
+/// through, so a wrong constant moves both sides together) — see this
+/// module's header. The live failure is a question about the WORLD, and the
+/// `d43_contract_failure_stage` unit this lane added is what answers it.
+fn market_trade_frame_fixture() -> CollectorStateFixture {
+    use compact_contract::build_profile as p;
+    use d43_at as at;
+
+    let mut fixture = CollectorStateFixture::new(
+        &[
+            C_GAME_STATE_DAILY_UPDATE_OFFSET,
+            GET_LONG_STRING_OFFSET,
+            p::DOMAIN57_CGAMESTATE_SINGLETON_RVA,
+        ],
+        0x1000,
+        at::HEAP_LEN,
+    );
+    fixture.stage_profile_sentinels();
+    // Also writes the label hour at `game_state + GS_CURRENT_DATE_OFFSET`;
+    // without it every domain is refused under `HOUR_LABEL_MISMATCH_POLICY`.
+    fixture.stage_scheduler_clock_at(at::GAME_STATE);
+
+    let base = fixture.module.module_base();
+    let country_vtable = base + p::DOMAIN57_COUNTRY_VTABLE_RVA;
+    let contract_vtable = base + p::DOMAIN43_PURCHASE_CONTRACT_VTABLE_RVA;
+    let variant_vtable = base + VARIANT_VTABLE_RVA;
+
+    let manager = fixture.heap.at(at::MANAGER);
+    fixture
+        .heap
+        .write_u64(at::GAME_STATE + CGAMESTATE_MARKET_MANAGER_OFF, manager as u64);
+
+    // Two countries, each corroborating the global manager through its own
+    // CEquipmentMarketStatus wrapper -- the check the census runs over every
+    // country it is handed.
+    for (country_at, status_at) in [
+        (at::COUNTRY_1, at::MARKET_STATUS_1),
+        (at::COUNTRY_2, at::MARKET_STATUS_2),
+    ] {
+        fixture.heap.write_u64(country_at, country_vtable as u64);
+        let status = fixture.heap.at(status_at);
+        fixture
+            .heap
+            .write_u64(country_at + CCOUNTRY_MARKET_STOCKPILE_WRAPPER_OFF, status as u64);
+        fixture
+            .heap
+            .write_u64(status_at + CEQUIPMENT_MARKET_STATUS_MANAGER_OFF, manager as u64);
+    }
+    let country_1 = fixture.heap.at(at::COUNTRY_1);
+    let country_2 = fixture.heap.at(at::COUNTRY_2);
+    fixture.set_verified_country_roster(
+        "gamestate_country_table_verified",
+        country_vtable,
+        vec![
+            test_country_row("SEL", 1, country_1),
+            test_country_row("BUY", 2, country_2),
+        ],
+    );
+
+    // The two variant objects the sub-buffer scan is looking for.
+    for (variant_at, variant_id) in [
+        (at::VARIANT_EQUIPMENT, at::EQUIPMENT_VARIANT_ID),
+        (at::VARIANT_DELIVERY, at::DELIVERY_VARIANT_ID),
+    ] {
+        fixture.heap.write_u64(variant_at, variant_vtable as u64);
+        fixture
+            .heap
+            .write_i32(variant_at + VARIANT_DEF_TYPE, VARIANT_TYPE as i32);
+        fixture
+            .heap
+            .write_i32(variant_at + VARIANT_DEF_ID, variant_id as i32);
+    }
+    // A sub-buffer is scanned for the FIRST embedded pointer that resolves to
+    // a type-70 variant; the amount is then taken from the 0x10 bytes that
+    // follow it. Staging the pointer at offset 0 and the amount at +8 is the
+    // shape that scan describes.
+    for (subbuf_at, variant_at) in [
+        (at::EQUIPMENT_SUBBUF_1, at::VARIANT_EQUIPMENT),
+        (at::DELIVERY_SUBBUF_1, at::VARIANT_DELIVERY),
+        (at::EQUIPMENT_SUBBUF_2, at::VARIANT_EQUIPMENT),
+        (at::DELIVERY_SUBBUF_2, at::VARIANT_DELIVERY),
+    ] {
+        let variant = fixture.heap.at(variant_at);
+        fixture.heap.write_u64(subbuf_at, variant as u64);
+        fixture
+            .heap
+            .write_i32(subbuf_at + 8, at::DELIVERY_AMOUNT_RAW);
+    }
+
+    // The contracts. Seller and buyer are distinct staged countries, and
+    // `+ DOMAIN43_PURCHASE_CONTRACT_BUYER_PTR` names the buyer's own object so
+    // the row carries `BUYER_PTR_VALID` rather than a bare tag.
+    for (contract_at, contract_id, equipment_at, delivery_at) in [
+        (
+            at::CONTRACT_1,
+            at::CONTRACT_1_ID,
+            at::EQUIPMENT_SUBBUF_1,
+            at::DELIVERY_SUBBUF_1,
+        ),
+        (
+            at::CONTRACT_2,
+            at::CONTRACT_2_ID,
+            at::EQUIPMENT_SUBBUF_2,
+            at::DELIVERY_SUBBUF_2,
+        ),
+    ] {
+        fixture.heap.write_u64(contract_at, contract_vtable as u64);
+        fixture.heap.write_i32(
+            contract_at + p::DOMAIN43_PURCHASE_CONTRACT_ID_TYPE,
+            p::DOMAIN43_PURCHASE_CONTRACT_TYPE as i32,
+        );
+        fixture
+            .heap
+            .write_i32(contract_at + p::DOMAIN43_PURCHASE_CONTRACT_ID_ID, contract_id as i32);
+        fixture
+            .heap
+            .write_i32(contract_at + p::DOMAIN43_PURCHASE_CONTRACT_SELLER_TAG_DB_ID, 1);
+        fixture
+            .heap
+            .write_i32(contract_at + p::DOMAIN43_PURCHASE_CONTRACT_BUYER_TAG_DB_ID, 2);
+        fixture
+            .heap
+            .write_u64(contract_at + p::DOMAIN43_PURCHASE_CONTRACT_BUYER_PTR, country_2 as u64);
+        let equipment = fixture.heap.at(equipment_at);
+        let delivery = fixture.heap.at(delivery_at);
+        fixture.heap.write_u64(
+            contract_at + p::DOMAIN43_PURCHASE_CONTRACT_EQUIPMENT_SUBBUF,
+            equipment as u64,
+        );
+        fixture.heap.write_u64(
+            contract_at + p::DOMAIN43_PURCHASE_CONTRACT_DELIVERY_SUBBUF,
+            delivery as u64,
+        );
+    }
+
+    // Both contract pointers in BOTH directional tables, once each. The census
+    // requires every contract to hold its seller AND buyer membership
+    // (`market_contract_membership_is_complete`), so a one-sided staging would
+    // be refused -- which is itself worth knowing, and is the negative control
+    // below.
+    let contract_1 = fixture.heap.at(at::CONTRACT_1);
+    let contract_2 = fixture.heap.at(at::CONTRACT_2);
+    for body_at in [at::INNER_BODY_0, at::INNER_BODY_1] {
+        fixture.heap.write_u64(body_at, contract_1 as u64);
+        fixture.heap.write_u64(body_at + 8, contract_2 as u64);
+    }
+    let inner_body_0 = fixture.heap.at(at::INNER_BODY_0);
+    let inner_body_1 = fixture.heap.at(at::INNER_BODY_1);
+
+    // Outer table 0 (manager + 0x30) carries the contracts in its slot 0;
+    // outer table 1 (manager + 0x48) carries them in its slot 1. Which slot
+    // holds them is immaterial to the walk -- it iterates `0..outer.count` and
+    // never subscripts by tag -- but splitting them proves that.
+    let write_vector = |heap: &mut FixtureRegion, at: usize, begin: u64, count: i32| {
+        heap.write_u64(at + MARKET_VECTOR_BEGIN_OFF, begin);
+        heap.write_i32(at + MARKET_VECTOR_CAP_OFF, count);
+        heap.write_i32(at + MARKET_VECTOR_COUNT_OFF, count);
+    };
+    write_vector(&mut fixture.heap, at::OUTER_TABLE_0, inner_body_0 as u64, 2);
+    write_vector(
+        &mut fixture.heap,
+        at::OUTER_TABLE_0 + MARKET_CONTRACT_VECTOR_STRIDE,
+        0,
+        0,
+    );
+    write_vector(&mut fixture.heap, at::OUTER_TABLE_1, 0, 0);
+    write_vector(
+        &mut fixture.heap,
+        at::OUTER_TABLE_1 + MARKET_CONTRACT_VECTOR_STRIDE,
+        inner_body_1 as u64,
+        2,
+    );
+
+    let outer_0 = fixture.heap.at(at::OUTER_TABLE_0);
+    let outer_1 = fixture.heap.at(at::OUTER_TABLE_1);
+    write_vector(
+        &mut fixture.heap,
+        at::MANAGER + MARKET_CONTRACT_TABLE_OFFSETS[0],
+        outer_0 as u64,
+        at::OUTER_COUNT,
+    );
+    write_vector(
+        &mut fixture.heap,
+        at::MANAGER + MARKET_CONTRACT_TABLE_OFFSETS[1],
+        outer_1 as u64,
+        at::OUTER_COUNT,
+    );
+
+    fixture
+}
+
+/// The headline d43 question, answered offline: with a market world staged,
+/// does `market_trade_live` put purchase-contract ROWS on the wire?
+///
+/// Before this test the answer existed only in live capture, and there it was
+/// "no" on every frame of t19, t20 and t21 with no attribution. The census
+/// (`compact_market_trade_rooted_contract_ptrs`) had roughly twenty
+/// `return None` sites and not one diagnostic, so an empty contract family and
+/// a broken walk looked identical on the wire.
+///
+/// What production change makes this fail: any break in
+/// `compact_market_trade_rooted_contract_ptrs`, `read_compact_market_trade_row`
+/// or the d43 emission site. Mutation-proved; see the assertion comments and
+/// the lane report.
+#[test]
+fn a_populated_market_world_makes_domain43_emit_purchase_contract_rows_offline() {
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
+    let fixture = market_trade_frame_fixture();
+    let outcome = drive_compact_frame(
+        Some(&fixture.collector_state()),
+        &compact_control_scheduling(&[RAW_MARKET_TRADE_LIVE_DOMAIN]),
+        fixture_game_hour_raw(),
+        7,
+    );
+
+    let perf = outcome
+        .perf(COMPACT_DOMAIN_MARKET_TRADE_LIVE)
+        .expect("d43 emitted its perf record");
+    // THE regression this lane exists to hold. In t21 this was `0x300`.
+    assert_eq!(
+        perf.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        0,
+        "the staged market roots are readable, so the contract census must not \
+         report SOURCE_UNAVAILABLE; status {:#010x}",
+        perf.status_flags
+    );
+    assert_eq!(
+        perf.row_count, 2,
+        "both staged purchase contracts were observed (t21 measured 0)"
+    );
+    assert_eq!(perf.unit_count, 2, "and both were emitted");
+
+    // The rows themselves, compared against what was STAGED rather than
+    // against the reader's own output, so a reader that walks to the wrong
+    // field cannot move both sides together.
+    let state = fixture.collector_state();
+    let country_by_tag = BTreeMap::from([
+        (1u32, fixture.heap.at(d43_at::COUNTRY_1)),
+        (2u32, fixture.heap.at(d43_at::COUNTRY_2)),
+    ]);
+    let vtable = state.base + compact_contract::build_profile::DOMAIN43_PURCHASE_CONTRACT_VTABLE_RVA;
+    let contract_ptrs =
+        compact_market_trade_rooted_contract_ptrs(&state, vtable, &country_by_tag)
+            .expect("the staged census is admissible");
+    assert_eq!(
+        contract_ptrs.len(),
+        2,
+        "both staged contracts hold their seller AND buyer membership"
+    );
+    let rows = contract_ptrs
+        .iter()
+        .map(|contract_ptr| {
+            read_compact_market_trade_row(state.base, *contract_ptr, vtable, &country_by_tag)
+                .expect("a staged contract decodes")
+        })
+        .collect::<Vec<_>>();
+    let staged_row = |contract_id: u32| CompactMarketTradeRow {
+        contract_id,
+        contract_type: compact_contract::build_profile::DOMAIN43_PURCHASE_CONTRACT_TYPE,
+        flags: COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID,
+        seller_tag_db_id: 1,
+        buyer_tag_db_id: 2,
+        equipment_variant_id: d43_at::EQUIPMENT_VARIANT_ID,
+        amount_raw: i64::from(d43_at::DELIVERY_AMOUNT_RAW),
+        equipment_subbuf_status: COMPACT_MARKET_TRADE_SUBBUF_STATUS_VALID,
+        delivery_subbuf_status: COMPACT_MARKET_TRADE_SUBBUF_STATUS_VALID,
+        buyer_ptr_status: COMPACT_MARKET_TRADE_PTR_STATUS_VALID,
+    };
+    assert_eq!(
+        rows,
+        vec![
+            staged_row(d43_at::CONTRACT_1_ID),
+            staged_row(d43_at::CONTRACT_2_ID)
+        ],
+        "the production contract reader must return exactly the staged values"
+    );
+
+    // Those rows reached the wire: the DOMAIN_DATA payload's contract block is
+    // the production encoding of them. The header's `row_count` is read back
+    // off the emitted bytes rather than from the perf record.
+    let data = outcome
+        .domain_data(COMPACT_DOMAIN_MARKET_TRADE_LIVE)
+        .expect("d43 emitted a DOMAIN_DATA record");
+    assert_eq!(
+        le_u32(&data.payload, 8),
+        2,
+        "the payload header states both contract rows"
+    );
+    assert_eq!(
+        le_u32(&data.payload, 24),
+        2,
+        "and both were observed rather than merely emitted"
+    );
+    let mut contract_ids = Vec::new();
+    for index in 0..2usize {
+        contract_ids.push(le_u32(&data.payload, 48 + index * 48));
+    }
+    assert_eq!(
+        contract_ids,
+        vec![d43_at::CONTRACT_1_ID, d43_at::CONTRACT_2_ID],
+        "the payload's contract block carries the staged contract ids"
+    );
+
+    // This frame IS partial -- the fixture stages the market world only, so
+    // the resource, flow, factory, classic-deal and stockpile families have no
+    // roots and each badge PARTIAL_DATA. That is what makes the assertion
+    // below worth making: the diagnostics ARE published, and the contract unit
+    // must state its own success rather than inherit the frame's partiality or
+    // hold a stale stage from an earlier frame in the same process.
+    assert_ne!(
+        perf.status_flags & COMPACT_STATUS_PARTIAL_DATA,
+        0,
+        "the market-only fixture leaves d43's other families absent"
+    );
+    assert_eq!(
+        outcome.diagnostic_unit(COMPACT_DOMAIN_MARKET_TRADE_LIVE, "d43_contract_failure_stage"),
+        Some(0),
+        "the census succeeded, so it must name no failing stage -- the ONE value \
+         that distinguishes a healthy census from the t21 wire"
+    );
+    assert_eq!(
+        outcome.diagnostic_unit(
+            COMPACT_DOMAIN_MARKET_TRADE_LIVE,
+            "d43_contract_failure_tag_db_id"
+        ),
+        Some(u64::from(u32::MAX)),
+        "and no offending country"
+    );
+    outcome.assert_diagnostics_agree_with_production(COMPACT_DOMAIN_MARKET_TRADE_LIVE);
+}
+
+/// The negative control, and the reason the instrumentation this lane added
+/// has a job: take the SAME world and remove one contract's membership from
+/// the second directional table. The census refuses the whole census — which
+/// is the t19/t20/t21 wire exactly — and the new
+/// `d43_contract_failure_stage` unit is what distinguishes this refusal from
+/// the other nineteen.
+///
+/// What production change makes this fail: deleting any `*stage = ...` write
+/// in `compact_market_trade_rooted_contract_ptrs_staged`, or reverting the
+/// census to the uninstrumented form, which would leave the unit at `0` and
+/// name no site. Mutation-proved; see the lane report.
+#[test]
+fn a_one_sided_purchase_contract_membership_names_the_stage_that_refused_it() {
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
+    let mut fixture = market_trade_frame_fixture();
+    // Contract 2 keeps its table-0 membership and loses its table-1 one, so
+    // its membership word is `0b01` rather than `0b11`. The vector is
+    // shortened rather than zeroed: a null pointer would be refused earlier,
+    // at the contract-identity stage, and would prove a different thing.
+    fixture
+        .heap
+        .write_i32(d43_at::OUTER_TABLE_1 + MARKET_CONTRACT_VECTOR_STRIDE + MARKET_VECTOR_COUNT_OFF, 1);
+    fixture
+        .heap
+        .write_i32(d43_at::OUTER_TABLE_1 + MARKET_CONTRACT_VECTOR_STRIDE + MARKET_VECTOR_CAP_OFF, 1);
+
+    let outcome = drive_compact_frame(
+        Some(&fixture.collector_state()),
+        &compact_control_scheduling(&[RAW_MARKET_TRADE_LIVE_DOMAIN]),
+        fixture_game_hour_raw(),
+        7,
+    );
+
+    let perf = outcome
+        .perf(COMPACT_DOMAIN_MARKET_TRADE_LIVE)
+        .expect("d43 emitted its perf record");
+    assert_eq!(
+        perf.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        "a refused census is source-unavailable, as in live capture t21"
+    );
+    assert_eq!(perf.row_count, 0, "and publishes no contract rows");
+    // The whole point: the wire now names WHICH guard refused. Without the
+    // instrumentation this assertion has no unit to read and the two failures
+    // -- this one and a missing market-status wrapper -- are the same bytes.
+    assert_eq!(
+        outcome.diagnostic_unit(COMPACT_DOMAIN_MARKET_TRADE_LIVE, "d43_contract_failure_stage"),
+        Some(u64::from(domain43_contract_stage::MEMBERSHIP_INCOMPLETE)),
+        "the incomplete-membership refusal must name its own stage"
+    );
+
+    // And the width evidence is published on the failing frame too, so one
+    // capture can rule the width hypothesis in or out without a second.
+    assert_eq!(
+        outcome.diagnostic_unit(COMPACT_DOMAIN_MARKET_TRADE_LIVE, "d43_contract_scope_countries"),
+        Some(2),
+        "the census states the country set it was handed"
+    );
+    assert_eq!(
+        outcome.diagnostic_unit(
+            COMPACT_DOMAIN_MARKET_TRADE_LIVE,
+            "d43_contract_snapshot_countries"
+        ),
+        Some(2),
+        "and the active-country subset it was widened from"
+    );
+    assert_eq!(
+        outcome.diagnostic_unit(COMPACT_DOMAIN_MARKET_TRADE_LIVE, "d43_contract_outer_count"),
+        Some(u64::from(d43_at::OUTER_COUNT as u32)),
+        "and the engine's own outer table width"
+    );
+}
+
+/// The second negative control, aimed squarely at the standing hypothesis for
+/// the live failure: a country whose `CEquipmentMarketStatus` wrapper is
+/// absent.
+///
+/// The corroboration loop is all-or-nothing over the country set the census is
+/// handed, and in production that set is WIDER than the one every family that
+/// succeeded in t21 walks — it is the active-country snapshot plus reserved
+/// dynamic slots (`extend_market_trade_country_ptrs_with_dynamic_slots`). One
+/// such slot with no wrapper would produce exactly the measured wire. This
+/// test pins the SHAPE of that failure offline so a live capture reporting
+/// stage 202 is immediately conclusive rather than merely suggestive.
+///
+/// What production change makes this fail: removing the wrapper guard, or
+/// merging stages 201/202/203 back into one code. Mutation-proved; see the
+/// lane report.
+#[test]
+fn a_country_without_a_market_status_wrapper_refuses_the_whole_contract_census() {
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
+    let mut fixture = market_trade_frame_fixture();
+    // Country 2 keeps every other field and loses only its wrapper pointer --
+    // the shape a reserved dynamic country slot takes.
+    fixture
+        .heap
+        .write_u64(d43_at::COUNTRY_2 + CCOUNTRY_MARKET_STOCKPILE_WRAPPER_OFF, 0);
+
+    let outcome = drive_compact_frame(
+        Some(&fixture.collector_state()),
+        &compact_control_scheduling(&[RAW_MARKET_TRADE_LIVE_DOMAIN]),
+        fixture_game_hour_raw(),
+        7,
+    );
+
+    let perf = outcome
+        .perf(COMPACT_DOMAIN_MARKET_TRADE_LIVE)
+        .expect("d43 emitted its perf record");
+    assert_eq!(
+        perf.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        "one country without a wrapper voids the whole census"
+    );
+    assert_eq!(perf.row_count, 0, "so no contract row is published at all");
+    assert_eq!(
+        outcome.diagnostic_unit(COMPACT_DOMAIN_MARKET_TRADE_LIVE, "d43_contract_failure_stage"),
+        Some(u64::from(
+            domain43_contract_stage::CORROBORATE_WRAPPER_NOT_HEAP
+        )),
+        "the refusal names the corroboration stage, not one of the other nineteen"
+    );
+    // And it names WHICH country, which is what turns a live stage-202 report
+    // into an actionable one.
+    assert_eq!(
+        outcome.diagnostic_unit(
+            COMPACT_DOMAIN_MARKET_TRADE_LIVE,
+            "d43_contract_failure_tag_db_id"
+        ),
+        Some(2),
+        "the offending country accompanies the stage"
+    );
+}
+

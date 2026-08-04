@@ -1686,6 +1686,17 @@ pub const GAUGE_UNITS: &[&str] = &[
     // ended -- is a statistic that can be named.
     "lw_pub_start_us",
     "lw_pub_end_us",
+    // The three WIDTHS d43's purchase-contract census states each frame: the
+    // country set it was handed, the active-country subset that set was
+    // widened from, and the engine's own per-country outer table count. They
+    // exist so one capture can tell "our extended country set outgrew the
+    // engine's table" from every other refusal, and that comparison is only
+    // meaningful frame by frame. Summing them would report a 439-country world
+    // as 129,066 countries over 294 frames -- the same defect the resolver
+    // bindings above were moved here to fix.
+    "d43_contract_scope_countries",
+    "d43_contract_snapshot_countries",
+    "d43_contract_outer_count",
 ];
 
 /// The OUTSIDE-BUILD frame segments: where the sweep thread spends the wall
@@ -3028,6 +3039,50 @@ mod tests {
             running,
             Some(9_865),
             "one publication observed three times is one publication"
+        );
+    }
+
+    /// D43's contract-census widths are gauges, and the suffix rules alone do
+    /// NOT get them there: `_countries` and `_count` match no suffix table, so
+    /// without their `GAUGE_UNITS` entries `unit_accumulation` falls through to
+    /// `PerFrame` and a capture would publish a 439-country world as a
+    /// six-figure country count.
+    ///
+    /// Pinned as a test rather than left to the table because these three
+    /// exist to be COMPARED with each other -- scope against snapshot against
+    /// the engine's outer width -- and a comparison between one summed number
+    /// and one gauge is not a comparison at all.
+    #[test]
+    fn the_d43_contract_census_widths_are_gauges_not_running_totals() {
+        for name in [
+            "d43_contract_scope_countries",
+            "d43_contract_snapshot_countries",
+            "d43_contract_outer_count",
+        ] {
+            let class = unit_accumulation(name);
+            assert_eq!(
+                class,
+                Accumulation::Gauge,
+                "{name} is a width observed each frame, not a total over the capture"
+            );
+            let mut running: Option<u64> = None;
+            for _ in 0..294 {
+                running = Some(class.fold(running, 439));
+            }
+            assert_eq!(
+                running,
+                Some(439),
+                "{name}: 439 countries seen on 294 frames is still 439 countries"
+            );
+        }
+        // The two failure words next to them are raw codes, reached by suffix.
+        assert_eq!(
+            unit_accumulation("d43_contract_failure_stage"),
+            Accumulation::LastValue
+        );
+        assert_eq!(
+            unit_accumulation("d43_contract_failure_tag_db_id"),
+            Accumulation::LastValue
         );
     }
 
