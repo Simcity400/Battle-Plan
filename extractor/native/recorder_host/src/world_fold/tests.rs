@@ -20258,6 +20258,8 @@ fn a33_domain86_folds_receipt_bound_writer_rows_without_pointer_identity() {
             source_sequence: 2,
             producer_complete: true,
             records_with_unavailable_text: 0,
+            producer_hour_raw: None,
+            producer_loss: None,
             events: vec![sunk86_lane::SunkShipEvent {
                 event_sequence: 2,
                 combat_join_present: true,
