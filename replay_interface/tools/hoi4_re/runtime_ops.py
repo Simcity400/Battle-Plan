@@ -11,14 +11,29 @@ from registry import Registry
 
 
 def _load_winmem(workspace: Path):
+    """The read-only live-process memory reader, via the repository RE facade.
+
+    The reader opens a running hoi4.exe, so it is acquisition code and stays in
+    the acquisition tree. This broker is filed under the replay side and reaches
+    it only through `<repo>/tools/hoi4_re`, which is owned by neither tree, so no
+    file on the replay side names an acquisition path.
+    """
+
     import sys
 
-    memory_reader = workspace / "extractor" / "memory_reader"
-    if str(memory_reader) not in sys.path:
-        sys.path.insert(0, str(memory_reader))
-    import winmem
+    facade_root = workspace / "tools"
+    if str(facade_root) not in sys.path:
+        sys.path.insert(0, str(facade_root))
+    import hoi4_re
 
-    return winmem
+    # Two packages in this repository are named `hoi4_re`. Resolving the wrong
+    # one would silently change which tree supplies the memory reader.
+    located = Path(hoi4_re.__file__).resolve().parent.parent
+    if located != facade_root.resolve():
+        raise ImportError(
+            f"the repository RE facade resolved to {located}, not {facade_root}"
+        )
+    return hoi4_re.load_winmem()
 
 
 class RuntimeLease:

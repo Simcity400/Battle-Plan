@@ -167,8 +167,16 @@ fn replay_workspace_declares_no_live_code_patching_dependency() {
 ///   src` as a root of its pathname-capability audit;
 /// - `replay_app/Invoke-HeadlessPerformanceAcceptance.ps1` dot-sourced
 ///   `extractor\native\scripts\ProductionArtifact.Attestation.ps1`;
-/// - `re_evidence/.../XN15L/verify_xn15l_live.py` inserts
+/// - `re_evidence/.../XN15L/verify_xn15l_live.py` inserted
 ///   `extractor/native/scripts` into `sys.path`.
+///
+/// Two live-tooling reaches survived that first pass because relocation alone
+/// could not fix them: the regrader above, and `tools/hoi4_re/runtime_ops.py`
+/// composing a path to the acquisition side's `winmem`. Both are now routed
+/// through `<repo>/tools/hoi4_re`, a facade at the repository root that is owned
+/// by neither tree and that delegates to the helpers where they live. The
+/// helpers did not move — a live-process memory reader is acquisition code by
+/// nature — so the allowlist below carries no live-tooling entry at all.
 ///
 /// So the rule is stated over the text instead: no file the replay side ships,
 /// tests, or runs may NAME a path under the acquisition tree outside a
@@ -280,29 +288,6 @@ fn is_allowed_extractor_path_mention(relative: &str, code: &str) -> bool {
         // acquisition path. Naming the string is how it checks.
         "replay_interface/native/replay_core/src/source.rs" => {
             code.trim() == format!("assert!(!manifest.contains(\"{ACQUISITION_TREE}/\"), \"{{manifest}}\");")
-        }
-        // KNOWN, NOT FIXED. A manual regrader for a recorder capture stream
-        // that happens to live in the replay evidence tree; it imports the
-        // acquisition side's sink-reconciliation module. Nothing in the replay
-        // product or its test suite reaches it — it is invoked by hand — and
-        // relocating it moves RE evidence and changes which files the production
-        // source digest covers (it is named explicitly in
-        // portable_replay/native/scripts/ProductionArtifact.Attestation.ps1),
-        // so that is an owner decision, not a lane's.
-        "replay_interface/re_evidence/rendering_laws/xn15l/verify_xn15l_live.py" => {
-            code.trim()
-                == format!("sys.path.insert(0, str(ROOT / \"{ACQUISITION_TREE}/native/scripts\"))")
-        }
-        // KNOWN, NOT FIXED. The hoi4_re MCP server's live-memory operations
-        // import `winmem` out of the acquisition tree. `winmem` opens and reads
-        // a running hoi4.exe, so it is acquisition code by nature and moving it
-        // to the neutral layer would be the wrong direction; the honest fix is
-        // that `replay_interface/tools/hoi4_re` is RE tooling filed under the
-        // replay product, and relocating an MCP server tree is an owner
-        // decision. Nothing the replay product ships or tests imports it.
-        "replay_interface/tools/hoi4_re/runtime_ops.py" => {
-            code.trim()
-                == format!("memory_reader = workspace / \"{ACQUISITION_TREE}\" / \"memory_reader\"")
         }
         _ => false,
     }
