@@ -1678,6 +1678,7 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "d95_land_abandoned_pending",
     "d95_land_admitted",
     "d95_land_frames_without_enumeration",
+    "d95_land_frames_producer_gate_closed",
     "d95_taskforce_candidates_seen",
     "d95_taskforce_rejected_unreadable_handle",
     "d95_taskforce_rejected_below_intel_threshold",
@@ -1686,6 +1687,8 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "d95_taskforce_abandoned_pending",
     "d95_taskforce_admitted",
     "d95_taskforce_frames_without_enumeration",
+    "d95_taskforce_frames_producer_gate_closed",
+    "d95_taskforce_frames_source_collection_empty",
 ];
 
 /// Domain 61 publishes one unit per pinned engine channel, named

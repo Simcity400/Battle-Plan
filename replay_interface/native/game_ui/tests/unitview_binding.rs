@@ -21,7 +21,9 @@
 //!     Div 101 `location_province`: `1000` (tick<4), `1001` (tick<8), else
 //!     `2000`; `moving = tick<8`.
 //!   * `fx_naval_air_activity` — task force `501:1` (owner ENG, fleet `500`,
-//!     mission `patrol`, `dominant_hull_class "capital"`, `location_province
+//!     mission `PATROL` — the generator's `mission_name`, which is the engine
+//!     enum token `replay_core`'s `MISSION_NAMES[1]` derives, upper case —
+//!     `dominant_hull_class "capital"`, `location_province
 //!     3000`, `ship_count = 8 + tick`, no inline `ships` array → Absent) and air
 //!     wing `800:1` (owner ENG, name `Fighter Wing`, `count = 100 + tick`,
 //!     mission `air_superiority`, strategic_region `301`, air_base `3000:1`,
@@ -206,7 +208,14 @@ fn naval_task_force_panel_binds_fixture_ground_truth() {
         assert!(tf.available, "naval view available @h{hour}");
         assert_eq!(tf.owner.as_deref(), Some("ENG"));
         assert_eq!(tf.fleet_uid.as_deref(), Some("500"));
-        assert_eq!(tf.mission.as_deref(), Some("patrol"));
+        // The mission name is the engine ENUM TOKEN, upper case. `replay_core`
+        // derives it from `mission_enum` through its `MISSION_NAMES` table, the
+        // fixture generator emits the same spelling, and the binding passes the
+        // value through untransformed -- so the table's spelling is the only
+        // correct one here. (Why this expectation was ever lower case is not
+        // recorded: no lower-case `mission_name` appears anywhere in the
+        // generator's history.)
+        assert_eq!(tf.mission.as_deref(), Some("PATROL"));
         assert_eq!(tf.dominant_hull_class.as_deref(), Some("capital"));
         assert_eq!(tf.location_province, Some(3000));
         // VIEW GAP: no task-force custom name surfaced.
