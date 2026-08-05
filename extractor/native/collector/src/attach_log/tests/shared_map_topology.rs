@@ -226,7 +226,7 @@ fn only_a_consumer_that_did_not_perform_the_walk_owes_the_extra_proofs() {
 // ---------------------------------------------------------------------
 
 const MAP_GS: usize = 0x0000;
-const MAP_PROVINCE_ARRAY: usize = 0x1000;
+pub(super) const MAP_PROVINCE_ARRAY: usize = 0x1000;
 const MAP_STATES: usize = 0x18000;
 const MAP_PROVINCES: usize = 0xC0000;
 const MAP_STATE_STRIDE: usize = 0xD0;
@@ -246,7 +246,7 @@ const MAP_HEAP_LEN: usize =
 /// slot and the `gs+0x468` word agreeing, `read_authenticated_scheduler_clock`
 /// returns `None`, every bracket opens `ClockUnreadable`, and the cache refuses
 /// every consumer for a reason that has nothing to do with what is being asked.
-fn staged_map_fixture() -> CollectorStateFixture {
+pub(super) fn staged_map_fixture() -> CollectorStateFixture {
     let mut fixture = CollectorStateFixture::new(
         &[compact_contract::build_profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA],
         0x1000,
@@ -307,7 +307,7 @@ fn staged_map_fixture() -> CollectorStateFixture {
 
 /// A lane tracker whose clock roots are the fixture's, so a bracket opened
 /// against it reads the same authenticated word the cache does.
-fn lanes_for(state: &CollectorState) -> FrameLaneTracker {
+pub(super) fn lanes_for(state: &CollectorState) -> FrameLaneTracker {
     FrameLaneTracker::new(
         Instant::now(),
         Instant::now(),
@@ -316,7 +316,7 @@ fn lanes_for(state: &CollectorState) -> FrameLaneTracker {
     )
 }
 
-fn cache_for(state: &CollectorState, game_hour_raw: i32) -> CompactFrameMapTopologyCache {
+pub(super) fn cache_for(state: &CollectorState, game_hour_raw: i32) -> CompactFrameMapTopologyCache {
     CompactFrameMapTopologyCache::from_clock_roots(
         state.base,
         state.date_ptr as usize + GS_CURRENT_DATE_OFFSET,
