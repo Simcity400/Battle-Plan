@@ -3354,13 +3354,14 @@ fn synthetic_structural_d71_passive_gate() {
         {
             param($Value)
             $firstProperty = @($Value.compact_stream.per_domain.PSObject.Properties)[0]
-            # Bit 15, not 14. Bit 14 is COMPACT_STATUS_SOURCE_EMPTY, an
-            # ASSIGNED informational status (the domain's read reached its
-            # source and the answer was empty), so promotion correctly accepts
-            # it and this fixture would no longer produce the failure it is
-            # asserting. The rule under test is unchanged: an UNASSIGNED status
-            # bit blocks promotion.
-            $firstProperty.Value.status_flags_or = 0x8000
+            # Bit 16, not 15. Bit 15 became COMPACT_STATUS_BASELINE_CLEAR (the
+            # assigned deliberate-resync primitive) and bit 14 is
+            # COMPACT_STATUS_SOURCE_EMPTY (assigned informational), so promotion
+            # correctly accepts both and either would stop this fixture
+            # producing the failure it asserts. The rule under test is
+            # unchanged: an UNASSIGNED status bit blocks promotion, and bit 16
+            # is the lowest unassigned bit.
+            $firstProperty.Value.status_flags_or = 0x10000
         }
     & $invokeManifestPromotionFailure `
         'missing manifest speed boundary cannot be promoted' `
