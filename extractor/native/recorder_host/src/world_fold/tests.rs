@@ -23496,3 +23496,553 @@ fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
         offenders.join("\n  ")
     );
 }
+
+// ---------------------------------------------------------------------
+// D29 `ships` — an entity destroyed across the domain's OWN gap
+// ---------------------------------------------------------------------
+//
+// D29 is a keyed diff with tombstones whose fold runs
+// `replace_or_sparse_after_first`: after the first record every later one
+// MERGES, so the only thing that ever removes a ship from the world is an
+// explicit tombstone row. The collector used to drop d29's delta pin whenever
+// d29's own clock bracket was rejected; with no pin `emit_full_snapshot` is
+// true and that branch skips the tombstone sweep, so the first record after the
+// gap listed the survivors and said nothing about the casualties.
+//
+// Measured over `runs/live_unlock/t26/collector_stream.bin`: 296 d29
+// `DOMAIN_DATA` records (all with status word `0x0`), 348 `DOMAIN_GAP` records,
+// 93 post-own-gap whole snapshots, and 11 ship identities left in the folded
+// world that no later record ever removes. The collector-side repair is the
+// transactional pin gated by
+// `collector::attach_log::transactional_delta_pin_tests`; these are the
+// consumer-side gates that say what the two shapes fold to.
+
+/// A `ships` DOMAIN_DATA payload carrying `live` ships and `tombstoned` ids.
+///
+/// `observed_ship_rows` is what the READ saw, which is not the row count when
+/// the encoder suppresses unchanged rows — the fold's
+/// `ensure_row_count_with_deletes` is written over exactly that distinction, so
+/// the fixture has to state it rather than derive it from the emitted rows.
+fn d29_ships_payload_with_tombstones(
+    live: &[(u32, u32, u32, &str)],
+    tombstoned: &[u32],
+    observed_ship_rows: u32,
+) -> Vec<u8> {
+    let row_count = (live.len() + tombstoned.len()) as u32;
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, row_count);
+    c2_u32(&mut p, 0); // status_flags
+    c2_u32(&mut p, observed_ship_rows);
+    c2_u32(&mut p, 1); // observed_task_force_rows
+    c2_u32(&mut p, tombstoned.len() as u32);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0);
+    for (instance_id, task_force_id, owner, definition) in live {
+        c2_u32(&mut p, *instance_id);
+        c2_u32(
+            &mut p,
+            SHIP_ROW_FLAG_TASK_FORCE | SHIP_ROW_FLAG_DEFINITION | SHIP_ROW_FLAG_OWNER,
+        );
+        c2_u32(&mut p, *task_force_id);
+        c2_u32(&mut p, 3);
+        c2_u32(&mut p, 90_000);
+        c2_u32(&mut p, 80_000);
+        c2_u32(&mut p, 10_000);
+        c2_u32(&mut p, 2);
+        c2_u32(&mut p, *owner);
+        c2_u32(&mut p, 0);
+        push_str(&mut p, definition);
+    }
+    for instance_id in tombstoned {
+        // Every live field zeroed, which is what the deleted-row grammar
+        // requires and what `deleted_compact_ship_row` emits.
+        c2_u32(&mut p, *instance_id);
+        c2_u32(&mut p, ROW_FLAG_DELETED_LOW_BIT);
+        for _ in 0..8 {
+            c2_u32(&mut p, 0);
+        }
+        push_str(&mut p, "");
+    }
+    p
+}
+
+/// What the first d29 record after d29's own `DOMAIN_GAP` carries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ShipsPostGapShape {
+    /// What the collector emitted before the transactional pin: the pin was
+    /// dropped, `emit_full_snapshot` became true, the tombstone sweep was
+    /// skipped, and the record lists only the ships that are still alive.
+    WholeSnapshotWithoutTombstone,
+    /// What the transactional pin emits: the pin still holds the pre-gap key
+    /// set, so the sweep tombstones the ship that vanished. Ship 300 is
+    /// unchanged and therefore not carried at all.
+    PatchWithTombstone,
+    /// The control that SPELLS OUT the world the arm above must produce, by
+    /// re-asserting the surviving ship alongside the tombstone. A stream that
+    /// removed 301 folds to exactly this; one that merely failed to mention it
+    /// does not.
+    WholeSnapshotWithTombstone,
+}
+
+/// Three game-hours of d29.
+///
+/// * Hour A — the keyframe: ships 300 and 301 both reach the folded world.
+/// * Hour B — d29's own bracket was rejected, so its `DOMAIN_DATA` was replaced
+///   with a `DOMAIN_GAP`. Ship 301 is destroyed inside this window.
+/// * Hour C — the first accepted read after the gap, carried per
+///   [`ShipsPostGapShape`].
+fn d29_gap_then_delete_stream(shape: ShipsPostGapShape) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let hours = [16_959_360i64, 16_959_361, 16_959_362];
+
+    let mut push = |stream: &mut Vec<u8>, hour: i64, domain: u16, rtype: u16, payload: &[u8]| {
+        push_record(stream, seq, raw_for(hour), domain, rtype, payload);
+        seq += 1;
+    };
+
+    // Hour A — the keyframe.
+    push(
+        &mut stream,
+        hours[0],
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push(
+        &mut stream,
+        hours[0],
+        29,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &d29_ships_payload_with_tombstones(
+            &[(300, 201, 1, "destroyer_1"), (301, 201, 1, "sub_1")],
+            &[],
+            2,
+        ),
+    );
+    push(
+        &mut stream,
+        hours[0],
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    // Hour B — d29 is absent. `ingest_record` dispatches only DOMAIN_DATA and
+    // FRAME_END, so the absence is the whole of what the fold sees; the
+    // collector's H4DG gap record is accounting, not fold input.
+    push(
+        &mut stream,
+        hours[1],
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    push(
+        &mut stream,
+        hours[1],
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    // Hour C — the shapes part company.
+    push(
+        &mut stream,
+        hours[2],
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(1, "GER")]),
+    );
+    let payload = match shape {
+        ShipsPostGapShape::WholeSnapshotWithoutTombstone => {
+            d29_ships_payload_with_tombstones(&[(300, 201, 1, "destroyer_1")], &[], 1)
+        }
+        ShipsPostGapShape::PatchWithTombstone => d29_ships_payload_with_tombstones(&[], &[301], 1),
+        ShipsPostGapShape::WholeSnapshotWithTombstone => {
+            d29_ships_payload_with_tombstones(&[(300, 201, 1, "destroyer_1")], &[301], 1)
+        }
+    };
+    push(
+        &mut stream,
+        hours[2],
+        29,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &payload,
+    );
+    push(
+        &mut stream,
+        hours[2],
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    stream
+}
+
+fn fold_d29_gap_stream(stream: &[u8]) -> Vec<Value> {
+    let mut fold = WorldFold::new("d29_gap_then_delete");
+    fold.ingest_stream(stream);
+    fold.finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect()
+}
+
+fn folded_ship_ids(snapshot: &Value) -> Vec<u64> {
+    snapshot["order_of_battle"]["ships"]
+        .as_array()
+        .expect("ships array")
+        .iter()
+        .map(|ship| ship["id"].as_u64().expect("ship id"))
+        .collect()
+}
+
+/// **The consumer half of the gap/tombstone gate.** A ship destroyed while d29
+/// was gapped is removed from the folded world by the tombstone, and is NOT
+/// removed by a whole snapshot that merely omits it.
+///
+/// The second half of that sentence is the defect, asserted here rather than
+/// described: a merging fold cannot read absence as deletion, so the pre-fix
+/// producer's record leaves ship 301 in the world for the rest of the campaign.
+///
+/// What production change makes this fail: making
+/// `replace_or_sparse_after_first` return "replace" for a record after a gap
+/// (which is owner decision #90 and not this lane's to take), or dropping the
+/// `ROW_FLAG_DELETED_LOW_BIT` branch in `fold_ships`.
+#[test]
+fn a_d29_tombstone_removes_a_ship_a_post_gap_whole_snapshot_leaves_behind() {
+    let patched = fold_d29_gap_stream(&d29_gap_then_delete_stream(
+        ShipsPostGapShape::PatchWithTombstone,
+    ));
+    let unpatched = fold_d29_gap_stream(&d29_gap_then_delete_stream(
+        ShipsPostGapShape::WholeSnapshotWithoutTombstone,
+    ));
+    let spelled_out = fold_d29_gap_stream(&d29_gap_then_delete_stream(
+        ShipsPostGapShape::WholeSnapshotWithTombstone,
+    ));
+
+    assert_eq!(patched.len(), 3, "three hours are published");
+
+    // The fixture is not vacuous: hour A really did put both ships in.
+    assert_eq!(
+        folded_ship_ids(&patched[0]),
+        vec![300, 301],
+        "hour A's keyframe must publish both ships or every assertion below is over an \
+         empty world"
+    );
+    // Hour B carries no d29 record at all, and the merging fold retains.
+    assert_eq!(folded_ship_ids(&patched[1]), vec![300, 301]);
+
+    // Hour C, the decisive assertion.
+    assert_eq!(
+        folded_ship_ids(&patched[2]),
+        vec![300],
+        "the tombstone must remove ship 301 from the folded world"
+    );
+    assert_eq!(
+        folded_ship_ids(&unpatched[2]),
+        vec![300, 301],
+        "this is the defect being gated: a post-gap whole snapshot that merely OMITS the \
+         destroyed ship leaves it in the world forever, because the fold merges"
+    );
+    // The spelled-out control proves the patched arm reached the same world by
+    // deletion rather than by both arms losing ship 300 as well.
+    assert_eq!(
+        patched[2]["order_of_battle"]["ships"], spelled_out[2]["order_of_battle"]["ships"],
+        "the tombstone-only patch must fold to the same ships as the stream that re-asserts \
+         the survivor alongside the tombstone"
+    );
+}
+
+// ---------------------------------------------------------------------
+// D12 / D13 — a failed country-bundle read must not fold as a clean hour
+// ---------------------------------------------------------------------
+//
+// All eight country-bundle domains (10..=17) share ONE status word: the bundle
+// read publishes it into every DOMAIN_PERF and every DOMAIN_DATA record it
+// produces. `fold_production` has always consulted it; `fold_focus` and
+// `fold_tech` did not, so a worker-panicked bundle folded as a clean hour with
+// no problem recorded and no note.
+//
+// The producer has always assumed the opposite. `compact_delta_baseline_
+// withheld` withholds the collector's pin advance on any failure-class bit
+// precisely because "the fold discards this frame", which is only true of a
+// domain that calls `handle_compact_failure`.
+//
+// Measured over `runs/live_unlock/t26/collector_stream.bin`: all 285 d12 and
+// all 285 d13 records carry status word `0x0`, so this change moves no byte in
+// that corpus — it closes the case the corpus does not contain.
+
+/// A `tech_live` payload with no active-research rows.
+/// `(tag_db_id, completed_tech_count, research_slot_count)` per country.
+fn d13_tech_payload(live: &[(u32, u32, u32)], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, live.len() as u32);
+    c2_u32(&mut p, live.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, 1_000); // TECH_PROGRESS_SCALE_RAW
+    c2_u32(&mut p, 100_000); // TECH_LIVE_PROGRESS_SCALE_RAW
+    c2_u32(&mut p, 0); // active_count
+    for (tag, completed, slots) in live {
+        c2_u32(&mut p, *tag);
+        c2_u32(&mut p, 0b11);
+        c2_u32(&mut p, *completed);
+        c2_u32(&mut p, *slots);
+    }
+    p
+}
+
+/// A `focus_live` payload carrying one country with a measured tree and a
+/// measured completed count of zero.
+fn d12_focus_payload(live: &[(u32, &str)], status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, live.len() as u32);
+    c2_u32(&mut p, live.len() as u32);
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0); // completed_token_count
+    for (tag, tree) in live {
+        c2_u32(&mut p, *tag);
+        // tree-present | count-present | completed-list-present
+        c2_u32(&mut p, 1 | (1 << 1) | (1 << 5));
+        c2_u32(&mut p, 0); // completed_count
+        c2_u32(&mut p, 0); // progress_raw (progress flag not set)
+        push_str(&mut p, tree);
+        push_str(&mut p, "");
+        push_str(&mut p, "");
+    }
+    p
+}
+
+/// A failure-class status word on a D13 record must make the hour's research
+/// UNKNOWN and retain the accumulator, not fold as a clean measurement.
+///
+/// What production change makes this fail: removing the `handle_compact_failure`
+/// call from `fold_tech`, or moving it after the row loop where the values have
+/// already been written.
+#[test]
+fn a_failed_d13_record_does_not_fold_as_a_clean_hour() {
+    let clean = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (13, d13_tech_payload(&[(1, 10, 3)], 0)),
+        ],
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (13, d13_tech_payload(&[(1, 99, 9)], 0)),
+        ],
+    ]);
+    let failed = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (13, d13_tech_payload(&[(1, 10, 3)], 0)),
+        ],
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                13,
+                d13_tech_payload(&[(1, 99, 9)], COMPACT_STATUS_WORKER_PANIC),
+            ),
+        ],
+    ]);
+
+    // Hour 0 is identical in both, and it is what makes hour 1 a comparison
+    // between two DIFFERENT worlds rather than two empty ones.
+    assert_eq!(
+        clean[0]["countries"]["GER"]["research"]["tech_count"],
+        json!(10)
+    );
+    assert_eq!(
+        clean[1]["countries"]["GER"]["research"]["tech_count"],
+        json!(99)
+    );
+    assert_eq!(
+        failed[1]["countries"]["GER"]["research"]["tech_count"],
+        json!(10),
+        "a worker-panicked bundle must not publish its payload; the accumulator is retained"
+    );
+    let notes = failed[1]["provenance"]["notes"]
+        .as_array()
+        .expect("hour-1 notes");
+    assert!(
+        notes.iter().any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("tech_live state unknown this hour")),
+        "the failed hour must SAY d13 was unknown: {notes:?}"
+    );
+    assert!(
+        !clean[1]["provenance"]["notes"]
+            .as_array()
+            .expect("clean notes")
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("tech_live state unknown")),
+        "the clean control must not carry the unknown note"
+    );
+}
+
+/// The same law for D12 `focus_live`, which travels in the same bundle behind
+/// the same status word.
+///
+/// What production change makes this fail: removing the `handle_compact_failure`
+/// call from `fold_focus`, or reading its status word from an offset other than
+/// 16 (which is where the bundle writes it and where
+/// `decode_compact_focus_data_payload` reads it).
+#[test]
+fn a_failed_d12_record_does_not_fold_as_a_clean_hour() {
+    let clean = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (12, d12_focus_payload(&[(1, "generic_focus")], 0)),
+        ],
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (12, d12_focus_payload(&[(1, "german_focus")], 0)),
+        ],
+    ]);
+    let failed = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (12, d12_focus_payload(&[(1, "generic_focus")], 0)),
+        ],
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                12,
+                d12_focus_payload(&[(1, "german_focus")], COMPACT_STATUS_SOURCE_UNAVAILABLE),
+            ),
+        ],
+    ]);
+
+    assert_eq!(
+        clean[0]["countries"]["GER"]["focus"]["focus_tree"],
+        json!("generic_focus")
+    );
+    assert_eq!(
+        clean[1]["countries"]["GER"]["focus"]["focus_tree"],
+        json!("german_focus")
+    );
+    assert_eq!(
+        failed[1]["countries"]["GER"]["focus"]["focus_tree"],
+        json!("generic_focus"),
+        "a source-unavailable bundle must not publish its payload; the accumulator is retained"
+    );
+    let notes = failed[1]["provenance"]["notes"]
+        .as_array()
+        .expect("hour-1 notes");
+    assert!(
+        notes.iter().any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("focus_live state unknown this hour")),
+        "the failed hour must SAY d12 was unknown: {notes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// D13 roster-departure eviction
+// ---------------------------------------------------------------------
+
+/// A country that LEAVES the D18 roster must lose its `research`, and a later
+/// D13 patch must not republish it.
+///
+/// `read_country_research` walks the same filtered live roster D18 publishes,
+/// so once D18 stops naming a country D13 can never measure it again. D13
+/// deliberately has no tombstone — for it an absent country means "not measured
+/// this hour", and its fold is a per-tag MERGE that retains what it holds — so
+/// without `evict_departed_roster_domain_fields` naming `research`, the last
+/// block ever measured would publish under the numeric fallback key forever.
+/// That is the whole reason `D13_OWNED_FIELDS` exists, and this is the
+/// regression net for it: hours B and C carry patches naming only GER, exactly
+/// as the producer would emit them, and the retention that is CORRECT for an
+/// unmeasured country must not keep a DEPARTED one alive.
+///
+/// What production change makes this fail: removing `"research"` from
+/// `D13_OWNED_FIELDS`, or moving the eviction out of the D18 roster-replacement
+/// point so it never runs on an hour that carries no D13 record.
+#[test]
+fn d13_research_of_a_tag_that_left_d18_is_evicted_not_republished() {
+    let snaps = chunk1_snapshots(vec![
+        // Hour A — D18 names both; D13's keyframe measures both.
+        vec![
+            (18, country_identity_payload(&[(1, "GER"), (400, "X40")])),
+            (13, d13_tech_payload(&[(1, 10, 3), (400, 55, 1)], 0)),
+        ],
+        // Hour B — D18 shrinks to GER. D13's patch carries only GER, which is
+        // what the producer emits: 400 is no longer in the roster it walks.
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                13,
+                d13_tech_payload(&[(1, 11, 3)], COMPACT_STATUS_DELTA_DATA),
+            ),
+        ],
+        // Hour C — another patch that says nothing about 400. The merging fold
+        // retains what it is not told about, so this is where a missing
+        // eviction would publish 400's hour-A research for the third time.
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                13,
+                d13_tech_payload(&[(1, 12, 3)], COMPACT_STATUS_DELTA_DATA),
+            ),
+        ],
+    ]);
+    assert_eq!(snaps.len(), 3);
+
+    // Hour A: 400 published normally, under its D18 tag.
+    assert_eq!(
+        snaps[0]["countries"]["X40"]["research"]["tech_count"],
+        json!(55)
+    );
+    assert!(
+        !snaps[0]["countries"]
+            .as_object()
+            .expect("hour-A countries map")
+            .contains_key("400"),
+        "hour A must publish 400 under its D18 tag, not the numeric fallback key"
+    );
+
+    for (index, snapshot) in snaps.iter().enumerate().skip(1) {
+        let countries = snapshot["countries"]
+            .as_object()
+            .unwrap_or_else(|| panic!("hour {index} countries map"));
+        assert!(
+            !countries.contains_key("400"),
+            "hour {index} republished the departed country's stale d13 research under the \
+             numeric key: {:?}",
+            snapshot["countries"]["400"]
+        );
+        assert!(
+            !countries.contains_key("X40"),
+            "hour {index} published the departed tag: {:?}",
+            snapshot["countries"]["X40"]
+        );
+    }
+    // The eviction is witnessed, and the country that stayed keeps folding.
+    let notes = snaps[1]["provenance"]["notes"]
+        .as_array()
+        .expect("hour-B notes");
+    assert!(
+        notes.iter().any(|note| {
+            let note = note.as_str().unwrap();
+            note.contains("roster replacement evicted d63/d67/d48/d13 fields of 1 departed tags")
+                && note.contains("[400]")
+        }),
+        "hour B must witness the eviction: {notes:?}"
+    );
+    assert_eq!(
+        snaps[1]["countries"]["GER"]["research"]["tech_count"],
+        json!(11)
+    );
+    assert_eq!(
+        snaps[2]["countries"]["GER"]["research"]["tech_count"],
+        json!(12)
+    );
+}
