@@ -24711,7 +24711,8 @@ fn every_apply_and_account_fixture_is_a_payload_the_boundary_decoder_admits() {
             // payload production could carry, and asserting the boundary
             // admits it would assert the hole is still open.
             // `the_capture_boundary_rejects_an_unassigned_status_bit` is where
-            // that bit is now measured, across the whole 15..=31 range.
+            // that bit is now measured, across the whole unassigned 16..=31 range
+            // (bit 15 became the assigned BASELINE_CLEAR resync primitive).
         ] {
             // 100 is the clean-baseline casualties value the pre-existing d17
             // test builds; without it that one instance escapes the check.
@@ -24747,17 +24748,18 @@ fn every_apply_and_account_fixture_is_a_payload_the_boundary_decoder_admits() {
 /// is what still holds the line downstream.
 ///
 /// The whole bit range is swept, not one sample, so a gate that happened to
-/// catch bit 31 (a sign bit, easy to catch by accident) but not bit 15 cannot
+/// catch bit 31 (a sign bit, easy to catch by accident) but not bit 16 cannot
 /// pass.
 ///
 /// What production change makes this fail: removing the
 /// `reject_unassigned_status_bits` call from `summarize_domain_data_payload`, or
-/// narrowing it to a subset of bits 15..=31. The mutation is recorded in the
+/// narrowing it to a subset of bits 16..=31 (bit 15 is now the assigned
+/// `BASELINE_CLEAR` primitive with its own rules and tests). The mutation is recorded in the
 /// lane report.
 #[test]
 fn the_capture_boundary_rejects_an_unassigned_status_bit() {
     for domain in APPLY_AND_ACCOUNT_DOMAINS {
-        for bit in 15..u32::BITS {
+        for bit in 16..u32::BITS {
             let flag = 1_u32 << bit;
             let payload = (domain.payload)(1, flag);
             let error = crate::domain_data_authority::summarize_domain_data_payload(
@@ -24996,7 +24998,7 @@ fn the_degraded_note_names_exactly_the_failure_bits() {
     );
 }
 
-/// An UNASSIGNED status bit (15..=31) has no defined classification, so it is
+/// An UNASSIGNED status bit (16..=31) has no defined classification, so it is
 /// not "clean". Masking to `COMPACT_STATUS_FAILURE_MASK` alone would fold such a
 /// record as a perfectly healthy hour — the unknown-read-as-clean shape the
 /// ruling exists to end.
@@ -26091,6 +26093,12 @@ fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
         "fold_divisions",
         "fold_dynamic_collection_trace",
         "fold_focus_research_decisions_depth",
+        // fold_fuel ENTERED this set when lane BY made it read the bundle's
+        // shared status word: it now qualifies as a fold that can apply rows,
+        // and like its siblings it ignores bit 15 rather than refusing it.
+        // Nothing lost a refusal; the silence became measurable. The per-fold
+        // remedy is the recorded follow-up for this whole list.
+        "fold_fuel",
         "fold_land_combat_detail_events",
         "fold_land_combats",
         "fold_map_control",
