@@ -1290,6 +1290,10 @@ mod tests {
         let mut request = fixture_request(&root.0);
         request.verifier =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../game_defs/static_bundle.py");
+        // This is the one test that spawns the real Python verifier; interpreter
+        // startup on a loaded machine can exceed the fixture's 5 s. The assertion
+        // is about rejection, not latency, so give the subprocess ample time.
+        request.timeout = Duration::from_secs(120);
         fs::write(&request.manifest, b"{}\n").unwrap();
         let error = verify(&request).unwrap_err();
         assert!(
