@@ -1,9 +1,9 @@
 //! d17 `diplomacy_live` — per-country diplomatic standing, and a **stopped**
 //! war-graph collection.
 //!
-//! Derived from `world_fold.rs:14783`-`:14841`
+//! Derived from `world_fold.rs:14910`-`:14965`
 //! (`fold_diplomacy`), the `ascii8` token decoder it calls (`world_fold.rs::ascii8`), and the
-// @world-fold-authority domain=17 functions=fold_diplomacy lines=14783-14841 sha256=772ddef21a518b70bd31d98ca409cb3314acd736c576ba9b44b7398b2a5b4cf4
+// @world-fold-authority domain=17 functions=fold_diplomacy lines=14910-14965 sha256=a2d29c75a973e774b4768c0f9f2a6fc8e5523bd925db45b1fe283d485fd5d808
 //! collector reads and writes that produce the payload
 //! (`extractor/native/collector/src/attach_log.rs:69650`-`:69710` writer,
 //! `:80136`-`:80290` reads, `:59759`-`:59780` war-segment accounting).
@@ -566,12 +566,19 @@ impl Accumulator {
     /// stores; the at-war table is censused into the report and not stored (see
     /// the module docs' stop condition).
     ///
-    /// The caller must already have excluded failure-status records: the fold
-    /// returns at `world_fold.rs::fold_diplomacy` before reaching any of this, retaining the
-    /// accumulator. `war_segment` is the caller's reading of
+    /// A failure-status record is folded here too, and the caller accounts for
+    /// it separately. `world_fold.rs::fold_diplomacy` used to return early on any
+    /// failure bit; owner ruling 2026-08-05 replaced that discard with
+    /// apply-and-account (`world_fold.rs::record_degraded_rows_applied`), because
+    /// the rows a partly-failed read produced are real and throwing them away
+    /// loses measured state. A caller that mirrors the fold must therefore fold
+    /// the rows AND record the failure; a caller that only wants clean frames
+    /// must filter them out itself, since this function no longer refuses them.
+    ///
+    /// `war_segment` is the caller's reading of
     /// `COMPACT_STATUS_WAR_SEGMENT_ABSENT`; that bit is informational and is
     /// **not** part of the failure mask (`world_fold.rs::fold_diplomacy`), so a frame carrying
-    /// it is data and must be folded.
+    /// it is data, is folded, and is NOT a degradation.
     ///
     /// On `Err` the accumulator is left as it was, so a caller that reports the
     /// error and stops is not left holding a half-folded frame: every row is

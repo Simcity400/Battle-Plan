@@ -19389,32 +19389,126 @@ fn w6_d69_tech_sharing_groups_partial_data_retains_prior() {
     );
 }
 
+/// How many distinct relation tokens [`diplomacy_payload`] can mint: every
+/// three-digit base-36 string, `000` through `ZZZ`. Shared with the test that
+/// proves the range is collision-free, so the test cannot check a smaller range
+/// than the builder promises.
+const DIPLOMACY_MAX_DISTINCT_RELATION_TOKENS: u32 = 36 * 36 * 36;
+
 fn diplomacy_payload(status_flags: u32, rows: &[(u32, i32, u32, i64)]) -> Vec<u8> {
     // Header: elapsed(u64) country_count(u32) country_count(u32) status(u32)
-    // relation_count(u32); rows: tag(u32) flags(u32) faction(i32)
-    // at_war_count(u32) casualties(i64).
+    // relation_count(u32); country rows: tag(u32) flags(u32) faction(i32)
+    // at_war_count(u32) casualties(i64); then relation rows: tag(u32)
+    // token_len(u32) token(8 bytes, zero-padded).
+    //
+    // `relation_count` is DERIVED from the rows' `at_war_count`s and the matching
+    // relation rows are emitted, because the production payload decoder rejects
+    // any other shape: `decode_compact_diplomacy_data_payload` sums the country
+    // rows' `at_war_count` and fails the payload when the total disagrees with
+    // the header's `relation_count`, and the collector's own encoder
+    // (`attach_log.rs::compact_diplomacy_data_payload`) derives the same count
+    // from the `at_war` lists it is about to write. A fixture that declared wars
+    // with no relation rows would only fold because `ingest_stream` skips
+    // boundary validation, and would prove nothing about a real record.
     let mut payload = Vec::new();
+    let relation_count: u32 = rows.iter().map(|&(_, _, at_war_count, _)| at_war_count).sum();
     payload.extend_from_slice(&5u64.to_le_bytes());
     payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
     payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&relation_count.to_le_bytes());
     for &(tag, faction, at_war_count, casualties) in rows {
         payload.extend_from_slice(&tag.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        // Bit 0: the at-war list is present. The decoder rejects `flags & !0b11`,
+        // and a declared war with the list bit clear is not a shape the
+        // collector writes.
+        payload.extend_from_slice(&if at_war_count > 0 { 1u32 } else { 0u32 }.to_le_bytes());
         payload.extend_from_slice(&faction.to_le_bytes());
         payload.extend_from_slice(&at_war_count.to_le_bytes());
         payload.extend_from_slice(&casualties.to_le_bytes());
     }
+    for &(tag, _, at_war_count, _) in rows {
+        // Three-byte tokens, base-36, so every index below the stated bound gets
+        // a DISTINCT token. The decoder rejects a duplicated (tag_db_id, token)
+        // pair, so a builder that wrapped its counter would silently start
+        // producing inadmissible payloads at some caller's row count rather than
+        // at an obvious boundary. Three bytes because that is the width
+        // production writes (`is_country_tag` admits exactly three, and d17's
+        // `COLLECTOR_TOKEN_LEN` is 3).
+        assert!(
+            at_war_count <= DIPLOMACY_MAX_DISTINCT_RELATION_TOKENS,
+            "diplomacy_payload cannot mint {at_war_count} distinct 3-byte relation tokens \
+             (max {DIPLOMACY_MAX_DISTINCT_RELATION_TOKENS}); widen the token before asking for more"
+        );
+        for index in 0..at_war_count {
+            const ALPHABET: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            let mut token = [0u8; 8];
+            token[0] = ALPHABET[((index / 1296) % 36) as usize];
+            token[1] = ALPHABET[((index / 36) % 36) as usize];
+            token[2] = ALPHABET[(index % 36) as usize];
+            payload.extend_from_slice(&tag.to_le_bytes());
+            payload.extend_from_slice(&3u32.to_le_bytes());
+            // Bytes 3..8 stay zero: the decoder rejects nonzero padding past
+            // `token_len`, and every emitted byte is ascii-alphanumeric, which
+            // is the token byte set it admits.
+            payload.extend_from_slice(&token);
+        }
+    }
     payload
 }
 
+/// The relation-token minter really is collision-free across its stated range.
+///
+/// The production decoder rejects a duplicated `(tag_db_id, token)` pair, so a
+/// wrapping counter would make `diplomacy_payload` start emitting inadmissible
+/// payloads at some future caller's row count — silently, because today's
+/// callers ask for two relations. This pins the property instead of the sample.
+///
+/// What production change makes this fail: reintroducing a modulus smaller than
+/// the asserted bound in the token minter, or narrowing the alphabet.
 #[test]
-fn d17_diplomacy_failure_frames_do_not_mutate_state_but_war_segment_absent_folds() {
-    // G1-residue gate finding 3: fold_diplomacy previously ignored its status
-    // word, so a failing d17 record folded as authoritative. A failure frame
-    // (even combined with the informational WAR_SEGMENT_ABSENT bit) must
-    // leave diplomacy unchanged; WAR_SEGMENT_ABSENT ALONE must fold normally.
+fn diplomacy_relation_tokens_are_distinct_across_the_builders_whole_range() {
+    // The WHOLE asserted range, not a sample of it: a minter that wrapped at
+    // any point below the bound would pass a smaller check and then emit
+    // decoder-rejected payloads at the first caller that crossed it. 46,656
+    // relations is a ~750 KB payload, which is cheap.
+    let count = DIPLOMACY_MAX_DISTINCT_RELATION_TOKENS;
+    let payload = diplomacy_payload(0, &[(1, 7, count, 0)]);
+    let header = 24usize;
+    let country_rows = header + 24;
+    let mut seen = std::collections::BTreeSet::new();
+    for index in 0..count as usize {
+        let base = country_rows + index * 16;
+        let token = payload[base + 8..base + 16].to_vec();
+        assert!(
+            token[..3].iter().all(|b| b.is_ascii_alphanumeric()),
+            "relation {index} token is not the byte set the decoder admits: {token:?}"
+        );
+        assert!(
+            token[3..].iter().all(|b| *b == 0),
+            "relation {index} has nonzero padding: {token:?}"
+        );
+        assert!(seen.insert(token.clone()), "relation {index} duplicates {token:?}");
+    }
+    assert_eq!(seen.len(), count as usize);
+    assert!(
+        crate::domain_data_authority::summarize_domain_data_payload(
+            17,
+            &payload,
+            crate::domain_data_authority::DomainDataContext::default(),
+        )
+        .is_ok(),
+        "and the whole 4096-relation payload is one the boundary decoder admits"
+    );
+}
+
+#[test]
+fn d17_failure_frames_are_applied_and_accounted_but_war_segment_absent_is_silent() {
+    // G1-residue gate finding 3 made fold_diplomacy read its status word at
+    // all; it then DISCARDED a failing record whole. Owner ruling 2026-08-05
+    // replaces the discard with apply-and-account: the surviving rows fold, and
+    // the failure lands on the fold ledger. WAR_SEGMENT_ABSENT is informational
+    // and folds silently on its own, exactly as before.
     let mut stream = Vec::new();
     let mut seq = 1u64;
     for (frame, status, casualties) in [
@@ -19423,8 +19517,8 @@ fn d17_diplomacy_failure_frames_do_not_mutate_state_but_war_segment_absent_folds
             1,
             COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_WAR_SEGMENT_ABSENT,
             999,
-        ), // failure -> must NOT fold
-        (2, COMPACT_STATUS_WAR_SEGMENT_ABSENT, 555), // informational alone -> folds
+        ), // failure -> folds, and lands on the ledger
+        (2, COMPACT_STATUS_WAR_SEGMENT_ABSENT, 555), // informational alone -> folds silently
     ] {
         let raw = raw_for(16_959_360 + frame);
         push_record(
@@ -19468,14 +19562,31 @@ fn d17_diplomacy_failure_frames_do_not_mutate_state_but_war_segment_absent_folds
     let frame2 = parse(&snaps[1].2);
     assert_eq!(
         frame2["countries"]["GER"]["diplomacy"]["casualties"],
-        json!(100),
-        "a failure-status d17 frame must not replace diplomacy state"
+        json!(999),
+        "a failure-status d17 frame's surviving rows are applied (owner ruling 2026-08-05)"
+    );
+    assert!(
+        frame2["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .expect("domain_problems")
+            .iter()
+            .any(|entry| entry["domain_id"] == json!(17)
+                && entry["problem"] == json!("compact_status_failure_rows_applied")),
+        "...and the failure is accounted for against d17 on that hour's ledger"
     );
     let frame3 = parse(&snaps[2].2);
     assert_eq!(
         frame3["countries"]["GER"]["diplomacy"]["casualties"],
         json!(555),
         "WAR_SEGMENT_ABSENT alone is informational and must fold"
+    );
+    assert!(
+        frame3["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .expect("domain_problems")
+            .iter()
+            .all(|entry| entry["domain_id"] != json!(17)),
+        "...and leaves no ledger entry at all"
     );
 }
 
@@ -23942,6 +24053,569 @@ fn a_failed_d12_record_does_not_fold_as_a_clean_hour() {
             .unwrap()
             .contains("focus_live state unknown this hour")),
         "the failed hour must SAY d12 was unknown: {notes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// D10/D14/D15/D16/D17 — apply the surviving rows, and account for the failure
+// ---------------------------------------------------------------------
+//
+// Owner ruling 2026-08-05. The country bundle's eight domains share ONE status
+// word, and the collector's `current_politics_rows_sharded` publishes REAL
+// surviving rows with `WORKER_PANIC` set — a panicked shard, not an unusable
+// read. For d10/d14/d15/d16/d17 the fold therefore KEEPS those rows (partial
+// data still seals) and records the failure against the domain-hour so a
+// panic-hour is distinguishable downstream from a clean one.
+//
+// This is NOT the d12/d13 rule directly above, which discards. It is also not
+// the status quo: four of these five never read the word at all, and d17 read
+// it and discarded the record whole (the 2026-07-12 G1-residue fix), which
+// threw away rows the read had actually produced.
+//
+// One mechanism, five call sites: `WorldFold::record_degraded_rows_applied`.
+// The failure/informational split comes from `compact_contract`'s
+// `COMPACT_STATUS_FAILURE_MASK`, and the names written into the note come from
+// `COMPACT_STATUS_V1_FLAG_SPECS` — so d17's `WAR_SEGMENT_ABSENT`, which
+// production sets on EVERY d17 record, cannot be re-classified by a local list.
+
+/// Overwrite a country-bundle payload's shared status word.
+///
+/// All eight bundle domains write it at `+16`
+/// (`attach_log.rs::compact_fuel_data_payload` and its five siblings), so one
+/// patcher serves every fixture here — and a fold that read its status from
+/// some other offset would fail every test below.
+fn with_bundle_status(mut payload: Vec<u8>, status_flags: u32) -> Vec<u8> {
+    payload[16..20].copy_from_slice(&status_flags.to_le_bytes());
+    payload
+}
+
+/// One d16 `decisions_live` country row carrying `active_timed = value`.
+/// Header 24 bytes, row 32 (`attach_log.rs::compact_decisions_data_payload`).
+fn d16_decisions_payload(value: u32, status_flags: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0); // elapsed_wall_ms
+    c2_u32(&mut p, 1); // country_count
+    c2_u32(&mut p, 1); // changed_rows
+    c2_u32(&mut p, status_flags);
+    c2_u32(&mut p, 0); // timed_count
+    c2_u32(&mut p, 1); // tag_db_id
+    c2_u32(&mut p, 1 | (1 << 1)); // status_present | timed_live present
+    c2_u32(&mut p, value); // active_timed
+    c2_u32(&mut p, 0); // active_targeted
+    c2_u32(&mut p, 0); // active_targeted_timed
+    c2_u32(&mut p, 0); // decisions_taken_bucket
+    c2_u32(&mut p, 0); // decision_to_re_enable
+    c2_u32(&mut p, 0); // per-row timed count
+    p
+}
+
+fn d10_apply_payload(value: u32, status_flags: u32) -> Vec<u8> {
+    with_bundle_status(
+        fuel_payload(&[(1, i64::from(value) * 32_768, 0, 0, 0)]),
+        status_flags,
+    )
+}
+
+/// `value` is the popularity's RAW fixed-point word, not a whole percentage:
+/// the production decoder bounds a popularity raw to `0..=FIXED_SCALE*100`
+/// (`domain_data_authority.rs::decode_compact_politics_data_payload`), so a
+/// fixture that multiplied by `FIXED_SCALE` would be inadmissible for anything
+/// past 100 and would only fold because `ingest_stream` skips validation.
+fn d14_apply_payload(value: u32, status_flags: u32) -> Vec<u8> {
+    with_bundle_status(
+        politics_payload(
+            1,
+            D14_FLAG_POPULARITIES,
+            &[("neutrality", value as i32)],
+            &[],
+            &[],
+            &[],
+        ),
+        status_flags,
+    )
+}
+
+/// d15's varying measurement is a BOOLEAN. The production decoder admits only
+/// `0`, `1`, or the `u32::MAX` unmeasured sentinel in the elections-allowed word
+/// (`domain_data_authority.rs::decode_compact_politics_residuals_data_payload`),
+/// so `value` is narrowed to a measured true/false rather than packed raw —
+/// otherwise the fixture would be a record no capture could contain.
+fn d15_apply_payload(value: u32, status_flags: u32) -> Vec<u8> {
+    with_bundle_status(
+        politics_residuals_payload(&[(
+            1,
+            D15_FLAG_LAST_ELECTION | D15_FLAG_ELECTIONS_ALLOWED,
+            u32::from(value != 0),
+            "1936.1.1.1",
+        )]),
+        status_flags,
+    )
+}
+
+fn d16_apply_payload(value: u32, status_flags: u32) -> Vec<u8> {
+    with_bundle_status(d16_decisions_payload(value, 0), status_flags)
+}
+
+fn d17_apply_payload(value: u32, status_flags: u32) -> Vec<u8> {
+    with_bundle_status(
+        diplomacy_payload(0, &[(1, 7, 2, i64::from(value))]),
+        status_flags,
+    )
+}
+
+struct ApplyAndAccountDomain {
+    domain_id: u16,
+    wire_name: &'static str,
+    payload: fn(u32, u32) -> Vec<u8>,
+    observe: fn(&Value) -> Value,
+    expect: fn(u32) -> Value,
+}
+
+const APPLY_AND_ACCOUNT_DOMAINS: &[ApplyAndAccountDomain] = &[
+    ApplyAndAccountDomain {
+        domain_id: 10,
+        wire_name: "fuel_live",
+        payload: d10_apply_payload,
+        observe: |snap| snap["countries"]["GER"]["fuel"]["current"].clone(),
+        expect: |value| json!(f64::from(value)),
+    },
+    ApplyAndAccountDomain {
+        domain_id: 14,
+        wire_name: "politics_live",
+        payload: d14_apply_payload,
+        observe: |snap| snap["countries"]["GER"]["politics"]["party_popularities"]["neutrality"]
+            .clone(),
+        // The fold divides the raw word by `FIXED_SCALE`.
+        expect: |value| json!(f64::from(value) / FIXED_SCALE),
+    },
+    ApplyAndAccountDomain {
+        domain_id: 15,
+        wire_name: "politics_residuals",
+        payload: d15_apply_payload,
+        observe: |snap| snap["countries"]["GER"]["politics"]["elections_allowed"].clone(),
+        expect: |value| json!(value != 0),
+    },
+    ApplyAndAccountDomain {
+        domain_id: 16,
+        wire_name: "decisions_live",
+        payload: d16_apply_payload,
+        observe: |snap| snap["countries"]["GER"]["decisions"]["status_present"]["active_timed"]
+            .clone(),
+        expect: |value| json!(value),
+    },
+    ApplyAndAccountDomain {
+        domain_id: 17,
+        wire_name: "diplomacy_live",
+        payload: d17_apply_payload,
+        observe: |snap| snap["countries"]["GER"]["diplomacy"]["casualties"].clone(),
+        expect: |value| json!(value),
+    },
+];
+
+/// Every `{domain_id, problem}` pair on an hour's fold ledger.
+fn ledger_problems(snapshot: &Value) -> Vec<(u16, String)> {
+    snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .expect("domain_problems is always present")
+        .iter()
+        .map(|entry| {
+            (
+                entry["domain_id"].as_u64().expect("domain_id") as u16,
+                entry["problem"].as_str().expect("problem").to_string(),
+            )
+        })
+        .collect()
+}
+
+fn hour_notes(snapshot: &Value) -> Vec<String> {
+    snapshot["provenance"]["notes"]
+        .as_array()
+        .expect("notes are always present")
+        .iter()
+        .map(|note| note.as_str().expect("note is a string").to_string())
+        .collect()
+}
+
+/// Every fixture below is a payload the PRODUCTION boundary decoder accepts.
+///
+/// `WorldFold::ingest_stream` does not run boundary validation, so a fold test
+/// can happily fold a payload no capture could ever contain — and then it
+/// proves nothing about production. `summarize_domain_data_payload` is the
+/// decoder the capture boundary actually runs, and it is stricter than the fold
+/// (d17, for one, rejects a country row that declares wars the header's
+/// `relation_count` does not account for). Running the fixtures through it is
+/// what makes the tests below evidence rather than self-agreement.
+///
+/// What production change makes this fail: tightening any of the five payload
+/// decoders in `domain_data_authority.rs` in a way the fixtures no longer
+/// satisfy — at which point the fold tests are testing an impossible record and
+/// must be re-based, which is exactly what this is here to force.
+#[test]
+fn every_apply_and_account_fixture_is_a_payload_the_boundary_decoder_admits() {
+    // Every (value, status) pair any test in this section builds. Enumerated
+    // rather than sampled so a fixture instance cannot escape the check by
+    // being constructed with an argument this test does not try.
+    for domain in APPLY_AND_ACCOUNT_DOMAINS {
+        for status in [
+            0,
+            COMPACT_STATUS_WORKER_PANIC,
+            COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+            COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_WAR_SEGMENT_ABSENT,
+            COMPACT_STATUS_WORKER_PANIC
+                | COMPACT_STATUS_SOURCE_UNAVAILABLE
+                | COMPACT_STATUS_WAR_SEGMENT_ABSENT
+                | COMPACT_STATUS_DELTA_DATA,
+            1 << 31,
+        ] {
+            // 100 is the clean-baseline casualties value the pre-existing d17
+            // test builds; without it that one instance escapes the check.
+            for value in [0u32, 1, 42, 77, 100, 555, 999] {
+            let payload = (domain.payload)(value, status);
+            let result = crate::domain_data_authority::summarize_domain_data_payload(
+                domain.domain_id,
+                &payload,
+                crate::domain_data_authority::DomainDataContext::default(),
+            );
+            assert!(
+                result.is_ok(),
+                "{} fixture (value {value}, status {status:#x}) is not a payload production \
+                 could carry: {:?}",
+                domain.wire_name,
+                result.err().map(|error| error.errors),
+            );
+            }
+        }
+    }
+}
+
+/// The boundary decoder admits an UNASSIGNED status bit on all five domains.
+///
+/// This is the measurement that makes `record_degraded_rows_applied`'s
+/// unassigned-bit term load-bearing rather than belt-and-braces: if the capture
+/// boundary rejected such a record, the fold would never see one and the term
+/// would be dead code. It does not reject it — `summarize_domain_data_payload`
+/// accumulates the raw word and none of these five decoders calls
+/// `compact_status_unknown_flags_v1` — so the fold is the last place that can
+/// notice, and the assertion above (that it does) is the only thing standing
+/// between an unassigned bit and a clean-looking hour.
+///
+/// What production change makes this fail: adding an unknown-status rejection to
+/// any of the five payload decoders in `domain_data_authority.rs`. That would be
+/// a strictly better place for it — and at that point the fold's term becomes
+/// unreachable and this pair of tests is what says so.
+#[test]
+fn the_capture_boundary_does_not_reject_an_unassigned_status_bit() {
+    for domain in APPLY_AND_ACCOUNT_DOMAINS {
+        let payload = (domain.payload)(1, 1 << 31);
+        assert!(
+            crate::domain_data_authority::summarize_domain_data_payload(
+                domain.domain_id,
+                &payload,
+                crate::domain_data_authority::DomainDataContext::default(),
+            )
+            .is_ok(),
+            "{}: if the boundary DID reject this, the fold's unassigned-bit term would be \
+             unreachable and should be removed rather than kept",
+            domain.wire_name,
+        );
+    }
+}
+
+/// Two hours of the same domain: a clean baseline, then the same domain
+/// carrying `WORKER_PANIC` with a DIFFERENT measurement. The second hour must
+/// publish the new measurement (the rows survived the panicked shard) and the
+/// ledger must name the failure against that domain.
+///
+/// What production change makes this fail:
+///   * removing the `record_degraded_rows_applied` call from any one fold — the
+///     failing domain is named in the assertion message;
+///   * reverting d17 to the discard it did before the ruling — hour 1 would
+///     republish hour 0's casualties;
+///   * dropping the `record_domain_problem` line from
+///     `record_degraded_rows_applied` (the mutation run recorded in
+///     `the_ledger_entry_is_what_makes_a_panic_hour_distinguishable`);
+///   * dropping the `note` line, which is the only place the bit NAMES appear;
+///   * reading the status word from an offset other than +16.
+#[test]
+fn a_degraded_record_keeps_its_rows_and_the_ledger_names_the_failure() {
+    for domain in APPLY_AND_ACCOUNT_DOMAINS {
+        let snaps = chunk1_snapshots(vec![
+            vec![
+                (18, country_identity_payload(&[(1, "GER")])),
+                (domain.domain_id, (domain.payload)(0, 0)),
+            ],
+            vec![
+                (18, country_identity_payload(&[(1, "GER")])),
+                (
+                    domain.domain_id,
+                    (domain.payload)(1, COMPACT_STATUS_WORKER_PANIC),
+                ),
+            ],
+        ]);
+        assert_eq!(snaps.len(), 2);
+        let name = domain.wire_name;
+
+        assert_eq!(
+            (domain.observe)(&snaps[0]),
+            (domain.expect)(0),
+            "{name}: the clean baseline hour must fold its measurement"
+        );
+        assert_eq!(
+            (domain.observe)(&snaps[1]),
+            (domain.expect)(1),
+            "{name}: a worker-panicked record's surviving rows must still be applied \
+             (partial data still seals), not discarded and not replaced by the accumulator"
+        );
+
+        let problems = ledger_problems(&snaps[1]);
+        assert!(
+            problems.contains(&(
+                domain.domain_id,
+                "compact_status_failure_rows_applied".to_string()
+            )),
+            "{name}: the degraded domain-hour must be on the fold ledger: {problems:?}"
+        );
+        let notes = hour_notes(&snaps[1]);
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains(name) && note.contains("worker_panic")),
+            "{name}: the hour's notes must NAME the failure bit: {notes:?}"
+        );
+    }
+}
+
+/// The control: a clean record leaves the ledger untouched. Without this, a
+/// mechanism that recorded unconditionally would pass the test above and make
+/// every hour look degraded.
+///
+/// What production change makes this fail: recording without checking the
+/// failure flags, or widening `COMPACT_STATUS_FAILURE_MASK` to cover a bit a
+/// clean record carries.
+#[test]
+fn a_clean_record_leaves_no_ledger_entry_in_any_apply_and_account_domain() {
+    for domain in APPLY_AND_ACCOUNT_DOMAINS {
+        let snapshot = chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (domain.domain_id, (domain.payload)(1, 0)),
+        ]);
+        let name = domain.wire_name;
+        assert_eq!(
+            (domain.observe)(&snapshot),
+            (domain.expect)(1),
+            "{name}: a clean record folds"
+        );
+        let problems = ledger_problems(&snapshot);
+        assert!(
+            !problems
+                .iter()
+                .any(|(domain_id, problem)| *domain_id == domain.domain_id
+                    && problem == "compact_status_failure_rows_applied"),
+            "{name}: a clean record must leave no degraded-hour ledger entry: {problems:?}"
+        );
+        let notes = hour_notes(&snapshot);
+        assert!(
+            !notes
+                .iter()
+                .any(|note| note.contains("recorded degraded")),
+            "{name}: a clean record must leave no degraded-hour note: {notes:?}"
+        );
+    }
+}
+
+/// `WAR_SEGMENT_ABSENT` (1<<13) rides on EVERY production d17 record — all
+/// t26 d17 records carry it — and it is deliberately outside
+/// `COMPACT_STATUS_FAILURE_MASK`: it says the war-relations SEGMENT did not
+/// capture, which is a first-class observation, not a failed read. Recording it
+/// as a failure would mark every diplomacy hour of every capture degraded.
+///
+/// What production change makes this fail: adding `COMPACT_STATUS_WAR_SEGMENT
+/// _ABSENT` to `COMPACT_STATUS_FAILURE_MASK`, or giving the fold its own
+/// hand-written failure list that includes it.
+#[test]
+fn d17_war_segment_absent_is_informational_and_never_reaches_the_ledger() {
+    assert!(
+        !compact_contract::compact_status_is_failure(COMPACT_STATUS_WAR_SEGMENT_ABSENT),
+        "the contract, not this fold, is what classifies the bit"
+    );
+    let snapshot = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (17, d17_apply_payload(555, COMPACT_STATUS_WAR_SEGMENT_ABSENT)),
+    ]);
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(555),
+        "an informational-only d17 record folds exactly as a clean one does"
+    );
+    assert_eq!(
+        ledger_problems(&snapshot)
+            .into_iter()
+            .filter(|(domain_id, problem)| *domain_id == 17
+                && problem == "compact_status_failure_rows_applied")
+            .count(),
+        0,
+        "WAR_SEGMENT_ABSENT must never be recorded as a failure"
+    );
+    assert!(
+        !hour_notes(&snapshot)
+            .iter()
+            .any(|note| note.contains("war_segment_absent")),
+        "an informational bit is not a degradation and is not named as one"
+    );
+}
+
+/// The note names EVERY failure bit set and NO informational one, from the
+/// contract's own spec table. This is what makes the ledger entry actionable —
+/// "degraded" without the cause is the thing the ruling exists to end.
+///
+/// What production change makes this fail: naming the whole status word instead
+/// of the failure subset (`delta_data`/`war_segment_absent` would appear), or
+/// replacing `compact_status_flag_names` with a local literal list that drifts.
+#[test]
+fn the_degraded_note_names_exactly_the_failure_bits() {
+    let status = COMPACT_STATUS_WORKER_PANIC
+        | COMPACT_STATUS_SOURCE_UNAVAILABLE
+        | COMPACT_STATUS_WAR_SEGMENT_ABSENT
+        | COMPACT_STATUS_DELTA_DATA;
+    let snapshot = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (17, d17_apply_payload(42, status)),
+    ]);
+    let note = hour_notes(&snapshot)
+        .into_iter()
+        .find(|note| note.contains("diplomacy_live") && note.contains("recorded degraded"))
+        .expect("the degraded d17 hour must carry its note");
+    assert!(note.contains("worker_panic"), "{note}");
+    assert!(note.contains("source_unavailable"), "{note}");
+    assert!(
+        !note.contains("war_segment_absent"),
+        "an informational bit must not be reported as a cause of degradation: {note}"
+    );
+    assert!(
+        !note.contains("delta_data"),
+        "an informational bit must not be reported as a cause of degradation: {note}"
+    );
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(42),
+        "the rows are applied all the same"
+    );
+}
+
+/// An UNASSIGNED status bit (15..=31) has no defined classification, so it is
+/// not "clean". Masking to `COMPACT_STATUS_FAILURE_MASK` alone would fold such a
+/// record as a perfectly healthy hour, because none of the five payload
+/// decoders rejects an unassigned bit for these domains — the same
+/// unknown-read-as-clean shape the ruling exists to end.
+///
+/// The rows still fold (an unassigned bit is not evidence the rows are bad, and
+/// the ruling's rule is apply-and-account), and the hour is recorded degraded
+/// with the offending mask spelled out.
+///
+/// What production change makes this fail: dropping the
+/// `compact_status_unknown_flags_v1` term from `record_degraded_rows_applied`,
+/// or assigning bit 31 in `COMPACT_STATUS_V1_KNOWN_MASK` without revisiting
+/// this.
+#[test]
+fn an_unassigned_status_bit_is_recorded_degraded_rather_than_folded_as_clean() {
+    let unassigned = 1u32 << 31;
+    assert_eq!(
+        compact_contract::compact_status_unknown_flags_v1(unassigned),
+        unassigned,
+        "the contract, not this fold, is what says the bit is unassigned"
+    );
+    assert!(
+        !compact_contract::compact_status_is_failure(unassigned),
+        "and the failure mask alone would call it clean -- that is the gap"
+    );
+    let snapshot = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (17, d17_apply_payload(77, unassigned)),
+    ]);
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"]["casualties"],
+        json!(77),
+        "the rows still fold"
+    );
+    assert!(
+        ledger_problems(&snapshot).contains(&(17, "compact_status_failure_rows_applied".to_string())),
+        "but the hour is recorded degraded"
+    );
+    let notes = hour_notes(&snapshot);
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("unassigned:0x80000000")),
+        "and the note names the offending mask: {notes:?}"
+    );
+}
+
+/// The mutation net for the central mechanism, kept as its own named test so
+/// the mutation run has a single target to quote.
+///
+/// MUTATION RUN (verbatim, `cargo test -p recorder_host --release --lib` with
+/// the `self.record_domain_problem(domain_id, DEGRADED_ROWS_APPLIED_PROBLEM)`
+/// line removed from `WorldFold::record_degraded_rows_applied` and nothing else
+/// changed):
+///
+/// ```text
+/// ---- world_fold::tests::a_degraded_record_keeps_its_rows_and_the_ledger_names_the_failure stdout ----
+///
+/// thread 'world_fold::tests::a_degraded_record_keeps_its_rows_and_the_ledger_names_the_failure' (37924) panicked at recorder_host\src\world_fold\tests.rs:24182:9:
+/// fuel_live: the degraded domain-hour must be on the fold ledger: []
+/// note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+///
+/// ---- world_fold::tests::d17_failure_frames_are_applied_and_accounted_but_war_segment_absent_is_silent stdout ----
+///
+/// thread 'world_fold::tests::d17_failure_frames_are_applied_and_accounted_but_war_segment_absent_is_silent' (55632) panicked at recorder_host\src\world_fold\tests.rs:19475:5:
+/// ...and the failure is accounted for against d17 on that hour's ledger
+///
+/// ---- world_fold::tests::the_ledger_entry_is_what_makes_a_panic_hour_distinguishable stdout ----
+///
+/// thread 'world_fold::tests::the_ledger_entry_is_what_makes_a_panic_hour_distinguishable' (32284) panicked at recorder_host\src\world_fold\tests.rs:24378:5:
+/// assertion `left != right` failed: a panicked d14 hour must be distinguishable from a clean one on the ledger: [] vs []
+///   left: []
+///  right: []
+///
+///
+/// failures:
+///     world_fold::tests::a_degraded_record_keeps_its_rows_and_the_ledger_names_the_failure
+///     world_fold::tests::d17_failure_frames_are_applied_and_accounted_but_war_segment_absent_is_silent
+///     world_fold::tests::the_ledger_entry_is_what_makes_a_panic_hour_distinguishable
+///
+/// test result: FAILED. 883 passed; 3 failed; 3 ignored; 0 measured; 0 filtered out; finished in 23.92s
+/// ```
+///
+/// Note what the mutation did NOT break: 883 tests still passed, and the rows
+/// still folded. Removing the accounting leaves a capture that looks entirely
+/// healthy — which is exactly the condition the ruling exists to prevent, and
+/// why these three are the net that has to catch it.
+///
+/// What production change makes this fail: exactly that deletion — the ledgers
+/// of a clean hour and a panicked hour become byte-identical.
+#[test]
+fn the_ledger_entry_is_what_makes_a_panic_hour_distinguishable() {
+    let clean = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (14, d14_apply_payload(1, 0)),
+    ]);
+    let panicked = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (14, d14_apply_payload(1, COMPACT_STATUS_WORKER_PANIC)),
+    ]);
+    // Same rows, both hours -- the ONLY difference the consumer can see is the
+    // ledger.
+    assert_eq!(
+        clean["countries"]["GER"]["politics"],
+        panicked["countries"]["GER"]["politics"],
+        "the surviving rows are identical; that is the point of applying them"
+    );
+    let clean_problems = ledger_problems(&clean);
+    let panicked_problems = ledger_problems(&panicked);
+    assert_ne!(
+        clean_problems, panicked_problems,
+        "a panicked d14 hour must be distinguishable from a clean one on the ledger: \
+         {clean_problems:?} vs {panicked_problems:?}"
     );
 }
 
