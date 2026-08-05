@@ -362,6 +362,9 @@ pub const COMPACT_MAX_STRATEGIC_RESOURCE_COUNT: u32 =
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION: u16 = 1;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = 2;
+/// v3 spends the header's last word on the incomplete-owner count and carries
+/// that many census keys between the witness block and the rows.
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION: u16 = 3;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
 pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] = b"MTRA";
@@ -12233,16 +12236,22 @@ fn decode_compact_market_trade_classic_deal_trailer(
     let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
     let scale_raw = read_u32_le(payload, trailer_offset + 20);
     let witness_count = read_u32_le(payload, trailer_offset + 24) as usize;
-    let reserved1 = read_u32_le(payload, trailer_offset + 28);
+    // v3's incomplete-owner count. v1/v2 hold this word at zero, so a v3
+    // payload that lost its version word still fails here rather than reading
+    // its completeness block as deal rows.
+    let per_owner = version == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION;
+    let incomplete_count = read_u32_le(payload, trailer_offset + 28) as usize;
     if ![
         COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION,
         COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION,
+        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
     ]
     .contains(&version)
         || header_len != COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN
         || row_len != COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN
         || reserved0 != 0
-        || reserved1 != 0
+        || (!per_owner && incomplete_count != 0)
+        || (per_owner && incomplete_count > witness_count)
         || scale_raw != COMPACT_FIXED_SCALE_RAW
         || witness_count != country_count
     {
@@ -12255,6 +12264,7 @@ fn decode_compact_market_trade_classic_deal_trailer(
     let expected_len = trailer_offset
         .saturating_add(header_len)
         .saturating_add(witness_count.saturating_mul(4))
+        .saturating_add(incomplete_count.saturating_mul(4))
         .saturating_add(row_count.saturating_mul(row_len));
     if payload.len() < expected_len {
         summary.parse_errors.push(format!(
@@ -12263,11 +12273,69 @@ fn decode_compact_market_trade_classic_deal_trailer(
         ));
         return trailer_offset;
     }
+    // v3's country blocks are READ, not merely counted.
+    //
+    // This decoder is structural: it advances a cursor and counts units, and it
+    // deliberately does not restate the fold's ROW-level semantics. But the
+    // incomplete block is a statement about which owners are exact, and it is
+    // only meaningful against a witness list that is itself well formed. A
+    // decoder that admits `[99]` where 99 is not a witness, `[67, 34]` out of
+    // order, or witnesses `[34, 34]` -- where the duplicate collapses in the set
+    // and lets `[34]` pass the subset check -- would report the payload
+    // decodable while `world_fold` rejects the whole D43 record. That is three
+    // decoders disagreeing about one grammar.
+    //
+    // Gated on v3 alone, not on a non-empty incomplete block: a v3 trailer with
+    // no incomplete owners still owes a well-formed witness list, and skipping
+    // the check when the block is empty was the hole review found. NO new
+    // refusal is introduced for a v1/v2 payload, whose witness content this
+    // decoder has never inspected and whose archived bytes must keep decoding
+    // exactly as they did.
+    if per_owner {
+        let mut witnesses = std::collections::BTreeSet::new();
+        let mut cursor = trailer_offset.saturating_add(header_len);
+        for witness_index in 0..witness_count {
+            let tag_db_id = read_u32_le(payload, cursor);
+            cursor = cursor.saturating_add(4);
+            if tag_db_id == 0
+                || tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID
+                || !witnesses.insert(tag_db_id)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade MTRD witness {witness_index} is invalid or duplicated"
+                ));
+                return trailer_offset;
+            }
+        }
+        let mut previous: Option<u32> = None;
+        for incomplete_index in 0..incomplete_count {
+            let tag_db_id = read_u32_le(payload, cursor);
+            cursor = cursor.saturating_add(4);
+            if !witnesses.contains(&tag_db_id)
+                || previous.is_some_and(|previous| previous >= tag_db_id)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade MTRD incomplete owner {incomplete_index} is not an ascending witness"
+                ));
+                return trailer_offset;
+            }
+            previous = Some(tag_db_id);
+        }
+    }
     add_compact_domain_data_unit(
         summary,
         43,
         "market_trade_classic_deal_country_witnesses",
         witness_count,
+    );
+    // Counted separately from the witnesses: this is the number of owners the
+    // hour published WITHOUT an exactness claim, and it is zero for every
+    // archived v1/v2 payload.
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_classic_deal_incomplete_owners",
+        incomplete_count,
     );
     add_compact_domain_data_unit(summary, 43, "market_trade_classic_deal_rows", row_count);
     expected_len
@@ -17945,6 +18013,175 @@ mod tests {
     fn push_string(out: &mut Vec<u8>, value: &str) {
         out.extend_from_slice(&(value.len() as u16).to_le_bytes());
         out.extend_from_slice(value.as_bytes());
+    }
+
+    /// A standalone `MTRD` trailer over two witnesses and no rows.
+    fn mtrd_trailer_with_witnesses(version: u16, witnesses: [u32; 2], incomplete: &[u32]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
+        payload.extend_from_slice(&version.to_le_bytes());
+        payload
+            .extend_from_slice(&(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16)
+                .to_le_bytes());
+        payload.extend_from_slice(&(COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 2);
+        push_u32(&mut payload, COMPACT_FIXED_SCALE_RAW);
+        push_u32(&mut payload, 2);
+        push_u32(&mut payload, incomplete.len() as u32);
+        push_u32(&mut payload, witnesses[0]);
+        push_u32(&mut payload, witnesses[1]);
+        for owner in incomplete {
+            push_u32(&mut payload, *owner);
+        }
+        payload
+    }
+
+    fn mtrd_trailer(version: u16, incomplete: &[u32]) -> Vec<u8> {
+        mtrd_trailer_with_witnesses(version, [34, 67], incomplete)
+    }
+
+    /// This decoder must refuse every `MTRD` v3 incomplete block the FOLD
+    /// refuses, or the two disagree about one grammar.
+    ///
+    /// The decoder is structural — it advances a cursor and counts units, and
+    /// does not restate the fold's row semantics. But the incomplete block is a
+    /// statement about which owners are exact. Admitting `[99]` where 99 is not
+    /// a witness, or `[67, 34]` out of order, would report the payload
+    /// decodable and authoritative while `world_fold` rejects the whole D43
+    /// record and every family in it.
+    ///
+    /// The witness list is checked for v3 too, and NOT only when the incomplete
+    /// block is non-empty: a duplicate witness collapses in the set and lets the
+    /// duplicate pass the subset check, so the block's meaning depends on the
+    /// list being well formed. v1/v2 witness content stays uninspected here,
+    /// exactly as it always was.
+    ///
+    /// What production change makes this fail: removing the ascending-witness
+    /// check, removing the witness validity check, re-gating either on a
+    /// non-empty incomplete block, or widening the header's version whitelist
+    /// without them.
+    ///
+    /// MUTATION RUN (`--release`): deleted the `if per_owner { .. }` block,
+    /// leaving the header/length checks alone -- which is the state review found
+    /// this decoder in.
+    /// OBSERVED: FAILED -- "an incomplete owner that is not a witness is refused
+    /// here exactly as the fold refuses it: []"
+    ///
+    /// MUTATION RUN (`--release`): re-gated the block on
+    /// `per_owner && incomplete_count > 0`, which is the narrower form the first
+    /// round of this fix shipped.
+    /// OBSERVED: FAILED -- "a duplicate witness with no incomplete owner is
+    /// refused here exactly as the fold refuses it: []"
+    ///
+    /// MUTATION RUN (`--release`): dropped `|| !witnesses.insert(tag_db_id)` from
+    /// the witness check, keeping the nonzero/range arms.
+    /// OBSERVED: FAILED -- "a duplicate witness is refused here exactly as the
+    /// fold refuses it: []"
+    #[test]
+    fn mtrd_v3_incomplete_block_is_refused_here_exactly_as_the_fold_refuses_it() {
+        let decode = |version: u16, incomplete: &[u32]| {
+            let payload = mtrd_trailer(version, incomplete);
+            let mut summary = DomainDataDecodeSummary::default();
+            let end = decode_compact_market_trade_classic_deal_trailer(0, &payload, 0, &mut summary);
+            (end, summary.parse_errors)
+        };
+
+        let (end, errors) = decode(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION, &[34]);
+        assert!(errors.is_empty(), "a well-formed v3 block decodes: {errors:?}");
+        assert_eq!(end, 32 + 2 * 4 + 4, "and the cursor clears the whole trailer");
+
+        let (_, errors) = decode(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION, &[99]);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("is not an ascending witness")),
+            "an incomplete owner that is not a witness is refused here exactly as \
+             the fold refuses it: {errors:?}"
+        );
+
+        let (_, errors) = decode(
+            COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[67, 34],
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("is not an ascending witness")),
+            "and so is a descending one: {errors:?}"
+        );
+
+        let (_, errors) = decode(
+            COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[34, 34],
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("is not an ascending witness")),
+            "and a repeated one: {errors:?}"
+        );
+
+        // The version word still decides the grammar here too: a v3 body under a
+        // v2 label puts a non-zero count in v2's reserved word.
+        let (_, errors) = decode(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION, &[34]);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("header shape is invalid")),
+            "a v3 body labelled v2 is refused: {errors:?}"
+        );
+
+        // A v3 witness list must itself be well formed, or the incomplete block
+        // has nothing meaningful to be a subset OF: duplicate witnesses collapse
+        // in the set and let the duplicate pass the subset check.
+        let decode_witnesses = |version: u16, witnesses: [u32; 2], incomplete: &[u32]| {
+            let payload = mtrd_trailer_with_witnesses(version, witnesses, incomplete);
+            let mut summary = DomainDataDecodeSummary::default();
+            decode_compact_market_trade_classic_deal_trailer(0, &payload, 0, &mut summary);
+            summary.parse_errors
+        };
+        for (label, witnesses, incomplete) in [
+            ("a duplicate witness", [34u32, 34], &[34u32][..]),
+            // Checked even with an EMPTY incomplete block: a v3 trailer owes a
+            // well-formed witness list whether or not it names anyone short.
+            ("a duplicate witness with no incomplete owner", [34, 34], &[][..]),
+            ("a zero witness", [0, 67], &[][..]),
+            (
+                "a witness past the owner bound",
+                [34, COMPACT_MARKET_TRADE_MAX_TAG_DB_ID + 1],
+                &[][..],
+            ),
+        ] {
+            let errors = decode_witnesses(
+                COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+                witnesses,
+                incomplete,
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("witness") && error.contains("invalid or duplicated")),
+                "{label} is refused here exactly as the fold refuses it: {errors:?}"
+            );
+        }
+
+        // And the archived shapes are untouched -- including the malformed
+        // witness lists this decoder has never inspected for v1/v2, which must
+        // keep decoding exactly as their archived bytes always did.
+        for version in [
+            COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION,
+            COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION,
+        ] {
+            let (end, errors) = decode(version, &[]);
+            assert!(errors.is_empty(), "v{version} still decodes: {errors:?}");
+            assert_eq!(end, 32 + 2 * 4, "with no block between witnesses and rows");
+            assert!(
+                decode_witnesses(version, [34, 34], &[]).is_empty(),
+                "and v{version}'s witness content is still not this decoder's business"
+            );
+        }
     }
 
     /// Minimal production-framed form of the six computed rows present at the

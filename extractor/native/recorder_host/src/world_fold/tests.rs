@@ -10650,6 +10650,31 @@ fn append_d43_mtrd_classic_deal_for_resource(
 /// can state the per-owner numbering explicitly: the producer's two direction
 /// counters each start at zero, so the un-renumbered form is `[0, 0, 0, 0]`.
 fn append_d43_mtrd_two_way_deals(payload: &mut Vec<u8>, a: u32, b: u32, orders: [u32; 4]) {
+    append_d43_mtrd_two_way_deals_versioned(
+        payload,
+        a,
+        b,
+        orders,
+        MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION,
+        &[],
+    );
+}
+
+/// The same world, written under an arbitrary version word and with an
+/// arbitrary incomplete-owner block.
+///
+/// Both are parameters rather than derived from each other so a fixture can
+/// state a DISAGREEMENT — a v3 body labelled v2, an incomplete owner that is not
+/// a witness, a block out of order — which is what pins the parser's refusals
+/// rather than its happy path.
+fn append_d43_mtrd_two_way_deals_versioned(
+    payload: &mut Vec<u8>,
+    a: u32,
+    b: u32,
+    orders: [u32; 4],
+    version: u16,
+    incomplete: &[u32],
+) {
     const RESOURCE_INDEX: u32 = 4;
     let deal_id = |exporter: u32, importer: u32| {
         (u64::from(exporter) << 32)
@@ -10658,7 +10683,7 @@ fn append_d43_mtrd_two_way_deals(payload: &mut Vec<u8>, a: u32, b: u32, orders: 
             | 1
     };
     payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
-    payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&version.to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
@@ -10666,9 +10691,12 @@ fn append_d43_mtrd_two_way_deals(payload: &mut Vec<u8>, a: u32, b: u32, orders: 
     payload.extend_from_slice(&2u32.to_le_bytes());
     payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
     payload.extend_from_slice(&2u32.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(incomplete.len() as u32).to_le_bytes());
     payload.extend_from_slice(&a.to_le_bytes());
     payload.extend_from_slice(&b.to_le_bytes());
+    for owner in incomplete {
+        payload.extend_from_slice(&owner.to_le_bytes());
+    }
     for (owner, counterpart, direction, visible_order, deal) in [
         (
             a,
@@ -10807,6 +10835,247 @@ fn d43_mtrd_two_way_deals_fold_only_under_dense_per_owner_visible_order() {
             .is_none(),
         "an owner numbered 0 and 2 is not dense, and the trailer is rejected: {}",
         gapped["countries"]["ENG"]["economy"]["resource_trade"]
+    );
+}
+
+/// `deals_complete` is a claim the PAYLOAD makes about ONE OWNER, and this is
+/// where the fold stops making it on the payload's behalf.
+///
+/// Before MTRD v3 the projection stamped `deals_complete: true` on every country
+/// of any MTRD it accepted. That is why the collector had to withhold the whole
+/// family the moment its walk excluded anything: a short list published under
+/// an unconditional `true` says the engine DELETED the deals that are missing,
+/// and `fold_market_trade` installs the classic families before its own
+/// failure-status return, so the `PARTIAL_DATA` badge does not take it back.
+///
+/// v3 states completeness per owner. SAF is named in the incomplete block, so
+/// its rows are published and its claim is `false`; ENG is not, so its claim is
+/// `true`. Both owners' rows are on the wire either way -- reciprocity is a
+/// property of the DEAL, and dropping an incomplete owner's half would take its
+/// exact partner's half down with it and cascade across the trade graph.
+///
+/// FOUR-FAMILY COHERENCE. The witness list is unchanged by incompleteness: MTRR
+/// witnesses `{34, 67}` and so does MTRD, which is what `fold_market_trade`'s
+/// country-set equality gate requires. A v3 producer that answered
+/// incompleteness by DROPPING the owner would fail that gate and take the whole
+/// D43 payload -- MTRF, MTRH, MTRR and MTRD together -- dark. The second half of
+/// this test is that gate, driven with a witness genuinely missing.
+///
+/// What production change makes this fail: restoring the unconditional
+/// `json!(true)` in `project_market_trade_classic_deals`, or dropping the
+/// incomplete set on the way from the parser into `WorldFold`.
+///
+/// MUTATION RUN (`--release`): restored
+/// `resource_trade.insert("deals_complete".into(), json!(true));`.
+/// OBSERVED: FAILED -- "assertion `left == right` failed: SAF is named in the
+/// incomplete block, so its list is measured but NOT exhaustive / left: Bool(true)
+/// / right: Bool(false)"
+///
+/// MUTATION RUN (`--release`): made `fold_market_trade` skip the
+/// `self.market_trade_classic_deals_incomplete = ...` assignment, i.e. parsed
+/// the block and threw it away.
+/// OBSERVED: FAILED -- same assertion, same values.
+#[test]
+fn d43_mtrd_v3_states_completeness_per_owner_not_per_trailer() {
+    let snapshot = {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[34, 67]);
+        append_d43_mtrd_two_way_deals_versioned(
+            &mut payload,
+            34,
+            67,
+            [0, 1, 0, 1],
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[34],
+        );
+        chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, payload),
+        ])
+    };
+    let saf = &snapshot["countries"]["SAF"]["economy"]["resource_trade"];
+    let eng = &snapshot["countries"]["ENG"]["economy"]["resource_trade"];
+    assert_eq!(
+        saf["deals_complete"],
+        json!(false),
+        "SAF is named in the incomplete block, so its list is measured but NOT \
+         exhaustive"
+    );
+    assert_eq!(
+        eng["deals_complete"],
+        json!(true),
+        "ENG is not named, so its list is exact -- one owner's shortfall must not \
+         cost another owner its claim"
+    );
+    assert_eq!(
+        saf["deals"].as_array().map(Vec::len),
+        Some(2),
+        "and the incomplete owner still publishes every row the recording proved"
+    );
+    assert_eq!(
+        eng["deals"].as_array().map(Vec::len),
+        Some(2),
+        "with its partner's reciprocal halves intact"
+    );
+
+    // The gate a short WITNESS list would hit. MTRR witnesses three countries
+    // and this MTRD witnesses two, which is the shape a producer would emit if
+    // it answered incompleteness by DROPPING the owner instead of naming it.
+    let dropped_witness = {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[12, 34, 67]);
+        append_d43_mtrd_two_way_deals_versioned(
+            &mut payload,
+            34,
+            67,
+            [0, 1, 0, 1],
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[],
+        );
+        chunk1_one_snapshot(vec![
+            (
+                18,
+                country_identity_payload(&[(12, "FRA"), (34, "SAF"), (67, "ENG")]),
+            ),
+            (43, payload),
+        ])
+    };
+    assert!(
+        dropped_witness["countries"]["ENG"]["economy"]["resource_trade"]
+            .get("deals")
+            .is_none(),
+        "an MTRD that names fewer countries than MTRR takes the WHOLE D43 payload \
+         down, which is why per-owner completeness had to keep the witness list \
+         whole: {}",
+        dropped_witness["countries"]["ENG"]["economy"]["resource_trade"]
+    );
+}
+
+/// The version word decides the grammar, and every disagreement about it is a
+/// refusal rather than a reinterpretation.
+///
+/// This is the version gate the MTRD bump rests on. The two failure modes it
+/// closes:
+///
+/// * a NEW payload read by an OLD decoder. The pre-v3 whitelist is `{1, 2}` and
+///   the pre-v3 rule is "the word at `+0x1C` must be zero", and v3 spends that
+///   word on its incomplete count -- so an old decoder refuses a v3 trailer
+///   twice over and never reads the completeness block as deal rows. Verified
+///   directly against the pre-change parser, out of tree:
+///
+///   ```text
+///   # parse_market_trade_classic_deal_trailer lifted verbatim out of
+///   # `git show d16a8484:extractor/native/recorder_host/src/world_fold.rs`
+///   # (lines 30407-30593) with its helpers, compiled standalone and driven.
+///   v2 (archived shape)        -> Ok, 4 rows over 2 witnesses, end 424
+///   v3, no incomplete owners   -> Err("market trade MTRD header shape is invalid")
+///   v3, one incomplete owner   -> Err("market trade MTRD header shape is invalid")
+///   ```
+///
+/// * a NEW payload MISLABELLED old, which is the misparse the version word
+///   exists to prevent. A v3 body under a `2` puts its incomplete count in a
+/// 	 word v2 requires to be zero, so it is refused instead of parsed with the
+///   block counted as row bytes.
+///
+/// What production change makes this fail: widening the version whitelist to
+/// accept an unknown version, dropping the reserved-must-be-zero rule for
+/// v1/v2, or dropping the ascending-witness-subset rule for the v3 block.
+///
+/// MUTATION RUN (`--release`): removed `(!per_owner && incomplete_count != 0)`
+/// from the header shape check.
+/// OBSERVED: FAILED -- "a v3 body labelled v2 must be refused, not parsed with
+/// its completeness block counted as row bytes"
+///
+/// MUTATION RUN (`--release`): removed the `!witnesses.contains(&tag_db_id)`
+/// arm of the incomplete-block check.
+/// OBSERVED: FAILED -- "an incomplete owner that is not a witness states
+/// nothing, and the trailer is refused"
+///
+/// MUTATION RUN (`--release`): removed the
+/// `previous_incomplete.is_some_and(|previous| previous >= tag_db_id)` arm.
+/// OBSERVED: FAILED -- "a descending incomplete block is refused: two decoders
+/// must not be free to disagree about a set's spelling"
+#[test]
+fn d43_mtrd_version_word_decides_the_grammar() {
+    let fold = |version: u16, incomplete: &[u32]| {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[34, 67]);
+        append_d43_mtrd_two_way_deals_versioned(
+            &mut payload,
+            34,
+            67,
+            [0, 1, 0, 1],
+            version,
+            incomplete,
+        );
+        chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, payload),
+        ])
+    };
+    let deals_present = |snapshot: &Value| {
+        snapshot["countries"]["ENG"]["economy"]["resource_trade"]
+            .get("deals")
+            .is_some()
+    };
+
+    assert!(
+        deals_present(&fold(
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[34]
+        )),
+        "the control: a well-formed v3 trailer folds"
+    );
+    assert!(
+        deals_present(&fold(MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION, &[])),
+        "and so does the archived v2 shape, unchanged"
+    );
+
+    // A v3 BODY under a v2 label. v2 requires `+0x1C` to be zero, so this is
+    // refused rather than parsed with the incomplete block counted as row bytes.
+    assert!(
+        !deals_present(&fold(MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION, &[34])),
+        "a v3 body labelled v2 must be refused, not parsed with its completeness \
+         block counted as row bytes"
+    );
+    // An unknown version: refused outright, so a future block cannot be read as
+    // rows by a decoder that has never heard of it.
+    assert!(
+        !deals_present(&fold(
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION + 1,
+            &[]
+        )),
+        "an unknown MTRD version is refused, never guessed at"
+    );
+    assert!(
+        !deals_present(&fold(
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[99]
+        )),
+        "an incomplete owner that is not a witness states nothing, and the \
+         trailer is refused"
+    );
+    assert!(
+        !deals_present(&fold(
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[67, 34]
+        )),
+        "a descending incomplete block is refused: two decoders must not be free \
+         to disagree about a set's spelling"
+    );
+    assert!(
+        !deals_present(&fold(
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[34, 34]
+        )),
+        "and a repeated one is refused for the same reason"
+    );
+    assert!(
+        !deals_present(&fold(
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[34, 67, 67]
+        )),
+        "an incomplete block longer than the witness list cannot be a subset of it"
     );
 }
 

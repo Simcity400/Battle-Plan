@@ -106,6 +106,13 @@ pub const MARKET_TRADE_RESOURCE_FLAGS_KNOWN: u32 =
 pub const MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
 pub const MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION: u16 = 2;
+/// v3: the header's last word is the INCOMPLETE-OWNER COUNT and that many
+/// census keys sit between the witness block and the rows, ascending and a
+/// subset of the witnesses. An owner named there published rows that are true
+/// but not exhaustive; every other witness's list is exact. v1/v2 hold the word
+/// at zero and state no per-owner claim -- their producers withheld the whole
+/// trailer instead of publishing a short list.
+pub const MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION: u16 = 3;
 pub const MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
 pub const MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT: u32 = 1;
@@ -473,6 +480,9 @@ pub struct MarketTradePayloadSummary {
     pub classic_deal_trailer_present: bool,
     pub classic_deal_rows: u32,
     pub classic_deal_country_count: u32,
+    /// How many of those witnesses the payload marked NOT exhaustive. Zero for
+    /// every v1/v2 trailer.
+    pub classic_deal_incomplete_owner_count: u32,
     pub activation_trailer_present: bool,
     pub stockpile_trailer_present: bool,
     pub stockpile_country_rows: u32,
@@ -486,6 +496,8 @@ pub struct MarketTradePayloadSummary {
     pub factory_headers: Vec<FactoryHeaderRow>,
     pub resource_view_rows: Vec<ResourceViewRow>,
     pub classic_deal_country_witnesses: Vec<u32>,
+    /// The witnesses the payload marked NOT exhaustive, in wire order.
+    pub classic_deal_incomplete_owners: Vec<u32>,
     pub classic_deals: Vec<ClassicDealRow>,
     pub activation: Option<MarketTradeActivation>,
     pub stockpile_countries: Vec<MarketStockpileCountryRow>,
@@ -2103,28 +2115,36 @@ fn decode_classic_deal_trailer(
     let country_count = read_u32_le(trailer, 16);
     let scale_raw = read_u32_le(trailer, 20);
     let witness_count = read_u32_le(trailer, 24);
-    let reserved1 = read_u32_le(trailer, 28);
+    let per_owner = version == MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION;
+    // v3's incomplete-owner count; v1/v2's reserved word, which must be zero.
+    // A v3 body labelled v2 therefore fails the shape check rather than
+    // reading the completeness block as deal rows.
+    let incomplete_count = read_u32_le(trailer, 28);
     summary.classic_deal_rows = row_count;
     summary.classic_deal_country_count = country_count;
+    summary.classic_deal_incomplete_owner_count = if per_owner { incomplete_count } else { 0 };
     if ![
         MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION,
         MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION,
+        MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION,
     ]
     .contains(&version)
         || header_len != MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN
         || row_len != MARKET_TRADE_CLASSIC_DEAL_ROW_LEN
         || reserved0 != 0
-        || reserved1 != 0
+        || (!per_owner && incomplete_count != 0)
+        || (per_owner && incomplete_count > witness_count)
         || scale_raw != MARKET_TRADE_SCALE_RAW
         || witness_count != country_count
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: invalid MTRD shape version {version} header_len {header_len} row_len {row_len} countries {country_count} witnesses {witness_count} scale {scale_raw}"
+            "offset {offset}: invalid MTRD shape version {version} header_len {header_len} row_len {row_len} countries {country_count} witnesses {witness_count} incomplete {incomplete_count} scale {scale_raw}"
         ));
         return None;
     }
     let expected_len = header_len
         .saturating_add((witness_count as usize).saturating_mul(4))
+        .saturating_add((incomplete_count as usize).saturating_mul(4))
         .saturating_add((row_count as usize).saturating_mul(row_len));
     if trailer.len() < expected_len {
         summary.parse_errors.push(format!(
@@ -2146,6 +2166,22 @@ fn decode_classic_deal_trailer(
         }
         summary.classic_deal_country_witnesses.push(tag_db_id);
     }
+    let mut incomplete_seen = BTreeSet::new();
+    let mut previous_incomplete: Option<u32> = None;
+    for incomplete_index in 0..incomplete_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        cursor += 4;
+        if !witnesses.contains(&tag_db_id)
+            || previous_incomplete.is_some_and(|previous| previous >= tag_db_id)
+            || !incomplete_seen.insert(tag_db_id)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRD incomplete owner {incomplete_index} is not an ascending witness"
+            ));
+        }
+        previous_incomplete = Some(tag_db_id);
+        summary.classic_deal_incomplete_owners.push(tag_db_id);
+    }
     let mut seen = BTreeSet::new();
     let mut pair_halves = BTreeMap::<u64, Vec<ClassicDealRow>>::new();
     let mut per_owner_order = BTreeMap::<u32, BTreeSet<u32>>::new();
@@ -2158,7 +2194,11 @@ fn decode_classic_deal_trailer(
             direction: read_u32_le(trailer, cursor + 16),
             route_kind: read_u32_le(trailer, cursor + 20),
             flags: read_u32_le(trailer, cursor + 24),
-            route_status_flags: if version == MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION {
+            // v2 added the exact route-status bytes and v3 inherits them
+            // unchanged; only legacy v1 leaves them unavailable. Testing for
+            // "not legacy" is what keeps a version bump from silently demoting
+            // a measured field to absent.
+            route_status_flags: if version != MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION {
                 Some(read_u32_le(trailer, cursor + 28))
             } else {
                 None
@@ -2194,7 +2234,7 @@ fn decode_classic_deal_trailer(
             || row.flags != MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT
             || (version == MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION
                 && status_or_reserved != 0)
-            || (version == MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION
+            || (version != MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION
                 && status_or_reserved & !MARKET_TRADE_CLASSIC_DEAL_STATUS_KNOWN != 0)
             || row.efficiency_raw < 0
             || row.efficiency_raw > MARKET_TRADE_SCALE_RAW as i64
