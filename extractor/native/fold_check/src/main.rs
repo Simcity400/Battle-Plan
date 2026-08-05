@@ -151,7 +151,23 @@ struct DomainCompleteness {
     /// domain is UNKNOWN for the hour. Nonzero here is only certifiable when
     /// the frame's `H4FD` notice declares this domain with exactly these bits;
     /// see `CompletenessAudit::observe`.
+    ///
+    /// PERF-derived, and kept that way. The collector mints its `H4FD` entries
+    /// from the PERF status, so this is the word the declaration is checked
+    /// against for EQUALITY.
     non_tolerated_status_flags: u32,
+    /// The same classification applied to the status embedded in this domain's
+    /// `DOMAIN_DATA` payload, kept SEPARATE from the PERF-derived word above.
+    ///
+    /// Merging the two loses the disagreement between them, and the merge is
+    /// not conservative in the direction one would hope: a domain whose PERF
+    /// says `partial_data` and whose payload says `source_unavailable` would
+    /// present a union of `0x00000300` that a notice could then declare, so the
+    /// hour would certify against a word NEITHER record carries. Separate fields
+    /// let the reconciliation state the two rules it actually means -- the
+    /// declaration EQUALS the PERF residual, and it COVERS the payload residual
+    /// -- neither of which the union can express.
+    non_tolerated_data_payload_status_flags: u32,
 }
 
 impl DomainCompleteness {
@@ -434,26 +450,80 @@ impl CompletenessAudit {
                 //
                 // Payload VALIDITY is deliberately NOT judged here. It has one
                 // authority: the decoder pass counts every payload that fails
-                // exact validation, and its certification verdict refuses the
-                // stream on that count. A payload this call cannot decode
-                // therefore yields no status and is refused there, in the one
-                // place that owns the question. Re-deciding it here would be a
-                // second copy of that rule.
+                // exact validation and writes it into the exclusion ledger, so a
+                // payload this call cannot decode yields no status and is
+                // accounted there. Re-deciding it here would be a second copy of
+                // that rule.
+                //
+                // KNOWN GAP, recorded rather than silently relied on, and NOT
+                // introduced here -- `unwrap_or(None)` predates this change and
+                // is unchanged by it. `DecodeStats::certification_verdict` does
+                // not refuse a stream on the malformed count; it only checks that
+                // the count and the ledger AGREE
+                // (`validate_excluded_domain_data_accounting`). So a payload the
+                // authority rejects after having already read a failure status
+                // word -- e.g. a valid header carrying `source_unavailable` plus
+                // one trailing byte -- is reduced to "no status", and if its PERF
+                // is clean the hour certifies with the domain reported complete
+                // while the fold applied none of its rows.
+                //
+                // Closing it is a ruling, not a patch: an excluded payload is
+                // ALREADY accounted (domain, hour, offset and decoder reason are
+                // in the ledger the report prints), and making it refuse would
+                // turn every capture carrying one malformed record into an
+                // uncertifiable capture -- which is the opposite of the
+                // per-domain degradation the zero-data-loss ruling asked for. The
+                // alternative is to join the ledger into per-hour completeness so
+                // the domain stops being reported complete. Lane CK, task #104.
+                //
+                // A non-tolerated failure found here is DEFERRED to the frame
+                // close, where the `H4FD` notice is checked to COVER it -- the
+                // same place, and the same notice, the PERF arm below defers to.
+                // It was refused on the spot, and that made this arm a SECOND,
+                // stricter answer to a question the reconciliation already owns.
+                // The two disagreed in production: t26 publishes d86 with
+                // `source_unavailable` in the payload, the identical word in the
+                // matching PERF, and an `H4FD` notice naming domain 86 with
+                // exactly that bit and the reader's typed reason. That is an
+                // ACCOUNTED degraded domain -- the fold withholds its rows and
+                // retains its accumulator, which is precisely what the notice
+                // declares -- and the hour certifies with the domain recorded
+                // unknown. Refusing it here made the same status word certifiable
+                // through one record type and fatal through the other, so d18,
+                // d47, d53, d60, d85 and d90 certified as declared-degraded on
+                // the very hours d86 refused the whole stream.
+                //
+                // Deferring is not a relaxation, and specifically it does not
+                // restore the defect this check was added for. The residual is
+                // carried to the frame close in its OWN field -- never merged
+                // into the PERF's -- where a payload failure the notice does not
+                // cover refuses with a verdict that names it. A payload declaring
+                // failure under a clean PERF has no `H4FD` entry at all, because
+                // the collector derives the notice from the PERF status, so it
+                // refuses: the original finding, stated by its owner.
                 let payload_status =
                     replay_decoder::domain_data_payload_status(domain_id, payload, record_flags)
                         .unwrap_or(None);
+                let residual = payload_status.map_or(0, |status_flags| {
+                    compact_status_failure_flags_after_expected_partial_tolerance(
+                        domain_id,
+                        status_flags,
+                    )
+                });
+                // An unassigned id has no domain descriptor, so it can never be
+                // declared degraded and there is nothing to defer to. Same
+                // reasoning, same verdict, as the PERF arm's probe case.
+                if residual != 0 && compact_contract::assigned_descriptor_by_id(domain_id).is_none()
+                {
+                    let status_flags = payload_status.unwrap_or(0);
+                    return Err(format!(
+                        "domain {domain_id} DOMAIN_DATA payload status {status_flags:#010x} has non-tolerated failure flags {residual:#010x}; the domain is outside the assigned roster, so no H4FD notice can account for it"
+                    ));
+                }
                 let domain = self.current_domains.entry(domain_id).or_default();
                 domain.data_records += 1;
                 if let Some(status_flags) = payload_status {
-                    let residual = compact_status_failure_flags_after_expected_partial_tolerance(
-                        domain_id,
-                        status_flags,
-                    );
-                    if residual != 0 {
-                        return Err(format!(
-                            "domain {domain_id} DOMAIN_DATA payload status {status_flags:#010x} has non-tolerated failure flags {residual:#010x}; the fold withholds this domain's rows on that status, so the hour cannot certify as complete"
-                        ));
-                    }
+                    domain.non_tolerated_data_payload_status_flags |= residual;
                     domain.data_payload_status_flags_or |=
                         compact_status_for_global_interpretation(domain_id, status_flags);
                     domain.normalized_status_flags_or |=
@@ -615,6 +685,50 @@ impl CompletenessAudit {
                     ));
                 }
 
+                // And the SECOND half of the same reconciliation: the status the
+                // `DOMAIN_DATA` payload carries INSIDE ITSELF.
+                //
+                // It is a separate rule, not a second term in the one above, and
+                // the relation is COVERAGE rather than equality. Two reasons, and
+                // both were mistakes this audit actually made:
+                //
+                //  * ORing the two residuals into one observed word erases the
+                //    disagreement between them. `PARTIAL_DATA` in the PERF and
+                //    `SOURCE_UNAVAILABLE` in the payload present a union of
+                //    `0x00000300`, and a notice declaring `0x00000300` would then
+                //    certify an hour against a status NEITHER record carries.
+                //  * equality is the wrong relation for the payload. The notice
+                //    is minted from the PERF status, so a payload whose residual
+                //    is a strict subset of a correctly declared PERF residual is
+                //    ordinary and honest. What must never happen is a payload bit
+                //    the notice does not name -- which is exactly the defect the
+                //    payload-status check exists to catch, because `WorldFold`
+                //    withholds the domain's rows on that bit while the PERF and
+                //    the notice both say the hour is fine.
+                for (domain_id, domain) in &self.current_domains {
+                    let payload_residual = domain.non_tolerated_data_payload_status_flags;
+                    if payload_residual == 0 {
+                        continue;
+                    }
+                    match declared_degraded.get(domain_id) {
+                        Some(declared) if (payload_residual & !declared) == 0 => {}
+                        Some(declared) => {
+                            return Err(format!(
+                                "domain {domain_id} DOMAIN_DATA payload status has non-tolerated \
+                                 failure flags {payload_residual:#010x} that the hour's H4FD notice \
+                                 does not declare; it declares it degraded with {declared:#010x}"
+                            ));
+                        }
+                        None => {
+                            return Err(format!(
+                                "domain {domain_id} DOMAIN_DATA payload status has non-tolerated \
+                                 failure flags {payload_residual:#010x} and the frame declares no \
+                                 H4FD degraded notice for it"
+                            ));
+                        }
+                    }
+                }
+
                 let aggregate = self
                     .current_domains
                     .values()
@@ -685,6 +799,31 @@ impl CompletenessAudit {
                     .map_err(|error| format!("FRAME_REFUSED payload: {error}"))?;
                 let hour_index = compact_contract::calendar::hour_index_from_raw(game_hour_raw)
                     .ok_or_else(|| format!("FRAME_REFUSED game hour {game_hour_raw} is invalid"))?;
+                // The open hour's `H4FD` declaration dies with the hour, and it
+                // is an ERROR for one to be here at all.
+                //
+                // `H4FD` annotates an hour that PUBLISHED; `H4FR` closes an hour
+                // that published nothing. The collector cannot emit both -- its
+                // completeness verdict is Degraded or Refused, never both, and
+                // only the Degraded arm splices a notice -- so a frame carrying
+                // the pair is a stream whose two frame-level records contradict
+                // each other about the same hour.
+                //
+                // Silently clearing it would stop the leak and still be wrong.
+                // Leaving `current_declared_degraded` populated made the NEXT
+                // hour inherit this one's declaration, so a domain that failed
+                // there with no notice of its own certified against a notice for
+                // an hour that never published: certification of an unnamed
+                // failure, reached through the record that closes hours.
+                let stale_declaration = std::mem::take(&mut self.current_declared_degraded);
+                if !stale_declaration.is_empty() {
+                    return Err(format!(
+                        "hour {hour_index} carries an H4FD degraded notice for domains {:?} and \
+                         then closes with FRAME_REFUSED; a notice annotates a published hour and \
+                         a refusal closes an hour that published nothing",
+                        stale_declaration.keys().collect::<Vec<_>>()
+                    ));
+                }
                 let discarded = std::mem::take(&mut self.current_domains);
                 let refusal = HourRefusal {
                     offenders: record
@@ -1522,11 +1661,38 @@ fn completeness_json(completeness: &HourCompleteness) -> Value {
             }),
         );
     }
+    // WHICH DOMAINS OF THIS HOUR ARE UNKNOWN, stated rather than left to be
+    // re-derived. A degraded hour certifies precisely BECAUSE its failures are
+    // accounted; a report that certifies it without naming them makes the
+    // accounting invisible at the one place a consumer reads the verdict, and
+    // "certified" would then look identical for a clean hour and for an hour
+    // with six declared-unknown domains.
+    //
+    // Deliberately NOT added to the chain hash: it is an exact function of the
+    // per-domain status words that hash already covers (the FRAME_END
+    // reconciliation refuses any stream where the two disagree), so hashing it
+    // would add no discriminating power while invalidating every identity
+    // already recorded against a certified stream.
+    let declared_degraded: Map<String, Value> = completeness
+        .declared_degraded_domains
+        .iter()
+        .map(|(domain_id, non_tolerated_flags)| {
+            (
+                domain_id.to_string(),
+                json!({
+                    "non_tolerated_flags": non_tolerated_flags,
+                    "non_tolerated_flag_names":
+                        compact_contract::compact_status_flag_names(*non_tolerated_flags),
+                }),
+            )
+        })
+        .collect();
     json!({
         "frame_emitted_domains": completeness.frame_emitted_domains,
         "frame_scheduled_domains": completeness.frame_scheduled_domains,
         "normalized_frame_status_flags": completeness.normalized_frame_status_flags,
         "normalized_status_flags_or": completeness.normalized_status_flags_or,
+        "declared_degraded_domains": Value::Object(declared_degraded),
         "domains": Value::Object(domains),
     })
 }

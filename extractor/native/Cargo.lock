@@ -482,6 +482,7 @@ dependencies = [
  "replay_decoder",
  "serde_json",
  "snapshot",
+ "sunk_ship_history_live_lane",
 ]
 
 [[package]]

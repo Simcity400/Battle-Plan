@@ -1625,6 +1625,14 @@ fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
     // "clean" therefore certified as a complete hour whose domain had in fact
     // contributed nothing, and the report said `data_records: 1` with a clean
     // status.
+    //
+    // The VERDICT now comes from the FRAME_END reconciliation rather than from
+    // the DOMAIN_DATA arm itself: the payload's residual joins the PERF's in the
+    // observed-degraded set, and an hour whose notice does not account for it
+    // refuses there. The refusal is unchanged; only its owner is, and there is
+    // now exactly one. What that buys is the case this test cannot see and t26
+    // is made of -- a payload failure the frame DOES declare, which the local
+    // refusal rejected while the identical word in a PERF certified.
     fn stream(payload_status: u32) -> Vec<u8> {
         let mut data = country_identity_payload(&[(47, "GER")]);
         data[16..20].copy_from_slice(&payload_status.to_le_bytes());
@@ -1677,12 +1685,21 @@ fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
     .err()
     .expect("a DATA payload declaring failure must not certify behind a clean PERF");
     assert!(
-        err.contains("DOMAIN_DATA payload status"),
+        err.contains("domain 18"),
+        "the verdict must name the offending domain: {err}"
+    );
+    assert!(
+        err.contains("DOMAIN_DATA"),
         "the verdict must name the payload's own status, not the PERF's: {err}"
     );
     assert!(
         err.contains("non-tolerated failure flags"),
         "{err}"
+    );
+    assert!(
+        err.contains("declares no H4FD degraded notice"),
+        "the payload failure must refuse for being UNDECLARED, which is the fact \
+         that distinguishes it from t26's accounted d86: {err}"
     );
 }
 
@@ -2113,6 +2130,562 @@ fn an_undeclared_non_tolerated_failure_still_fails_certification() {
     assert!(
         err.contains("declares no H4FD degraded notice"),
         "the verdict must say the declaration was missing, not merely that a bit was set: {err}"
+    );
+}
+
+// --- d86: a payload's own status is reconciled, not separately refused ------
+//
+// The production profile refused run t26 at byte 7673 on domain 86's
+// DOMAIN_DATA payload status `0x00000100` -- `source_unavailable`, an assigned
+// v1 failure bit meaning the read did not get through. That bit is genuinely
+// failure-class and must NOT be added to `COMPACT_EXPECTED_PARTIAL_TOLERANCES`:
+// a tolerance entry asserts a reviewed partial with a written integrity
+// argument, and "the source could not be read" is the opposite of that.
+//
+// What t26 actually carries is the ACCOUNTED shape: the same word in d86's
+// PERF, and an `H4FD` notice naming domain 86 with exactly that bit and the
+// reader's typed reason. The fold withholds d86's rows and retains its
+// accumulator -- precisely what the notice declares -- so the hour certifies
+// with the domain recorded unknown, which is what the partial-data law asks
+// for. The defect was that the DOMAIN_DATA arm answered that question a second
+// time, and more strictly, than the FRAME_END reconciliation that owns it: on
+// those very hours d18, d47, d53, d60, d85 and d90 certified as
+// declared-degraded carrying the same or wider failure words.
+
+/// One SHP1 payload built through the lane's own encoder.
+///
+/// `producer_loss` present means a CD-style PARTIAL BATCH: rows that survived,
+/// travelling beside a named loss, with `producer_complete` false.
+fn sunk_ship_payload(
+    status_flags: u32,
+    producer_loss: Option<sunk_ship_history_live_lane::SunkShipProducerLoss>,
+) -> Vec<u8> {
+    sunk_ship_payload_for(HOUR_A, status_flags, producer_loss)
+}
+
+fn sunk_ship_payload_for(
+    hour_index: i64,
+    status_flags: u32,
+    producer_loss: Option<sunk_ship_history_live_lane::SunkShipProducerLoss>,
+) -> Vec<u8> {
+    use sunk_ship_history_live_lane as d86;
+    if status_flags != 0 {
+        // The lane refuses an unavailable frame that carries a snapshot and a
+        // snapshot-bearing frame that carries a status, so an unavailable
+        // payload is the only shape a failing d86 read can publish.
+        return d86::encode_unavailable(hour_index as u64, 7, status_flags)
+            .expect("an unavailable d86 payload encodes");
+    }
+    d86::encode_payload(&d86::SunkShipFrame {
+        elapsed_wall_ms: 7,
+        frame_hour: hour_index as u64,
+        status_flags: 0,
+        authority: d86::AuthorityState::StaticExact20Receipt,
+        snapshot: Some(d86::SunkShipSnapshot {
+            source_sequence: 2,
+            producer_complete: producer_loss.is_none(),
+            records_with_unavailable_text: 0,
+            producer_hour_raw: None,
+            producer_loss,
+            events: vec![d86::SunkShipEvent {
+                event_sequence: 2,
+                combat_join_present: true,
+                combat_id: 4,
+                combat_generation: 2,
+                victim_country_id_raw: 3,
+                attacker_country_id_raw: 9,
+                ui_source_country_id_raw: 5,
+                sink_date_raw: DATE_EPOCH_CONST + 16_959_300,
+                victim_member_battle_slot_index: 7,
+                flags: d86::EVENT_FLAG_KILLED,
+                victim_ship_reference_raw: [11, 12],
+                damage_source_reference_raw: [13, 14],
+                task_force_id_raw: 15,
+                terminal_context_raw: [16, 17],
+                cause_record_flag: false,
+                ship_name: "HMS Exact".into(),
+                ship_class_name: "Destroyer".into(),
+                attribution_source_name: "KMS Exact".into(),
+                attribution_source_class_name: "Cruiser".into(),
+            }],
+        }),
+    })
+    .expect("a d86 snapshot payload encodes")
+}
+
+/// One hour holding exactly d86: its DATA payload, its PERF, an optional `H4FD`
+/// notice, then a closing frame record.
+///
+/// `close` is what terminates the hour, so the same body can be published or
+/// refused -- which is the only way to build the "declaration outlives its
+/// hour" case at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum D86HourClose {
+    Published,
+    Refused,
+}
+
+fn d86_hour_stream(payload: &[u8], perf_status: u32, declared: Option<(u32, &str)>) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    append_d86_hour(
+        &mut stream,
+        &mut sequence,
+        HOUR_A,
+        payload,
+        perf_status,
+        declared,
+        D86HourClose::Published,
+    );
+    stream
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_d86_hour(
+    stream: &mut Vec<u8>,
+    sequence: &mut u64,
+    hour_index: i64,
+    payload: &[u8],
+    perf_status: u32,
+    declared: Option<(u32, &str)>,
+    close: D86HourClose,
+) {
+    push_record(
+        stream,
+        *sequence,
+        raw_for(hour_index),
+        86,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        payload,
+    );
+    *sequence += 1;
+    push_record(
+        stream,
+        *sequence,
+        raw_for(hour_index),
+        86,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload_with_status(perf_status),
+    );
+    *sequence += 1;
+    if let Some((status_flags, reason)) = declared {
+        let notice = compact_contract::frame_degraded::FrameDegradedRecordV1 {
+            degraded_hour: raw_for(hour_index),
+            domains: vec![compact_contract::frame_degraded::FrameDegradedDomain {
+                domain_id: 86,
+                status_flags,
+                non_tolerated_flags: compact_status_failure_flags_after_expected_partial_tolerance(
+                    86,
+                    status_flags,
+                ),
+                reason: reason.to_string(),
+            }],
+        };
+        push_record(
+            stream,
+            *sequence,
+            raw_for(hour_index),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+            &notice.encode().expect("test notice must be encodable"),
+        );
+        *sequence += 1;
+    }
+    match close {
+        D86HourClose::Published => push_record(
+            stream,
+            *sequence,
+            raw_for(hour_index),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        ),
+        D86HourClose::Refused => push_record(
+            stream,
+            *sequence,
+            raw_for(hour_index),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_REFUSED,
+            &refusal_payload(hour_index, 86),
+        ),
+    }
+    *sequence += 1;
+}
+
+fn d86_roster() -> ExpectedRoster {
+    ExpectedRoster::test(&[(86, true)])
+}
+
+/// THE t26 SHAPE. A `DOMAIN_DATA` payload whose own status carries a
+/// non-tolerated failure certifies when -- and only when -- the frame's `H4FD`
+/// notice accounts for exactly those bits.
+///
+/// The reason string is t26's verbatim d86 prefix, so the fixture is the
+/// production shape and not a convenient invention.
+///
+/// MUTATION RUN (verbatim, `cargo test -p fold_check --release`):
+///   Reverting the DOMAIN_DATA arm to its immediate refusal
+///   (`if residual != 0 { return Err(...) }` before the deferral) fails this
+///   test with:
+///     called `Result::unwrap` on an `Err` value: "completeness record at byte
+///     0: domain 86 DOMAIN_DATA payload status 0x00000100 has non-tolerated
+///     failure flags 0x00000100; the fold withholds this domain's rows on that
+///     status, so the hour cannot certify as complete"
+///
+/// Production change that makes this fail: refusing a DOMAIN_DATA payload
+/// status locally instead of reconciling it against the frame's declaration --
+/// which is the state that refused t26 while `stream_fold` folded the same
+/// corpus, and which would refuse every t27 hour whose d86 read did not get
+/// through.
+#[test]
+fn a_declared_d86_payload_failure_certifies_as_an_accounted_unknown() {
+    let stream = d86_hour_stream(
+        &sunk_ship_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, None),
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        Some((
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            "domain 86: read_completion=2,answer_extent=1,\
+             d86_refusal_code_4_dropped_unbound=1",
+        )),
+    );
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &d86_roster(),
+    )
+    .expect("an accounted d86 failure must certify as a declared unknown");
+    let hour = run
+        .hours
+        .iter()
+        .find(|hour| hour.hour_index == HOUR_A)
+        .expect("the hour must publish");
+    assert_eq!(
+        hour.completeness.declared_degraded_domains.get(&86),
+        Some(&COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        "the certified hour must record d86 as unknown with its exact bits"
+    );
+    // The word is still on the identity, so "accounted" never means "erased".
+    assert_eq!(
+        hour.completeness
+            .domains
+            .get(&86)
+            .map(|domain| domain.data_payload_status_flags_or),
+        Some(COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        "the payload's own status must remain in the certified evidence"
+    );
+
+    // And the accounting is VISIBLE in the emitted report, not merely held in
+    // memory. A certified degraded hour that reads identically to a certified
+    // clean hour would make "accounted" an unverifiable claim.
+    //
+    // Production change that makes this fail: dropping
+    // `declared_degraded_domains` from `completeness_json`, which is the state
+    // this report shipped in before the deferral made degraded hours reachable
+    // through the DOMAIN_DATA path at all.
+    let rendered = completeness_json(&hour.completeness);
+    assert_eq!(
+        rendered["declared_degraded_domains"]["86"]["non_tolerated_flags"],
+        json!(COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        "the report must name the declared-unknown domain: {rendered}"
+    );
+    assert_eq!(
+        rendered["declared_degraded_domains"]["86"]["non_tolerated_flag_names"],
+        json!(["source_unavailable"]),
+        "the report must spell the bit, not only its value: {rendered}"
+    );
+}
+
+/// The non-weakening proof for the DOMAIN_DATA side, and the reason no
+/// tolerance was widened: an UNNAMED payload failure still refuses.
+///
+/// This is the original finding restated by its owner. `WorldFold` decides
+/// whether to apply a domain's rows from the status embedded in the payload, so
+/// a payload declaring failure under a clean PERF makes the fold withhold every
+/// row of an hour that would otherwise certify as complete.
+///
+/// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): deleting the
+/// DOMAIN_DATA arm's `domain.non_tolerated_status_flags |= residual;`
+/// accumulation -- i.e. deferring the payload status to a reconciliation it
+/// never reaches -- fails this test, and two more, with:
+///     thread 'tests::an_undeclared_d86_payload_failure_still_refuses' panicked
+///     at fold_check\src\tests.rs:2385:6:
+///     an unnamed d86 payload failure must never certify
+/// (`a_d86_declaration_with_the_wrong_bits_refuses` and
+/// `a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf`
+/// fail on the same mutation; 49 passed, 3 failed.)
+///
+/// Production change that makes this fail: dropping the payload's residual out
+/// of the observed-degraded set, which would restore exactly the hole the
+/// payload-status check was added to close.
+#[test]
+fn an_undeclared_d86_payload_failure_still_refuses() {
+    let stream = d86_hour_stream(
+        &sunk_ship_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, None),
+        // The PERF is CLEAN, so nothing but the payload says anything is wrong
+        // and the collector would mint no notice.
+        0,
+        None,
+    );
+    let err = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &d86_roster(),
+    )
+    .err()
+    .expect("an unnamed d86 payload failure must never certify");
+    assert!(err.contains("domain 86"), "{err}");
+    assert!(err.contains("non-tolerated failure flags"), "{err}");
+    assert!(
+        err.contains("declares no H4FD degraded notice"),
+        "the verdict must name the missing declaration, not merely the bit: {err}"
+    );
+}
+
+/// A declaration that does not MATCH the payload's bits is a disagreement, not
+/// an accounting, and must refuse. Otherwise "declared degraded" would be a
+/// blanket amnesty for whatever the payload happened to carry.
+///
+/// Production change that makes this fail: reconciling on domain identity
+/// instead of on the exact bits.
+#[test]
+fn a_d86_declaration_with_the_wrong_bits_refuses() {
+    let stream = d86_hour_stream(
+        &sunk_ship_payload(
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            None,
+        ),
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        Some((COMPACT_STATUS_SOURCE_UNAVAILABLE, "domain 86: read_completion=2")),
+    );
+    let err = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &d86_roster(),
+    )
+    .err()
+    .expect("a declaration that understates the payload's bits must not certify");
+    assert!(err.contains("domain 86 DOMAIN_DATA payload status"), "{err}");
+    assert!(
+        err.contains("does not declare") && err.contains("0x00000300"),
+        "the verdict must show both words: {err}"
+    );
+}
+
+/// The union of a domain's two residuals is not its degradation, and a notice
+/// may not be satisfied by a word neither record carries.
+///
+/// This is the shape ORing the PERF and payload residuals admitted: `0x200` in
+/// the PERF, `0x100` in the payload, a notice declaring `0x300`, and an hour
+/// that certifies against a status no record of it ever published. The two
+/// rules are therefore stated separately -- the notice EQUALS the PERF residual
+/// and COVERS the payload residual -- and a union can satisfy neither.
+///
+/// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): restoring the
+/// union (`domain.non_tolerated_status_flags |= residual` in the DOMAIN_DATA
+/// arm, and neutering the payload coverage loop) fails this test with:
+///     thread 'tests::a_notice_may_not_be_satisfied_by_the_union_of_two_disagreeing_statuses'
+///     panicked at fold_check\src\tests.rs:2507:6:
+///     a notice declaring the union of two disagreeing words must not certify
+/// -- i.e. the mutated build CERTIFIES the hour, which is Codex round-1
+/// BLOCKER 2 reproduced.
+///
+/// Production change that makes this fail: merging the payload residual into
+/// the PERF-derived `non_tolerated_status_flags` instead of keeping its own.
+#[test]
+fn a_notice_may_not_be_satisfied_by_the_union_of_two_disagreeing_statuses() {
+    let stream = d86_hour_stream(
+        &sunk_ship_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, None),
+        COMPACT_STATUS_PARTIAL_DATA,
+        Some((
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            "domain 86: read_completion=2",
+        )),
+    );
+    let err = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &d86_roster(),
+    )
+    .err()
+    .expect("a notice declaring the union of two disagreeing words must not certify");
+    assert!(err.contains("domain 86 PERF status"), "{err}");
+    assert!(
+        err.contains("0x00000200") && err.contains("0x00000300"),
+        "the verdict must show the PERF residual and what the notice claims: {err}"
+    );
+}
+
+/// A refused frame's `H4FD` declaration must not survive into the next hour.
+///
+/// `H4FD` annotates a published hour; `H4FR` closes an hour that published
+/// nothing. Holding the declaration across the refusal let the NEXT hour
+/// inherit it, so a domain that failed there with no notice of its own
+/// certified against the refused hour's notice -- certification of an unnamed
+/// failure, reached through the record that closes hours.
+///
+/// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): deleting the
+/// `std::mem::take(&mut self.current_declared_degraded)` guard from the
+/// FRAME_REFUSED arm fails this test with:
+///     thread 'tests::a_refused_frames_declaration_does_not_certify_the_next_hours_failure'
+///     panicked at fold_check\src\tests.rs:2566:6:
+///     hour A's declaration must not certify hour B's undeclared failure
+/// -- i.e. the mutated build CERTIFIES hour B, which is Codex round-1
+/// BLOCKER 1 reproduced.
+///
+/// Production change that makes this fail: closing an hour without clearing the
+/// declaration it accumulated.
+#[test]
+fn a_refused_frames_declaration_does_not_certify_the_next_hours_failure() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    // Hour A: a d86 failure, DECLARED, then refused rather than published.
+    append_d86_hour(
+        &mut stream,
+        &mut sequence,
+        HOUR_A,
+        &sunk_ship_payload_for(HOUR_A, COMPACT_STATUS_SOURCE_UNAVAILABLE, None),
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        Some((
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            "domain 86: read_completion=2",
+        )),
+        D86HourClose::Refused,
+    );
+    // Hour B: the SAME failure and NO notice of its own. Its only possible
+    // accounting is hour A's, which died with hour A.
+    append_d86_hour(
+        &mut stream,
+        &mut sequence,
+        HOUR_B,
+        &sunk_ship_payload_for(HOUR_B, COMPACT_STATUS_SOURCE_UNAVAILABLE, None),
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        None,
+        D86HourClose::Published,
+    );
+
+    let err = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &d86_roster(),
+    )
+    .err()
+    .expect("hour A's declaration must not certify hour B's undeclared failure");
+    assert!(
+        err.contains("H4FD degraded notice") && err.contains("FRAME_REFUSED"),
+        "the verdict must name the contradiction between the two frame records: {err}"
+    );
+}
+
+/// TOMORROW'S SHAPE (t27). Lane CD's partial batch -- rows that survived,
+/// `producer_complete = false`, and a 48-byte loss block naming the cause --
+/// certifies as an ORDINARY COMPLETE hour, with no `H4FD` notice and no
+/// tolerance entry.
+///
+/// That is the correct outcome and not an oversight. A partial batch is a
+/// successful read whose rows are all present and whose shortfall is stated in
+/// the payload's own grammar; it publishes under
+/// `AuthorityState::StaticExact20Receipt` with a clean status word, because
+/// nothing about the READ failed. Only the three authority-denying refusal
+/// codes (`EvidenceInstall`, `BaselineIncomplete`, `BaselineNotRevalidated`)
+/// deny a batch, and those take the unavailable arm above -- which certifies
+/// only when the frame declares it.
+///
+/// SCOPE, stated because it is narrower than the tests above and a reader
+/// should not mistake it for one of them: this pins the CONTRACT BOUNDARY
+/// between the d86 lane and the certifier, not the deferral rule. Its DATA and
+/// PERF statuses are both clean, so reverting the deferral leaves it green --
+/// deliberately. What it forbids is the other half of the alignment CD's change
+/// requires: that a named partial batch must not become uncertifiable.
+///
+/// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): setting
+/// `producer_complete: true` while keeping the loss block fails this test in the
+/// lane's own validator, before certification is reached:
+///     thread 'tests::a_cd_style_partial_batch_certifies_without_a_degraded_notice'
+///     panicked at fold_check\src\tests.rs:2208:6:
+///     a d86 snapshot payload encodes: Invalid("SHP1 completeness claim and
+///     producer loss disagree")
+/// -- which is the check that stops a partial batch from presenting itself as
+/// whole, and is why a clean status word here is honest.
+///
+/// Production change that makes this fail: deriving a failure status bit from
+/// `producer_complete == false` without also emitting the matching `H4FD`
+/// notice, which would refuse every t27 hour that lost a callback.
+#[test]
+fn a_cd_style_partial_batch_certifies_without_a_degraded_notice() {
+    let loss = sunk_ship_history_live_lane::SunkShipProducerLoss {
+        dropped_unbound: 9,
+        ..Default::default()
+    };
+    assert!(loss.names_a_cause(), "the fixture must name a real cause");
+    let payload = sunk_ship_payload(0, Some(loss));
+    let decoded = sunk_ship_history_live_lane::decode_payload(&payload)
+        .expect("the partial batch decodes");
+    let snapshot = decoded.snapshot.expect("the batch carries its rows");
+    assert!(
+        !snapshot.producer_complete && snapshot.producer_loss == Some(loss),
+        "the fixture must be a NAMED partial batch, not a whole one"
+    );
+    assert_eq!(
+        snapshot.events.len(),
+        1,
+        "a partial batch still ships the rows that survived"
+    );
+
+    let stream = d86_hour_stream(&payload, 0, None);
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &d86_roster(),
+    )
+    .expect("a named partial batch must certify; refusing it is what stops t27");
+    let hour = run
+        .hours
+        .iter()
+        .find(|hour| hour.hour_index == HOUR_A)
+        .expect("the hour must publish");
+    assert!(
+        hour.completeness.declared_degraded_domains.is_empty(),
+        "a named partial batch is not a degradation and must not be declared one"
+    );
+    assert_eq!(
+        hour.domain_data_counts.get(&86),
+        Some(&1),
+        "the batch's rows must reach the certified hour"
+    );
+}
+
+/// The tolerance table is NOT the mechanism here, and must not become it.
+///
+/// An entry for d86 would assert that a failed read is a reviewed partial with
+/// a written integrity argument. It is not: the fold withholds the domain's
+/// rows entirely. Widening the table would also make the failure INVISIBLE --
+/// a tolerated status is never declared in `H4FD` -- which is the mislabel the
+/// degraded record exists to prevent.
+///
+/// Production change that makes this fail: adding a d86 entry to
+/// `COMPACT_EXPECTED_PARTIAL_TOLERANCES` to make t26 pass.
+#[test]
+fn d86_certifies_through_the_declaration_and_never_through_a_tolerance() {
+    assert!(
+        compact_contract::expected_partial_tolerance(86).is_none(),
+        "d86 must have no expected-partial tolerance entry"
+    );
+    assert_eq!(
+        compact_status_failure_flags_after_expected_partial_tolerance(
+            86,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE
+        ),
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        "source_unavailable must stay a non-tolerated failure for d86"
+    );
+    assert!(
+        compact_contract::frame_degraded::FrameDegradedDomain::from_status(
+            86,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            "domain 86: read_completion=2",
+        )
+        .is_some(),
+        "the accounting path for d86 is the H4FD declaration"
     );
 }
 
@@ -2902,4 +3475,5 @@ fn the_d13_fold_equivalence_gate_can_tell_two_worlds_apart() {
         world.hours[2].snapshot_hash, other.hours[2].snapshot_hash,
         "a patch carrying a different value for country 2 folded to the same world"
     );
-}
+}
+

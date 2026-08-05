@@ -16,6 +16,13 @@ compact_contract = { path = "../compact_contract" }
 compact_stream = { path = "../compact_stream" }
 serde_json = "1"
 
+[dev-dependencies]
+# Certification tests build d86 payloads through the lane's OWN encoder rather
+# than by hand: a payload the lane contract would refuse to emit must not be
+# constructible for a test either, or the test pins a shape production cannot
+# produce.
+sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
+
 [[bin]]
 name = "fold_check"
 path = "src/main.rs"
