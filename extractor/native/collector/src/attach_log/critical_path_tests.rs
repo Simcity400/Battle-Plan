@@ -240,10 +240,14 @@ fn oob_and_ship_validators_reject_non_heap_bodies_before_reading_fields() {
             None,
             "non-heap body must be rejected before any field read"
         );
-        assert!(
-            validate_compact_task_force_body(0, fleet_addr, &BTreeMap::new(), true)
-                .is_none()
-        );
+        assert!(matches!(
+            validate_compact_task_force_body(0, fleet_addr, &BTreeMap::new(), true),
+            // A non-heap body never reaches the identity gate, so it is not a
+            // task force at all -- NOT a rejected one. Asserting the exact arm
+            // is what keeps the hoist from turning blob noise into a reported
+            // partial (see `CompactTaskForceCandidate`).
+            CompactTaskForceCandidate::NotATaskForce
+        ));
 
         // Same for the CShip identity reader, whose window is the
         // 0x714-byte one the ship-loop hoists skip.
@@ -594,13 +598,19 @@ fn hoisted_naval_sites_still_accept_and_emit_for_heap_bodies() {
                 owner_tag_db_id: Some(2),
             },
         );
-        let validated =
-            validate_compact_task_force_body(MODULE_BASE, base + TASK_FORCE, &fleet_roots, true)
-                .expect("heap task-force body must still validate after the hoist");
-        assert_eq!(validated.0, 9, "task force id");
-        assert_eq!(validated.1.fleet_id, 5, "parent fleet");
+        let CompactTaskForceCandidate::Accepted {
+            task_force_id,
+            fleet_root,
+            ship_members,
+            ..
+        } = validate_compact_task_force_body(MODULE_BASE, base + TASK_FORCE, &fleet_roots, true)
+        else {
+            panic!("heap task-force body must still validate after the hoist");
+        };
+        assert_eq!(task_force_id, 9, "task force id");
+        assert_eq!(fleet_root.fleet_id, 5, "parent fleet");
         assert_eq!(
-            validated.3.ids.as_deref(),
+            ship_members.ids.as_deref(),
             Some([4001u32, 4002].as_slice()),
             "ship members must still be read through the hoisted ship-window site"
         );
