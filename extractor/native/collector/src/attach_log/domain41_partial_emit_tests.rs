@@ -123,6 +123,7 @@ fn read_with(
         neutral_facility_countries: 0,
         neutral_project_pool_countries: 0,
         invalid_breakthrough_countries: 0,
+        breakthrough_specializations_resolved: true,
         root_reasons: ProjectRootReasonCounters::default(),
         lifecycle: Vec::new(),
         lifecycle_countries: 0,
@@ -291,15 +292,21 @@ fn encoded_len(read: &CompactProjectsRead) -> usize {
     compact_projects_data_payload(read, 0).len()
 }
 
-/// THE GATE. An all-partial capture — t19's actual condition — encoded under
-/// `DeltaPartial` must decode, hour by hour, to exactly the rows full emission
-/// carried. If this fails the mode is lossy and must not be enabled.
+/// THE GATE. Every partial hour after a clean seed, encoded under
+/// `DeltaPartial`, must decode to exactly the rows full emission carried. If
+/// this fails the mode is lossy and must not be enabled.
+///
+/// Hour 0 is CLEAN because the seed is not part of the extension: a
+/// `PARTIAL_DATA` record is discarded whole by `world_fold` (D41 is absent from
+/// `COMPACT_EXPECTED_PARTIAL_TOLERANCES`), so a pin taken from one is a baseline
+/// the consumer has not got. `a_partial_first_record_never_seeds_the_chain` is
+/// that half of the contract; this one is the reconstruction half.
 ///
 /// Production change that makes this fail: dropping the tombstone sweep for
 /// partial reads, or advancing the pinned baseline from a partial read. Either
 /// one leaves the reconstruction holding rows the hour did not observe.
 #[test]
-fn delta_partial_reconstructs_every_all_partial_hour_exactly() {
+fn delta_partial_reconstructs_every_partial_hour_after_a_clean_seed() {
     let mut full_tracker = CompactProjectsTracker::default();
     let mut delta_tracker = CompactProjectsTracker::default();
     let mut baseline: Option<CompactProjectsRead> = None;
@@ -313,16 +320,17 @@ fn delta_partial_reconstructs_every_all_partial_hour_exactly() {
         } else {
             0
         };
+        let partial = hour != 0;
         // The same read, built twice: `CompactProjectsRead` is a production
         // type and is deliberately not `Clone`, so the two modes are driven
         // from two identical constructions rather than from a test-only derive.
         let full = compact_projects_apply_emit_mode(
-            hour_read(hour, true, dropped),
+            hour_read(hour, partial, dropped),
             D41EmitMode::Full,
             &mut full_tracker,
         );
         let emitted = compact_projects_apply_emit_mode(
-            hour_read(hour, true, dropped),
+            hour_read(hour, partial, dropped),
             D41EmitMode::DeltaPartial,
             &mut delta_tracker,
         );
@@ -379,6 +387,106 @@ fn default_delta_mode_still_refuses_to_patch_a_partial_read() {
             "hour {hour}: a refused partial read must not seed the baseline"
         );
     }
+}
+
+/// A `PARTIAL_DATA` first record must NOT seed the chain, and the clean hours
+/// after it must still be foldable.
+///
+/// This is the defect the seed guard exists for, and its cost is not the partial
+/// hours. D41 is absent from `COMPACT_EXPECTED_PARTIAL_TOLERANCES`, so
+/// `world_fold::handle_compact_failure` discards every `PARTIAL_DATA` D41 record
+/// whole and never records a delta baseline for the domain. Seeding from one
+/// pins the producer to a state the fold has not got; every later clean hour
+/// then ships `DELTA_DATA` into `reject_delta_before_baseline` and is marked
+/// unknown, and nothing recovers, because `baseline_seeded` stays true and no
+/// keyframe is ever emitted again. The CLEAN hours are what is lost.
+///
+/// The test models the fold's two rules directly rather than describing them:
+/// a record with a failure bit is discarded, and a `DELTA_DATA` record before a
+/// baseline is discarded.
+///
+/// MUTATION: revert the seed rule in `compact_projects_apply_emit_mode` —
+/// delete the `if baseline && !advance_baseline { return read; }` guard AND
+/// restore `if baseline || advance_baseline { *tracker = current; }` — and this
+/// fails, observed verbatim:
+///   "a record the fold discards must not seed the producer's pin"
+/// with `mixed_clean_and_partial_coverage_reconstructs_across_pin_moves` failing
+/// beside it:
+///   "assertion `left == right` failed: hour 1: the chain starts at the first
+///    clean read and only records after it patch / left: true / right: false"
+///
+/// Deleting the guard ALONE is not observable: the pin condition below it is
+/// the load-bearing half, and the guard is the early exit that states the rule
+/// at the point of decision and skips a keyed diff whose output is discarded.
+#[test]
+fn a_partial_first_record_never_seeds_the_chain() {
+    let mut tracker = CompactProjectsTracker::default();
+
+    // Hour 0: partial. Emitted whole, pins nothing.
+    let first = compact_projects_apply_emit_mode(
+        hour_read(0, true, 0),
+        D41EmitMode::DeltaPartial,
+        &mut tracker,
+    );
+    assert_eq!(
+        first.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "a discarded record must not be dressed as a patch"
+    );
+    assert!(
+        !tracker.baseline_seeded,
+        "a record the fold discards must not seed the producer's pin"
+    );
+
+    // Hour 1: partial again. Same answer — the chain has still not started.
+    let second = compact_projects_apply_emit_mode(
+        hour_read(1, true, 0),
+        D41EmitMode::DeltaPartial,
+        &mut tracker,
+    );
+    assert_eq!(second.status_flags & COMPACT_STATUS_DELTA_DATA, 0);
+    assert!(!tracker.baseline_seeded);
+
+    // Hour 2: clean. This is the first record the fold applies, so it is the
+    // keyframe — and it must be a whole payload, or the fold rejects it as
+    // `delta_before_baseline` and the hour is lost.
+    let third = compact_projects_apply_emit_mode(
+        hour_read(2, false, 0),
+        D41EmitMode::DeltaPartial,
+        &mut tracker,
+    );
+    let mut fold_has_baseline = false;
+    for (label, record) in [("hour 0", &first), ("hour 1", &second), ("hour 2", &third)] {
+        let discarded_by_failure =
+            record.status_flags & compact_contract::COMPACT_STATUS_FAILURE_MASK != 0;
+        let is_delta = record.status_flags & COMPACT_STATUS_DELTA_DATA != 0;
+        if discarded_by_failure {
+            continue;
+        }
+        assert!(
+            !(is_delta && !fold_has_baseline),
+            "the fold never got a baseline, so {label}'s patch is \
+             delta_before_baseline and the clean hour is lost"
+        );
+        fold_has_baseline = true;
+    }
+    assert!(
+        fold_has_baseline,
+        "the clean hour must have reached the fold"
+    );
+    assert!(tracker.baseline_seeded, "the clean read seeds the chain");
+
+    // And the chain is live from there: the next read patches.
+    let fourth = compact_projects_apply_emit_mode(
+        hour_read(3, true, 0),
+        D41EmitMode::DeltaPartial,
+        &mut tracker,
+    );
+    assert_ne!(
+        fourth.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "once a clean read has seeded, later reads patch"
+    );
 }
 
 /// An ALL-EMPTY first read is still a baseline, and it seeds exactly once.
@@ -566,13 +674,17 @@ fn delta_partial_emits_a_small_fraction_of_the_full_payload() {
     let hours = 24u32;
 
     for hour in 0..hours {
+        // Hour 0 is clean: it is the only record that may seed the chain, and a
+        // partial one is not allowed to. See `delta_partial_reconstructs_every_
+        // partial_hour_after_a_clean_seed`.
+        let partial = hour != 0;
         full_bytes += encoded_len(&compact_projects_apply_emit_mode(
-            hour_read(hour, true, 0),
+            hour_read(hour, partial, 0),
             D41EmitMode::Full,
             &mut full_tracker,
         ));
         delta_bytes += encoded_len(&compact_projects_apply_emit_mode(
-            hour_read(hour, true, 0),
+            hour_read(hour, partial, 0),
             D41EmitMode::DeltaPartial,
             &mut delta_tracker,
         ));
@@ -600,13 +712,15 @@ fn delta_partial_measured_at_t19_owner_progress_scale() {
     let mut steady_delta_bytes = 0usize;
 
     for hour in 0..HOURS {
+        // Hour 0 is the clean seed; see the module's seeding rule.
+        let partial = hour != 0;
         full_bytes += encoded_len(&compact_projects_apply_emit_mode(
-            hour_read_scaled(hour, true, 0, ROWS),
+            hour_read_scaled(hour, partial, 0, ROWS),
             D41EmitMode::Full,
             &mut full_tracker,
         ));
         let emitted = compact_projects_apply_emit_mode(
-            hour_read_scaled(hour, true, 0, ROWS),
+            hour_read_scaled(hour, partial, 0, ROWS),
             D41EmitMode::DeltaPartial,
             &mut delta_tracker,
         );
@@ -740,9 +854,12 @@ fn mixed_clean_and_partial_coverage_reconstructs_across_pin_moves() {
             &mut delta_tracker,
         );
         let is_delta = emitted.status_flags & COMPACT_STATUS_DELTA_DATA != 0;
+        // Only a record the consumer applies may seed, so the leading partial
+        // hours are whole payloads that pin nothing. The chain starts at the
+        // first CLEAN read and every record after it is a patch.
         assert_eq!(
             is_delta, seeded,
-            "hour {hour}: exactly the seeding record may be a keyframe"
+            "hour {hour}: the chain starts at the first clean read and only records after it patch"
         );
 
         let applied = pin.applied(&emitted, is_delta);
@@ -754,9 +871,314 @@ fn mixed_clean_and_partial_coverage_reconstructs_across_pin_moves() {
 
         // The contract: the seeding record and every complete read become the
         // next reference; an incomplete read never does.
-        if !seeded || !partial {
+        if !partial {
             pin = applied;
+            seeded = true;
         }
-        seeded = true;
     }
+    assert!(
+        seeded,
+        "the schedule must contain a clean read, or it proves nothing about the pin"
+    );
+}
+
+/// The `PPA1` authority word must describe the STATE, not the patch.
+///
+/// `D41_AUTHORITY_X9_SPECIALIZATIONS` claims that every breakthrough row this
+/// record's read observed carried a resolved specialization. It used to be
+/// derived with `read.breakthrough.iter().all(..)` inside
+/// `append_compact_project_authority_trailer`, which runs AFTER
+/// `compact_projects_apply_emit_mode` has replaced that vector with a patch —
+/// and `all()` over an empty patch is vacuously true. So a state whose whole
+/// payload was refused the claim would be granted it on the very next unchanged
+/// hour, and the fold stores the authority whether or not the record re-carried
+/// the unresolved row.
+///
+/// MUTATION: put `read.breakthrough.iter().all(|row| row.deleted || matches!(
+/// row.specialization_code, PROJECT_SPECIALIZATION_NUCLEAR | ..LAND))` back in
+/// place of `read.breakthrough_specializations_resolved` and this fails —
+/// observed verbatim:
+///   "an empty patch is not evidence that every breakthrough row resolved"
+#[test]
+fn an_unresolved_breakthrough_is_not_forgotten_by_the_patch_that_omits_it() {
+    fn read_with_unresolved_breakthrough() -> CompactProjectsRead {
+        let mut read = read_with(
+            vec![facility(1, 10, 0)],
+            Vec::new(),
+            vec![owner_progress(42, 1, 5, 0)],
+            0,
+        );
+        read.breakthrough = vec![ProjectBreakthroughRow {
+            tag_db_id: 42,
+            program_status_index: 0,
+            specialization_handle: 7,
+            points_raw: 3,
+            // The unresolved case: the handle did not classify.
+            specialization_code: 0,
+            deleted: false,
+        }];
+        // What `read_compact_projects` computes over the WHOLE observed row set.
+        read.breakthrough_specializations_resolved = false;
+        read.d18_authority = Some(D41CountryRosterAuthority {
+            row_count: 1,
+            sha256: [0u8; 32],
+        });
+        read
+    }
+
+    fn authority_word(read: &CompactProjectsRead) -> u32 {
+        let mut payload = compact_projects_data_payload(read, 0);
+        let trailer_start = payload.len();
+        append_compact_project_authority_trailer(&mut payload, read, 1, 10);
+        assert!(
+            payload.len() > trailer_start,
+            "the authority trailer must be emitted for this read"
+        );
+        let at = trailer_start + 44;
+        u32::from_le_bytes([payload[at], payload[at + 1], payload[at + 2], payload[at + 3]])
+    }
+
+    let mut tracker = CompactProjectsTracker::default();
+    let seed = compact_projects_apply_emit_mode(
+        read_with_unresolved_breakthrough(),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_eq!(seed.status_flags & COMPACT_STATUS_DELTA_DATA, 0);
+    assert_eq!(
+        authority_word(&seed) & D41_AUTHORITY_X9_SPECIALIZATIONS,
+        0,
+        "the whole payload carrying the unresolved row must be refused the X9 claim"
+    );
+
+    // The same read again. Nothing changed, so the patch carries no breakthrough
+    // row at all — and must still be refused the claim.
+    let patch = compact_projects_apply_emit_mode(
+        read_with_unresolved_breakthrough(),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_ne!(
+        patch.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "an unchanged read must patch"
+    );
+    assert!(
+        patch.breakthrough.is_empty(),
+        "the unchanged breakthrough row must not be re-carried"
+    );
+    assert_eq!(
+        authority_word(&patch) & D41_AUTHORITY_X9_SPECIALIZATIONS,
+        0,
+        "an empty patch is not evidence that every breakthrough row resolved"
+    );
+
+    // And the claim is still GRANTED when the state really does resolve, so the
+    // fix is not "never set the bit".
+    let mut resolved_tracker = CompactProjectsTracker::default();
+    let mut resolved = read_with_unresolved_breakthrough();
+    resolved.breakthrough[0].specialization_code = PROJECT_SPECIALIZATION_NUCLEAR;
+    resolved.breakthrough_specializations_resolved = true;
+    let resolved_seed =
+        compact_projects_apply_emit_mode(resolved, D41EmitMode::Delta, &mut resolved_tracker);
+    assert_ne!(
+        authority_word(&resolved_seed) & D41_AUTHORITY_X9_SPECIALIZATIONS,
+        0,
+        "a resolved state must still earn the X9 claim"
+    );
+}
+
+/// A trailer walk that is not key-ascending emits WHOLE and drops the pin.
+///
+/// `fold_special_projects` keeps PLCF/PPGF/PRHF as `Vec`s: a whole record stores
+/// them in walk order, a patch is merged through a `BTreeMap` and comes back in
+/// ascending key order. While the walk is ascending the two agree — it is, in
+/// every record of t26 — but if it ever were not, the same hour would fold to
+/// differently ordered arrays under whole and patch emission and the per-hour
+/// snapshot hash would differ for an identical world.
+///
+/// The predicate has THREE independent clauses, one per trailer, and each is
+/// checked here on its own tracker: dropping any one of them must turn a case
+/// red. A gate that reversed only owner-progress would let the lifecycle and
+/// reward-history clauses be deleted silently.
+///
+/// MUTATIONS, each observed verbatim:
+///
+/// * delete the `compact_projects_trailers_are_key_ascending` guard in
+///   `compact_projects_apply_emit_mode`:
+///   "an out-of-order walk must not be patched"
+/// * drop the `read.lifecycle` clause of the predicate:
+///   "assertion `left == right` failed: lifecycle: an out-of-order walk must
+///    not be patched"
+/// * drop the `read.reward_history` clause:
+///   "assertion `left == right` failed: reward_history: an out-of-order walk
+///    must not be patched"
+#[test]
+fn an_out_of_order_trailer_walk_is_not_patched() {
+    // One case per clause of the predicate: seed ascending, then walk the SAME
+    // rows of one trailer family in the other order.
+    for (family, reverse) in [
+        ("lifecycle", 0usize),
+        ("owner_progress", 1),
+        ("reward_history", 2),
+    ] {
+        fn lifecycle_rows(reversed: bool) -> Vec<ProjectLifecycleRow> {
+            let mut rows = vec![
+                ProjectLifecycleRow {
+                    tag_db_id: 42,
+                    local_id: 1,
+                    started: true,
+                    completed: false,
+                    deleted: false,
+                },
+                ProjectLifecycleRow {
+                    tag_db_id: 42,
+                    local_id: 2,
+                    started: true,
+                    completed: false,
+                    deleted: false,
+                },
+            ];
+            if reversed {
+                rows.reverse();
+            }
+            rows
+        }
+        fn reward_rows(reversed: bool) -> Vec<ProjectRewardHistoryRow> {
+            let row = |history_index: u32| ProjectRewardHistoryRow {
+                tag_db_id: 42,
+                local_id: 1,
+                history_index,
+                prototype_reward_handle: 3,
+                option_handle: 4,
+                province: 5,
+                progress_raw: 6,
+                character_ref_type: 0,
+                character_ref_id: 0,
+                country_ref: 0,
+                scientist_ref: 0,
+                state_ref: 0,
+                date_raw: 7,
+                country_present: false,
+                scientist_present: false,
+                state_present: false,
+                deleted: false,
+            };
+            let mut rows = vec![row(0), row(1)];
+            if reversed {
+                rows.reverse();
+            }
+            rows
+        }
+        let read = |reversed: bool| {
+            let mut read = read_with(
+                Vec::new(),
+                Vec::new(),
+                if reversed && reverse == 1 {
+                    vec![owner_progress(42, 2, 5, 0), owner_progress(42, 1, 5, 0)]
+                } else {
+                    vec![owner_progress(42, 1, 5, 0), owner_progress(42, 2, 5, 0)]
+                },
+                0,
+            );
+            read.lifecycle = lifecycle_rows(reversed && reverse == 0);
+            read.lifecycle_countries = 1;
+            read.reward_history = reward_rows(reversed && reverse == 2);
+            read.reward_history_countries = 1;
+            read
+        };
+
+        let mut tracker = CompactProjectsTracker::default();
+        let seed = compact_projects_apply_emit_mode(read(false), D41EmitMode::Delta, &mut tracker);
+        assert_eq!(
+            seed.status_flags & COMPACT_STATUS_DELTA_DATA,
+            0,
+            "{family}: the ascending seed is a keyframe"
+        );
+        assert!(tracker.baseline_seeded, "{family}: the ascending seed pins");
+
+        let out_of_order =
+            compact_projects_apply_emit_mode(read(true), D41EmitMode::Delta, &mut tracker);
+        assert_eq!(
+            out_of_order.status_flags & COMPACT_STATUS_DELTA_DATA,
+            0,
+            "{family}: an out-of-order walk must not be patched"
+        );
+        assert!(
+            !tracker.baseline_seeded,
+            "{family}: the pin is dropped, so the next record is a keyframe too"
+        );
+    }
+
+    let mut tracker = CompactProjectsTracker::default();
+    let seed = compact_projects_apply_emit_mode(
+        read_with(
+            Vec::new(),
+            Vec::new(),
+            vec![owner_progress(42, 1, 5, 0), owner_progress(42, 2, 5, 0)],
+            0,
+        ),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_eq!(seed.status_flags & COMPACT_STATUS_DELTA_DATA, 0);
+    assert!(tracker.baseline_seeded, "the ascending seed pins");
+
+    // Same rows, walked in the other order.
+    let reversed = compact_projects_apply_emit_mode(
+        read_with(
+            Vec::new(),
+            Vec::new(),
+            vec![owner_progress(42, 2, 5, 0), owner_progress(42, 1, 5, 0)],
+            0,
+        ),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_eq!(
+        reversed.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "an out-of-order walk must not be patched"
+    );
+    assert_eq!(
+        reversed.owner_progress.len(),
+        2,
+        "the whole payload carries both rows"
+    );
+    assert!(
+        !tracker.baseline_seeded,
+        "the pin is dropped, so the next record is a keyframe too"
+    );
+
+    // An ascending walk after it starts a fresh chain.
+    let next = compact_projects_apply_emit_mode(
+        read_with(
+            Vec::new(),
+            Vec::new(),
+            vec![owner_progress(42, 1, 5, 0), owner_progress(42, 2, 5, 0)],
+            0,
+        ),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_eq!(
+        next.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "the record after a dropped pin is a keyframe"
+    );
+    let patched = compact_projects_apply_emit_mode(
+        read_with(
+            Vec::new(),
+            Vec::new(),
+            vec![owner_progress(42, 1, 5, 0), owner_progress(42, 2, 5, 0)],
+            0,
+        ),
+        D41EmitMode::Delta,
+        &mut tracker,
+    );
+    assert_ne!(
+        patched.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "and the chain resumes from there"
+    );
 }

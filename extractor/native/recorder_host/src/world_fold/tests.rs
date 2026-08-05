@@ -24956,3 +24956,441 @@ fn d13_research_of_a_tag_that_left_d18_is_evicted_not_republished() {
         json!(12)
     );
 }
+
+// --- D41 delta pairing (lane/CF) --------------------------------------------
+
+/// One D41 payload with the sections a patch actually carries.
+///
+/// Shape mirrors `collector::attach_log::compact_projects_data_payload`:
+/// header (extension 4), facility rows, one length-prefixed string per facility,
+/// then the `PLCF` and `PPGF` trailers. Row values sit inside the exact bounds
+/// `parse_project_owner_progress_segment` enforces.
+fn d41_delta_pairing_payload(
+    status: u32,
+    facilities: &[(u32, u32, bool)],
+    lifecycle: &[(u32, u32, u32)],
+    owner_progress: &[(u32, u32, u32, u32)],
+    reward_history: &[(u32, u32, u32, u32, bool)],
+) -> Vec<u8> {
+    let mut out = vec![
+        0u8;
+        SPECIAL_PROJECTS_HEADER_BASE_LEN
+            + SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN
+            + SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN
+            + SPECIAL_PROJECTS_HEADER_PROGRESS_LEN
+    ];
+    let facility_count = facilities.len() as u32;
+    put_u64_at(&mut out, 0, 10);
+    put_u32_at(&mut out, 8, facility_count);
+    put_u32_at(&mut out, 12, facility_count);
+    put_u32_at(&mut out, 16, status);
+    put_u32_at(&mut out, 20, facility_count);
+    put_u32_at(&mut out, 24, 0);
+    put_u32_at(&mut out, 28, 0);
+    // Observed counts are the "active" totals the fold checks a whole payload
+    // against; a patch is exempt from that check by design.
+    put_u32_at(&mut out, 32, 64);
+    put_u32_at(&mut out, 36, 64);
+    put_u32_at(&mut out, 40, 64);
+    put_u32_at(&mut out, 44, 0);
+    put_u32_at(&mut out, 48, 1);
+    put_u32_at(&mut out, 52, 4);
+    put_u64_at(&mut out, 56, 7);
+    let progress_offset = SPECIAL_PROJECTS_HEADER_BASE_LEN
+        + SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN
+        + SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN;
+    put_u32_at(&mut out, progress_offset, 0);
+    put_u32_at(&mut out, progress_offset + 4, 0);
+    put_u32_at(&mut out, progress_offset + 8, 64);
+    put_u32_at(&mut out, progress_offset + 12, 0);
+
+    for (id, province, deleted) in facilities {
+        if *deleted {
+            for value in [*id, 0, SPECIAL_PROJECTS_FACILITY_DELETED, 0, 0, 0, 0, 0] {
+                push_u32(&mut out, value);
+            }
+        } else {
+            for value in [*id, *province, 0, 0, 0, 3, 0, 0] {
+                push_u32(&mut out, value);
+            }
+        }
+    }
+    for _ in facilities {
+        push_str(&mut out, "");
+    }
+
+    out.extend_from_slice(b"PLCF");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    push_u32(&mut out, lifecycle.len() as u32);
+    push_u32(&mut out, 2);
+    push_u32(&mut out, 0);
+    for (tag, local, flags) in lifecycle {
+        for value in [*tag, *local, *flags] {
+            push_u32(&mut out, value);
+        }
+    }
+
+    out.extend_from_slice(b"PPGF");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    push_u32(&mut out, owner_progress.len() as u32);
+    push_u32(&mut out, 2);
+    push_u32(&mut out, 0);
+    for (tag, local, phase_progress, flags) in owner_progress {
+        if *flags == 1 << 31 {
+            for value in [*tag, *local, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1u32 << 31] {
+                push_u32(&mut out, value);
+            }
+        } else {
+            for value in [
+                *tag,
+                *local,
+                9001,
+                0x18,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                *phase_progress,
+                7,
+                *flags,
+            ] {
+                push_u32(&mut out, value);
+            }
+        }
+    }
+
+    out.extend_from_slice(b"PRHF");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    push_u32(&mut out, reward_history.len() as u32);
+    push_u32(&mut out, 2);
+    push_u32(&mut out, 0);
+    for (tag, local, history_index, progress, deleted) in reward_history {
+        if *deleted {
+            for value in [*tag, *local, *history_index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] {
+                push_u32(&mut out, value);
+            }
+            push_u32(&mut out, SPECIAL_PROJECTS_REWARD_HISTORY_DELETED);
+        } else {
+            for value in [
+                *tag,
+                *local,
+                *history_index,
+                11,
+                12,
+                13,
+                *progress,
+                0,
+                0,
+                0,
+                0,
+                0,
+                14,
+            ] {
+                push_u32(&mut out, value);
+            }
+            push_u32(&mut out, 0);
+        }
+    }
+    out
+}
+
+/// A D41 patch must fold to exactly the world the whole payload for the same
+/// read folds to.
+///
+/// This is the consumer half of the producer's delta contract, and nothing
+/// tested it: `fold_special_projects`'s `if delta { ...clone previous... }`
+/// branches and all three trailer appliers — `apply_project_lifecycle_delta`,
+/// `apply_project_owner_progress_delta`, `apply_project_reward_history_delta` —
+/// had no coverage through the production fold, while the producer's D41 delta
+/// path is the one being switched back on.
+///
+/// Two streams over the same two hours, folded by the production `WorldFold`:
+/// hour A identical in both; hour B carried whole in one and as a patch in the
+/// other. The patch exercises each applier with something that can fail:
+///
+/// * facilities — one changed, one added, one tombstoned, one left out;
+/// * `PLCF` — NOTHING carried, so a replacing applier loses all three rows;
+/// * `PPGF` — one advanced, one tombstoned, one left out;
+/// * `PRHF` — one changed, one tombstoned, one left out.
+///
+/// The hour-B snapshots must be equal.
+///
+/// MUTATIONS, each observed verbatim as
+///   "assertion `left == right` failed: the D41 patch folded to a different
+///    world than the whole payload":
+///
+/// * `fold_special_projects`: make the facility map always start empty
+///   (`let mut facilities = BTreeMap::new();` in place of the
+///   `if delta { ...clone... }`);
+/// * `apply_project_lifecycle_delta`: return the patch instead of merging it;
+/// * `apply_project_reward_history_delta`: the same.
+#[test]
+fn a_d41_patch_folds_to_the_world_the_whole_payload_folds_to() {
+    // Hour A: three facilities, three lifecycle rows, three progress rows.
+    let hour_a = d41_delta_pairing_payload(
+        0,
+        &[(9, 101, false), (10, 102, false), (11, 103, false)],
+        &[(47, 1, 1), (47, 2, 1), (47, 3, 3)],
+        &[(47, 1, 100, 0), (47, 2, 200, 0), (47, 3, 300, 1)],
+        &[(47, 1, 0, 50, false), (47, 1, 1, 60, false), (47, 2, 0, 70, false)],
+    );
+    // Hour B as a WHOLE payload: facility 9 moved, 10 gone, 12 new; progress
+    // row 2 advanced and row 3 gone.
+    let hour_b_whole = d41_delta_pairing_payload(
+        0,
+        &[(9, 999, false), (11, 103, false), (12, 104, false)],
+        &[(47, 1, 1), (47, 2, 1), (47, 3, 3)],
+        &[(47, 1, 100, 0), (47, 2, 222, 0)],
+        &[(47, 1, 0, 50, false), (47, 1, 1, 99, false)],
+    );
+    // The same hour as a PATCH: only what moved, plus tombstones for what the
+    // read proved gone. This is what `compact_projects_delta_rows` emits —
+    // changed rows in walk order, then tombstones in ascending key order.
+    let hour_b_delta = d41_delta_pairing_payload(
+        COMPACT_STATUS_DELTA_DATA,
+        &[(9, 999, false), (12, 104, false), (10, 0, true)],
+        // Nothing in the lifecycle moved, so the patch carries NO lifecycle
+        // row — the case that tells a merging applier from a replacing one.
+        // The trailer is still emitted: its country counters are non-zero.
+        &[],
+        &[(47, 2, 222, 0), (47, 3, 0, 1 << 31)],
+        &[(47, 1, 1, 99, false), (47, 2, 0, 0, true)],
+    );
+
+    let identity = country_identity_payload(&[(47, "GER")]);
+    let fold_two_hours = |second: Vec<u8>| -> Vec<Value> {
+        let mut stream = Vec::new();
+        let mut sequence = 1u64;
+        for (hour_index, projects) in [(16_959_360i64, hour_a.clone()), (16_959_361, second)] {
+            let raw = raw_for(hour_index);
+            for (domain_id, payload) in [(18u16, identity.clone()), (41, projects)] {
+                push_record(
+                    &mut stream,
+                    sequence,
+                    raw,
+                    domain_id,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &payload,
+                );
+                sequence += 1;
+            }
+            push_record(
+                &mut stream,
+                sequence,
+                raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &frame_end_payload(),
+            );
+            sequence += 1;
+        }
+        let mut fold = WorldFold::new("d41_delta_pairing");
+        fold.ingest_stream(&stream);
+        let snaps = fold.finish();
+        assert_eq!(snaps.len(), 2, "both hours must publish");
+        snaps.iter().map(|snap| parse(&snap.2)).collect()
+    };
+
+    let whole = fold_two_hours(hour_b_whole);
+    let patched = fold_two_hours(hour_b_delta);
+
+    assert_eq!(
+        whole[0]["special_projects"], patched[0]["special_projects"],
+        "hour A is the same record in both streams"
+    );
+    // The claim: the patch reconstructs the whole payload's world exactly.
+    assert_eq!(
+        whole[1]["special_projects"], patched[1]["special_projects"],
+        "the D41 patch folded to a different world than the whole payload"
+    );
+    // …and it is not vacuous: hour B really did move.
+    assert_ne!(
+        whole[0]["special_projects"], whole[1]["special_projects"],
+        "hour B must differ from hour A, or this proves nothing"
+    );
+    assert_eq!(
+        patched[1]["special_projects"]["facilities"]["9"]["province"],
+        json!(999)
+    );
+    assert!(
+        patched[1]["special_projects"]["facilities"]["10"].is_null(),
+        "the tombstone must remove facility 10: {:?}",
+        patched[1]["special_projects"]["facilities"]
+    );
+    assert_eq!(
+        patched[1]["special_projects"]["facilities"]["11"]["province"],
+        json!(103),
+        "a key the patch did not carry must survive"
+    );
+    assert_eq!(
+        patched[1]["special_projects"]["project_lifecycle"]["row_count"],
+        json!(3),
+        "an empty PLCF patch must retain the pinned lifecycle rows: {:?}",
+        patched[1]["special_projects"]["project_lifecycle"]
+    );
+    assert_eq!(
+        patched[1]["special_projects"]["reward_history"]["row_count"],
+        json!(2),
+        "the PRHF patch must change one row, tombstone one, and retain one: {:?}",
+        patched[1]["special_projects"]["reward_history"]
+    );
+}
+
+/// Append the `PPA1` authority trailer the collector appends after the D41
+/// payload, with every pinned hash and the carrier digest the fold recomputes.
+fn append_d41_authority_trailer(
+    payload: &mut Vec<u8>,
+    record_sequence: u64,
+    game_hour_raw: i32,
+    status_flags: u32,
+    d18_country_count: u32,
+    owner_progress_row_count: u32,
+    breakthrough_row_count: u32,
+    walked_countries: u32,
+    aborted_countries: u32,
+    authority_flags: u32,
+    d18_identity_sha256: &str,
+) {
+    fn unhex(value: &str) -> Vec<u8> {
+        (0..value.len() / 2)
+            .map(|index| u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap())
+            .collect()
+    }
+    let carrier: [u8; 32] = Sha256::digest(payload.as_slice()).into();
+    payload.extend_from_slice(b"PPA1");
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&208u16.to_le_bytes());
+    payload.extend_from_slice(&record_sequence.to_le_bytes());
+    payload.extend_from_slice(&game_hour_raw.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&d18_country_count.to_le_bytes());
+    payload.extend_from_slice(&owner_progress_row_count.to_le_bytes());
+    payload.extend_from_slice(&breakthrough_row_count.to_le_bytes());
+    payload.extend_from_slice(&walked_countries.to_le_bytes());
+    payload.extend_from_slice(&aborted_countries.to_le_bytes());
+    payload.extend_from_slice(&authority_flags.to_le_bytes());
+    payload.extend_from_slice(&unhex(D41_AUTHORITY_EXECUTABLE_SHA256));
+    payload.extend_from_slice(&unhex(D41_A20_STATIC_RECEIPT_SHA256));
+    payload.extend_from_slice(&unhex(D41_X9_PRODUCER_MANIFEST_SHA256));
+    payload.extend_from_slice(&unhex(d18_identity_sha256));
+    payload.extend_from_slice(&carrier);
+}
+
+/// A `PPA1` trailer on a PATCH record must be accepted, and its counts are the
+/// PATCH's counts.
+///
+/// The authority trailer cross-joins its row counts, status word, record
+/// identity and D18 digest against the record it rides on. Those checks are
+/// written against whole payloads, and a patch carries fewer rows and a status
+/// word with bit 10 set — so if any of them were written against the pinned
+/// STATE rather than the emitted RECORD, every D41 delta record would be
+/// rejected as a malformed payload and the domain would be dead the moment its
+/// delta path came back on. Nothing tested that.
+///
+/// MUTATION: in `fold_special_projects`'s PPA1 cross-join, compare
+/// `authority.owner_progress_row_count` against the PINNED owner-progress row
+/// count instead of the patch trailer's own, and the hour-B record is rejected
+/// — this fails, observed verbatim:
+///   "assertion `left == right` failed: the patch's own authority record is
+///    what the hour keeps: ... left: Number(2) / right: Number(5)"
+/// (hour B is discarded, so the hour keeps hour A's authority record).
+#[test]
+fn a_d41_patch_carrying_its_authority_trailer_is_accepted() {
+    let identity = country_identity_payload(&[(47, "GER")]);
+    let mut d18_rows = BTreeMap::new();
+    d18_rows.insert(47u32, "GER".to_string());
+    let d18_sha = d41_country_identity_sha256(&d18_rows);
+
+    let mut hour_a = d41_delta_pairing_payload(
+        0,
+        &[(9, 101, false)],
+        &[(47, 1, 1), (47, 2, 1)],
+        &[(47, 1, 100, 0), (47, 2, 200, 0)],
+        &[(47, 1, 0, 50, false)],
+    );
+    append_d41_authority_trailer(&mut hour_a, 2, raw_for(16_959_360), 0, 1, 2, 0, 2, 0, 0x0f, &d18_sha);
+
+    // Hour B: only the second owner-progress row moved, so the patch carries
+    // exactly one row — and its PPA1 must say one.
+    let mut hour_b = d41_delta_pairing_payload(
+        COMPACT_STATUS_DELTA_DATA,
+        &[],
+        &[],
+        &[(47, 2, 222, 0)],
+        &[],
+    );
+    append_d41_authority_trailer(
+        &mut hour_b,
+        5,
+        raw_for(16_959_361),
+        COMPACT_STATUS_DELTA_DATA,
+        1,
+        1,
+        0,
+        2,
+        0,
+        0x0f,
+        &d18_sha,
+    );
+
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (hour_index, projects) in [(16_959_360i64, hour_a), (16_959_361, hour_b)] {
+        let raw = raw_for(hour_index);
+        for (domain_id, payload) in [(18u16, identity.clone()), (41, projects)] {
+            push_record(
+                &mut stream,
+                sequence,
+                raw,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            sequence += 1;
+        }
+        push_record(
+            &mut stream,
+            sequence,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        sequence += 1;
+    }
+    let mut fold = WorldFold::new("d41_patch_authority");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let hour_b_snapshot = parse(&snaps[1].2);
+
+    // Accepted, not discarded: a rejected payload leaves the leaf null.
+    assert!(
+        !hour_b_snapshot["special_projects"].is_null(),
+        "the patch with its authority trailer must fold: {:?}",
+        hour_b_snapshot["provenance"]["notes"]
+    );
+    let authority = &hour_b_snapshot["special_projects"]["_r2_project_authority"];
+    assert_eq!(
+        authority["record_sequence"],
+        json!(5),
+        "the patch's own authority record is what the hour keeps: {authority:?}"
+    );
+    assert_eq!(
+        authority["source_status_flags"],
+        json!(COMPACT_STATUS_DELTA_DATA),
+        "the authority word describes the delta record it rode on"
+    );
+    // The merged world, not the patch: the row the patch omitted survives.
+    assert_eq!(
+        hour_b_snapshot["special_projects"]["project_progress"]["row_count"],
+        json!(2),
+        "the omitted owner-progress row must survive the patch: {:?}",
+        hour_b_snapshot["special_projects"]["project_progress"]
+    );
+}
