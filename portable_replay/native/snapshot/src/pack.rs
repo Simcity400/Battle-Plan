@@ -227,6 +227,24 @@ pub const ZSTD_COMPRESSION_LEVEL: i32 = DEFAULT_ZSTD_COMPRESSION_LEVEL;
 /// The smallest zstd window log accepted by libzstd.
 pub const MIN_ZSTD_WINDOW_LOG: u32 = 10;
 /// Entries smaller than this stay STORE even under the zstd policy.
+///
+/// The policy is a pure size floor: at or above it EVERY entry is compressed.
+/// It used to additionally consult a three-name allowlist (`*.snapshot.json`,
+/// `/collector_raw/`, `/production_render_blobs/`), which left every other
+/// large payload STORED at full size. Measured on the sealed t26 recording the
+/// entries that allowlist excluded were 160,247,978 bytes of pure JSON — the
+/// recorder manifest, all six static catalogs, `index.json` and `timeline.json`
+/// — with no already-compressed image or archive data among them; at this
+/// profile's level they pack to 10,711,580 bytes (93.3% smaller). The exclusion
+/// was an oversight, not an incompressibility finding, and it also silently
+/// covered the `replay_decoder` hour index and checkpoint cache, which are the
+/// artifacts that replace the per-hour JSON entirely.
+///
+/// Below the floor a zstd frame's own header and checksum can cost more than
+/// the payload saves, and the container carries many tiny descriptors.
+/// Genuinely incompressible bytes need no special case: zstd emits stored
+/// blocks for them, bounding the worst case at a small per-frame overhead
+/// rather than expansion.
 pub const ZSTD_MIN_ENTRY_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,12 +302,12 @@ impl PackCompression {
         }
     }
 
-    fn method_for_entry(self, name: &str, len: u64) -> ZipCompression {
+    fn method_for_entry(self, len: u64) -> ZipCompression {
         match self {
             PackCompression::Store => ZipCompression::Store,
             PackCompression::Deflate => ZipCompression::Deflate,
             PackCompression::ZstdLarge => {
-                if len >= ZSTD_MIN_ENTRY_BYTES && is_zstd_candidate(name) {
+                if len >= ZSTD_MIN_ENTRY_BYTES {
                     ZipCompression::Zstd
                 } else {
                     ZipCompression::Store
@@ -314,12 +332,6 @@ impl ZipCompression {
             ZipCompression::Zstd => ZIP_METHOD_ZSTD,
         }
     }
-}
-
-fn is_zstd_candidate(name: &str) -> bool {
-    name.ends_with(".snapshot.json")
-        || name.contains("/collector_raw/")
-        || name.contains("/production_render_blobs/")
 }
 
 /// Build a complete `.battleplan` (manifest written last) from the given entries.
@@ -476,7 +488,7 @@ pub fn pack_mixed_to_writer<W: Write>(
             &mut zip64_used,
             &e.path,
             e.bytes,
-            compression.method_for_entry(&e.path, e.bytes.len() as u64),
+            compression.method_for_entry(e.bytes.len() as u64),
             CompressionProfile::default(),
         )?;
         file_count += 1;
@@ -726,7 +738,7 @@ where
                 &mut zip64_used,
                 &entry.path,
                 entry.bytes,
-                compression.method_for_entry(&entry.path, entry.bytes.len() as u64),
+                compression.method_for_entry(entry.bytes.len() as u64),
                 compression_profile,
             )?,
             OrderedStreamingPackEntry::File(entry) => {
@@ -963,7 +975,7 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
             &mut zip64_used,
             &e.path,
             e.bytes,
-            compression.method_for_entry(&e.path, e.bytes.len() as u64),
+            compression.method_for_entry(e.bytes.len() as u64),
             compression_profile,
         )?;
         file_count += 1;
@@ -1157,7 +1169,7 @@ pub fn pack_borrowed_with_writer<W: Write>(
             &mut zip64_used,
             &e.path,
             e.bytes,
-            compression.method_for_entry(&e.path, e.bytes.len() as u64),
+            compression.method_for_entry(e.bytes.len() as u64),
             CompressionProfile::default(),
         )?;
         file_count += 1;
@@ -1556,7 +1568,7 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
     // the exact decoded bytes written still have the same length and digest.
     // This closes the mutable-path window without retaining whole entries.
     let file_len = expected_len;
-    let zip_compression = compression.method_for_entry(name, file_len);
+    let zip_compression = compression.method_for_entry(file_len);
     let method = zip_compression.method();
     // general-purpose bit 3: crc-32 and sizes are in a trailing data descriptor.
     let flags: u16 = 0x0008;
@@ -2185,6 +2197,89 @@ mod tests {
             .validate()
             .expect_err("writer must not create unreadable windows");
         assert!(err.to_string().contains("reader compatibility max"));
+    }
+
+    /// The zstd policy is a pure size floor over EVERY entry.
+    ///
+    /// It used to also consult a three-name allowlist (`*.snapshot.json`,
+    /// `/collector_raw/`, `/production_render_blobs/`). Measured on the sealed
+    /// t26 recording that left 160,247,978 bytes of pure JSON STORED at full
+    /// size — the recorder manifest, all six static catalogs, `index.json` and
+    /// `timeline.json` — none of it already-compressed data, and it also covered
+    /// the `replay_decoder` hour index and checkpoint cache, which are the
+    /// artifacts that replace the per-hour JSON series entirely.
+    #[test]
+    fn zstd_policy_compresses_every_entry_over_the_size_floor() {
+        // Compressible far beyond any plausible zstd framing overhead, so a
+        // STORED result can only mean the policy declined the entry.
+        let big = vec![b'{'; ZSTD_MIN_ENTRY_BYTES as usize * 2];
+        let small = vec![b'{'; ZSTD_MIN_ENTRY_BYTES as usize - 1];
+        let over_floor = [
+            ("payload/g/recorder/native_session_manifest.json", "recorder_manifest"),
+            (
+                "payload/g/static/localisation_join/localisation_catalog.json",
+                "static_artifact",
+            ),
+            ("payload/g/replay_decoder/checkpoints.h4cp", crate::replay_cache::CHECKPOINT_CACHE_ROLE),
+            ("payload/g/replay_decoder/hour_index.h4ix", crate::replay_cache::HOUR_INDEX_ROLE),
+            ("payload/g/index.json", "index"),
+        ];
+        let mut entries = over_floor
+            .iter()
+            .map(|(path, role)| BorrowedPackEntry {
+                path: (*path).to_string(),
+                bytes: &big,
+                role,
+                hour_index: None,
+            })
+            .collect::<Vec<_>>();
+        entries.push(BorrowedPackEntry {
+            path: "payload/g/timeline.json".to_string(),
+            bytes: &small,
+            role: "timeline",
+            hour_index: None,
+        });
+
+        let mut out = Vec::new();
+        pack_streaming_zstd_to_writer_with_profile(
+            "g",
+            &entries,
+            &[],
+            &[],
+            &PackIdentity::default(),
+            CompressionProfile::default(),
+            &mut out,
+        )
+        .expect("pack the container under the production zstd profile");
+
+        let archive = crate::zip::ZipArchive::parse(out).expect("parse the packed container");
+        for (path, _) in over_floor {
+            let entry = archive
+                .entries()
+                .iter()
+                .find(|entry| entry.name == path)
+                .unwrap_or_else(|| panic!("packed container is missing {path}"));
+            assert_eq!(
+                entry.method, ZIP_METHOD_ZSTD,
+                "{path} is at/over the size floor and must be compressed"
+            );
+            assert!(
+                entry.comp_size < entry.uncomp_size,
+                "{path} compressed to {} from {}",
+                entry.comp_size,
+                entry.uncomp_size
+            );
+        }
+
+        // Below the floor a zstd frame's own header and checksum can cost more
+        // than the payload saves, and the container carries many tiny
+        // descriptors.
+        let tiny = archive
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "payload/g/timeline.json")
+            .expect("packed container is missing the sub-floor entry");
+        assert_eq!(tiny.method, ZIP_METHOD_STORE);
     }
 
     #[test]

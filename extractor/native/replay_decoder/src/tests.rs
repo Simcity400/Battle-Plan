@@ -1969,3 +1969,493 @@ fn extractor_decoder_manifest_has_no_replay_interface_dependency() {
     let manifest = include_str!("../Cargo.toml").replace('\\', "/");
     assert!(!manifest.contains("replay_interface/"), "{manifest}");
 }
+
+// ---------------------------------------------------------------------------
+// Golden cross-path proof: binary persistence reconstructs the legacy per-hour
+// JSON series byte for byte.
+//
+// `build_certified_replay_artifacts` already proves its deltas round-trip
+// against the hashes of its OWN fold. That is not the guarantee the container
+// needs. The bytes the legacy seal path packs as
+// `payload/<id>/snapshots/NNNNN.snapshot.json` come from a different driver —
+// the file-backed, worker-parallel `stream_fold` — and it is THAT series a
+// reader loses when a recording ships binary artifacts instead. These tests pin
+// the two together over a chain long enough to cross several checkpoints and to
+// walk a maximal-depth delta run.
+// ---------------------------------------------------------------------------
+
+/// A long synthetic capture whose world state churns every hour: countries are
+/// added, removed, and renamed, so consecutive snapshots differ by object
+/// insertions, deletions, and in-place value changes rather than only by the
+/// hour stamp. A chain of pure-`Keep` patches would exercise nothing.
+fn churning_stream(hours: usize) -> Vec<u8> {
+    assert!(hours > 0);
+    let tags = [
+        "GER", "FRA", "ENG", "SOV", "USA", "ITA", "JAP", "POL", "HOL", "BEL",
+    ];
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for hour in 0..hours {
+        // A rotating window over the tag table: each hour drops the country that
+        // fell out of the window and gains the one that entered, while the ids
+        // of the survivors stay put. Every third hour also renames one survivor.
+        let width = 3 + (hour % 5);
+        let mut rows: Vec<(u32, String)> = Vec::new();
+        for offset in 0..width {
+            let slot = (hour + offset) % tags.len();
+            let mut tag = tags[slot].to_string();
+            if hour % 3 == 0 && offset == 1 {
+                tag = format!("{}{}", &tags[slot][..2], (b'A' + (hour % 26) as u8) as char);
+            }
+            rows.push((40 + slot as u32, tag));
+        }
+        let borrowed = rows
+            .iter()
+            .map(|(id, tag)| (*id, tag.as_str()))
+            .collect::<Vec<_>>();
+        push_record(
+            &mut stream,
+            seq,
+            raw_for(HOUR_A + hour as i64),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&borrowed),
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw_for(HOUR_A + hour as i64),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+    }
+    stream
+}
+
+/// Drive the production file-backed parallel fold — the exact driver whose
+/// output the legacy seal path packs — and return `(hour_index, bytes)` per
+/// closed hour.
+fn legacy_packed_snapshot_series(
+    stream_path: &std::path::Path,
+    spill: &std::path::Path,
+    game_id: &str,
+) -> Vec<(i64, Vec<u8>)> {
+    let (files, _stats) =
+        recorder_host::stream_fold::fold_compact_stream_file_parallel_with_identity_mode(
+            stream_path,
+            game_id,
+            spill,
+            recorder_host::stream_fold::default_fold_workers(),
+            StreamIdentityMode::Legacy,
+        )
+        .expect("production file-backed parallel fold");
+    files
+        .into_iter()
+        .map(|file| {
+            let bytes = std::fs::read(&file.path).expect("read spilled legacy snapshot");
+            (file.hour_index, bytes)
+        })
+        .collect()
+}
+
+fn open_certified_cache(artifacts: &CertifiedReplayArtifacts) -> snapshot::CertifiedReplayCache {
+    let index_bytes = std::fs::read(&artifacts.hour_index_path).unwrap();
+    let cache_bytes = std::fs::read(&artifacts.checkpoint_cache_path).unwrap();
+    snapshot::CertifiedReplayCache::open(
+        &index_bytes,
+        cache_bytes,
+        artifacts.source_len,
+        &artifacts.source_sha256,
+    )
+    .expect("open certified replay cache")
+}
+
+#[test]
+fn binary_persistence_reconstructs_the_legacy_json_snapshot_series_byte_for_byte() {
+    const HOURS: usize = 400;
+    const INTERVAL: u32 = 168;
+
+    let dir = TmpDir::new("golden_binary_vs_legacy");
+    let source = dir.0.join("collector_stream.bin");
+    let stream = churning_stream(HOURS);
+    std::fs::write(&source, &stream).unwrap();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+
+    let legacy_spill = dir.0.join("legacy_spill");
+    std::fs::create_dir(&legacy_spill).unwrap();
+    let legacy = legacy_packed_snapshot_series(&source, &legacy_spill, "golden_game");
+    assert_eq!(
+        legacy.len(),
+        HOURS,
+        "the legacy fold must close one snapshot per synthesized game hour"
+    );
+
+    let artifact_root = dir.0.join("artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let artifacts = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "golden_game",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &source_sha256,
+        INTERVAL,
+    )
+    .expect("build certified replay artifacts");
+
+    // The shape under test: sparse keyframes, and a delta run that actually
+    // reaches the far end of a checkpoint window.
+    assert_eq!(artifacts.hour_count, HOURS as u64);
+    assert_eq!(
+        artifacts.checkpoint_count,
+        HOURS.div_ceil(INTERVAL as usize) as u64
+    );
+    assert_eq!(artifacts.max_seek_deltas, INTERVAL - 1);
+
+    let cache = open_certified_cache(&artifacts);
+    assert_eq!(cache.index().hours().len(), legacy.len());
+    for (entry, (legacy_hour, legacy_bytes)) in cache.index().hours().iter().zip(&legacy) {
+        assert_eq!(entry.hour_index(), *legacy_hour);
+        let (reconstructed, receipt) = cache
+            .reconstruct_json(*legacy_hour)
+            .unwrap_or_else(|error| panic!("reconstruct hour {legacy_hour}: {error}"));
+        assert_eq!(
+            &reconstructed, legacy_bytes,
+            "hour {legacy_hour} does not reconstruct to the bytes the legacy seal path packs"
+        );
+        assert!(receipt.applied_deltas < INTERVAL);
+    }
+
+    // The whole point of the change: the delta/keyframe series is a fraction of
+    // the JSON series it replaces.
+    let legacy_bytes: u64 = legacy.iter().map(|(_, bytes)| bytes.len() as u64).sum();
+    assert_eq!(artifacts.legacy_json_bytes_avoided, legacy_bytes);
+    assert!(
+        artifacts.checkpoint_cache_len + artifacts.hour_index_len < legacy_bytes,
+        "binary persistence ({} cache + {} index) must be smaller than the {legacy_bytes}-byte JSON series it replaces",
+        artifacts.checkpoint_cache_len,
+        artifacts.hour_index_len
+    );
+}
+
+#[test]
+fn binary_persistence_reconstruction_is_exact_at_every_checkpoint_distance() {
+    // One checkpoint window, walked from both ends: hour 0 is the keyframe, the
+    // last hour is the deepest delta, and every hour between is reachable at its
+    // own distance. Seeking is order-independent, so the series is also checked
+    // in reverse against the same legacy bytes.
+    const HOURS: usize = 24;
+    const INTERVAL: u32 = 24;
+
+    let dir = TmpDir::new("golden_checkpoint_distances");
+    let source = dir.0.join("collector_stream.bin");
+    let stream = churning_stream(HOURS);
+    std::fs::write(&source, &stream).unwrap();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+
+    let legacy_spill = dir.0.join("legacy_spill");
+    std::fs::create_dir(&legacy_spill).unwrap();
+    let legacy = legacy_packed_snapshot_series(&source, &legacy_spill, "golden_game");
+
+    let artifact_root = dir.0.join("artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let artifacts = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "golden_game",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &source_sha256,
+        INTERVAL,
+    )
+    .expect("build certified replay artifacts");
+    assert_eq!(artifacts.checkpoint_count, 1);
+
+    let cache = open_certified_cache(&artifacts);
+    for (distance, (hour_index, legacy_bytes)) in legacy.iter().enumerate().rev() {
+        let (reconstructed, receipt) = cache.reconstruct_json(*hour_index).unwrap();
+        assert_eq!(
+            &reconstructed, legacy_bytes,
+            "reverse-order seek to hour {hour_index} diverged from the legacy fold"
+        );
+        assert_eq!(receipt.applied_deltas as usize, distance);
+        assert_eq!(receipt.checkpoint_hour, legacy[0].0);
+    }
+}
+
+#[test]
+fn certified_artifacts_publish_the_retained_campaign_identity() {
+    // Legacy-protocol streams must retain no CID1 at all; the seal-time join
+    // treats a retained identity on a Legacy stream as a publication refusal, so
+    // the artifacts have to report the absence rather than omit the question.
+    let dir = TmpDir::new("certified_identity_legacy");
+    let source = dir.0.join("collector_stream.bin");
+    let stream = three_hour_stream();
+    std::fs::write(&source, &stream).unwrap();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+    let artifact_root = dir.0.join("artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+
+    let artifacts = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "identity_game",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &source_sha256,
+        2,
+    )
+    .unwrap();
+    assert_eq!(artifacts.campaign_identity_manifest, None);
+
+    // An IdentityV1 stream carries a placement-authoritative CID1, and the
+    // artifacts must surface it in the same manifest shape the legacy per-hour
+    // fold publishes, so both seal paths can be held to the same join.
+    let dir = TmpDir::new("certified_identity_v1");
+    let source = dir.0.join("collector_stream.bin");
+    let stream = identity_v1_stream();
+    std::fs::write(&source, &stream).unwrap();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+    let artifact_root = dir.0.join("artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+
+    let artifacts = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "identity_game",
+        StreamIdentityMode::IdentityV1,
+        stream.len() as u64,
+        &source_sha256,
+        2,
+    )
+    .unwrap();
+    let retained = artifacts
+        .campaign_identity_manifest
+        .expect("IdentityV1 artifacts must retain the placement-authoritative CID1");
+    assert_eq!(
+        retained.get("game_unique_id").and_then(serde_json::Value::as_str),
+        Some(CAMPAIGN_UUID)
+    );
+}
+
+/// One canonical DOMAIN_GAP payload for the given raw game hour, in the exact
+/// shape `stream_fold`'s own boundary fixtures use.
+fn domain_gap_payload(game_hour_raw: i32) -> Vec<u8> {
+    compact_contract::DomainGapRecordV1 {
+        part: compact_contract::DomainGapPart::Both,
+        reason: compact_contract::DomainGapReason::ClockUnreadable,
+        target_hour_raw: game_hour_raw,
+        range_start_hour_raw: game_hour_raw,
+        range_end_hour_raw: game_hour_raw,
+        tick_before: 0,
+        tick_after: 0,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    }
+    .encode()
+    .expect("canonical gap fixture")
+}
+
+/// A capture whose FIRST observed hour published no data at all: every
+/// scheduled domain reported a gap, then FRAME_END sealed the hour. Later hours
+/// are ordinary.
+fn settling_gap_hour_stream(gap_domains: &[u16]) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for domain in gap_domains {
+        push_record(
+            &mut stream,
+            seq,
+            raw_for(HOUR_A),
+            *domain,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            &domain_gap_payload(raw_for(HOUR_A)),
+        );
+        seq += 1;
+    }
+    push_record(
+        &mut stream,
+        seq,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with_perf_domains(gap_domains.len() as u32),
+    );
+    seq += 1;
+    for hour in [HOUR_B, HOUR_C] {
+        push_record(
+            &mut stream,
+            seq,
+            raw_for(hour),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        seq += 1;
+        push_record(
+            &mut stream,
+            seq,
+            raw_for(hour),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        seq += 1;
+    }
+    stream
+}
+
+/// An hour in which every scheduled domain reported a gap is a real hour, and a
+/// recording that opens with one must still certify.
+///
+/// The strict machine used to treat only DOMAIN_DATA as opening an hour, so that
+/// hour's FRAME_END read as "closes hour N without an open DOMAIN_DATA hour" and
+/// the WHOLE stream failed certification — no hour index, no checkpoints, no
+/// sealed container. Capture t26's first observed hour is exactly this shape (68
+/// DOMAIN_GAP records and a FRAME_END, the ordinary settling shape of a late
+/// attach), and the shared production `BoundaryTracker` accepts it: it closes
+/// from `open_hour.or(pending_perf_hour)`, and `WorldFold` publishes the hour's
+/// snapshot like any other.
+#[test]
+fn a_capture_opening_with_an_all_gap_hour_still_certifies() {
+    let gap_domains: Vec<u16> = (10u16..=17).collect();
+    let stream = settling_gap_hour_stream(&gap_domains);
+
+    let dir = TmpDir::new("settling_gap_hour");
+    let source = dir.0.join("collector_stream.bin");
+    std::fs::write(&source, &stream).unwrap();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+    let artifact_root = dir.0.join("artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+
+    let artifacts = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "settling_game",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &source_sha256,
+        2,
+    )
+    .expect("a recording whose first hour is all gaps must still certify");
+
+    // The gap hour is a published hour, not a skipped one.
+    assert_eq!(artifacts.hour_count, 3);
+    let cache = open_certified_cache(&artifacts);
+    assert_eq!(
+        cache
+            .index()
+            .hours()
+            .iter()
+            .map(snapshot::ReplayHourEntry::hour_index)
+            .collect::<Vec<_>>(),
+        vec![HOUR_A, HOUR_B, HOUR_C]
+    );
+
+    // And it reconstructs to the same bytes the legacy seal path would pack.
+    let legacy_spill = dir.0.join("legacy_spill");
+    std::fs::create_dir(&legacy_spill).unwrap();
+    let legacy = legacy_packed_snapshot_series(&source, &legacy_spill, "settling_game");
+    assert_eq!(legacy.len(), 3);
+    for (hour_index, legacy_bytes) in &legacy {
+        let (reconstructed, _) = cache.reconstruct_json(*hour_index).unwrap();
+        assert_eq!(
+            &reconstructed, legacy_bytes,
+            "hour {hour_index} diverged from the legacy fold"
+        );
+    }
+}
+
+/// The relaxation is bounded: a terminal outcome still cannot open an hour while
+/// another is open, and a FRAME_END with no outcome at all is still refused.
+///
+/// Both refusals are asserted on the STRICT machine's own wording, not on the
+/// fact that the stream is refused. The shared `BoundaryTracker` rejects these
+/// same two streams for its own reasons ("...: DOMAIN_PERF for hour N while hour
+/// M is still open" and "...closes hour N without a terminal domain outcome"),
+/// and `finish` prefers the strict error only when there is one — so a test that
+/// merely asserted "refused", or that accepted either wording, would still pass
+/// with the strict arms removed entirely.
+#[test]
+fn terminal_outcomes_do_not_relax_hour_interleaving_or_a_bare_frame_end() {
+    let dir = TmpDir::new("settling_gap_hour_bounds");
+
+    // FRAME_END with nothing open at all.
+    let mut bare = Vec::new();
+    push_record(
+        &mut bare,
+        1,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let source = dir.0.join("bare.bin");
+    std::fs::write(&source, &bare).unwrap();
+    let artifact_root = dir.0.join("bare_artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let error = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "bare_game",
+        StreamIdentityMode::Legacy,
+        bare.len() as u64,
+        &to_hex(&Sha256::digest(&bare)),
+        2,
+    )
+    .expect_err("a FRAME_END with no terminal domain outcome must still be refused");
+    assert!(
+        format!("{error}").contains("without an open DOMAIN_DATA hour"),
+        "the strict machine, not only the shared boundary tracker, must refuse this: {error}"
+    );
+
+    // A gap for a later hour while an hour is already open.
+    let mut interleaved = Vec::new();
+    push_record(
+        &mut interleaved,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut interleaved,
+        2,
+        raw_for(HOUR_B),
+        19,
+        COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        &domain_gap_payload(raw_for(HOUR_B)),
+    );
+    push_record(
+        &mut interleaved,
+        3,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let source = dir.0.join("interleaved.bin");
+    std::fs::write(&source, &interleaved).unwrap();
+    let artifact_root = dir.0.join("interleaved_artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let error = build_certified_replay_artifacts(
+        &source,
+        &artifact_root,
+        "interleaved_game",
+        StreamIdentityMode::Legacy,
+        interleaved.len() as u64,
+        &to_hex(&Sha256::digest(&interleaved)),
+        2,
+    )
+    .expect_err("a terminal outcome for another hour must still be interleaving");
+    assert!(
+        format!("{error}").contains("terminal domain outcome for hour"),
+        "the strict machine, not only the shared boundary tracker, must refuse this: {error}"
+    );
+}

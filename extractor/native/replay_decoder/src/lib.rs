@@ -76,8 +76,9 @@ use compact_contract::stream_validator::{AcceptedRecordKind, StatefulStreamValid
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, CompactRecordHeader,
     RecordFramingError, ASSIGNED_COMPACT_DOMAINS, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
 use recorder_host::stream_fold::{
     strict_stream_certification_verdict, validate_domain_data_payload,
@@ -1088,6 +1089,15 @@ pub struct CertifiedReplayArtifacts {
     pub production_render_blob_count: u64,
     pub production_render_blob_bytes: u64,
     pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
+    /// Placement-authoritative CID1 the complete fold retained, in the same
+    /// manifest shape the legacy per-hour JSON fold publishes. `None` for a
+    /// Legacy-protocol stream, which must never retain one.
+    ///
+    /// The seal path joins this against the session manifest's declared
+    /// `campaign_identity`. Before this field existed only the legacy JSON fold
+    /// could be joined, so every binary-persistence capture published without
+    /// that check.
+    pub campaign_identity_manifest: Option<serde_json::Value>,
 }
 
 /// Fold a complete raw H4CR source once and build the certified production
@@ -1208,6 +1218,14 @@ pub fn build_certified_replay_artifacts(
         pending = Some((hour, start_offset));
     }
     let excluded_domain_data_records = cursor.stats().excluded_domain_data_records.clone();
+    // Read before `take_index` consumes the cursor: the seal path needs the
+    // retained CID1 to join against the session manifest exactly as the legacy
+    // per-hour JSON fold does.
+    let campaign_identity_manifest = cursor.campaign_identity().map(|identity| {
+        recorder_host::campaign_identity::to_manifest_json(
+            &recorder_host::campaign_identity::resolve_validated_cid1(identity),
+        )
+    });
     let stream_index = cursor
         .take_index()
         .map_err(|error| OpenError::Certification(error.to_string()))?;
@@ -1362,6 +1380,7 @@ pub fn build_certified_replay_artifacts(
         production_render_blob_count,
         production_render_blob_bytes,
         excluded_domain_data_records,
+        campaign_identity_manifest,
     })
 }
 
@@ -2456,6 +2475,32 @@ impl HourCursor {
                 }
                 Some(_) => None,
             },
+            // A terminal domain outcome opens the hour just as DOMAIN_DATA does.
+            //
+            // An hour in which EVERY scheduled domain reported a gap is a real,
+            // fully-accounted hour: the shared `BoundaryTracker` closes it from
+            // `open_hour.or(pending_perf_hour)`, `WorldFold` publishes its
+            // snapshot, and the seal path packs it. This machine tracked only
+            // DOMAIN_DATA, so it called that hour's FRAME_END a boundary
+            // violation and refused the WHOLE stream. That is the same
+            // duplicate-of-a-boundary-rule mistake the FRAME_REFUSED arm below
+            // documents, and it is not hypothetical: capture t26's first
+            // observed hour is 68 DOMAIN_GAP records and a FRAME_END — the
+            // ordinary settling shape of a late attach — so no such recording
+            // could produce certified binary artifacts at all.
+            COMPACT_RECORD_TYPE_DOMAIN_GAP | COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+                match self.strict_open_hour {
+                    Some(open) if open != header.game_hour_raw => Some(format!(
+                        "hour interleaving at byte {at}: terminal domain outcome for hour {} while hour {open} is open",
+                        header.game_hour_raw
+                    )),
+                    None => {
+                        self.strict_open_hour = Some(header.game_hour_raw);
+                        None
+                    }
+                    Some(_) => None,
+                }
+            }
             COMPACT_RECORD_TYPE_FRAME_END => match self.strict_open_hour {
                 Some(open) if open == header.game_hour_raw => {
                     self.strict_open_hour = None;
