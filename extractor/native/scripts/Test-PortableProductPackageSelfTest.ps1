@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +14,30 @@ $attestationSource = Join-Path $neutralScriptDir 'ProductionArtifact.Attestation
 . (Join-Path $scriptDir 'ProductionCapture.Promotion.ps1')
 $script:PortablePackageSelfTestCases = 0
 
+# Per-case wall time, written only when BATTLE_PLAN_SELFTEST_CASE_TIMING names a file.
+# The script is one straight line of fixture construction punctuated by
+# assertions, so there is no "case body" to wrap: the honest unit is the time
+# from the previous case's verdict to this one's, which is the work that case
+# needed done before it could be decided. Off by default, and it changes no
+# case name, order or verdict.
+$script:PortablePackageSelfTestTimingPath = $(if (Test-Path Env:BATTLE_PLAN_SELFTEST_CASE_TIMING) { $env:BATTLE_PLAN_SELFTEST_CASE_TIMING } else { $env:HOI4_SELFTEST_CASE_TIMING })
+$script:PortablePackageSelfTestClock = $null
+if ($script:PortablePackageSelfTestTimingPath) {
+    $script:PortablePackageSelfTestClock = [Diagnostics.Stopwatch]::StartNew()
+    [IO.File]::WriteAllText($script:PortablePackageSelfTestTimingPath, "ms`tordinal`tname`n")
+}
+
+function Write-SelfTestCaseTiming {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if (-not $script:PortablePackageSelfTestClock) { return }
+    $ms = $script:PortablePackageSelfTestClock.Elapsed.TotalMilliseconds
+    $script:PortablePackageSelfTestClock.Restart()
+    [IO.File]::AppendAllText(
+        $script:PortablePackageSelfTestTimingPath,
+        ('{0:F1}{1}{2}{1}{3}{4}' -f $ms, "`t", $script:PortablePackageSelfTestCases, $Name, "`n")
+    )
+}
+
 function Assert-Case {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -21,6 +45,7 @@ function Assert-Case {
     )
     if (-not $Condition) { throw "portable package self-test failed: $Name" }
     $script:PortablePackageSelfTestCases++
+    Write-SelfTestCaseTiming -Name $Name
 }
 
 function Invoke-ExpectFailure {
@@ -33,6 +58,7 @@ function Invoke-ExpectFailure {
     }
     catch {
         $script:PortablePackageSelfTestCases++
+        Write-SelfTestCaseTiming -Name $Name
         return
     }
     throw "portable package self-test expected failure: $Name"
@@ -117,12 +143,190 @@ function Write-InertFixtureSource {
     )
 }
 
+function Get-SelfTestTreeManifest {
+    # Relative path -> SHA256, over EVERY file in the tree.
+    #
+    # The source-tree authority's own digest covers only .rs/.c/.h/.cc/.cpp
+    # under the production roots. Everything else a gate reads -- the gate's own
+    # PowerShell, the manifests, the lockfile, the accepted baseline -- is
+    # outside it. A copy that matched that digest and nothing else would still
+    # be free to carry a rewritten gate, so proving a copy faithful needs the
+    # whole tree.
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    $full = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    # Ordinal, not OrdinalIgnoreCase. Case-insensitive keys make 'Dir\File.rs'
+    # and 'dir\file.rs' the same entry, so a copy that renamed a file's case
+    # would compare equal, and on a case-sensitive directory two genuinely
+    # different files would collapse into one and hide a missing or extra file.
+    # Copy-Item preserves casing, so a faithful copy still matches exactly.
+    $manifest = [Collections.Generic.Dictionary[string, string]]::new(
+        [StringComparer]::Ordinal
+    )
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($entry in ([IO.DirectoryInfo]$full).EnumerateFileSystemInfos(
+            '*', [IO.SearchOption]::AllDirectories)) {
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "self-test tree manifest reached a reparse point: $($entry.FullName)"
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                continue
+            }
+            $relative = $entry.FullName.Substring($full.Length + 1)
+            $manifest[$relative] = ([BitConverter]::ToString(
+                $sha.ComputeHash([IO.File]::ReadAllBytes($entry.FullName))
+            )).Replace('-', '').ToLowerInvariant()
+        }
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return $manifest
+}
+
+function Compare-SelfTestTreeManifest {
+    # Returns the empty string when the two manifests are identical, or a
+    # description of the FIRST difference in a stable order. Ordered so the
+    # message is reproducible rather than dependent on enumeration order.
+    param(
+        [Parameter(Mandatory = $true)]
+        [Collections.Generic.Dictionary[string, string]]$Expected,
+        [Parameter(Mandatory = $true)]
+        [Collections.Generic.Dictionary[string, string]]$Actual
+    )
+
+    foreach ($relative in @($Expected.Keys | Sort-Object)) {
+        if (-not $Actual.ContainsKey($relative)) {
+            return "missing file '$relative'"
+        }
+        if ([string]$Actual[$relative] -cne [string]$Expected[$relative]) {
+            return "content of '$relative' differs"
+        }
+    }
+    foreach ($relative in @($Actual.Keys | Sort-Object)) {
+        if (-not $Expected.ContainsKey($relative)) {
+            return "unexpected extra file '$relative'"
+        }
+    }
+    return ''
+}
+
+# Body of the source-rejection worker, materialised beside the worker trees at
+# run time. It lives here rather than as its own file under scripts/ so it
+# cannot be copied into a fixture tree and cannot drift from the loop that
+# dispatches it.
+$script:PortablePackageSourceRejectionWorkerScript = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$RequestPath
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+$root = [string]$request.Root
+$outPath = [string]$request.OutPath
+
+. (Join-Path $root 'extractor\native\scripts\PortableProduct.InteractionClosure.ps1')
+
+$response = [ordered]@{
+    schema = 'battle-plan.selftest_source_rejection_worker.v1'
+    clean_tree_sha256 = ''
+    clean_tree_accepted = $false
+    clean_tree_message = ''
+    results = @()
+}
+
+# The control, on THIS worker's own copy. The gate has to accept the unmutated
+# private tree, or every rejection below could be the copy being broken rather
+# than the planted symbol being caught. This is necessary but NOT sufficient on
+# its own -- it is computed by code living inside the copy -- so the parent
+# separately proves the copy is faithful before trusting anything here.
+try {
+    $cleanAuthority = Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root
+    $response.clean_tree_sha256 = [string]$cleanAuthority.sha256
+    Assert-ProductionInteractionSourceTreeClosure `
+        -RepoRoot $root `
+        -Authority $cleanAuthority
+    $response.clean_tree_accepted = $true
+}
+catch {
+    $response.clean_tree_message = [string]$_.Exception.Message
+}
+
+if ($response.clean_tree_accepted) {
+    $originals = @{}
+    $results = [Collections.Generic.List[object]]::new()
+    foreach ($item in @($request.Items)) {
+        $relative = [string]$item.RelativePath
+        $path = Join-Path $root $relative
+        if (-not $originals.ContainsKey($relative)) {
+            $originals[$relative] = [IO.File]::ReadAllText($path)
+        }
+        $original = [string]$originals[$relative]
+        $symbol = [string]$item.Symbol
+        [IO.File]::WriteAllText(
+            $path,
+            ($original + "`nunsafe extern `"system`" { fn $symbol(); }`n"),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $rejected = $false
+        $message = ''
+        try {
+            Assert-ProductionInteractionSourceTreeClosure `
+                -RepoRoot $root `
+                -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root)
+        }
+        catch {
+            $rejected = $true
+            $message = [string]$_.Exception.Message
+        }
+        finally {
+            [IO.File]::WriteAllText(
+                $path,
+                $original,
+                [Text.UTF8Encoding]::new($false)
+            )
+        }
+        # The whole dispatched tuple is echoed back, not just the role. The
+        # parent matches these against exactly what it sent, so a dropped,
+        # duplicated or misattributed verdict cannot hide behind a correct
+        # per-role count.
+        $results.Add([ordered]@{
+            role = [string]$item.Role
+            relative_path = $relative
+            symbol = $symbol
+            rejected = [bool]$rejected
+            message = $message
+        })
+    }
+    $response.results = @($results)
+}
+
+[IO.File]::WriteAllText(
+    $outPath,
+    ($response | ConvertTo-Json -Depth 6),
+    [Text.UTF8Encoding]::new($false)
+)
+'@
+
 function Invoke-JsonScript {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
+    $childClock = $null
+    if ($script:PortablePackageSelfTestClock) { $childClock = [Diagnostics.Stopwatch]::StartNew() }
     $stdout = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments)
+    if ($childClock) {
+        [IO.File]::AppendAllText(
+            $script:PortablePackageSelfTestTimingPath,
+            ('{0:F1}{1}child{1}{2}{3}' -f $childClock.Elapsed.TotalMilliseconds, "`t",
+                [IO.Path]::GetFileName($Path), "`n")
+        )
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "fixture script exited $LASTEXITCODE`: $Path"
     }
@@ -1946,55 +2150,355 @@ workspace_additive_alias = {
             $_.Exception.Message
         )
     }
+    # The roster loop below is the suite's dominant cost: four roles times the
+    # full forbidden-capability roster is several hundred gate evaluations, and
+    # every one of them is a genuinely fresh derivation, because the planted
+    # symbol really does change what the classification sees -- planting
+    # SuspendThread makes a crate become a suspending code patcher, which is the
+    # whole point of the case. No memo makes distinct inputs cheap, so the only
+    # lever left is to stop running them one after another. Measured serially at
+    # roughly 4.8 s per evaluation, this segment was 72% of the suite.
+    #
+    # Each worker gets its OWN copy of the fixture tree. That is what makes the
+    # parallelism sound: the loop's mutation is an in-place write to one file,
+    # so workers sharing a tree would read each other's planted symbols and
+    # every verdict would be meaningless. It also means exactly one process
+    # mutates any given tree, so nothing here widens the per-file memo's
+    # edit-and-revert window -- each private tree has a single writer, where the
+    # serial version had one writer on one tree.
+    #
+    # An unfaithful copy is the failure this has to be able to see: a worker
+    # whose tree was truncated, or whose copy of the gate was altered, would
+    # reject every symbol and pass the case for the wrong reason. THE PARENT
+    # proves the copy, file by file, before it will read any verdict from it --
+    # a digest the worker computes with code living inside the copy cannot
+    # establish that the copy is what we think it is. The worker's own control
+    # (the gate must accept its unmutated tree) is kept as well, because it
+    # catches a tree that is a faithful copy of something that was already
+    # broken.
+    #
+    # One behaviour does change: the serial loop stopped at the first symbol a
+    # role failed to reject. Workers evaluate their whole slice. That makes a
+    # FAILING run do more work and report every unrejected symbol rather than
+    # the first; it cannot change a verdict.
+    $sourceRejectionSymbols = @(Get-ForbiddenProductionClientCapabilitySymbols)
+    if ($sourceRejectionSymbols.Count -lt 2) {
+        throw 'self-test source-rejection roster is too small to exercise the gate'
+    }
+    # The first symbol of every role still goes through the whole package
+    # builder, exactly as before, so the builder is still proved to reach this
+    # gate; the rest go through the source-tree authority the builder calls.
+    $sourceRoleBuilderVerdicts = [ordered]@{}
     foreach ($sourceRole in $sourceRejectionRoles) {
-        $sourceOriginal = [IO.File]::ReadAllText([string]$sourceRole.Path)
-        $allSourceCapabilitiesRejected = $true
-        $sourceRoleBuilderPathProved = $false
-        foreach ($symbol in @(Get-ForbiddenProductionClientCapabilitySymbols)) {
+        $roleName = [string]$sourceRole.Name
+        $rolePath = [string]$sourceRole.Path
+        $sourceOriginal = [IO.File]::ReadAllText($rolePath)
+        $symbol = [string]$sourceRejectionSymbols[0]
+        [IO.File]::WriteAllText(
+            $rolePath,
+            ($sourceOriginal + "`nunsafe extern `"system`" { fn $symbol(); }`n"),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $rejected = $false
+        try {
+            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
+                '-RecorderExe', $recorder,
+                '-ReplayExe', $replay,
+                '-CollectorDll', $collector,
+                '-OutputZip', (Join-Path $releaseRoot ("forbidden-source-{0}-{1}.zip" -f
+                    $roleName, $symbol)),
+                '-Version', '0.1.0'
+            ) | Out-Null
+        }
+        catch {
+            $rejected = $true
+        }
+        finally {
             [IO.File]::WriteAllText(
-                [string]$sourceRole.Path,
-                ($sourceOriginal + "`nunsafe extern `"system`" { fn $symbol(); }`n"),
+                $rolePath,
+                $sourceOriginal,
                 [Text.UTF8Encoding]::new($false)
             )
-            $rejected = $false
-            $useBuilder = (-not $sourceRoleBuilderPathProved)
-            try {
-                if ($useBuilder) {
-                    Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                        '-RecorderExe', $recorder,
-                        '-ReplayExe', $replay,
-                        '-CollectorDll', $collector,
-                        '-OutputZip', (Join-Path $releaseRoot ("forbidden-source-{0}-{1}.zip" -f
-                            $sourceRole.Name, $symbol)),
-                        '-Version', '0.1.0'
-                    ) | Out-Null
+        }
+        $sourceRoleBuilderVerdicts[$roleName] = $rejected
+    }
+    Write-SelfTestCaseTiming -Name 'source-rejection builder path (one symbol per role)'
+
+    $sourceRejectionWorkerCount = [Math]::Max(
+        2,
+        [Math]::Min(6, [int]([Environment]::ProcessorCount / 4))
+    )
+    $sourceRejectionWorkItems = [Collections.Generic.List[object]]::new()
+    # Ordinal throughout. Rust symbol matching is case-sensitive, so
+    # CreateProcessW and createprocessw are different work items and a
+    # case-insensitive set would let a verdict for one satisfy the other.
+    $sourceRejectionKeys = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($sourceRole in $sourceRejectionRoles) {
+        $relative = Get-FixtureRelativePath -RepoRoot $root -Path ([string]$sourceRole.Path)
+        foreach ($symbol in @($sourceRejectionSymbols | Select-Object -Skip 1)) {
+            $key = "$([string]$sourceRole.Name)`0$relative`0$([string]$symbol)"
+            # Stated rather than assumed: the per-worker bijection below proves
+            # each worker answered its own slice, and only global uniqueness
+            # makes those slices add up to the whole roster.
+            if (-not $sourceRejectionKeys.Add($key)) {
+                throw "self-test source-rejection work item is not unique: '$key'"
+            }
+            $sourceRejectionWorkItems.Add([pscustomobject]@{
+                Role = [string]$sourceRole.Name
+                RelativePath = $relative
+                Symbol = [string]$symbol
+                Key = $key
+            })
+        }
+    }
+    # Outside the fixture root, never inside it: a copy of the tree placed under
+    # $root would be walked by the parent's own authority. The name is kept
+    # SHORT on purpose -- these roots hold a full copy of a tree that already
+    # sits under a long fixture path, and a longer prefix would push the deepest
+    # files past MAX_PATH and produce a partial copy. This prefix is shorter than
+    # the fixture root's own, so any tree that could be created can be copied.
+    $sourceRejectionRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        'hoi4sr' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    )
+    $sourceRejectionWorkers = [Collections.Generic.List[object]]::new()
+    $sourceRejectionCleanupProblems = [Collections.Generic.List[string]]::new()
+    $sourceRejectionVerdicts = [ordered]@{}
+    foreach ($sourceRole in $sourceRejectionRoles) {
+        $sourceRejectionVerdicts[[string]$sourceRole.Name] =
+            [Collections.Generic.List[object]]::new()
+    }
+    # Everything from the moment the root exists is inside the cleanup guard.
+    [IO.Directory]::CreateDirectory($sourceRejectionRoot) | Out-Null
+    try {
+        $workerScriptPath = Join-Path $sourceRejectionRoot 'worker.ps1'
+        [IO.File]::WriteAllText(
+            $workerScriptPath,
+            $script:PortablePackageSourceRejectionWorkerScript,
+            [Text.UTF8Encoding]::new($false)
+        )
+        $sharedTreeManifest = Get-SelfTestTreeManifest -Root $root
+        for ($workerIndex = 0; $workerIndex -lt $sourceRejectionWorkerCount; $workerIndex++) {
+            # Round robin, not contiguous blocks: every worker then carries the
+            # same mix of roles, so one role being cheaper cannot leave a worker
+            # idle while another still has a third of the roster left.
+            $slice = @(
+                0..($sourceRejectionWorkItems.Count - 1) |
+                    Where-Object { ($_ % $sourceRejectionWorkerCount) -eq $workerIndex } |
+                    ForEach-Object { $sourceRejectionWorkItems[$_] }
+            )
+            if ($slice.Count -eq 0) { continue }
+            $workerRoot = Join-Path $sourceRejectionRoot "t$workerIndex"
+            # Not silenced. A copy error has to surface here rather than as a
+            # confusing rejection later.
+            Copy-Item -LiteralPath $root -Destination $workerRoot -Recurse -Force `
+                -ErrorAction Stop
+            # Proved by the parent, over every file in both trees, before the
+            # worker is allowed to speak: same relative paths, same bytes. This
+            # covers the gate's own code and its manifests, lockfiles and
+            # baselines, none of which the source-tree digest reaches.
+            $workerManifestDifference = Compare-SelfTestTreeManifest `
+                -Expected $sharedTreeManifest `
+                -Actual (Get-SelfTestTreeManifest -Root $workerRoot)
+            if ($workerManifestDifference) {
+                throw (
+                    "self-test source-rejection worker $workerIndex tree is not a " +
+                    "faithful copy of the fixture tree: $workerManifestDifference"
+                )
+            }
+            $requestPath = Join-Path $sourceRejectionRoot "request$workerIndex.json"
+            $responsePath = Join-Path $sourceRejectionRoot "response$workerIndex.json"
+            [IO.File]::WriteAllText(
+                $requestPath,
+                ([ordered]@{
+                    Root = $workerRoot
+                    OutPath = $responsePath
+                    Items = @(
+                        $slice | ForEach-Object {
+                            [ordered]@{
+                                Role = $_.Role
+                                RelativePath = $_.RelativePath
+                                Symbol = $_.Symbol
+                            }
+                        }
+                    )
+                } | ConvertTo-Json -Depth 6),
+                [Text.UTF8Encoding]::new($false)
+            )
+            # Quoted. Start-Process flattens -ArgumentList into one command
+            # line, so an unquoted path splits on the first space in %TEMP%.
+            $process = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
+                -ArgumentList @(
+                    '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', ('"{0}"' -f $workerScriptPath),
+                    '-RequestPath', ('"{0}"' -f $requestPath)
+                )
+            $sourceRejectionWorkers.Add([pscustomobject]@{
+                Index = $workerIndex
+                Process = $process
+                ResponsePath = $responsePath
+                Expected = @($slice)
+            })
+        }
+        # Bounded: a wedged worker fails the suite with a named reason instead of
+        # holding the run open until something outside it intervenes.
+        $sourceRejectionBudgetMs = 3600000
+        $sourceRejectionClock = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($worker in $sourceRejectionWorkers) {
+            $remaining = $sourceRejectionBudgetMs -
+                [int]$sourceRejectionClock.Elapsed.TotalMilliseconds
+            if ($remaining -lt 1) { $remaining = 1 }
+            if (-not $worker.Process.WaitForExit($remaining)) {
+                try { $worker.Process.Kill() } catch { }
+                throw (
+                    "self-test source-rejection worker $($worker.Index) did not " +
+                    "finish within the $sourceRejectionBudgetMs ms budget"
+                )
+            }
+            # The bool overload can return before the exit-code cache is filled.
+            $worker.Process.WaitForExit()
+            if ($worker.Process.ExitCode -ne 0) {
+                throw (
+                    "self-test source-rejection worker $($worker.Index) exited " +
+                    "$($worker.Process.ExitCode)"
+                )
+            }
+        }
+        foreach ($worker in $sourceRejectionWorkers) {
+            if (-not (Test-Path -LiteralPath $worker.ResponsePath -PathType Leaf)) {
+                throw (
+                    "self-test source-rejection worker $($worker.Index) produced no response"
+                )
+            }
+            $response = Get-Content -LiteralPath $worker.ResponsePath -Raw |
+                ConvertFrom-Json
+            if (-not $response.clean_tree_accepted) {
+                throw (
+                    "self-test source-rejection worker $($worker.Index) rejected its " +
+                    'own unmutated tree: ' + [string]$response.clean_tree_message
+                )
+            }
+            # Exact bijection between what was dispatched and what came back.
+            # Counting alone lets two rows swap roles, or one tuple appear twice
+            # while another never runs, and still add up.
+            # Ordinal: a default hashtable would let a row for 'createprocessw'
+            # consume the dispatched 'CreateProcessW', and the symbols this
+            # plants into Rust are matched case-sensitively.
+            $outstanding = [Collections.Generic.HashSet[string]]::new(
+                [StringComparer]::Ordinal
+            )
+            foreach ($item in @($worker.Expected)) {
+                [void]$outstanding.Add([string]$item.Key)
+            }
+            foreach ($row in @($response.results)) {
+                $key = "$([string]$row.role)`0$([string]$row.relative_path)`0$([string]$row.symbol)"
+                # Remove returns false for a key that was never dispatched AND
+                # for one already consumed, so this is the duplicate check too.
+                if (-not $outstanding.Remove($key)) {
+                    throw (
+                        "self-test source-rejection worker $($worker.Index) returned a " +
+                        "verdict for unrequested or duplicated work item '$key'"
+                    )
                 }
-                else {
-                    Assert-ProductionInteractionSourceTreeClosure `
-                        -RepoRoot $root `
-                        -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root)
+                if ($row.rejected -isnot [bool]) {
+                    throw (
+                        "self-test source-rejection worker $($worker.Index) returned a " +
+                        "non-boolean verdict for '$key'"
+                    )
+                }
+                $sourceRejectionVerdicts[[string]$row.role].Add($row)
+            }
+            if ($outstanding.Count -ne 0) {
+                throw (
+                    "self-test source-rejection worker $($worker.Index) returned no " +
+                    "verdict for $($outstanding.Count) dispatched work item(s)"
+                )
+            }
+        }
+    }
+    finally {
+        # Cleanup problems are RECORDED here, not thrown: throwing from a
+        # finally would replace the real failure with a janitorial one. They are
+        # raised after the block instead, where they can only be reached if the
+        # main path succeeded.
+        foreach ($worker in $sourceRejectionWorkers) {
+            try {
+                if (-not $worker.Process.HasExited) { $worker.Process.Kill() }
+            }
+            catch {
+                $sourceRejectionCleanupProblems.Add(
+                    "worker $($worker.Index) could not be terminated: $($_.Exception.Message)"
+                )
+            }
+        }
+        # Wait before removing: on Windows a directory whose files a dying
+        # process still has open cannot be removed, and the private trees would
+        # be left behind in %TEMP%.
+        foreach ($worker in $sourceRejectionWorkers) {
+            try {
+                if (-not $worker.Process.WaitForExit(30000)) {
+                    $sourceRejectionCleanupProblems.Add(
+                        "worker $($worker.Index) was still running 30000 ms after being terminated"
+                    )
                 }
             }
             catch {
-                $rejected = $true
-            }
-            finally {
-                [IO.File]::WriteAllText(
-                    [string]$sourceRole.Path,
-                    $sourceOriginal,
-                    [Text.UTF8Encoding]::new($false)
+                $sourceRejectionCleanupProblems.Add(
+                    "worker $($worker.Index) could not be waited on: $($_.Exception.Message)"
                 )
-                if ($useBuilder) {
-                    $sourceRoleBuilderPathProved = $true
-                }
-            }
-            if (-not $rejected) {
-                $allSourceCapabilitiesRejected = $false
-                break
             }
         }
-        Assert-Case "$($sourceRole.Name) source rejects the complete lifecycle/UI API roster" (
-            $allSourceCapabilitiesRejected
+        try {
+            Remove-Item -LiteralPath $sourceRejectionRoot -Recurse -Force `
+                -ErrorAction Stop
+        }
+        catch {
+            $sourceRejectionCleanupProblems.Add(
+                "private worker trees under $sourceRejectionRoot were left behind: " +
+                $_.Exception.Message
+            )
+        }
+        # Warned here as well as thrown below, because those are different
+        # paths. If the block above threw, that exception propagates the moment
+        # this finally returns and the check below is never reached -- so a
+        # leaked tree on a FAILING run would otherwise be recorded and then
+        # silently discarded. A warning cannot displace the primary failure.
+        # -WarningAction Continue is not the default here, it is the POINT.
+        # This is an advanced script, so a caller's -WarningAction reaches this
+        # line: Stop would make the warning terminating inside a finally and
+        # replace the very exception it is trying to annotate, and
+        # SilentlyContinue would drop the leaked path entirely. Pinning the
+        # action makes the report independent of how the suite was invoked.
+        if ($sourceRejectionCleanupProblems.Count -ne 0) {
+            Write-Warning (
+                'self-test source-rejection cleanup failed: ' +
+                ($sourceRejectionCleanupProblems -join '; ')
+            ) -WarningAction Continue
+        }
+    }
+    # Only reachable when the block above did not throw. A run that leaves
+    # worker processes or full tree copies behind in %TEMP% is a defect in this
+    # suite, not something to discover later as unexplained disk use.
+    if ($sourceRejectionCleanupProblems.Count -ne 0) {
+        throw (
+            'self-test source-rejection cleanup failed: ' +
+            ($sourceRejectionCleanupProblems -join '; ')
+        )
+    }
+    Write-SelfTestCaseTiming -Name 'source-rejection roster (parallel workers)'
+
+    foreach ($sourceRole in $sourceRejectionRoles) {
+        $roleName = [string]$sourceRole.Name
+        $rows = @($sourceRejectionVerdicts[$roleName])
+        # Every symbol after the first has to be accounted for. Without this a
+        # worker that silently dropped its slice would leave "none unrejected"
+        # true over an empty set, which is the shape of a case that cannot fail.
+        $expectedRows = $sourceRejectionSymbols.Count - 1
+        Assert-Case "$roleName source rejects the complete lifecycle/UI API roster" (
+            [bool]$sourceRoleBuilderVerdicts[$roleName] -and
+            $rows.Count -eq $expectedRows -and
+            @($rows | Where-Object { -not $_.rejected }).Count -eq 0
         )
     }
     $allProductionLaneRootsScanned = $true
@@ -2323,6 +2827,20 @@ pub fn observer_only() {}
             domain_gap_outcomes = @()
             failure_status_flags_or = 0
             failure_status_seen = $false
+            # The promotion gate requires this block and reads exactly three
+            # things out of it: the schema literal, undeclared_unit_count, and
+            # the undeclared list, which it cross-checks against that count and
+            # then requires to be empty. The recorder's producer
+            # (recorder_host diagnostic_unit_accumulation_json) also publishes a
+            # `classes` table; it is deliberately NOT synthesized here, because
+            # reproducing the Rust Accumulation table in this fixture would be a
+            # second copy of engine content free to drift from the first, and
+            # nothing in the gate reads it.
+            diagnostic_unit_accumulation = [ordered]@{
+                schema = 'battle-plan.diagnostic_unit_accumulation.v1'
+                undeclared_unit_count = 0
+                undeclared = @()
+            }
             per_domain = $perDomain
         }
     }
@@ -2459,6 +2977,14 @@ pub fn observer_only() {}
         pinned_hook_site_count = [int]$hookAuthority.Count
         pinned_hook_site_baseline_sha256 = $hexC
         pinned_hook_site_restored_sha256 = $hexC
+        # Lane AS added `pinned_hook_import_slot_count` to the recorder's
+        # teardown record (recorder_host/src/main.rs) and to the exact-property
+        # pin in Test-PassiveCaptureTeardownReceipt; this fixture was not
+        # updated with it, so every promotion case here died 28-vs-29 before
+        # reaching its own assertion. Take the count from the same canonical
+        # roster authority the verifier compares against -- a literal would
+        # stop tracking the roster and make the check vacuous.
+        pinned_hook_import_slot_count = [int]$hookAuthority.ImportSlotCount
     }
     $teardownPath = Join-Path $captureRun 'CAPTURE_TEARDOWN_V1.json'
     [IO.File]::WriteAllText(

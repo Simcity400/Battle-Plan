@@ -218,7 +218,15 @@ def capture_ready_ack_sha256(ready: dict[str, Any], pipe_token: str) -> str | No
     return hashlib.sha256(authenticated).hexdigest()
 
 
-def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
+def canonical_hook_authority(problems: list[str]) -> tuple[int, int, str | None]:
+    """Re-derive (site count, import-slot count, allowlist digest) from the roster.
+
+    The import-slot count rides the teardown receipt as
+    ``pinned_hook_import_slot_count`` and is the count of the ONLY thing the
+    ImportExport primitive mutates. It is re-derived here from the same roster
+    text the digest is built from, for the same reason the site count is: a
+    count is only a check while something independent knows what it should be.
+    """
     source_path = (
         Path(__file__).resolve().parent.parent
         / "compact_contract"
@@ -227,7 +235,7 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
     )
     require(source_path.is_file(), "canonical_hook_authority_source_missing", problems)
     if not source_path.is_file():
-        return 0, None
+        return 0, 0, None
     source = source_path.read_text(encoding="utf-8")
     count_match = re.search(
         r"pub const PINNED_PRODUCTION_HOOK_COUNT_V1:\s*u16\s*=\s*"
@@ -245,7 +253,7 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
         problems,
     )
     if count_match is None or roster_match is None:
-        return 0, None
+        return 0, 0, None
     constants = {
         name: value
         for name, value in re.findall(
@@ -303,14 +311,14 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
         problems,
     )
     if import_mandatory is None or rva_mandatory is None:
-        return 0, None
+        return 0, 0, None
     require(
         import_width_match is not None,
         "canonical_hook_authority_import_width_missing",
         problems,
     )
     if import_width_match is None:
-        return 0, None
+        return 0, 0, None
     import_patch_len = int(import_width_match.group(1))
     roster_source = roster_match.group(1)
     import_rows = re.findall(
@@ -326,18 +334,24 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
         roster_source,
         re.DOTALL,
     )
+    expected_import_slot_count = len(import_rows)
     expected_count = len(import_rows) + len(rva_rows)
     declared_macro_count = len(
         re.findall(r"\bpinned_(?:import|rva)!\s*\(", roster_source)
     )
     require(
         0 < expected_count <= 0xFFFF
-        and declared_macro_count == expected_count,
+        and declared_macro_count == expected_count
+        and expected_import_slot_count > 0,
         "canonical_hook_authority_roster_count_mismatch",
         problems,
     )
-    if not (0 < expected_count <= 0xFFFF and declared_macro_count == expected_count):
-        return 0, None
+    if not (
+        0 < expected_count <= 0xFFFF
+        and declared_macro_count == expected_count
+        and expected_import_slot_count > 0
+    ):
+        return 0, 0, None
 
     def named_digest(label: str, name: str) -> bytes:
         raw = name.encode("utf-8")
@@ -446,13 +460,17 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, str | None]:
     )
     entries.sort(key=lambda row: row[0])
     if len(entries) != expected_count:
-        return expected_count, None
+        return expected_count, expected_import_slot_count, None
     preimage = (
         labelled_preimage("battle-plan.capture_ready.hook_allowlist.v1")
         + struct.pack("<H", expected_count)
         + b"".join(row[1] for row in entries)
     )
-    return expected_count, hashlib.sha256(preimage).hexdigest()
+    return (
+        expected_count,
+        expected_import_slot_count,
+        hashlib.sha256(preimage).hexdigest(),
+    )
 
 
 def canonical_production_domain_roster(problems: list[str]) -> list[tuple[int, str]]:
@@ -516,9 +534,11 @@ def grade_passive_lifecycle(
     expected_domain_names: list[str],
     problems: list[str],
 ) -> None:
-    expected_hook_count, expected_hook_allowlist_sha256 = (
-        canonical_hook_authority(problems)
-    )
+    (
+        expected_hook_count,
+        expected_import_slot_count,
+        expected_hook_allowlist_sha256,
+    ) = canonical_hook_authority(problems)
     ready_path = run_dir / "CAPTURE_READY_V2.json"
     teardown_path = run_dir / "CAPTURE_TEARDOWN_V1.json"
     require(ready_path.is_file(), "capture_ready_receipt_missing", problems)
@@ -558,6 +578,12 @@ def grade_passive_lifecycle(
         "semantic_game_state_mutated", "pinned_hook_sites_restored",
         "pinned_hook_site_count", "pinned_hook_site_baseline_sha256",
         "pinned_hook_site_restored_sha256",
+        # Lane AS added this to the recorder's teardown record and to the
+        # PowerShell verifier's exact-property pin; this independent
+        # re-derivation was left on the 28-key set, so it rejected every
+        # receipt the recorder actually writes as
+        # `capture_teardown_property_set_invalid`.
+        "pinned_hook_import_slot_count",
     }
     require(set(ready) == ready_keys, "capture_ready_property_set_invalid", problems)
     require(
@@ -879,6 +905,12 @@ def grade_passive_lifecycle(
         and teardown.get("semantic_game_state_mutated") is False
         and teardown.get("pinned_hook_sites_restored") is True
         and teardown.get("pinned_hook_site_count") == expected_hook_count
+        # A zero expectation means the roster re-derivation failed above (it
+        # already recorded its own problem); never let that degrade into
+        # accepting a receipt that claims zero verified import slots.
+        and expected_import_slot_count > 0
+        and teardown.get("pinned_hook_import_slot_count")
+            == expected_import_slot_count
         and is_hex64(teardown.get("pinned_hook_site_baseline_sha256"))
         and teardown.get("pinned_hook_site_baseline_sha256") != "0" * 64
         and teardown.get("pinned_hook_site_restored_sha256")

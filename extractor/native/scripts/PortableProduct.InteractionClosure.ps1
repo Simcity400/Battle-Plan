@@ -29,11 +29,15 @@
 # re-derivation and can never change an answer.
 $script:ProductionInteractionDerivationCache = @{}
 $script:ProductionInteractionDerivationCacheWeight = 0
-# Roughly 128 MB of UTF-16, measured against a tree whose largest production
-# source is about 1.7 MB: big enough that a caller rewriting one file keeps the
-# other several hundred cached for tens of iterations, small enough that the
-# process stays well inside what a validation runner should hold.
-$script:ProductionInteractionDerivationCacheWeightBudget = 64000000
+# The budget is a cliff, not a gradient: on overflow the WHOLE cache is dropped,
+# so a budget the working set merely brushes against turns every derivation into
+# a cold one at unpredictable moments. Measured on this repository the working
+# set is about 42 MB of weight, which the previous 64 MB budget was close enough
+# to that a few more memoised files would have started dropping everything each
+# time. Raised to a size the working set cannot approach; the entries are pure
+# functions of their keys, so the only cost of holding them is memory, and this
+# process is a validation runner that exits when it is done.
+$script:ProductionInteractionDerivationCacheWeightBudget = 1000000000
 
 function Set-ProductionInteractionDerivation {
     param(
@@ -49,6 +53,159 @@ function Set-ProductionInteractionDerivation {
     }
     $script:ProductionInteractionDerivationCache[$Key] = $Value
     $script:ProductionInteractionDerivationCacheWeight += $Weight
+}
+
+# Digest of the rules themselves.
+#
+# Every memo below answers "what does this rule say about these bytes". The
+# bytes are in the key; without this the RULES would not be, and editing a
+# classification in this file would leave a warm memo answering the old
+# question. It is this file's own text, so any edit anywhere in it - a roster,
+# a predicate, an entry point - invalidates every memo at once. Deliberately
+# coarse: over-invalidating costs one re-derivation, under-invalidating is a
+# gate that has stopped asking what it claims to ask.
+$script:ProductionInteractionAuthorityWalkId = $null
+$script:ProductionInteractionEvaluationDepth = 0
+
+function Enter-ProductionInteractionEvaluation {
+    # A source tree authority is a statement about bytes as of ONE walk, and the
+    # per-file memo trusts its digests. A walk id alone only proves no NEWER
+    # walk has happened, so a caller that kept an authority, edited a file and
+    # called back without re-walking would still have been served the old
+    # derivation - the memo cannot see an edit it was never asked to look for.
+    #
+    # So an authority backs at most one evaluation. The outermost gate call
+    # retires the walk id when it returns, and any later use of that authority
+    # is refused rather than answered. Nesting is counted because the closure
+    # assertion calls the findings walk with the same authority.
+    $script:ProductionInteractionEvaluationDepth++
+}
+
+function Exit-ProductionInteractionEvaluation {
+    $script:ProductionInteractionEvaluationDepth--
+    if ($script:ProductionInteractionEvaluationDepth -le 0) {
+        $script:ProductionInteractionEvaluationDepth = 0
+        $script:ProductionInteractionAuthorityWalkId = $null
+    }
+}
+
+$script:ProductionInteractionRulesDigest = $(
+    $rulesPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+    if ([string]::IsNullOrEmpty($rulesPath) -or -not (Test-Path -LiteralPath $rulesPath -PathType Leaf)) {
+        throw 'production interaction closure cannot digest its own rules'
+    }
+    $rulesSha = [Security.Cryptography.SHA256]::Create()
+    try {
+        [BitConverter]::ToString(
+            $rulesSha.ComputeHash([IO.File]::ReadAllBytes($rulesPath))
+        ).Replace('-', '')
+    }
+    finally {
+        $rulesSha.Dispose()
+    }
+)
+
+function Get-ProductionInteractionFileDerivation {
+    # One file's answer to one rule, keyed on the digest of that file's bytes.
+    #
+    # The per-file strip and capability-evidence caches key on the TEXT handed
+    # to them, which means the caller has already read the file to get it. That
+    # is the whole remaining cost of a gate evaluation once everything else is
+    # cached: the self-test's source-rejection cases change exactly one of the
+    # 362 authority files per iteration, and every rule re-read all 362 to find
+    # out which. FileSha256 lets an unchanged file be answered without being
+    # opened.
+    #
+    # The digest MUST be the one the authority walk computed in THIS evaluation
+    # - Get-ProductionInteractionSourceTreeAuthority reads every admitted file's
+    # bytes and returns file_digests from exactly those bytes, and it runs at
+    # the start of every evaluation. A digest from anywhere else is a promise
+    # about a file nobody re-read, so an empty one is refused rather than
+    # treated as "no digest available".
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$FileSha256,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Discriminator,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AuthorityWalkId,
+        [Parameter(Mandatory = $true)][scriptblock]$Compute,
+        [int]$Weight = 4096
+    )
+
+    if ($FileSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+        throw "production interaction file derivation has no authority digest: $Path"
+    }
+    # A digest is only a statement about the bytes as of the walk that took it.
+    # Holding an authority across an edit and passing it back would select the
+    # warm derivation for the old bytes, which is the one way this memo could
+    # hide a real change - so the derivation refuses any authority but the most
+    # recent walk's, and re-verifies the bytes it actually reads on a miss.
+    if ($AuthorityWalkId -ne $script:ProductionInteractionAuthorityWalkId) {
+        throw (
+            'production interaction file derivation was handed a stale source ' +
+            "tree authority: $Path"
+        )
+    }
+    $key = 'file-derivation:' + (Get-ProductionInteractionContentKey -Text (
+        @(
+            $Kind,
+            [IO.Path]::GetFullPath($Path),
+            $FileSha256,
+            $Discriminator,
+            $script:ProductionInteractionRulesDigest
+        ) -join "`n"
+    ))
+    if ($script:ProductionInteractionDerivationCache.Contains($key)) {
+        return $script:ProductionInteractionDerivationCache[$key]
+    }
+    # On a miss the compute block opens the file again, after the walk hashed
+    # it. Re-digesting what it read closes that window: a tree that changed
+    # between the walk and the read is a torn evaluation, and this refuses it
+    # rather than filing an answer under a digest that never described it.
+    $value = & $Compute
+    $verifySha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $observed = [BitConverter]::ToString(
+            $verifySha.ComputeHash([IO.File]::ReadAllBytes($Path))
+        ).Replace('-', '')
+    }
+    finally {
+        $verifySha.Dispose()
+    }
+    if ($observed -ne $FileSha256.ToUpperInvariant() -and
+        $observed.ToLowerInvariant() -ne $FileSha256.ToLowerInvariant()) {
+        throw (
+            'production interaction source changed while the gate was reading ' +
+            "it: $Path"
+        )
+    }
+    Set-ProductionInteractionDerivation -Key $key -Value $value -Weight $Weight
+    return $value
+}
+
+function Get-ProductionInteractionAuthorityFileDigest {
+    param(
+        [Parameter(Mandatory = $true)]$Authority,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if ($null -eq $Authority -or
+        -not ($Authority.PSObject.Properties.Name -contains 'file_digests') -or
+        $null -eq $Authority.file_digests -or
+        -not $Authority.file_digests.Contains($Path)) {
+        throw "production interaction authority carries no digest for: $Path"
+    }
+    return [string]$Authority.file_digests[$Path]
+}
+
+function Get-ProductionInteractionAuthorityWalkId {
+    param([Parameter(Mandatory = $true)]$Authority)
+
+    if ($null -eq $Authority -or
+        -not ($Authority.PSObject.Properties.Name -contains 'walk_id')) {
+        throw 'production interaction authority carries no walk identity'
+    }
+    return [string]$Authority.walk_id
 }
 
 function Get-ProductionInteractionContentKey {
@@ -891,8 +1048,22 @@ function Get-RustCodeWithoutCommentsOrStringsCore {
 }
 
 function Get-TomlProductionDependencyRecords {
+    # Cached on the exact TOML text, the same discipline as the per-file strip:
+    # the answer is a pure function of the text handed in, and the key is that
+    # text's digest, so a hit can only return what re-parsing would have.
+    #
+    # This is the shared floor under the manifest walks. Every production unit,
+    # every lane root resolution and every dependency-closure step re-parses the
+    # same handful of manifests, and the parse - not the read - is what costs:
+    # one bare read pass over all 365 authority files is 0.33 s, while the walks
+    # that consume these records were 4.6 s and 1.3 s per evaluation.
     param([Parameter(Mandatory = $true)][string]$Toml)
 
+    $recordsKey = 'toml-dependency-records:' +
+        (Get-ProductionInteractionContentKey -Text $Toml)
+    if ($script:ProductionInteractionDerivationCache.Contains($recordsKey)) {
+        return @($script:ProductionInteractionDerivationCache[$recordsKey])
+    }
     $records = [ordered]@{}
     foreach ($assignment in @(Get-TomlLogicalAssignments -Toml $Toml)) {
         $sectionParts = @(
@@ -971,7 +1142,14 @@ function Get-TomlProductionDependencyRecords {
             $record.package = ([string]$assignment.Value).Trim().Trim('"', "'")
         }
     }
-    return @($records.Values)
+    # Every consumer reads these records and none writes back into them, so one
+    # instance shared across hits is indistinguishable from re-parsing.
+    $parsed = @($records.Values)
+    Set-ProductionInteractionDerivation `
+        -Key $recordsKey `
+        -Value $parsed `
+        -Weight (256 + 256 * $parsed.Count)
+    return @($parsed)
 }
 
 function Assert-ProductionRepoPathIsPhysical {
@@ -1172,11 +1350,17 @@ function Get-CargoLockPackageDependencyGraph {
     if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
         throw "production Cargo.lock is missing: $LockPath"
     }
+    # Lexing the whole lock, once per caller. Keyed on the lock's exact text,
+    # which is the entire input to the graph.
+    $lockText = Get-Content -LiteralPath $LockPath -Raw
+    $graphKey = 'cargo-lock-graph:' +
+        (Get-ProductionInteractionContentKey -Text $lockText)
+    if ($script:ProductionInteractionDerivationCache.Contains($graphKey)) {
+        return $script:ProductionInteractionDerivationCache[$graphKey]
+    }
     $graph = [System.Collections.Specialized.OrderedDictionary]::new([StringComparer]::Ordinal)
     $current = $null
-    foreach ($assignment in @(Get-TomlLogicalAssignments -Toml (
-                Get-Content -LiteralPath $LockPath -Raw
-            ))) {
+    foreach ($assignment in @(Get-TomlLogicalAssignments -Toml $lockText)) {
         if (([string]$assignment.Section) -cne 'package') {
             continue
         }
@@ -1206,6 +1390,10 @@ function Get-CargoLockPackageDependencyGraph {
             )
         }
     }
+    Set-ProductionInteractionDerivation `
+        -Key $graphKey `
+        -Value $graph `
+        -Weight (256 + 256 * $graph.Count)
     return $graph
 }
 
@@ -1357,18 +1545,29 @@ function Get-ProductionInteractionSourceTreeAuthority {
                 throw "production interaction source root is missing: $root"
             }
             Assert-ProductionRepoPathIsPhysical -RepoRoot $repo -Path $root
-            $entries = @(Get-ChildItem -LiteralPath $root -Recurse -Force)
-            foreach ($entry in $entries) {
+            # Enumerated through the framework rather than Get-ChildItem, which
+            # materialises a FileInfo for every entry in the tree and dominated
+            # this walk. Same entries - files AND directories, hidden ones
+            # included, so the reparse-point rule still sees everything - same
+            # admission test, same order. This runs once per gate evaluation and
+            # the self-test evaluates the gate several hundred times.
+            foreach ($entry in ([IO.DirectoryInfo]$root).EnumerateFileSystemInfos(
+                '*', [IO.SearchOption]::AllDirectories)) {
+                # FileSystemInfo carries the attributes the enumeration already
+                # returned, so the reparse-point rule costs no extra syscall.
                 if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                     throw "production interaction source tree contains a reparse point: $($entry.FullName)"
                 }
+                if (($entry.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                    continue
+                }
+                if ($sourceExtensions -contains $entry.Extension) {
+                    $entry.FullName
+                }
             }
-            $entries |
-                Where-Object { -not $_.PSIsContainer } |
-                Where-Object { $sourceExtensions -contains $_.Extension }
         }
     ) | Sort-Object {
-        Get-ProductionInteractionRelativePath -Root $repo -Path $_.FullName
+        Get-ProductionInteractionRelativePath -Root $repo -Path $_
     }
     if ($files.Count -eq 0) {
         throw 'production interaction source tree is empty'
@@ -1380,17 +1579,28 @@ function Get-ProductionInteractionSourceTreeAuthority {
     # difference between about 1.1 s and about 0.05 s per evaluation. The
     # tree digest this feeds is compared byte for byte against the previous
     # implementation's in the lane's differential evidence.
+    # The per-file digest is kept, not just folded into the tree digest. It is
+    # the SHA256 of the exact bytes this walk read, so every downstream rule
+    # that derives something from one file can be keyed on it instead of
+    # re-reading the file to find out whether it changed. The self-test's
+    # source-rejection cases change exactly one of these files per iteration;
+    # without the per-file digests every rule re-reads all 362 to discover that.
+    $fileDigests = [System.Collections.Specialized.OrderedDictionary]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
     $rowSha = [Security.Cryptography.SHA256]::Create()
     try {
         $rows = @(
             foreach ($file in $files) {
+                $digest = ([BitConverter]::ToString(
+                    $rowSha.ComputeHash([IO.File]::ReadAllBytes($file))
+                )).Replace('-', '').ToLowerInvariant()
+                $fileDigests[[string]$file] = $digest
                 [ordered]@{
                     path = Get-ProductionInteractionRelativePath `
                         -Root $repo `
-                        -Path $file.FullName
-                    sha256 = ([BitConverter]::ToString(
-                        $rowSha.ComputeHash([IO.File]::ReadAllBytes($file.FullName))
-                    )).Replace('-', '').ToLowerInvariant()
+                        -Path $file
+                    sha256 = $digest
                 }
             }
         )
@@ -1408,10 +1618,16 @@ function Get-ProductionInteractionSourceTreeAuthority {
     finally {
         $sha.Dispose()
     }
+    # Each walk gets a fresh identity and becomes the only one whose digests the
+    # per-file memo will honour. An authority retained across an edit is then
+    # refused instead of selecting derivations for bytes that are gone.
+    $script:ProductionInteractionAuthorityWalkId = [guid]::NewGuid().ToString('N')
     return [pscustomobject]@{
-        files = @($files.FullName)
+        files = @([string[]]$files)
         file_count = $files.Count
         sha256 = $treeSha
+        file_digests = $fileDigests
+        walk_id = $script:ProductionInteractionAuthorityWalkId
     }
 }
 
@@ -2291,31 +2507,43 @@ function Get-ProductionCrateSourceCapabilityScan {
         [Parameter(Mandatory = $true)][string[]]$CodeMutationEntryPoints
     )
 
-    # Deliberately NOT cached across calls, after three attempts at a safe key.
+    # Cached on ONE pass, after three earlier attempts at a safe key failed.
     #
     # A cache is only sound here if the key describes exactly the bytes the
-    # value was derived from. This function walks a directory, so the key has to
-    # come from a separate pass over that directory, and separate passes are
-    # separate snapshots:
+    # value was derived from, and this function walks a directory. Three keys
+    # that do not survive that were tried and removed:
     #   - a path/length/last-write-tick key is defeated by a same-length edit
     #     that restores the timestamp;
-    #   - a content key read before the scan can file a value derived from state
-    #     B under a key describing state A;
-    #   - re-reading the key after the scan narrows that to a change made and
-    #     reverted inside the scan, but does not close it, and the difference
-    #     from the uncached scan is not the torn read - it is that the cache
-    #     PERSISTS the torn read and keeps serving it after the tree is stable
-    #     again. It also introduces a failure mode the uncached scan does not
-    #     have: the post-scan read can throw and discard a scan that had already
-    #     succeeded.
-    # Deriving key and value from one pass would mean reading every dependency
-    # source before the lookup, and that read is essentially the whole cost of
-    # this scan, so a sound cache would save nothing.
+    #   - a content key read in a pass BEFORE the scan files a value derived
+    #     from state B under a key describing state A;
+    #   - re-reading the key in a pass AFTER the scan narrows that to a change
+    #     made and reverted inside the scan but does not close it, and it
+    #     persists that torn read after the tree is stable again.
+    # Every one of those has two passes. This one has one: the loop below reads
+    # each admitted file exactly once, keeps the text it read, and digests that
+    # same text. The key therefore describes the precise bytes the value is
+    # derived from - a change made mid-walk lands in the key as well as in the
+    # answer, exactly as it would in an uncached scan - and there is no second
+    # read to disagree with the first.
     #
-    # The per-file strip and capability-evidence caches below DO apply inside
-    # this scan, and they are sound because their key is the exact text handed
-    # to them - not a re-read of a path. They remove the expensive part; what is
-    # left is the read.
+    # What the earlier note got wrong was the cost, and it was measured rather
+    # than argued: reading every admitted source under all 22 production
+    # dependency roots is 0.75 s and digesting them is 0.04 s, against 2.3 s for
+    # one uncached derivation pass over the same corpus with the per-file caches
+    # already warm. The derivation, not the read, is the cost - most of it the
+    # entry-point prefilter over 40 MB of registry sources, which a hit skips
+    # entirely. The classification above re-enters this function about ten times
+    # per crate in one evaluation, because the reachability closure is computed
+    # once per (crate, lock) pair and each of those walks the shared in-repository
+    # crates again with its own visited set.
+    #
+    # The root path is in the key. Two copies of one crate at different paths
+    # cannot share an entry, which costs nothing real (the returned record names
+    # its own root) and keeps the value's `root` field honest.
+    #
+    # The per-file strip and capability-evidence caches below still apply on a
+    # miss, and are sound for the same reason: their key is the exact text
+    # handed to them, not a re-read of a path.
     $sourceExtensions = @(Get-ProductionInteractionSourceExtensions)
     $excludedTopLevel = @('tests', 'benches', 'examples', 'fuzz', 'target')
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -2327,20 +2555,59 @@ function Get-ProductionCrateSourceCapabilityScan {
     $prefilter = '(?:' + (($allEntryPoints | ForEach-Object {
         [regex]::Escape($_)
     }) -join '|') + ')'
-    foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -Recurse -Force -File)) {
-        if ($sourceExtensions -notcontains $file.Extension) {
-            continue
+    $admitted = [System.Collections.Generic.List[object]]::new()
+    $keyPreimage = [Text.StringBuilder]::new()
+    $keySha = [Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -Recurse -Force -File)) {
+            if ($sourceExtensions -notcontains $file.Extension) {
+                continue
+            }
+            $relative = $file.FullName.Substring($rootFull.Length + 1).Replace('\', '/')
+            $firstSegment = ($relative -split '/')[0]
+            if ($relative.Contains('/') -and ($excludedTopLevel -contains $firstSegment)) {
+                continue
+            }
+            $source = Get-Content -LiteralPath $file.FullName -Raw
+            if ($null -eq $source) { $source = '' }
+            $admitted.Add([pscustomobject]@{
+                Relative = $relative
+                Source = $source
+                CFamily = ($cFamilyExtensions -contains $file.Extension)
+            })
+            [void]$keyPreimage.Append($relative).Append("`0").Append(
+                [BitConverter]::ToString(
+                    $keySha.ComputeHash([Text.Encoding]::UTF8.GetBytes($source))
+                ).Replace('-', '')
+            ).Append("`n")
         }
-        $relative = $file.FullName.Substring($rootFull.Length + 1).Replace('\', '/')
-        $firstSegment = ($relative -split '/')[0]
-        if ($relative.Contains('/') -and ($excludedTopLevel -contains $firstSegment)) {
-            continue
-        }
-        $source = Get-Content -LiteralPath $file.FullName -Raw
+    }
+    finally {
+        $keySha.Dispose()
+    }
+    $scanKey = 'crate-capability-scan:' + (Get-ProductionInteractionContentKey -Text (
+        @(
+            $rootFull,
+            (@($SuspensionEntryPoints) -join "`0"),
+            (@($CodeMutationEntryPoints) -join "`0"),
+            $keyPreimage.ToString()
+        ) -join "`n"
+    ))
+    if ($script:ProductionInteractionDerivationCache.Contains($scanKey)) {
+        # Read-only to every caller: the reachability closure copies site
+        # references out of the record and never writes back into it, and the
+        # classification stamps its digest onto its own closure record rather
+        # than onto this one. Sharing one instance across hits is therefore
+        # indistinguishable from recomputing.
+        return $script:ProductionInteractionDerivationCache[$scanKey]
+    }
+    foreach ($entry in $admitted) {
+        $source = [string]$entry.Source
         if ([string]::IsNullOrEmpty($source) -or $source -cnotmatch $prefilter) {
             continue
         }
-        $cFamily = ($cFamilyExtensions -contains $file.Extension)
+        $relative = [string]$entry.Relative
+        $cFamily = [bool]$entry.CFamily
         $code = Get-RustCodeWithoutCommentsOrStrings -Text $source
         Add-ProductionCapabilityEvidence -Accumulator $suspension -Evidence (
             Get-ProductionCapabilityEvidence `
@@ -2366,7 +2633,7 @@ function Get-ProductionCrateSourceCapabilityScan {
     $mutation.resolves_exports = $resolvesExports
     $suspensionSites = @(Resolve-ProductionCapabilitySites -Accumulator $suspension)
     $mutationSites = @(Resolve-ProductionCapabilitySites -Accumulator $mutation)
-    return [ordered]@{
+    $scan = [ordered]@{
         root = $rootFull
         suspension_sites = @($suspensionSites)
         code_mutation_sites = @($mutationSites)
@@ -2382,6 +2649,11 @@ function Get-ProductionCrateSourceCapabilityScan {
         suspends_and_mutates_code =
             ($suspensionSites.Count -gt 0 -and $mutationSites.Count -gt 0)
     }
+    Set-ProductionInteractionDerivation `
+        -Key $scanKey `
+        -Value $scan `
+        -Weight (256 + 256 * ($suspensionSites.Count + $mutationSites.Count))
+    return $scan
 }
 
 function Get-CargoLockPackageVersion {
@@ -2394,6 +2666,16 @@ function Get-CargoLockPackageVersion {
         throw "production dependency lock file is missing: $LockPath"
     }
     $lock = Get-Content -LiteralPath $LockPath -Raw
+    # One regex over the whole lock per package, and the classification asks for
+    # every registry dependency of every unit. Keyed on the lock's exact text
+    # and the package name, which is the entire input to the answer.
+    $versionKey = 'cargo-lock-package-version:' +
+        (Get-ProductionInteractionContentKey -Text (
+            @((Get-ProductionInteractionContentKey -Text $lock), $Package) -join "`n"
+        ))
+    if ($script:ProductionInteractionDerivationCache.Contains($versionKey)) {
+        return [string]$script:ProductionInteractionDerivationCache[$versionKey]
+    }
     $versions = @([regex]::Matches(
         $lock,
         '(?m)^\[\[package\]\]\r?\nname = "' + [regex]::Escape($Package) +
@@ -2402,6 +2684,10 @@ function Get-CargoLockPackageVersion {
     if ($versions.Count -ne 1) {
         throw "production dependency '$Package' does not resolve to one exact locked version"
     }
+    Set-ProductionInteractionDerivation `
+        -Key $versionKey `
+        -Value ([string]$versions[0]) `
+        -Weight 128
     return [string]$versions[0]
 }
 
@@ -2694,12 +2980,27 @@ function Get-ProductionDependencyCapabilityClosure {
     # either half only through a SECOND registry crate is not composed here,
     # because registry manifests are not followed at all. Nothing in the tree
     # has that shape today.
+    #
+    # ScanCache, when the caller supplies one, holds the crate scans already
+    # taken during the caller's own evaluation. This closure is computed once
+    # per (crate, lock) pair and each computation re-walks the in-repository
+    # crates the other pairs already walked with its own visited set, so one
+    # classification enters the scan about ten times per crate. The scan itself
+    # is content-addressed, so those repeats no longer re-derive anything - but
+    # they do re-read and re-digest the crate to find that out, and on the
+    # dependency corpus here that read is 0.75 s and its digest 0.4 s, ten times
+    # over. The classification hands in one dictionary for the whole evaluation,
+    # so each crate is read exactly once per classification. Which crates a
+    # closure REACHES is untouched - that is decided by the lock and the
+    # manifests, not by this - so the classification's cross-workspace
+    # disagreement check keeps exactly the teeth it had.
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$Root,
         [Parameter(Mandatory = $true)][string]$LockPath,
         [Parameter(Mandatory = $true)][string[]]$SuspensionEntryPoints,
-        [Parameter(Mandatory = $true)][string[]]$CodeMutationEntryPoints
+        [Parameter(Mandatory = $true)][string[]]$CodeMutationEntryPoints,
+        $ScanCache = $null
     )
 
     $repo = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
@@ -2721,10 +3022,19 @@ function Get-ProductionDependencyCapabilityClosure {
             throw "production dependency crate root is missing: $crateRoot"
         }
         $crateId = Get-ProductionCrateIdentity -RepoRoot $repo -Root $crateRoot
-        $scan = Get-ProductionCrateSourceCapabilityScan `
-            -Root $crateRoot `
-            -SuspensionEntryPoints $SuspensionEntryPoints `
-            -CodeMutationEntryPoints $CodeMutationEntryPoints
+        $scan = if ($null -ne $ScanCache -and $ScanCache.Contains($crateRoot)) {
+            $ScanCache[$crateRoot]
+        }
+        else {
+            $taken = Get-ProductionCrateSourceCapabilityScan `
+                -Root $crateRoot `
+                -SuspensionEntryPoints $SuspensionEntryPoints `
+                -CodeMutationEntryPoints $CodeMutationEntryPoints
+            if ($null -ne $ScanCache) {
+                $ScanCache[$crateRoot] = $taken
+            }
+            $taken
+        }
         $inRepo = $crateRoot.StartsWith(
             $repo + '\',
             [StringComparison]::OrdinalIgnoreCase
@@ -2818,7 +3128,164 @@ function Get-ProductionDependencyCodeMutationClassification {
     # decide what the crate is measured to do.
     $scansByLock = @{}
     $digests = @{}
-    foreach ($unit in @(Get-ProductionUnitDependencyClosure -RepoRoot $repo)) {
+    # One crate scan per crate for this whole classification, shared by every
+    # (crate, lock) closure below. See Get-ProductionDependencyCapabilityClosure.
+    $crateScans = @{}
+    $unitClosure = @(Get-ProductionUnitDependencyClosure -RepoRoot $repo)
+
+    # Memoised on a one-pass digest of exactly what the classification reads.
+    #
+    # This is the single most expensive thing a gate evaluation does and it is
+    # invariant across the self-test's source-rejection cases: those mutate a
+    # production UNIT source, and the classification reads unit MANIFESTS and
+    # DEPENDENCY sources. 528 evaluations therefore asked the same question 528
+    # times. Measured here: 3.4 s per evaluation, against 1.05 s for the whole
+    # authority walk.
+    #
+    # The key is built from one pass over those inputs, so key and value
+    # describe the same snapshot: the resolved unit closure (which manifest,
+    # lock and workspace manifest each unit resolved to, and their exact text),
+    # every dependency root that closure names with the content digest of every
+    # source the crate scan would admit under it, both entry-point rosters, and
+    # the rules digest. Anything that can change a classification is in there;
+    # a stale answer would need one of those bytes to have changed without its
+    # digest changing.
+    $classificationKeySha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $classificationPreimage = [Text.StringBuilder]::new()
+        [void]$classificationPreimage.Append($repo).Append("`n")
+        [void]$classificationPreimage.Append($suspensionEntryPoints -join "`0").Append("`n")
+        [void]$classificationPreimage.Append($codeMutationEntryPoints -join "`0").Append("`n")
+        [void]$classificationPreimage.Append($script:ProductionInteractionRulesDigest).Append("`n")
+        $manifestInputs = [System.Collections.Generic.List[string]]::new()
+        $dependencyRootsForKey = [System.Collections.Generic.List[string]]::new()
+        foreach ($unit in $unitClosure) {
+            [void]$classificationPreimage.Append('unit ').Append([string]$unit.unit_root).Append("`n")
+            foreach ($manifestInput in @(
+                [string]$unit.manifest_path,
+                [string]$unit.lock_path,
+                [string]$unit.workspace_cargo_path
+            )) {
+                if (-not [string]::IsNullOrEmpty($manifestInput) -and
+                    -not $manifestInputs.Contains($manifestInput)) {
+                    $manifestInputs.Add($manifestInput)
+                }
+            }
+            foreach ($dependency in @($unit.dependencies)) {
+                if ($dependency.production_unit) { continue }
+                $dependencyRoot = [string]$dependency.root
+                [void]$classificationPreimage.Append('edge ').
+                    Append([string]$unit.unit_root).Append("`0").
+                    Append([string]$dependency.name).Append("`0").
+                    Append([string]$dependency.package).Append("`0").
+                    Append($dependencyRoot).Append("`0").
+                    Append([string]$unit.lock_path).Append("`n")
+                if (-not $dependencyRootsForKey.Contains($dependencyRoot)) {
+                    $dependencyRootsForKey.Add($dependencyRoot)
+                }
+            }
+        }
+        foreach ($manifestInput in $manifestInputs) {
+            [void]$classificationPreimage.Append('manifest ').Append($manifestInput).Append("`0")
+            if (Test-Path -LiteralPath $manifestInput -PathType Leaf) {
+                [void]$classificationPreimage.Append([BitConverter]::ToString(
+                    $classificationKeySha.ComputeHash([IO.File]::ReadAllBytes($manifestInput))
+                ).Replace('-', ''))
+            }
+            else {
+                [void]$classificationPreimage.Append('absent')
+            }
+            [void]$classificationPreimage.Append("`n")
+        }
+        # The reachability closure expands in-repository crates through their
+        # OWN manifests, so a crate no production unit names directly is still
+        # read - `recorder_host` names `wire_product`, whose manifest names
+        # `wire_format`, and a suspension entry point appearing in
+        # wire_format/src/lib.rs changes the classification. Digesting only the
+        # directly named roots would have left that change behind a warm memo.
+        # The key therefore walks the same edges the classification walks, per
+        # (root, lock) pair, and digests every crate it reaches - manifest
+        # included, because a manifest edit is what moves the walk itself.
+        #
+        # This walk reads manifests only, never sources, and every manifest
+        # parse below it is memoised on the manifest text, so discovering the
+        # reached set costs far less than scanning it.
+        $keySourceExtensions = @(Get-ProductionInteractionSourceExtensions)
+        $reachedForKey = [System.Collections.Specialized.OrderedDictionary]::new(
+            [StringComparer]::OrdinalIgnoreCase
+        )
+        foreach ($unit in $unitClosure) {
+            $unitLockForKey = [string]$unit.lock_path
+            foreach ($dependency in @($unit.dependencies)) {
+                if ($dependency.production_unit) { continue }
+                $pendingForKey = [System.Collections.Generic.Queue[string]]::new()
+                $pendingForKey.Enqueue([string]$dependency.root)
+                $visitedForKey = [System.Collections.Generic.HashSet[string]]::new(
+                    [StringComparer]::OrdinalIgnoreCase
+                )
+                while ($pendingForKey.Count -ne 0) {
+                    $reachedRoot = [IO.Path]::GetFullPath($pendingForKey.Dequeue()).TrimEnd('\')
+                    if (-not $visitedForKey.Add($reachedRoot)) { continue }
+                    if (-not $reachedForKey.Contains($reachedRoot)) {
+                        $reachedForKey[$reachedRoot] = $true
+                    }
+                    if (-not $reachedRoot.StartsWith(
+                            $repo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                        # Registry crates are leaves to the closure: it does not
+                        # follow their manifests, so neither does this.
+                        continue
+                    }
+                    if (-not (Test-Path -LiteralPath $reachedRoot -PathType Container)) { continue }
+                    foreach ($nested in @(
+                        (Get-CrateManifestDependencyRoots `
+                            -CrateRoot $reachedRoot `
+                            -LockPath $unitLockForKey).dependencies
+                    )) {
+                        $pendingForKey.Enqueue([string]$nested.root)
+                    }
+                }
+            }
+        }
+        foreach ($dependencyRoot in @($reachedForKey.Keys)) {
+            [void]$classificationPreimage.Append('root ').Append($dependencyRoot).Append("`n")
+            if (-not (Test-Path -LiteralPath $dependencyRoot -PathType Container)) {
+                [void]$classificationPreimage.Append("absent`n")
+                continue
+            }
+            $reachedManifest = Join-Path $dependencyRoot 'Cargo.toml'
+            [void]$classificationPreimage.Append('root-manifest ').Append($reachedManifest).Append("`0")
+            if (Test-Path -LiteralPath $reachedManifest -PathType Leaf) {
+                [void]$classificationPreimage.Append([BitConverter]::ToString(
+                    $classificationKeySha.ComputeHash([IO.File]::ReadAllBytes($reachedManifest))
+                ).Replace('-', ''))
+            }
+            else {
+                [void]$classificationPreimage.Append('absent')
+            }
+            [void]$classificationPreimage.Append("`n")
+            foreach ($entry in ([IO.DirectoryInfo]$dependencyRoot).EnumerateFiles(
+                '*', [IO.SearchOption]::AllDirectories)) {
+                if ($keySourceExtensions -notcontains $entry.Extension) { continue }
+                [void]$classificationPreimage.Append($entry.FullName).Append("`0").
+                    Append([BitConverter]::ToString(
+                        $classificationKeySha.ComputeHash([IO.File]::ReadAllBytes($entry.FullName))
+                    ).Replace('-', '')).Append("`n")
+            }
+        }
+        foreach ($unitRootForKey in @($unitClosure | ForEach-Object { [string]$_.unit_root })) {
+            [void]$classificationPreimage.Append('unit-root ').Append($unitRootForKey).Append("`n")
+        }
+        $classificationKey = 'dependency-code-mutation-classification:' +
+            (Get-ProductionInteractionContentKey -Text $classificationPreimage.ToString())
+    }
+    finally {
+        $classificationKeySha.Dispose()
+    }
+    if ($script:ProductionInteractionDerivationCache.Contains($classificationKey)) {
+        return $script:ProductionInteractionDerivationCache[$classificationKey]
+    }
+
+    foreach ($unit in $unitClosure) {
         $unitLockPath = [string]$unit.lock_path
         foreach ($dependency in @($unit.dependencies)) {
             if ($dependency.production_unit) {
@@ -2832,7 +3299,8 @@ function Get-ProductionDependencyCodeMutationClassification {
                     -Root $dependencyRoot `
                     -LockPath $unitLockPath `
                     -SuspensionEntryPoints $suspensionEntryPoints `
-                    -CodeMutationEntryPoints $codeMutationEntryPoints
+                    -CodeMutationEntryPoints $codeMutationEntryPoints `
+                    -ScanCache $crateScans
             }
             $scan = $scansByLock[$scanKey]
             $digest = Get-ProductionCapabilityEvidenceDigest -Scan $scan
@@ -2874,12 +3342,20 @@ function Get-ProductionDependencyCodeMutationClassification {
         $classified[$key]['capability_digest'] =
             Get-ProductionCapabilityEvidenceDigest -Scan $classified[$key]
     }
-    return [ordered]@{
+    $classification = [ordered]@{
         schema = 'hoi4.production-dependency-code-mutation-classification.v1'
         scanned_dependency_count = $scans.Count
         classified_patchers = $classified
         edges = @($edges)
     }
+    # Read-only to every consumer: the findings walk reads edges and
+    # classified_patchers and never writes back, and the capability digest each
+    # classified patcher carries was stamped on above, before this was stored.
+    Set-ProductionInteractionDerivation `
+        -Key $classificationKey `
+        -Value $classification `
+        -Weight (4096 + 256 * (@($edges).Count + $classified.Count))
+    return $classification
 }
 
 function Get-OrdinallySortedKeys {
@@ -2932,6 +3408,9 @@ function Get-ProductionSuspendingCodeMutationFindings {
         [Parameter(Mandatory = $true)]$Authority
     )
 
+    Enter-ProductionInteractionEvaluation
+    try {
+
     $repo = [IO.Path]::GetFullPath($RepoRoot)
     $earlyRenderEvidencePath =
         Join-Path $repo 'extractor\native\recorder_host\src\early_render_launch.rs'
@@ -2981,37 +3460,67 @@ function Get-ProductionSuspendingCodeMutationFindings {
         }
         $unitRoot = [string]$owningRoot[0]
         $relative = Get-ProductionInteractionRelativePath -Root $repo -Path $fullPath
-        $source = Get-ProductionInteractionScannableSource `
+        # One file's contribution to both halves, keyed on the digest the
+        # authority walk already took of its bytes. Everything inside is a pure
+        # function of those bytes and of the two entry-point rosters, and both
+        # rosters are in the key. A file that did not change is not reopened.
+        $fileEvidence = Get-ProductionInteractionFileDerivation `
+            -Kind 'suspending-code-mutation-file-evidence' `
             -Path $fullPath `
-            -EarlyRenderEvidencePath $earlyRenderEvidencePath
-        $code = Get-RustCodeWithoutCommentsOrStrings -Text $source
-        $cFamily = @('.c', '.h', '.cc', '.cpp') -contains
-            [IO.Path]::GetExtension($fullPath)
+            -FileSha256 (Get-ProductionInteractionAuthorityFileDigest `
+                -Authority $Authority -Path $path) `
+            -Discriminator (@(
+                $relative,
+                ($suspensionEntryPoints -join "`0"),
+                ($codeMutationEntryPoints -join "`0"),
+                [IO.Path]::GetFullPath($earlyRenderEvidencePath)
+            ) -join "`n") `
+            -AuthorityWalkId (Get-ProductionInteractionAuthorityWalkId -Authority $Authority) `
+            -Weight 2048 `
+            -Compute {
+                $source = Get-ProductionInteractionScannableSource `
+                    -Path $fullPath `
+                    -EarlyRenderEvidencePath $earlyRenderEvidencePath
+                $code = Get-RustCodeWithoutCommentsOrStrings -Text $source
+                $cFamily = @('.c', '.h', '.cc', '.cpp') -contains
+                    [IO.Path]::GetExtension($fullPath)
+                [pscustomobject]@{
+                    # The stripped code travels with the evidence because the
+                    # delegation scan below needs the same text, and which
+                    # crates it looks for comes from the classification rather
+                    # than from this file - so that scan stays outside the memo
+                    # and is handed the text instead of re-deriving it.
+                    Code = $code
+                    Suspension = Get-ProductionCapabilityEvidence `
+                        -Source $source `
+                        -Code $code `
+                        -EntryPoints $suspensionEntryPoints `
+                        -Path $relative `
+                        -CFamily:$cFamily
+                    Mutation = Get-ProductionCapabilityEvidence `
+                        -Source $source `
+                        -Code $code `
+                        -EntryPoints $codeMutationEntryPoints `
+                        -Path $relative `
+                        -CFamily:$cFamily
+                }
+            }
         Add-ProductionCapabilityEvidence `
             -Accumulator $units[$unitRoot].suspension `
-            -Evidence (Get-ProductionCapabilityEvidence `
-                -Source $source `
-                -Code $code `
-                -EntryPoints $suspensionEntryPoints `
-                -Path $relative `
-                -CFamily:$cFamily)
+            -Evidence $fileEvidence.Suspension
         Add-ProductionCapabilityEvidence `
             -Accumulator $units[$unitRoot].mutation `
-            -Evidence (Get-ProductionCapabilityEvidence `
-                -Source $source `
-                -Code $code `
-                -EntryPoints $codeMutationEntryPoints `
-                -Path $relative `
-                -CFamily:$cFamily)
+            -Evidence $fileEvidence.Mutation
         if ($delegatedCrates.Contains($unitRoot)) {
             foreach ($edge in @($delegatedCrates[$unitRoot])) {
                 $crateRootIdent = ([string]$edge.dependency) -replace '-', '_'
                 $pattern =
                     "(?<![A-Za-z0-9_])$([regex]::Escape($crateRootIdent))\s*::"
-                foreach ($match in [regex]::Matches($code, $pattern)) {
+                foreach ($match in [regex]::Matches($fileEvidence.Code, $pattern)) {
                     $units[$unitRoot].delegation_sites.Add([ordered]@{
                         path = $relative
-                        line = Get-ProductionSourceLineNumber -Text $code -Index $match.Index
+                        line = Get-ProductionSourceLineNumber `
+                            -Text $fileEvidence.Code -Index $match.Index
                         capability = 'delegated_suspending_code_mutation'
                         token = $crateRootIdent
                         kind = 'external_patcher_use'
@@ -3123,6 +3632,11 @@ function Get-ProductionSuspendingCodeMutationFindings {
             $nonConforming | Sort-Object { [string]$_.unit }
         )
         no_suspending_code_mutation = ($nonConforming.Count -eq 0)
+    }
+
+    }
+    finally {
+        Exit-ProductionInteractionEvaluation
     }
 }
 
@@ -3720,6 +4234,50 @@ function Get-ProductionThreadFreezeExemptions {
     return $exemptions
 }
 
+function Get-ProductionInteractionPresentSymbols {
+    # Which of these symbols occur in this exact stripped code as whole
+    # identifiers, in the order the roster names them. The three whole-tree
+    # symbol loops in Assert-ProductionInteractionSourceTreeClosure each ran
+    # their own regex per symbol per file - about fifty thousand matches per
+    # evaluation over the same 362 files - and the self-test drives that gate
+    # once per forbidden symbol per role, so the same file's answer was
+    # recomputed several hundred times.
+    #
+    # The answer is a pure function of the two arguments and the key is both of
+    # them: the digest of the exact code text that was matched, and the exact
+    # roster it was matched against. The regex the loops built by hand is
+    # reproduced here once, escaped, so a caller cannot drift from it - the two
+    # rosters that were previously matched unescaped are plain identifiers and
+    # escaping is the identity on them.
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Code,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Symbols
+    )
+
+    $key = 'symbol-presence:' + (Get-ProductionInteractionContentKey -Text (
+        @(
+            (Get-ProductionInteractionContentKey -Text $Code),
+            (@($Symbols) -join "`0")
+        ) -join "`n"
+    ))
+    if ($script:ProductionInteractionDerivationCache.Contains($key)) {
+        return @($script:ProductionInteractionDerivationCache[$key])
+    }
+    $present = @(
+        foreach ($symbol in @($Symbols)) {
+            if ($Code -cmatch
+                "(?<![A-Za-z0-9_])$([regex]::Escape($symbol))(?![A-Za-z0-9_])") {
+                $symbol
+            }
+        }
+    )
+    Set-ProductionInteractionDerivation `
+        -Key $key `
+        -Value $present `
+        -Weight (64 + 64 * $present.Count)
+    return @($present)
+}
+
 function Get-ProductionInteractionForbiddenSymbolsForPath {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -3815,6 +4373,9 @@ function Assert-ProductionInteractionSourceTreeClosure {
         [Parameter(Mandatory = $true)]$Authority
     )
 
+    Enter-ProductionInteractionEvaluation
+    try {
+
     $repo = [IO.Path]::GetFullPath($RepoRoot)
     $recorderMainPath = Join-Path $repo 'extractor\native\recorder_host\src\main.rs'
     $earlyRenderEvidencePath =
@@ -3891,32 +4452,73 @@ function Assert-ProductionInteractionSourceTreeClosure {
         -Baseline $pinnedBaseline
     $handleEntryPoints = @(Get-ProductionThreadFreezeHandleEntryPoints)
 
+    # The three symbol rules below used to open, read and strip every authority
+    # file each - three reads of the same 362 files per evaluation, and the
+    # package self-test drives this gate once per forbidden symbol per role.
+    # They read the file for exactly the same thing (the comment- and
+    # string-stripped code, with the early-render evidence region excised), so
+    # the read happens once here and the three rules run over what it produced.
+    # Their order, and therefore which defect a tree with several is reported
+    # for, is unchanged: each rule still visits every file before the next rule
+    # starts.
+    # Keyed on the digest the authority walk already took of this file's bytes,
+    # so a file that did not change is not opened again here. The excision and
+    # the strip are both inside the memo because both are pure functions of
+    # those bytes.
+    $earlyRenderFull = [IO.Path]::GetFullPath($earlyRenderEvidencePath)
+    $authorityCode = [System.Collections.Generic.List[object]]::new()
     foreach ($path in @($Authority.files)) {
-        $source = Get-Content -LiteralPath $path -Raw
-        if ([IO.Path]::GetFullPath($path) -ieq
-            [IO.Path]::GetFullPath($earlyRenderEvidencePath)) {
-            $actuatorStart = $source.IndexOf(
-                '#[cfg(all(windows, feature = "evidence-client-driving"))]',
-                [StringComparison]::Ordinal
-            )
-            $observerStart = $source.IndexOf(
-                '#[cfg(all(windows, not(feature = "evidence-client-driving")))]',
-                [StringComparison]::Ordinal
-            )
-            if ($actuatorStart -lt 0 -or $observerStart -le $actuatorStart) {
-                throw 'early-render source lacks a bounded evidence-only actuator region'
+        $fileDigest = Get-ProductionInteractionAuthorityFileDigest `
+            -Authority $Authority `
+            -Path $path
+        $code = Get-ProductionInteractionFileDerivation `
+            -Kind 'authority-stripped-code' `
+            -Path $path `
+            -FileSha256 $fileDigest `
+            -Discriminator $earlyRenderFull `
+            -AuthorityWalkId (Get-ProductionInteractionAuthorityWalkId -Authority $Authority) `
+            -Weight 8192 `
+            -Compute {
+                $source = Get-Content -LiteralPath $path -Raw
+                if ([IO.Path]::GetFullPath($path) -ieq $earlyRenderFull) {
+                    $actuatorStart = $source.IndexOf(
+                        '#[cfg(all(windows, feature = "evidence-client-driving"))]',
+                        [StringComparison]::Ordinal
+                    )
+                    $observerStart = $source.IndexOf(
+                        '#[cfg(all(windows, not(feature = "evidence-client-driving")))]',
+                        [StringComparison]::Ordinal
+                    )
+                    if ($actuatorStart -lt 0 -or $observerStart -le $actuatorStart) {
+                        throw 'early-render source lacks a bounded evidence-only actuator region'
+                    }
+                    $source = $source.Remove($actuatorStart, $observerStart - $actuatorStart)
+                }
+                Get-RustCodeWithoutCommentsOrStrings -Text $source
             }
-            $source = $source.Remove($actuatorStart, $observerStart - $actuatorStart)
-        }
-        $code = Get-RustCodeWithoutCommentsOrStrings -Text $source
+        $authorityCode.Add([pscustomobject]@{
+            Path = $path
+            Code = $code
+        })
+    }
+
+    foreach ($entry in $authorityCode) {
+        $path = [string]$entry.Path
+        $code = [string]$entry.Code
         $pathForbidden = @(Get-ProductionInteractionForbiddenSymbolsForPath `
             -RepoRoot $repo `
             -Path $path `
             -FreezeExemptions $freezeExemptions)
-        foreach ($symbol in $pathForbidden) {
-            if ($code -cmatch "(?<![A-Za-z0-9_])$([regex]::Escape($symbol))(?![A-Za-z0-9_])") {
-                throw "production source contains forbidden client capability '$symbol': $path"
-            }
+        $presentForbidden = @(Get-ProductionInteractionPresentSymbols `
+            -Code $code `
+            -Symbols $pathForbidden)
+        if ($presentForbidden.Count -gt 0) {
+            # First in roster order, which is the symbol the per-symbol loop
+            # this replaced would have thrown on.
+            throw (
+                'production source contains forbidden client capability ' +
+                "'$($presentForbidden[0])': $path"
+            )
         }
         $fullPath = [IO.Path]::GetFullPath($path)
         if ($freezeExemptions.Contains($fullPath)) {
@@ -3941,38 +4543,37 @@ function Assert-ProductionInteractionSourceTreeClosure {
         'ShowWindow',
         'DestroyWindow'
     )
-    foreach ($path in @($Authority.files)) {
-        $source = Get-Content -LiteralPath $path -Raw
-        if ([IO.Path]::GetFullPath($path) -ieq
-            [IO.Path]::GetFullPath($earlyRenderEvidencePath)) {
-            $actuatorStart = $source.IndexOf(
-                '#[cfg(all(windows, feature = "evidence-client-driving"))]',
-                [StringComparison]::Ordinal
+    foreach ($entry in $authorityCode) {
+        $path = [string]$entry.Path
+        $code = [string]$entry.Code
+        # The permitted-path test decides which symbols this file may not carry
+        # and reads nothing out of the source, so it is applied first and the
+        # code is searched once for what is left. Roster order is preserved, so
+        # the symbol reported is the one the per-symbol loop would have reported.
+        $selfUiCandidates = @(
+            foreach ($symbol in $recorderSelfUiExceptions) {
+                $permittedPath = if ($symbol -in @('SetWindowTextW', 'DestroyWindow')) {
+                    @(
+                        [IO.Path]::GetFullPath($selfUiPath),
+                        [IO.Path]::GetFullPath($replayUiPath)
+                    )
+                }
+                else {
+                    @([IO.Path]::GetFullPath($selfUiPath))
+                }
+                if ($permittedPath -notcontains [IO.Path]::GetFullPath($path)) {
+                    $symbol
+                }
+            }
+        )
+        $escapedSelfUi = @(Get-ProductionInteractionPresentSymbols `
+            -Code $code `
+            -Symbols $selfUiCandidates)
+        if ($escapedSelfUi.Count -gt 0) {
+            throw (
+                "self-UI exception '$($escapedSelfUi[0])' escaped its exact " +
+                "product window source: $path"
             )
-            $observerStart = $source.IndexOf(
-                '#[cfg(all(windows, not(feature = "evidence-client-driving")))]',
-                [StringComparison]::Ordinal
-            )
-            if ($actuatorStart -lt 0 -or $observerStart -le $actuatorStart) {
-                throw 'early-render source lacks a bounded evidence-only actuator region'
-            }
-            $source = $source.Remove($actuatorStart, $observerStart - $actuatorStart)
-        }
-        $code = Get-RustCodeWithoutCommentsOrStrings -Text $source
-        foreach ($symbol in $recorderSelfUiExceptions) {
-            $permittedPath = if ($symbol -in @('SetWindowTextW', 'DestroyWindow')) {
-                @(
-                    [IO.Path]::GetFullPath($selfUiPath),
-                    [IO.Path]::GetFullPath($replayUiPath)
-                )
-            }
-            else {
-                @([IO.Path]::GetFullPath($selfUiPath))
-            }
-            if ($permittedPath -notcontains [IO.Path]::GetFullPath($path) -and
-                $code -cmatch "(?<![A-Za-z0-9_])$symbol(?![A-Za-z0-9_])") {
-                throw "self-UI exception '$symbol' escaped its exact product window source: $path"
-            }
         }
     }
     $selfUiSource = Get-Content -LiteralPath $selfUiPath -Raw
@@ -4027,31 +4628,19 @@ function Assert-ProductionInteractionSourceTreeClosure {
         'LoadLibraryW',
         'FreeLibrary'
     )
-    foreach ($path in @($Authority.files)) {
-        $source = Get-Content -LiteralPath $path -Raw
-        if ([IO.Path]::GetFullPath($path) -ieq
-            [IO.Path]::GetFullPath($earlyRenderEvidencePath)) {
-            $actuatorStart = $source.IndexOf(
-                '#[cfg(all(windows, feature = "evidence-client-driving"))]',
-                [StringComparison]::Ordinal
-            )
-            $observerStart = $source.IndexOf(
-                '#[cfg(all(windows, not(feature = "evidence-client-driving")))]',
-                [StringComparison]::Ordinal
-            )
-            if ($actuatorStart -lt 0 -or $observerStart -le $actuatorStart) {
-                throw 'early-render source lacks a bounded evidence-only actuator region'
-            }
-            $source = $source.Remove($actuatorStart, $observerStart - $actuatorStart)
-        }
+    foreach ($entry in $authorityCode) {
+        $path = [string]$entry.Path
         if ([IO.Path]::GetFullPath($path) -ine
             [IO.Path]::GetFullPath($recorderMainPath)) {
-            $code = Get-RustCodeWithoutCommentsOrStrings -Text $source
-            foreach ($symbol in $injectionSymbols) {
-                if ($code -cmatch
-                    "(?<![A-Za-z0-9_])$([regex]::Escape($symbol))(?![A-Za-z0-9_])") {
-                    throw "passive injection capability '$symbol' escaped recorder main seam: $path"
-                }
+            $code = [string]$entry.Code
+            $escapedInjection = @(Get-ProductionInteractionPresentSymbols `
+                -Code $code `
+                -Symbols $injectionSymbols)
+            if ($escapedInjection.Count -gt 0) {
+                throw (
+                    "passive injection capability '$($escapedInjection[0])' " +
+                    "escaped recorder main seam: $path"
+                )
             }
         }
     }
@@ -4154,5 +4743,10 @@ function Assert-ProductionInteractionSourceTreeClosure {
             '(?<![A-Za-z0-9_])child\.kill\s*\(\s*\)'
         ).Count -ne 4) {
         throw 'replay self-worker Command/Child lifecycle differs from the exact authenticated callsite census'
+    }
+
+    }
+    finally {
+        Exit-ProductionInteractionEvaluation
     }
 }

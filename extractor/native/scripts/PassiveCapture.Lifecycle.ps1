@@ -900,7 +900,19 @@ function Test-PassiveCaptureReadyReceipt {
         # refusal a THROW: no caller can accidentally treat a refused receipt as
         # an admitted one, because the only value this function ever returns is
         # an admitted authority.
-        [ref]$CustodyAuthorityOut = $null
+        #
+        # No `= $null` default. Windows PowerShell 5.1 runs the argument
+        # transformation over a parameter's DEFAULT as well as over a supplied
+        # value, and [ref] refuses $null: with the default present, every call
+        # that omits this parameter died on "Cannot process argument
+        # transformation on parameter 'CustodyAuthorityOut'. Reference type is
+        # expected in argument." That is exactly what the package builder does
+        # through Get-ProductionCapturePromotionEvidence, so the whole
+        # production-capture promotion path could not run at all. Omitting the
+        # default leaves the variable $null without a transformation, which is
+        # what the guard below already expects, and a caller that does supply
+        # one is still held to [ref].
+        [ref]$CustodyAuthorityOut
     )
 
     if ($ScheduledDomainNames.Count -eq 0) {
