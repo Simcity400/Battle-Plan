@@ -10641,6 +10641,175 @@ fn append_d43_mtrd_classic_deal_for_resource(
     }
 }
 
+/// Two countries that trade with each other in BOTH directions: four MTRD rows,
+/// two deals, and every country owning one export row and one import row.
+///
+/// This is the shape the collector's classic-deal walk produces for any pair
+/// that both imports and exports, and it is the shape no fixture had until
+/// lane/BW. `orders` is `[a_export, a_import, b_export, b_import]` so a caller
+/// can state the per-owner numbering explicitly: the producer's two direction
+/// counters each start at zero, so the un-renumbered form is `[0, 0, 0, 0]`.
+fn append_d43_mtrd_two_way_deals(payload: &mut Vec<u8>, a: u32, b: u32, orders: [u32; 4]) {
+    const RESOURCE_INDEX: u32 = 4;
+    let deal_id = |exporter: u32, importer: u32| {
+        (u64::from(exporter) << 32)
+            | (u64::from(importer) << 16)
+            | (u64::from(RESOURCE_INDEX) << 8)
+            | 1
+    };
+    payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&4u32.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&a.to_le_bytes());
+    payload.extend_from_slice(&b.to_le_bytes());
+    for (owner, counterpart, direction, visible_order, deal) in [
+        (
+            a,
+            b,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
+            orders[0],
+            deal_id(a, b),
+        ),
+        (
+            a,
+            b,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
+            orders[1],
+            deal_id(b, a),
+        ),
+        (
+            b,
+            a,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
+            orders[2],
+            deal_id(b, a),
+        ),
+        (
+            b,
+            a,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
+            orders[3],
+            deal_id(a, b),
+        ),
+    ] {
+        payload.extend_from_slice(&owner.to_le_bytes());
+        payload.extend_from_slice(&counterpart.to_le_bytes());
+        payload.extend_from_slice(&RESOURCE_INDEX.to_le_bytes());
+        payload.extend_from_slice(&visible_order.to_le_bytes());
+        payload.extend_from_slice(&direction.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&deal.to_le_bytes());
+        payload.extend_from_slice(&800_000i64.to_le_bytes());
+        payload.extend_from_slice(&720_000i64.to_le_bytes());
+        payload.extend_from_slice(&1_600_000i64.to_le_bytes());
+        payload.extend_from_slice(&100_000i64.to_le_bytes());
+        payload.extend_from_slice(&90_000i64.to_le_bytes());
+        payload.extend_from_slice(&8i32.to_le_bytes());
+        payload.extend_from_slice(&3i32.to_le_bytes());
+        payload.extend_from_slice(&5i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+    }
+}
+
+/// A country that both imports and exports folds only when its `visible_order`
+/// is dense across BOTH of its directions.
+///
+/// This is the consumer half of the seam the collector's
+/// `compact_market_trade_classic_deal_renumber` sits on. The producer numbers a
+/// route's two halves from two independent per-direction counters, so before
+/// lane/BW every such country published two rows numbered 0 — and this parser
+/// rejects the whole MTRD trailer, and with it the whole D43 payload, on
+/// exactly that. The family has never published a row in live capture, so
+/// nothing had ever exercised it.
+///
+/// What production change makes this fail: relaxing the CONTIGUITY check in
+/// `parse_market_trade_classic_deal_trailer`. It is deliberately not claimed to
+/// pin the `seen.insert((owner, visible_order))` uniqueness check as well:
+/// sorted duplicates can never equal `0..n`, so contiguity rejects every input
+/// uniqueness would, and no MTRD exists that isolates the uniqueness guard.
+/// Both cases below are therefore contiguity cases -- one with a duplicate, one
+/// unique but gapped -- and the second is the one that cannot be caught by
+/// anything else.
+///
+/// MUTATION RUN (`--release`): disabled the contiguity check in
+/// `parse_market_trade_classic_deal_trailer`.
+/// OBSERVED: FAILED -- "an owner numbered 0 and 2 is not dense, and the trailer
+/// is rejected", with ENG's two deals projected under `deals_complete: true`
+/// and `visible_order` 0 and 2.
+#[test]
+fn d43_mtrd_two_way_deals_fold_only_under_dense_per_owner_visible_order() {
+    let dense = {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[34, 67]);
+        append_d43_mtrd_two_way_deals(&mut payload, 34, 67, [0, 1, 0, 1]);
+        chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, payload),
+        ])
+    };
+    let trade = &dense["countries"]["ENG"]["economy"]["resource_trade"];
+    assert_eq!(
+        trade["deals_complete"],
+        json!(true),
+        "a bidirectional pair numbered densely per owner folds"
+    );
+    assert_eq!(
+        trade["deals"].as_array().map(Vec::len),
+        Some(2),
+        "and the country carries both of its deals"
+    );
+
+    // The producer's un-renumbered form: each direction counted from zero, so
+    // ENG owns two rows both numbered 0.
+    let collided = {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[34, 67]);
+        append_d43_mtrd_two_way_deals(&mut payload, 34, 67, [0, 0, 0, 0]);
+        chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, payload),
+        ])
+    };
+    assert!(
+        collided["countries"]["ENG"]["economy"]["resource_trade"]
+            .get("deals")
+            .is_none(),
+        "two rows of one owner sharing a visible_order is a rejected trailer, \
+         not a short deal list: {}",
+        collided["countries"]["ENG"]["economy"]["resource_trade"]
+    );
+
+    // Unique per owner and still not dense: `{0, 2}` apiece. This is the case
+    // the uniqueness guard cannot see, so it is what actually pins contiguity,
+    // and it is the shape a producer emits if it numbers by ENGINE position and
+    // leaves a gap where a route was excluded.
+    let gapped = {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[34, 67]);
+        append_d43_mtrd_two_way_deals(&mut payload, 34, 67, [0, 2, 0, 2]);
+        chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, payload),
+        ])
+    };
+    assert!(
+        gapped["countries"]["ENG"]["economy"]["resource_trade"]
+            .get("deals")
+            .is_none(),
+        "an owner numbered 0 and 2 is not dense, and the trailer is rejected: {}",
+        gapped["countries"]["ENG"]["economy"]["resource_trade"]
+    );
+}
+
 fn d43_empty_payload() -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(&0u64.to_le_bytes());
