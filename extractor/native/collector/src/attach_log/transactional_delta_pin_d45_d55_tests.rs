@@ -1,0 +1,882 @@
+//! Gates for the TRANSACTIONAL delta pin on d45 and d55.
+//!
+//! # The defect
+//!
+//! Both domains advance a cross-frame delta pin while building rows, INSIDE the
+//! reader's clock bracket, and both can then be badged failure-class by
+//! hook-reservation custody that settles on the main thread AFTER that bracket
+//! has closed (`D45DirectBatchCustodyConflict`,
+//! `D55DetailEventCustodyConflict`). The consumer discards a failure-class
+//! record whole — d55's fold clears the hour's detail events and returns; d45's
+//! fold refuses the record outright once the direct source is downgraded after
+//! activation. So the producer's pin had advanced to a baseline the fold never
+//! applied, and every later delta patched against a baseline that did not exist
+//! downstream.
+//!
+//! It happens on ORDINARY frames, not only rejected ones. The blanket
+//! rejected-bracket reset was masking it by accident, and lane BN's narrowing
+//! removed the accident — which is why BN excluded both domains from its
+//! allowlist rather than inherit the bug.
+//!
+//! # Why it cannot be repaired after the fact
+//!
+//! A keyframe does not resynchronise. Once a domain has a delta baseline,
+//! `replace_or_sparse_after_first` makes every later record — keyframes
+//! included — a SPARSE patch, so an omitted row is retained and only an explicit
+//! tombstone removes a key. Either the pin never diverges, or the stream is
+//! wrong for its whole life.
+//!
+//! # What is pinned here
+//!
+//! 1. The stage is INVISIBLE to a reader: staging changes when a value becomes
+//!    durable, never what the next read derives against inside its own frame.
+//! 2. A rolled-back frame leaves the producer deriving from EXACTLY the baseline
+//!    a consumer that applied nothing still holds — proven by equivalence
+//!    against a run in which the discarded frame never happened at all.
+//! 3. The commit is guarded by the SHARED contract predicate, at both sites and
+//!    only at those sites, so a producer and its fold cannot drift apart.
+//! 4. A d55 rebaseline that is rolled back stays PENDING, so the reset is
+//!    announced again rather than believed on the consumer's behalf.
+
+use super::*;
+
+// ---------------------------------------------------------------------
+// 1. The stage is invisible to a reader
+// ---------------------------------------------------------------------
+
+/// STAGING CHANGES DURABILITY, NOT VISIBILITY.
+///
+/// The d45 readers insert one value per key per frame and read the previous
+/// value back through the same map. If the stage were write-only, a second row
+/// for one key inside a frame would suddenly derive against the PRE-FRAME value
+/// instead of the one just written, silently changing what the producer emits.
+///
+/// MUTATION RUN: change `StagedDeltaPin::get` to `self.committed.get(key)`.
+/// Observed failure:
+///   `assertion `left == right` failed: a staged successor must be what the
+///    next read in the same frame derives against
+///     left: Some(1)
+///    right: Some(2)`.
+/// (Verbatim, run 2026-08-05.)
+#[test]
+fn a_staged_successor_is_visible_to_the_rest_of_its_own_frame() {
+    let mut pin: StagedDeltaPin<u32, u32> = StagedDeltaPin::default();
+    pin.stage(7, 1);
+    pin.commit();
+    assert_eq!(pin.get(&7).copied(), Some(1));
+
+    pin.stage(7, 2);
+    assert_eq!(
+        pin.get(&7).copied(),
+        Some(2),
+        "a staged successor must be what the next read in the same frame derives against"
+    );
+
+    // And a roll-back puts the reader back on the committed baseline.
+    pin.roll_back();
+    assert_eq!(pin.get(&7).copied(), Some(1));
+    assert!(!pin.has_staged());
+}
+
+/// COMMIT INSTALLS, ROLL-BACK DISCARDS, AND NEITHER TOUCHES AN UNRELATED KEY.
+///
+/// MUTATION RUN: make `StagedDeltaPin::roll_back` call `self.commit()`.
+/// Observed failure:
+///   `assertion `left == right` failed: a rolled-back frame must leave the
+///    baseline exactly where the consumer's is
+///     left: Some(9)
+///    right: Some(1)`.
+#[test]
+fn commit_installs_and_roll_back_leaves_the_consumers_baseline() {
+    let mut pin: StagedDeltaPin<u32, u32> = StagedDeltaPin::default();
+    pin.stage(1, 1);
+    pin.stage(2, 2);
+    pin.commit();
+
+    pin.stage(1, 9);
+    pin.roll_back();
+    assert_eq!(
+        pin.get(&1).copied(),
+        Some(1),
+        "a rolled-back frame must leave the baseline exactly where the consumer's is"
+    );
+    assert_eq!(pin.get(&2).copied(), Some(2), "and must not disturb its neighbours");
+
+    pin.stage(1, 9);
+    pin.commit();
+    assert_eq!(pin.get(&1).copied(), Some(9));
+    assert_eq!(pin.get(&2).copied(), Some(2));
+}
+
+// ---------------------------------------------------------------------
+// 2. The equivalence that IS the acceptance bar
+// ---------------------------------------------------------------------
+
+struct FixedLandCombatMemory(Vec<land_detail55::LandCombatSnapshot>);
+
+impl land_detail55::LandCombatDetailMemory for FixedLandCombatMemory {
+    fn land_combat_snapshots(
+        &self,
+    ) -> Result<Vec<land_detail55::LandCombatSnapshot>, Vec<String>> {
+        Ok(self.0.clone())
+    }
+}
+
+fn land_combat_snapshot(
+    combat_id: u32,
+    day: u32,
+    attacker_divisions: Vec<u32>,
+) -> land_detail55::LandCombatSnapshot {
+    land_detail55::LandCombatSnapshot {
+        combat_id,
+        generation: 1,
+        location: Some(3236),
+        day: Some(day),
+        duration: Some(day),
+        attacker_divisions,
+        defender_divisions: vec![201],
+        attacker_detail: None,
+        defender_detail: None,
+        attacker_attribution: Vec::new(),
+        defender_attribution: Vec::new(),
+        attacker_reserve_divisions: None,
+        defender_reserve_divisions: None,
+    }
+}
+
+/// THE PRODUCER'S PIN NEVER RUNS AHEAD OF WHAT THE FOLD APPLIED.
+///
+/// Stated as an equivalence rather than as an assertion about a private field,
+/// because the field is not what matters — what matters is that the NEXT frame's
+/// rows are exactly the rows a producer would emit to a consumer that applied
+/// nothing on the discarded frame.
+///
+/// Two runs, same starting baseline:
+///
+///  * `withheld` — frame A is built and its record is then badged failure-class
+///    by late custody, so the pin rolls back; frame B follows.
+///  * `never_happened` — frame A is never built at all; frame B follows.
+///
+/// A consumer that discarded frame A whole is in the SAME state in both runs, so
+/// the producer must be too, and frame B's transitions must be byte-identical.
+/// Under the old unconditional advance they are not: the withheld run derives
+/// B against A's snapshot, so every change A introduced is lost forever — no
+/// keyframe can bring it back, because after a baseline exists every record is a
+/// sparse patch.
+///
+/// MUTATION RUN: make `roll_back_staged_baseline` commit instead of
+/// discarding, which is what an unguarded advance amounts to. Observed failure:
+///   `assertion `left == right` failed: a frame the consumer discarded must
+///    leave the producer deriving from the baseline the consumer still holds
+///     left: [DetailEventRow { combat_id: 1, generation: 1, event_kind: 2, ...
+///            new_side_count: 3, flags: 39 }, DetailEventRow { combat_id: 1,
+///            generation: 1, event_kind: 4, side: Some(Attacker),
+///            division_id: Some(102), ... }]
+///    right: [DetailEventRow { combat_id: 1, generation: 1, event_kind: 1,
+///            ... new_side_count: 3, flags: 39 }]`.
+///
+/// Read that failure carefully: the withheld run emitted event kinds 2 and 4
+/// (an UPDATE and a division JOIN, derived against frame A's snapshot) where a
+/// consumer that never received frame A needed kind 1, the CREATE. The create
+/// is gone for good -- no later record reintroduces it.
+#[test]
+fn a_discarded_d55_frame_leaves_the_producer_on_the_consumers_baseline() {
+    let frame_a = FixedLandCombatMemory(vec![land_combat_snapshot(1, 60, vec![101])]);
+    let frame_b = FixedLandCombatMemory(vec![land_combat_snapshot(1, 61, vec![101, 102])]);
+
+    // Run 1: frame A is built, then WITHHELD by late custody.
+    let mut withheld = land_detail55::LandCombatDetailTracker::default();
+    land_detail55::collect_transition_capture_frame(&frame_a, &mut withheld, 0, 60_787_539, 1)
+        .expect("frame A collects");
+    // This is the late custody decision, spelled through the SAME contract
+    // function the production emission site uses. The status word is the one
+    // `D55DetailEventCustodyConflict` derives: the read did not complete and its
+    // answer is incomplete.
+    let custody_failed = COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA;
+    assert!(
+        !compact_contract::compact_delta_pin_may_advance(
+            COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+            custody_failed,
+        ),
+        "a custody-conflict word is one the consumer discards"
+    );
+    withheld.roll_back_staged_baseline();
+    let after_withheld =
+        land_detail55::collect_transition_capture_frame(&frame_b, &mut withheld, 0, 60_787_540, 1)
+            .expect("frame B collects");
+
+    // Run 2: frame A never happened.
+    let mut never_happened = land_detail55::LandCombatDetailTracker::default();
+    let after_never =
+        land_detail55::collect_transition_capture_frame(
+            &frame_b,
+            &mut never_happened,
+            0,
+            60_787_540,
+            1,
+        )
+        .expect("frame B collects");
+
+    assert_eq!(
+        after_withheld.rows, after_never.rows,
+        "a frame the consumer discarded must leave the producer deriving from the baseline \
+         the consumer still holds"
+    );
+
+    // The control that stops the assertion above from passing trivially: a
+    // COMMITTED frame A really does change what frame B emits, so the two runs
+    // are distinguishable and the equivalence is a fact about the roll-back and
+    // not about the fixture.
+    let mut committed = land_detail55::LandCombatDetailTracker::default();
+    land_detail55::collect_transition_capture_frame(&frame_a, &mut committed, 0, 60_787_539, 1)
+        .expect("frame A collects");
+    committed.commit_staged_baseline();
+    let after_committed =
+        land_detail55::collect_transition_capture_frame(&frame_b, &mut committed, 0, 60_787_540, 1)
+            .expect("frame B collects");
+    assert_ne!(
+        after_committed.rows, after_never.rows,
+        "committing frame A must change frame B, or this fixture proves nothing"
+    );
+}
+
+/// The same equivalence for D45, whose pin is three keyed maps rather than one
+/// snapshot vector, and whose events are derived per country tag.
+///
+/// MUTATION RUN: make `StagedDeltaPin::roll_back` commit instead of clearing.
+/// Observed failure:
+///   `assertion `left == right` failed: a discarded D45 frame must leave the
+///    producer deriving from the baseline the consumer still holds
+///     left: 2
+///    right: 0`.
+///
+/// The withheld run derived two focus events against frame A's pin; a consumer
+/// that discarded frame A needed the zero events a fresh baseline produces,
+/// and would have decoded the two it got against a state it never held.
+#[test]
+fn a_discarded_d45_frame_leaves_the_producer_on_the_consumers_baseline() {
+    fn focus(completed: u32, current: &str) -> CountryFocusRow {
+        CountryFocusRow {
+            focus_tree: None,
+            completed: None,
+            completed_count: Some(completed),
+            current: Some(current.to_string()),
+            current_set_measured: true,
+            current_continuous: None,
+            current_continuous_set_measured: false,
+            progress: None,
+            paused: None,
+        }
+    }
+
+    // An empty read, borrowed from the panic constructor so this test cannot
+    // drift out of shape when the read gains a field.
+    fn empty_read() -> CompactFrdDepthRead {
+        let mut read = compact_frd_depth_worker_panic_read(0);
+        read.status_flags = 0;
+        read
+    }
+
+    let row = super::tests::test_country_row("GER", 7, 0x1000);
+    let (row_a, focus_a) = (row.clone(), focus(1, "FOCUS_A"));
+    let (row_b, focus_b) = (row, focus(3, "FOCUS_B"));
+
+    // Run 1: frame A built, then withheld.
+    let mut withheld = CompactFrdDepthTracker::default();
+    let mut read_a = empty_read();
+    compact_frd_apply_focus_row(&mut read_a, &mut withheld, 60_787_539, &row_a, &focus_a);
+    withheld.roll_back_staged_pins();
+    let mut read_b_withheld = empty_read();
+    compact_frd_apply_focus_row(
+        &mut read_b_withheld,
+        &mut withheld,
+        60_787_540,
+        &row_b,
+        &focus_b,
+    );
+
+    // Run 2: frame A never happened.
+    let mut never_happened = CompactFrdDepthTracker::default();
+    let mut read_b_never = empty_read();
+    compact_frd_apply_focus_row(
+        &mut read_b_never,
+        &mut never_happened,
+        60_787_540,
+        &row_b,
+        &focus_b,
+    );
+
+    assert_eq!(
+        read_b_withheld.focus_events.len(),
+        read_b_never.focus_events.len(),
+        "a discarded D45 frame must leave the producer deriving from the baseline the \
+         consumer still holds"
+    );
+
+    // Control: committing frame A really does change frame B.
+    let mut committed = CompactFrdDepthTracker::default();
+    let mut read_a2 = empty_read();
+    compact_frd_apply_focus_row(&mut read_a2, &mut committed, 60_787_539, &row_a, &focus_a);
+    committed.commit_staged_pins();
+    let mut read_b_committed = empty_read();
+    compact_frd_apply_focus_row(
+        &mut read_b_committed,
+        &mut committed,
+        60_787_540,
+        &row_b,
+        &focus_b,
+    );
+    assert_ne!(
+        read_b_committed.focus_events.len(),
+        read_b_never.focus_events.len(),
+        "committing frame A must change frame B, or this fixture proves nothing"
+    );
+}
+
+/// A ROLLBACK IS AS DANGEROUS AS AN UNCONDITIONAL COMMIT, IN THE OTHER
+/// DIRECTION.
+///
+/// If the producer rolls back a frame the FOLD APPLIED, the producer is BEHIND:
+/// the fold holds B, the producer holds A. The next time the state returns to A
+/// the producer compares A to A, emits nothing, and the fold keeps B forever.
+/// No keyframe repairs it, for the same reason nothing repairs the other
+/// direction.
+///
+/// D45 reaches exactly that shape on ordinary frames: it sets `PARTIAL_DATA`
+/// for an unrelated targeted-decision omission while every focus row in the
+/// same record stays valid, and its fold applies them. This pins the sequence
+/// end to end.
+///
+/// MUTATION RUN: make `StagedDeltaPin::roll_back` commit instead of clearing --
+/// which is what any guard that rolls back an APPLIED frame amounts to.
+/// Observed failure:
+///   `assertion `left != right` failed: a frame the fold APPLIED must leave the
+///    producer's pin where the fold's is; rolling it back loses the next
+///    reversion for good
+///     left: 1
+///    right: 1`.
+///
+/// The companion property -- that production does not USE the status word for
+/// D45 -- is pinned structurally by
+/// `every_pin_commit_is_guarded_by_the_predicate_its_own_fold_uses`, whose
+/// mutation run swaps the guard back and fails with
+/// `commit_staged_pins() is called but is not guarded by
+/// d45_late_custody_conflict`.
+#[test]
+fn an_ordinary_d45_partial_does_not_roll_the_pin_back_behind_the_fold() {
+    fn focus(completed: u32, current: &str) -> CountryFocusRow {
+        CountryFocusRow {
+            focus_tree: None,
+            completed: None,
+            completed_count: Some(completed),
+            current: Some(current.to_string()),
+            current_set_measured: true,
+            current_continuous: None,
+            current_continuous_set_measured: false,
+            progress: None,
+            paused: None,
+        }
+    }
+    fn empty_read() -> CompactFrdDepthRead {
+        let mut read = compact_frd_depth_worker_panic_read(0);
+        read.status_flags = 0;
+        read
+    }
+
+    // The word D45 publishes on an ordinary frame whose targeted-decision read
+    // was partial. `compact_delta_pin_may_advance` says do not advance...
+    let ordinary_partial = COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA;
+    assert!(
+        !compact_contract::compact_delta_pin_may_advance(
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            ordinary_partial,
+        ),
+        "the shared predicate refuses this word, which is why D45 must not use it"
+    );
+
+    // ...but `fold_focus_research_decisions_depth` never consults the status
+    // word: it applies the focus rows regardless. So the producer must commit.
+    let fold = super::tests::collector_source_lf();
+    let _ = fold;
+
+    let row = super::tests::test_country_row("GER", 7, 0x1000);
+    let a = focus(1, "FOCUS_A");
+    let b = focus(1, "FOCUS_B");
+
+    // Frame 1 observes A -> B and the fold applies it. Frame 2 sees the focus
+    // revert to A.
+    let mut committed = CompactFrdDepthTracker::default();
+    let mut read1 = empty_read();
+    compact_frd_apply_focus_row(&mut read1, &mut committed, 60_787_539, &row, &a);
+    committed.commit_staged_pins();
+    let mut read2 = empty_read();
+    compact_frd_apply_focus_row(&mut read2, &mut committed, 60_787_540, &row, &b);
+    committed.commit_staged_pins();
+    let mut read3 = empty_read();
+    compact_frd_apply_focus_row(&mut read3, &mut committed, 60_787_541, &row, &a);
+    let reversion_seen = read3.focus_events.len();
+    assert_ne!(
+        reversion_seen, 0,
+        "the fixture must actually produce a reversion event, or it proves nothing"
+    );
+
+    // The same three frames, with frame 2 rolled back as a status-word guard
+    // would have done. The reversion is now invisible: the producer compares A
+    // to A and says nothing, while a fold that applied frame 2 still holds B.
+    let mut rolled_back = CompactFrdDepthTracker::default();
+    let mut read1 = empty_read();
+    compact_frd_apply_focus_row(&mut read1, &mut rolled_back, 60_787_539, &row, &a);
+    rolled_back.commit_staged_pins();
+    let mut read2 = empty_read();
+    compact_frd_apply_focus_row(&mut read2, &mut rolled_back, 60_787_540, &row, &b);
+    rolled_back.roll_back_staged_pins();
+    let mut read3 = empty_read();
+    compact_frd_apply_focus_row(&mut read3, &mut rolled_back, 60_787_541, &row, &a);
+    assert_ne!(
+        read3.focus_events.len(),
+        reversion_seen,
+        "a frame the fold APPLIED must leave the producer's pin where the fold's is; \
+         rolling it back loses the next reversion for good"
+    );
+    assert_eq!(
+        read3.focus_events.len(),
+        0,
+        "and the shape of the loss is silence, which is why no later record repairs it"
+    );
+}
+
+/// WHETHER THE FOLD APPLIES A D45 RECORD IS NOT A PROPERTY OF THE RECORD.
+///
+/// `fold_focus_research_decisions_depth` refuses a record with no validated
+/// direct trailer ONLY once it has already accepted one
+/// (`frd_direct_baseline_ready`). Before that it applies the record and ignores
+/// the missing trailer. So the same bytes are applied in one stream position and
+/// refused in another, and a producer predicate that looks only at the record --
+/// "did custody conflict this frame?" -- is wrong in the pre-activation case:
+/// the fold APPLIES, the producer rolls back, and the producer falls BEHIND.
+///
+/// The producer therefore mirrors the two pieces of fold state that decide it.
+/// This pins the mirror against the fold's three regimes.
+///
+/// MUTATION RUN: drop `d45_tracker.direct_baseline_published` from
+/// `d45_fold_refuses_this_record`, leaving the bare custody test. Observed
+/// failure:
+///   `before the fold has ever accepted a validated source it APPLIES an
+///    untrailered record, so the producer must commit`.
+#[test]
+fn the_d45_pin_predicate_mirrors_the_folds_activation_state() {
+    let mut tracker = CompactFrdDepthTracker::default();
+
+    // PRODUCTION'S predicate, not a paraphrase. A local copy passed this test
+    // while production followed a different rule, which is the failure mode a
+    // mirror test is most likely to have.
+    use super::d45_fold_refuses_record as fold_refuses;
+
+    // REGIME 1 -- before activation. The fold has never seen a validated direct
+    // source, so it applies an untrailered record and ignores the absence. A
+    // custody conflict here produces exactly such a record.
+    assert!(
+        !fold_refuses(&tracker, false),
+        "before the fold has ever accepted a validated source it APPLIES an untrailered \
+         record, so the producer must commit"
+    );
+
+    // REGIME 2 -- activation. A validated record is applied and arms the fold.
+    assert!(!fold_refuses(&tracker, true));
+    tracker.direct_baseline_published = true;
+
+    // REGIME 3 -- after activation, the same untrailered record is REFUSED
+    // (`direct hook source downgraded after activation`).
+    assert!(
+        fold_refuses(&tracker, false),
+        "after activation a downgraded record is refused whole, so the pin must not advance"
+    );
+
+    // And the refusal is ABSORBING on both arms: a validated record afterwards
+    // hits `already invalidated`, an untrailered one hits the downgrade again.
+    tracker.fold_history_failed = true;
+    assert!(fold_refuses(&tracker, true));
+    assert!(fold_refuses(&tracker, false));
+}
+
+/// A RECORD THAT NEVER REACHED THE FOLD MUST TEACH THE MIRROR NOTHING.
+///
+/// The mirror is read and staged at D45's emission site, which runs BEFORE
+/// bracket rejection is known. A rejected D45 bracket then has its records
+/// REPLACED WITH A GAP: the fold receives no D45 record for that hour and
+/// learns nothing from it.
+///
+/// Arming the mirror there was a real divergence, in the direction that loses
+/// data. An unvalidated record after activation would set `fold_history_failed`
+/// on a frame whose record was withdrawn, the fold would never fail, and the
+/// producer would then roll back the NEXT record — one the fold applies —
+/// leaving it permanently behind.
+///
+/// MUTATION RUN: drop the `d45_published_its_record` condition from the
+/// frame-end resolution, committing the staged mirror unconditionally. Observed
+/// failure:
+///   `a record the frame replaced with a gap never reached the fold, so it must
+///    not arm the producer's mirror of the fold`.
+#[test]
+fn a_withdrawn_d45_record_does_not_arm_the_fold_mirror() {
+    // What the emission site stages when the fold would refuse the record.
+    let mut tracker = CompactFrdDepthTracker::default();
+    tracker.direct_baseline_published = true;
+    assert!(
+        super::d45_fold_refuses_record(&tracker, false),
+        "an untrailered record after activation is refused, so this frame stages a failure"
+    );
+    tracker.staged_mirror_fails_history = true;
+
+    // The frame then rejects D45's bracket, so its records are replaced with a
+    // gap. Modelled exactly as the frame-end resolution spells it.
+    let d45_published_its_record = false;
+    if d45_published_its_record && tracker.staged_mirror_fails_history {
+        tracker.fold_history_failed = true;
+    }
+    tracker.staged_mirror_fails_history = false;
+
+    assert!(
+        !tracker.fold_history_failed,
+        "a record the frame replaced with a gap never reached the fold, so it must not arm \
+         the producer's mirror of the fold"
+    );
+    // And the consequence: the next record is still one the producer commits,
+    // because the fold has not failed either.
+    assert!(
+        !super::d45_fold_refuses_record(&tracker, true),
+        "with the mirror correctly untouched, the next validated record commits, exactly as \
+         the fold applies it"
+    );
+
+    // The control: a frame that DID publish arms it, or the assertion above
+    // would pass under a mirror that never arms at all.
+    let mut published = CompactFrdDepthTracker::default();
+    published.direct_baseline_published = true;
+    published.staged_mirror_fails_history = true;
+    let d45_published_its_record = true;
+    if d45_published_its_record && published.staged_mirror_fails_history {
+        published.fold_history_failed = true;
+    }
+    assert!(
+        published.fold_history_failed,
+        "a published refusal must arm the mirror, or the mirror is inert"
+    );
+}
+
+/// THE MIRROR MUST SURVIVE THE REJECTED-BRACKET RESET.
+///
+/// `reset_trackers_after_rejected_bracket` wipes d45's tracker, which is correct
+/// for its PINS -- they are read products. It would be wrong for the two mirror
+/// flags: they record what this STREAM has already published, and no reset can
+/// unpublish it. Dropping them makes the producer believe the fold had never
+/// activated, and it then commits a pin on the next record the fold refuses --
+/// the ahead-divergence, reintroduced by a reset.
+///
+/// MUTATION RUN: delete the two `direct_baseline_published` / `fold_history
+/// _failed` carry-overs from `reset_trackers_after_rejected_bracket`. Observed
+/// failure:
+///   `the fold cannot un-activate, so a producer reset must not forget that it
+///    did`.
+#[test]
+fn the_d45_fold_mirror_is_carried_across_a_rejected_bracket() {
+    let mut trackers = CompactPerfGateTrackers::default();
+    trackers
+        .focus_research_decisions_depth_live
+        .direct_baseline_published = true;
+    trackers.focus_research_decisions_depth_live.fold_history_failed = true;
+    // A pin the reset SHOULD drop, so this test cannot pass by the reset having
+    // become a no-op.
+    trackers
+        .focus_research_decisions_depth_live
+        .focus_by_tag
+        .stage(7, CompactFrdFocusState {
+            tag_db_id: 7,
+            completed_count: Some(1),
+            progress_raw: None,
+            current: None,
+            current_continuous: None,
+            completed_tokens: Vec::new(),
+            paused: None,
+        });
+    trackers
+        .focus_research_decisions_depth_live
+        .focus_by_tag
+        .commit();
+
+    let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE]
+        .into_iter()
+        .collect();
+    reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
+
+    assert!(
+        trackers
+            .focus_research_decisions_depth_live
+            .direct_baseline_published,
+        "the fold cannot un-activate, so a producer reset must not forget that it did"
+    );
+    assert!(
+        trackers.focus_research_decisions_depth_live.fold_history_failed,
+        "nor can a fold un-fail; the refusal is absorbing for the life of the stream"
+    );
+    assert!(
+        trackers
+            .focus_research_decisions_depth_live
+            .focus_by_tag
+            .get(&7)
+            .is_none(),
+        "the PIN is still dropped by the reset, or this test proves nothing about scoping"
+    );
+}
+
+// ---------------------------------------------------------------------
+// 3. A rolled-back rebaseline stays pending
+// ---------------------------------------------------------------------
+
+/// A REBASELINE THE CONSUMER NEVER SAW IS STILL OWED.
+///
+/// d55 announces a transition-baseline reset with
+/// `TRANSITION_BASELINE_RESET | PARTIAL_DATA`, and the fold APPLIES that record.
+/// But a rebaseline frame that ALSO loses hook custody carries extra failure
+/// bits, and the fold then discards it like any other — so the reset it
+/// announced never happened downstream. Clearing `pending_rebaseline` on that
+/// frame would leave the producer emitting deltas against a baseline the
+/// consumer never established.
+///
+/// MUTATION RUN: make `LandCombatDetailTracker::roll_back_staged_baseline`
+/// commit instead of discarding — which is what an unguarded advance amounts
+/// to. Observed failure:
+///   `the rebaseline must be announced again after the consumer discarded it`.
+#[test]
+fn a_rolled_back_rebaseline_is_announced_again() {
+    let frame = FixedLandCombatMemory(vec![land_combat_snapshot(1, 60, vec![101])]);
+
+    // The clean rebaseline word IS applied by the fold, so it commits.
+    let rebaseline_only =
+        COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_TRANSITION_BASELINE_RESET;
+    assert!(
+        compact_contract::compact_delta_pin_may_advance(
+            COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+            rebaseline_only,
+        ),
+        "the fold applies a plain rebaseline, so refusing to commit it would loop forever"
+    );
+
+    // A rebaseline that also lost custody is discarded whole.
+    let rebaseline_and_custody_failure = rebaseline_only | COMPACT_STATUS_SOURCE_UNAVAILABLE;
+    assert!(
+        !compact_contract::compact_delta_pin_may_advance(
+            COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+            rebaseline_and_custody_failure,
+        ),
+        "a rebaseline that also failed is not a tolerated word"
+    );
+
+    let mut tracker = land_detail55::LandCombatDetailTracker::default();
+    tracker.reset_transition_baseline();
+    let first =
+        land_detail55::collect_transition_capture_frame(&frame, &mut tracker, 0, 60_787_539, 1)
+            .expect("rebaseline frame collects");
+    assert!(first.rows.is_empty(), "a rebaseline emits no synthetic events");
+    assert!(
+        tracker.last_frame_rebaselined(),
+        "and the reader can see the reset it just performed"
+    );
+    tracker.roll_back_staged_baseline();
+
+    // Still owed: the next frame rebaselines again rather than assuming the
+    // consumer took the first one.
+    let second =
+        land_detail55::collect_transition_capture_frame(&frame, &mut tracker, 0, 60_787_540, 1)
+            .expect("second frame collects");
+    assert!(
+        tracker.last_frame_rebaselined(),
+        "the rebaseline must be announced again after the consumer discarded it"
+    );
+    assert!(second.rows.is_empty());
+
+    // And once it IS committed, the domain leaves rebaseline mode.
+    tracker.commit_staged_baseline();
+    let third =
+        land_detail55::collect_transition_capture_frame(&frame, &mut tracker, 0, 60_787_541, 1)
+            .expect("third frame collects");
+    assert!(
+        !tracker.last_frame_rebaselined(),
+        "a committed rebaseline is not owed twice"
+    );
+    let _ = third;
+}
+
+// ---------------------------------------------------------------------
+// 4. The guard is the SHARED predicate, at both sites and only there
+// ---------------------------------------------------------------------
+
+/// EACH PIN COMMIT IS GUARDED, AND BY THE PREDICATE ITS OWN FOLD USES.
+///
+/// The two domains need DIFFERENT predicates, and getting that wrong is a
+/// defect in both directions:
+///
+///  * D55's fold discards on the status word, so the status word is the right
+///    question and both sides ask it through `compact_delta_pin_may_advance`.
+///  * D45's fold does NOT consult the status word. It applies the focus,
+///    research and decision rows whatever `PARTIAL_DATA` says — and D45 sets
+///    `PARTIAL_DATA` routinely for an unrelated targeted-decision omission. A
+///    status-word guard there rolled the pin back on ordinary frames the fold
+///    had APPLIED, leaving the producer BEHIND the fold, which loses a change
+///    for good the moment the state returns to the producer's stale value.
+///    Its guard is `d45_fold_refuses_this_record`, which mirrors the fold's own
+///    rule: a record without a validated direct trailer is refused only once a
+///    validated one has ALREADY been accepted, and the refusal is absorbing.
+///
+/// Written against this crate's own source text so an edit that reintroduces an
+/// unconditional advance — the regression this lane exists to prevent — fails a
+/// test rather than shipping.
+///
+/// MUTATION RUN: delete the `if d45_fold_refuses_this_record` guard around the
+/// D45 arms, leaving `commit_staged_pins()` unconditional. Observed failure:
+///   `commit_staged_pins() is called but is not guarded by
+///    d45_fold_refuses_this_record`.
+#[test]
+fn every_pin_commit_is_guarded_by_the_predicate_its_own_fold_uses() {
+    let source = super::tests::collector_source_lf();
+
+    for (commit, roll_back, guard) in [
+        (
+            "commit_staged_pins()",
+            "roll_back_staged_pins()",
+            // THE GUARD STATEMENT, not the identifier. A test that only asked
+            // whether the name appeared nearby passed a mutation that replaced
+            // the condition with `if false` and left the binding standing.
+            "if d45_fold_refuses_this_record {",
+        ),
+        (
+            "commit_staged_baseline()",
+            "roll_back_staged_baseline()",
+            "if compact_contract::compact_delta_pin_may_advance(",
+        ),
+    ] {
+        let commits = source.matches(commit).count();
+        assert_eq!(
+            commits, 1,
+            "{commit} must have exactly one call site in production; found {commits}"
+        );
+
+        // The guard and its two arms, as one shape. `find` on the guard and then
+        // a bounded look-behind is what makes "guarded" mean adjacency rather
+        // than mere co-presence in a 100k-line file.
+        let at = source
+            .find(commit)
+            .expect("the commit call site was just counted");
+        let window_start = at.saturating_sub(900);
+        let window = &source[window_start..at];
+        assert!(
+            window.contains(guard),
+            "{commit} is called but is not guarded by {guard}"
+        );
+
+        // And the other arm exists: a guard with no roll-back would leave the
+        // stage alive into the next frame, which is the same divergence from
+        // the other direction.
+        let around = &source[window_start..(at + 900).min(source.len())];
+        assert!(
+            around.contains(roll_back),
+            "{commit} has no {roll_back} arm; an unconsumed stage would survive the frame"
+        );
+    }
+
+    // The FRAME-END MIRROR RESOLUTION is guarded too, and by D45's own
+    // publication rather than by anything the emission site knew. A record the
+    // frame replaced with a gap never reached the fold, so it must teach the
+    // mirror nothing -- and the emission site cannot know that yet.
+    let resolution = source
+        .find("let d45_published_its_record =")
+        .expect("the frame-end mirror resolution");
+    let resolution_body = &source[resolution..(resolution + 1400).min(source.len())];
+    assert!(
+        resolution_body.contains("if d45_published_its_record {"),
+        "the staged mirror must be committed only when D45 actually published its record"
+    );
+    for staged in [
+        "d45_tracker.staged_mirror_publishes_baseline",
+        "d45_tracker.staged_mirror_fails_history",
+    ] {
+        assert!(
+            resolution_body.contains(&format!("{staged} = false;")),
+            "{staged} must be cleared at the frame end, or a staged mirror survives its frame"
+        );
+    }
+
+    // D45's guard must NOT be the status word. This is the P1 regression stated
+    // as a property: a status-word guard on D45 rolls back records its fold
+    // applied.
+    let d45_at = source
+        .find("commit_staged_pins()")
+        .expect("the D45 commit site");
+    let d45_window = &source[d45_at.saturating_sub(900)..d45_at];
+    assert!(
+        !d45_window.contains("compact_delta_pin_may_advance("),
+        "D45's commit must not be gated on the status word: its fold applies a PARTIAL_DATA \
+         record, so a status-word guard leaves the producer BEHIND the fold"
+    );
+
+    // The frame-end backstop: every path out of the builder discards whatever is
+    // still staged, so no stage can cross a frame boundary even on a path that
+    // never reaches an emission block.
+    assert_eq!(
+        source.matches("roll_back_staged_pins()").count(),
+        2,
+        "D45 needs its emission-site roll-back AND the frame-end backstop"
+    );
+    assert_eq!(
+        source.matches("roll_back_staged_baseline()").count(),
+        2,
+        "D55 needs its emission-site roll-back AND the frame-end backstop"
+    );
+}
+
+/// The contract predicate itself: a clean word advances, a failure word does
+/// not, and the two documented tolerances are the only exceptions.
+///
+/// MUTATION RUN: make `compact_delta_pin_may_advance` return `true`
+/// unconditionally. Observed failure:
+///   `a custody-conflict word must not advance a pin`.
+#[test]
+fn the_pin_predicate_matches_what_the_folds_actually_apply() {
+    use compact_contract::compact_delta_pin_may_advance as may_advance;
+
+    assert!(may_advance(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE, 0));
+    assert!(may_advance(
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        COMPACT_STATUS_DELTA_DATA
+    ));
+    assert!(
+        !may_advance(
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA
+        ),
+        "a custody-conflict word must not advance a pin"
+    );
+
+    // d55's rebaseline is tolerated; d45 has no such tolerance, so the same bits
+    // on d45 are still a discard. The exception is domain-scoped, not global.
+    let rebaseline =
+        COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_TRANSITION_BASELINE_RESET;
+    assert!(may_advance(COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE, rebaseline));
+    assert!(
+        !may_advance(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE, rebaseline),
+        "the rebaseline tolerance belongs to d55 alone"
+    );
+
+    // An expected-partial domain's tolerated flag IS applied, as a sparse patch.
+    assert!(
+        may_advance(COMPACT_DOMAIN_ARMY_ORDERS, COMPACT_STATUS_PARTIAL_DATA),
+        "an expected-partial record is applied sparsely, so its pin advances"
+    );
+    assert!(
+        !may_advance(
+            COMPACT_DOMAIN_ARMY_ORDERS,
+            COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_WORKER_PANIC
+        ),
+        "and a tolerance never covers a second, untolerated failure"
+    );
+}

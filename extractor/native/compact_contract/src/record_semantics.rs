@@ -35,6 +35,22 @@ pub const COMPACT_RECORD_TYPE_CAPTURE_TERMINATED: u16 = 8;
 /// hour, which is a real hour the producer was observing when it wrote the
 /// record, and `crate::clock_unreadable_interval` requires the two to agree.
 pub const COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL: u16 = 9;
+/// Frame-level record: the authenticated clock read again after an outage, and
+/// the value it returned is one this producer does not trust.
+///
+/// The counterpart to `CLOCK_UNREADABLE_INTERVAL`, minted by the other branch of
+/// the same decision and never alongside it. That record names a range and
+/// ACCOUNTS for it; this one names the same two endpoints and accounts for
+/// nothing, because the span rests entirely on a value the producer has just
+/// declared untrustworthy. What it does state is that the resumed hour — and so
+/// every hour published after it — descends from an untrusted read, which is the
+/// only way a consumer can tell those hours apart from hours reached through a
+/// clock read that was believed.
+///
+/// Like its counterpart it CLOSES no hour and publishes no `FRAME_END`. Its
+/// envelope carries the RESUMED hour, and `crate::untrusted_clock_recovery`
+/// requires the two to agree.
+pub const COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY: u16 = 10;
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
@@ -198,6 +214,14 @@ pub fn validate_compact_record_semantics(
                 ));
             }
             crate::clock_unreadable_interval::validate_clock_unreadable_interval_payload(payload)
+        }
+        COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "UNTRUSTED_CLOCK_RECOVERY domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::untrusted_clock_recovery::validate_untrusted_clock_recovery_payload(payload)
         }
         COMPACT_RECORD_TYPE_DOMAIN_GAP => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {

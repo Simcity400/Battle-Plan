@@ -768,6 +768,44 @@ pub struct LandCombatDetailTracker {
     previous: Vec<LandCombatSnapshot>,
     pending_rebaseline: bool,
     last_frame_rebaselined: bool,
+    /// This frame's successor baseline, durable only once the frame's D55
+    /// record is judged one the consumer will apply.
+    ///
+    /// # The defect this removes
+    ///
+    /// The snapshot baseline used to be installed here, inside the reader's
+    /// clock bracket. D55 can then be badged failure-class by hook-reservation
+    /// custody that settles on the main thread AFTER that bracket has closed,
+    /// and the fold discards a failure-class D55 record WHOLE -- it clears the
+    /// hour's detail events and returns. So the producer's baseline had moved to
+    /// a state the fold never applied, and the next frame's transitions were
+    /// derived against a baseline that did not exist downstream. The transitions
+    /// that happened during the discarded frame were then never emitted by
+    /// anyone.
+    ///
+    /// A later keyframe does not repair it: once a domain has a delta baseline
+    /// the fold treats every subsequent record as a sparse patch, so the missing
+    /// transitions are simply gone. The pin must therefore never diverge in the
+    /// first place, which is what committing it after the status is final buys.
+    ///
+    /// Rolling back keeps the OLDER baseline, so the next frame derives
+    /// old -> newest and emits the union of both frames' transitions. A
+    /// superset, never a gap.
+    staged: Option<StagedLandCombatDetailBaseline>,
+}
+
+/// One frame's uncommitted D55 baseline.
+///
+/// `last_frame_rebaselined` is deliberately NOT staged. It is a FRAME-LOCAL
+/// signal -- `read_compact_land_combat_detail_events_live` reads it immediately
+/// after `collect_transition_capture_frame` returns, to decide this frame's
+/// status word, and every path that reaches the next frame rewrites it before it
+/// is read again. Staging it would have made the reader unable to see the reset
+/// it had just performed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct StagedLandCombatDetailBaseline {
+    previous: Vec<LandCombatSnapshot>,
+    pending_rebaseline: bool,
 }
 
 impl LandCombatDetailTracker {
@@ -775,10 +813,44 @@ impl LandCombatDetailTracker {
         self.previous.clear();
         self.pending_rebaseline = true;
         self.last_frame_rebaselined = false;
+        // A hard reset outranks an uncommitted successor: the successor
+        // describes a read this frame has just decided not to stand behind.
+        self.staged = None;
     }
 
     pub fn last_frame_rebaselined(&self) -> bool {
         self.last_frame_rebaselined
+    }
+
+    /// Record this frame's successor baseline. Nothing is durable until
+    /// [`Self::commit_staged_baseline`].
+    fn stage_baseline(&mut self, previous: Vec<LandCombatSnapshot>, pending_rebaseline: bool) {
+        self.staged = Some(StagedLandCombatDetailBaseline {
+            previous,
+            pending_rebaseline,
+        });
+    }
+
+    /// Install this frame's successor baseline. Called ONLY where D55's final
+    /// status word is known -- after hook-reservation custody has settled -- and
+    /// only when that word is one the consumer applies.
+    pub fn commit_staged_baseline(&mut self) {
+        if let Some(staged) = self.staged.take() {
+            self.previous = staged.previous;
+            self.pending_rebaseline = staged.pending_rebaseline;
+        }
+    }
+
+    /// Discard this frame's successor baseline, because the record carrying it
+    /// will be discarded whole. A rebaseline that is rolled back stays PENDING,
+    /// so the next frame announces it again rather than believing a reset the
+    /// consumer never saw.
+    pub fn roll_back_staged_baseline(&mut self) {
+        self.staged = None;
+    }
+
+    pub fn has_staged_baseline(&self) -> bool {
+        self.staged.is_some()
     }
 }
 
@@ -836,8 +908,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
             0,
             &payload,
         );
-        tracker.previous = current;
-        tracker.pending_rebaseline = false;
+        tracker.stage_baseline(current, false);
         tracker.last_frame_rebaselined = true;
         return Ok(CaptureFrame {
             compact_stream,
@@ -886,7 +957,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         &payload,
     );
     frame.carrier_rows = carrier_rows;
-    tracker.previous = current;
+    tracker.stage_baseline(current, false);
     tracker.last_frame_rebaselined = false;
     Ok(frame)
 }

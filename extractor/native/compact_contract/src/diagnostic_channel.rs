@@ -1536,6 +1536,8 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "rs_unobserved_overrun_hours",
     "rs_unobserved_clock_unknown_hours",
     "rs_counter_anomaly_events",
+    "rs_untrusted_clock_recovery_events",
+    "rs_untrusted_clock_recoveries_dropped",
     "rs_post_terminal_observations",
     "rs_gapped_domain_hours",
     "rs_overrun_domain_hours",
@@ -1549,6 +1551,7 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     // Running maxima maintained by the scheduler, not per-frame depths.
     // `read_only_scheduler` keeps each with `.max(...)`, never resetting.
     "rs_max_request_depth",
+    "rs_untrusted_clock_recovery_max_delta_hours",
     "rs_max_control_depth",
     "rs_max_publishing_depth",
     // Session constants: capacity caps and policy latches. Constant across
@@ -3029,6 +3032,9 @@ mod tests {
             "rs_unobserved_overrun_hours",
             "rs_unobserved_clock_unknown_hours",
             "rs_counter_anomaly_events",
+            "rs_untrusted_clock_recovery_events",
+            "rs_untrusted_clock_recoveries_dropped",
+            "rs_untrusted_clock_recovery_max_delta_hours",
             "rs_post_terminal_observations",
             "rs_gapped_domain_hours",
             "rs_overrun_domain_hours",

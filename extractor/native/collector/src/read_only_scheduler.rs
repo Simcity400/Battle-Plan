@@ -15,7 +15,14 @@
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-const MAX_FORWARD_DELTA: i64 = 24 * 32;
+/// The largest forward clock motion this scheduler believes.
+///
+/// Aliased from the contract rather than restated: the `H4CJ` record carries
+/// this value and its reader REQUIRES the pinned one, so a scheduler that
+/// drifted would emit a record its own consumer refuses. One constant, two
+/// users, no drift.
+const MAX_FORWARD_DELTA: i64 =
+    compact_contract::untrusted_clock_recovery::UNTRUSTED_CLOCK_RECOVERY_TRUST_CEILING_HOURS;
 
 /// How many unpublished clock-unreadable intervals the scheduler will hold.
 ///
@@ -58,6 +65,34 @@ pub enum GapKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UnobservedCause {
     ClockUnknown,
+}
+
+/// What the scheduler makes of the value the clock returned when it read again
+/// after an outage.
+///
+/// The three arms are exhaustive and disjoint, and each one owns exactly one
+/// wire outcome. This type exists so the ceiling is applied ONCE, at the single
+/// site that decides, rather than being re-derived by each consumer of the
+/// recovery -- an earlier shape applied it inside the interval minter, where a
+/// refusal could not say which of two very different reasons had refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClockRecoveryTrust {
+    /// The outage resumed in the hour it started, or the next one. No hour was
+    /// lost, so there is nothing to account for and NOTHING is minted -- the
+    /// wire grammar refuses an empty range, and a producer that emitted one
+    /// would be writing a record its own reader rejects.
+    NoHoursLost,
+    /// A believable forward motion. The hours between are vouched for and reach
+    /// the wire as an `H4CU` interval.
+    Trusted,
+    /// A forward motion larger than `MAX_FORWARD_DELTA`, which the ordinary
+    /// path refuses outright as a counter anomaly. The recovery path ACCEPTS it
+    /// -- one failed clock read is far too weak a reason to destroy a capture,
+    /// and the owner ruled on 2026-08-05 that it is recorded rather than made
+    /// terminal -- but the span it implies is never converted into vouched
+    /// hours, and the jump reaches the wire as its own `H4CJ` record carrying
+    /// the OBSERVED delta.
+    Untrusted { observed_delta_hours: i64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +202,29 @@ pub struct SchedulerTelemetry {
     /// turning it into an hour count would assert elapsed time on the strength
     /// of a read that is not trusted.
     pub counter_anomaly_events: u64,
+    /// Clock recoveries whose resumed value was a forward jump the scheduler
+    /// does not trust (`delta > MAX_FORWARD_DELTA`). Counted as EVENTS for the
+    /// same reason `counter_anomaly_events` is: the implied span rests on the
+    /// rejected value, so turning it into an hour count would assert elapsed
+    /// time on the strength of a read that is not trusted.
+    ///
+    /// The ordinary path makes such a jump terminal. This path does not -- the
+    /// owner ruled that one failed clock read must not destroy a capture -- so
+    /// this counter, the delta beside it, and the `H4CJ` record the recovery
+    /// publishes are the whole of the evidence that the hours scheduled from
+    /// here on descend from an untrusted read.
+    pub untrusted_clock_recovery_events: u64,
+    /// The largest jump any of those recoveries observed, in hours. THE ACTUAL
+    /// SIZE, not a boolean: a fold deciding what to do with the capture, and a
+    /// human reading the probe, both need to know whether the clock moved a day
+    /// past the ceiling or a decade. Per-event deltas are on the wire in `H4CJ`;
+    /// this is the running maximum, so it never resets.
+    pub max_untrusted_clock_recovery_delta_hours: u64,
+    /// Untrusted recoveries discarded because the publication queue was full.
+    /// Nonzero means an untrusted jump reached no wire record, so the hours it
+    /// scheduled cannot be told apart from hours reached through a trusted read
+    /// -- exactly the silence this record exists to end.
+    pub untrusted_clock_recoveries_dropped: u64,
     /// Stable observations discarded because the scheduler was already
     /// terminal. Nothing publishes after a terminal, so these hours leave the
     /// capture span rather than opening a hole -- but they are not invisible.
@@ -230,6 +288,14 @@ pub struct HourLedger {
     pub unobserved_clock_unknown: u64,
     /// Rejected forward counter jumps. An event count, not an hour count.
     pub counter_anomaly_events: u64,
+    /// Clock recoveries that resumed on a forward jump the scheduler does not
+    /// trust. An event count, not an hour count, for the same reason: the span
+    /// rests on the rejected value. These recoveries DID schedule their resumed
+    /// hour -- see [`SchedulerTelemetry::untrusted_clock_recovery_events`].
+    pub untrusted_clock_recovery_events: u64,
+    /// The largest jump those recoveries observed, in hours. The observed size,
+    /// never a boolean.
+    pub max_untrusted_clock_recovery_delta_hours: u64,
     /// Stable observations discarded because the scheduler was already
     /// terminal. Nothing publishes after a terminal, so these hours leave the
     /// capture span rather than opening a hole -- but they are not invisible.
@@ -295,7 +361,36 @@ pub struct ReadOnlyScheduler {
     /// its own frame-level record, which is what makes those hours ACCOUNTED for
     /// the host's gap gate instead of an unexplained hole.
     clock_unreadable_intervals: VecDeque<ClockUnreadableInterval>,
+    /// Untrusted clock recoveries observed and not yet published. Drained by the
+    /// capture loop, which emits one `H4CJ` record per entry.
+    ///
+    /// A separate queue from `clock_unreadable_intervals` because the two carry
+    /// opposite claims -- an interval VOUCHES for its hours, a recovery
+    /// explicitly refuses to -- and one queue holding both would have let a
+    /// publication path treat them alike. Bounded by the same ceiling, and a
+    /// drop is counted in
+    /// [`SchedulerTelemetry::untrusted_clock_recoveries_dropped`].
+    untrusted_clock_recoveries: VecDeque<UntrustedClockRecovery>,
     telemetry: SchedulerTelemetry,
+}
+
+/// One untrusted clock recovery, exactly as the wire record spells it.
+///
+/// The counterpart to [`ClockUnreadableInterval`], and deliberately a different
+/// type: an interval names a range of hours the producer VOUCHES elapsed, this
+/// names two endpoints and vouches for nothing between them. Sharing one type
+/// would have let a publication path account for hours on the strength of a read
+/// the scheduler had just rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UntrustedClockRecovery {
+    pub last_observed_hour_raw: i32,
+    pub resumed_hour_raw: i32,
+    pub unreadable_events: u32,
+    /// The ACTUAL jump size in hours, not a boolean "too far".
+    pub observed_delta_hours: i64,
+    /// The ceiling that judged it, carried so the record substantiates its own
+    /// claim rather than asking a consumer to know the producer's constant.
+    pub trust_ceiling_hours: i64,
 }
 
 /// One elapsed-but-unobserved interval, exactly as the wire record spells it.
@@ -355,6 +450,7 @@ impl ReadOnlyScheduler {
             clock_unknown: false,
             clock_unknown_events: 0,
             clock_unreadable_intervals: VecDeque::new(),
+            untrusted_clock_recoveries: VecDeque::new(),
             telemetry: SchedulerTelemetry {
                 request_cap: 1,
                 control_cap: control_cap as u32,
@@ -395,6 +491,9 @@ impl ReadOnlyScheduler {
             unobserved_overrun: t.unobserved_overrun_hours,
             unobserved_clock_unknown: t.unobserved_clock_unknown_hours,
             counter_anomaly_events: t.counter_anomaly_events,
+            untrusted_clock_recovery_events: t.untrusted_clock_recovery_events,
+            max_untrusted_clock_recovery_delta_hours: t
+                .max_untrusted_clock_recovery_delta_hours,
             post_terminal_observations: t.post_terminal_observations,
         }
     }
@@ -468,8 +567,36 @@ impl ReadOnlyScheduler {
             // counted here and nowhere else, and the host's gap gate, which
             // demands a typed producer statement for every hole hour, failed the
             // whole capture over an interval the producer could describe exactly.
-            self.count_unobserved_span(self.last, hour_raw, UnobservedCause::ClockUnknown);
-            self.queue_clock_unreadable_interval(self.last, hour_raw);
+            //
+            // UNLESS the value the clock came back with is one this scheduler
+            // does not believe. The ordinary path refuses a forward delta above
+            // `MAX_FORWARD_DELTA` outright; the recovery path accepts it, on the
+            // owner's 2026-08-05 ruling that one failed clock read is too weak a
+            // reason to destroy a capture. Accepting is not the same as
+            // believing: the span is NOT counted as elapsed hours and NOT minted
+            // as a vouched interval, because both would assert elapsed time on
+            // the strength of the rejected value. The jump gets its own record
+            // instead -- see `ClockRecoveryTrust`.
+            match self.clock_recovery_trust(self.last, hour_raw) {
+                ClockRecoveryTrust::NoHoursLost => {}
+                ClockRecoveryTrust::Trusted => {
+                    self.count_unobserved_span(
+                        self.last,
+                        hour_raw,
+                        UnobservedCause::ClockUnknown,
+                    );
+                    self.queue_clock_unreadable_interval(self.last, hour_raw);
+                }
+                ClockRecoveryTrust::Untrusted {
+                    observed_delta_hours,
+                } => {
+                    self.queue_untrusted_clock_recovery(
+                        self.last,
+                        hour_raw,
+                        observed_delta_hours,
+                    );
+                }
+            }
             self.clock_unknown_events = 0;
             self.next_epoch = self.next_epoch.saturating_add(1);
             self.force_baseline = true;
@@ -606,36 +733,17 @@ impl ReadOnlyScheduler {
         if range_start > range_end {
             return;
         }
-        // THE SAME CEILING THE ORDINARY PATH APPLIES.
+        // THE CEILING IS NOT APPLIED HERE.
         //
-        // A forward jump larger than `MAX_FORWARD_DELTA` is a counter read this
-        // scheduler does not believe: on the ordinary path it is refused as a
-        // terminal anomaly and deliberately NOT converted into elapsed hours,
-        // because the span rests entirely on the rejected value. The recovery
-        // branch runs before that check, so without this a single failed clock
-        // read would turn exactly the same untrusted value into hundreds of
-        // hours -- and, now that the interval reaches the wire, into hundreds of
-        // ACCOUNTED hours. One failed read must not buy a claim the scheduler
-        // would otherwise refuse outright.
+        // It used to be, and the refusal it produced was indistinguishable on
+        // the wire from a queue-full drop: both incremented
+        // `clock_unreadable_intervals_dropped`, so a nonzero counter could not
+        // say whether the producer had run out of room or had refused to vouch
+        // for a read it did not trust. The decision now happens ONCE, in
+        // `clock_recovery_trust`, and an untrusted recovery never reaches this
+        // function at all -- it mints an `H4CJ` instead. This counter therefore
+        // means exactly one thing again: an outage that reached no wire record.
         //
-        // Refusing here leaves those hours with no producer statement, which is
-        // the honest outcome: the recorder cannot vouch for a span it derived
-        // from a read it does not trust.
-        //
-        // Compared as the DELTA between the two observed values, which is what
-        // `observe_stable` compares -- not as the width of the missing span,
-        // which is one smaller. Comparing the span admitted exactly the one
-        // value the ordinary path refuses: a delta of `MAX_FORWARD_DELTA + 1`
-        // leaves a span of `MAX_FORWARD_DELTA`, so the untrusted read would have
-        // minted an interval covering every hour it implied.
-        let delta = i64::from(resumed_hour) - i64::from(from.hour_raw);
-        if delta > MAX_FORWARD_DELTA {
-            self.telemetry.clock_unreadable_intervals_dropped = self
-                .telemetry
-                .clock_unreadable_intervals_dropped
-                .saturating_add(1);
-            return;
-        }
         // The events counter is what substantiates the claim. It cannot be zero
         // here -- `clock_unknown` is only set by `note_clock_unreadable`, which
         // increments it first -- but a saturating counter that somehow read zero
@@ -656,6 +764,99 @@ impl ReadOnlyScheduler {
                 resumed_hour_raw: resumed_hour,
                 unreadable_events,
             });
+    }
+
+    /// What this scheduler makes of the value the clock returned on recovery.
+    ///
+    /// THE SINGLE SITE THAT APPLIES THE CEILING to a recovery, and the reason
+    /// the two outcomes can never both fire for one outage.
+    ///
+    /// Compared as the DELTA between the two observed values, which is what
+    /// `observe_stable` compares on the ordinary path -- not as the width of the
+    /// missing span, which is one smaller. Comparing the span would admit
+    /// exactly the one value the ordinary path refuses: a delta of
+    /// `MAX_FORWARD_DELTA + 1` leaves a span of `MAX_FORWARD_DELTA`, so the
+    /// untrusted read would have minted a vouched interval covering every hour
+    /// it implied.
+    fn clock_recovery_trust(&self, from: Option<ClockStamp>, resumed_hour: i32) -> ClockRecoveryTrust {
+        let Some(from) = from else {
+            return ClockRecoveryTrust::NoHoursLost;
+        };
+        let delta = i64::from(resumed_hour) - i64::from(from.hour_raw);
+        if delta > MAX_FORWARD_DELTA {
+            return ClockRecoveryTrust::Untrusted {
+                observed_delta_hours: delta,
+            };
+        }
+        // An outage that resumes in the SAME hour it started, or in the next
+        // one, lost no hours. Non-forward motion lands here too: a resumed value
+        // at or below the last observed one is a reload boundary's business, not
+        // an interval's, and minting a range for it would be a producer writing
+        // a record its own reader refuses.
+        if delta <= 1 {
+            return ClockRecoveryTrust::NoHoursLost;
+        }
+        ClockRecoveryTrust::Trusted
+    }
+
+    /// Queue the untrusted jump a recovering observation just made, so the hours
+    /// it goes on to schedule can be told apart from hours reached through a
+    /// clock read this scheduler believed.
+    ///
+    /// Counts the event and the OBSERVED DELTA -- never hours. Turning the span
+    /// into an hour count is precisely what the ordinary path refuses to do with
+    /// the same value, and doing it here would let one failed clock read buy a
+    /// claim the scheduler would otherwise reject outright.
+    fn queue_untrusted_clock_recovery(
+        &mut self,
+        from: Option<ClockStamp>,
+        resumed_hour: i32,
+        observed_delta_hours: i64,
+    ) {
+        let Some(from) = from else {
+            return;
+        };
+        self.telemetry.untrusted_clock_recovery_events = self
+            .telemetry
+            .untrusted_clock_recovery_events
+            .saturating_add(1);
+        let delta_magnitude = u64::try_from(observed_delta_hours).unwrap_or(0);
+        self.telemetry.max_untrusted_clock_recovery_delta_hours = self
+            .telemetry
+            .max_untrusted_clock_recovery_delta_hours
+            .max(delta_magnitude);
+        // The events counter is what substantiates the outage claim, exactly as
+        // it does for an interval: a jump that names no failed read is an
+        // ordinary forward jump, and the wire grammar refuses one wearing this
+        // record's name.
+        let unreadable_events = self.clock_unknown_events.max(1);
+        if self.untrusted_clock_recoveries.len() >= CLOCK_UNREADABLE_INTERVAL_QUEUE_CAP {
+            self.telemetry.untrusted_clock_recoveries_dropped = self
+                .telemetry
+                .untrusted_clock_recoveries_dropped
+                .saturating_add(1);
+            return;
+        }
+        self.untrusted_clock_recoveries
+            .push_back(UntrustedClockRecovery {
+                last_observed_hour_raw: from.hour_raw,
+                resumed_hour_raw: resumed_hour,
+                unreadable_events,
+                observed_delta_hours,
+                trust_ceiling_hours: MAX_FORWARD_DELTA,
+            });
+    }
+
+    /// Take every queued untrusted recovery, in the order the jumps happened.
+    pub fn drain_untrusted_clock_recoveries(
+        &mut self,
+    ) -> impl Iterator<Item = UntrustedClockRecovery> + '_ {
+        self.untrusted_clock_recoveries.drain(..)
+    }
+
+    /// Whether any untrusted recovery is waiting to be published.
+    pub fn has_untrusted_clock_recoveries(&self) -> bool {
+        !self.untrusted_clock_recoveries.is_empty()
     }
 
     /// Take every queued interval, in the order the outages happened.
@@ -1785,7 +1986,7 @@ mod tests {
     }
 
     /// A FAILED CLOCK READ IS NOT A LICENCE. An outage whose implied span
-    /// exceeds the trusted forward delta mints no interval.
+    /// exceeds the trusted forward delta mints no VOUCHED interval.
     ///
     /// On the ordinary path a jump larger than `MAX_FORWARD_DELTA` is a
     /// terminal counter anomaly and is deliberately never converted into
@@ -1794,11 +1995,16 @@ mod tests {
     /// would otherwise turn the identical untrusted value into hundreds of hours
     /// the host then counts as accounted.
     ///
-    /// MUTATION RUN: delete the `span > MAX_FORWARD_DELTA` refusal from
-    /// `queue_clock_unreadable_interval`. Observed failure:
+    /// What it mints INSTEAD is the subject of
+    /// `an_untrusted_recovery_is_recorded_on_the_wire_and_is_not_terminal`.
+    ///
+    /// MUTATION RUN: change the `delta > MAX_FORWARD_DELTA` arm of
+    /// `clock_recovery_trust` to return `ClockRecoveryTrust::Trusted`. Observed
+    /// failure:
     ///   `an untrusted forward jump must not become accounted hours because one
     ///    clock read failed: [ClockUnreadableInterval { range_start_hour_raw:
-    ///    101, range_end_hour_raw: 1099, ... }]`.
+    ///    101, range_end_hour_raw: 868, last_observed_hour_raw: 100,
+    ///    resumed_hour_raw: 869, unreadable_events: 1 }]`.
     #[test]
     fn an_outage_wider_than_the_trusted_forward_delta_mints_no_interval() {
         let mut s = scheduler(&[10], 1, 64);
@@ -1820,9 +2026,17 @@ mod tests {
              read failed: {intervals:?}"
         );
         assert_eq!(
+            s.hour_ledger().unobserved_clock_unknown,
+            0,
+            "and the span refused as a record is not counted as hours either"
+        );
+        // The interval-drop counter means ONE thing: an outage that reached no
+        // wire record. This outage reaches one -- a different one -- so counting
+        // it here would restate a refusal that is no longer a refusal.
+        assert_eq!(
             s.telemetry().clock_unreadable_intervals_dropped,
-            1,
-            "and the refusal is counted, not silent"
+            0,
+            "an untrusted recovery is not an interval the producer failed to publish"
         );
 
         // The largest delta the ordinary path DOES trust still publishes, so the
@@ -1838,6 +2052,209 @@ mod tests {
             1,
             "an outage at the trusted ceiling still reaches the wire"
         );
+        assert_eq!(
+            s.telemetry().untrusted_clock_recovery_events,
+            0,
+            "and it is not ALSO disclaimed -- the two records are disjoint"
+        );
+    }
+
+    /// AN UNTRUSTED CLOCK JUMP IS ACCEPTED AND RECORDED.
+    ///
+    /// The owner ruled on 2026-08-05 that a recovery on a jump the ordinary
+    /// path would refuse must NOT be terminal -- one failed clock read is far
+    /// too weak a reason to destroy a capture -- but must not be silent either.
+    /// Before this the resumed hour was scheduled with `terminal: None`, every
+    /// anomaly counter at zero and (after the interval was refused) nothing on
+    /// the wire at all, so the hours that followed were indistinguishable from
+    /// hours reached through a clock read the scheduler believed.
+    ///
+    /// Three things are pinned here, and they are the three the ruling asked
+    /// for: the capture SURVIVES, the anomaly is COUNTED, and the record
+    /// carries the OBSERVED DELTA rather than a boolean.
+    ///
+    /// MUTATION RUN 1: delete the `queue_untrusted_clock_recovery` call from
+    /// the `Untrusted` arm of `observe_stable`. Observed failure:
+    ///   `assertion `left == right` failed: the untrusted jump must be counted
+    ///     left: 0
+    ///    right: 1`.
+    ///
+    /// MUTATION RUN 2: replace `observed_delta_hours` in
+    /// `queue_untrusted_clock_recovery` with `1` (a boolean-grade "some jump").
+    /// Observed failure:
+    ///   `assertion `left == right` failed: the record must carry the ACTUAL
+    ///    jump size, not a flag
+    ///     left: 1
+    ///    right: 769`.
+    #[test]
+    fn an_untrusted_recovery_is_recorded_on_the_wire_and_is_not_terminal() {
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+
+        s.note_clock_unreadable();
+        s.note_clock_unreadable();
+        let delta = MAX_FORWARD_DELTA + 1;
+        let far = 100 + delta as i32;
+        s.observe_stable(far, 2);
+
+        // ACCEPTED: the capture keeps running and the resumed hour is scheduled.
+        assert_eq!(
+            s.terminal(),
+            None,
+            "one failed clock read must not destroy the capture"
+        );
+        let resumed = s
+            .take_current_request()
+            .expect("the resumed hour is still scheduled");
+        assert_eq!(resumed.stamp.hour_raw, far);
+        assert!(
+            resumed.force_baseline,
+            "and it re-baselines, as any epoch boundary does"
+        );
+
+        // RECORDED: counted, and on the wire.
+        assert_eq!(
+            s.hour_ledger().untrusted_clock_recovery_events,
+            1,
+            "the untrusted jump must be counted"
+        );
+        let recoveries: Vec<_> = s.drain_untrusted_clock_recoveries().collect();
+        assert_eq!(recoveries.len(), 1, "the untrusted jump must reach the wire");
+        let recovery = recoveries[0];
+        assert_eq!(recovery.last_observed_hour_raw, 100);
+        assert_eq!(recovery.resumed_hour_raw, far);
+        assert_eq!(
+            recovery.unreadable_events, 2,
+            "and it substantiates itself with its own failed reads"
+        );
+        assert_eq!(recovery.trust_ceiling_hours, MAX_FORWARD_DELTA);
+
+        // THE OBSERVED DELTA, not a boolean. A jump a day past the ceiling and a
+        // jump a decade past it are different facts about a capture.
+        assert_eq!(
+            recovery.observed_delta_hours, delta,
+            "the record must carry the ACTUAL jump size, not a flag"
+        );
+        assert_eq!(
+            s.hour_ledger().max_untrusted_clock_recovery_delta_hours,
+            delta as u64,
+            "and the telemetry carries the size too, not just the fact"
+        );
+    }
+
+    /// THE CEILING THE SCHEDULER APPLIES IS THE ONE THE RECORD'S READER
+    /// REQUIRES.
+    ///
+    /// `H4CJ` carries its ceiling so the record substantiates its own
+    /// classification, and its reader pins that value -- otherwise a producer
+    /// could declare a ceiling of 1, call a two-hour outage untrusted, and
+    /// escape the `H4CU` branch that ACCOUNTS for the hours. That pin only
+    /// helps if the scheduler's own constant is the same one, so the two are
+    /// literally the same constant and this says so.
+    ///
+    /// MUTATION RUN: restate `MAX_FORWARD_DELTA` as its own `24 * 32` literal
+    /// and change one of them. Observed failure:
+    ///   `assertion `left == right` failed: the scheduler's ceiling and the
+    ///    record's pinned ceiling are one constant`.
+    #[test]
+    fn the_scheduler_ceiling_is_the_contract_ceiling() {
+        assert_eq!(
+            MAX_FORWARD_DELTA,
+            compact_contract::untrusted_clock_recovery::
+                UNTRUSTED_CLOCK_RECOVERY_TRUST_CEILING_HOURS,
+            "the scheduler's ceiling and the record's pinned ceiling are one constant"
+        );
+
+        // And the scheduler's own recovery encodes under that pin, so a drift
+        // would be caught by the producer refusing its own record rather than
+        // by a consumer refusing it later. Real calendar hours here: the record
+        // validates them, and a fixture the record refuses would prove nothing
+        // about the ceiling.
+        let base = compact_contract::calendar::DATE_EPOCH_CONST + 1936 * 365 * 24;
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(base, 1);
+        let baseline = s.take_current_request().expect("baseline is takeable");
+        s.accept_request(baseline);
+        s.note_clock_unreadable();
+        s.observe_stable(base + MAX_FORWARD_DELTA as i32 + 1, 2);
+        let recovery = s
+            .drain_untrusted_clock_recoveries()
+            .next()
+            .expect("the untrusted recovery is queued");
+        compact_contract::untrusted_clock_recovery::UntrustedClockRecoveryRecordV1 {
+            last_observed_hour_raw: recovery.last_observed_hour_raw,
+            resumed_hour_raw: recovery.resumed_hour_raw,
+            unreadable_events: recovery.unreadable_events,
+            observed_delta_hours: recovery.observed_delta_hours,
+            trust_ceiling_hours: recovery.trust_ceiling_hours,
+        }
+        .encode()
+        .expect("the scheduler's own recovery satisfies the record's pinned ceiling");
+    }
+
+    /// THE TWO RECOVERY RECORDS ARE DISJOINT, AND NEITHER FIRES ON A LOSSLESS
+    /// OUTAGE.
+    ///
+    /// One decision, three arms, and each arm owns exactly one wire outcome.
+    /// An outage that loses no hour mints NEITHER -- the invariant BC
+    /// established and which this change must not break, because the wire
+    /// grammar refuses an empty range and a disclaimer of nothing is not a fact.
+    ///
+    /// MUTATION RUN: change the `delta > MAX_FORWARD_DELTA` arm of
+    /// `clock_recovery_trust` to return `ClockRecoveryTrust::Trusted`, so both
+    /// branches claim the same outage. Observed failure, on the untrusted leg:
+    ///   `assertion `left == right` failed
+    ///     left: 1
+    ///    right: 0`
+    /// -- an interval was minted for a jump only the recovery may describe.
+    ///
+    /// NOT proven by weakening the `delta <= 1` arm to `delta <= 0`: that arm is
+    /// an EARLY-OUT, not the guarantee. A lossless outage that reaches the
+    /// `Trusted` branch still mints nothing, because `count_unobserved_span` and
+    /// `queue_clock_unreadable_interval` each refuse an empty range on their own
+    /// -- which is what `an_outage_that_loses_no_hour_mints_no_interval` pins.
+    /// The battery ran that mutation and the suite stayed green; it is recorded
+    /// here rather than dressed up as a kill.
+    #[test]
+    fn the_two_recovery_records_are_disjoint_and_neither_fires_on_a_lossless_outage() {
+        // Lossless: the same hour, and the very next one.
+        for resumed in [100, 101] {
+            let mut s = scheduler(&[10], 1, 64);
+            s.observe_stable(100, 1);
+            let baseline = s.take_current_request().expect("baseline is takeable");
+            s.accept_request(baseline);
+            s.note_clock_unreadable();
+            s.observe_stable(resumed, 2);
+            let intervals: Vec<_> = s.drain_clock_unreadable_intervals().collect();
+            let recoveries: Vec<_> = s.drain_untrusted_clock_recoveries().collect();
+            assert!(
+                intervals.is_empty() && recoveries.is_empty(),
+                "an outage that lost no hour must mint neither record: \
+                 intervals={intervals:?} recoveries={recoveries:?}"
+            );
+        }
+
+        // Trusted: the interval, and only the interval.
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline is takeable");
+        s.accept_request(baseline);
+        s.note_clock_unreadable();
+        s.observe_stable(105, 2);
+        assert_eq!(s.drain_clock_unreadable_intervals().count(), 1);
+        assert_eq!(s.drain_untrusted_clock_recoveries().count(), 0);
+
+        // Untrusted: the recovery, and only the recovery.
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline is takeable");
+        s.accept_request(baseline);
+        s.note_clock_unreadable();
+        s.observe_stable(100 + MAX_FORWARD_DELTA as i32 + 1, 2);
+        assert_eq!(s.drain_clock_unreadable_intervals().count(), 0);
+        assert_eq!(s.drain_untrusted_clock_recoveries().count(), 1);
     }
 
     /// THE QUEUE MUST NOT REFUSE AN HONEST CAPTURE.

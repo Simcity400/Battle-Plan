@@ -30,7 +30,8 @@ use compact_contract::{
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
     COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_STATUS_FAILURE_MASK,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
+    COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY, COMPACT_STATUS_FAILURE_MASK,
 };
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -330,6 +331,22 @@ pub struct BoundaryTracker {
     /// hour, and the stream then said one hour was both closed and never
     /// observed. Two overlapping intervals were accepted for the same reason.
     unobserved_intervals: Vec<(i32, i32)>,
+    /// Every span an `H4CJ` has DISCLAIMED, in arrival order.
+    ///
+    /// Kept separately from `unobserved_intervals` because the two carry
+    /// opposite claims and only one of them excludes anything. A disclaimed span
+    /// excludes NO later frame -- the producer said only that it would not vouch
+    /// for those hours, and honest frames inside them are expected. What it does
+    /// exclude is the OTHER statement about the same hours: an interval that
+    /// vouches for a span a recovery disowned is one producer saying both, and
+    /// the host would then retire hours through the interval that the recovery
+    /// says rest on a rejected clock read.
+    ///
+    /// Checking that in one direction only was not enough. The recovery arm
+    /// looked back at declared intervals, so `H4CU` then `H4CJ` was caught --
+    /// but `H4CJ` then `H4CU` certified, because nothing recorded the
+    /// disclaimed span for the interval arm to find.
+    disclaimed_spans: Vec<(i32, i32)>,
     violation: Option<String>,
 }
 
@@ -345,6 +362,15 @@ impl BoundaryTracker {
     /// A declared-unobserved interval this range intersects, if any.
     fn intersecting_unobserved_interval(&self, start: i32, end: i32) -> Option<(i32, i32)> {
         self.unobserved_intervals
+            .iter()
+            .find(|(other_start, other_end)| start <= *other_end && *other_start <= end)
+            .copied()
+    }
+
+    /// The disclaimed span intersecting this range, if any. See
+    /// [`BoundaryTracker::disclaimed_spans`].
+    fn intersecting_disclaimed_span(&self, start: i32, end: i32) -> Option<(i32, i32)> {
+        self.disclaimed_spans
             .iter()
             .find(|(other_start, other_end)| start <= *other_end && *other_start <= end)
             .copied()
@@ -797,8 +823,102 @@ impl BoundaryTracker {
                     ));
                     return;
                 }
+                // Nor may it VOUCH for a span a recovery already disowned. Same
+                // contradiction as the check the recovery arm makes, reached
+                // from the other order of arrival -- and the more dangerous
+                // order, because this is the record that ACCOUNTS for hours.
+                // Accepting it would let a stream disclaim a span and then
+                // retire it anyway.
+                if let Some((start, end)) = self.intersecting_disclaimed_span(
+                    record.range_start_hour_raw,
+                    record.range_end_hour_raw,
+                ) {
+                    self.violation = Some(format!(
+                        "CLOCK_UNREADABLE_INTERVAL at byte {at_byte} claims hours {}..={} \
+                         were never observed, but an UNTRUSTED_CLOCK_RECOVERY already \
+                         disclaimed {start}..={end}",
+                        record.range_start_hour_raw, record.range_end_hour_raw
+                    ));
+                    return;
+                }
                 self.unobserved_intervals
                     .push((record.range_start_hour_raw, record.range_end_hour_raw));
+            }
+            COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
+                // The counterpart to the interval above, and the one place the
+                // two must NOT be treated alike: this record declares no hour
+                // unobserved. It says the producer will not vouch for the span
+                // at all, so pushing it onto `unobserved_intervals` would
+                // convert a refusal to make a claim into a claim -- and would
+                // then make every later frame in that span a contradiction, on
+                // the strength of a delta the producer has explicitly disowned.
+                //
+                // Like the interval it is not a boundary record: it closes no
+                // hour, opens none, and clears nothing.
+                let record = match compact_contract::untrusted_clock_recovery::
+                    UntrustedClockRecoveryRecordV1::decode(payload)
+                {
+                    Ok(record) => record,
+                    Err(reason) => {
+                        self.violation = Some(format!(
+                            "UNTRUSTED_CLOCK_RECOVERY payload at byte {at_byte} is \
+                             unreadable: {reason}"
+                        ));
+                        return;
+                    }
+                };
+                // The envelope hour must be the payload's RESUMED hour, for the
+                // same reason the interval's must be: that is the only hour the
+                // producer was actually observing when it wrote the record, and
+                // binding the two is what stops a record from disclaiming a
+                // recovery unrelated to where it was written.
+                if record.resumed_hour_raw != header.game_hour_raw {
+                    self.violation = Some(format!(
+                        "UNTRUSTED_CLOCK_RECOVERY at byte {at_byte} is framed for hour {} but \
+                         its payload resumed at hour {}",
+                        header.game_hour_raw, record.resumed_hour_raw
+                    ));
+                    return;
+                }
+                // A recovery announces hours the stream has not reached yet. If
+                // it resumes at or before an hour already closed, the producer
+                // is disclaiming a read the stream has already published under,
+                // which is a statement about the past dressed as a warning about
+                // the future.
+                if let Some(last_closed) = self.last_closed_hour {
+                    if record.resumed_hour_raw <= last_closed {
+                        self.violation = Some(format!(
+                            "UNTRUSTED_CLOCK_RECOVERY at byte {at_byte} resumes at hour {}, \
+                             which is not after the already-closed hour {last_closed}",
+                            record.resumed_hour_raw
+                        ));
+                        return;
+                    }
+                }
+                // Nor may it disclaim a span an interval has already VOUCHED
+                // for. The two records are minted by disjoint branches of one
+                // decision, so a stream carrying both over the same hours is a
+                // producer making two contradictory statements about them.
+                let (disclaimed_start, disclaimed_end) = (
+                    record.last_observed_hour_raw.saturating_add(1),
+                    record.resumed_hour_raw.saturating_sub(1),
+                );
+                if let Some((start, end)) =
+                    self.intersecting_unobserved_interval(disclaimed_start, disclaimed_end)
+                {
+                    self.violation = Some(format!(
+                        "UNTRUSTED_CLOCK_RECOVERY at byte {at_byte} disclaims hours \
+                         {disclaimed_start}..={disclaimed_end} after a \
+                         CLOCK_UNREADABLE_INTERVAL already declared {start}..={end} never \
+                         observed"
+                    ));
+                    return;
+                }
+                // Recorded so the INTERVAL arm can make the same check when the
+                // records arrive the other way round. Nothing else consults
+                // this: a disclaimed span excludes no frame, only the opposite
+                // statement about the same hours.
+                self.disclaimed_spans.push((disclaimed_start, disclaimed_end));
             }
             // Not a frame-boundary record: it carries campaign identity and is
             // validated where identity is folded, not here.
@@ -1730,6 +1850,199 @@ mod tests {
                 .is_some_and(|v| v.contains("unknown compact record type")),
             "an untaught record type must be a violation, got {:?}",
             untaught.violation
+        );
+    }
+
+    /// AN UNTRUSTED RECOVERY DISCLAIMS HOURS; IT DOES NOT DECLARE THEM
+    /// UNOBSERVED.
+    ///
+    /// `H4CJ` and `H4CU` name the same two endpoints and mean opposite things.
+    /// The interval VOUCHES that its hours elapsed unobserved, which makes every
+    /// later claim on them a contradiction. The recovery vouches for nothing:
+    /// the producer has disowned the very delta the span is derived from, so
+    /// treating those hours as declared-unobserved would convert a refusal to
+    /// make a claim INTO a claim -- and would then reject every honest frame the
+    /// capture goes on to publish inside that span.
+    ///
+    /// Three things are pinned: the record folds clean, it excludes NOTHING, and
+    /// it may not contradict an interval that already vouched for the same span.
+    ///
+    /// MUTATION RUN 1: push the recovery's implied span onto
+    /// `unobserved_intervals` in the UNTRUSTED_CLOCK_RECOVERY arm. Observed
+    /// failure:
+    ///   `a recovery declares no hour unobserved, so a later frame inside its
+    ///    span must fold clean, got Some("FRAME_END at byte 0 closes hour ...,
+    ///    which an earlier CLOCK_UNREADABLE_INTERVAL declared never observed
+    ///    (...)")`.
+    ///
+    /// MUTATION RUN 2: delete the `intersecting_unobserved_interval` check from
+    /// the UNTRUSTED_CLOCK_RECOVERY arm. Observed failure:
+    ///   `a recovery may not disclaim a span an interval already vouched for,
+    ///    got None`.
+    #[test]
+    fn an_untrusted_recovery_disclaims_hours_without_declaring_them_unobserved() {
+        let recovery = |last_observed: i32, resumed: i32| {
+            compact_contract::untrusted_clock_recovery::UntrustedClockRecoveryRecordV1 {
+                last_observed_hour_raw: last_observed,
+                resumed_hour_raw: resumed,
+                unreadable_events: 2,
+                observed_delta_hours: i64::from(resumed) - i64::from(last_observed),
+                trust_ceiling_hours: 768,
+            }
+            .encode()
+            .expect("canonical recovery fixture")
+        };
+        let observe_recovery =
+            |tracker: &mut BoundaryTracker, seq: u64, resumed: i32, payload: &[u8]| {
+                tracker.observe(
+                    &boundary_header(
+                        seq,
+                        resumed,
+                        COMPACT_DOMAIN_FRAME,
+                        COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY,
+                        payload.len(),
+                        0,
+                    ),
+                    payload,
+                    0,
+                );
+            };
+
+        let base = raw_for(HOUR_A);
+        let last_observed = base;
+        let resumed = base + 800;
+
+        // An honest recovery folds clean.
+        let payload = recovery(last_observed, resumed);
+        let mut clean = BoundaryTracker::default();
+        observe_recovery(&mut clean, 1, resumed, &payload);
+        assert!(clean.violation.is_none(), "{:?}", clean.violation);
+
+        // And it excludes nothing: a FRAME_REFUSED for an hour inside the span
+        // it disclaims is an ordinary refusal, not a contradiction. This is the
+        // exact case the interval arm rejects, which is what makes the two
+        // records different rather than duplicates.
+        let refusal_hour = base + 300;
+        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+            refused_hour: refusal_hour,
+            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                domain_id: 64,
+                status_flags: 0x0000_0100,
+                non_tolerated_flags: 0x0000_0100,
+                reason: "d64".to_string(),
+            }],
+        }
+        .encode()
+        .expect("canonical refusal fixture");
+        let mut inside = BoundaryTracker::default();
+        observe_recovery(&mut inside, 1, resumed, &payload);
+        inside.observe(
+            &boundary_header(
+                2,
+                refusal_hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal.len(),
+                0,
+            ),
+            &refusal,
+            0,
+        );
+        assert!(
+            inside.violation.is_none(),
+            "a recovery declares no hour unobserved, so a later frame inside its span must \
+             fold clean, got {:?}",
+            inside.violation
+        );
+
+        // The envelope must carry the resumed hour, exactly as the interval's
+        // must: it is the only hour the producer was observing as it wrote.
+        let mut misframed = BoundaryTracker::default();
+        observe_recovery(&mut misframed, 1, resumed + 1, &payload);
+        assert!(
+            misframed
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("is framed for hour")),
+            "a recovery framed for the wrong hour must be a violation, got {:?}",
+            misframed.violation
+        );
+
+        // And it may not disclaim a span an interval has already vouched for.
+        // The two are minted by disjoint branches of one decision, so a stream
+        // carrying both over the same hours is one producer making two
+        // contradictory statements.
+        let interval = compact_contract::clock_unreadable_interval::
+            ClockUnreadableIntervalRecordV1 {
+                range_start_hour_raw: base + 1,
+                range_end_hour_raw: base + 4,
+                last_observed_hour_raw: base,
+                resumed_hour_raw: base + 5,
+                unreadable_events: 1,
+            }
+            .encode()
+            .expect("canonical interval fixture");
+        let mut contradicted = BoundaryTracker::default();
+        contradicted.observe(
+            &boundary_header(
+                1,
+                base + 5,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
+                interval.len(),
+                0,
+            ),
+            &interval,
+            0,
+        );
+        assert!(contradicted.violation.is_none(), "{:?}", contradicted.violation);
+        observe_recovery(&mut contradicted, 2, resumed, &payload);
+        assert!(
+            contradicted
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("already declared")),
+            "a recovery may not disclaim a span an interval already vouched for, got {:?}",
+            contradicted.violation
+        );
+
+        // AND IN THE OTHER ORDER, which is the dangerous one. Checking only
+        // backwards from the recovery left `H4CJ` then `H4CU` certifying: the
+        // stream disclaimed a span and then vouched for it anyway, and the
+        // host's accounting retires hours through the interval that the
+        // recovery says rest on a rejected clock read.
+        let mut reversed = BoundaryTracker::default();
+        observe_recovery(&mut reversed, 1, resumed, &payload);
+        assert!(reversed.violation.is_none(), "{:?}", reversed.violation);
+        let inside_interval = compact_contract::clock_unreadable_interval::
+            ClockUnreadableIntervalRecordV1 {
+                range_start_hour_raw: base + 101,
+                range_end_hour_raw: base + 104,
+                last_observed_hour_raw: base + 100,
+                resumed_hour_raw: base + 105,
+                unreadable_events: 1,
+            }
+            .encode()
+            .expect("canonical interval fixture");
+        reversed.observe(
+            &boundary_header(
+                2,
+                base + 105,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
+                inside_interval.len(),
+                0,
+            ),
+            &inside_interval,
+            0,
+        );
+        assert!(
+            reversed
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("already disclaimed")),
+            "an interval may not vouch for a span a recovery already disclaimed, got {:?}",
+            reversed.violation
         );
     }
 

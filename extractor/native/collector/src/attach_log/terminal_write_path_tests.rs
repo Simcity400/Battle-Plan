@@ -411,18 +411,20 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         code_only(capture_loop.1)
             .matches("scheduler_stream_closed_by_write = true")
             .count(),
-        4,
+        5,
         "every site that reaches teardown after a write committed a rollover sets it: the \
          scheduler DATA publication, the frame-refusal publication, the clock-unreadable \
-         interval publication, and the terminal DATA write"
+         interval publication, the untrusted clock-recovery publication, and the terminal \
+         DATA write"
     );
-    // FOUR, and the fourth one earned its place. The `H4CU` clock-unreadable
-    // interval publication was added at the top of the sweep, and it calls
-    // `write_compact_frame` -- so it takes its own campaign-identity observation
-    // and can commit a rollover exactly as the DATA and refusal writes can. A
-    // site that CAN commit one must set the flag; the whole point of the flag is
-    // that the terminal sequence's stream-id latch cannot see a rollover
-    // committed before that sequence began.
+    // FIVE, and the last two earned their places on the same argument. The
+    // `H4CU` clock-unreadable interval publication and the `H4CJ` untrusted
+    // clock-recovery publication both sit at the top of the sweep and both call
+    // `write_compact_frame` -- so each takes its own campaign-identity
+    // observation and can commit a rollover exactly as the DATA and refusal
+    // writes can. A site that CAN commit one must set the flag; the whole point
+    // of the flag is that the terminal sequence's stream-id latch cannot see a
+    // rollover committed before that sequence began.
     //
     // The scheduler H4DG write is the one that is deliberately NOT here, and the
     // reason is the opposite: it used to call `write_compact_frame` and now

@@ -1758,6 +1758,15 @@ fn record_type_name(record_type: u16) -> &'static str {
         COMPACT_RECORD_TYPE_FRAME_REFUSED => "FRAME_REFUSED",
         COMPACT_RECORD_TYPE_FRAME_DEGRADED => "FRAME_DEGRADED",
         COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => "CAPTURE_TERMINATED",
+        // The two clock-recovery records. Both were reaching this audit as
+        // "UNKNOWN", which is the least helpful thing an hour-label audit can
+        // say about a record that exists precisely to explain an hour gap.
+        compact_contract::COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
+            "CLOCK_UNREADABLE_INTERVAL"
+        }
+        compact_contract::COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
+            "UNTRUSTED_CLOCK_RECOVERY"
+        }
         _ => "UNKNOWN",
     }
 }

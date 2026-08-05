@@ -43,6 +43,7 @@ use compact_contract::{
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
     parse_compact_record_header, validate_compact_record_semantics, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
+    COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
@@ -749,6 +750,26 @@ impl CompletenessAudit {
                 compact_contract::clock_unreadable_interval::
                     ClockUnreadableIntervalRecordV1::decode(payload)
                     .map_err(|error| format!("CLOCK_UNREADABLE_INTERVAL payload: {error}"))?;
+            }
+            COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
+                // AN UNACCOUNTED ABSENCE OF HOURS -- the difference from the
+                // arm above is the whole reason this is a separate record.
+                //
+                // The interval vouches that its hours elapsed; this one refuses
+                // to vouch for anything, because the span rests on a clock read
+                // the producer rejected. So it enters no accounting at all: not
+                // `hours`, not `refusals`, and not any accounted-absence set
+                // either. Counting it as accounted would let one failed clock
+                // read retire hours the producer explicitly declined to claim.
+                //
+                // Its boundary rules (envelope hour equals the payload's
+                // resumed hour; the recovery does not reach back over a closed
+                // hour; it does not contradict an interval) belong to
+                // `BoundaryTracker`, which owns every boundary rule in this
+                // workspace.
+                compact_contract::untrusted_clock_recovery::
+                    UntrustedClockRecoveryRecordV1::decode(payload)
+                    .map_err(|error| format!("UNTRUSTED_CLOCK_RECOVERY payload: {error}"))?;
             }
             other => {
                 // Not a skip. A record type this audit has not been taught is

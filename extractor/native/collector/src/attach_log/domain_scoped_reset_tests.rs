@@ -73,9 +73,10 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "focus_research_decisions_depth_live",
-        "d45 advances its tracker while building rows, then hook-reservation custody can add a \
-         failure-class status after its bracket closed; the consumer discards such a record, so \
-         bracket survival does not prove the pin and the consumer's mirror agree",
+        "d45's pin is now TRANSACTIONAL -- staged inside the bracket, committed only where the \
+         late custody status is final -- so it can no longer run ahead of the fold. Joining the \
+         allowlist is a separate question with its own fold-equivalence proof to write, and it \
+         stays on the blanket reset until that lands",
     ),
     (
         "tech_country_delta",
@@ -85,9 +86,9 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "land_combat_detail_events_live",
-        "d55 has the same shape as d45: `tracker.previous = current` runs inside the bracket, a \
-         custody conflict can badge the record failure-class afterwards, and the consumer clears \
-         and returns without applying it",
+        "d55 took the same repair as d45: the snapshot baseline is staged and committed against \
+         the same shared contract predicate the fold applies. Also awaiting its own \
+         fold-equivalence proof before it can join the allowlist",
     ),
 ];
 
