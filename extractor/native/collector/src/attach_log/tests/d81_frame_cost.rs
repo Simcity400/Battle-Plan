@@ -1026,3 +1026,735 @@ fn d81_topology_phase_cost_model() {
     println!("  raw rebuild:  {rebuild_us:?}");
     println!("  raw accepted: {accepted_us:?}");
 }
+
+// ---------------------------------------------------------------------
+// Job 4 -- the POV loop stops re-reading the roster loop's two windows
+// ---------------------------------------------------------------------
+//
+// The hub read walks the country roster to authenticate every
+// `(CCountry, CCountrySupplySystem)` pair, then walks the authenticated pairs
+// again as POVs. The second walk used to RE-READ `[country, country+0x0C)` and
+// `[country_system, country_system+0x88)` -- the identical addresses, the
+// identical lengths -- and re-check the same fields against the same expected
+// values. Four guarded calls per country per frame for bytes already in hand.
+//
+// The obligation the elision takes on is that every one of those checks still
+// runs and still refuses, so what the tests below drive is the production gate
+// `d81_admit_pov_country_windows` over windows that are WRONG in each of the
+// ways a mis-served cache entry could make them wrong.
+
+const POV_COUNTRY_VTABLE: usize = 0x7ff7_0000_1000;
+const POV_CCSS_VTABLE0: usize = 0x7ff7_0000_2000;
+const POV_CCSS_VTABLE1: usize = 0x7ff7_0000_3000;
+const POV_SUPPLY_SYSTEM: usize = 0x0000_1000_0000;
+const POV_COUNTRY: usize = 0x0000_2000_0000;
+const POV_COUNTRY_SYSTEM: usize = 0x0000_3000_0000;
+const POV_COMPANION: usize = 0x0000_4000_0000;
+const POV_RAW_HANDLE: u32 = 37;
+/// Deliberately NOT equal to the raw handle, so a gate that compared the wrong
+/// pair of identities cannot pass by coincidence.
+const POV_CANONICAL: u32 = 12;
+
+fn put_u64(window: &mut [u8], offset: usize, value: usize) {
+    window[offset..offset + 8].copy_from_slice(&(value as u64).to_le_bytes());
+}
+
+fn pov_authority() -> D81CountryAuthority {
+    let mut country_window = vec![0u8; D81_COUNTRY_IDENTITY_WINDOW_LEN];
+    put_u64(&mut country_window, 0, POV_COUNTRY_VTABLE);
+    country_window[OBJ_TAG_DB_ID..OBJ_TAG_DB_ID + 4]
+        .copy_from_slice(&POV_RAW_HANDLE.to_le_bytes());
+
+    let mut country_system_window = vec![0u8; D81_COUNTRY_SYSTEM_WINDOW_LEN];
+    put_u64(&mut country_system_window, 0, POV_CCSS_VTABLE0);
+    put_u64(&mut country_system_window, 8, POV_CCSS_VTABLE1);
+    put_u64(
+        &mut country_system_window,
+        CCOUNTRY_SUPPLY_SYSTEM_OWNER_CSUPPLY,
+        POV_SUPPLY_SYSTEM,
+    );
+    put_u64(
+        &mut country_system_window,
+        CCOUNTRY_SUPPLY_SYSTEM_OWNER_COUNTRY,
+        POV_COUNTRY,
+    );
+    put_u64(
+        &mut country_system_window,
+        CCOUNTRY_SUPPLY_SYSTEM_OWNER_COMPANION,
+        POV_COMPANION,
+    );
+
+    D81CountryAuthority {
+        country: POV_COUNTRY,
+        country_system: POV_COUNTRY_SYSTEM,
+        companion: POV_COMPANION,
+        raw_handle: POV_RAW_HANDLE,
+        country_window,
+        country_system_window,
+    }
+}
+
+fn admit_pov(authority: &D81CountryAuthority) -> Result<(), D81FirstFailure> {
+    d81_admit_pov_country_windows(
+        POV_CANONICAL,
+        authority,
+        POV_COUNTRY_VTABLE,
+        POV_CCSS_VTABLE0,
+        POV_CCSS_VTABLE1,
+        POV_SUPPLY_SYSTEM,
+        Some(POV_CANONICAL),
+    )
+}
+
+/// The bytes the roster loop authenticated are admitted unchanged.
+///
+/// This is the arm the elision has to keep working: every frame, for every
+/// country, the POV loop is now handed the roster loop's windows and must
+/// accept them. A gate that refused here would cost d81 every hour.
+#[test]
+fn the_roster_loops_own_country_windows_are_admitted_by_the_pov_gate() {
+    admit_pov(&pov_authority())
+        .expect("the windows the roster loop authenticated must be admitted");
+}
+
+/// Every field the POV gate checks still refuses when the window carries the
+/// wrong value -- with the same reason, subject and raw witness it carried when
+/// the POV loop read the window itself.
+///
+/// THIS IS THE ELISION'S VALUE TEST. The pre-elision code obtained these bytes
+/// from its own guarded read; it now obtains them from a keyed lookup, and the
+/// failure a keyed lookup invites -- handing back ANOTHER entry's window -- is
+/// exactly what these arms catch. Each case below is a byte another country's
+/// window would plausibly hold.
+///
+/// MUTATION RUN: the `!= Some(authority.country)` disjunct (the `OWNER_COUNTRY`
+/// tie) deleted from `d81_admit_pov_country_windows`, i.e. the bytes are no
+/// longer required to belong to THIS country's supply system. Observed in
+/// `--release`:
+///
+/// ```text
+/// a supply-system window belonging to another country: ()
+/// ```
+///
+/// Restored.
+#[test]
+fn a_country_window_that_is_not_this_countrys_refuses_field_by_field() {
+    type Corrupt = Box<dyn Fn(&mut D81CountryAuthority)>;
+    let cases: Vec<(&str, Corrupt, D81FailureReason, u64)> = vec![
+        (
+            "a CCountry window whose vtable is not the country vtable",
+            Box::new(|a| put_u64(&mut a.country_window, 0, 0xdead_0000)),
+            D81FailureReason::IdentityMismatch,
+            u64::from(POV_RAW_HANDLE),
+        ),
+        (
+            "a CCountry window bearing another country's tag handle",
+            Box::new(|a| {
+                a.country_window[OBJ_TAG_DB_ID..OBJ_TAG_DB_ID + 4]
+                    .copy_from_slice(&(POV_RAW_HANDLE + 1).to_le_bytes())
+            }),
+            D81FailureReason::IdentityMismatch,
+            u64::from(POV_RAW_HANDLE),
+        ),
+        (
+            "a CCountrySupplySystem window whose first vtable is wrong",
+            Box::new(|a| put_u64(&mut a.country_system_window, 0, 0xdead_0000)),
+            D81FailureReason::VtableMismatch,
+            0,
+        ),
+        (
+            "a CCountrySupplySystem window whose second vtable is wrong",
+            Box::new(|a| put_u64(&mut a.country_system_window, 8, 0xdead_0000)),
+            D81FailureReason::VtableMismatch,
+            0,
+        ),
+        (
+            "a supply-system window owned by a different CSupplySystem",
+            Box::new(|a| {
+                put_u64(
+                    &mut a.country_system_window,
+                    CCOUNTRY_SUPPLY_SYSTEM_OWNER_CSUPPLY,
+                    POV_SUPPLY_SYSTEM + 0x1000,
+                )
+            }),
+            D81FailureReason::VtableMismatch,
+            0,
+        ),
+        (
+            "a supply-system window belonging to another country",
+            Box::new(|a| {
+                put_u64(
+                    &mut a.country_system_window,
+                    CCOUNTRY_SUPPLY_SYSTEM_OWNER_COUNTRY,
+                    POV_COUNTRY + 0x1000,
+                )
+            }),
+            D81FailureReason::VtableMismatch,
+            0,
+        ),
+        (
+            "a supply-system window naming another country's companion",
+            Box::new(|a| {
+                put_u64(
+                    &mut a.country_system_window,
+                    CCOUNTRY_SUPPLY_SYSTEM_OWNER_COMPANION,
+                    POV_COMPANION + 0x1000,
+                )
+            }),
+            D81FailureReason::IdentityMismatch,
+            u64::from(POV_RAW_HANDLE),
+        ),
+    ];
+
+    for (what, corrupt, reason, raw_value) in cases {
+        let mut authority = pov_authority();
+        corrupt(&mut authority);
+        let failure = admit_pov(&authority).expect_err(what);
+        assert_eq!(failure.stage, D81FailureStage::HubRoot, "{what}");
+        assert_eq!(failure.reason, reason, "{what}");
+        assert_eq!(failure.subject_id, POV_CANONICAL, "{what}");
+        assert_eq!(failure.raw_value, raw_value, "{what}");
+    }
+}
+
+/// A whole window served from the wrong country -- the exact shape of a keyed
+/// lookup returning the neighbouring entry -- refuses rather than publishing one
+/// country's supply topology under another's POV.
+#[test]
+fn a_pov_served_another_countrys_windows_entirely_refuses() {
+    let mut authority = pov_authority();
+    let mut other = pov_authority();
+    put_u64(
+        &mut other.country_system_window,
+        CCOUNTRY_SUPPLY_SYSTEM_OWNER_COUNTRY,
+        POV_COUNTRY + 0x8000,
+    );
+    other.country_window[OBJ_TAG_DB_ID..OBJ_TAG_DB_ID + 4]
+        .copy_from_slice(&(POV_RAW_HANDLE + 9).to_le_bytes());
+    // This POV's own identity, the neighbour's bytes.
+    authority.country_window = other.country_window;
+    authority.country_system_window = other.country_system_window;
+    let failure = admit_pov(&authority)
+        .expect_err("a POV handed another country's windows must refuse the frame");
+    assert_eq!(failure.reason, D81FailureReason::IdentityMismatch);
+    assert_eq!(failure.subject_id, POV_CANONICAL);
+}
+
+/// A tag handle the equivalence snapshot no longer resolves to this POV refuses,
+/// exactly as it did when the POV loop performed its own read.
+#[test]
+fn a_pov_whose_handle_no_longer_resolves_to_it_refuses() {
+    let authority = pov_authority();
+    let failure = d81_admit_pov_country_windows(
+        POV_CANONICAL,
+        &authority,
+        POV_COUNTRY_VTABLE,
+        POV_CCSS_VTABLE0,
+        POV_CCSS_VTABLE1,
+        POV_SUPPLY_SYSTEM,
+        // The equivalence snapshot now maps this raw handle somewhere else.
+        Some(POV_CANONICAL + 1),
+    )
+    .expect_err("a handle that no longer resolves to this POV must refuse");
+    assert_eq!(failure.stage, D81FailureStage::HubRoot);
+    assert_eq!(failure.reason, D81FailureReason::IdentityMismatch);
+    assert_eq!(failure.subject_id, POV_CANONICAL);
+    assert_eq!(failure.raw_value, u64::from(POV_RAW_HANDLE));
+}
+
+/// A window SHORTER than the fields the gate reads refuses rather than passing
+/// on absent bytes.
+///
+/// `read_u64_from_slice` returns `None` past the end, and `None != Some(x)` is
+/// true, so the arms refuse -- but that is a property worth pinning rather than
+/// assuming, because the retained windows are now sized at a different call site
+/// than the one that consumes them.
+#[test]
+fn a_truncated_retained_window_refuses_instead_of_reading_absent_bytes() {
+    let mut authority = pov_authority();
+    authority
+        .country_system_window
+        .truncate(CCOUNTRY_SUPPLY_SYSTEM_OWNER_COMPANION);
+    let failure = admit_pov(&authority).expect_err("a truncated window cannot be admitted");
+    assert_eq!(failure.reason, D81FailureReason::IdentityMismatch);
+
+    let mut authority = pov_authority();
+    authority.country_window.truncate(OBJ_TAG_DB_ID);
+    let failure = admit_pov(&authority).expect_err("a truncated window cannot be admitted");
+    assert_eq!(failure.reason, D81FailureReason::IdentityMismatch);
+}
+
+/// A witness minted from the ROSTER read still refuses a change that lands after
+/// it -- which is the whole safety argument for serving the POV loop from those
+/// bytes.
+///
+/// The elision moves only the START of the span each witness vouches for,
+/// earlier; the re-read stays where it was in the closing gate. This drives the
+/// real `d81_read_stable_bytes` over staged memory, mints the witness the POV
+/// loop mints, and then changes the memory under it.
+#[test]
+fn a_witness_minted_from_the_roster_read_still_refuses_a_later_change() {
+    let mut heap = FixtureRegion::new(0x200);
+    heap.write_u64(0x00, 0x1234_5678);
+    let mut scratch = Vec::new();
+    let window = d81_read_stable_bytes(
+        heap.at(0x00),
+        D81_COUNTRY_IDENTITY_WINDOW_LEN,
+        D81FailureStage::HubRoot,
+        &mut scratch,
+    )
+    .expect("the staged window is readable");
+    let witness = D81BytesWitness::new(heap.at(0x00), window);
+    assert!(witness.unchanged(), "nothing has moved yet");
+
+    heap.write_u64(0x00, 0x9999_9999);
+    assert!(
+        !witness.unchanged(),
+        "a window changed after the roster loop read it must still refuse the \
+         frame; serving the POV loop from those bytes is only sound because \
+         this check survives"
+    );
+}
+
+/// The POV loop reads NEITHER window again, and still closes both.
+///
+/// Asserted against the source because a POV loop that consults the retained
+/// windows AND re-reads them anyway publishes exactly the same rows and is
+/// invisible to every behavioural test above. It is only visible as guarded
+/// calls, and the number of guarded calls is what this change is about.
+///
+/// MUTATION RUN: the two `D81BytesWitness::new(...)` pushes in the POV loop
+/// replaced by `let mut pov_witnesses: Vec<D81BytesWitness> = Vec::new();`, so
+/// the retained windows are never closed. Observed in `--release`:
+///
+/// ```text
+/// the POV loop must still mint the CCountry witness, from the roster bytes; without it the elided read has no closing check at all
+/// ```
+///
+/// Restored.
+#[test]
+fn the_pov_loop_never_re_reads_the_windows_the_roster_loop_retained() {
+    let source = collector_source_lf();
+    let hub = source
+        .split_once("fn read_compact_rail_hub_simulation(")
+        .expect("the d81 hub read")
+        .1
+        .split_once("\nfn ")
+        .expect("the end of the d81 hub read")
+        .0;
+    let (roster, pov) = hub
+        .split_once("for (&pov_country_id, authority) in &country_authority {")
+        .expect("the POV loop");
+
+    assert!(
+        roster.contains("D81_COUNTRY_IDENTITY_WINDOW_LEN"),
+        "the roster loop is where the CCountry identity window is read"
+    );
+    assert!(
+        roster.contains("D81_COUNTRY_SYSTEM_WINDOW_LEN"),
+        "and where the CCountrySupplySystem window is read"
+    );
+    assert!(
+        !pov.contains("D81_COUNTRY_IDENTITY_WINDOW_LEN"),
+        "the POV loop must not read the CCountry window a second time; the \
+         roster loop already read that exact address and length"
+    );
+    assert!(
+        !pov.contains("D81_COUNTRY_SYSTEM_WINDOW_LEN"),
+        "and must not read the CCountrySupplySystem window a second time"
+    );
+    assert!(
+        pov.contains("D81BytesWitness::new(country, authority.country_window.clone())"),
+        "the POV loop must still mint the CCountry witness, from the roster \
+         bytes; without it the elided read has no closing check at all"
+    );
+    assert!(
+        pov.contains(
+            "D81BytesWitness::new(country_system, authority.country_system_window.clone())"
+        ),
+        "and the CCountrySupplySystem witness likewise"
+    );
+    assert!(
+        pov.contains("final_witnesses.extend(pov_witnesses);"),
+        "and both must reach the closing gate, which is where the span they \
+         vouch for ends"
+    );
+    assert!(
+        pov.contains("d81_admit_pov_country_windows("),
+        "and every check the POV loop ran against its own read must still run \
+         against the retained bytes"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Job 5 -- the province-array slot the walk already read
+// ---------------------------------------------------------------------
+//
+// `d81_resolve_anchor_selector_key` computes `province_array + selector_key*8`
+// and reads it. The walk that calls it has ALREADY read
+// `province_array + province_id*8` and compared it against the topology
+// pointer, a few hundred nanoseconds earlier in the same bracket -- and those
+// two addresses are the SAME whenever the engine's selector key is the walking
+// province's own id. So is the CLOSING re-read: the walk closed the selector
+// slot and then closed the source slot, twice over one address.
+
+const SELECTOR_CPROVINCE_VTABLE: usize = 0x7ff7_99b1_8170;
+const SELECTOR_PROVINCE_ID: u32 = 260;
+
+/// A staged province array whose live slot for `SELECTOR_PROVINCE_ID` holds a
+/// DIFFERENT pointer than the topology recorded, so a resolve that reads the
+/// slot must refuse and a resolve that is served the caller's value must not.
+fn selector_fixture() -> (FixtureRegion, FixtureRegion, FixtureRegion) {
+    let mut resolved = FixtureRegion::new(0xA8);
+    resolved.write_u64(0, SELECTOR_CPROVINCE_VTABLE as u64);
+    resolved.write_u32(CPROVINCE_OFF_ID, SELECTOR_PROVINCE_ID);
+    let replacement = FixtureRegion::new(0xA8);
+    let mut province_array = FixtureRegion::new(0x828);
+    province_array.write_u64(SELECTOR_PROVINCE_ID as usize * 8, replacement.addr() as u64);
+    (resolved, replacement, province_array)
+}
+
+fn selector_topology(
+    resolved: &FixtureRegion,
+    province_array: &FixtureRegion,
+) -> CompactMapControlTopology {
+    CompactMapControlTopology {
+        province_array: province_array.addr(),
+        province_count: SELECTOR_PROVINCE_ID + 1,
+        states: Vec::new(),
+        provinces: vec![CompactMapProvinceRoot {
+            province_id: SELECTOR_PROVINCE_ID,
+            province_ptr: resolved.addr(),
+            state_id: 0,
+        }],
+    }
+}
+
+/// The walk's own slot read serves the selector resolve, and the resolve does
+/// not read the slot again.
+///
+/// The staged live slot holds the WRONG pointer, so this is not a test that
+/// merely agrees with itself: a resolve that read the slot refuses, and a
+/// resolve served the caller's already-validated value succeeds. The two arms
+/// are the same fixture and differ only in the hint.
+///
+/// MUTATION RUN: the `Some((observed_address, observed_value)) if
+/// observed_address == province_slot` arm in `d81_resolve_anchor_selector_key`
+/// deleted, so the slot is always read. Observed in `--release`:
+///
+/// ```text
+/// the caller's own read of this exact slot must serve the resolve: D81FirstFailure { stage: AnchorSelector, reason: ClosureChanged, subject_id: 6338, related_id: 260, index: 3, raw_value: 1287452008224, anchor_province_ptr: 0, anchor_address: 0, anchor_variant: 0, read_address: 0, read_width: 0, read_attempt: 0, read_success_mask: 0, read_first_value: 0, read_second_value: 0 }
+/// ```
+///
+/// Restored.
+#[test]
+fn the_walks_own_slot_read_serves_the_selector_resolve_for_the_same_slot() {
+    let (resolved, _replacement, province_array) = selector_fixture();
+    let topology = selector_topology(&resolved, &province_array);
+    let slot = province_array.at(SELECTOR_PROVINCE_ID as usize * 8);
+
+    let route = d81_resolve_anchor_selector_key(
+        6338,
+        &topology,
+        SELECTOR_CPROVINCE_VTABLE,
+        SELECTOR_PROVINCE_ID,
+        Some((slot, resolved.addr())),
+    )
+    .expect("the caller's own read of this exact slot must serve the resolve");
+    assert_eq!(route.selector_key, SELECTOR_PROVINCE_ID);
+    assert_eq!(route.province_slot, slot);
+    assert_eq!(route.province_ptr, resolved.addr());
+}
+
+/// Without the hint the same fixture refuses, which is what makes the arm above
+/// a measurement of the elision rather than of the fixture.
+#[test]
+fn the_same_fixture_refuses_when_the_resolve_reads_the_slot_itself() {
+    let (resolved, replacement, province_array) = selector_fixture();
+    let topology = selector_topology(&resolved, &province_array);
+    let failure = d81_resolve_anchor_selector_key(
+        6338,
+        &topology,
+        SELECTOR_CPROVINCE_VTABLE,
+        SELECTOR_PROVINCE_ID,
+        None,
+    )
+    .expect_err("a live slot that no longer holds the topology pointer must refuse");
+    assert_eq!(failure.stage, D81FailureStage::AnchorSelector);
+    assert_eq!(failure.reason, D81FailureReason::ClosureChanged);
+    assert_eq!(failure.index, 3);
+    assert_eq!(failure.raw_value, replacement.addr() as u64);
+}
+
+/// A hint for a DIFFERENT address is ignored and the slot is read.
+///
+/// The hint is honoured on address identity and nothing else. A caller that
+/// passed the wrong province's slot -- or a future caller that passed a slot it
+/// had not validated at THIS address -- changes no outcome.
+///
+/// MUTATION RUN: the `if observed_address == province_slot` guard deleted, so
+/// any hint is honoured. Observed in `--release`:
+///
+/// ```text
+/// a hint for a different address must be ignored and the slot read: D81AnchorSelectorRoute { selector_key: 260, province_slot: 2347307032464, province_ptr: 2347307020496 }
+/// ```
+///
+/// Restored.
+#[test]
+fn a_hint_that_names_another_address_is_ignored_and_the_slot_is_read() {
+    let (resolved, replacement, province_array) = selector_fixture();
+    let topology = selector_topology(&resolved, &province_array);
+    let other_slot = province_array.at(SELECTOR_PROVINCE_ID as usize * 8 - 8);
+    let failure = d81_resolve_anchor_selector_key(
+        6338,
+        &topology,
+        SELECTOR_CPROVINCE_VTABLE,
+        SELECTOR_PROVINCE_ID,
+        Some((other_slot, resolved.addr())),
+    )
+    .expect_err("a hint for a different address must be ignored and the slot read");
+    assert_eq!(failure.reason, D81FailureReason::ClosureChanged);
+    assert_eq!(failure.index, 3);
+    assert_eq!(failure.raw_value, replacement.addr() as u64);
+}
+
+/// The surviving closing read is the LATER of the two, and the elided one's
+/// comparison runs first.
+///
+/// This is the same property lane BS's controller witnesses have, in the same
+/// shape and for the same reason: a deduplicated re-read must land no EARLIER
+/// than the latest re-read it stands in for, or the span it vouches for is a
+/// prefix of theirs instead of a superset. Here the two sites are separated by a
+/// comparison and nothing else, so no offline fixture can distinguish them --
+/// the position of the read IS the claim, and it is asserted against the source.
+///
+/// MUTATION RUN: the elision moved to the EARLIER position -- the selector
+/// close made unconditional and the SOURCE close replaced by
+/// `if selector_slot_is_source_slot { closing_selector_ptr } else { ..read.. }`,
+/// so the surviving read is the earlier of the two and the span it vouches for
+/// ends sooner than the span it replaced. That is the defect this test exists
+/// for, and it is invisible to every behavioural test. Observed in `--release`:
+///
+/// ```text
+/// the SELECTOR close is the one that is skipped when the two slots coincide
+/// ```
+///
+/// Restored.
+#[test]
+fn the_surviving_closing_slot_read_is_the_later_of_the_two() {
+    let source = collector_source_lf();
+    let walk = source
+        .split_once("fn read_compact_rail_replay_state(")
+        .expect("the d81 walk")
+        .1;
+    assert!(
+        walk.contains(
+            "let selector_slot_is_source_slot = selector_route.province_slot == source_province_slot;"
+        ),
+        "the elision must be keyed on the two slots being ONE address, never \
+         assumed"
+    );
+    let selector_close = walk
+        .split_once("if !selector_slot_is_source_slot {")
+        .expect(
+            "the SELECTOR close is the one that is skipped when the two slots \
+             coincide",
+        )
+        .1;
+    assert!(
+        selector_close.starts_with(
+            "\n            let closing_selector_ptr = match d81_read_u64_pair(selector_route.province_slot) {"
+        ),
+        "the read that survives must be the SOURCE close -- the later of the \
+         two -- or the deduplicated span is a prefix of the one it replaces"
+    );
+    let after_surviving_read = walk
+        .split_once(
+            "let closing_source_province_ptr = match d81_read_u64_pair(source_province_slot) {",
+        )
+        .expect("the surviving closing read")
+        .1;
+    let selector_comparison = after_surviving_read
+        .find("closing_source_province_ptr != selector_route.province_ptr")
+        .expect("the elided selector comparison, run against the surviving read");
+    let source_comparison = after_surviving_read
+        .find("if closing_source_province_ptr != root.province_ptr {")
+        .expect("the source comparison");
+    assert!(
+        selector_comparison < source_comparison,
+        "the selector close reported FIRST before the elision, so its \
+         comparison must still run first"
+    );
+    assert!(
+        after_surviving_read.contains(
+            "if selector_slot_is_source_slot {\n                    return fail(status_flags, selector_close_read_failure(read_failure));"
+        ),
+        "and a refusal of the surviving read must be dressed in the SELECTOR's \
+         clothes when the two slots are one, because the selector close is the \
+         site that reported first"
+    );
+    assert!(
+        walk.contains("Some((source_province_slot, opening_source_province_ptr)),"),
+        "the walk must hand its own already-validated slot read to the selector \
+         resolve, or the opening half of the elision does not happen"
+    );
+}
+
+// ---------------------------------------------------------------------
+// What the elisions cost, counted rather than modelled
+// ---------------------------------------------------------------------
+
+/// Guarded reads performed by `body`, taken from the collector's OWN per-domain
+/// read counter under a domain id production never tags.
+///
+/// `rc_domain_take_and_reset` drains every domain slot, and `RC_ENABLED` is
+/// process-global, so this must not run beside other tests -- which is why its
+/// only caller is `#[ignore]`d.
+fn guarded_reads(body: impl FnOnce()) -> u64 {
+    const UNUSED_DOMAIN_ID: u16 = 219;
+    RC_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = rc_domain_take_and_reset();
+    {
+        let _scope = RcDomainScope::new(UNUSED_DOMAIN_ID);
+        body();
+    }
+    rc_flush_current_thread();
+    RC_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+    rc_domain_take_and_reset()
+        .iter()
+        .find(|(id, _)| *id == UNUSED_DOMAIN_ID)
+        .map(|(_, counters)| counters[RC_PD_READS])
+        .unwrap_or(0)
+}
+
+/// What each elision removes, in GUARDED CALLS PER FRAME.
+///
+/// COUNTS, NOT WALL TIME. Lane BG established that a guarded call costs ~80-90
+/// ns almost independently of width, because the cost is the per-call
+/// `range_confirmed_good` + `copy_selected` rather than the bytes moved. The
+/// call count is deterministic and this machine's wall clock is not (lanes run
+/// concurrently on it), so the count is the measurement and microseconds are a
+/// secondary note.
+///
+/// MEASURED, `--release`, counted through the collector's own `rc_d219_reads`:
+///
+/// ```text
+/// d81 guarded reads per call, counted
+///   read_u32_stable                                : 2
+///   d81_read_stable_bytes, 0x0C window             : 2
+///   d81_read_stable_bytes, 0x88 window             : 2
+///   d81_read_u64_pair                              : 2
+///   d81_resolve_anchor_selector_key, no hint       : 6
+///   d81_resolve_anchor_selector_key, caller's slot : 4
+/// ```
+///
+/// THE PER-FRAME ARITHMETIC that follows from those counts:
+///
+///  * SITE 1, the anchor-selector slot. The resolve drops 6 -> 4, and the two
+///    closing `d81_read_u64_pair`s over one address drop 4 -> 2. Four guarded
+///    calls per railed province whose selector key is its own id; at t26's 3510
+///    railed provinces that is -14,040 calls/frame, ~1.19 ms at 85 ns/call.
+///    Lane BG's own measurement of a four-call-per-province cut on this walk was
+///    ~0.87-0.92 ms/frame, so ~0.9-1.2 ms is the band.
+///  * SITES 2+3, the two country windows. The roster loop's 4-byte tag read
+///    widens to the 0x0C window at NO change in call count (2 -> 2), and the POV
+///    loop's own 0x0C and 0x88 reads disappear (4 -> 0). Four guarded calls per
+///    country per frame; at ~200 countries that is -800 calls/frame, ~68 us.
+///
+/// TOTAL ~-14,840 guarded calls per frame.
+///
+/// WHICH `d81_phase_*` UNITS MOVE, for t27 comparability: none of the work
+/// changes phase. Site 1's resolve elision lands wholly inside
+/// `d81_phase_walk_selector_us` and its closing elision wholly inside
+/// `d81_phase_walk_close_us`; sites 2 and 3 are both inside `d81_phase_hub_us`,
+/// and site 3's widened read stays in the same phase as the scalar it replaces.
+/// Every unit keeps meaning exactly what it meant at t26 -- three of them simply
+/// get smaller.
+///
+/// `#[ignore]` on purpose -- it toggles the process-global read-counter gate:
+///
+/// ```text
+/// cargo test -p collector --release d81_elided_read_count_model -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn d81_elided_read_count_model() {
+    page_cache_new_frame();
+    let mut heap = FixtureRegion::new(0x400);
+    heap.write_u64(0x00, 0x1122_3344_5566_7788);
+
+    let scalar = guarded_reads(|| {
+        read_u32_stable(heap.at(0x00)).expect("the staged scalar is readable");
+    });
+    let window_0c = guarded_reads(|| {
+        let mut scratch = Vec::new();
+        d81_read_stable_bytes(
+            heap.at(0x00),
+            D81_COUNTRY_IDENTITY_WINDOW_LEN,
+            D81FailureStage::HubRoot,
+            &mut scratch,
+        )
+        .expect("the staged window is readable");
+    });
+    let window_88 = guarded_reads(|| {
+        let mut scratch = Vec::new();
+        d81_read_stable_bytes(
+            heap.at(0x00),
+            D81_COUNTRY_SYSTEM_WINDOW_LEN,
+            D81FailureStage::HubObject,
+            &mut scratch,
+        )
+        .expect("the staged window is readable");
+    });
+    let u64_pair = guarded_reads(|| {
+        d81_read_u64_pair(heap.at(0x00)).expect("the staged pointer is readable");
+    });
+
+    // The resolve, over a fixture whose live slot AGREES with the topology, so
+    // both arms succeed and the only difference between them is the read.
+    let mut resolved = FixtureRegion::new(0xA8);
+    resolved.write_u64(0, SELECTOR_CPROVINCE_VTABLE as u64);
+    resolved.write_u32(CPROVINCE_OFF_ID, SELECTOR_PROVINCE_ID);
+    let mut province_array = FixtureRegion::new(0x828);
+    province_array.write_u64(SELECTOR_PROVINCE_ID as usize * 8, resolved.addr() as u64);
+    let topology = selector_topology(&resolved, &province_array);
+    let slot = province_array.at(SELECTOR_PROVINCE_ID as usize * 8);
+    let resolve = |hint: Option<(usize, usize)>| {
+        guarded_reads(|| {
+            d81_resolve_anchor_selector_key(
+                6338,
+                &topology,
+                SELECTOR_CPROVINCE_VTABLE,
+                SELECTOR_PROVINCE_ID,
+                hint,
+            )
+            .expect("the staged province resolves");
+        })
+    };
+    let resolve_reading = resolve(None);
+    let resolve_served = resolve(Some((slot, resolved.addr())));
+
+    println!("d81 guarded reads per call, counted");
+    println!("  read_u32_stable                                : {scalar}");
+    println!("  d81_read_stable_bytes, 0x0C window             : {window_0c}");
+    println!("  d81_read_stable_bytes, 0x88 window             : {window_88}");
+    println!("  d81_read_u64_pair                              : {u64_pair}");
+    println!("  d81_resolve_anchor_selector_key, no hint       : {resolve_reading}");
+    println!("  d81_resolve_anchor_selector_key, caller's slot : {resolve_served}");
+
+    // Deterministic, so they are checked as well as printed.
+    assert_eq!(scalar, 2, "a stable scalar read is two guarded calls");
+    assert_eq!(
+        (window_0c, window_88),
+        (2, 2),
+        "and a confirmed window is two guarded calls whatever its width -- \
+         which is why widening the roster read costs nothing"
+    );
+    assert_eq!(u64_pair, 2);
+    assert_eq!(
+        (resolve_reading, resolve_served),
+        (6, 4),
+        "the caller's own slot read must remove exactly one stable read from \
+         the resolve"
+    );
+}
