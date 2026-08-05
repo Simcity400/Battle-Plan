@@ -24436,7 +24436,13 @@ fn every_apply_and_account_fixture_is_a_payload_the_boundary_decoder_admits() {
                 | COMPACT_STATUS_SOURCE_UNAVAILABLE
                 | COMPACT_STATUS_WAR_SEGMENT_ABSENT
                 | COMPACT_STATUS_DELTA_DATA,
-            1 << 31,
+            // `1 << 31` was in this list while the boundary admitted an
+            // unassigned bit. It is now REFUSED there (owner ruling
+            // 2026-08-05), so a fixture carrying it is by definition not a
+            // payload production could carry, and asserting the boundary
+            // admits it would assert the hole is still open.
+            // `the_capture_boundary_rejects_an_unassigned_status_bit` is where
+            // that bit is now measured, across the whole 15..=31 range.
         ] {
             // 100 is the clean-baseline casualties value the pre-existing d17
             // test builds; without it that one instance escapes the check.
@@ -24459,36 +24465,84 @@ fn every_apply_and_account_fixture_is_a_payload_the_boundary_decoder_admits() {
     }
 }
 
-/// The boundary decoder admits an UNASSIGNED status bit on all five domains.
+/// The boundary decoder REFUSES an unassigned status bit, and says which one.
 ///
-/// This is the measurement that makes `record_degraded_rows_applied`'s
-/// unassigned-bit term load-bearing rather than belt-and-braces: if the capture
-/// boundary rejected such a record, the fold would never see one and the term
-/// would be dead code. It does not reject it — `summarize_domain_data_payload`
-/// accumulates the raw word and none of these five decoders calls
-/// `compact_status_unknown_flags_v1` — so the fold is the last place that can
-/// notice, and the assertion above (that it does) is the only thing standing
-/// between an unassigned bit and a clean-looking hour.
+/// This replaces the measurement that recorded the opposite. Before the owner
+/// ruling of 2026-08-05 the boundary admitted such a record — the failure mask
+/// covers assigned bits only and no decoder called
+/// `compact_status_unknown_flags_v1` — which made the fold's unassigned-bit term
+/// the last place an undefined bit could be noticed. It is now refused at the
+/// decoder, so the term is defence in depth and this test is the measurement
+/// that keeps the claim honest: if the boundary ever stops rejecting, THIS test
+/// fails, and `a_degraded_record_keeps_its_rows_and_the_ledger_names_the_failure`
+/// is what still holds the line downstream.
 ///
-/// What production change makes this fail: adding an unknown-status rejection to
-/// any of the five payload decoders in `domain_data_authority.rs`. That would be
-/// a strictly better place for it — and at that point the fold's term becomes
-/// unreachable and this pair of tests is what says so.
+/// The whole bit range is swept, not one sample, so a gate that happened to
+/// catch bit 31 (a sign bit, easy to catch by accident) but not bit 15 cannot
+/// pass.
+///
+/// What production change makes this fail: removing the
+/// `reject_unassigned_status_bits` call from `summarize_domain_data_payload`, or
+/// narrowing it to a subset of bits 15..=31. The mutation is recorded in the
+/// lane report.
 #[test]
-fn the_capture_boundary_does_not_reject_an_unassigned_status_bit() {
+fn the_capture_boundary_rejects_an_unassigned_status_bit() {
     for domain in APPLY_AND_ACCOUNT_DOMAINS {
-        let payload = (domain.payload)(1, 1 << 31);
-        assert!(
-            crate::domain_data_authority::summarize_domain_data_payload(
+        for bit in 15..u32::BITS {
+            let flag = 1_u32 << bit;
+            let payload = (domain.payload)(1, flag);
+            let error = crate::domain_data_authority::summarize_domain_data_payload(
                 domain.domain_id,
                 &payload,
                 crate::domain_data_authority::DomainDataContext::default(),
             )
-            .is_ok(),
-            "{}: if the boundary DID reject this, the fold's unassigned-bit term would be \
-             unreachable and should be removed rather than kept",
-            domain.wire_name,
-        );
+            .expect_err(&format!(
+                "{}: an unassigned status bit {bit} must be refused at the boundary, not folded",
+                domain.wire_name,
+            ));
+            let reason = error.to_string();
+            assert!(
+                reason.contains(&format!("{flag:#x}")) && reason.contains(&format!("bit {bit}")),
+                "{}: the refusal must NAME the offending bit; got {reason}",
+                domain.wire_name,
+            );
+        }
+    }
+}
+
+/// The refusal is about bits with no DEFINITION, never about the
+/// failure/informational split.
+///
+/// d17 sets `WAR_SEGMENT_ABSENT` on every production diplomacy record. It is an
+/// assigned v1 bit that is deliberately absent from
+/// `COMPACT_STATUS_FAILURE_MASK`, so a gate that confused "not in the failure
+/// mask" with "not defined" would refuse every diplomacy record in every
+/// capture. It is swept here alongside the other assigned informational bits and
+/// the failure bits, on all five domains.
+///
+/// What production change makes this fail: spelling the gate as
+/// `status & !COMPACT_STATUS_FAILURE_MASK` instead of
+/// `compact_status_unassigned_flags`, or dropping any bit from
+/// `COMPACT_STATUS_V1_KNOWN_MASK`.
+#[test]
+fn the_capture_boundary_admits_every_assigned_status_bit() {
+    for domain in APPLY_AND_ACCOUNT_DOMAINS {
+        for spec in compact_contract::COMPACT_STATUS_V1_FLAG_SPECS {
+            let payload = (domain.payload)(1, spec.bit);
+            let result = crate::domain_data_authority::summarize_domain_data_payload(
+                domain.domain_id,
+                &payload,
+                crate::domain_data_authority::DomainDataContext::default(),
+            );
+            assert!(
+                result.is_ok(),
+                "{}: assigned bit {} ({:#x}) must not be refused: {:?}",
+                domain.wire_name,
+                spec.name,
+                spec.bit,
+                result.err().map(|error| error.errors),
+            );
+        }
     }
 }
 
@@ -24675,16 +24729,27 @@ fn the_degraded_note_names_exactly_the_failure_bits() {
 
 /// An UNASSIGNED status bit (15..=31) has no defined classification, so it is
 /// not "clean". Masking to `COMPACT_STATUS_FAILURE_MASK` alone would fold such a
-/// record as a perfectly healthy hour, because none of the five payload
-/// decoders rejects an unassigned bit for these domains — the same
-/// unknown-read-as-clean shape the ruling exists to end.
+/// record as a perfectly healthy hour — the unknown-read-as-clean shape the
+/// ruling exists to end.
+///
+/// # This is now the SECOND line, not the only one
+///
+/// `summarize_domain_data_payload` refuses such a record at the capture
+/// boundary (owner ruling 2026-08-05), and
+/// `the_capture_boundary_rejects_an_unassigned_status_bit` measures that. A
+/// production stream cannot reach this fold carrying an unassigned bit. This
+/// test exercises the path that remains: `WorldFold::ingest_stream` runs no
+/// payload validation, so any fold driven without the boundary decoder — this
+/// test's own `chunk1_one_snapshot`, and the re-fold tooling that shares it —
+/// still needs the term. Keeping it is what makes the boundary's rejection a
+/// defence in depth rather than a single point of failure.
 ///
 /// The rows still fold (an unassigned bit is not evidence the rows are bad, and
 /// the ruling's rule is apply-and-account), and the hour is recorded degraded
 /// with the offending mask spelled out.
 ///
 /// What production change makes this fail: dropping the
-/// `compact_status_unknown_flags_v1` term from `record_degraded_rows_applied`,
+/// `compact_status_unassigned_flags` term from `record_degraded_rows_applied`,
 /// or assigning bit 31 in `COMPACT_STATUS_V1_KNOWN_MASK` without revisiting
 /// this.
 #[test]

@@ -943,10 +943,83 @@ struct DomainDataDecodeSummary {
     session_header_identity: SessionHeaderIdentityObservation,
 }
 
+/// The one place every payload decoder's status word enters this authority.
+///
+/// 87 call sites reach it; nothing else may write
+/// [`DomainDataDecodeSummary::raw_status_flags_or`]. That single-funnel property
+/// is what lets [`reject_unassigned_status_bits`] be one gate instead of one
+/// per domain, and `every_decoder_status_word_reaches_the_shared_funnel` is what
+/// keeps a new decoder from bypassing it.
 fn add_decoder_status(summary: &mut DomainDataDecodeSummary, status_flags: u32) {
     summary.raw_status_flags_or = Some(summary.raw_status_flags_or.unwrap_or(0) | status_flags);
     summary.status_flags_or |=
         compact_contract::compact_status_for_global_interpretation(summary.domain_id, status_flags);
+}
+
+/// Refuse a `DOMAIN_DATA` record whose status word carries a bit the contract
+/// does not assign and this domain has not declared lane-locally.
+///
+/// # Owner ruling 2026-08-05: reject at the decoder
+///
+/// The collector DLL and this host ship together, so a status bit neither side
+/// defines is not version skew — it is producer/consumer wire disagreement,
+/// i.e. corruption or an unregistered producer-side assignment. Before this
+/// gate such a bit was INVISIBLE: [`compact_contract::COMPACT_STATUS_FAILURE_MASK`]
+/// covers assigned bits only, and no payload decoder called
+/// [`compact_contract::compact_status_unknown_flags_v1`], so a record carrying
+/// bit 20 folded exactly like a clean one.
+///
+/// The refusal is one gate at the shared boundary rather than 40 copies:
+/// [`add_decoder_status`] is the single funnel every decoder's status word
+/// passes through, so testing the accumulated word once here covers every
+/// domain [`summarize_domain_data_payload`] dispatches.
+///
+/// # Why a parse error and not a new outcome type
+///
+/// A non-empty `parse_errors` makes [`summarize_domain_data_payload`] return
+/// [`DomainDataError`], which the two production drivers already turn into an
+/// ACCOUNTED gap rather than a silent drop:
+/// `stream_fold::drive_fold_compressed_with_identity_mode` records an
+/// [`crate::stream_fold::ExcludedDomainDataRecord`] plus a
+/// `malformed_payload_domains` entry and calls
+/// `WorldFold::record_malformed_domain_payload`, and the manifest path in
+/// `recorder_host::main` pushes the same excluded record. The domain-hour
+/// therefore reads as refused-with-a-reason (partial data still seals), not as
+/// clean. Reusing that machinery is also why the reason is a string: it lands
+/// verbatim in `validation_reason`, so the offending bits are what the ledger
+/// SAYS (a degraded outcome names its cause).
+///
+/// Lane-local badges are NOT refused: `compact_status_unassigned_flags` strips
+/// this domain's declared mask first, so d53's bits 16..=22 and d60's 16..=17 —
+/// production-emitted, outside the v1 vocabulary, and legitimate — pass. d17's
+/// `WAR_SEGMENT_ABSENT` is an ASSIGNED informational bit and likewise passes;
+/// this gate never re-decides the failure/informational split, only whether the
+/// bit has a definition at all.
+fn reject_unassigned_status_bits(
+    summary: &mut DomainDataDecodeSummary,
+    domain_id: u16,
+    offset: usize,
+) {
+    let Some(raw_status_flags) = summary.raw_status_flags_or else {
+        return;
+    };
+    let unassigned = compact_contract::compact_status_unassigned_flags(domain_id, raw_status_flags);
+    if unassigned == 0 {
+        return;
+    }
+    let bits = compact_contract::compact_status_unassigned_bit_indices(unassigned)
+        .into_iter()
+        .map(|bit| format!("bit {bit}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    summary.parse_errors.push(format!(
+        "offset {offset}: domain {domain_id} status word {raw_status_flags:#x} carries unassigned \
+         status flag(s) {unassigned:#x} ({bits}); compact-stream contract v1 assigns only \
+         {:#x} and this domain declares lane-local {:#x}, so producer and consumer disagree \
+         about the wire",
+        compact_contract::COMPACT_STATUS_V1_KNOWN_MASK,
+        compact_contract::lane_local_status_mask(domain_id),
+    ));
 }
 
 fn add_compact_global_status_flags(
@@ -13704,6 +13777,14 @@ fn decode_compact_country_army_upgrade_data_payload(
             )
         },
     );
+    // d93 recorded its status word into the per-domain copy only, never into the
+    // shared funnel. `DomainDataAuthority::status_flags` was therefore `None` for
+    // this domain, which is the claim "this payload authority decodes no status
+    // word at all" — false, and deliberately not collapsed with "the status was
+    // clean" (see `stream_fold::domain_data_payload_status`). The consequence was
+    // that d93's embedded status was never cross-checked against its DOMAIN_PERF
+    // status, and now also that it would have escaped `reject_unassigned_status_bits`.
+    add_decoder_status(summary, decoded.status_flags);
     if let Some(domain) = summary
         .per_domain
         .get_mut(&COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE)
@@ -17554,6 +17635,8 @@ pub fn summarize_domain_data_payload(
         )),
     }
 
+    reject_unassigned_status_bits(&mut summary, domain_id, offset);
+
     if domain_id == COMPACT_DOMAIN_SESSION_HEADER_LIVE {
         if let Some(target) = context.session_header_identity.as_deref_mut() {
             *target = summary.session_header_identity.clone();
@@ -19412,5 +19495,232 @@ mod tests {
             .errors
             .iter()
             .any(|item| item.contains("CTA2 payload invalid: Reserved")));
+    }
+
+    /// Drive the production gate over an assembled status word without needing a
+    /// well-formed payload for every one of the ~95 dispatched domains.
+    ///
+    /// This calls `reject_unassigned_status_bits` — the production function, not
+    /// a restatement of it — after feeding the word through `add_decoder_status`,
+    /// the production funnel. The end-to-end payload path is measured separately
+    /// in `world_fold::tests::the_capture_boundary_rejects_an_unassigned_status_bit`.
+    fn refusal_for(domain_id: u16, status_flags: u32) -> Option<String> {
+        let mut summary = DomainDataDecodeSummary {
+            domain_id,
+            ..DomainDataDecodeSummary::default()
+        };
+        add_decoder_status(&mut summary, status_flags);
+        reject_unassigned_status_bits(&mut summary, domain_id, 4096);
+        summary.parse_errors.first().cloned()
+    }
+
+    /// A lane's DECLARED private badge is not a wire disagreement, even though
+    /// it sits outside the v1 vocabulary.
+    ///
+    /// d53 publishes bits 16..=22 on 379 of 514 hours of batch-3a, and d60's
+    /// bit 16 is MANDATORY on any frame carrying war rows. A gate spelled
+    /// `compact_status_unknown_flags_v1(raw)` instead of
+    /// `compact_status_unassigned_flags(domain_id, raw)` would refuse every one
+    /// of those records — over-rejection that destroys real data rather than
+    /// protecting it.
+    ///
+    /// What production change makes this fail: dropping the
+    /// `compact_status_for_global_interpretation` strip from
+    /// `compact_status_unassigned_flags`, or removing a domain's row from
+    /// `lane_local_status_mask`.
+    #[test]
+    fn a_declared_lane_local_badge_is_not_refused() {
+        for (domain_id, mask) in [
+            (49u16, compact_contract::DOMAIN49_LANE_LOCAL_STATUS_MASK),
+            (51, compact_contract::DOMAIN51_LANE_LOCAL_STATUS_MASK),
+            (53, compact_contract::DOMAIN53_LANE_LOCAL_STATUS_MASK),
+            (60, compact_contract::DOMAIN60_LANE_LOCAL_STATUS_MASK),
+            (
+                99,
+                compact_contract::division_combat_stats::DOMAIN99_LANE_LOCAL_STATUS_MASK,
+            ),
+        ] {
+            assert_ne!(mask, 0, "domain {domain_id} must declare a lane-local mask");
+            // The whole mask at once, and each bit alone: a gate that tolerated
+            // the union but not a single bit would pass the first form only.
+            assert_eq!(
+                refusal_for(domain_id, mask),
+                None,
+                "domain {domain_id}: its own declared badge mask {mask:#x} must not be refused"
+            );
+            for bit in 0..u32::BITS {
+                let flag = 1_u32 << bit;
+                if (mask & flag) == 0 {
+                    continue;
+                }
+                assert_eq!(
+                    refusal_for(domain_id, flag),
+                    None,
+                    "domain {domain_id}: declared lane-local bit {bit} must not be refused"
+                );
+                // The SAME bit on a domain that has not declared it is a
+                // disagreement, whenever the bit is outside the v1 vocabulary.
+                if compact_contract::compact_status_unknown_flags_v1(flag) != 0 {
+                    assert!(
+                        refusal_for(17, flag).is_some(),
+                        "bit {bit} is lane-local to domain {domain_id} only; d17 has not \
+                         declared it and must refuse it"
+                    );
+                }
+            }
+        }
+    }
+
+    /// d17's `WAR_SEGMENT_ABSENT` is ASSIGNED and informational, and production
+    /// sets it on every diplomacy record.
+    ///
+    /// It is deliberately absent from `COMPACT_STATUS_FAILURE_MASK`, so a gate
+    /// that asked "is this bit a known FAILURE?" rather than "is this bit
+    /// DEFINED?" would refuse the entire d17 domain in every capture ever taken.
+    #[test]
+    fn d17_war_segment_absent_is_assigned_and_never_refused() {
+        assert_eq!(
+            compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT
+                & compact_contract::COMPACT_STATUS_FAILURE_MASK,
+            0,
+            "the premise: it is informational, not a failure bit"
+        );
+        assert_eq!(
+            refusal_for(17, compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT),
+            None
+        );
+        assert_eq!(
+            refusal_for(
+                17,
+                compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT
+                    | compact_contract::COMPACT_STATUS_WAR_BRIDGE_APPLIED
+                    | compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            ),
+            None,
+            "nor in the company production actually pairs it with"
+        );
+    }
+
+    /// Every unassigned bit is refused on every dispatched domain, and the
+    /// reason NAMES the offending bits.
+    ///
+    /// The naming is the point: the refusal string is what lands verbatim in
+    /// `ExcludedDomainDataRecord::validation_reason`, so it is the only place
+    /// the capture ledger can say WHICH bit disagreed.
+    ///
+    /// What production change makes this fail: removing the
+    /// `reject_unassigned_status_bits` call, or reducing its message to a bare
+    /// "unknown status".
+    #[test]
+    fn every_unassigned_bit_is_refused_and_named() {
+        for bit in 0..u32::BITS {
+            let flag = 1_u32 << bit;
+            let refusal = refusal_for(17, flag);
+            if compact_contract::compact_status_unknown_flags_v1(flag) == 0 {
+                assert_eq!(refusal, None, "assigned bit {bit} must not be refused");
+                continue;
+            }
+            let reason = refusal.unwrap_or_else(|| panic!("unassigned bit {bit} must be refused"));
+            assert!(
+                reason.contains(&format!("{flag:#x}")),
+                "bit {bit}: the reason must carry the offending mask: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("bit {bit}")),
+                "bit {bit}: the reason must name the bit: {reason}"
+            );
+            assert!(
+                reason.contains("offset 4096"),
+                "bit {bit}: the reason must locate the record: {reason}"
+            );
+        }
+    }
+
+    /// Several offending bits at once are ALL named, not just the lowest.
+    #[test]
+    fn a_multi_bit_disagreement_names_every_offending_bit() {
+        let reason = refusal_for(
+            17,
+            compact_contract::COMPACT_STATUS_PARTIAL_DATA | (1 << 15) | (1 << 20) | (1 << 31),
+        )
+        .expect("three unassigned bits must be refused");
+        for bit in [15u32, 20, 31] {
+            assert!(reason.contains(&format!("bit {bit}")), "{reason}");
+        }
+        assert!(
+            reason.contains("0x80108000"),
+            "the mask must be the union of exactly the offending bits: {reason}"
+        );
+        assert!(
+            !reason.contains("bit 9"),
+            "an assigned bit riding along must not be reported as offending: {reason}"
+        );
+    }
+
+    /// Every decoder that reads a status word must route it through
+    /// `add_decoder_status`, or the single gate in
+    /// `summarize_domain_data_payload` silently stops covering that domain.
+    ///
+    /// This is what makes "one mechanism at the shared boundary" a property
+    /// rather than a claim: the gate reads `summary.raw_status_flags_or`, and
+    /// `add_decoder_status` is the only writer of it.
+    ///
+    /// d93 (`decode_compact_country_army_upgrade_data_payload`) was exactly the
+    /// bypass this catches — it wrote `decoded.status_flags` into the per-domain
+    /// copy only, leaving `DomainDataAuthority::status_flags` as `None` for the
+    /// domain. Fixed in this lane; this test is what stops the next one.
+    ///
+    /// What production change makes this fail: adding a decoder that writes
+    /// `domain.status_flags_or |= ...` without calling `add_decoder_status`.
+    #[test]
+    fn every_decoder_status_word_reaches_the_shared_funnel() {
+        let source = include_str!("domain_data_authority.rs").replace("\r\n", "\n");
+        let production = source
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .expect("the test module marker moved")
+            .0;
+
+        assert_eq!(
+            production.matches("raw_status_flags_or = ").count(),
+            1,
+            "`add_decoder_status` must remain the ONLY writer of the accumulator the gate reads"
+        );
+        assert!(
+            production.contains("reject_unassigned_status_bits(&mut summary, domain_id, offset);"),
+            "the gate must still be wired into `summarize_domain_data_payload`"
+        );
+
+        let mut current: Option<&str> = None;
+        let mut body = String::new();
+        let mut offenders = Vec::new();
+        let mut check = |name: Option<&str>, body: &str, offenders: &mut Vec<String>| {
+            let Some(name) = name else { return };
+            if !body.contains("status_flags_or |=") {
+                return;
+            }
+            if body.contains("add_decoder_status(") || body.contains("add_compact_global_status_flags(") {
+                return;
+            }
+            offenders.push(name.to_string());
+        };
+        for line in production.lines() {
+            if line.starts_with("fn ")
+                || line.starts_with("pub fn ")
+                || line.starts_with("pub(crate) fn ")
+            {
+                check(current, &body, &mut offenders);
+                current = Some(line.trim_end_matches('(').trim_end());
+                body.clear();
+            }
+            body.push_str(line);
+            body.push('\n');
+        }
+        check(current, &body, &mut offenders);
+
+        assert!(
+            offenders.is_empty(),
+            "these decoders record a status word without routing it through the shared funnel, \
+             so the unassigned-bit gate does not see it: {offenders:#?}"
+        );
     }
 }
