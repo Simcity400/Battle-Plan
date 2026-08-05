@@ -2517,3 +2517,389 @@ fn the_middle_hour_really_carries_the_foreign_domains_gap() {
         "domain 29 must still be accounted in the same hour"
     );
 }
+
+// ---------------------------------------------------------------------
+// Domain 13 `tech_live` — the fold-equivalence gate for its keyed
+// per-country patch
+// ---------------------------------------------------------------------
+//
+// D13 is the one country-bundle domain that re-sent every country every hour:
+// `research_slots_fingerprint` mixes the current game hour into the hash it
+// uses to decide "changed", so that predicate can never say no. Measured over
+// `runs/live_unlock/t26/collector_stream.bin`, all 439 countries were carried
+// in all 285 records while only 2.25% of the per-country wire blocks differed
+// from the block sent before them.
+//
+// `compact_tech_data_payload_delta` now diffs those blocks. These are the gates
+// that a patch stream folds to the same world as the whole-payload stream it
+// replaced — including the case the encoder must NOT treat as a removal: a
+// country the reader could not sample, which drops out of the payload with no
+// failure bit and which the merging fold reads as "keep what you have".
+//
+// The payload builder below mirrors `world_fold::fold_tech`'s layout and the
+// scale words `domain_data_authority` validates. It is not a second source of
+// truth: every byte goes to the production decoder, so drift makes these tests
+// error rather than pass.
+
+const TECH_DOMAIN: u16 = 13;
+const TECH_HEADER_LEN: usize = 32;
+/// These are `domain_data_authority`'s `COMPACT_TECH_PROGRESS_SCALE_RAW` and
+/// `COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW`, and they are NOT interchangeable: a
+/// record whose scale words disagree with them is excluded as malformed before
+/// the fold ever sees it. Swapping the two here is how this fixture first went
+/// green over two worlds that contained no research at all, which is what
+/// `the_d13_fixture_actually_publishes_research_into_the_folded_world` exists
+/// to stop happening again.
+const TECH_PROGRESS_SCALE_RAW: u32 = 1_000;
+const TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100_000;
+const TECH_COUNTRY_FLAG_COMPLETED: u32 = 1;
+const TECH_COUNTRY_FLAG_SLOTS: u32 = 1 << 1;
+
+/// `(tag_db_id, completed_tech_count, research_slot_count)`.
+type TechCountry = (u32, u32, u32);
+
+/// A `tech_live` DOMAIN_DATA payload carrying `live` countries. No
+/// active-research rows: the country section alone is what the delta keys on.
+///
+/// There is no `deleted` parameter, and that is the point — D13 has no
+/// tombstone grammar, so a control that fabricated one would not be a control
+/// over anything the producer can emit.
+fn tech_payload(live: &[TechCountry], status_flags: u32) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(TECH_HEADER_LEN + live.len() * 16);
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&(live.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(live.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&TECH_PROGRESS_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&TECH_LIVE_PROGRESS_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    assert_eq!(payload.len(), TECH_HEADER_LEN, "tech header is 32 bytes");
+    for (tag, completed, slots) in live {
+        payload.extend_from_slice(&tag.to_le_bytes());
+        payload.extend_from_slice(
+            &(TECH_COUNTRY_FLAG_COMPLETED | TECH_COUNTRY_FLAG_SLOTS).to_le_bytes(),
+        );
+        payload.extend_from_slice(&completed.to_le_bytes());
+        payload.extend_from_slice(&slots.to_le_bytes());
+    }
+    payload
+}
+
+/// What hour C carries for domain 13.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TechHourCShape {
+    /// The patch the encoder emits: only country 2 changed, and country 3 was
+    /// not measured this hour so nothing is said about it.
+    Patch,
+    /// The whole payload the encoder emits after a reset — exactly what
+    /// `compact_tech_data_payload` produces for the same read, which is the
+    /// control the patch must fold identically to. Country 3 is absent for the
+    /// same reason: it was not measured.
+    WholePayload,
+    /// The control that proves country 3 SURVIVED, rather than merely that both
+    /// arms treated it the same way: it re-asserts country 3 at the value hour
+    /// A gave it, alongside the other two. A stream that retained country 3
+    /// folds to exactly this world; a stream that dropped it does not.
+    PatchReassertingTheUnmeasuredCountry,
+    /// Seeded inequality, so a comparator that always reports equality is
+    /// caught.
+    DivergentPatch,
+}
+
+/// Three game-hours of a domain 13 patch chain.
+///
+/// * Hour A — a keyframe seeds the baseline with countries 1, 2 and 3.
+/// * Hour B — a patch moves country 1.
+/// * Hour C — country 2 moves; country 3 is NOT measured, carried per
+///   [`TechHourCShape`].
+///
+/// `Patch` and `WholePayload` describe the SAME world after hour C:
+/// `{1 -> (11, 1), 2 -> (77, 2), 3 -> (30, 3) retained}`.
+fn tech_delta_chain_stream(shape: TechHourCShape) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    fn push(
+        stream: &mut Vec<u8>,
+        seq: &mut u64,
+        hour: i64,
+        domain: u16,
+        rtype: u16,
+        payload: &[u8],
+    ) {
+        push_record(stream, *seq, raw_for(hour), domain, rtype, payload);
+        *seq += 1;
+    }
+    // Every hour carries D18's roster, as a real capture does. Without it the
+    // fold has no country identity to publish D13's research under, and the
+    // gates below would compare two worlds that hold no research at all.
+    //
+    // The roster keeps all three countries in every hour on purpose: country 3
+    // is UNMEASURED here, not departed, so
+    // `evict_departed_roster_domain_fields` must not be what removes it — the
+    // question these gates ask is what the ENCODER does about an unmeasured
+    // country.
+    fn push_roster(stream: &mut Vec<u8>, seq: &mut u64, hour: i64) {
+        push(
+            stream,
+            seq,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(1, "AAA"), (2, "BBB"), (3, "CCC")]),
+        );
+        push(
+            stream,
+            seq,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(),
+        );
+    }
+
+    // Hour A — the keyframe that seeds the delta baseline.
+    push_roster(&mut stream, &mut seq, HOUR_A);
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_A,
+        TECH_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_payload(&[(1, 10, 1), (2, 20, 2), (3, 30, 3)], 0),
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_A,
+        TECH_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_A,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(2, 2, 0),
+    );
+
+    // Hour B — a patch carrying only the country that changed.
+    push_roster(&mut stream, &mut seq, HOUR_B);
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_B,
+        TECH_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &tech_payload(&[(1, 11, 1)], COMPACT_STATUS_DELTA_DATA),
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_B,
+        TECH_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload_with_status(COMPACT_STATUS_DELTA_DATA),
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_B,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(2, 2, 0),
+    );
+
+    // Hour C — the shapes part company.
+    push_roster(&mut stream, &mut seq, HOUR_C);
+    let (payload, status) = match shape {
+        TechHourCShape::Patch => (
+            tech_payload(&[(2, 77, 2)], COMPACT_STATUS_DELTA_DATA),
+            COMPACT_STATUS_DELTA_DATA,
+        ),
+        TechHourCShape::WholePayload => (tech_payload(&[(1, 11, 1), (2, 77, 2)], 0), 0),
+        TechHourCShape::PatchReassertingTheUnmeasuredCountry => (
+            tech_payload(
+                &[(1, 11, 1), (2, 77, 2), (3, 30, 3)],
+                COMPACT_STATUS_DELTA_DATA,
+            ),
+            COMPACT_STATUS_DELTA_DATA,
+        ),
+        TechHourCShape::DivergentPatch => (
+            tech_payload(&[(2, 111, 2)], COMPACT_STATUS_DELTA_DATA),
+            COMPACT_STATUS_DELTA_DATA,
+        ),
+    };
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_C,
+        TECH_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &payload,
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_C,
+        TECH_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload_with_status(status),
+    );
+    push(
+        &mut stream,
+        &mut seq,
+        HOUR_C,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(2, 2, 0),
+    );
+
+    stream
+}
+
+/// The fixture has to actually put D13's research into the folded world, or
+/// every equivalence assertion below would hold vacuously over two empty
+/// worlds. It did exactly that once: `domain_data_authority` excludes a D13
+/// record whose two scale words disagree with the contract, and with them
+/// transposed all three records were dropped as malformed while the gates went
+/// green.
+///
+/// What production change makes this fail: anything that stops `fold_tech`
+/// publishing under a resolved country key, or a change to either scale
+/// constant that the fixture does not follow.
+#[test]
+fn the_d13_fixture_actually_publishes_research_into_the_folded_world() {
+    let with_tech = fold_bytes(&tech_delta_chain_stream(TechHourCShape::WholePayload));
+    let roster_only = {
+        let mut stream = Vec::new();
+        let mut seq = 1u64;
+        for hour in [HOUR_A, HOUR_B, HOUR_C] {
+            push_record(
+                &mut stream,
+                seq,
+                raw_for(hour),
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &country_identity_payload(&[(1, "AAA"), (2, "BBB"), (3, "CCC")]),
+            );
+            seq += 1;
+            push_record(
+                &mut stream,
+                seq,
+                raw_for(hour),
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &perf_payload(),
+            );
+            seq += 1;
+            push_record(
+                &mut stream,
+                seq,
+                raw_for(hour),
+                DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &frame_end_payload_with(1, 1, 0),
+            );
+            seq += 1;
+        }
+        fold_bytes(&stream)
+    };
+    assert_ne!(
+        with_tech.hours[0].snapshot_hash, roster_only.hours[0].snapshot_hash,
+        "D13's records put nothing in the folded world, so every equivalence assertion in \
+         this module would pass over two empty worlds"
+    );
+    assert_eq!(
+        with_tech.totals.malformed_payload_records, 0,
+        "a D13 record was excluded as malformed before the fold saw it: {:?}",
+        with_tech.totals.excluded_domain_data_records
+    );
+}
+
+/// **The fold-equivalence gate for D13's keyed per-country patch.**
+///
+/// The patch stream and the whole-payload stream must fold to a byte-identical
+/// world in every hour, through the production `WorldFold`, compared on the
+/// canonical per-hour snapshot hash rather than on a projection of it.
+///
+/// What production change makes this fail: emitting a country the pin already
+/// holds unchanged, corrupting any field a patch carries, or advancing the pin
+/// to a set the payload did not carry.
+#[test]
+fn the_d13_patch_stream_folds_identically_to_the_whole_payload_stream() {
+    let patch = fold_bytes(&tech_delta_chain_stream(TechHourCShape::Patch));
+    let whole = fold_bytes(&tech_delta_chain_stream(TechHourCShape::WholePayload));
+
+    assert_eq!(
+        patch.hours.len(),
+        whole.hours.len(),
+        "both producers publish the same three hours"
+    );
+    for (a, b) in patch.hours.iter().zip(whole.hours.iter()) {
+        assert_eq!(
+            a.hour_index, b.hour_index,
+            "the two streams cover the same hours in the same order"
+        );
+        assert_eq!(
+            a.snapshot_hash, b.snapshot_hash,
+            "hour {} folds to a different world under D13's patch encoding: patch {} vs \
+             whole {}",
+            a.hour_index, a.snapshot_hash, b.snapshot_hash
+        );
+    }
+}
+
+/// An UNMEASURED country must survive, and this is what says so on the wire
+/// rather than in a comment.
+///
+/// Country 3 is in the roster in every hour and is measured only in hour A. Its
+/// research must still be in the world at hour C under both shapes. If the
+/// encoder ever read "absent from this frame" as "deleted" — the tombstone this
+/// domain deliberately does not have — country 3's research would be gone here
+/// and this fails.
+///
+/// What production change makes this fail: giving
+/// `compact_tech_data_payload_delta` a `deleted_row_fn` that emits a real
+/// tombstone row, or dropping the carry-forward in
+/// `compact_tech_delta_blocks` so the shared engine tombstones every country
+/// the frame did not measure.
+#[test]
+fn an_unmeasured_d13_country_is_retained_by_both_shapes() {
+    let patch = fold_bytes(&tech_delta_chain_stream(TechHourCShape::Patch));
+    let re_asserted = fold_bytes(&tech_delta_chain_stream(
+        TechHourCShape::PatchReassertingTheUnmeasuredCountry,
+    ));
+    // The control SPELLS OUT the world country 3 must still be in: it re-sends
+    // country 3 at its hour-A value. Equality therefore says the patch arm,
+    // which never mentioned country 3 after hour A, still holds it — an
+    // assertion that both arms silently dropping country 3 could not satisfy.
+    assert_eq!(
+        patch.hours[2].snapshot_hash, re_asserted.hours[2].snapshot_hash,
+        "hour C's patch dropped the unmeasured country 3: it folds to a different world than \
+         the stream that re-asserts country 3 at the value hour A gave it"
+    );
+    // And hour C must still differ from hour B, or the comparison above would
+    // be between two worlds in which nothing happened at all.
+    assert_ne!(
+        patch.hours[1].snapshot_hash, patch.hours[2].snapshot_hash,
+        "hour C changed nothing, so this gate compares two identical worlds"
+    );
+}
+
+/// The seeded-inequality control for the gate above.
+#[test]
+fn the_d13_fold_equivalence_gate_can_tell_two_worlds_apart() {
+    let world = fold_bytes(&tech_delta_chain_stream(TechHourCShape::Patch));
+    let other = fold_bytes(&tech_delta_chain_stream(TechHourCShape::DivergentPatch));
+
+    assert_eq!(
+        world.hours[0].snapshot_hash, other.hours[0].snapshot_hash,
+        "the two streams are identical up to hour C, so hour A must still match"
+    );
+    assert_ne!(
+        world.hours[2].snapshot_hash, other.hours[2].snapshot_hash,
+        "a patch carrying a different value for country 2 folded to the same world"
+    );
+}

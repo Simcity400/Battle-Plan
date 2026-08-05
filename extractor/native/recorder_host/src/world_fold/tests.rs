@@ -21933,7 +21933,7 @@ fn d63_fields_of_a_tag_that_left_d18_are_evicted_not_republished() {
     assert!(
         notes.iter().any(|note| {
             let note = note.as_str().unwrap();
-            note.contains("roster replacement evicted d63/d67/d48 fields of 1 departed tags")
+            note.contains("roster replacement evicted d63/d67/d48/d13 fields of 1 departed tags")
                 && note.contains("[400]")
         }),
         "hour-2 notes must witness the eviction: {notes:?}"

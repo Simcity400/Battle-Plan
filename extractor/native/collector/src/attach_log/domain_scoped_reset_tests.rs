@@ -78,6 +78,12 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
          bracket survival does not prove the pin and the consumer's mirror agree",
     ),
     (
+        "tech_country_delta",
+        "d13's wire baseline is advanced at EMISSION, after every reader has returned, so no \
+         reader bracket can decide whether it survived; the blanket reset is what keeps the pin \
+         and the fold's mirror in step",
+    ),
+    (
         "land_combat_detail_events_live",
         "d55 has the same shape as d45: `tracker.previous = current` runs inside the bracket, a \
          custody conflict can badge the record failure-class afterwards, and the consumer clears \
