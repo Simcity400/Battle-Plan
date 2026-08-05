@@ -3,6 +3,9 @@ name = "snapshot"
 version = "0.1.0"
 edition = "2021"
 description = "Forward-compatible READ-ONLY reader for the replay snapshot store"
+# src/bin/ no longer exists in this package; every bin is declared explicitly
+# below against the neutral sources.
+autobins = false
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -31,10 +34,24 @@ windows-sys = { version = "0.61", features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# The bin sources live in the NEUTRAL layer next to the implementation they
+# drive (portable_replay/native/snapshot/src/bin). They were moved there so the
+# replay-side pathname-capability audit
+# (replay_interface/native/replay_core/src/source.rs::
+# production_sources_have_no_descendant_pathname_read) can scan them without
+# reaching across the boundary into extractor/. They are still declared here so
+# the centralized Release keeps emitting `.cargo-target/release/pack_replay.exe`
+# for the `container_verify` production-artifact role, and so every existing
+# `cargo run -p snapshot --bin pack_replay ...` invocation is unchanged.
+
 [[bin]]
 name = "m0_demo"
-path = "src/bin/m0_demo.rs"
+path = "../../../portable_replay/native/snapshot/src/bin/m0_demo.rs"
 
 [[bin]]
 name = "pack_replay"
-path = "src/bin/pack_replay.rs"
+path = "../../../portable_replay/native/snapshot/src/bin/pack_replay.rs"
+
+[[bin]]
+name = "container_codec_bench"
+path = "../../../portable_replay/native/snapshot/src/bin/container_codec_bench.rs"

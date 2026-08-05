@@ -398,7 +398,8 @@ function Get-ProductionCapturePromotionEvidence {
     $currentAttestationPath = [IO.Path]::GetFullPath($CurrentArtifactAttestationPath)
     $currentAttestation = Read-ProductionPromotionJson -Path $currentAttestationPath
     $retainedAttestation = Read-ProductionPromotionJson -Path $paths.retained_attestation
-    $attestationHelper = Join-Path $repo 'extractor\native\scripts\ProductionArtifact.Attestation.ps1'
+    # Neutral, shared build machinery; see Invoke-CentralRustValidation.ps1.
+    $attestationHelper = Join-Path $repo 'portable_replay\native\scripts\ProductionArtifact.Attestation.ps1'
     $captureDriver = Join-Path $repo 'extractor\native\scripts\Start-Hoi4ProductionCaptureSafe.ps1'
     $lifecycleHelper = Join-Path $repo 'extractor\native\scripts\PassiveCapture.Lifecycle.ps1'
     . $attestationHelper

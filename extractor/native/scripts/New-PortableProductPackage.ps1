@@ -33,7 +33,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot 'PortableProduct.PeImports.ps1')
+. (Join-Path $PSScriptRoot '..\..\..\portable_replay\native\scripts\PortableProduct.PeImports.ps1')
 . (Join-Path $PSScriptRoot 'PortableProduct.InteractionClosure.ps1')
 . (Join-Path $PSScriptRoot 'ProductionCapture.Promotion.ps1')
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))

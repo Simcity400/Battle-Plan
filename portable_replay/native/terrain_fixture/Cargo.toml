@@ -1,0 +1,15 @@
+[package]
+name = "portable_terrain_fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Neutral, deterministic map-frame-bundle fixture shared by the capture producer and the replay consumer"
+
+[dependencies]
+serde_json = "1"
+
+# Fail-closed doctrine, matching the sibling portable crates. When this crate is
+# built as a path dependency of the replay_interface workspace Cargo prints
+# "profiles for the non root package will be ignored"; that warning is expected
+# and benign (the workspace root carries the same setting).
+[profile.release]
+overflow-checks = true

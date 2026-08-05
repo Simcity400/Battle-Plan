@@ -1,8 +1,8 @@
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use serde_json::json;
-use snapshot::pack::ZSTD_COMPRESSION_LEVEL;
-use snapshot::zip::ZSTD_WINDOW_LOG;
+use portable_replay_format::pack::ZSTD_COMPRESSION_LEVEL;
+use portable_replay_format::zip::ZSTD_WINDOW_LOG;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;

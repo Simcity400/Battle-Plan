@@ -8,7 +8,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptDir '..\..\..')).Path
 $builderSource = Join-Path $scriptDir 'New-PortableProductPackage.ps1'
 $verifierSource = Join-Path $scriptDir 'Test-PortableProductPackageReceipt.ps1'
-$attestationSource = Join-Path $scriptDir 'ProductionArtifact.Attestation.ps1'
+$neutralScriptDir = Join-Path $repoRoot 'portable_replay\native\scripts'
+$attestationSource = Join-Path $neutralScriptDir 'ProductionArtifact.Attestation.ps1'
 . (Join-Path $scriptDir 'PortableProduct.InteractionClosure.ps1')
 . (Join-Path $scriptDir 'ProductionCapture.Promotion.ps1')
 $script:PortablePackageSelfTestCases = 0
@@ -213,25 +214,36 @@ function Invoke-FixtureInteractionEnforcer {
 $root = Join-Path ([IO.Path]::GetTempPath()) ("hoi4-portable-package-selftest-{0}" -f [guid]::NewGuid().ToString('N'))
 try {
     $fixtureScripts = Join-Path $root 'extractor\native\scripts'
+    # The attestation helper and the two files it dot-sources are neutral,
+    # shared build machinery under portable_replay\native\scripts, so the
+    # fixture repository has to reproduce that layout rather than putting every
+    # script under extractor\native\scripts. Getting this wrong is not silent:
+    # the helper resolves its own siblings through $PSScriptRoot.
+    $fixtureNeutralScripts = Join-Path $root 'portable_replay\native\scripts'
     $releaseRoot = Join-Path $root '.cargo-target\release'
     [IO.Directory]::CreateDirectory($fixtureScripts) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $root 'portable_replay\native')) | Out-Null
+    [IO.Directory]::CreateDirectory($fixtureNeutralScripts) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $root 'replay_interface\native')) | Out-Null
     [IO.Directory]::CreateDirectory($releaseRoot) | Out-Null
 
     foreach ($name in @(
-        'Hoi4ClientDriving.OptIn.ps1',
-        'PortableProduct.PeImports.ps1',
         'PortableProduct.InteractionClosure.ps1',
         'ProductionCapture.Promotion.ps1',
         'New-PortableProductPackage.ps1',
         'Test-PortableProductPackageReceipt.ps1',
-        'ProductionArtifact.Attestation.ps1',
         'Read-Hoi4GameState.ps1',
         'Test-PassiveCapturePolicy.ps1',
         'PassiveCapture.Lifecycle.ps1'
     )) {
         Copy-Item -LiteralPath (Join-Path $scriptDir $name) -Destination (Join-Path $fixtureScripts $name)
+    }
+    foreach ($name in @(
+        'Hoi4ClientDriving.OptIn.ps1',
+        'PortableProduct.PeImports.ps1',
+        'ProductionArtifact.Attestation.ps1'
+    )) {
+        Copy-Item -LiteralPath (Join-Path $neutralScriptDir $name) -Destination (Join-Path $fixtureNeutralScripts $name)
     }
     # Deriving the fixture from the authority's own walk means this file no
     # longer double-checks that walk by restating it. The pin below is the
@@ -1169,7 +1181,7 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
 
     $fixtureBuilder = Join-Path $fixtureScripts 'New-PortableProductPackage.ps1'
     $fixtureVerifier = Join-Path $fixtureScripts 'Test-PortableProductPackageReceipt.ps1'
-    $fixtureHelper = Join-Path $fixtureScripts 'ProductionArtifact.Attestation.ps1'
+    $fixtureHelper = Join-Path $fixtureNeutralScripts 'ProductionArtifact.Attestation.ps1'
     . $fixtureHelper
     . (Join-Path $fixtureScripts 'PassiveCapture.Lifecycle.ps1')
     $freshness = Clear-ProductionArtifactOutputs -RepoRoot $root

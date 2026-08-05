@@ -86,8 +86,17 @@ function Get-NearestRank {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $workloadContractPath = Join-Path $PSScriptRoot 'headless_performance_workload.json'
-$attestationHelper = Join-Path $repoRoot 'extractor\native\scripts\ProductionArtifact.Attestation.ps1'
-$expectedDriver = Join-Path $repoRoot 'extractor\native\scripts\Start-Hoi4ProductionCaptureSafe.ps1'
+# The centralized Release attestation covers all three trees (collector.dll,
+# collector_record.exe, fold_check.exe, compact_replay_gate.exe, pack_replay.exe
+# AND replay_app.exe), so the helper that writes and checks it is shared build
+# machinery, not acquisition code. It lives in the neutral layer for that
+# reason: this script used to dot-source it out of
+# extractor\native\scripts, which is a filesystem reach across the
+# replay/extractor boundary that the cargo dependency gate
+# (game_ui/tests/replay_dependency_boundary.rs) cannot see. The capture-driver
+# path is no longer spelled here either; Test-ProductionArtifactAttestation
+# resolves the same canonical driver the receipt was written against.
+$attestationHelper = Join-Path $repoRoot 'portable_replay\native\scripts\ProductionArtifact.Attestation.ps1'
 . $attestationHelper
 
 $outputPath = [IO.Path]::GetFullPath($Output)
@@ -164,8 +173,7 @@ try {
 
     $attestation = Test-ProductionArtifactAttestation `
         -RepoRoot $repoRoot `
-        -ReceiptPath ([IO.Path]::GetFullPath($ReleaseArtifactReceipt)) `
-        -ExpectedDriverPath $expectedDriver
+        -ReceiptPath ([IO.Path]::GetFullPath($ReleaseArtifactReceipt))
     $attestedReplayPath = [IO.Path]::GetFullPath([string]$attestation.artifacts.replay_app)
     $attestedReplaySha256 = [string]$attestation.artifact_sha256.replay_app
     Assert-HexSha256 $attestedReplaySha256 'attested replay executable hash'

@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $scriptDir 'Hoi4ClientDriving.OptIn.ps1')
+. (Join-Path $scriptDir '..\..\..\portable_replay\native\scripts\Hoi4ClientDriving.OptIn.ps1')
 Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
 
 # Retained as a fail-closed migration tombstone because historical evidence and

@@ -6053,22 +6053,28 @@ fn production(root: &std::path::Path) {
         let mut modules = discover_rust_sources("replay_core", &manifest_dir.join("src"))
             .expect("discover every replay_core production source");
         // The REAL container/loader implementation replay_core links lives in
-        // portable_replay/native/snapshot (Cargo.toml: snapshot = portable);
-        // the extractor-side crate is only a re-export facade + bin tools, but
-        // is kept scanned so its bins stay covered too.
+        // portable_replay/native/snapshot (Cargo.toml: snapshot = portable).
+        // Its command-line drivers (src/bin/pack_replay.rs and friends) live
+        // there too, so this one neutral root is the whole audited surface.
+        //
+        // This scan used to add `extractor/native/snapshot/src` as a second
+        // root, because the bins were on the extractor side. That was a
+        // filesystem reach across the replay/extractor boundary that the cargo
+        // dependency gate cannot see
+        // (`replay_interface/native/game_ui/tests/replay_dependency_boundary.rs`
+        // reads `cargo metadata`, not paths a test opens). The bins moved to
+        // the neutral layer instead of the reach being kept: the module labels
+        // are unchanged (`snapshot/bin/pack_replay.rs`, ...), so every
+        // classification below still names exactly the same site it did before.
+        // What remains on the extractor side is `pub use
+        // portable_replay_format::*;` and three `[[bin]]` declarations, neither
+        // of which can open a file.
         modules.extend(
             discover_rust_sources(
                 "snapshot",
                 &manifest_dir.join("../../../portable_replay/native/snapshot/src"),
             )
             .expect("discover every portable snapshot production source"),
-        );
-        modules.extend(
-            discover_rust_sources(
-                "snapshot",
-                &manifest_dir.join("../../../extractor/native/snapshot/src"),
-            )
-            .expect("discover every snapshot facade production source"),
         );
         let discovered = modules.len();
         let mut classified = 0;

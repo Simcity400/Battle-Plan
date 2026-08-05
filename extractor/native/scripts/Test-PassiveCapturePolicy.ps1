@@ -8,7 +8,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $harnessPath = Join-Path $scriptDir 'Invoke-HeadlessRawCapture.ps1'
 $observerPath = Join-Path $scriptDir 'Read-Hoi4GameState.ps1'
 $driverPath = Join-Path $scriptDir 'Control-Hoi4Game.ps1'
-$optInPath = Join-Path $scriptDir 'Hoi4ClientDriving.OptIn.ps1'
+$optInPath = Join-Path $scriptDir '..\..\..\portable_replay\native\scripts\Hoi4ClientDriving.OptIn.ps1'
 $productionPath = Join-Path $scriptDir 'Start-Hoi4ProductionCaptureSafe.ps1'
 $lifecyclePath = Join-Path $scriptDir 'PassiveCapture.Lifecycle.ps1'
 

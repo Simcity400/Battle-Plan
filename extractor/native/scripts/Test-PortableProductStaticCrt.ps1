@@ -3,7 +3,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot 'PortableProduct.PeImports.ps1')
+. (Join-Path $PSScriptRoot '..\..\..\portable_replay\native\scripts\PortableProduct.PeImports.ps1')
 
 function Set-U16([byte[]]$Bytes, [int]$Offset, [uint16]$Value) {
     [BitConverter]::GetBytes($Value).CopyTo($Bytes, $Offset)

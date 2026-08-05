@@ -3,6 +3,17 @@ name = "portable_replay_format"
 version = "0.1.0"
 edition = "2021"
 description = "Neutral portable .battleplan container, snapshot store, verifier, and packer"
+# src/bin/ holds the command-line drivers for this crate. They are stored here,
+# next to the implementation they drive, so the replay side's
+# pathname-capability audit can scan every file-access site in them without
+# reading across the replay/acquisition boundary (see
+# `production_sources_have_no_descendant_pathname_read` in replay_core's
+# source.rs). They are NOT built from this manifest: the acquisition-side
+# `snapshot` facade package declares all three by path and is the sole owner of
+# the released `pack_replay.exe` / `m0_demo.exe` / `container_codec_bench.exe`.
+# Both manifests share one target directory, so two packages emitting the same
+# binary names would race to overwrite an attested production artifact.
+autobins = false
 
 [dependencies]
 compact_stream = { package = "portable_compact_stream", path = "../compact_stream" }

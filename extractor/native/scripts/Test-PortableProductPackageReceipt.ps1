@@ -9,7 +9,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repo = [IO.Path]::GetFullPath($RepoRoot)
 $receiptFull = [IO.Path]::GetFullPath($ReceiptPath)
-$attestationHelper = Join-Path $repo 'extractor\native\scripts\ProductionArtifact.Attestation.ps1'
+# Neutral, shared build machinery; see Invoke-CentralRustValidation.ps1.
+$attestationHelper = Join-Path $repo 'portable_replay\native\scripts\ProductionArtifact.Attestation.ps1'
 $builder = Join-Path $repo 'extractor\native\scripts\New-PortableProductPackage.ps1'
 $driver = Join-Path $repo 'extractor\native\scripts\Start-Hoi4ProductionCaptureSafe.ps1'
 $readOnlyWitness = Join-Path $repo 'extractor\native\scripts\Read-Hoi4GameState.ps1'

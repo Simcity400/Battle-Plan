@@ -15,7 +15,7 @@
 //! SNAPSHOT's provenance (so the container's identity == what was captured).
 
 use serde_json::Value;
-use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
+use portable_replay_format::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -365,7 +365,7 @@ fn cmd_verify(args: &[String]) -> i32 {
             // re-derive the container's stored bytes by hashing both sides; the
             // reader already guarantees the served bytes == manifest hash, so equal
             // sha over the source proves byte-identity.
-            let want = snapshot::sha256::Sha256::hex(&orig_bytes);
+            let want = portable_replay_format::sha256::Sha256::hex(&orig_bytes);
             // find the manifest entry hash for this file
             let path = format!("payload/{game}/{}", s.file);
             let got = c

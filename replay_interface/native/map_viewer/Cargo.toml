@@ -26,6 +26,12 @@ winapi = { version = "0.3.9", features = [
 
 [dev-dependencies]
 flate2 = "1"
+serde_json = "1"
+# Neutral, deterministic map-frame-bundle fixture. It is shared ground on
+# purpose: the producer (extractor/native/terrain_capture) cannot be a
+# dev-dependency here, and this workspace may not open files under extractor/
+# either, so the bundle both sides argue about lives in portable_replay.
+terrain_fixture = { package = "portable_terrain_fixture", path = "../../../portable_replay/native/terrain_fixture" }
 # Fixture-driven placement gate (C2): open the A2 fixtures through the real
 # ReplaySource / WorldTimeline and prove placement == generator ground truth.
 # Test-only on purpose — map_viewer stays decoupled from replay_core in

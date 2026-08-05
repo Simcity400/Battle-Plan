@@ -221,6 +221,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "portable_replay_format",
+ "portable_terrain_fixture",
  "replay_core",
  "serde",
  "serde_json",
@@ -296,6 +297,13 @@ dependencies = [
  "unicode-normalization",
  "windows-sys",
  "zstd",
+]
+
+[[package]]
+name = "portable_terrain_fixture"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

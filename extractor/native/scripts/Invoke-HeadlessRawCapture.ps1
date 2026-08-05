@@ -890,7 +890,7 @@ if ([uint32]`$created.ReturnValue -eq 0 -and [uint32]`$created.ProcessId -gt 0) 
 
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $scriptDir 'Hoi4ClientDriving.OptIn.ps1')
+. (Join-Path $scriptDir '..\..\..\portable_replay\native\scripts\Hoi4ClientDriving.OptIn.ps1')
 . (Join-Path $scriptDir 'PassiveCapture.Lifecycle.ps1')
 . (Join-Path $scriptDir 'Hoi4WorldReady.Gate.ps1')
 $reuseRunningGame = -not $EvidenceOnlyDriveGame

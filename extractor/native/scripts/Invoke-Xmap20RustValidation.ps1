@@ -31,7 +31,9 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $targetDir = Join-Path $repoRoot ".cargo-target-xmap20"
 $timingReportDir = Join-Path $repoRoot ".cargo-timings"
 $nextestConfig = Join-Path $repoRoot ".config\nextest.toml"
-$artifactAttestationHelper = Join-Path $PSScriptRoot "ProductionArtifact.Attestation.ps1"
+# See Invoke-CentralRustValidation.ps1: the attestation helper is neutral,
+# shared build machinery, not acquisition code.
+$artifactAttestationHelper = Join-Path $repoRoot "portable_replay\native\scripts\ProductionArtifact.Attestation.ps1"
 $artifactAttestationPath = Join-Path $targetDir "release\hoi4-production-prebuilt-artifacts.json"
 $portablePackageScript = Join-Path $PSScriptRoot "New-PortableProductPackage.ps1"
 $portablePackageVerifier = Join-Path $PSScriptRoot "Test-PortableProductPackageReceipt.ps1"

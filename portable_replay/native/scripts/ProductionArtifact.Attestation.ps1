@@ -33,6 +33,18 @@ $script:ProductionBuildEnvironmentKeys = @(
     'WindowsSdkDir', 'WindowsSDKVersion'
 )
 
+function Get-ProductionCaptureDriverPath {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    # The one place in this helper that names the capture driver. Callers on
+    # either side ask for it rather than spelling the path themselves, so a
+    # verifier outside extractor/ does not have to know where the acquisition
+    # side keeps its driver in order to check the receipt that pins it.
+    return [IO.Path]::GetFullPath(
+        (Join-Path ([IO.Path]::GetFullPath($RepoRoot)) 'extractor\native\scripts\Start-Hoi4ProductionCaptureSafe.ps1')
+    )
+}
+
 function Get-ProductionArtifactPaths {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
@@ -416,7 +428,7 @@ function Write-ProductionArtifactAttestation {
         (@($ArtifactFreshness.artifact_paths | ForEach-Object { [IO.Path]::GetFullPath([string]$_) }) -join '|') -ine ($expectedPaths -join '|')) {
         throw 'production artifact freshness record is missing or does not cover every canonical output'
     }
-    $driver = Join-Path $repo "extractor\native\scripts\Start-Hoi4ProductionCaptureSafe.ps1"
+    $driver = Get-ProductionCaptureDriverPath -RepoRoot $repo
     $runner = Join-Path $repo "extractor\native\scripts\Invoke-CentralRustValidation.ps1"
     $artifacts = @()
     foreach ($entry in $script:ProductionArtifactRoles.GetEnumerator()) {
@@ -481,7 +493,11 @@ function Test-ProductionArtifactAttestation {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$ReceiptPath,
-        [Parameter(Mandatory = $true)][string]$ExpectedDriverPath,
+        # Optional. Omitted, it resolves to the same canonical driver
+        # Write-ProductionArtifactAttestation pinned, so a verifier that has no
+        # business knowing where the acquisition side keeps its driver does not
+        # have to spell that path to check the receipt.
+        [string]$ExpectedDriverPath = $null,
         $ExpectedBuildEnvironment = $null,
         # Only the centralized Release run itself may pass this, with the
         # digest it computed after its builds; every external verifier must
@@ -493,6 +509,9 @@ function Test-ProductionArtifactAttestation {
         throw "centralized prebuilt artifact attestation is missing: $ReceiptPath"
     }
     $repo = [System.IO.Path]::GetFullPath($RepoRoot)
+    if ([string]::IsNullOrWhiteSpace($ExpectedDriverPath)) {
+        $ExpectedDriverPath = Get-ProductionCaptureDriverPath -RepoRoot $repo
+    }
     $receipt = Get-Content -LiteralPath $ReceiptPath -Raw | ConvertFrom-Json
     if ([string]$receipt.schema -cne $script:ProductionArtifactReceiptSchema -or
         [string]$receipt.status -cne "PASS_CENTRAL_RELEASE_PREBUILT_ARTIFACTS" -or

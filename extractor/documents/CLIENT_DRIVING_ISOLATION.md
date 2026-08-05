@@ -83,7 +83,7 @@ package path.
 ## Evidence-only control
 
 Evidence-only control remains guarded by `Assert-Hoi4ClientDrivingOptIn` in
-`extractor/native/scripts/Hoi4ClientDriving.OptIn.ps1`, which throws unless its
+`portable_replay/native/scripts/Hoi4ClientDriving.OptIn.ps1`, which throws unless its
 invoking process sets:
 
 `BATTLE_PLAN_CLIENT_DRIVING_OPT_IN=I_ACKNOWLEDGE_THIS_TOOL_WILL_CONTROL_HOI4`

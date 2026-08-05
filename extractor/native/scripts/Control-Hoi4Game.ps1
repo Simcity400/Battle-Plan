@@ -23,7 +23,7 @@ if ($Play -and $Pause) {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $scriptDir 'Hoi4ClientDriving.OptIn.ps1')
+. (Join-Path $scriptDir '..\..\..\portable_replay\native\scripts\Hoi4ClientDriving.OptIn.ps1')
 Assert-Hoi4ClientDrivingOptIn -Caller $MyInvocation.MyCommand.Path
 
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'

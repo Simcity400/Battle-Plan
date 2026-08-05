@@ -9,16 +9,19 @@
 //! ever baked in; pass an explicit root to point elsewhere.
 
 use serde_json::Value;
-use snapshot::Store;
+use portable_replay_format::Store;
 use std::env;
 
 fn main() {
     let a: Vec<String> = env::args().collect();
-    let root = a
-        .get(1)
-        .map(String::as_str)
-        .unwrap_or("replay_interface/replay/snapshots")
-        .to_string();
+    // The store root is required. It used to default to a path inside the
+    // replay product's tree; this file now lives in the neutral layer, and a
+    // neutral crate that silently opens a path inside one of the two product
+    // trees is the same boundary reach in the other direction.
+    let Some(root) = a.get(1).map(String::to_string) else {
+        eprintln!("usage: m0_demo <store_root> [game_id] [hour] [tag] [state_id]");
+        std::process::exit(2);
+    };
     let game = a.get(2).map(String::as_str).unwrap_or("replay").to_string();
     let hour: i64 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(17005619);
     let tag = a.get(4).map(String::as_str).unwrap_or("GER").to_string();

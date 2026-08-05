@@ -53,7 +53,12 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $targetDir = Join-Path $repoRoot ".cargo-target"
 $timingReportDir = Join-Path $repoRoot ".cargo-timings"
 $nextestConfig = Join-Path $repoRoot ".config\nextest.toml"
-$artifactAttestationHelper = Join-Path $PSScriptRoot "ProductionArtifact.Attestation.ps1"
+# Shared build machinery: the attestation covers replay_app.exe as well as the
+# acquisition artifacts, and the replay side verifies the same receipt, so the
+# helper (with PortableProduct.PeImports.ps1 and Hoi4ClientDriving.OptIn.ps1,
+# which it dot-sources) lives in the neutral layer that both sides may reach.
+$neutralScripts = Join-Path $repoRoot "portable_replay\native\scripts"
+$artifactAttestationHelper = Join-Path $neutralScripts "ProductionArtifact.Attestation.ps1"
 $artifactAttestationPath = Join-Path $targetDir "release\hoi4-production-prebuilt-artifacts.json"
 $portablePackageScript = Join-Path $PSScriptRoot "New-PortableProductPackage.ps1"
 $portablePackageVerifier = Join-Path $PSScriptRoot "Test-PortableProductPackageReceipt.ps1"

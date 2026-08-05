@@ -217,8 +217,16 @@ def run(args) -> int:
 
     vanilla = Path(args.vanilla)
     mod = Path(args.mod) if args.mod else None
-    output_dir = Path(args.save_output) if args.save_output else \
-        (ex.REPO / "extractor" / "save_oracle" / "output")
+    # Required. This used to default into the acquisition tree, which made a
+    # replay-side asset builder open a path under extractor/ with no caller
+    # asking for it — a filesystem reach across the replay/acquisition boundary
+    # that the cargo dependency gate cannot see. The caller names the directory
+    # now; nothing here knows where the save oracle writes.
+    if not args.save_output:
+        print("ERROR: --save-output is required (the save_oracle output dir "
+              "holding characters.json + intel.json)")
+        return 2
+    output_dir = Path(args.save_output)
     out_assets = HERE / "assets" / "portraits"
 
     if not vanilla.is_dir():
@@ -395,8 +403,8 @@ def build_argparser():
     ap.add_argument("--mod", default=DEFAULT_MOD,
                     help="Path to the mod overlay (default: sibling test mod). Use '' for vanilla-only.")
     ap.add_argument("--save-output", default=None,
-                    help="save_oracle output dir holding characters.json + intel.json "
-                         "(default: extractor/save_oracle/output).")
+                    help="REQUIRED. save_oracle output dir holding characters.json "
+                         "+ intel.json.")
     ap.add_argument("--manifest-only", action="store_true",
                     help="Resolve + report coverage only; skip PNG conversion.")
     return ap
