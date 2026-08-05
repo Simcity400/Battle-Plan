@@ -168,6 +168,34 @@ struct DomainCompleteness {
     /// declaration EQUALS the PERF residual, and it COVERS the payload residual
     /// -- neither of which the union can express.
     non_tolerated_data_payload_status_flags: u32,
+    /// `DOMAIN_DATA` records for this domain in this hour that the decoder's
+    /// payload authority REJECTED, so `WorldFold` applied none of their rows.
+    ///
+    /// Joined in from the decoder's exclusion ledger by (hour, domain); it is
+    /// never re-decided here. The ledger has exactly one author — the decode
+    /// pass, which is also the pass that withholds the rows — and the audit's
+    /// own `domain_data_payload_status` call cannot stand in for it: that call
+    /// passes a zero sequence, hour and offset, so a payload whose validity
+    /// depends on its envelope would be classified differently by the two.
+    /// One rule, one owner; this field carries the owner's answer.
+    ///
+    /// Nonzero here is the whole point of the join. The record is well-framed
+    /// and counted, its PERF is clean, the collector mints its `H4FD` notice
+    /// FROM that clean PERF, and a payload that does not decode yields no
+    /// status word to classify — so before this field existed, every signal the
+    /// report carried said the domain was complete while the fold held nothing.
+    excluded_data_records: u64,
+    /// The ledger's OWN reason strings for those exclusions, carried through
+    /// verbatim so the report says WHY the domain is incomplete and not merely
+    /// that it is.
+    ///
+    /// A set, not a list: it is keyed by nothing and joined on nothing, so
+    /// deduplicating identical reasons keeps it bounded by the number of
+    /// DISTINCT decoder verdicts rather than by capture length, and the
+    /// `BTreeSet` ordering keeps the rendered report deterministic. The reason
+    /// text is deliberately never used as a join key — the join is on the
+    /// ledger entry's own (hour, domain) identity.
+    excluded_data_reasons: std::collections::BTreeSet<String>,
 }
 
 impl DomainCompleteness {
@@ -176,6 +204,95 @@ impl DomainCompleteness {
     /// against.
     fn terminal_outcomes(&self) -> u64 {
         self.perf_records.saturating_add(self.gap_records)
+    }
+
+    /// What state this domain is in for this hour, named in the SHARED
+    /// vocabulary rather than a private one.
+    ///
+    /// `compact_contract::frame_degraded` owns the three-state classifier —
+    /// complete / expected-partial / degraded-unknown — and says so explicitly:
+    /// "the collector decides what to publish with it, the fold decides what to
+    /// apply with it, and the certifier decides what to accept with it, so the
+    /// three cannot drift into disagreeing". This certifier is that third
+    /// reader, so it CALLS that classifier instead of restating it. An earlier
+    /// draft of this function answered with its own boolean and collapsed
+    /// expected-partial into complete, which is precisely the mislabel that
+    /// module warns is worse than the deadlock it was built to solve.
+    ///
+    /// Two states sit OUTSIDE that classifier because they are not status-word
+    /// facts at all, and both mean the rows never reached the fold:
+    ///
+    ///  * `absent`   — a `DOMAIN_GAP`: the collector accounted the domain's
+    ///    extraction as missing for this hour.
+    ///  * `excluded` — a `DOMAIN_DATA` payload the decoder's authority rejected
+    ///    and wrote to the exclusion ledger (the join this lane added).
+    ///
+    /// They are checked first because a record that never reached the fold is a
+    /// stronger statement than any status word carried alongside it. The report
+    /// publishes the raw counts next to this name, so a domain that is both
+    /// excluded and degraded still shows both.
+    fn state(&self, domain_id: u16) -> &'static str {
+        if self.gap_records != 0 {
+            return "absent";
+        }
+        if self.excluded_data_records != 0 {
+            return "excluded";
+        }
+        // Degraded is decided on the two residual words the `FRAME_END`
+        // reconciliation itself uses — the PERF's and the payload's, kept apart
+        // for the reasons `non_tolerated_data_payload_status_flags` documents.
+        // Either one being nonzero means rows were withheld.
+        if self.non_tolerated_status_flags != 0 || self.non_tolerated_data_payload_status_flags != 0
+        {
+            return "degraded_unknown";
+        }
+        // Neither residual survived tolerance, so the only remaining question is
+        // whether tolerance was ENGAGED — expected-partial versus complete —
+        // and it must be asked of BOTH status sources. Asking only the PERF word
+        // was a real defect: a domain whose PERF is clean while its own
+        // DOMAIN_DATA payload carries a TOLERATED partial gets no `H4FD` notice
+        // (the notice is minted from the PERF) and clears the payload coverage
+        // loop at `FRAME_END` (its residual is zero), so nothing else would stop
+        // it being reported complete while its rows are a sparse patch.
+        //
+        // `normalized_status_flags_or` is the union of both sources, and on this
+        // branch the union answers for both EXACTLY rather than approximately.
+        // A zero residual means a source carries no failure bits at all, or only
+        // tolerated ones (the helper returns the whole failure word when no
+        // tolerance applies, so a domain without an entry cannot reach here with
+        // any failure bit set). Both residuals are zero here, so the union is
+        // itself entirely tolerated and cannot classify as degraded; and since
+        // `expected_partial_tolerance_applies` tests
+        // `failure_bits & tolerated != 0`, the union engages the tolerance iff at
+        // least one source did. Normalization is a bitmask, so it distributes
+        // over the OR and the union is normalized exactly as each part was.
+        // Classifying the union is therefore the more-conservative-of-the-two
+        // answer — and it needs no new field, so the report keeps exactly the
+        // per-domain evidence its identity hash already covers.
+        //
+        // The union is safe to pass as stored: the classifier's first act is to
+        // strip lane-local bits through the same normalizer this field was built
+        // with. (A union is deliberately NOT used for the `H4FD` reconciliation
+        // at `FRAME_END`, where it could certify a word neither record carried;
+        // that is a different question, and it is asked there.)
+        if matches!(
+            compact_contract::frame_degraded::compact_domain_completeness(
+                domain_id,
+                self.normalized_status_flags_or,
+            ),
+            compact_contract::frame_degraded::CompactDomainCompleteness::ExpectedPartial
+        ) {
+            return "expected_partial";
+        }
+        "complete"
+    }
+
+    /// Did everything this hour scheduled for the domain actually reach the
+    /// fold? True for `complete` alone — an expected-partial is a reviewed
+    /// SPARSE patch, not a complete one, and the shared vocabulary keeps the two
+    /// apart by construction.
+    fn is_complete(&self, domain_id: u16) -> bool {
+        self.state(domain_id) == "complete"
     }
 }
 
@@ -266,10 +383,18 @@ struct HourCompleteness {
     /// non-tolerated bits it declared them with. Empty for a clean hour.
     ///
     /// This is the certifier's record of "the producer told me not to trust
-    /// these". A consumer reading a certified hour can therefore separate the
-    /// three states without re-deriving anything: absent from this map and no
-    /// failure bits means complete, absent but tolerated means expected-partial,
-    /// present means unknown.
+    /// these": present here means the domain is UNKNOWN for the hour, and the
+    /// bits say what the producer declared it unknown with. Absent but carrying
+    /// tolerated failure bits means expected-partial.
+    ///
+    /// It is NOT the whole completeness answer, and reading it as if it were is
+    /// the defect the exclusion-ledger join closed. This map is derived from the
+    /// producer's `H4FD` notice, which the collector mints from the PERF status;
+    /// a `DOMAIN_DATA` payload the decoder could not decode at all has a clean
+    /// PERF, therefore no notice, therefore no entry here — while `WorldFold`
+    /// applied none of its rows. `DomainCompleteness::is_complete` is the one
+    /// place that answers "is this domain complete for this hour", and the
+    /// report publishes its answer per domain so no consumer re-derives it.
     declared_degraded_domains: BTreeMap<u16, u32>,
 }
 
@@ -455,26 +580,28 @@ impl CompletenessAudit {
                 // accounted there. Re-deciding it here would be a second copy of
                 // that rule.
                 //
-                // KNOWN GAP, recorded rather than silently relied on, and NOT
-                // introduced here -- `unwrap_or(None)` predates this change and
-                // is unchanged by it. `DecodeStats::certification_verdict` does
-                // not refuse a stream on the malformed count; it only checks that
-                // the count and the ledger AGREE
-                // (`validate_excluded_domain_data_accounting`). So a payload the
-                // authority rejects after having already read a failure status
-                // word -- e.g. a valid header carrying `source_unavailable` plus
-                // one trailing byte -- is reduced to "no status", and if its PERF
-                // is clean the hour certifies with the domain reported complete
-                // while the fold applied none of its rows.
+                // `unwrap_or(None)` therefore reduces a payload the authority
+                // rejects to "no status" -- e.g. a valid header carrying
+                // `source_unavailable` plus one trailing byte. That is correct
+                // HERE (validity is not this call's question) but it used to be
+                // the end of the story: `DecodeStats::certification_verdict`
+                // does not refuse a stream on the malformed count, it only checks
+                // that the count and the ledger AGREE
+                // (`validate_excluded_domain_data_accounting`), so if such a
+                // record's PERF was clean the hour certified with the domain
+                // reported COMPLETE while the fold applied none of its rows.
                 //
-                // Closing it is a ruling, not a patch: an excluded payload is
-                // ALREADY accounted (domain, hour, offset and decoder reason are
-                // in the ledger the report prints), and making it refuse would
-                // turn every capture carrying one malformed record into an
-                // uncertifiable capture -- which is the opposite of the
-                // per-domain degradation the zero-data-loss ruling asked for. The
-                // alternative is to join the ledger into per-hour completeness so
-                // the domain stops being reported complete. Lane CK, task #104.
+                // CLOSED by the owner's 2026-08-06 ruling, and closed the way the
+                // ruling asked: NOT by refusing here. An excluded payload is
+                // already accounted -- domain, hour, offset and decoder reason
+                // are in the ledger the report prints -- and refusing would turn
+                // every capture carrying one malformed record into an
+                // uncertifiable capture, the opposite of the per-domain
+                // degradation the zero-data-loss ruling asked for. Instead the
+                // ledger is JOINED into per-hour completeness by (hour, domain),
+                // so the hour still seals and simply stops claiming a
+                // completeness it does not have. See `attribute_exclusion_ledger`
+                // and `DomainCompleteness::is_complete`.
                 //
                 // A non-tolerated failure found here is DEFERRED to the frame
                 // close, where the `H4FD` notice is checked to COVER it -- the
@@ -1103,6 +1230,117 @@ fn audit_source(
     }
 }
 
+/// Join the decoder's exclusion ledger into ONE hour's per-domain completeness,
+/// and return how many ledger entries this hour took.
+///
+/// The join key is the ledger entry's own identity — the `game_hour_raw` the
+/// RECORD carried in its envelope, and its domain id. It is emphatically not
+/// the hour the entry was processed in and not its position in the ledger:
+/// attributing a loss to the wrong hour would leave one hour claiming
+/// completeness it does not have while another reports a loss it never
+/// suffered. The reason text is carried through but never matched on; reasons
+/// are renamed deliberately and are not a join key.
+///
+/// Called once per published hour with the decoder's running ledger. Every
+/// record of hour H precedes H's `FRAME_END` — `BoundaryTracker` refuses an
+/// interleaved or reopened hour — so by the time the cursor yields H, every
+/// exclusion belonging to H is already in the ledger. `verify_exclusion_ledger_attribution`
+/// checks that conclusion rather than assuming it.
+///
+/// `next` is a resume position into the ledger, so the whole walk is LINEAR
+/// rather than a full rescan per hour. That matters on exactly the streams this
+/// join exists for: a rescan costs `hours x exclusions`, and a long capture that
+/// is losing payloads steadily is the case where both factors are large at once.
+/// It is sound for the same reason the timing is: the decoder appends in stream
+/// order and closed hours strictly increase, so the ledger is non-decreasing in
+/// hour. The walk therefore stops at the first entry belonging to a LATER hour
+/// and leaves it for that hour, and steps over entries belonging to earlier
+/// hours — those closed without publishing, so no completeness record exists for
+/// them to reach. If that ordering ever failed, the entry would go unattributed
+/// and `verify_exclusion_ledger_attribution` would refuse the report rather than
+/// let the loss disappear.
+fn attribute_exclusion_ledger(
+    hour_index: i64,
+    completeness: &mut HourCompleteness,
+    ledger: &[replay_decoder::ExcludedDomainDataRecord],
+    next: &mut usize,
+) -> Result<u64, String> {
+    let mut attributed = 0u64;
+    while let Some(entry) = ledger.get(*next) {
+        match compact_contract::calendar::hour_index_from_raw(entry.game_hour_raw) {
+            Some(entry_hour) if entry_hour > hour_index => break,
+            Some(entry_hour) if entry_hour == hour_index => {
+                // The audit counts EVERY framed DOMAIN_DATA record, so the
+                // domain this excluded record names must already be here. If it
+                // is not, the two passes disagree about what the stream
+                // contains, and a certification gate must say so rather than
+                // synthesize the missing domain and certify on top of it.
+                let domain = completeness
+                    .domains
+                    .get_mut(&entry.domain_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "hour {hour_index} exclusion ledger names domain {} at stream offset \
+                             {} but the completeness audit recorded no such domain for the hour",
+                            entry.domain_id, entry.stream_offset
+                        )
+                    })?;
+                domain.excluded_data_records = domain.excluded_data_records.saturating_add(1);
+                domain
+                    .excluded_data_reasons
+                    .insert(entry.validation_reason.clone());
+                attributed += 1;
+            }
+            _ => {}
+        }
+        *next += 1;
+    }
+    Ok(attributed)
+}
+
+/// Every excluded record must land SOMEWHERE, and this says where.
+///
+/// An exclusion in a published hour must have reached that hour's completeness
+/// record; an exclusion in a refused hour has no completeness record to reach,
+/// because the hour published nothing and the refusal already says so. An
+/// exclusion in neither is a loss that no hour reports — the exact blindness
+/// this join exists to remove, merely relocated — so it is named and refused.
+fn verify_exclusion_ledger_attribution(
+    ledger: &[replay_decoder::ExcludedDomainDataRecord],
+    attributed: u64,
+    published_hours: &std::collections::BTreeSet<i64>,
+    refusals: &BTreeMap<i64, HourRefusal>,
+) -> Result<(), String> {
+    let mut expected_attributed = 0u64;
+    let mut unaccounted: Vec<String> = Vec::new();
+    for entry in ledger {
+        match compact_contract::calendar::hour_index_from_raw(entry.game_hour_raw) {
+            Some(hour) if published_hours.contains(&hour) => expected_attributed += 1,
+            Some(hour) if refusals.contains_key(&hour) => {}
+            _ => unaccounted.push(format!(
+                "domain {} at stream offset {} (game hour {})",
+                entry.domain_id, entry.stream_offset, entry.game_hour_raw
+            )),
+        }
+    }
+    if !unaccounted.is_empty() {
+        return Err(format!(
+            "exclusion ledger names {} excluded DOMAIN_DATA record(s) belonging to neither a \
+             published nor a refused hour, so their loss reaches no hour's completeness: {}",
+            unaccounted.len(),
+            unaccounted.join("; ")
+        ));
+    }
+    if attributed != expected_attributed {
+        return Err(format!(
+            "exclusion ledger attribution is short: {expected_attributed} excluded record(s) \
+             belong to published hours but only {attributed} reached a per-hour completeness \
+             record"
+        ));
+    }
+    Ok(())
+}
+
 fn verify_fold_counts(
     hour_index: i64,
     folded: &BTreeMap<u16, u64>,
@@ -1223,14 +1461,28 @@ fn fold_input(
         .open_cursor_with_identity_mode(&fold_check_opts(), identity_mode)
         .map_err(|e| format!("open {}: {e}", path.display()))?;
     let mut published_hours = 0usize;
+    let mut published_hour_indexes: std::collections::BTreeSet<i64> =
+        std::collections::BTreeSet::new();
+    let mut attributed_exclusions = 0u64;
+    let mut ledger_position = 0usize;
     while let Some(hour) = cursor.next_hour() {
         let hour = hour.map_err(|e| format!("fold {}: {e}", path.display()))?;
-        let audited = completeness.get(&hour.hour_index).ok_or_else(|| {
+        let audited = completeness.get_mut(&hour.hour_index).ok_or_else(|| {
             format!(
                 "completeness audit has no closed record boundary for folded hour {}",
                 hour.hour_index
             )
         })?;
+        // Before anything reads this hour's completeness: fold in the records
+        // the decoder excluded from THIS hour, so a domain that lost its payload
+        // stops being reported complete.
+        attributed_exclusions += attribute_exclusion_ledger(
+            hour.hour_index,
+            audited,
+            &cursor.stats().excluded_domain_data_records,
+            &mut ledger_position,
+        )?;
+        let audited = &*audited;
         verify_fold_counts(hour.hour_index, &hour.domain_data_counts, audited)?;
         verify_expected_roster(hour.hour_index, audited, expected_roster)?;
         on_hour(
@@ -1242,11 +1494,19 @@ fn fold_input(
         );
         completeness.remove(&hour.hour_index);
         published_hours += 1;
+        published_hour_indexes.insert(hour.hour_index);
     }
     cursor
         .stats()
         .certification_verdict()
         .map_err(|reason| format!("certify {}: {reason}", path.display()))?;
+    verify_exclusion_ledger_attribution(
+        &cursor.stats().excluded_domain_data_records,
+        attributed_exclusions,
+        &published_hour_indexes,
+        &refusals,
+    )
+    .map_err(|reason| format!("certify {}: {reason}", path.display()))?;
     if let Some(hour) = completeness.keys().next() {
         return Err(format!(
             "completeness audit produced hour {hour} that the production fold did not emit"
@@ -1411,14 +1671,25 @@ fn collect_run_with_identity_mode_and_expected_roster(
         FOLD_CHECK_GAME_ID,
         identity_mode,
     );
+    let mut published_hour_indexes: std::collections::BTreeSet<i64> =
+        std::collections::BTreeSet::new();
+    let mut attributed_exclusions = 0u64;
+    let mut ledger_position = 0usize;
     while let Some(hour) = cursor.next_hour() {
         let hour = hour.map_err(|e| e.to_string())?;
-        let audited = completeness.get(&hour.hour_index).ok_or_else(|| {
+        let audited = completeness.get_mut(&hour.hour_index).ok_or_else(|| {
             format!(
                 "completeness audit has no closed record boundary for folded hour {}",
                 hour.hour_index
             )
         })?;
+        attributed_exclusions += attribute_exclusion_ledger(
+            hour.hour_index,
+            audited,
+            &cursor.stats().excluded_domain_data_records,
+            &mut ledger_position,
+        )?;
+        let audited = &*audited;
         verify_fold_counts(hour.hour_index, &hour.domain_data_counts, audited)?;
         if let Some(expected_roster) = expected_roster {
             verify_expected_roster(hour.hour_index, audited, expected_roster)?;
@@ -1432,11 +1703,19 @@ fn collect_run_with_identity_mode_and_expected_roster(
             audited,
         );
         completeness.remove(&hour.hour_index);
+        published_hour_indexes.insert(hour.hour_index);
     }
     cursor
         .stats()
         .certification_verdict()
         .map_err(|reason| format!("certify in-memory stream: {reason}"))?;
+    verify_exclusion_ledger_attribution(
+        &cursor.stats().excluded_domain_data_records,
+        attributed_exclusions,
+        &published_hour_indexes,
+        &refusals,
+    )
+    .map_err(|reason| format!("certify in-memory stream: {reason}"))?;
     if let Some(hour) = completeness.keys().next() {
         return Err(format!(
             "completeness audit produced hour {hour} that the production fold did not emit"
@@ -1650,11 +1929,26 @@ fn completeness_json(completeness: &HourCompleteness) -> Value {
         domains.insert(
             domain_id.to_string(),
             json!({
+                // The hour's verdict for this domain, stated rather than left to
+                // be re-derived from the fields below. `data_records` counts the
+                // RECORD, which is why it cannot answer this: an excluded
+                // payload is a counted record whose rows never reached the fold.
+                //
+                // `state` is the authoritative name, in the shared three-state
+                // vocabulary plus the two record-level states it cannot see;
+                // `complete` is the single-predicate shorthand for `state ==
+                // "complete"` and never widens it — an expected-partial is a
+                // sparse patch, not a complete one.
+                "state": domain.state(*domain_id),
+                "complete": domain.is_complete(*domain_id),
                 "data_records": domain.data_records,
                 "perf_records": domain.perf_records,
                 "gap_records": domain.gap_records,
                 "gap_reasons": gap_reason_names(domain.gap_reason_mask),
                 "gap_parts": gap_part_names(domain.gap_part_mask),
+                // The accounted loss, with the decoder's own words for it.
+                "excluded_data_records": domain.excluded_data_records,
+                "excluded_data_reasons": domain.excluded_data_reasons,
                 "data_payload_status_flags_or": domain.data_payload_status_flags_or,
                 "normalized_status_flags_or": domain.normalized_status_flags_or,
                 "lane_local_status_flags_or": domain.lane_local_status_flags_or,

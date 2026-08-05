@@ -2100,6 +2100,97 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
         "an expected partial must never be labelled a degradation"
     );
 
+    // Nor may it be laundered in the other direction. `complete` and
+    // `expected-partial` are distinct states in the shared vocabulary
+    // (`compact_contract::frame_degraded`): a tolerated partial's rows are a
+    // reviewed SPARSE patch, so a report that renders it as complete is telling
+    // a consumer the hour holds rows it never carried.
+    let report = completeness_json(&hour.completeness);
+    assert_eq!(
+        report["domains"]["26"]["state"],
+        serde_json::json!("expected_partial"),
+        "{report:#}"
+    );
+    assert_eq!(
+        report["domains"]["26"]["complete"],
+        serde_json::json!(false),
+        "an expected partial is not complete: {report:#}"
+    );
+    // The control: the untouched domain in the same hour IS complete, so the
+    // assertion above is not simply reporting that nothing is ever complete.
+    assert_eq!(
+        report["domains"]["18"]["state"],
+        serde_json::json!("complete"),
+        "{report:#}"
+    );
+    assert_eq!(
+        report["domains"]["18"]["complete"],
+        serde_json::json!(true),
+        "{report:#}"
+    );
+
+    // The same rule reached through the OTHER record. A domain whose PERF is
+    // clean while its own DOMAIN_DATA payload carries a tolerated partial gets
+    // no H4FD notice (the notice is minted from the PERF) and clears the
+    // FRAME_END payload-coverage loop (its residual is zero), so the status
+    // classification is the only thing standing between it and a false
+    // "complete". Asserted directly on the classifier because building a real
+    // domain-26 DATA payload means reproducing that domain's grammar; the rule
+    // under test is the classification, not the wire shape.
+    // The field shape is exactly what `CompletenessAudit::observe` builds for a
+    // clean PERF plus a DATA payload carrying PARTIAL_DATA: the payload's word
+    // in `data_payload_status_flags_or`, the same bit unioned into
+    // `normalized_status_flags_or`, and BOTH residuals zero because domain 26
+    // tolerates that bit.
+    let payload_side_partial = DomainCompleteness {
+        data_records: 1,
+        perf_records: 1,
+        data_payload_status_flags_or: COMPACT_STATUS_PARTIAL_DATA,
+        normalized_status_flags_or: COMPACT_STATUS_PARTIAL_DATA,
+        ..DomainCompleteness::default()
+    };
+    // The PREMISE, asked of the contract rather than restated from the struct
+    // literal above: domain 26 tolerates this bit completely, so BOTH residuals
+    // really are zero for this shape and no residual can be what makes the
+    // domain incomplete. If that tolerance entry were ever removed, this fires
+    // here rather than silently turning the assertions below into a test of the
+    // degraded path.
+    assert_eq!(
+        compact_status_failure_flags_after_expected_partial_tolerance(
+            26,
+            COMPACT_STATUS_PARTIAL_DATA,
+        ),
+        0,
+        "domain 26 must tolerate PARTIAL_DATA outright, or this is no longer an \
+         expected-partial fixture"
+    );
+    assert_eq!(
+        payload_side_partial.state(26),
+        "expected_partial",
+        "a tolerated partial reaching the hour only through the DATA payload is still an \
+         expected partial, and an expected partial is not complete"
+    );
+    assert!(!payload_side_partial.is_complete(26));
+    // Domain 18 has no tolerance entry, so the identical bit there is a
+    // non-tolerated failure and a different state. This proves the assertion
+    // above reads the tolerance table rather than merely reacting to the bit.
+    assert_eq!(
+        DomainCompleteness {
+            data_records: 1,
+            perf_records: 1,
+            data_payload_status_flags_or: COMPACT_STATUS_PARTIAL_DATA,
+            normalized_status_flags_or: COMPACT_STATUS_PARTIAL_DATA,
+            non_tolerated_data_payload_status_flags:
+                compact_status_failure_flags_after_expected_partial_tolerance(
+                    18,
+                    COMPACT_STATUS_PARTIAL_DATA,
+                ),
+            ..DomainCompleteness::default()
+        }
+        .state(18),
+        "degraded_unknown"
+    );
+
     // And declaring it degraded is refused by the codec, so a stream cannot
     // even be BUILT that way.
     assert!(
@@ -3475,5 +3566,427 @@ fn the_d13_fold_equivalence_gate_can_tell_two_worlds_apart() {
         world.hours[2].snapshot_hash, other.hours[2].snapshot_hash,
         "a patch carrying a different value for country 2 folded to the same world"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The exclusion ledger joined into per-hour completeness (owner ruling
+// 2026-08-06). A DOMAIN_DATA record the payload authority rejects is dropped
+// from the fold and recorded in the exclusion ledger, so the LOSS is accounted
+// — but the hour that lost it must stop reporting that domain complete.
+// ---------------------------------------------------------------------------
+
+/// Two hours over one roster domain. Hour A's DATA payload is exact; hour B's
+/// carries one trailing byte, so the payload authority rejects it, `WorldFold`
+/// applies none of its rows, and the decoder writes it into the exclusion
+/// ledger. Both hours carry a CLEAN `DOMAIN_PERF`, which is what made the loss
+/// invisible: the collector mints its `H4FD` notice from the PERF status, so a
+/// payload the authority cannot decode has no notice, no status word, and no
+/// gap record — every signal a reader had for "this domain is not complete"
+/// stays clean while the fold holds nothing.
+///
+/// `malformed_hour` selects WHICH of the two hours carries the bad payload,
+/// and that choice is load-bearing rather than cosmetic. The decoder's ledger
+/// is a RUNNING total: when the cursor yields the first hour, a later hour's
+/// exclusion has not been read yet, so a join that ignored the hour key
+/// entirely would still leave the first hour looking clean. Only putting the
+/// exclusion in the EARLIER hour puts an entry in the ledger that a broken
+/// join could leak forward into the later one.
+fn two_hours_with_one_excluded_payload(malformed_hour: i64) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for hour in [HOUR_A, HOUR_B] {
+        let exact = hour != malformed_hour;
+        let mut payload = country_identity_payload(&[(47, "GER")]);
+        if !exact {
+            // One trailing byte the domain grammar does not consume. The record
+            // stays well-FRAMED; only its payload is bad, which is exactly the
+            // zero-data-loss case that degrades one domain instead of the
+            // recording.
+            payload.push(0xAA);
+        }
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(hour),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        sequence += 1;
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(hour),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(),
+        );
+        sequence += 1;
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(hour),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        );
+        sequence += 1;
+    }
+    stream
+}
+
+#[test]
+fn an_excluded_domain_data_payload_makes_its_hour_incomplete_for_that_domain() {
+    let stream = two_hours_with_one_excluded_payload(HOUR_B);
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect(
+        "an excluded payload is ACCOUNTED, not fatal: the hour still seals and the capture is \
+         never destroyed (owner ruling 'partial data still seals')",
+    );
+
+    // The ledger recorded the loss, against the hour the record BELONGED to.
+    assert_eq!(run.totals.excluded_domain_data_records.len(), 1);
+    let excluded = &run.totals.excluded_domain_data_records[0];
+    assert_eq!(excluded.domain_id, 18);
+    assert_eq!(excluded.game_hour_raw, raw_for(HOUR_B));
+    assert!(!excluded.validation_reason.is_empty());
+
+    assert_eq!(
+        run.hours
+            .iter()
+            .map(|hour| hour.hour_index)
+            .collect::<Vec<_>>(),
+        vec![HOUR_A, HOUR_B],
+        "both hours seal; the exclusion degrades one domain, not the capture"
+    );
+
+    // THE BLINDNESS, STATED. Every pre-existing per-domain signal is clean for
+    // hour B, so none of them can be the thing that says the domain is
+    // incomplete. These assertions hold both before and after the ledger join —
+    // they are the reason a NEW fact was needed rather than a re-reading of an
+    // old one.
+    let hour_b = &run.hours[1].completeness;
+    let hour_b_domain = hour_b
+        .domains
+        .get(&18)
+        .expect("the excluded record is still a counted, well-framed record");
+    assert_eq!(
+        hour_b_domain.data_records, 1,
+        "the record was framed and counted; it is its PAYLOAD that never reached the fold"
+    );
+    assert_eq!(hour_b_domain.perf_records, 1);
+    assert_eq!(
+        hour_b_domain.gap_records, 0,
+        "an excluded payload is not a DOMAIN_GAP; the collector never declared an absence"
+    );
+    assert_eq!(hour_b_domain.normalized_status_flags_or, 0);
+    assert_eq!(hour_b_domain.non_tolerated_status_flags, 0);
+    assert_eq!(
+        hour_b_domain.non_tolerated_data_payload_status_flags, 0,
+        "the payload did not decode, so it yielded no status word to classify"
+    );
+    assert!(
+        hour_b.declared_degraded_domains.is_empty(),
+        "the H4FD notice is minted from the PERF status, which is clean, so no notice exists"
+    );
+
+    // THE RULING. The hour's completeness report must say the domain is not
+    // complete, and must name the ledger's own reason for it.
+    let report_b = completeness_json(hour_b);
+    let reported_b = &report_b["domains"]["18"];
+    assert_eq!(
+        reported_b["complete"],
+        serde_json::json!(false),
+        "hour B lost domain 18's payload to the exclusion ledger, so the hour must not report \
+         that domain complete: {report_b:#}"
+    );
+    assert_eq!(
+        reported_b["state"],
+        serde_json::json!("excluded"),
+        "the state must name the record-level loss, not a status word the payload never \
+         produced: {report_b:#}"
+    );
+    assert_eq!(
+        reported_b["excluded_data_records"],
+        serde_json::json!(1),
+        "{report_b:#}"
+    );
+    let reasons = reported_b["excluded_data_reasons"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the incompleteness must name its cause: {report_b:#}"));
+    assert_eq!(reasons.len(), 1, "{report_b:#}");
+    assert_eq!(
+        reasons[0],
+        serde_json::json!(excluded.validation_reason),
+        "the report must carry the LEDGER's reason string through verbatim, not a restatement \
+         of it: {report_b:#}"
+    );
+}
+
+/// The exclusion is attributed to the hour the record BELONGED to, never to the
+/// hour it happened to be processed in (owner stop condition: hour
+/// misattribution is unacceptable).
+///
+/// The offending record is in the EARLIER hour on purpose. By the time the
+/// cursor yields hour B, hour A's exclusion is already sitting in the decoder's
+/// running ledger, so a join that matched on anything other than the entry's
+/// own `game_hour_raw` — or that simply took every ledger entry it was handed —
+/// would charge hour B for a loss it never suffered. Putting the bad record in
+/// the LATER hour cannot test this: the ledger is still empty when the earlier
+/// hour is reported, so the earlier hour looks clean either way.
+#[test]
+fn an_excluded_payload_is_never_charged_to_a_later_hour() {
+    let stream = two_hours_with_one_excluded_payload(HOUR_A);
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect("the stream seals");
+
+    assert_eq!(run.totals.excluded_domain_data_records.len(), 1);
+    assert_eq!(
+        run.totals.excluded_domain_data_records[0].game_hour_raw,
+        raw_for(HOUR_A),
+        "the ledger records the hour the RECORD carried in its envelope"
+    );
+
+    // Hour A owns the loss.
+    let report_a = completeness_json(&run.hours[0].completeness);
+    let reported_a = &report_a["domains"]["18"];
+    assert_eq!(
+        reported_a["complete"],
+        serde_json::json!(false),
+        "{report_a:#}"
+    );
+    assert_eq!(
+        reported_a["excluded_data_records"],
+        serde_json::json!(1),
+        "{report_a:#}"
+    );
+
+    // Hour B decoded and folded its own payload, and must not inherit hour A's.
+    let report_b = completeness_json(&run.hours[1].completeness);
+    let reported_b = &report_b["domains"]["18"];
+    assert_eq!(
+        reported_b["complete"],
+        serde_json::json!(true),
+        "hour B's payload decoded and folded; charging it with hour A's exclusion is hour \
+         misattribution: {report_b:#}"
+    );
+    assert_eq!(
+        reported_b["excluded_data_records"],
+        serde_json::json!(0),
+        "{report_b:#}"
+    );
+    assert_eq!(
+        reported_b["excluded_data_reasons"],
+        serde_json::json!([]),
+        "{report_b:#}"
+    );
+
+    // And the two hours are therefore NOT the same hour to `compare`, which
+    // decides equivalence on the completeness record.
+    assert_ne!(
+        run.hours[0].completeness, run.hours[1].completeness,
+        "an hour that lost a payload and an hour that did not must not compare equal"
+    );
+}
+
+/// An exclusion inside a REFUSED hour has no completeness record to reach, and
+/// that is not a hole in the accounting: the hour published nothing at all, and
+/// the refusal already says so. The attribution check must accept it rather
+/// than demand it be charged to some published hour — charging it to the next
+/// published hour is precisely the misattribution the ruling forbids.
+#[test]
+fn an_exclusion_in_a_refused_hour_is_accounted_by_the_refusal_not_the_next_hour() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+
+    // Hour A: a malformed payload, then the hour is refused outright.
+    let mut malformed = country_identity_payload(&[(47, "GER")]);
+    malformed.push(0xAA);
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &malformed,
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal_payload(HOUR_A, 18),
+    );
+    sequence += 1;
+
+    // Hour B publishes normally.
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(1, 1, 0),
+    );
+
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect("an exclusion in a refused hour is accounted by the refusal, not a certification bar");
+
+    assert_eq!(run.totals.excluded_domain_data_records.len(), 1);
+    assert_eq!(
+        run.totals.excluded_domain_data_records[0].game_hour_raw,
+        raw_for(HOUR_A)
+    );
+    assert!(
+        run.refusals.contains_key(&HOUR_A),
+        "hour A is accounted as refused"
+    );
+    assert_eq!(
+        run.hours
+            .iter()
+            .map(|hour| hour.hour_index)
+            .collect::<Vec<_>>(),
+        vec![HOUR_B],
+        "only hour B published"
+    );
+
+    let report_b = completeness_json(&run.hours[0].completeness);
+    let reported_b = &report_b["domains"]["18"];
+    assert_eq!(
+        reported_b["complete"],
+        serde_json::json!(true),
+        "hour B folded its own exact payload; the refused hour's exclusion is not its loss: \
+         {report_b:#}"
+    );
+    assert_eq!(
+        reported_b["excluded_data_records"],
+        serde_json::json!(0),
+        "{report_b:#}"
+    );
+}
+
+/// The resume-position walk has to do two different things inside ONE call: step
+/// OVER an exclusion belonging to an earlier hour that closed without
+/// publishing, and then attribute an exclusion belonging to the hour being
+/// reported. Both ledger entries are already present when the single published
+/// hour is processed, so this pins the skip and the attribution against each
+/// other — a walk that stopped at the first non-matching entry would attribute
+/// nothing, and one that took every entry it stepped over would charge hour B
+/// with hour A's loss as well.
+#[test]
+fn the_ledger_walk_skips_a_refused_hours_exclusion_and_still_takes_the_current_ones() {
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    let mut malformed = country_identity_payload(&[(47, "GER")]);
+    malformed.push(0xAA);
+
+    // Hour A: an excluded payload, then refused.
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &malformed,
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal_payload(HOUR_A, 18),
+    );
+    sequence += 1;
+
+    // Hour B: an excluded payload too, and it PUBLISHES.
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &malformed,
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    sequence += 1;
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_B),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(1, 1, 0),
+    );
+
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect("both losses are accounted, so the stream still seals");
+
+    assert_eq!(
+        run.totals.excluded_domain_data_records.len(),
+        2,
+        "one exclusion in the refused hour, one in the published hour"
+    );
+    assert_eq!(
+        run.hours
+            .iter()
+            .map(|hour| hour.hour_index)
+            .collect::<Vec<_>>(),
+        vec![HOUR_B]
+    );
+
+    let report = completeness_json(&run.hours[0].completeness);
+    let reported = &report["domains"]["18"];
+    assert_eq!(
+        reported["excluded_data_records"],
+        serde_json::json!(1),
+        "hour B owns exactly its OWN loss — not zero, and not both: {report:#}"
+    );
+    assert_eq!(reported["state"], serde_json::json!("excluded"), "{report:#}");
 }
 
