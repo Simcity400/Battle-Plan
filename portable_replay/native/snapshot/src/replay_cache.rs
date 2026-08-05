@@ -1590,6 +1590,14 @@ impl std::fmt::Display for ReplayCacheError {
 
 impl std::error::Error for ReplayCacheError {}
 
+/// Lane CE size-lever measurement instrument. It walks the v2 record grammar
+/// from inside this module — the grammar's own private constants and reader —
+/// so the decomposition it publishes cannot drift from the encoder it is
+/// measuring. Never on by default and never packaged.
+#[cfg(feature = "ce-cache-anatomy")]
+#[path = "ce_anatomy.rs"]
+pub mod ce_anatomy;
+
 #[cfg(test)]
 mod tests {
     use super::*;

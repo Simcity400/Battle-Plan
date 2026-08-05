@@ -1845,6 +1845,19 @@ fn finish_zip<W: Write>(
     Ok(())
 }
 
+/// Lane CE measurement hook: THE production entry encoder, exposed under the
+/// measurement feature so the size instrument prices candidate cache encodings
+/// with the compressor the container actually seals with. Replicating the
+/// profile in the instrument would let the two drift, and every number the
+/// instrument publishes is a container-layer number.
+#[cfg(feature = "ce-cache-anatomy")]
+pub fn ce_production_zstd_encoder<W: Write>(
+    writer: W,
+    profile: CompressionProfile,
+) -> std::io::Result<zstd::stream::write::Encoder<'static, W>> {
+    configured_zstd_encoder(writer, profile)
+}
+
 fn configured_zstd_encoder<W: Write>(
     writer: W,
     profile: CompressionProfile,

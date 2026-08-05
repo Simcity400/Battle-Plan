@@ -16,6 +16,10 @@ dev-prefold-worker-bin = []
 # checkpoint-density curve can be measured rather than modelled. Never on by
 # default and never packaged.
 cc-cache-probe = []
+# Lane CE cache-size measurement instrument. Decomposes an already-built
+# checkpoint cache and prices candidate encodings in container bytes. Never on
+# by default and never packaged.
+ce-cache-anatomy = ["snapshot/ce-cache-anatomy"]
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -33,6 +37,11 @@ required-features = ["dev-prefold-worker-bin"]
 name = "cc_cache_probe"
 path = "src/bin/cc_cache_probe.rs"
 required-features = ["cc-cache-probe"]
+
+[[bin]]
+name = "ce_cache_anatomy"
+path = "src/bin/ce_cache_anatomy.rs"
+required-features = ["ce-cache-anatomy"]
 
 [[test]]
 name = "prefold_worker_process"

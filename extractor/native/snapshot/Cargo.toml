@@ -7,6 +7,12 @@ description = "Forward-compatible READ-ONLY reader for the replay snapshot store
 # below against the neutral sources.
 autobins = false
 
+[features]
+default = []
+# Passthrough for the Lane CE cache-size measurement instrument. Never on by
+# default; no production binary in this package enables it.
+ce-cache-anatomy = ["portable_replay_format/ce-cache-anatomy"]
+
 [dependencies]
 compact_stream = { path = "../compact_stream" }
 portable_replay_format = { path = "../../../portable_replay/native/snapshot" }

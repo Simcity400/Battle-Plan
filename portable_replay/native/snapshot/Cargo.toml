@@ -15,6 +15,15 @@ description = "Neutral portable .battleplan container, snapshot store, verifier,
 # binary names would race to overwrite an attested production artifact.
 autobins = false
 
+[features]
+default = []
+# Lane CE size-lever measurement instrument (`src/ce_anatomy.rs`). It decomposes
+# an existing sealed checkpoint cache into the byte classes its v2 grammar
+# emits and prices candidate encodings by rewriting the cache and compressing
+# the result with the production container profile. Measurement only: it never
+# writes a cache and no production path enables it.
+ce-cache-anatomy = []
+
 [dependencies]
 compact_stream = { package = "portable_compact_stream", path = "../compact_stream" }
 portable_content_manifest = { path = "../content_manifest" }
