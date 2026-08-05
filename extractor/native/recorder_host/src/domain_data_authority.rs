@@ -17098,6 +17098,18 @@ fn decode_compact_pov_visibility_data_payload(
         "pov_province_visibility_complete_frames",
         1,
     );
+    // How many of the frames delivered carry the hour their PRODUCER observed
+    // at, rather than only the hour the collector drained them in. D94 retains
+    // its frame and re-serves it until the producer replaces it, so without this
+    // word a consumer cannot tell fog standing since an earlier hour from fog
+    // rebuilt in the labelled one -- and a capture whose coverage of this fact
+    // is partial has to be able to say so.
+    add_compact_domain_data_unit(
+        summary,
+        visibility94::DOMAIN_ID,
+        "pov_province_visibility_producer_hour_frames",
+        usize::from(decoded.producer_hour_raw.is_some()),
+    );
 }
 
 fn decode_compact_pov_spotted_units_data_payload(

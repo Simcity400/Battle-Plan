@@ -16,11 +16,12 @@
 //! |---|---|---|---|---|
 //! | `+0`  | `[u8;4]` | magic `FOW1`      | — | rejected unless exact (`:48`) |
 //! | `+4`  | u16 | `version`              | — | must be `1` (`:53`) |
-//! | `+6`  | u16 | `reserved`             | — | must be `0` (`:53`) |
+//! | `+6`  | u16 | `flags`                | — | only `FLAG_PRODUCER_HOUR` defined; any other bit rejected (`:53`) |
 //! | `+8`  | u64 | `capture_sequence`     | raw | must be non-zero (`:20`) |
 //! | `+16` | u32 | `pov_country_id`       | raw | `1..=2048` (`:23`) |
-//! | `+20` | u32 | `count`                | raw | `1..=65535`, and `len == 24 + count` (`:26`, `:59`) |
+//! | `+20` | u32 | `count`                | raw | `1..=65535`, and `len == 24 + count + 8·hour` (`:26`, `:59`) |
 //! | `+24` | u8 × `count` | `province_levels` | **raw, no scale** | none |
+//! | `+24+count` | i64 | `producer_hour_raw` | raw engine date | present iff `FLAG_PRODUCER_HOUR`; must fit `i32` |
 //!
 //! **THE HEADLINE: the index is the key.** `province_levels` is the complete
 //! engine byte vector and *"Index is the province database ID"*
@@ -106,8 +107,16 @@ pub mod field {
 pub const CARRIER_MAGIC: [u8; 4] = *b"FOW1";
 /// `CARRIER_VERSION`, `pov_visibility.rs:6`.
 pub const CARRIER_VERSION: u16 = 1;
-/// `pov_visibility.rs:36`, `:48` — magic, version, reserved, sequence, POV, count.
+/// `pov_visibility.rs:36`, `:48` — magic, version, flags, sequence, POV, count.
 pub const HEADER_LEN: usize = 24;
+/// `FLAG_PRODUCER_HOUR`, `pov_visibility.rs`. The hour the producer observed
+/// at, appended AFTER the province vector so no pre-existing offset moves.
+pub const FLAG_PRODUCER_HOUR: u16 = 1 << 0;
+/// Every flag bit this carrier version defines; any other is refused.
+pub const KNOWN_FLAGS: u16 = FLAG_PRODUCER_HOUR;
+/// The width of the appended producer-hour word (`i64`, narrowed to `i32` by
+/// the codec).
+pub const HOUR_LEN: usize = 8;
 /// One province slot is one byte. The "row" of this domain is that byte; its
 /// position in the vector is its identity (see the module docs).
 pub const ROW_LEN: usize = 1;
@@ -199,13 +208,15 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
         ));
     }
     let version = u16::from_le_bytes([payload[4], payload[5]]);
-    let reserved = u16::from_le_bytes([payload[6], payload[7]]);
-    // `:53` — one check over both words, so a v2 carrier and a dirty reserved
-    // word are the same refusal.
-    if version != CARRIER_VERSION || reserved != 0 {
+    let flags = u16::from_le_bytes([payload[6], payload[7]]);
+    // `:53` — one check over both words, so a v2 carrier and an undefined flag
+    // bit are the same refusal. The word that was `reserved` now carries
+    // `FLAG_PRODUCER_HOUR`; every OTHER bit is still refused, so this is the
+    // same predicate the codec applies and not a relaxation of it.
+    if version != CARRIER_VERSION || flags & !KNOWN_FLAGS != 0 {
         return Err(format!(
             "pov_province_visibility carrier version/reserved mismatch \
-             (version {version}, reserved {reserved})"
+             (version {version}, reserved {flags})"
         ));
     }
     let header = PayloadHeader {
@@ -215,9 +226,14 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     };
     // `:59` — checked addition, because `count` is a u32 read from a file and
     // `24 + count` must not wrap on a 32-bit `usize`. Exact equality: a trailing
-    // byte is as much a refusal as a truncation.
+    // byte is as much a refusal as a truncation. The producer-hour word, when
+    // its flag is set, is part of the expected length and NOT part of the
+    // province vector — the codec slices the body as `[HEADER_LEN..HEADER_LEN +
+    // count]` for exactly that reason.
+    let hour_words = usize::from(flags & FLAG_PRODUCER_HOUR != 0);
     let expected = HEADER_LEN
         .checked_add(header.count as usize)
+        .and_then(|len| len.checked_add(HOUR_LEN.saturating_mul(hour_words)))
         .ok_or_else(|| format!("pov_province_visibility carrier length overflow ({})", header.count))?;
     if payload.len() != expected {
         return Err(format!(
@@ -225,6 +241,28 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
              (len {}, header claims {expected})",
             payload.len()
         ));
+    }
+    // The codec narrows the appended `i64` to `i32` and refuses a word that does
+    // not fit. Checking the tail's PRESENCE but not its VALUE would leave a
+    // payload the recorder's own authority refuses and this restatement accepts,
+    // which is exactly the drift the restatement exists to make impossible.
+    // (Codex review round 1, finding 2.)
+    //
+    // It sits HERE, between the length check and the `validate` mirror, because
+    // that is where `decode` does it: the codec reads the hour word while
+    // building the snapshot and only then calls `validate`. Placed after the
+    // three checks below, a payload with BOTH a zero sequence and an
+    // out-of-range hour would report a different first reason here than the
+    // codec reports, and this module's contract is that only which rejection is
+    // reported first may never differ. (Codex review round 2, 2a.)
+    if hour_words == 1 {
+        let at = HEADER_LEN + header.count as usize;
+        let word = i64::from_le_bytes(payload[at..at + HOUR_LEN].try_into().expect("8 bytes"));
+        if i32::try_from(word).is_err() {
+            return Err(format!(
+                "pov_province_visibility producer hour {word} is outside the engine's date range"
+            ));
+        }
     }
     // `validate`, `:19`-`:29`. Ordered as the codec orders them so the reported
     // reason is the codec's reason.
@@ -243,7 +281,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
             header.count
         ));
     }
-    Ok((header, &payload[HEADER_LEN..]))
+    Ok((header, &payload[HEADER_LEN..HEADER_LEN + header.count as usize]))
 }
 
 /// The key of one province slot: `(pov_country_id, province_id)`, where
@@ -564,14 +602,32 @@ mod tests {
     /// A raw FOW1 payload, built the way `PovVisibilitySnapshot::encode` packs one
     /// (`compact_contract/src/pov_visibility.rs:32`-`:45`).
     fn raw_payload(capture_sequence: u64, pov_country_id: u32, levels: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(HEADER_LEN + levels.len());
+        raw_payload_with_hour(capture_sequence, pov_country_id, levels, None)
+    }
+
+    /// The same, optionally carrying the appended producer-hour word.
+    fn raw_payload_with_hour(
+        capture_sequence: u64,
+        pov_country_id: u32,
+        levels: &[u8],
+        producer_hour_raw: Option<i32>,
+    ) -> Vec<u8> {
+        let flags = if producer_hour_raw.is_some() {
+            FLAG_PRODUCER_HOUR
+        } else {
+            0
+        };
+        let mut out = Vec::with_capacity(HEADER_LEN + levels.len() + HOUR_LEN);
         out.extend_from_slice(&CARRIER_MAGIC);
         out.extend_from_slice(&CARRIER_VERSION.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
         out.extend_from_slice(&capture_sequence.to_le_bytes());
         out.extend_from_slice(&pov_country_id.to_le_bytes());
         out.extend_from_slice(&(levels.len() as u32).to_le_bytes());
         out.extend_from_slice(levels);
+        if let Some(hour) = producer_hour_raw {
+            out.extend_from_slice(&i64::from(hour).to_le_bytes());
+        }
         out
     }
 
@@ -793,6 +849,29 @@ mod tests {
         assert_eq!(&payload[HEADER_LEN..], body);
     }
 
+    /// This restatement must accept and reject exactly what the codec does,
+    /// including the producer-hour tail — a restatement that drifts from the
+    /// recorder is a harness that can be wrong with nothing failing.
+    ///
+    /// MUTATION RUN: drop the `hour_words` term from `expected` in
+    /// `split_payload`. OBSERVED: FAILED -- `assertion failed:
+    /// split_payload(&flag_without_tail).is_err()`.
+    ///
+    /// MUTATION RUN: slice the body as `&payload[HEADER_LEN..]` again.
+    /// OBSERVED: FAILED -- `assertion `left == right` failed: the hour word is
+    /// not a province byte / left: [0, 1, 2, 56, 58, 160, 3, 0, 0, 0, 0] /
+    /// right: [0, 1, 2]`.
+    ///
+    /// MUTATION RUN: check the hour tail's presence but not its value, i.e.
+    /// drop the `i32::try_from` refusal. OBSERVED: FAILED -- `hour word
+    /// 4294967296`. This is the case Codex review round 1 found: the codec
+    /// refuses that payload and, before the fix, this restatement accepted it.
+    ///
+    /// MUTATION RUN: move the hour check BELOW the capture-sequence check, so
+    /// the two rules are applied in a different order from the codec's.
+    /// OBSERVED: FAILED -- `the codec reports the hour first; this reported
+    /// "pov_province_visibility capture sequence is zero"`. (Codex review
+    /// round 2, 2a: the accepted set was already right; the precedence was not.)
     #[test]
     fn split_payload_enforces_the_codecs_structural_rules() {
         // `PovVisibilitySnapshot::decode` + `::validate`, rule by rule
@@ -816,12 +895,57 @@ mod tests {
             p[4..6].copy_from_slice(&version.to_le_bytes());
             assert!(split_payload(&p).is_err(), "version {version}");
         }
-        // Any non-zero reserved word.
-        for reserved in [1u16, 0x0100, u16::MAX] {
+        // Any flag word with a bit this version does not define.
+        for reserved in [0x0002u16, 0x0100, u16::MAX] {
             let mut p = good.clone();
             p[6..8].copy_from_slice(&reserved.to_le_bytes());
             assert!(split_payload(&p).is_err(), "reserved {reserved}");
         }
+        // `FLAG_PRODUCER_HOUR` is defined, so it is refused for its LENGTH and
+        // not for its bit: the same word over a payload that actually carries
+        // the trailing hour word is accepted, and the body it hands back stops
+        // at the province vector.
+        let mut flag_without_tail = good.clone();
+        flag_without_tail[6..8].copy_from_slice(&FLAG_PRODUCER_HOUR.to_le_bytes());
+        assert!(split_payload(&flag_without_tail).is_err());
+        let with_hour = raw_payload_with_hour(1, 7, &[0, 1, 2], Some(60_832_312));
+        let (header, body) = split_payload(&with_hour).expect("an hour-carrying payload splits");
+        assert_eq!(header.count, 3);
+        assert_eq!(body, &[0u8, 1, 2], "the hour word is not a province byte");
+        // And the tail is exact in both directions, exactly as the vector is.
+        assert!(split_payload(&with_hour[..with_hour.len() - 1]).is_err());
+        let mut padded = with_hour.clone();
+        padded.push(0);
+        assert!(split_payload(&padded).is_err());
+        // The tail's VALUE is checked too, not only its presence: the codec
+        // narrows the appended `i64` to `i32` and refuses a word that does not
+        // fit, so a restatement that accepted one would drift from the recorder.
+        for word in [1i64 << 32, i64::MIN, i64::MAX, i64::from(i32::MAX) + 1] {
+            let mut out_of_range = with_hour.clone();
+            let at = out_of_range.len() - HOUR_LEN;
+            out_of_range[at..].copy_from_slice(&word.to_le_bytes());
+            assert!(split_payload(&out_of_range).is_err(), "hour word {word}");
+        }
+        // ...and the two edges that DO fit are still accepted.
+        for word in [i64::from(i32::MIN), i64::from(i32::MAX)] {
+            let mut edge = with_hour.clone();
+            let at = edge.len() - HOUR_LEN;
+            edge[at..].copy_from_slice(&word.to_le_bytes());
+            assert!(split_payload(&edge).is_ok(), "hour word {word}");
+        }
+        // And the hour is checked BEFORE the `validate` mirror, because that is
+        // where `decode` checks it. A payload that offends both must report the
+        // hour, not the sequence, or this restatement and the codec would
+        // disagree about the reason for a refusal they both make.
+        let mut both = raw_payload_with_hour(1, 7, &[0, 1, 2], Some(1));
+        both[8..16].copy_from_slice(&0u64.to_le_bytes());
+        let at = both.len() - HOUR_LEN;
+        both[at..].copy_from_slice(&i64::MAX.to_le_bytes());
+        let reason = split_payload(&both).expect_err("both rules are offended");
+        assert!(
+            reason.contains("producer hour"),
+            "the codec reports the hour first; this reported {reason:?}"
+        );
         // A zero capture sequence (`:20`).
         let mut p = good.clone();
         p[8..16].copy_from_slice(&0u64.to_le_bytes());
