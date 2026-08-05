@@ -1951,6 +1951,18 @@ $stderrPath = Join-Path $OutDir 'collector_record.stderr.log'
 $readyReceiptPath = Join-Path $OutDir 'CAPTURE_READY_V2.json'
 Write-Host "phase=capture duration_s=$durationArg compression=none scheduled_domains=$($scheduledDomains.Count) out_dir=$OutDir"
 
+# SAMPLED BEFORE THE RECORDER EXISTS, which is the only place the answer means
+# anything. A teardown receipt present at this instant cannot be this attempt's,
+# so its existence is not evidence that this attempt's collector has detached;
+# the witness-phase boundary below keys on that. Testing it any later -- after
+# injection, after READY -- lets this attempt's OWN receipt be mistaken for a
+# stale one on a short or early-finalizing capture, which disables the boundary
+# and leaves detached samples labelled `capture` (Codex gate finding, round 2).
+$teardownReceiptPreexisting = Test-Path -LiteralPath $collectorTeardownReceiptPath -PathType Leaf
+if ($teardownReceiptPreexisting) {
+    Write-Host "phase=teardown_receipt_preexisting path=$collectorTeardownReceiptPath detail=witness_phase_boundary_disabled_for_this_attempt"
+}
+
 # Redirect straight to files rather than in-memory pipes: an in-memory read
 # hides the recorder's progress until it exits, which makes a startup hang
 # indistinguishable from a slow capture.
@@ -2141,8 +2153,50 @@ while (-not $recorderProcess.HasExited) {
         break
     }
     if ([DateTime]::UtcNow -ge $nextPassiveWitnessDeadline) {
+        # THE COLLECTOR DETACHES LONG BEFORE THE RECORDER EXITS, and this loop
+        # runs until the RECORDER exits. The dwell is `requested_duration_ms`
+        # (60 s in every live_unlock run); the recorder then spends minutes
+        # converting a multi-GB stream into a session and a manifest on this
+        # same machine, with the game still running and no collector attached.
+        # Labelling those samples `capture` made them the numerator of
+        # `clock_baseline_summary.py`'s with-collector rate: in t26, 55 of 65
+        # `capture` samples were taken after detach, so the published
+        # "with collector 7.17 h/s" was mostly a measurement of THIS SCRIPT's
+        # own post-capture conversion competing with the game, not of the
+        # collector.
+        #
+        # CAPTURE_TEARDOWN_V1.json is the recorder's authenticated proof that
+        # the hook lease is released and the target's bytes are restored, and
+        # the recorder publishes it while it is still alive. Its presence is
+        # therefore the exact, evidence-backed boundary between "attached" and
+        # "the host is finalizing". Samples after it are still recorded --
+        # they are the only measurement of what finalization costs the game --
+        # but under their own phase, so no consumer can mistake them for
+        # collector cost.
+        # `$teardownReceiptPreexisting` is the guard on using existence as
+        # evidence at all. This loop cannot AUTHENTICATE the receipt -- that is
+        # `Confirm-CollectorTeardownReceipt`, which cannot run until the
+        # recorder exits -- so a stale file left in this OutDir by an earlier
+        # attempt would label the WHOLE capture `recorder_finalize` and silently
+        # empty the with-collector numerator. When one is already present before
+        # injection its existence proves nothing, every sample keeps the
+        # `capture` label, and `clock_baseline_summary.py` still bounds the
+        # window from the dwell, so such a run is reported rather than lost.
+        #
+        # RESIDUAL, and deliberately left to the summary tool: the check happens
+        # before the observation, so the ONE bracket during which the receipt is
+        # published is still labelled `capture` while spanning detach. That
+        # bracket is excluded downstream by `sample_inside_window`, which drops
+        # any sample not wholly inside the dwell -- and the receipt lands at the
+        # dwell end. Relabelling it here instead would mean deciding a phase
+        # after the row is already appended.
+        $witnessPhase = 'capture'
+        if ((-not $teardownReceiptPreexisting) -and
+            (Test-Path -LiteralPath $collectorTeardownReceiptPath -PathType Leaf)) {
+            $witnessPhase = 'recorder_finalize'
+        }
         [void](Write-PassiveWitnessSample `
-            -Phase 'capture' `
+            -Phase $witnessPhase `
             -TargetProcessId $gamePid `
             -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
             -ExpectedSpeed $Speed)

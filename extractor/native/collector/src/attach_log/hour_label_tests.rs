@@ -1063,6 +1063,7 @@ fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
         23_641,
         &OutsideBuildSpans::default(),
         &summary,
+        FrameCpuSplit::default(),
     );
     let units = compact_perf_diagnostic_units(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]);
     let value = |name: &str| {
@@ -1101,6 +1102,7 @@ fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
         23_641,
         &OutsideBuildSpans::default(),
         &summary,
+        FrameCpuSplit::default(),
     );
     let units = compact_perf_diagnostic_units(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]);
     let value = |name: &str| {

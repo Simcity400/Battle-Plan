@@ -198,6 +198,7 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
         0,
         &OutsideBuildSpans::default(),
         &summary,
+        FrameCpuSplit::default(),
     );
     let header =
         compact_contract::parse_compact_record_header(&out).expect("well-formed record header");
@@ -228,6 +229,244 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
         "lw_prefetch_dist_candidates",
     ] {
         assert!(text.contains(name), "missing unit {name}");
+    }
+}
+
+/// A gated worker's OWN cycles are folded into the frame's split, and the
+/// frame's process term covers the fan-out.
+///
+/// THE MEASUREMENT THIS EXISTS FOR. The capture witness records the target
+/// process's total CPU, and the collector is an injected DLL, so that total is
+/// the game AND us. A capture can therefore see the process go from 4.9 to 7.2
+/// busy cores on attach and still not say whether the game's own half moved --
+/// which is the entire question behind "a passive reader should not cost the
+/// host wall-clock". `process_cycles - worker_cycles` is the subtraction that
+/// answers it, and neither term existed on the wire before.
+///
+/// The workers below burn a real, unelidable amount of CPU (a volatile
+/// accumulator the optimiser cannot drop), so a split that reports zero ours,
+/// or that counts the workers but not their cycles, cannot pass.
+///
+/// MUTATION RUN (`--release`), verbatim:
+///  * `lanes.observe_worker_cycles(...)` deleted from `spawn_gated` ->
+///    `assertion `left == right` failed: every gated worker must contribute to
+///    the split, or the bound it supports covers fewer workers than the wire
+///    claims / left: 0 / right: 6`.
+///  * `observe_worker_cycles` folded the count but not the cycles
+///    (`fetch_add(0, ...)`) -> this test fails at the `worker_cycles > 0`
+///    assertion and `a_frame_with_no_process_counter_...` fails
+///    `left: 0 / right: 4242`.
+///  * `cpu_split` returned a hardcoded `worker_threads: 0` -> this test fails
+///    `left: 0 / right: 6` and `a_frame_with_no_process_counter_...` fails
+///    `left: 0 / right: 1`.
+#[test]
+fn the_frame_cpu_split_counts_every_gated_worker_and_its_own_cycles() {
+    const PERMITS: usize = 2;
+    const WORKERS: u16 = 6;
+    let gate = ReaderGate::new(PERMITS);
+    let tracker = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
+    thread::scope(|scope| {
+        let gref = Some(&gate);
+        let tref = &tracker;
+        let handles: Vec<_> = (0..WORKERS)
+            .map(|i| {
+                spawn_gated(scope, gref, tref, 400 + i, move || {
+                    // Real work, not a sleep: a sleeping thread accrues no
+                    // cycles, so a sleep here would pass a split that measured
+                    // nothing.
+                    let mut acc: u64 = 0;
+                    for step in 0..2_000_000u64 {
+                        acc = acc.wrapping_add(step ^ u64::from(i));
+                    }
+                    std::hint::black_box(acc);
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+    // Production closes the process term on the same statement that closes
+    // `worker_read_span_us`; without it the frame is correctly reported as
+    // unmeasurable, so the test has to do what production does.
+    tracker.close_fanout_process_cycles();
+    let split = tracker.cpu_split();
+    assert_eq!(
+        split.worker_threads,
+        u64::from(WORKERS),
+        "every gated worker must contribute to the split, or the bound it \
+         supports covers fewer workers than the wire claims"
+    );
+    assert!(
+        split.worker_cycles > 0,
+        "the workers burned real CPU, so a zero worker term means the split is \
+         charging our cycles to the game"
+    );
+    assert!(
+        !split.process_cycles_missing,
+        "the process cycle counter must be readable on a supported host"
+    );
+    // The process ran the same workers plus this thread, so its term cannot be
+    // smaller than ours. This is the invariant the subtraction depends on: if
+    // it inverts, `process - workers` underflows into a nonsense game term.
+    assert!(
+        split.process_cycles >= split.worker_cycles,
+        "process cycles {} < worker cycles {}; the subtraction that yields the \
+         game's own cycles is not defined",
+        split.process_cycles,
+        split.worker_cycles
+    );
+}
+
+/// A frame whose process counter was refused contributes NOTHING to either
+/// term, and says why.
+///
+/// THE PAIRING RULE. The host sums the process and worker terms independently
+/// across the capture and subtracts the totals to get the game's own cycles.
+/// A frame that contributed a real worker term but no process term would shrink
+/// that difference by exactly its worker cycles -- with enough such frames it
+/// goes negative, and `frames_with_no_counter` can tell you the total is
+/// damaged but cannot repair it. So an unmeasurable frame contributes zero to
+/// BOTH and raises the flag; the ratio is then over fewer frames, which is a
+/// statement the flag makes and the totals no longer have to.
+///
+/// Three ways a frame can be unmeasurable, all checked: the counter was refused
+/// at the origin, the fan-out was never closed, and the counter did not advance
+/// across the interval.
+///
+/// MUTATION RUN (`--release`), verbatim: `cpu_split` changed to return the
+/// worker terms alongside a zero process term -> `assertion `left == right`
+/// failed: an unmeasurable frame must contribute nothing to the worker term
+/// either / left: 4242 / right: 0`.
+#[test]
+fn a_frame_with_no_process_counter_contributes_to_neither_term() {
+    for (label, prepare) in [
+        (
+            "the origin counter was refused",
+            (|t: &mut FrameLaneTracker| {
+                t.origin_process_cycles = 0;
+                t.fanout_end_process_cycles.store(9_000, Ordering::Relaxed);
+            }) as fn(&mut FrameLaneTracker),
+        ),
+        ("the fan-out was never closed", |t: &mut FrameLaneTracker| {
+            t.origin_process_cycles = 1_000;
+        }),
+        ("the counter went backwards", |t: &mut FrameLaneTracker| {
+            t.origin_process_cycles = 9_000;
+            t.fanout_end_process_cycles.store(1_000, Ordering::Relaxed);
+        }),
+    ] {
+        let mut tracker = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
+        prepare(&mut tracker);
+        tracker.observe_worker_cycles(4_242);
+        let split = tracker.cpu_split();
+        assert!(split.process_cycles_missing, "{label}");
+        assert_eq!(split.process_cycles, 0, "{label}");
+        assert_eq!(
+            split.worker_cycles, 0,
+            "{label}: an unmeasurable frame must contribute nothing to the \
+             worker term either"
+        );
+        assert_eq!(split.worker_threads, 0, "{label}");
+    }
+}
+
+/// The process term is bounded by the FAN-OUT, not by whenever the probe is
+/// built.
+///
+/// In production the probe is appended after the encode and attribution tail,
+/// several milliseconds of SERIAL COLLECTOR WORK after the last worker joined.
+/// A process term closed at probe time would include those cycles, be divided
+/// by a `lw_worker_span_us` that does not cover them, and hand the difference
+/// to the game as if the game had burned it. Here the tracker is closed, then
+/// a large amount of CPU is burned, then the split is taken: the burn must not
+/// appear.
+///
+/// MUTATION RUN (`--release`), verbatim: `cpu_split` reverted to sampling
+/// `process_cycle_counter()` itself instead of reading the stored fan-out close
+/// -> `assertion failed: split.process_cycles < burn_cycles / the process term
+/// grew by work done after the fan-out closed`.
+#[test]
+fn the_process_term_is_closed_at_the_fanout_not_at_probe_time() {
+    let tracker = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
+    tracker.close_fanout_process_cycles();
+    let closed_at = tracker.fanout_end_process_cycles.load(Ordering::Relaxed);
+    assert_ne!(closed_at, 0, "the process counter must be readable");
+    // Burn enough that a term closed later could not be mistaken for one
+    // closed at the fan-out.
+    let before = process_cycle_counter().expect("readable");
+    let mut acc: u64 = 0;
+    for step in 0..20_000_000u64 {
+        acc = acc.wrapping_add(step ^ 0x9e37_79b9);
+    }
+    std::hint::black_box(acc);
+    let burn_cycles = process_cycle_counter().expect("readable") - before;
+    assert!(burn_cycles > 0, "the burn must move the process counter");
+    let split = tracker.cpu_split();
+    assert!(
+        !split.process_cycles_missing,
+        "a closed fan-out with a readable counter is a measurement"
+    );
+    assert!(
+        split.process_cycles < burn_cycles,
+        "the process term grew by work done after the fan-out closed: \
+         {} cycles reported, {burn_cycles} burned afterwards",
+        split.process_cycles
+    );
+}
+
+/// All four CPU-split units reach the wire, including the flag.
+///
+/// Red if any is dropped from `append_compact_lane_wall_probe_record` -- a
+/// consumer would then read the remaining ones as complete.
+#[test]
+fn the_cpu_split_units_reach_the_probe() {
+    let summary = summarize_lane_spans(&[]);
+    let mut out = Vec::new();
+    append_compact_lane_wall_probe_record(
+        &mut out,
+        7,
+        123,
+        5,
+        900,
+        125,
+        None,
+        &[],
+        &BTreeSet::new(),
+        0,
+        0,
+        0,
+        &OutsideBuildSpans::default(),
+        &summary,
+        FrameCpuSplit {
+            process_cycles: 987_654_321,
+            worker_cycles: 123_456_789,
+            worker_threads: 11,
+            process_cycles_missing: false,
+        },
+    );
+    // Decoded, not string-matched: the values are little-endian binary in the
+    // PDU1 trailer, and a test that only looked for the NAMES would pass with
+    // every unit carrying the same wrong number.
+    let payload = &out[compact_contract::COMPACT_RECORD_HEADER_LEN..];
+    let trailer = &payload[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN..];
+    assert_eq!(
+        &trailer[..4],
+        compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC
+    );
+    let (units, _) = compact_contract::diagnostic_channel::decode_units(&trailer[6..])
+        .expect("the probe's own trailer must decode");
+    for (name, expected) in [
+        ("lw_fanout_process_cycles", 987_654_321u64),
+        ("lw_fanout_worker_cycles", 123_456_789),
+        ("lw_fanout_worker_threads", 11),
+        ("lw_fanout_cycles_missing", 0),
+    ] {
+        let unit = units
+            .iter()
+            .find(|unit| unit.name == name)
+            .unwrap_or_else(|| panic!("missing unit {name}"));
+        assert_eq!(unit.value, expected, "unit {name} carries the wrong value");
     }
 }
 
@@ -271,6 +510,7 @@ fn every_outside_build_segment_reaches_the_probe_under_its_own_name() {
         0,
         &outside,
         &summary,
+        FrameCpuSplit::default(),
     );
     let payload = &out[compact_contract::COMPACT_RECORD_HEADER_LEN..];
     let units = compact_perf_diagnostic_units(payload);
@@ -319,6 +559,7 @@ fn a_zero_outside_build_segment_is_stated_rather_than_omitted() {
         0,
         &OutsideBuildSpans::default(),
         &summary,
+        FrameCpuSplit::default(),
     );
     let payload = &out[compact_contract::COMPACT_RECORD_HEADER_LEN..];
     let units = compact_perf_diagnostic_units(payload);
