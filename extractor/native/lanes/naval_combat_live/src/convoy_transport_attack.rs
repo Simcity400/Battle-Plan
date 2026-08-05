@@ -19,8 +19,23 @@ pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
 /// decoder would refuse any v2 batch that carries a nonzero count rather than
 /// silently reading a partial resolver as a complete one; the version bump
 /// makes that refusal explicit instead of accidental.
-pub const BATCH_VERSION: u16 = 2;
-pub const BATCH_HEADER_LEN: usize = 192;
+/// v3 appends eight telemetry words at 192..256, splitting the two aggregate
+/// drop counters into the sites they were hiding and adding the signed distance
+/// a refused receipt sat from the live engine clock.
+///
+/// The bump is required rather than cosmetic: a v2 decoder computes the payload
+/// length from `BATCH_HEADER_LEN`, so it would read a v3 batch's first row out
+/// of the appended words and refuse it as a length or carrier error. The
+/// version says which layout the bytes are in instead of leaving that to be
+/// inferred from a failure.
+pub const BATCH_VERSION: u16 = 3;
+pub const BATCH_HEADER_LEN: usize = 256;
+/// Where the fifteen v2 telemetry words start.
+const V2_TELEMETRY_WORDS_OFF: usize = 32;
+/// Where the eight v3 telemetry words start -- past the end of the v2 header,
+/// so no v2 field moves.
+const V3_TELEMETRY_WORDS_OFF: usize = 192;
+const V3_TELEMETRY_WORDS: usize = 8;
 pub const BATCH_ROW_LEN: usize = 120;
 pub const BATCH_FLAG_COMPLETE_EXACT_EVENTS: u32 = 1 << 0;
 pub const BATCH_FLAG_HOOK_INSTALLED: u32 = 1 << 1;
@@ -83,9 +98,39 @@ pub struct ConvoyTransportAttackTelemetry {
     pub dropped_teardown: u64,
     pub dropped_nested: u64,
     pub dropped_capture_busy: u64,
+    /// The AGGREGATE of the four hour sites below. Kept as it was so counts
+    /// from earlier captures stay directly comparable; it is no longer the only
+    /// thing that knows an hour drop happened.
     pub dropped_hour_or_epoch: u64,
+    /// The aggregate of the two resolver sites below, for the same reason.
     pub dropped_resolver: u64,
     pub dropped_candidate: u64,
+    /// The pre-call stable hour read failed, so there was no live hour to
+    /// compare anything against.
+    pub dropped_pre_hour_unreadable: u64,
+    /// A live hour WAS read and a published receipt existed, and the two named
+    /// different hours. This is the arm that says the sweep's publication and
+    /// the engine clock disagree; `receipt_hour_lag_max` /
+    /// `receipt_hour_lead_max` say by how much and in which direction.
+    pub dropped_receipt_hour_mismatch: u64,
+    /// The post-call stable hour read failed.
+    pub dropped_post_hour_unreadable: u64,
+    /// The engine hour changed between `prepare_observation` and
+    /// `complete_observation`, i.e. the capture straddled an hour boundary.
+    pub dropped_post_hour_changed: u64,
+    /// No resolver snapshot could be obtained at all.
+    pub dropped_resolver_snapshot_absent: u64,
+    /// A snapshot existed but carried no publication (`publication_sequence`
+    /// zero).
+    pub dropped_resolver_unpublished: u64,
+    /// Running maximum of `engine_hour - receipt_hour` over refused receipts
+    /// where that difference was non-negative: how far BEHIND the live clock
+    /// the newest publication fell.
+    pub receipt_hour_lag_max: u64,
+    /// Running maximum of `receipt_hour - engine_hour` over refused receipts
+    /// where the receipt was AHEAD of the live clock. Nonzero is a clock
+    /// inversion, which is a different defect from a slow publisher.
+    pub receipt_hour_lead_max: u64,
     pub dropped_d70_pre: u64,
     pub dropped_d70_post: u64,
     pub dropped_d70_mutation: u64,
@@ -94,6 +139,11 @@ pub struct ConvoyTransportAttackTelemetry {
 }
 
 impl ConvoyTransportAttackTelemetry {
+    /// The per-site splits are deliberately absent from this list. Each is a
+    /// strict subset of `dropped_hour_or_epoch` or `dropped_resolver`, which
+    /// are here, so adding them changes no answer; and the two `*_hour_*_max`
+    /// words are distances, not drops -- a maximum is not a count and must
+    /// never make `exact_events_complete` false on its own.
     pub fn has_drop(&self) -> bool {
         [
             self.dropped_no_original,
@@ -246,7 +296,7 @@ pub fn encode_convoy_transport_attack_batch(
         witness.telemetry.dropped_queue_full,
     ];
     for (index, value) in telemetry_values.into_iter().enumerate() {
-        write_u64(&mut out, 32 + index * 8, value);
+        write_u64(&mut out, V2_TELEMETRY_WORDS_OFF + index * 8, value);
     }
     write_u32(&mut out, 152, witness.drained_rows);
     write_u32(&mut out, 156, witness.remaining_events);
@@ -257,6 +307,23 @@ pub fn encode_convoy_transport_attack_batch(
     write_u32(&mut out, 180, witness.resolver_member_bindings);
     write_u32(&mut out, 184, witness.resolver_route_bindings);
     write_u32(&mut out, 188, witness.resolver_unbound_convoy_clients);
+    // CTA2 v3 words, appended past the end of the v2 header so every v2 field
+    // keeps the offset it had. The header grows; nothing moves.
+    for (index, value) in [
+        witness.telemetry.dropped_pre_hour_unreadable,
+        witness.telemetry.dropped_receipt_hour_mismatch,
+        witness.telemetry.dropped_post_hour_unreadable,
+        witness.telemetry.dropped_post_hour_changed,
+        witness.telemetry.dropped_resolver_snapshot_absent,
+        witness.telemetry.dropped_resolver_unpublished,
+        witness.telemetry.receipt_hour_lag_max,
+        witness.telemetry.receipt_hour_lead_max,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        write_u64(&mut out, V3_TELEMETRY_WORDS_OFF + index * 8, value);
+    }
 
     for (index, row) in rows.iter().enumerate() {
         validate_row(row)?;
@@ -319,7 +386,10 @@ pub fn decode_convoy_transport_attack_batch(
     }
 
     let telemetry_values = (0..15)
-        .map(|index| read_u64(bytes, 32 + index * 8))
+        .map(|index| read_u64(bytes, V2_TELEMETRY_WORDS_OFF + index * 8))
+        .collect::<Result<Vec<_>, _>>()?;
+    let v3 = (0..V3_TELEMETRY_WORDS)
+        .map(|index| read_u64(bytes, V3_TELEMETRY_WORDS_OFF + index * 8))
         .collect::<Result<Vec<_>, _>>()?;
     let witness = ConvoyTransportAttackWitness {
         hook_installed: flags & BATCH_FLAG_HOOK_INSTALLED != 0,
@@ -349,6 +419,14 @@ pub fn decode_convoy_transport_attack_batch(
             dropped_hour_or_epoch: telemetry_values[7],
             dropped_resolver: telemetry_values[8],
             dropped_candidate: telemetry_values[9],
+            dropped_pre_hour_unreadable: v3[0],
+            dropped_receipt_hour_mismatch: v3[1],
+            dropped_post_hour_unreadable: v3[2],
+            dropped_post_hour_changed: v3[3],
+            dropped_resolver_snapshot_absent: v3[4],
+            dropped_resolver_unpublished: v3[5],
+            receipt_hour_lag_max: v3[6],
+            receipt_hour_lead_max: v3[7],
             dropped_d70_pre: telemetry_values[10],
             dropped_d70_post: telemetry_values[11],
             dropped_d70_mutation: telemetry_values[12],
@@ -634,6 +712,74 @@ mod tests {
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
         assert!(decoded.exact_events_complete);
         assert_eq!(decoded.rows, expected);
+    }
+
+    /// Law: the eight CTA2 v3 words reach the wire and come back with their own
+    /// values, and none of them collides with a v2 field.
+    ///
+    /// # The defect this closes
+    ///
+    /// t26's d90 trailer said `dropped_hour_or_epoch = 83` and nothing more.
+    /// Four unrelated refusals report through that one word, so the capture
+    /// could not say which of them lost the 109 transport-attack events. These
+    /// eight words are the split. They are only worth anything if they survive
+    /// encode/decode carrying DISTINCT values -- a layout slip that aliased two
+    /// of them onto one offset, or onto a v2 field, would publish a confident
+    /// wrong answer, which is worse than the aggregate that at least admitted
+    /// it did not know.
+    ///
+    /// Every value below is distinct and none is zero, so any aliasing shows up
+    /// as a wrong number rather than as a coincidentally equal one. The v2
+    /// fields are re-asserted in the same test because "no v2 field moved" is
+    /// the other half of appending to a frozen header.
+    ///
+    /// MUTATION RUN: change `V3_TELEMETRY_WORDS_OFF` from 192 to 184.
+    /// OBSERVED: FAILED, `resolver_route_bindings` reads back 101 instead of 2
+    /// -- the first v3 word landed on top of two v2 fields.
+    #[test]
+    fn cta2_v3_telemetry_words_round_trip_without_disturbing_v2() {
+        let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
+        let mut witness = witness(&rows);
+        witness.telemetry.dropped_pre_hour_unreadable = 101;
+        witness.telemetry.dropped_receipt_hour_mismatch = 102;
+        witness.telemetry.dropped_post_hour_unreadable = 103;
+        witness.telemetry.dropped_post_hour_changed = 104;
+        witness.telemetry.dropped_resolver_snapshot_absent = 105;
+        witness.telemetry.dropped_resolver_unpublished = 106;
+        witness.telemetry.receipt_hour_lag_max = 107;
+        witness.telemetry.receipt_hour_lead_max = 108;
+        // The aggregates the split sits under, so the two are checked together.
+        witness.telemetry.dropped_hour_or_epoch = 101 + 102 + 103 + 104;
+        witness.telemetry.dropped_resolver = 105 + 106;
+
+        let encoded = encode_convoy_transport_attack_batch(&rows, witness).unwrap();
+        assert_eq!(
+            encoded.len(),
+            BATCH_HEADER_LEN + BATCH_ROW_LEN,
+            "the header grew to hold the v3 words and the row still follows it"
+        );
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        let telemetry = decoded.witness.telemetry;
+
+        assert_eq!(telemetry.dropped_pre_hour_unreadable, 101);
+        assert_eq!(telemetry.dropped_receipt_hour_mismatch, 102);
+        assert_eq!(telemetry.dropped_post_hour_unreadable, 103);
+        assert_eq!(telemetry.dropped_post_hour_changed, 104);
+        assert_eq!(telemetry.dropped_resolver_snapshot_absent, 105);
+        assert_eq!(telemetry.dropped_resolver_unpublished, 106);
+        assert_eq!(telemetry.receipt_hour_lag_max, 107);
+        assert_eq!(telemetry.receipt_hour_lead_max, 108);
+        assert_eq!(telemetry.dropped_hour_or_epoch, 410);
+        assert_eq!(telemetry.dropped_resolver, 211);
+
+        // No v2 field moved.
+        assert_eq!(decoded.witness.resolver_publication_sequence, 3);
+        assert_eq!(decoded.witness.resolver_game_hour_raw, 61_000_000);
+        assert_eq!(decoded.witness.resolver_member_bindings, 4);
+        assert_eq!(decoded.witness.resolver_route_bindings, 2);
+        assert_eq!(decoded.witness.resolver_unbound_convoy_clients, 0);
+        assert_eq!(decoded.witness.drained_rows, 1);
+        assert_eq!(decoded.rows, rows);
     }
 
     /// The partial batch must SURVIVE. If the collector ever goes back to

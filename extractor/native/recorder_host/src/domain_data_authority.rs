@@ -9030,6 +9030,46 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             "convoy_transport_attack_resolver_unbound_convoy_clients",
             witness.resolver_unbound_convoy_clients as u64,
         ),
+        // The sites `..._dropped_hour_or_epoch` and `..._dropped_resolver` were
+        // hiding. They are published HERE rather than in `drop_counts` on
+        // purpose: `drop_counts` is summed into
+        // `convoy_transport_attack_dropped_events`, and these are subsets of
+        // two entries already in that sum, so folding them in would count the
+        // same dropped callback two or three times.
+        (
+            "convoy_transport_attack_dropped_pre_hour_unreadable",
+            telemetry.dropped_pre_hour_unreadable,
+        ),
+        (
+            "convoy_transport_attack_dropped_receipt_hour_mismatch",
+            telemetry.dropped_receipt_hour_mismatch,
+        ),
+        (
+            "convoy_transport_attack_dropped_post_hour_unreadable",
+            telemetry.dropped_post_hour_unreadable,
+        ),
+        (
+            "convoy_transport_attack_dropped_post_hour_changed",
+            telemetry.dropped_post_hour_changed,
+        ),
+        (
+            "convoy_transport_attack_dropped_resolver_snapshot_absent",
+            telemetry.dropped_resolver_snapshot_absent,
+        ),
+        (
+            "convoy_transport_attack_dropped_resolver_unpublished",
+            telemetry.dropped_resolver_unpublished,
+        ),
+        // Distances, not counts. Running maxima, so they fold with MAX like the
+        // counters around them rather than being summed.
+        (
+            "convoy_transport_attack_receipt_hour_lag_max",
+            telemetry.receipt_hour_lag_max,
+        ),
+        (
+            "convoy_transport_attack_receipt_hour_lead_max",
+            telemetry.receipt_hour_lead_max,
+        ),
     ] {
         add_compact_domain_cumulative_unit(
             summary,

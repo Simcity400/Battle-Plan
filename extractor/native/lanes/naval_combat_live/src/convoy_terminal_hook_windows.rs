@@ -141,6 +141,14 @@ pub struct ConvoyTerminalHookTelemetry {
     pub dropped_hour_or_epoch: u64,
     pub dropped_resolver: u64,
     pub dropped_candidate: u64,
+    pub dropped_pre_hour_unreadable: u64,
+    pub dropped_receipt_hour_mismatch: u64,
+    pub dropped_post_hour_unreadable: u64,
+    pub dropped_post_hour_changed: u64,
+    pub dropped_resolver_snapshot_absent: u64,
+    pub dropped_resolver_unpublished: u64,
+    pub receipt_hour_lag_max: u64,
+    pub receipt_hour_lead_max: u64,
     pub dropped_d70_pre: u64,
     pub dropped_d70_post: u64,
     pub dropped_d70_mutation: u64,
@@ -572,6 +580,31 @@ counters!(
     DROP_D70_MUTATION,
     DROP_QUEUE_BUSY,
     DROP_QUEUE_FULL,
+    // The four sites that all report as `DROP_HOUR_OR_EPOCH`, counted
+    // separately. The aggregate stays exactly as it was -- these are additional
+    // words, not a replacement -- so t26's 83 remains directly comparable while
+    // the next capture also says WHICH of the four produced it. See
+    // `HOUR_DROP_SITES_ARE_COUNTED_SEPARATELY` for why the aggregate alone
+    // could not close this.
+    DROP_PRE_HOUR_UNREADABLE,
+    DROP_RECEIPT_HOUR_MISMATCH,
+    DROP_POST_HOUR_UNREADABLE,
+    DROP_POST_HOUR_CHANGED,
+    // Same split for `DROP_RESOLVER`, whose two sites mean different things: no
+    // snapshot could be obtained at all, versus a snapshot that exists but
+    // carries no publication.
+    DROP_RESOLVER_SNAPSHOT_ABSENT,
+    DROP_RESOLVER_UNPUBLISHED,
+    // Running extrema of the SIGNED distance `engine_hour - receipt_hour` at
+    // the receipt classifier, split by sign so one unsigned word each can carry
+    // them. Lag is the receipt describing an OLDER hour than the live engine
+    // clock -- the shape a publication that is slower than the game clock
+    // produces. Lead is the receipt describing a NEWER one, which is a clock
+    // inversion and a different defect entirely. A mismatch count alone cannot
+    // tell those apart, and cannot say whether the miss was by one hour or by
+    // ten thousand.
+    RECEIPT_HOUR_LAG_MAX,
+    RECEIPT_HOUR_LEAD_MAX,
 );
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -1040,6 +1073,14 @@ fn encode_convoy_transport_attack_drain(
             dropped_hour_or_epoch: telemetry.dropped_hour_or_epoch,
             dropped_resolver: telemetry.dropped_resolver,
             dropped_candidate: telemetry.dropped_candidate,
+            dropped_pre_hour_unreadable: telemetry.dropped_pre_hour_unreadable,
+            dropped_receipt_hour_mismatch: telemetry.dropped_receipt_hour_mismatch,
+            dropped_post_hour_unreadable: telemetry.dropped_post_hour_unreadable,
+            dropped_post_hour_changed: telemetry.dropped_post_hour_changed,
+            dropped_resolver_snapshot_absent: telemetry.dropped_resolver_snapshot_absent,
+            dropped_resolver_unpublished: telemetry.dropped_resolver_unpublished,
+            receipt_hour_lag_max: telemetry.receipt_hour_lag_max,
+            receipt_hour_lead_max: telemetry.receipt_hour_lead_max,
             dropped_d70_pre: telemetry.dropped_d70_pre,
             dropped_d70_post: telemetry.dropped_d70_post,
             dropped_d70_mutation: telemetry.dropped_d70_mutation,
@@ -1063,6 +1104,14 @@ fn telemetry() -> ConvoyTerminalHookTelemetry {
         dropped_hour_or_epoch: load(&DROP_HOUR_OR_EPOCH),
         dropped_resolver: load(&DROP_RESOLVER),
         dropped_candidate: load(&DROP_CANDIDATE),
+        dropped_pre_hour_unreadable: load(&DROP_PRE_HOUR_UNREADABLE),
+        dropped_receipt_hour_mismatch: load(&DROP_RECEIPT_HOUR_MISMATCH),
+        dropped_post_hour_unreadable: load(&DROP_POST_HOUR_UNREADABLE),
+        dropped_post_hour_changed: load(&DROP_POST_HOUR_CHANGED),
+        dropped_resolver_snapshot_absent: load(&DROP_RESOLVER_SNAPSHOT_ABSENT),
+        dropped_resolver_unpublished: load(&DROP_RESOLVER_UNPUBLISHED),
+        receipt_hour_lag_max: load(&RECEIPT_HOUR_LAG_MAX),
+        receipt_hour_lead_max: load(&RECEIPT_HOUR_LEAD_MAX),
         dropped_d70_pre: load(&DROP_D70_PRE),
         dropped_d70_post: load(&DROP_D70_POST),
         dropped_d70_mutation: load(&DROP_D70_MUTATION),
@@ -1088,6 +1137,14 @@ fn reset_observer_state_for_install() {
         &DROP_D70_MUTATION,
         &DROP_QUEUE_BUSY,
         &DROP_QUEUE_FULL,
+        &DROP_PRE_HOUR_UNREADABLE,
+        &DROP_RECEIPT_HOUR_MISMATCH,
+        &DROP_POST_HOUR_UNREADABLE,
+        &DROP_POST_HOUR_CHANGED,
+        &DROP_RESOLVER_SNAPSHOT_ABSENT,
+        &DROP_RESOLVER_UNPUBLISHED,
+        &RECEIPT_HOUR_LAG_MAX,
+        &RECEIPT_HOUR_LEAD_MAX,
     ] {
         counter.store(0, Ordering::Release);
     }
@@ -1233,6 +1290,62 @@ fn classify_resolver_receipt(
     None
 }
 
+/// Record how far, and in which direction, a refused receipt's hour sat from
+/// the live engine hour.
+///
+/// A refusal count says a receipt disagreed; it cannot say by how much or which
+/// way. Those are different defects: a receipt describing an OLDER hour is a
+/// publication that did not keep up with the game clock, and its magnitude is
+/// the number of hours it fell behind. A receipt describing a NEWER hour is a
+/// clock inversion -- the sweep labelling a publication with an hour the engine
+/// has not reached -- which no amount of publishing faster would fix. Splitting
+/// by sign lets each be a running maximum in an unsigned word, and a maximum
+/// rather than a sample because the interesting question is the worst case the
+/// capture contained.
+///
+/// The distance is computed in `i64` because both operands are `i32` read from
+/// engine memory and an unvalidated one could otherwise overflow the
+/// subtraction.
+fn record_receipt_hour_distance(receipt_game_hour_raw: i32, engine_hour: i32) {
+    let (direction, magnitude) =
+        receipt_hour_distance(receipt_game_hour_raw, engine_hour);
+    let counter = match direction {
+        ReceiptHourDirection::Lag => &RECEIPT_HOUR_LAG_MAX,
+        ReceiptHourDirection::Lead => &RECEIPT_HOUR_LEAD_MAX,
+    };
+    counter.fetch_max(magnitude, Ordering::Relaxed);
+}
+
+/// Which side of the live clock a refused receipt sat on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiptHourDirection {
+    /// The receipt describes an OLDER hour than the engine clock: the
+    /// publication did not keep up.
+    Lag,
+    /// The receipt describes a NEWER hour than the engine clock: an inversion.
+    Lead,
+}
+
+/// The signed distance, split into a direction and an unsigned magnitude.
+///
+/// Separated from the counter update so it is testable: `record_...` runs only
+/// inside an injected `hoi4.exe`, but the arithmetic that decides WHICH counter
+/// a distance belongs to does not have to.
+///
+/// Computed in `i64` because both operands are `i32` read out of engine memory,
+/// and `engine_hour - receipt_hour` on two unvalidated `i32`s can overflow.
+fn receipt_hour_distance(
+    receipt_game_hour_raw: i32,
+    engine_hour: i32,
+) -> (ReceiptHourDirection, u64) {
+    let distance = i64::from(engine_hour) - i64::from(receipt_game_hour_raw);
+    if distance >= 0 {
+        (ReceiptHourDirection::Lag, distance as u64)
+    } else {
+        (ReceiptHourDirection::Lead, distance.unsigned_abs())
+    }
+}
+
 fn prepare_observation(
     game_state: usize,
     count: u32,
@@ -1246,10 +1359,12 @@ fn prepare_observation(
     let memory = ProcessMemory;
     let Some(hour) = read_stable_i32(&memory, game_state.checked_add(GS_CURRENT_HOUR_OFF)?) else {
         DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        DROP_PRE_HOUR_UNREADABLE.fetch_add(1, Ordering::Relaxed);
         return None;
     };
     let Some(resolver) = try_current_convoy_terminal_resolver_snapshot() else {
         DROP_RESOLVER.fetch_add(1, Ordering::Relaxed);
+        DROP_RESOLVER_SNAPSHOT_ABSENT.fetch_add(1, Ordering::Relaxed);
         return None;
     };
     let receipt = resolver.receipt();
@@ -1257,10 +1372,13 @@ fn prepare_observation(
         None => {}
         Some(ResolverRefusal::Unpublished) => {
             DROP_RESOLVER.fetch_add(1, Ordering::Relaxed);
+            DROP_RESOLVER_UNPUBLISHED.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         Some(ResolverRefusal::HourMismatch) => {
             DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+            DROP_RECEIPT_HOUR_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            record_receipt_hour_distance(receipt.game_hour_raw, hour);
             return None;
         }
     }
@@ -1360,10 +1478,12 @@ fn complete_observation(game_state: usize, pre: PreObservation) {
         game_state.checked_add(GS_CURRENT_HOUR_OFF).unwrap_or(0),
     ) else {
         DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        DROP_POST_HOUR_UNREADABLE.fetch_add(1, Ordering::Relaxed);
         return;
     };
     if hour != pre.carrier.game_hour_raw {
         DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        DROP_POST_HOUR_CHANGED.fetch_add(1, Ordering::Relaxed);
         return;
     }
     let module_base = MODULE_BASE.load(Ordering::Acquire);
@@ -2493,6 +2613,137 @@ mod resolver_refusal_tests {
         assert!(
             !routing.contains("publication_sequence == 0 ||"),
             "the collapsed guard must not come back alongside the classifier"
+        );
+    }
+
+    /// Law: each of the FOUR sites that report `dropped_hour_or_epoch`, and
+    /// each of the TWO that report `dropped_resolver`, also names itself.
+    ///
+    /// # The defect this closes
+    ///
+    /// t26 published `dropped_hour_or_epoch = 83`, `dropped_candidate = 23`,
+    /// `dropped_resolver = 3` and `events_emitted = 0` over 109 callbacks. That
+    /// is enough to say d90 lost every event and not enough to say why:
+    /// `DROP_HOUR_OR_EPOCH` is incremented at four unrelated places -- the
+    /// pre-call stable hour read failing, the published receipt naming a
+    /// different hour, the post-call stable hour read failing, and the hour
+    /// changing across the capture -- and `DROP_RESOLVER` at two. So "83 events
+    /// were lost to the clock" is compatible with four different defects, three
+    /// of which would not be fixed by anything done to the fourth.
+    ///
+    /// The counters cannot be made to discriminate by reading them harder; the
+    /// producer has to say which site it was. This pins that every site does.
+    ///
+    /// A source pin, for the same reason as `each_refusal_reaches_its_own_counter`
+    /// directly above: these are detour callbacks that run only inside an
+    /// injected `hoi4.exe`, so no offline test can move the counters.
+    ///
+    /// MUTATION RUN: delete
+    /// `DROP_POST_HOUR_CHANGED.fetch_add(1, Ordering::Relaxed);` from
+    /// `complete_observation`. OBSERVED: FAILED, `every site that increments
+    /// DROP_HOUR_OR_EPOCH must also increment its own counter; 4 aggregate
+    /// increments but only 3 site increments means one site is still
+    /// anonymous`.
+    #[test]
+    fn every_conflated_drop_site_also_names_itself() {
+        let production = super::freeze_call_site_tests::production_code();
+        for (aggregate, sites) in [
+            (
+                "DROP_HOUR_OR_EPOCH",
+                &[
+                    "DROP_PRE_HOUR_UNREADABLE",
+                    "DROP_RECEIPT_HOUR_MISMATCH",
+                    "DROP_POST_HOUR_UNREADABLE",
+                    "DROP_POST_HOUR_CHANGED",
+                ][..],
+            ),
+            (
+                "DROP_RESOLVER",
+                &["DROP_RESOLVER_SNAPSHOT_ABSENT", "DROP_RESOLVER_UNPUBLISHED"][..],
+            ),
+        ] {
+            let increment = format!("{aggregate}.fetch_add(1, Ordering::Relaxed);");
+            let aggregate_increments = production.matches(&increment).count();
+            let site_increments: usize = sites
+                .iter()
+                .map(|site| {
+                    let site_increment = format!("{site}.fetch_add(1, Ordering::Relaxed);");
+                    let count = production.matches(&site_increment).count();
+                    assert_eq!(
+                        count, 1,
+                        "{site} must be incremented at exactly one site, or it \
+                         names a place rather than a cause"
+                    );
+                    count
+                })
+                .sum();
+            assert_eq!(
+                aggregate_increments, sites.len(),
+                "{aggregate} is incremented at {aggregate_increments} sites but \
+                 only {} are enumerated here; an unenumerated site is a cause \
+                 the wire cannot name",
+                sites.len()
+            );
+            assert_eq!(
+                aggregate_increments, site_increments,
+                "every site that increments {aggregate} must also increment its \
+                 own counter; {aggregate_increments} aggregate increments but \
+                 only {site_increments} site increments means one site is still \
+                 anonymous"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod receipt_hour_distance_tests {
+    use super::{receipt_hour_distance, ReceiptHourDirection};
+
+    /// Law: a refused receipt's distance from the live clock is recorded with
+    /// its DIRECTION, and the two directions are different defects.
+    ///
+    /// A receipt naming an older hour than the engine is a publisher that fell
+    /// behind the game clock; its magnitude is how far. A receipt naming a
+    /// newer hour is a clock inversion -- the sweep labelling a publication
+    /// with an hour the engine has not reached -- and publishing faster would
+    /// not touch it. A single unsigned "hours apart" word would report those
+    /// two as the same number and send the next capture after the wrong one.
+    ///
+    /// MUTATION RUN: change the `distance >= 0` test in `receipt_hour_distance`
+    /// to `distance > 0`. OBSERVED: FAILED, `an equal receipt is zero LAG, not
+    /// lead: a receipt that agrees has not inverted the clock` -- left `Lead`,
+    /// right `Lag`.
+    #[test]
+    fn a_refused_receipt_records_which_side_of_the_clock_it_sat_on() {
+        assert_eq!(
+            receipt_hour_distance(4_210, 4_211),
+            (ReceiptHourDirection::Lag, 1),
+            "the receipt is one hour BEHIND the engine: the publisher lagged"
+        );
+        assert_eq!(
+            receipt_hour_distance(4_211, 4_210),
+            (ReceiptHourDirection::Lead, 1),
+            "the receipt is one hour AHEAD of the engine: the clock inverted"
+        );
+        assert_eq!(
+            receipt_hour_distance(4_211, 4_211),
+            (ReceiptHourDirection::Lag, 0),
+            "an equal receipt is zero LAG, not lead: a receipt that agrees has \
+             not inverted the clock"
+        );
+        // Both operands are `i32` read out of engine memory and are not
+        // validated before this point, so the subtraction must not be done in
+        // `i32`: `i32::MIN - i32::MAX` overflows and would panic in debug and
+        // wrap to 1 in release, reporting a ten-billion-hour disagreement as a
+        // one-hour one.
+        assert_eq!(
+            receipt_hour_distance(i32::MAX, i32::MIN),
+            (ReceiptHourDirection::Lead, 4_294_967_295),
+            "the widest possible disagreement is reported at its true size"
+        );
+        assert_eq!(
+            receipt_hour_distance(i32::MIN, i32::MAX),
+            (ReceiptHourDirection::Lag, 4_294_967_295)
         );
     }
 }

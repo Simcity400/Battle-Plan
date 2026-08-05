@@ -1601,6 +1601,20 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "convoy_transport_attack_dropped_d70_mutation",
     "convoy_transport_attack_dropped_queue_busy",
     "convoy_transport_attack_dropped_queue_full",
+    // The per-site splits of the two aggregates above. Same shape -- process-
+    // global counters reset only at hook install, republished absolute every
+    // batch -- so they must be MAX'd for exactly the reason the aggregates are.
+    "convoy_transport_attack_dropped_pre_hour_unreadable",
+    "convoy_transport_attack_dropped_receipt_hour_mismatch",
+    "convoy_transport_attack_dropped_post_hour_unreadable",
+    "convoy_transport_attack_dropped_post_hour_changed",
+    "convoy_transport_attack_dropped_resolver_snapshot_absent",
+    "convoy_transport_attack_dropped_resolver_unpublished",
+    // Running maxima of a game-hour distance. Cumulative for the same reason:
+    // a maximum republished every batch is not a per-frame quantity, and
+    // summing it would report a distance no receipt was ever at.
+    "convoy_transport_attack_receipt_hour_lag_max",
+    "convoy_transport_attack_receipt_hour_lead_max",
     // --- domain 75 fired-event popups (append-only ledger + hook telemetry) --
     // `snapshot_rows` clones `state.rows` in full every frame, and rows are
     // inserted without removal up to the queue capacity, so the published row
@@ -1657,6 +1671,10 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     // "was this observer ever patched in" answerable from the manifest.
     "d85_callback_count",
     "d85_variant_upgrade_selection_count",
+    // Same shape: an observer-lifetime total of division-order registrations,
+    // published absolute every frame. Summing it over a 644-frame capture would
+    // multiply a handful of real registrations by ~644.
+    "d85_division_view_registrations",
     "d85_hook_installed",
     "d97_refresh_observed_total",
     "d97_hook_installed",
@@ -2922,6 +2940,50 @@ mod tests {
         let summed = series.iter().fold(0u64, |a, b| a + b);
         assert_eq!(summed, 19_470, "the published t15 figure");
         assert_ne!(summed, 107);
+    }
+
+    /// Law: the eight CTA2 v3 words are classified, and every one of them is
+    /// CUMULATIVE.
+    ///
+    /// They have the same shape as the aggregates they split: process-global
+    /// `AtomicU64`s reset only at hook install, republished at their absolute
+    /// value on every batch. An unclassified name falls through to `PerFrame`
+    /// and is SUMMED, which is exactly the arithmetic that published t15's 107
+    /// drops as 19,470 -- and a unit added to diagnose a loss is the worst
+    /// possible place to reintroduce it.
+    ///
+    /// The two `_max` words matter for a second reason: they are game-hour
+    /// DISTANCES. Summing a running maximum over 644 batches reports a
+    /// disagreement no receipt was ever at.
+    ///
+    /// MUTATION RUN: remove
+    /// `"convoy_transport_attack_dropped_receipt_hour_mismatch"` from
+    /// `CUMULATIVE_UNITS`. OBSERVED: FAILED, `left: PerFrame, right:
+    /// Cumulative`.
+    #[test]
+    fn the_new_d90_hour_split_units_are_classified_and_none_is_summed() {
+        for name in [
+            "convoy_transport_attack_dropped_pre_hour_unreadable",
+            "convoy_transport_attack_dropped_receipt_hour_mismatch",
+            "convoy_transport_attack_dropped_post_hour_unreadable",
+            "convoy_transport_attack_dropped_post_hour_changed",
+            "convoy_transport_attack_dropped_resolver_snapshot_absent",
+            "convoy_transport_attack_dropped_resolver_unpublished",
+            "convoy_transport_attack_receipt_hour_lag_max",
+            "convoy_transport_attack_receipt_hour_lead_max",
+        ] {
+            assert_eq!(unit_accumulation(name), Accumulation::Cumulative, "{name}");
+        }
+
+        // And the fold really is last-value, not sum, on the same t15 series
+        // the aggregate above is checked against.
+        let series = t15_callbacks_seen_series();
+        let class = unit_accumulation("convoy_transport_attack_dropped_receipt_hour_mismatch");
+        let mut running: Option<u64> = None;
+        for value in &series {
+            running = Some(class.fold(running, *value));
+        }
+        assert_eq!(running, Some(107));
     }
 
     /// A per-frame unit must still be summed. Guards the opposite mistake:
