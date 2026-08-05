@@ -11,6 +11,11 @@ default = []
 # Historical process-boundary fixture only. Production uses replay_app's
 # authenticated internal child mode and must never mint or package this binary.
 dev-prefold-worker-bin = []
+# Lane CC size-lever measurement instrument. Builds the certified binary replay
+# artifacts for an existing capture at a chosen checkpoint interval so the
+# checkpoint-density curve can be measured rather than modelled. Never on by
+# default and never packaged.
+cc-cache-probe = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -23,6 +28,11 @@ serde_json = "1"
 name = "replay_prefold_worker"
 path = "src/bin/replay_prefold_worker.rs"
 required-features = ["dev-prefold-worker-bin"]
+
+[[bin]]
+name = "cc_cache_probe"
+path = "src/bin/cc_cache_probe.rs"
+required-features = ["cc-cache-probe"]
 
 [[test]]
 name = "prefold_worker_process"
