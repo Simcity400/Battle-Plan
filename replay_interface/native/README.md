@@ -10,7 +10,13 @@ Native replay workspace. Architecture of record:
 | `replay_core` | `.battleplan` ingest boundary + scrubbable `WorldTimeline` (the playback spine). |
 | `replay_app` | The product surface: Win32 + D3D11 swapchain app, GPU map-mode recolor, camera, picking, timeline. |
 | `map_viewer` | Map bundle tooling from the game install, CPU reference renderer, captured D3D11 pass validation/replay backend. |
-| `terrain_capture` | D3D11 map-frame extraction/capture contract for map replay fidelity. |
+
+`terrain_capture` — the D3D11 map-frame capture DLL that produces the bundles
+`map_viewer` validates — is not here. It injects into a running `hoi4.exe` and
+patches live code, so it is a member of `extractor/native`. This workspace
+consumes sealed captures: it takes no dependency on any `extractor/` manifest
+and carries no live-code patching primitive
+(`game_ui/tests/replay_dependency_boundary.rs`).
 
 ## Checks
 

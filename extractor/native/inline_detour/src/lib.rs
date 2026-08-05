@@ -608,11 +608,15 @@ mod source_ban_tests {
     /// Every `.rs` file in every native workspace that can inject into the
     /// game, except this crate's own.
     ///
-    /// EXPLICITLY MORE THAN ONE WORKSPACE. `terrain_capture` lives in
-    /// `replay_interface/native` and is a separately injected DLL with its own
-    /// D3D11 detours; a scan that stopped at the extractor boundary would have
-    /// declared the invariant enforced while that mapping patched before
-    /// pinning. An invariant that stops at a workspace boundary is not one.
+    /// EXPLICITLY MORE THAN ONE WORKSPACE, and it stays that way now that the
+    /// crate that motivated it has moved. `terrain_capture` is a separately
+    /// injected DLL with its own D3D11 detours; it used to live in
+    /// `replay_interface/native`, and a scan that stopped at the extractor
+    /// boundary would have declared the invariant enforced while that mapping
+    /// patched before pinning. It now sits in `extractor/native` with the rest
+    /// of the injected code, but the second root is kept deliberately: an
+    /// invariant that stops at a workspace boundary is not one, and nothing
+    /// stops a future injected DLL appearing in the replay tree again.
     fn workspace_sources() -> Vec<PathBuf> {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
@@ -675,10 +679,15 @@ mod source_ban_tests {
     /// a new lane calling it. The tree already uses source scanning for ordering
     /// laws it cannot otherwise state (`division_combat_stats_live`).
     ///
-    /// SCOPE, stated because it is narrower than the invariant: this walks
-    /// `extractor/native` only. `replay_interface/native/terrain_capture` is a
-    /// separately injected DLL with its own MinHook detours and its own pin,
-    /// and it is NOT covered here or by `inline_detour::enable`.
+    /// SCOPE: whatever [`workspace_sources`] walks, which is BOTH native
+    /// workspaces. An earlier version of this comment claimed the scan stopped
+    /// at `extractor/native` and that `terrain_capture` was exempt; that was
+    /// never what the code did — `workspace_sources` has always included
+    /// `replay_interface/native`, and `terrain_capture` has always routed its
+    /// D3D11 detours through `inline_detour::queue_enable`. The crate now lives
+    /// at `extractor/native/terrain_capture`, so the point is moot for it, but
+    /// the comment was describing a hole that did not exist and would have
+    /// licensed one that did.
     #[test]
     fn no_direct_minhook_enable_outside_this_crate() {
         let mut violations = Vec::new();

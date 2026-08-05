@@ -20,7 +20,7 @@ name = "capture_harness"
 path = "src/bin/capture_harness.rs"
 
 [dependencies]
-inline_detour = { path = "../../../extractor/native/inline_detour" }
+inline_detour = { path = "../inline_detour" }
 minhook = "0.9.0"
 # The engine calendar this module stamps onto captured records is the same
 # calendar the recorder and the replay consumer apply; it has one home.
@@ -52,5 +52,16 @@ winapi = { version = "0.3.9", features = [
     "winerror",
 ] }
 
-[dev-dependencies]
-map_viewer = { path = "../map_viewer" }
+# NO dev-dependency on `map_viewer`. This crate is the PRODUCER half of the
+# map-frame constant-buffer naming contract and `replay_interface/native`'s
+# `map_viewer` is the CONSUMER half; the two live in workspaces that
+# deliberately do not depend on each other
+# (`replay_interface/native/game_ui/tests/replay_dependency_boundary.rs`).
+# The agreement is pinned by paired tests instead of by the type system, the
+# same mechanism `extractor/native/wire_format/tests/
+# producer_consumer_admission_agreement.rs` uses:
+#   producer half: `map_frame_constant_buffer_naming_contract` in src/lib.rs
+#   consumer half: `map_frame_constant_buffer_naming_contract` in
+#                  `replay_interface/native/map_viewer/src/constants.rs`
+# Both halves must exist; a name enforced on one side and not its sibling is
+# not enforced.

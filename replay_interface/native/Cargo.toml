@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "package_runtime",
     "map_viewer",
-    "terrain_capture",
     "replay_core",
     "replay_fixture_gen",
     "replay_app",
@@ -14,7 +13,14 @@ members = [
 # Native replay-interface workspace. See documents/REPLAY_ARCHITECTURE.md:
 # replay_core owns .battleplan ingest and the scrubbable world timeline,
 # replay_app is the product D3D11 replay surface, map_viewer owns map bundle
-# tooling and captured-pass validation/replay, terrain_capture owns capture.
+# tooling and captured-pass validation/replay.
+#
+# Acquisition does NOT live here. `terrain_capture` — the injected D3D11
+# capture DLL that produces the map-frame bundles map_viewer consumes — is an
+# acquisition tool that patches live game code, so it lives with the other
+# injected code at `extractor/native/terrain_capture`. This workspace consumes
+# sealed captures and takes zero dependencies on extractor crates
+# (`game_ui/tests/replay_dependency_boundary.rs`).
 
 # Fail-closed doctrine: the untrusted-input parsers (bespoke ZIP reader,
 # stream verifier, compact-stream framing) must panic on integer overflow in

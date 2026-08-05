@@ -725,3 +725,67 @@ impl ShaderSamplerResourceType {
         }
     }
 }
+
+#[cfg(test)]
+mod producer_consumer_naming_agreement {
+    use super::{
+        TERRAIN_DRAW_CB1_BIND_POINT, TERRAIN_DRAW_CB1_LAYOUT_SOURCE, TERRAIN_SCENE_CB0_BIND_POINT,
+        TERRAIN_SCENE_CB0_SYMBOL,
+    };
+
+    /// The CONSUMER half of the map-frame constant-buffer naming contract.
+    ///
+    /// # What this pins and why
+    ///
+    /// The producer is `extractor/native/terrain_capture`, the injected D3D11
+    /// DLL that writes `map_frame_bundle.json`. It is in the OTHER cargo
+    /// workspace and this one path-depends on nothing under `extractor/`
+    /// (`game_ui/tests/replay_dependency_boundary.rs`), so the names both sides
+    /// must agree on are written twice — once in
+    /// `terrain_capture/src/lib.rs`, once here — and the agreement is asserted
+    /// rather than compiled in.
+    ///
+    /// This used to be checked by `terrain_capture` dev-depending on
+    /// `map_viewer` and running the real validator. That dependency was the
+    /// boundary violation, and it was pointing the wrong way besides: the
+    /// acquisition tool cannot be downstream of the product it feeds.
+    ///
+    /// The failure this prevents is silent at the type level and total at
+    /// runtime. `map_frame_reflected_constant_buffer_binding_blockers` in
+    /// `frame_bundle.rs` rejects any bundle whose captured binding name differs
+    /// from the reflected name, and
+    /// `validate_map_frame_app_camera_constant_buffer_coverage` requires a PS
+    /// slot-0 capture named exactly `TerrainSceneCB0` before it will derive the
+    /// app-owned camera. A producer-side rename lands as "every captured
+    /// terrain bundle is unrenderable", with nothing pointing at the rename.
+    ///
+    /// The producer half is `map_frame_constant_buffer_naming_contract` in
+    /// `extractor/native/terrain_capture/src/lib.rs`. Both halves must exist;
+    /// one side pinned alone pins nothing.
+    ///
+    /// This test pins the VALUES only. That this crate still ENFORCES them is
+    /// pinned separately, by tests that run the real validator:
+    /// `frame_bundle.rs::water_map_frame_validation_rejects_reflected_constant_buffer_name_mismatch`
+    /// for the reflected-name match, and
+    /// `frame_bundle.rs::map_frame_bundle_validation_rejects_vertex_shader_with_wrong_cb1_source`
+    /// for the slot-1 source citation. Deleting either enforcement path fails
+    /// there, not here — which is why those two are load-bearing and not
+    /// redundant with this one.
+    #[test]
+    fn map_frame_constant_buffer_naming_contract() {
+        assert_eq!(
+            TERRAIN_SCENE_CB0_SYMBOL, "TerrainSceneCB0",
+            "terrain_capture canonicalises the PS slot-0 capture to this exact \
+             name; renaming it here alone rejects every bundle the capture DLL \
+             produces"
+        );
+        assert_eq!(TERRAIN_SCENE_CB0_BIND_POINT, 0);
+        assert_eq!(
+            TERRAIN_DRAW_CB1_LAYOUT_SOURCE, "gfx/FX/pdxmap.fxh:ConstantBuffer(1,32)",
+            "terrain_capture canonicalises the VS slot-1 capture to this exact \
+             source citation; renaming it here alone rejects every bundle the \
+             capture DLL produces"
+        );
+        assert_eq!(TERRAIN_DRAW_CB1_BIND_POINT, 1);
+    }
+}

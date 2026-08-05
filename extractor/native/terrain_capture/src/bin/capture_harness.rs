@@ -726,9 +726,18 @@ mod windows_app {
             .map(|pair| pair[1].clone())
     }
 
+    /// Where `--bundle` points when the operator does not pass it.
+    ///
+    /// This is a filesystem path to a local, gitignored capture output tree, not
+    /// a build dependency — the harness reads bundle FILES, it does not link
+    /// `map_viewer`. It is spelled from the repository root on purpose: this
+    /// crate used to live at `replay_interface/native/terrain_capture`, where
+    /// `../map_viewer/out` reached the same directory, and moving the crate to
+    /// `extractor/native` must not silently re-point an operator's default
+    /// bundle at a path that has never existed.
     fn default_bundle_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../map_viewer/out/captures/session_20260702d")
+            .join("../../../replay_interface/native/map_viewer/out/captures/session_20260702d")
     }
 
     #[derive(Debug, Deserialize)]

@@ -39,9 +39,12 @@ Supporting toolchains (not in the runtime path):
 - `map_viewer` — map bundle generation from the game install, CPU reference
   renderer, captured D3D11 pass validation/replay. Feeds `replay_app` with
   grounded static inputs; keeps its fail-closed capture program.
-- `terrain_capture` — one-time capture of engine-generated GPU inputs
-  (TerrainIDMap, water/river/border passes). Captures are asset extraction,
-  not a per-frame runtime dependency.
+- `extractor/native/terrain_capture` — one-time capture of engine-generated GPU
+  inputs (TerrainIDMap, water/river/border passes). Captures are asset
+  extraction, not a per-frame runtime dependency. It is an injected DLL that
+  patches live game code, so it lives on the acquisition side with the rest of
+  the injected code, not in this workspace; `map_viewer` consumes its sealed
+  `map_frame_bundle.json` output and never links it.
 - Python (`replay/`, `models/`, `derive/`, `game_assets/`) — development,
   validation, fixture generation, and asset extraction tooling. Never in the
   runtime playback path. `replay_interface/game_assets/extract.py` output is a local inspection
@@ -114,7 +117,13 @@ Rules at the boundary:
 | `replay_core` | Container/dir ingest, `WorldTimeline`, scrub, typed views, provenance/coverage. Statically links the neutral `portable_replay/native/snapshot` format crate; it has no extractor library, process, or install-path dependency. |
 | `replay_app` | The product: Win32 + D3D11 swapchain window, frame loop, camera, map-mode GPU recolor, hit testing, timeline control, and (growing) the game UI chrome. |
 | `map_viewer` | Bundle tooling + CPU reference + captured-pass validation/replay backend. To be split from one 28.9k-line `lib.rs` into modules; behavior unchanged. |
-| `terrain_capture` | Unchanged; capture DLL + attach helper. |
+
+The capture DLL + attach helper (`terrain_capture`) is NOT a member of this
+workspace. It injects into `hoi4.exe` and enables inline detours through
+`extractor/native/inline_detour`, so it is a member of `extractor/native`
+alongside the collector. This workspace declares zero dependencies on
+`extractor/` manifests and no live-code patching primitive at all
+(`game_ui/tests/replay_dependency_boundary.rs`).
 
 Neutral build-time format code lives under `portable_replay/native/`. Both
 distributions may statically link it, but neither installed distribution needs

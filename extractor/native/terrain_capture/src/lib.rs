@@ -2733,17 +2733,91 @@ mod tests {
         assert_eq!(D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT, 32);
     }
 
+    /// The PRODUCER half of the map-frame constant-buffer naming contract.
+    ///
+    /// # Why this is a pinned literal and not a call into the consumer
+    ///
+    /// `extractor/native` and `replay_interface/native` are separate cargo
+    /// workspaces that deliberately take no dependency on each other
+    /// (`replay_interface/native/game_ui/tests/replay_dependency_boundary.rs`
+    /// fails the suite if the replay side path-depends on anything under
+    /// `extractor/`). This crate used to live in the replay workspace and
+    /// dev-depend on `map_viewer` so one test could run the real consumer over
+    /// a repaired bundle. It cannot: it is an injected DLL that patches live
+    /// game code through `inline_detour`, so it belongs on the acquisition
+    /// side, and the dev-dependency was the boundary violation.
+    ///
+    /// So the mechanism is the one
+    /// `extractor/native/wire_format/tests/producer_consumer_admission_agreement.rs`
+    /// already uses for admission values: the name is written twice, once per
+    /// workspace, and each copy is pinned to the same literal by a test that
+    /// names its sibling. The consumer half is
+    /// `map_frame_constant_buffer_naming_contract` in
+    /// `replay_interface/native/map_viewer/src/constants.rs`. Both halves must
+    /// exist; a name enforced on one side and not its sibling is not enforced
+    /// at all, because the failure mode is silent: the capture writes a name
+    /// the renderer does not recognise and the bundle is rejected wholesale.
     #[test]
-    fn map_viewer_accepts_shared_constant_buffer_naming_contract() {
+    fn map_frame_constant_buffer_naming_contract() {
+        assert_eq!(
+            TERRAIN_SCENE_CB0_SYMBOL, "TerrainSceneCB0",
+            "map_viewer requires a PS constant-buffer capture named exactly \
+             TerrainSceneCB0 to derive the app-owned camera; renaming it here \
+             alone makes every captured terrain bundle unrenderable"
+        );
+        assert_eq!(TERRAIN_SCENE_CB0_BIND_POINT, 0);
+        assert_eq!(
+            TERRAIN_DRAW_CB1_LAYOUT_SOURCE, "gfx/FX/pdxmap.fxh:ConstantBuffer(1,32)",
+            "map_viewer matches the VS slot-1 declared name against this exact \
+             source citation; renaming it here alone fails the bundle closed"
+        );
+        assert_eq!(TERRAIN_DRAW_CB1_BIND_POINT, 1);
+    }
+
+    /// Asserts the repair emits the spelling the consumer will accept.
+    ///
+    /// The rule this mirrors is `map_viewer/src/frame_bundle.rs::
+    /// map_frame_reflected_constant_buffer_binding_blockers`: a bundle is
+    /// blocked when a captured constant-buffer binding at some stage/slot does
+    /// not carry the same declared name the active shader's reflection uses for
+    /// that slot. Because the repair canonicalises the reflection too, that
+    /// rule bites on the canonical names — PS slot 0 as `TerrainSceneCB0`, VS
+    /// slot 1 as the `pdxmap.fxh` layout citation — and those two are asserted
+    /// by name below.
+    ///
+    /// DELIBERATELY STRICTER THAN THE CONSUMER, and not a restatement of it.
+    /// `validate_map_frame_app_camera_constant_buffer_coverage` is looser than
+    /// what is checked here: it accepts a VS or a PS binding, and accepts a
+    /// reflected `dx11_cb0` alias when the bundle carries `standardfuncsgfx.fxh`
+    /// layout evidence, because it decides on the buffer's decoded LAYOUT
+    /// rather than its name. Asserting the canonical name is a sufficient
+    /// condition for that check, not an equivalent one. The point of pinning
+    /// the strict form is that it is what the repair is FOR: a producer that
+    /// stops emitting the canonical spelling has regressed even if some looser
+    /// consumer path would still have accepted the bundle.
+    ///
+    /// That the consumer really does enforce its half is pinned on the consumer
+    /// side, where the real validator can be run:
+    /// `water_map_frame_validation_rejects_reflected_constant_buffer_name_mismatch`
+    /// (frame_bundle.rs:6094) and
+    /// `map_frame_bundle_validation_rejects_vertex_shader_with_wrong_cb1_source`
+    /// (frame_bundle.rs:6444).
+    ///
+    /// The stale input is checked first on purpose: without it the repair could
+    /// be a no-op and this test would still pass.
+    #[test]
+    fn constant_buffer_repair_establishes_the_names_the_renderer_requires() {
         let root = temp_test_dir("cb_name_contract");
         let bundle_path = write_stale_constant_buffer_name_contract_fixture(&root);
 
-        let stale_error = map_viewer::validate_terrain_d3d11_bundle(&bundle_path)
-            .expect_err("stale fixture must reach the renderer constant-buffer naming checks")
-            .to_string();
+        let stale: Value =
+            serde_json::from_slice(&fs::read(&bundle_path).expect("read stale bundle"))
+                .expect("parse stale bundle");
+        let stale_blockers = constant_buffer_naming_blockers(&stale);
         assert!(
-            has_constant_buffer_naming_complaint(&stale_error),
-            "stale fixture did not exercise the naming contract, got: {stale_error}"
+            !stale_blockers.is_empty(),
+            "stale fixture already satisfies the naming contract, so the repair \
+             below proves nothing"
         );
 
         let report = repair_map_frame_bundle_constant_buffer_names(&bundle_path)
@@ -2753,14 +2827,101 @@ mod tests {
             "repair should rewrite stale constant-buffer names"
         );
 
-        if let Err(error) = map_viewer::validate_terrain_d3d11_bundle(&bundle_path) {
-            let message = error.to_string();
-            assert!(
-                !has_constant_buffer_naming_complaint(&message),
-                "repaired fixture still trips constant-buffer naming: {message}"
-            );
-        }
+        let repaired: Value =
+            serde_json::from_slice(&fs::read(&bundle_path).expect("read repaired bundle"))
+                .expect("parse repaired bundle");
+        let repaired_blockers = constant_buffer_naming_blockers(&repaired);
+        assert!(
+            repaired_blockers.is_empty(),
+            "repaired bundle still violates the renderer's constant-buffer \
+             naming contract: {repaired_blockers:?}"
+        );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Mirror of the consumer's reflected-name rule plus the two canonical
+    /// names it bites on. Kept in test code on purpose: it must be able to
+    /// disagree with the production canonicaliser, which is the whole point of
+    /// the check.
+    fn constant_buffer_naming_blockers(bundle: &Value) -> Vec<String> {
+        let mut blockers = Vec::new();
+        let mut draws = bundle
+            .get("draws")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(!draws.is_empty(), "fixture must carry at least one draw");
+        // `active_draw` is a separate copy in the bundle, repaired separately.
+        // The renderer validates it separately too, so a repair that fixed
+        // `draws` and missed `active_draw` must not read as clean here.
+        if let Some(active) = bundle.get("active_draw") {
+            assert!(
+                !active.is_null(),
+                "fixture must carry an active draw for this check to mean anything"
+            );
+            draws.push(active.clone());
+        }
+        for draw in &draws {
+            let index = draw.get("draw_index").and_then(Value::as_u64).unwrap_or(0);
+            let bindings: Vec<(&str, u32, Option<&str>)> = draw
+                .get("constant_buffers")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|binding| {
+                    Some((
+                        binding.get("stage").and_then(Value::as_str)?,
+                        u32::try_from(binding.get("slot").and_then(Value::as_u64)?).ok()?,
+                        binding.get("declared_name").and_then(Value::as_str),
+                    ))
+                })
+                .collect();
+
+            for stage in ["PS", "VS"] {
+                let Some(shader) = draw_stage_shader(draw, stage) else {
+                    continue;
+                };
+                for (name, slot) in shader_constant_buffers_from_value(shader) {
+                    match bindings
+                        .iter()
+                        .find(|(binding_stage, binding_slot, _)| {
+                            *binding_stage == stage && *binding_slot == slot
+                        })
+                        .map(|(_, _, declared)| *declared)
+                    {
+                        None => blockers.push(format!(
+                            "draw {index} {stage} reflects {name} at slot {slot} with no captured binding"
+                        )),
+                        Some(declared) if declared != Some(name.as_str()) => blockers.push(
+                            format!(
+                                "draw {index} {stage} slot {slot} is captured as {declared:?}, expected reflected constant buffer {name}"
+                            ),
+                        ),
+                        Some(_) => {}
+                    }
+                }
+            }
+
+            if !bindings.iter().any(|(stage, slot, declared)| {
+                *stage == "PS"
+                    && *slot == TERRAIN_SCENE_CB0_BIND_POINT
+                    && *declared == Some(TERRAIN_SCENE_CB0_SYMBOL)
+            }) {
+                blockers.push(format!(
+                    "draw {index} has no PS slot {TERRAIN_SCENE_CB0_BIND_POINT} capture named {TERRAIN_SCENE_CB0_SYMBOL}"
+                ));
+            }
+            if !bindings.iter().any(|(stage, slot, declared)| {
+                *stage == "VS"
+                    && *slot == TERRAIN_DRAW_CB1_BIND_POINT
+                    && *declared == Some(TERRAIN_DRAW_CB1_LAYOUT_SOURCE)
+            }) {
+                blockers.push(format!(
+                    "draw {index} has no VS slot {TERRAIN_DRAW_CB1_BIND_POINT} capture named {TERRAIN_DRAW_CB1_LAYOUT_SOURCE}"
+                ));
+            }
+        }
+        blockers
     }
 
     #[test]
@@ -3671,8 +3832,12 @@ mod tests {
 
     #[test]
     fn captured_pixel_shader_prefilter_covers_full_family_classifiers() {
+        // Local, gitignored capture output; the test skips when it is absent.
+        // Spelled from the repository root because this crate moved from
+        // `replay_interface/native/terrain_capture` to `extractor/native` and
+        // the fixture did not move with it.
         let capture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../map_viewer/out/captures/session_20260702d");
+            .join("../../../replay_interface/native/map_viewer/out/captures/session_20260702d");
         if !capture_dir.is_dir() {
             eprintln!(
                 "captured_pixel_shader_prefilter_covers_full_family_classifiers skipped: {} absent",
@@ -4283,12 +4448,6 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("create temp test directory");
         path
-    }
-
-    fn has_constant_buffer_naming_complaint(message: &str) -> bool {
-        message.contains("expected reflected constant buffer")
-            || message.contains("has no named TerrainSceneCB0 PS constant-buffer capture")
-            || message.contains("constant-buffer slot") && message.contains("is captured as")
     }
 
     fn write_stale_constant_buffer_name_contract_fixture(root: &Path) -> std::path::PathBuf {

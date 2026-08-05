@@ -12,6 +12,10 @@ members = [
     "scientists_live_lane",
     "replay_decoder",
     "fold_check",
+    # Injected D3D11 map-frame capture DLL + attach helper. It patches live
+    # game code through `inline_detour`, so it belongs with the rest of the
+    # injected code, not in `replay_interface/native` where it used to sit.
+    "terrain_capture",
     "lanes/air_wings_variants_lifecycle_live",
     "lanes/air_loss_stats_live",
     "lanes/hub_motorization_live",

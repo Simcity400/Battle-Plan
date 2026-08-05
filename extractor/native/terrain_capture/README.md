@@ -3,9 +3,21 @@
 Rust-native contract crate for extracting HOI4's engine-generated
 `TerrainIDMap` and related terrain draw inputs from the DirectX 11 renderer.
 
-This crate is deliberately separate from the gameplay replay collector. The map
-renderer needs generated GPU textures, scene constants, the terrain vertex
-buffer, and the D3D input layout before it can reproduce HOI4 terrain
+This crate is deliberately separate from the gameplay replay collector, but it
+is on the same side of the line: it is an injected DLL that patches live
+`hoi4.exe` code through `inline_detour`, so it is a member of the
+`extractor/native` acquisition workspace. It is NOT part of
+`replay_interface/native`, which consumes sealed captures and declares zero
+dependencies on `extractor/` manifests
+(`replay_interface/native/game_ui/tests/replay_dependency_boundary.rs`). The
+consumer of everything this crate writes is `map_viewer` on the replay side,
+reached only through the `map_frame_bundle.json` files on disk — never by
+linking. The constant-buffer names both sides must spell identically are pinned
+by paired tests (`map_frame_constant_buffer_naming_contract`, one in this
+crate's `src/lib.rs` and one in `map_viewer/src/constants.rs`).
+
+The map renderer needs generated GPU textures, scene constants, the terrain
+vertex buffer, and the D3D input layout before it can reproduce HOI4 terrain
 faithfully. The current crate encodes the D3D11 hook contract and validates the
 state machine needed to identify pdxmap terrain pixel shader variants, use the
 TerrainIDMap slot declared by each shader/cache variant, and prepare staging
@@ -25,6 +37,10 @@ they have equivalent shader/resource signatures. No later layer is approximated
 from static map bitmaps.
 
 ## Commands
+
+All commands below run from `extractor/native` (the workspace this crate is a
+member of). Bundles land wherever `--capture-out-dir` points; the replay side
+reads them as files.
 
 Build the DLL and attach helper:
 
