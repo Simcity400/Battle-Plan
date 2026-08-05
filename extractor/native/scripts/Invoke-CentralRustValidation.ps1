@@ -999,11 +999,18 @@ try {
             $packageSelfTestResult = (($packageSelfTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
             if ([string]$packageSelfTestResult.schema -cne 'battle-plan.portable_package_selftest.v1' -or
                 [string]$packageSelfTestResult.status -cne 'PASS' -or
-                # 61 + 5. The five are the three pinned manifest-graph cases, the
+                # 61 + 13. Five are the three pinned manifest-graph cases, the
                 # case that the derived fixture reaches exactly the delegating unit
                 # closure the committed baseline accepts, and the case that a
-                # drifted accepted-inventory pin is rejected.
-                [int]$packageSelfTestResult.cases -ne 66) {
+                # drifted accepted-inventory pin is rejected. The other eight cover
+                # the ways this authority can go blind without failing: a
+                # suspending code mutation whose freeze and patch sit on opposite
+                # sides of a dependency edge (in this repository, and outside it
+                # both as a direct call and through a function pointer, with the
+                # name-definition case that must NOT count), a reachability flag
+                # pinned as a string, and a lane leaving the manifest walk that
+                # decides which files are scanned at all.
+                [int]$packageSelfTestResult.cases -ne 74) {
                 throw "portable-product package builder/verifier self-tests returned no authority"
             }
         }

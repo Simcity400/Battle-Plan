@@ -400,14 +400,43 @@ Assert-ClosureCase 'code-mutation closure is keyed on behaviour, not on a vendor
 )
 $cases++
 
-# This tree does perform thread-suspending code mutation: four lanes install
-# detours into live game code while suspending the game's other threads, and
-# every MinHook-backed lane delegates the same behaviour to a primitive that
-# patches even when its suspend attempt failed. Those sites are pinned as an
-# accepted inventory rather than asserted away, so the case fails when a NEW
-# patcher appears, when a unit starts suspending, when a site moves to another
-# file, or when a pinned site is gone. The roster is printed either way -
-# accepting these sites is not the same as hiding them.
+# Everything below reads only the files the lane-root derivation admits, so a
+# lane that quietly leaves that derivation does not make any case here fail -
+# it makes them all pass over a smaller tree. The set is therefore derived a
+# second time from cargo's own resolution of the workspace (Cargo.lock, which
+# this repository's PowerShell does not write) and the two have to name the
+# same lanes. This is a coverage assertion, not a capability one: it says the
+# gate is still looking at what production links, and says nothing about what
+# it finds there.
+$laneRootCoverageDifferences = @(
+    try {
+        Get-CollectorProductionLaneRootCoverageDifferences -RepoRoot $repoRoot
+    }
+    catch {
+        $_.Exception.Message
+    }
+)
+foreach ($difference in $laneRootCoverageDifferences) {
+    [Console]::Error.WriteLine("  lane root coverage: $difference")
+}
+Assert-ClosureCase 'scanned lane roots are the lanes the resolved collector links' (
+    $laneRootCoverageDifferences.Count -eq 0
+)
+$cases++
+
+# This tree does perform thread-suspending code mutation: four lanes rewrite
+# live game code themselves while every other thread in the process is stopped,
+# and every MinHook-backed lane delegates the same behaviour to a primitive that
+# patches even when its suspend attempt failed. The four no longer stop those
+# threads with their own SuspendThread - they take the freeze from the shared
+# inline_detour crate - and the operation is unchanged, so the finding has to
+# compose the freeze in the dependency with the patch in the unit. It did not,
+# and all four dropped out of this inventory the day they migrated.
+#
+# Those sites are pinned as an accepted inventory rather than asserted away, so
+# the case fails when a NEW patcher appears, when a unit starts suspending, when
+# a site moves to another file, or when a pinned site is gone. The roster is
+# printed either way - accepting these sites is not the same as hiding them.
 $suspendingCodeMutationFindings = Get-ProductionSuspendingCodeMutationFindings `
     -RepoRoot $repoRoot `
     -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $repoRoot)

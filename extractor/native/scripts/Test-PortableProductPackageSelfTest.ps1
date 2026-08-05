@@ -408,6 +408,10 @@ name = "replay_shared"
     # paths and locked versions. Those come out of the walk, not out of a list.
     $fixtureManifestInputs = [System.Collections.Generic.List[string]]::new()
     $fixtureSourceRoots = [System.Collections.Generic.List[string]]::new()
+    $fixtureUnitRoots = [System.Collections.Generic.List[string]]::new()
+    foreach ($closureUnit in $productionClosureUnits) {
+        $fixtureUnitRoots.Add([string]$closureUnit.unit_root)
+    }
     foreach ($closureUnit in $productionClosureUnits) {
         foreach ($manifestInput in @(
             [string]$closureUnit.manifest_path,
@@ -423,6 +427,14 @@ name = "replay_shared"
         if (-not $fixtureSourceRoots.Contains($closureUnitRoot)) {
             $fixtureSourceRoots.Add($closureUnitRoot)
         }
+        # Transitive, because the capability closure the authority computes is:
+        # an in-repository crate is expanded through its own manifest, so
+        # `extractor/native/snapshot` reaching `portable_replay/native/*` puts
+        # those crates in the tree the authority reads. Materialising only the
+        # units' DIRECT path dependencies built a fixture the authority then
+        # threw on, and the queue is seeded and grown from the same resolver the
+        # authority uses so the two cannot part company again.
+        $pendingDependencies = [System.Collections.Generic.Queue[string]]::new()
         foreach ($dependency in @($closureUnit.dependencies)) {
             # A dependency that is itself a production unit is already a root
             # here, and a registry crate is read out of the real cargo source
@@ -431,20 +443,34 @@ name = "replay_shared"
             if ($dependency.production_unit -or -not $dependency.path_dependency) {
                 continue
             }
-            $dependencyRoot = [string]$dependency.root
+            $pendingDependencies.Enqueue([string]$dependency.root)
+        }
+        while ($pendingDependencies.Count -ne 0) {
+            $dependencyRoot = [string]$pendingDependencies.Dequeue()
             if (-not $dependencyRoot.StartsWith(
                     $repoRootFull + '\',
                     [StringComparison]::OrdinalIgnoreCase
                 )) {
                 continue
             }
-            if (-not $fixtureSourceRoots.Contains($dependencyRoot)) {
-                $fixtureSourceRoots.Add($dependencyRoot)
+            if ($fixtureSourceRoots.Contains($dependencyRoot)) {
+                continue
             }
+            $fixtureSourceRoots.Add($dependencyRoot)
             $dependencyManifest = Join-Path $dependencyRoot 'Cargo.toml'
-            if ((Test-Path -LiteralPath $dependencyManifest -PathType Leaf) -and
-                -not $fixtureManifestInputs.Contains($dependencyManifest)) {
+            if (-not (Test-Path -LiteralPath $dependencyManifest -PathType Leaf)) {
+                continue
+            }
+            if (-not $fixtureManifestInputs.Contains($dependencyManifest)) {
                 $fixtureManifestInputs.Add($dependencyManifest)
+            }
+            foreach ($nested in @((Get-CrateManifestDependencyRoots `
+                        -CrateRoot $dependencyRoot `
+                        -LockPath ([string]$closureUnit.lock_path)).dependencies)) {
+                if (-not [bool]$nested.path_dependency) {
+                    continue
+                }
+                $pendingDependencies.Enqueue([string]$nested.root)
             }
         }
     }
@@ -458,9 +484,34 @@ name = "replay_shared"
                 Get-FixtureRelativePath -RepoRoot $repoRoot -Path $manifestInput
             ))
     }
+    # An in-repository DEPENDENCY that measures as capability-bearing is carried
+    # verbatim, and which ones those are is measured, not listed. The capability
+    # digest the committed pin accepts for such a crate is computed from that
+    # crate's own sources, so an inert body would make the fixture's digest for
+    # `inline_detour` differ from the repository's for no reason but the
+    # fixture, and the case below - which compares the two - could then only be
+    # weakened until it stopped saying anything. Unit sources stay inert: those
+    # ARE read by the forbidden-symbol rules, and copying them would turn this
+    # self-test into a restatement of the repository.
+    $verbatimFixtureRoots = [System.Collections.Generic.List[string]]::new()
+    $fixtureSuspensionEntryPoints = @(Get-ProductionThreadSuspensionEntryPoints)
+    $fixtureMutationEntryPoints = @(Get-ProductionCodeMutationEntryPoints)
+    foreach ($fixtureSourceRoot in $fixtureSourceRoots) {
+        if ($fixtureUnitRoots.Contains($fixtureSourceRoot)) {
+            continue
+        }
+        $dependencyScan = Get-ProductionCrateSourceCapabilityScan `
+            -Root $fixtureSourceRoot `
+            -SuspensionEntryPoints $fixtureSuspensionEntryPoints `
+            -CodeMutationEntryPoints $fixtureMutationEntryPoints
+        if ([bool]$dependencyScan.suspends -or [bool]$dependencyScan.mutates_code) {
+            $verbatimFixtureRoots.Add($fixtureSourceRoot)
+        }
+    }
     $fixtureSourceExtensions = @(Get-ProductionInteractionSourceExtensions)
     $fixtureMaterialisedSources = [System.Collections.Generic.List[string]]::new()
     foreach ($fixtureSourceRoot in $fixtureSourceRoots) {
+        $verbatimRoot = $verbatimFixtureRoots.Contains($fixtureSourceRoot)
         foreach ($sourceFile in @(
             Get-ChildItem -LiteralPath $fixtureSourceRoot -Recurse -Force -File
         )) {
@@ -470,7 +521,7 @@ name = "replay_shared"
             $relativeSource =
                 Get-FixtureRelativePath -RepoRoot $repoRoot -Path $sourceFile.FullName
             $destination = Join-Path $root $relativeSource
-            if ($verbatimFixtureSources -ccontains $relativeSource) {
+            if ($verbatimRoot -or $verbatimFixtureSources -ccontains $relativeSource) {
                 Copy-FixtureInput -Source $sourceFile.FullName -Destination $destination
             }
             else {
@@ -731,30 +782,389 @@ dependencies.path = "../lanes/active_command_abilities_live"
             ForEach-Object { [string]$_.unit } |
             Sort-Object
     )
-    $repoAcceptedPatcherDigests = @(
-        $repoSuspendingBaseline.units |
-            ForEach-Object { @($_.delegated_patchers) } |
-            Where-Object { [string]$_.package -ceq 'minhook' } |
-            ForEach-Object { [string]$_.capability_digest } |
-            Select-Object -Unique
-    )
+    # The expected delegated-patcher signature per unit is READ OUT of the
+    # committed pin, never written down here. It used to be the literal
+    # 'minhook', count exactly one - which was true only while every unit that
+    # patched live code named minhook itself. It stopped being true the moment
+    # lanes started taking their freeze from the shared in-repository detour
+    # crate, and a hand-written expectation would have had to be edited to match
+    # rather than reporting that the closure had changed shape.
+    $repoPatcherSignatures =
+        [System.Collections.Specialized.OrderedDictionary]::new([StringComparer]::Ordinal)
+    foreach ($repoUnit in @($repoSuspendingBaseline.units)) {
+        if (-not [bool]$repoUnit.delegates_suspending_code_mutation) {
+            continue
+        }
+        $repoPatcherSignatures[[string]$repoUnit.unit] = (@(
+            @($repoUnit.delegated_patchers) | ForEach-Object {
+                "$([string]$_.package)|$([bool]$_.reaches_suspension)|" +
+                "$([bool]$_.reaches_code_mutation)|$([string]$_.capability_digest)"
+            } | Sort-Object
+        ) -join ';')
+    }
     $fixtureBaselineUnits = @($fixtureSuspendingBaseline.units)
     $fixtureBaselineUnitNames = @(
         $fixtureBaselineUnits | ForEach-Object { [string]$_.unit } | Sort-Object
     )
     Assert-Case 'fixture reaches the exact accepted delegating unit closure' (
         $repoDelegatingUnits.Count -gt 0 -and
-        $repoAcceptedPatcherDigests.Count -eq 1 -and
         ($fixtureBaselineUnitNames -join '|') -ceq ($repoDelegatingUnits -join '|') -and
         @($fixtureBaselineUnits | Where-Object {
+            # The fixture's sources are inert, so no unit in it can perform the
+            # mutation itself and none can carry direct evidence. What it does
+            # carry is the manifest graph, so the delegation edges - and the
+            # capability each one contributes - have to be the accepted ones.
             [bool]$_.performs_suspending_code_mutation -or
             -not [bool]$_.delegates_suspending_code_mutation -or
             @($_.direct_evidence).Count -ne 0 -or
-            @($_.delegated_patchers).Count -ne 1 -or
-            [string]@($_.delegated_patchers)[0].package -cne 'minhook' -or
-            [string]@($_.delegated_patchers)[0].capability_digest -cne
-                $repoAcceptedPatcherDigests[0]
+            -not $repoPatcherSignatures.Contains([string]$_.unit) -or
+            (@(
+                @($_.delegated_patchers) | ForEach-Object {
+                    "$([string]$_.package)|$([bool]$_.reaches_suspension)|" +
+                    "$([bool]$_.reaches_code_mutation)|$([string]$_.capability_digest)"
+                } | Sort-Object
+            ) -join ';') -cne [string]$repoPatcherSignatures[[string]$_.unit]
         }).Count -eq 0
+    )
+
+    # Regression, mutation-proven by construction: the two halves of a
+    # suspending code mutation split across the unit/dependency boundary. A unit
+    # that writes live code itself and takes its thread freeze from a crate it
+    # depends on is doing exactly what this gate inventories, and the rule that
+    # required one scan subject to spell both halves reported nothing at all for
+    # it. Both sides are synthesised into a unit the fixture measures as clean,
+    # so the case can only pass because the halves were composed.
+    $splitClosureUnits = @(Get-ProductionUnitDependencyClosure -RepoRoot $root)
+    $splitCandidate = $null
+    foreach ($splitUnit in $splitClosureUnits) {
+        if ($fixtureBaselineUnitNames -ccontains [string]$splitUnit.unit) {
+            continue
+        }
+        $splitDependency = @(
+            @($splitUnit.dependencies) | Where-Object {
+                [bool]$_.path_dependency -and
+                -not [bool]$_.production_unit -and
+                ([string]$_.root).StartsWith(
+                    ([IO.Path]::GetFullPath($root).TrimEnd('\')) + '\',
+                    [StringComparison]::OrdinalIgnoreCase
+                )
+            } | Select-Object -First 1
+        )
+        if ($splitDependency.Count -ne 1) {
+            continue
+        }
+        $splitUnitSource = @(
+            Get-ChildItem -LiteralPath ([string]$splitUnit.unit_root) -Recurse -Force -File |
+                Where-Object { $_.Extension -ceq '.rs' } |
+                Sort-Object FullName |
+                Select-Object -First 1
+        )
+        $splitDependencySource = @(
+            Get-ChildItem -LiteralPath ([string]$splitDependency[0].root) -Recurse -Force -File |
+                Where-Object { $_.Extension -ceq '.rs' } |
+                Sort-Object FullName |
+                Select-Object -First 1
+        )
+        if ($splitUnitSource.Count -ne 1 -or $splitDependencySource.Count -ne 1) {
+            continue
+        }
+        $splitCandidate = [pscustomobject]@{
+            Unit = [string]$splitUnit.unit
+            UnitSource = [string]$splitUnitSource[0].FullName
+            DependencyName = [string]$splitDependency[0].name
+            DependencySource = [string]$splitDependencySource[0].FullName
+        }
+        break
+    }
+    if ($null -eq $splitCandidate) {
+        throw (
+            'self-test fixture has no clean production unit with an in-repository ' +
+            'path dependency to compose a split suspending code mutation from'
+        )
+    }
+    $splitUnitOriginal = [IO.File]::ReadAllText($splitCandidate.UnitSource)
+    $splitDependencyOriginal = [IO.File]::ReadAllText($splitCandidate.DependencySource)
+    try {
+        [IO.File]::WriteAllText(
+            $splitCandidate.UnitSource,
+            ($splitUnitOriginal + @'
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn VirtualProtect(a: *mut u8, b: usize, c: u32, d: *mut u32) -> i32;
+}
+pub unsafe fn split_fixture_mutates_code(a: *mut u8, d: *mut u32) -> i32 {
+    VirtualProtect(a, 1, 0x40, d)
+}
+'@),
+            [Text.UTF8Encoding]::new($false)
+        )
+        [IO.File]::WriteAllText(
+            $splitCandidate.DependencySource,
+            ($splitDependencyOriginal + @'
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn SuspendThread(a: *mut u8) -> u32;
+}
+pub unsafe fn split_fixture_suspends(a: *mut u8) -> u32 {
+    SuspendThread(a)
+}
+'@),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $splitFindings = Get-ProductionSuspendingCodeMutationFindings `
+            -RepoRoot $root `
+            -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root)
+        $splitUnitFinding = @(
+            @($splitFindings.non_conforming_units) |
+                Where-Object { [string]$_.unit -ceq $splitCandidate.Unit }
+        )
+        $splitPatcher = @(
+            if ($splitUnitFinding.Count -eq 1) {
+                @($splitUnitFinding[0].delegated_patchers) | Where-Object {
+                    [string]$_.dependency -ceq $splitCandidate.DependencyName
+                }
+            }
+        )
+        Assert-Case 'a freeze in a dependency and a patch in the unit compose into one finding' (
+            $splitUnitFinding.Count -eq 1 -and
+            # Neither side spells both halves, so neither side is reportable on
+            # its own - which is precisely why this used to measure as clean.
+            -not [bool]$splitUnitFinding[0].performs_suspending_code_mutation -and
+            [bool]$splitUnitFinding[0].delegates_suspending_code_mutation -and
+            @($splitUnitFinding[0].suspension_sites).Count -eq 0 -and
+            @($splitUnitFinding[0].code_mutation_sites).Count -gt 0 -and
+            $splitPatcher.Count -eq 1 -and
+            [bool]$splitPatcher[0].reaches_suspension -and
+            -not [bool]$splitPatcher[0].reaches_code_mutation
+        )
+    }
+    finally {
+        [IO.File]::WriteAllText(
+            $splitCandidate.UnitSource,
+            $splitUnitOriginal,
+            [Text.UTF8Encoding]::new($false)
+        )
+        [IO.File]::WriteAllText(
+            $splitCandidate.DependencySource,
+            $splitDependencyOriginal,
+            [Text.UTF8Encoding]::new($false)
+        )
+    }
+
+    # The same split, but with the freeze in a crate OUTSIDE the repository.
+    # A registry crate is not expanded through its manifest, so the only thing
+    # that can be said about it is what its own sources do - and a name that is
+    # merely mentioned there may belong to something else entirely, which is why
+    # the rule asks whether the half is exercised rather than merely present.
+    # Both halves of that distinction are pinned here: a crate that CALLS the
+    # entry point contributes its half, a crate that only names it does not.
+    $externalCrateRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        'hoi4-selftest-external-' + [guid]::NewGuid().ToString('N')
+    )
+    $externalCallingRoot = Join-Path $externalCrateRoot 'calling'
+    $externalNamingRoot = Join-Path $externalCrateRoot 'naming'
+    $externalPointerRoot = Join-Path $externalCrateRoot 'pointer'
+    try {
+        [IO.Directory]::CreateDirectory((Join-Path $externalCallingRoot 'src')) | Out-Null
+        [IO.Directory]::CreateDirectory((Join-Path $externalNamingRoot 'src')) | Out-Null
+        [IO.Directory]::CreateDirectory((Join-Path $externalPointerRoot 'src')) | Out-Null
+        [IO.File]::WriteAllText(
+            (Join-Path $externalCallingRoot 'src\lib.rs'),
+            @'
+#[link(name = "kernel32")]
+extern "system" {
+    fn SuspendThread(a: *mut u8) -> u32;
+}
+pub unsafe fn external_fixture_suspends(a: *mut u8) -> u32 {
+    SuspendThread(a)
+}
+'@,
+            [Text.UTF8Encoding]::new($false)
+        )
+        # The exact shape the unrestricted rule reported as a thread freeze:
+        # libc-0.2.189/src/psp.rs:505 is `SuspendThread = 66`, a variant of a
+        # PlayStation-Portable enum.
+        [IO.File]::WriteAllText(
+            (Join-Path $externalNamingRoot 'src\lib.rs'),
+            @'
+#[repr(i32)]
+pub enum ExternalFixtureThreadOp {
+    SleepThread = 64,
+    SuspendThread = 66,
+}
+'@,
+            [Text.UTF8Encoding]::new($false)
+        )
+        # The ordinary indirect call: the entry point is bound to a local and
+        # the local is called. Nothing about this is a definition of the name,
+        # and a rule that discounted it would suppress a genuine freeze in a
+        # third-party crate.
+        [IO.File]::WriteAllText(
+            (Join-Path $externalPointerRoot 'src\lib.rs'),
+            @'
+#[link(name = "kernel32")]
+extern "system" {
+    fn SuspendThread(a: *mut u8) -> u32;
+}
+pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
+    let suspend = SuspendThread;
+    suspend(a)
+}
+'@,
+            [Text.UTF8Encoding]::new($false)
+        )
+        $externalLockPath = Join-Path $root 'extractor\native\Cargo.lock'
+        $externalSuspension = @(Get-ProductionThreadSuspensionEntryPoints)
+        $externalMutation = @(Get-ProductionCodeMutationEntryPoints)
+        $externalCallingClosure = Get-ProductionDependencyCapabilityClosure `
+            -RepoRoot $root `
+            -Root $externalCallingRoot `
+            -LockPath $externalLockPath `
+            -SuspensionEntryPoints $externalSuspension `
+            -CodeMutationEntryPoints $externalMutation
+        $externalNamingClosure = Get-ProductionDependencyCapabilityClosure `
+            -RepoRoot $root `
+            -Root $externalNamingRoot `
+            -LockPath $externalLockPath `
+            -SuspensionEntryPoints $externalSuspension `
+            -CodeMutationEntryPoints $externalMutation
+        Assert-Case 'a crate outside the repository that calls the freeze contributes its half' (
+            [bool]$externalCallingClosure.reaches_suspension -and
+            -not [bool]$externalCallingClosure.reaches_code_mutation -and
+            @($externalCallingClosure.suspension_sites).Count -eq 1 -and
+            [string]@($externalCallingClosure.suspension_sites)[0].kind -ceq 'direct_call'
+        )
+        $externalPointerClosure = Get-ProductionDependencyCapabilityClosure `
+            -RepoRoot $root `
+            -Root $externalPointerRoot `
+            -LockPath $externalLockPath `
+            -SuspensionEntryPoints $externalSuspension `
+            -CodeMutationEntryPoints $externalMutation
+        Assert-Case 'a crate outside the repository that calls the freeze through a pointer contributes its half' (
+            [bool]$externalPointerClosure.reaches_suspension -and
+            -not [bool]$externalPointerClosure.reaches_code_mutation -and
+            # The binding is a reference, not a call, and it still counts: the
+            # only kind that does not is a DEFINITION of the name.
+            @(@($externalPointerClosure.suspension_sites) | Where-Object {
+                [string]$_.kind -ceq 'capability_reference'
+            }).Count -eq 1
+        )
+        Assert-Case 'a crate outside the repository that only names the freeze contributes nothing' (
+            -not [bool]$externalNamingClosure.reaches_suspension -and
+            -not [bool]$externalNamingClosure.reaches_code_mutation -and
+            @($externalNamingClosure.suspension_sites).Count -eq 0 -and
+            # The site IS measured, as a definition of the name - it is the
+            # contribution rule that declines it, not the scanner failing to see
+            # it. If the scan stopped seeing the enum variant this case would
+            # pass for the wrong reason.
+            @(@((Get-ProductionCrateSourceCapabilityScan `
+                -Root $externalNamingRoot `
+                -SuspensionEntryPoints $externalSuspension `
+                -CodeMutationEntryPoints $externalMutation).suspension_sites) |
+                    Where-Object { [string]$_.kind -ceq 'capability_definition' }
+            ).Count -eq 1
+        )
+    }
+    finally {
+        if (Test-Path -LiteralPath $externalCrateRoot) {
+            Remove-Item -LiteralPath $externalCrateRoot -Recurse -Force
+        }
+    }
+
+    # A pinned reachability flag has to be a real boolean in the file. [bool] on
+    # the string "false" is $true, so a pin that spelled it as a string would
+    # compare equal to a measured $true while reading as its opposite.
+    $booleanPinUnit = [pscustomobject]@{
+        unit = 'extractor/native/lanes/fixture_boolean_pin'
+        performs_suspending_code_mutation = $false
+        delegates_suspending_code_mutation = $true
+        direct_evidence = @()
+        delegated_patchers = @(
+            [pscustomobject]@{
+                dependency = 'fixture_patcher'
+                package = 'fixture_patcher'
+                reaches_suspension = 'false'
+                reaches_code_mutation = $true
+                capability_digest = 'f' * 64
+            }
+        )
+    }
+    $booleanPinDefects = @(Get-ProductionSuspendingCodeMutationBaselineDefects -Pinned (
+        [pscustomobject]@{
+            schema = 'hoi4.production-suspending-code-mutation-baseline.v1'
+            units = @($booleanPinUnit)
+        }
+    ))
+    Assert-Case 'a pinned reachability flag spelled as a string is rejected' (
+        @($booleanPinDefects | Where-Object {
+            ([string]$_).Contains('reaches_suspension') -and
+            ([string]$_).Contains('is not a boolean')
+        }).Count -eq 1
+    )
+
+    # The lane-root derivation and cargo's own resolution of the collector have
+    # to name the same lanes, and removing a lane from the manifest walk has to
+    # be what makes them disagree. Without this, a dependency shape the TOML
+    # reader stops understanding silently shrinks the tree every other case
+    # above measures, and every one of them still passes.
+    Assert-Case 'fixture lane roots agree with the resolved collector' (
+        @(Get-CollectorProductionLaneRootCoverageDifferences -RepoRoot $root).Count -eq 0
+    )
+    $coverageCollectorCargoPath =
+        Join-Path $root 'extractor\native\collector\Cargo.toml'
+    $coverageCollectorCargoOriginal =
+        [IO.File]::ReadAllText($coverageCollectorCargoPath)
+    # Which lane is dropped is derived, not chosen: a lane the collector also
+    # reaches through another lane's manifest stays in the walk when the
+    # collector's own edge is deleted, and asserting on a hand-picked name would
+    # make this case depend on which lane happened to be first in the file.
+    $coverageMutationProven = $false
+    $coverageDroppedLaneName = $null
+    try {
+        foreach ($coverageMatch in @([regex]::Matches(
+                    $coverageCollectorCargoOriginal,
+                    '(?m)^[^\r\n]*path\s*=\s*"\.\./lanes/(?<lane>[A-Za-z0-9_]+)"[^\r\n]*\r?\n'
+                ))) {
+            [IO.File]::WriteAllText(
+                $coverageCollectorCargoPath,
+                $coverageCollectorCargoOriginal.Remove(
+                    $coverageMatch.Index,
+                    $coverageMatch.Length
+                ),
+                [Text.UTF8Encoding]::new($false)
+            )
+            $coverageLane = [string]$coverageMatch.Groups['lane'].Value
+            $coverageDifferences = @(
+                Get-CollectorProductionLaneRootCoverageDifferences -RepoRoot $root
+            )
+            if (@($coverageDifferences | Where-Object {
+                        ([string]$_).EndsWith(
+                            '\' + $coverageLane,
+                            [StringComparison]::OrdinalIgnoreCase
+                        ) -and
+                        ([string]$_).Contains('is not in the scanned lane roots')
+                    }).Count -ge 1) {
+                $coverageMutationProven = $true
+                $coverageDroppedLaneName = $coverageLane
+                break
+            }
+        }
+    }
+    finally {
+        [IO.File]::WriteAllText(
+            $coverageCollectorCargoPath,
+            $coverageCollectorCargoOriginal,
+            [Text.UTF8Encoding]::new($false)
+        )
+    }
+    Assert-Case 'a lane dropped from the manifest walk fails the coverage cross-check' (
+        $coverageMutationProven -and
+        -not [string]::IsNullOrWhiteSpace($coverageDroppedLaneName)
+    )
+    Assert-Case 'the coverage cross-check is green again once the lane is restored' (
+        @(Get-CollectorProductionLaneRootCoverageDifferences -RepoRoot $root).Count -eq 0
     )
 
     $fixtureBuilder = Join-Path $fixtureScripts 'New-PortableProductPackage.ps1'
@@ -1779,8 +2189,14 @@ pub fn observer_only() {}
     $domains = @(
         $registry.domains |
             Where-Object {
+                # Read through PSObject.Properties, exactly as the promotion
+                # authority does: the key is ABSENT on the 83 of 88 domains that
+                # are still scheduled, and a direct `$_.capture_scheduled` is a
+                # terminating PropertyNotFoundStrict under the strict mode this
+                # script sets.
+                $descheduled = $_.PSObject.Properties['capture_scheduled']
                 $_.schedulable -eq $true -and
-                $_.capture_scheduled -ne $false -and
+                -not ($null -ne $descheduled -and $descheduled.Value -eq $false) -and
                 $promotionStatuses -ccontains [string]$_.status
             } |
             Sort-Object { [int]$_.id }

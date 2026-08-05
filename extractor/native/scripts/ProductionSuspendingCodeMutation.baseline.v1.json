@@ -6,13 +6,33 @@
                       "performs_suspending_code_mutation":  false,
                       "delegates_suspending_code_mutation":  true,
                       "direct_evidence":  [
-
+                                              {
+                                                  "file":  "extractor/native/collector/src/attach_log/critical_path_tests.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/collector/src/attach_log/tests.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  3
+                                              }
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -25,9 +45,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -40,9 +69,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -55,9 +93,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -70,9 +117,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -85,9 +141,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -100,9 +165,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -115,9 +189,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -130,9 +213,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -145,16 +237,25 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
                   {
                       "unit":  "extractor/native/lanes/fired_event_popups_live",
-                      "performs_suspending_code_mutation":  true,
-                      "delegates_suspending_code_mutation":  false,
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
                       "direct_evidence":  [
                                               {
                                                   "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
@@ -164,30 +265,24 @@
                                               },
                                               {
                                                   "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
-                                                  "capability":  "ResumeThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
-                                                  "capability":  "SuspendThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/fired_event_popups_live/src/a729_inline_hook.rs",
                                                   "capability":  "VirtualProtect",
                                                   "kind":  "direct_call",
                                                   "count":  4
                                               }
                                           ],
                       "delegated_patchers":  [
-
+                                                 {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 }
                                              ]
                   },
                   {
                       "unit":  "extractor/native/lanes/focus_research_decisions_depth_live",
-                      "performs_suspending_code_mutation":  true,
+                      "performs_suspending_code_mutation":  false,
                       "delegates_suspending_code_mutation":  true,
                       "direct_evidence":  [
                                               {
@@ -198,18 +293,6 @@
                                               },
                                               {
                                                   "file":  "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
-                                                  "capability":  "ResumeThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
-                                                  "capability":  "SuspendThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
                                                   "capability":  "VirtualProtect",
                                                   "kind":  "direct_call",
                                                   "count":  3
@@ -217,9 +300,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -232,9 +324,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -247,9 +348,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -258,20 +368,40 @@
                       "performs_suspending_code_mutation":  false,
                       "delegates_suspending_code_mutation":  true,
                       "direct_evidence":  [
-
+                                              {
+                                                  "file":  "extractor/native/lanes/land_combat_detail_events_live/src/a729_hook.rs",
+                                                  "capability":  "FlushInstructionCache",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
+                                                  "file":  "extractor/native/lanes/land_combat_detail_events_live/src/a729_hook.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              }
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
                   {
                       "unit":  "extractor/native/lanes/naval_combat_live",
-                      "performs_suspending_code_mutation":  true,
-                      "delegates_suspending_code_mutation":  false,
+                      "performs_suspending_code_mutation":  false,
+                      "delegates_suspending_code_mutation":  true,
                       "direct_evidence":  [
                                               {
                                                   "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
@@ -281,25 +411,19 @@
                                               },
                                               {
                                                   "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
-                                                  "capability":  "ResumeThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
-                                                  "capability":  "SuspendThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/naval_combat_live/src/convoy_terminal_hook_windows.rs",
                                                   "capability":  "VirtualProtect",
                                                   "kind":  "direct_call",
                                                   "count":  3
                                               }
                                           ],
                       "delegated_patchers":  [
-
+                                                 {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 }
                                              ]
                   },
                   {
@@ -311,9 +435,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -326,9 +459,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -341,9 +483,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -356,9 +507,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -371,9 +531,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -386,9 +555,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
@@ -401,15 +579,24 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   },
                   {
                       "unit":  "extractor/native/lanes/supply_logistics_attrition_live",
-                      "performs_suspending_code_mutation":  true,
+                      "performs_suspending_code_mutation":  false,
                       "delegates_suspending_code_mutation":  true,
                       "direct_evidence":  [
                                               {
@@ -420,18 +607,6 @@
                                               },
                                               {
                                                   "file":  "extractor/native/lanes/supply_logistics_attrition_live/src/a729_attrition_hook.rs",
-                                                  "capability":  "ResumeThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/supply_logistics_attrition_live/src/a729_attrition_hook.rs",
-                                                  "capability":  "SuspendThread",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/supply_logistics_attrition_live/src/a729_attrition_hook.rs",
                                                   "capability":  "VirtualProtect",
                                                   "kind":  "direct_call",
                                                   "count":  5
@@ -439,9 +614,18 @@
                                           ],
                       "delegated_patchers":  [
                                                  {
+                                                     "dependency":  "inline_detour",
+                                                     "package":  "inline_detour",
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "448934c7b6305e6df618f49c461a225b109801e73a85c4cfe78df7e3666175aa"
+                                                 },
+                                                 {
                                                      "dependency":  "minhook",
                                                      "package":  "minhook",
-                                                     "capability_digest":  "387b2caf6d7d6d86594002b6c2d260211a89d3d35e19a99cfca0675bb419284d"
+                                                     "reaches_suspension":  true,
+                                                     "reaches_code_mutation":  true,
+                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
                                                  }
                                              ]
                   }

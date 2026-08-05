@@ -1163,6 +1163,170 @@ function Get-CollectorProductionLaneRoots {
     return @($laneRoots | Sort-Object)
 }
 
+function Get-CargoLockPackageDependencyGraph {
+    # Cargo's own resolution of the workspace, read as a graph. This is the same
+    # TOML lexer the manifests go through, so there is no second parser here -
+    # only a second SOURCE, which is the whole point of reading it.
+    param([Parameter(Mandatory = $true)][string]$LockPath)
+
+    if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
+        throw "production Cargo.lock is missing: $LockPath"
+    }
+    $graph = [System.Collections.Specialized.OrderedDictionary]::new([StringComparer]::Ordinal)
+    $current = $null
+    foreach ($assignment in @(Get-TomlLogicalAssignments -Toml (
+                Get-Content -LiteralPath $LockPath -Raw
+            ))) {
+        if (([string]$assignment.Section) -cne 'package') {
+            continue
+        }
+        $key = [string]$assignment.Key
+        $value = [string]$assignment.Value
+        if ($key -ceq 'name') {
+            # Every [[package]] block opens with its name, so a name is what
+            # starts a block here. A lock file that stopped doing that would
+            # attribute dependencies to the previous package, which is why the
+            # coverage assertion below also requires the package it starts from
+            # to exist.
+            $current = $value.Trim().Trim('"', "'")
+            if (-not $graph.Contains($current)) {
+                $graph[$current] = [System.Collections.Generic.List[string]]::new()
+            }
+            continue
+        }
+        if ($key -cne 'dependencies' -or $null -eq $current) {
+            continue
+        }
+        foreach ($match in [regex]::Matches($value, '"(?<entry>[^"]+)"')) {
+            # A lock entry is "name", or "name version", or
+            # "name version (source)" when one name resolves to several
+            # versions. The name is the first field either way.
+            $graph[$current].Add(
+                (([string]$match.Groups['entry'].Value).Split(' ')[0])
+            )
+        }
+    }
+    return $graph
+}
+
+function Get-CollectorLockResolvedLaneRoots {
+    # What cargo itself says the collector links, restricted to the lane roots.
+    #
+    # This exists to be a SECOND derivation of the production lane set, computed
+    # from an artifact this repository's PowerShell does not write: cargo
+    # resolves Cargo.lock from the manifests, and this walk starts at the
+    # collector package and follows the lock's own dependency lists. The first
+    # derivation - Get-CollectorProductionLaneRoots - walks the manifests with
+    # our TOML reader. A dependency shape our reader stops understanding makes
+    # the two disagree instead of quietly shrinking the scanned tree, which is
+    # the failure this whole gate was one refactor away from.
+    #
+    # One known asymmetry, stated rather than papered over: Cargo.lock merges a
+    # package's normal, build and dev dependencies into one list, while the
+    # manifest walk deliberately reads only the normal and target-scoped ones.
+    # A lane that became dev-only would therefore show up here as a difference.
+    # That is the intended behaviour - a lane leaving what production links is
+    # exactly the change this must not absorb silently.
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $repo = [IO.Path]::GetFullPath($RepoRoot)
+    $workspaceRoot = Join-Path $repo 'extractor\native'
+    $lockPath = Join-Path $workspaceRoot 'Cargo.lock'
+    $lanesRoot = [IO.Path]::GetFullPath((Join-Path $workspaceRoot 'lanes'))
+    if (-not (Test-Path -LiteralPath $lanesRoot -PathType Container)) {
+        throw 'extractor production lane root is missing'
+    }
+    $graph = Get-CargoLockPackageDependencyGraph -LockPath $lockPath
+    if (-not $graph.Contains('collector')) {
+        throw "production Cargo.lock does not resolve the collector package: $lockPath"
+    }
+    $reached = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $pending = [System.Collections.Generic.Queue[string]]::new()
+    $pending.Enqueue('collector')
+    while ($pending.Count -ne 0) {
+        $package = $pending.Dequeue()
+        if (-not $reached.Add($package)) {
+            continue
+        }
+        if (-not $graph.Contains($package)) {
+            continue
+        }
+        foreach ($dependency in @($graph[$package])) {
+            $pending.Enqueue([string]$dependency)
+        }
+    }
+    $roots = [System.Collections.Generic.List[string]]::new()
+    foreach ($laneDirectory in @(
+        Get-ChildItem -LiteralPath $lanesRoot -Directory -Force | Sort-Object Name
+    )) {
+        $manifestPath = Join-Path $laneDirectory.FullName 'Cargo.toml'
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            continue
+        }
+        $packageName = $null
+        foreach ($assignment in @(Get-TomlLogicalAssignments -Toml (
+                    Get-Content -LiteralPath $manifestPath -Raw
+                ))) {
+            if (([string]$assignment.Section) -ceq 'package' -and
+                ([string]$assignment.Key) -ceq 'name') {
+                $packageName = ([string]$assignment.Value).Trim().Trim('"', "'")
+                break
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($packageName)) {
+            throw "production lane manifest declares no package name: $manifestPath"
+        }
+        if ($reached.Contains($packageName)) {
+            $roots.Add([IO.Path]::GetFullPath($laneDirectory.FullName).TrimEnd('\'))
+        }
+    }
+    return @($roots | Sort-Object)
+}
+
+function Get-CollectorProductionLaneRootCoverageDifferences {
+    # The manifest walk and cargo's own resolution have to name the same lanes.
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $repo = [IO.Path]::GetFullPath($RepoRoot)
+    $derived = @(
+        Get-CollectorProductionLaneRoots -RepoRoot $repo |
+            ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') }
+    )
+    $locked = @(Get-CollectorLockResolvedLaneRoots -RepoRoot $repo)
+    $differences = [System.Collections.Generic.List[string]]::new()
+    foreach ($root in $locked) {
+        if ($derived -cnotcontains $root) {
+            $differences.Add(
+                'production lane is linked by the resolved collector but is not ' +
+                "in the scanned lane roots: $root"
+            )
+        }
+    }
+    foreach ($root in $derived) {
+        if ($locked -cnotcontains $root) {
+            $differences.Add(
+                'production lane is in the scanned lane roots but the resolved ' +
+                "collector does not link it: $root"
+            )
+        }
+    }
+    return @($differences)
+}
+
+function Assert-CollectorProductionLaneRootCoverage {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $differences = @(
+        Get-CollectorProductionLaneRootCoverageDifferences -RepoRoot $RepoRoot
+    )
+    if ($differences.Count -ne 0) {
+        throw (
+            @('production lane root coverage disagrees with the resolved collector:') +
+            @($differences | ForEach-Object { "  $_" })
+        ) -join [Environment]::NewLine
+    }
+}
+
 function Get-ProductionInteractionSourceExtensions {
     # The one answer to "which files in a production root are source". A second
     # copy of this list somewhere else is a place where the authority can start
@@ -1174,6 +1338,13 @@ function Get-ProductionInteractionSourceTreeAuthority {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
     $repo = [IO.Path]::GetFullPath($RepoRoot)
+    # Every rule downstream of here reads only the files this list admits, so a
+    # lane that leaves the manifest walk does not fail anything - it makes
+    # everything pass over a smaller tree. The cross-check is therefore inside
+    # the authority rather than beside one of its callers: the package builder
+    # and the receipt verifier read this list too, and neither of them would
+    # otherwise notice that production had quietly stopped being scanned.
+    Assert-CollectorProductionLaneRootCoverage -RepoRoot $repo
     $roots = @(
         (Join-Path $repo 'extractor\native\recorder_host'),
         (Join-Path $repo 'extractor\native\collector'),
@@ -1263,11 +1434,20 @@ function Get-ProductionPassiveSourceAdmissionClosure {
     # never installed in a passive capture, which is exactly the shape this
     # closure blocks the package for. Owned by
     # compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS.
+    # The key is read through PSObject.Properties because it is ABSENT on the
+    # 83 of 88 domains that are still scheduled, and `$_.capture_scheduled` on
+    # an object that does not have it is a terminating PropertyNotFoundStrict
+    # under the Set-StrictMode -Version Latest that every caller of this
+    # function runs with. The package builder, the receipt verifier and the
+    # package self-test all reach this line and all three died on it; the
+    # interaction-closure gate never calls this function, which is why it went
+    # unnoticed. Reproduced on the unmodified helper at aa602182.
     $productionIds = @(
         $registry.domains |
             Where-Object {
+                $descheduled = $_.PSObject.Properties['capture_scheduled']
                 $_.schedulable -eq $true -and
-                $_.capture_scheduled -ne $false -and
+                -not ($null -ne $descheduled -and $descheduled.Value -eq $false) -and
                 $productionStatuses -ccontains [string]$_.status
             } |
             Sort-Object { [int]$_.id } |
@@ -1937,12 +2117,26 @@ function Get-ProductionCapabilityEvidenceCore {
                         -NameIndex $match.Index)) {
                 continue
             }
+            # A name immediately followed by an assignment is being DEFINED, not
+            # used: `SuspendThread = 66` is a variant of an enum that happens to
+            # spell the entry point. A name that is bound to something -
+            # `let suspend = SuspendThread;` - is on the other side of that `=`
+            # and is a use of the function pointer, not a definition of a
+            # constant, so it stays a `capability_reference`.
+            #
+            # `==` and `=>` are excluded because neither defines the name, and
+            # this distinction only ever REMOVES evidence for crates outside the
+            # repository. Inside it, every kind counts, so a definition site is
+            # still measured, still reported and still pinned.
+            $isDefinition = (-not $isCall -and $after -cmatch '^\s*=(?![=>])')
             $sites.Add([ordered]@{
                 path = $Path
                 line = Get-ProductionSourceLineNumber -Text $Code -Index $match.Index
                 capability = $entryPoint
                 token = $entryPoint
-                kind = if ($isCall) { 'direct_call' } else { 'capability_reference' }
+                kind = if ($isCall) { 'direct_call' }
+                    elseif ($isDefinition) { 'capability_definition' }
+                    else { 'capability_reference' }
             })
         }
     }
@@ -2176,6 +2370,15 @@ function Get-ProductionCrateSourceCapabilityScan {
         root = $rootFull
         suspension_sites = @($suspensionSites)
         code_mutation_sites = @($mutationSites)
+        # The two halves are reported separately because they are separately
+        # composable. A crate that only stops threads is still the thread-stop
+        # half of a suspending code mutation when its dependent writes the
+        # bytes, and reporting only the conjunction is what let exactly that
+        # split walk out of this gate: four lanes moved their suspender into a
+        # shared crate, kept the VirtualProtect, and both halves stopped being
+        # visible at once.
+        suspends = ($suspensionSites.Count -gt 0)
+        mutates_code = ($mutationSites.Count -gt 0)
         suspends_and_mutates_code =
             ($suspensionSites.Count -gt 0 -and $mutationSites.Count -gt 0)
     }
@@ -2235,6 +2438,123 @@ function Get-CargoRegistryCrateRoot {
     return [string]$candidates[0]
 }
 
+function Get-CrateOwningCargoLockPath {
+    param([Parameter(Mandatory = $true)][string]$CrateRoot)
+
+    $probe = Split-Path -Parent ([IO.Path]::GetFullPath($CrateRoot).TrimEnd('\'))
+    while (-not [string]::IsNullOrEmpty($probe)) {
+        $candidate = Join-Path $probe 'Cargo.lock'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+        $probe = Split-Path -Parent $probe
+    }
+    return $null
+}
+
+function Get-CrateManifestDependencyRoots {
+    # The one resolution of "which crate roots does this manifest name", for any
+    # crate in the repository - a production unit or a crate a production unit
+    # depends on. Both callers below go through this, so a dependency shape the
+    # resolver stops understanding stops being followed everywhere at once and
+    # cannot go missing from one traversal while another still sees it.
+    #
+    # dev-dependencies and build-dependencies are not here, because
+    # Get-TomlProductionDependencyRecords does not return them: their table
+    # names are `dev-dependencies` and `build-dependencies`, not `dev` and
+    # `build` sub-tables of `dependencies`. What a production artifact links is
+    # the normal and target-scoped graph.
+    param(
+        [Parameter(Mandatory = $true)][string]$CrateRoot,
+        # The lock of the workspace that is BUILDING this crate. A path
+        # dependency shared between workspaces - the portable_replay crates are
+        # built by both extractor/native and replay_interface/native - has no
+        # Cargo.lock above it, and the versions its own registry dependencies
+        # resolve to are decided by whichever workspace pulled it in. Walking up
+        # from the crate is only correct for a crate that owns its workspace.
+        [string]$LockPath
+    )
+
+    $crateFull = [IO.Path]::GetFullPath($CrateRoot).TrimEnd('\')
+    $manifestPath = Join-Path $crateFull 'Cargo.toml'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "production unit Cargo manifest is missing: $manifestPath"
+    }
+    $lockPath = if (-not [string]::IsNullOrWhiteSpace($LockPath)) {
+        [IO.Path]::GetFullPath($LockPath)
+    }
+    else {
+        Get-CrateOwningCargoLockPath -CrateRoot $crateFull
+    }
+    if ([string]::IsNullOrWhiteSpace($lockPath)) {
+        throw "production unit has no owning Cargo.lock: $crateFull"
+    }
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "production unit Cargo.lock is missing: $lockPath"
+    }
+    $workspaceRoot = Split-Path -Parent $lockPath
+    $workspaceCargoPath = Join-Path $workspaceRoot 'Cargo.toml'
+    $workspaceRecords = @(
+        if (Test-Path -LiteralPath $workspaceCargoPath -PathType Leaf) {
+            Get-TomlProductionDependencyRecords -Toml (
+                Get-Content -LiteralPath $workspaceCargoPath -Raw
+            ) | Where-Object { [string]$_.scope -ceq 'workspace.dependencies' }
+        }
+    )
+    $dependencies = [System.Collections.Generic.List[object]]::new()
+    foreach ($record in @(Get-TomlProductionDependencyRecords -Toml (
+                Get-Content -LiteralPath $manifestPath -Raw
+            ))) {
+        if ([string]$record.scope -ceq 'workspace.dependencies') {
+            continue
+        }
+        $dependencyName = [string]$record.name
+        $package = if ([string]::IsNullOrWhiteSpace([string]$record.package)) {
+            $dependencyName
+        }
+        else {
+            [string]$record.package
+        }
+        $dependencyPath = [string]$record.path
+        $dependencyBase = $crateFull
+        if ([string]::IsNullOrWhiteSpace($dependencyPath) -and $record.workspace) {
+            $inherited = @($workspaceRecords | Where-Object {
+                [string]$_.name -ceq $dependencyName
+            })
+            if ($inherited.Count -eq 1) {
+                $dependencyPath = [string]$inherited[0].path
+                $dependencyBase = $workspaceRoot
+                if (-not [string]::IsNullOrWhiteSpace([string]$inherited[0].package)) {
+                    $package = [string]$inherited[0].package
+                }
+            }
+        }
+        $isPathDependency = (-not [string]::IsNullOrWhiteSpace($dependencyPath))
+        $dependencyRoot = if ($isPathDependency) {
+            [IO.Path]::GetFullPath((Join-Path $dependencyBase $dependencyPath)).TrimEnd('\')
+        }
+        else {
+            Get-CargoRegistryCrateRoot `
+                -Package $package `
+                -Version (Get-CargoLockPackageVersion -LockPath $lockPath -Package $package)
+        }
+        $dependencies.Add([ordered]@{
+            name = $dependencyName
+            package = $package
+            root = $dependencyRoot
+            path_dependency = $isPathDependency
+        })
+    }
+    return [ordered]@{
+        crate_root = $crateFull
+        manifest_path = $manifestPath
+        lock_path = $lockPath
+        workspace_root = $workspaceRoot
+        workspace_cargo_path = $workspaceCargoPath
+        dependencies = @($dependencies)
+    }
+}
+
 function Get-ProductionUnitDependencyClosure {
     # The one traversal that answers "what does a production unit reach through
     # its manifest": for every production unit, the manifest that declares its
@@ -2262,91 +2582,224 @@ function Get-ProductionUnitDependencyClosure {
     $units = [System.Collections.Generic.List[object]]::new()
     foreach ($unitRoot in $unitRoots) {
         $unitFull = [IO.Path]::GetFullPath($unitRoot).TrimEnd('\')
-        $manifestPath = Join-Path $unitFull 'Cargo.toml'
-        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-            throw "production unit Cargo manifest is missing: $manifestPath"
-        }
-        $lockPath = $null
-        $probe = Split-Path -Parent $unitFull
-        while (-not [string]::IsNullOrEmpty($probe)) {
-            $candidate = Join-Path $probe 'Cargo.lock'
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                $lockPath = $candidate
-                break
-            }
-            $probe = Split-Path -Parent $probe
-        }
-        if ($null -eq $lockPath) {
-            throw "production unit has no owning Cargo.lock: $unitFull"
-        }
-        $workspaceRoot = Split-Path -Parent $lockPath
-        $workspaceCargoPath = Join-Path $workspaceRoot 'Cargo.toml'
-        $workspaceRecords = @(
-            if (Test-Path -LiteralPath $workspaceCargoPath -PathType Leaf) {
-                Get-TomlProductionDependencyRecords -Toml (
-                    Get-Content -LiteralPath $workspaceCargoPath -Raw
-                ) | Where-Object { [string]$_.scope -ceq 'workspace.dependencies' }
-            }
-        )
+        $resolved = Get-CrateManifestDependencyRoots -CrateRoot $unitFull
         $dependencies = [System.Collections.Generic.List[object]]::new()
-        foreach ($record in @(Get-TomlProductionDependencyRecords -Toml (
-                    Get-Content -LiteralPath $manifestPath -Raw
-                ))) {
-            if ([string]$record.scope -ceq 'workspace.dependencies') {
-                continue
-            }
-            $dependencyName = [string]$record.name
-            $package = if ([string]::IsNullOrWhiteSpace([string]$record.package)) {
-                $dependencyName
-            }
-            else {
-                [string]$record.package
-            }
-            $dependencyPath = [string]$record.path
-            $dependencyBase = $unitFull
-            if ([string]::IsNullOrWhiteSpace($dependencyPath) -and $record.workspace) {
-                $inherited = @($workspaceRecords | Where-Object {
-                    [string]$_.name -ceq $dependencyName
-                })
-                if ($inherited.Count -eq 1) {
-                    $dependencyPath = [string]$inherited[0].path
-                    $dependencyBase = $workspaceRoot
-                    if (-not [string]::IsNullOrWhiteSpace([string]$inherited[0].package)) {
-                        $package = [string]$inherited[0].package
-                    }
-                }
-            }
-            $isPathDependency = (-not [string]::IsNullOrWhiteSpace($dependencyPath))
-            $dependencyRoot = if ($isPathDependency) {
-                [IO.Path]::GetFullPath((Join-Path $dependencyBase $dependencyPath)).TrimEnd('\')
-            }
-            else {
-                Get-CargoRegistryCrateRoot `
-                    -Package $package `
-                    -Version (Get-CargoLockPackageVersion -LockPath $lockPath -Package $package)
-            }
+        foreach ($dependency in @($resolved.dependencies)) {
             $dependencies.Add([ordered]@{
-                name = $dependencyName
-                package = $package
-                root = $dependencyRoot
-                path_dependency = $isPathDependency
+                name = [string]$dependency.name
+                package = [string]$dependency.package
+                root = [string]$dependency.root
+                path_dependency = [bool]$dependency.path_dependency
                 # A production unit is a scan subject in its own right, so an
                 # edge onto one is an edge between units, not onto a dependency.
-                production_unit = $unitRootSet.Contains($dependencyRoot)
+                production_unit = $unitRootSet.Contains([string]$dependency.root)
             })
         }
         $units.Add([ordered]@{
             unit = Get-ProductionInteractionRelativePath -Root $repo -Path $unitFull
             unit_root = $unitFull
-            manifest = Get-ProductionInteractionRelativePath -Root $repo -Path $manifestPath
-            manifest_path = $manifestPath
-            lock_path = $lockPath
-            workspace_root = $workspaceRoot
-            workspace_cargo_path = $workspaceCargoPath
+            manifest = Get-ProductionInteractionRelativePath `
+                -Root $repo `
+                -Path ([string]$resolved.manifest_path)
+            manifest_path = [string]$resolved.manifest_path
+            lock_path = [string]$resolved.lock_path
+            workspace_root = [string]$resolved.workspace_root
+            workspace_cargo_path = [string]$resolved.workspace_cargo_path
             dependencies = @($dependencies)
         })
     }
     return @($units)
+}
+
+function Get-ProductionUnexercisedCapabilityKinds {
+    # The kinds of evidence that do NOT establish that a crate uses the entry
+    # point. It is stated as the excluded set rather than the admitted one so a
+    # kind added later is treated as evidence until someone decides otherwise -
+    # the opposite default silently drops it.
+    #
+    # `capability_definition` is a name immediately followed by an assignment,
+    # which defines it rather than using it: `libc-0.2.189/src/psp.rs:505` is
+    # `SuspendThread = 66`, a variant of a PlayStation-Portable enum. A bare
+    # `capability_reference` is NOT in this set - `let suspend = SuspendThread;`
+    # followed by `suspend(handle)` is an ordinary indirect call, and a rule
+    # that discounted it would suppress exactly the composition this closure
+    # exists to see.
+    return @('capability_definition')
+}
+
+function Test-ProductionCapabilityIsExercised {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()]$Sites)
+
+    $unexercised = @(Get-ProductionUnexercisedCapabilityKinds)
+    return (@(@($Sites) | Where-Object {
+        $unexercised -cnotcontains [string]$_.kind
+    }).Count -gt 0)
+}
+
+function Get-ProductionCrateIdentity {
+    # A machine-independent name for a crate root, because it goes into a digest
+    # that is pinned in a committed baseline. In-repo crates get their
+    # repository-relative path; a registry crate gets its extracted directory
+    # name, which is package-version - never the absolute cargo-home path, which
+    # differs per machine and per user.
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $repo = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
+    $full = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    if ($full.StartsWith($repo + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        return (Get-ProductionInteractionRelativePath -Root $repo -Path $full)
+    }
+    return (Split-Path -Leaf $full)
+}
+
+function Get-ProductionDependencyCapabilityClosure {
+    # What a dependency edge actually reaches, not what the crate at the far end
+    # of it happens to spell itself.
+    #
+    # This is transitive on purpose. `inline_detour` stops every other thread
+    # and asks MinHook to write the bytes; a lane that names only
+    # `inline_detour` still causes live code to be rewritten under a freeze, and
+    # a rule that read only the crate named in the manifest would call that lane
+    # clean. The migration onto the shared freeze is ongoing, so that is not a
+    # hypothetical shape - it is the shape the tree is moving towards.
+    #
+    # The traversal expands crates inside the repository and stops at crates
+    # outside it. A registry crate has no Cargo.lock of its own to resolve its
+    # dependencies against, so following its manifest would mean guessing at
+    # versions; it is scanned for what its own sources do and treated as a leaf.
+    #
+    # What a reached crate CONTRIBUTES is decided per half, and the evidence
+    # each side of the repository boundary needs is deliberately different:
+    #
+    #   * A crate in this repository contributes a half on any evidence of it,
+    #     a bare reference to the entry point included. Its sources are ours to
+    #     read and handing an entry point to something else is as reachable as
+    #     calling it, so the conservative reading is the right one.
+    #   * A crate outside it contributes a half on every kind of evidence
+    #     EXCEPT a definition of the name (`Get-ProductionUnexercisedCapability-
+    #     Kinds`), and also whenever the crate does both halves itself, which is
+    #     the rule that applied to every dependency before this closure existed,
+    #     so this can never admit less than it did. The one thing it excludes is
+    #     a name that third-party source DEFINES rather than uses:
+    #     `libc-0.2.189/src/psp.rs:505` is `SuspendThread = 66`, a variant of a
+    #     PlayStation-Portable enum, and without that exclusion every unit that
+    #     transitively depends on `libc` and writes a byte anywhere was reported
+    #     as patching live code under a freeze. That was measured, not
+    #     predicted.
+    #
+    # The residual is stated rather than hidden: a registry crate that reaches
+    # either half only through a SECOND registry crate is not composed here,
+    # because registry manifests are not followed at all. Nothing in the tree
+    # has that shape today.
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$LockPath,
+        [Parameter(Mandatory = $true)][string[]]$SuspensionEntryPoints,
+        [Parameter(Mandatory = $true)][string[]]$CodeMutationEntryPoints
+    )
+
+    $repo = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $visited = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $pending = [System.Collections.Generic.Queue[string]]::new()
+    $pending.Enqueue($rootFull)
+    $reached = [System.Collections.Generic.List[object]]::new()
+    $suspensionSites = [System.Collections.Generic.List[object]]::new()
+    $mutationSites = [System.Collections.Generic.List[object]]::new()
+    while ($pending.Count -ne 0) {
+        $crateRoot = [IO.Path]::GetFullPath($pending.Dequeue()).TrimEnd('\')
+        if (-not $visited.Add($crateRoot)) {
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $crateRoot -PathType Container)) {
+            throw "production dependency crate root is missing: $crateRoot"
+        }
+        $crateId = Get-ProductionCrateIdentity -RepoRoot $repo -Root $crateRoot
+        $scan = Get-ProductionCrateSourceCapabilityScan `
+            -Root $crateRoot `
+            -SuspensionEntryPoints $SuspensionEntryPoints `
+            -CodeMutationEntryPoints $CodeMutationEntryPoints
+        $inRepo = $crateRoot.StartsWith(
+            $repo + '\',
+            [StringComparison]::OrdinalIgnoreCase
+        )
+        # Whether a crate contributes a half, and which halves, is decided per
+        # half rather than per crate. `$scan.suspends_and_mutates_code` is kept
+        # as one of the ways a crate qualifies so that this can never admit
+        # LESS than the rule it replaced.
+        $bothHalvesHere = [bool]$scan.suspends_and_mutates_code
+        $contributesSuspension = if ($inRepo) {
+            [bool]$scan.suspends
+        }
+        else {
+            ($bothHalvesHere -or
+                (Test-ProductionCapabilityIsExercised -Sites @($scan.suspension_sites)))
+        }
+        $contributesMutation = if ($inRepo) {
+            [bool]$scan.mutates_code
+        }
+        else {
+            ($bothHalvesHere -or
+                (Test-ProductionCapabilityIsExercised -Sites @($scan.code_mutation_sites)))
+        }
+        $reached.Add([ordered]@{
+            root = $crateRoot
+            crate = $crateId
+            in_repository = $inRepo
+            suspends = [bool]$scan.suspends
+            mutates_code = [bool]$scan.mutates_code
+            contributes_suspension = $contributesSuspension
+            contributes_code_mutation = $contributesMutation
+        })
+        if ($contributesSuspension) {
+            foreach ($site in @($scan.suspension_sites)) {
+                $suspensionSites.Add([ordered]@{
+                    crate = $crateId
+                    path = [string]$site.path
+                    line = $site.line
+                    capability = [string]$site.capability
+                    kind = [string]$site.kind
+                })
+            }
+        }
+        if ($contributesMutation) {
+            foreach ($site in @($scan.code_mutation_sites)) {
+                $mutationSites.Add([ordered]@{
+                    crate = $crateId
+                    path = [string]$site.path
+                    line = $site.line
+                    capability = [string]$site.capability
+                    kind = [string]$site.kind
+                })
+            }
+        }
+        if (-not $inRepo) {
+            continue
+        }
+        foreach ($dependency in @(
+            (Get-CrateManifestDependencyRoots `
+                -CrateRoot $crateRoot `
+                -LockPath $LockPath).dependencies
+        )) {
+            $pending.Enqueue([string]$dependency.root)
+        }
+    }
+    return [ordered]@{
+        root = $rootFull
+        lock_path = [IO.Path]::GetFullPath($LockPath)
+        crate = Get-ProductionCrateIdentity -RepoRoot $repo -Root $rootFull
+        reached_crates = @($reached)
+        suspension_sites = @($suspensionSites)
+        code_mutation_sites = @($mutationSites)
+        reaches_suspension = ($suspensionSites.Count -gt 0)
+        reaches_code_mutation = ($mutationSites.Count -gt 0)
+    }
 }
 
 function Get-ProductionDependencyCodeMutationClassification {
@@ -2357,17 +2810,41 @@ function Get-ProductionDependencyCodeMutationClassification {
     $codeMutationEntryPoints = @(Get-ProductionCodeMutationEntryPoints)
     $edges = [System.Collections.Generic.List[object]]::new()
     $scans = [ordered]@{}
+    # One crate can be reached by two workspaces - the portable_replay crates
+    # are path dependencies of both the extractor and the replay workspace - and
+    # each resolves that crate's registry dependencies against its own lock. The
+    # closure is therefore computed per (crate, lock) and the results are
+    # required to agree, rather than letting whichever unit was enumerated first
+    # decide what the crate is measured to do.
+    $scansByLock = @{}
+    $digests = @{}
     foreach ($unit in @(Get-ProductionUnitDependencyClosure -RepoRoot $repo)) {
+        $unitLockPath = [string]$unit.lock_path
         foreach ($dependency in @($unit.dependencies)) {
             if ($dependency.production_unit) {
                 continue
             }
             $dependencyRoot = [string]$dependency.root
-            if (-not $scans.Contains($dependencyRoot)) {
-                $scans[$dependencyRoot] = Get-ProductionCrateSourceCapabilityScan `
+            $scanKey = "$dependencyRoot`0$unitLockPath"
+            if (-not $scansByLock.ContainsKey($scanKey)) {
+                $scansByLock[$scanKey] = Get-ProductionDependencyCapabilityClosure `
+                    -RepoRoot $repo `
                     -Root $dependencyRoot `
+                    -LockPath $unitLockPath `
                     -SuspensionEntryPoints $suspensionEntryPoints `
                     -CodeMutationEntryPoints $codeMutationEntryPoints
+            }
+            $scan = $scansByLock[$scanKey]
+            $digest = Get-ProductionCapabilityEvidenceDigest -Scan $scan
+            if (-not $scans.Contains($dependencyRoot)) {
+                $scans[$dependencyRoot] = $scan
+                $digests[$dependencyRoot] = $digest
+            }
+            elseif ([string]$digests[$dependencyRoot] -cne $digest) {
+                throw (
+                    'production dependency measures two different capabilities ' +
+                    "depending on which workspace resolves it: $dependencyRoot"
+                )
             }
             $edges.Add([ordered]@{
                 unit = [string]$unit.unit
@@ -2379,9 +2856,14 @@ function Get-ProductionDependencyCodeMutationClassification {
             })
         }
     }
+    # Either half is classified, not only the conjunction. A dependency that
+    # only stops threads is still what a dependent's own VirtualProtect runs
+    # under, and requiring one crate to spell both halves is what made four
+    # lanes disappear from this gate the day their suspender moved one crate
+    # away and their code mutation stayed put.
     $classified = [ordered]@{}
     foreach ($key in @($scans.Keys)) {
-        if ($scans[$key].suspends_and_mutates_code) {
+        if ($scans[$key].reaches_suspension -or $scans[$key].reaches_code_mutation) {
             $classified[$key] = $scans[$key]
         }
     }
@@ -2415,10 +2897,13 @@ function Get-ProductionCapabilityEvidenceDigest {
 
     # Same key discipline as the unit baseline: file, capability and kind with a
     # count, never a line number, so the digest survives a reformat of the
-    # dependency and moves when its behaviour does.
+    # dependency and moves when its behaviour does. The crate the file belongs
+    # to is part of the key because the evidence now spans a closure: two crates
+    # in it can both have a src/lib.rs, and without the crate the digest would
+    # collapse them and stop moving when one of them changed.
     $counts = [System.Collections.Specialized.OrderedDictionary]::new([StringComparer]::Ordinal)
     foreach ($site in (@($Scan.suspension_sites) + @($Scan.code_mutation_sites))) {
-        $key = "$($site.path)|$($site.capability)|$($site.kind)"
+        $key = "$($site.crate)|$($site.path)|$($site.capability)|$($site.kind)"
         if (-not $counts.Contains($key)) {
             $counts[$key] = 0
         }
@@ -2556,7 +3041,21 @@ function Get-ProductionSuspendingCodeMutationFindings {
             (@($unit.suspension_sites).Count -gt 0 -and
                 @($unit.code_mutation_sites).Count -gt 0)
         $delegates = $delegatedCrates.Contains($unitRoot)
-        if (-not $directlySuspendsAndMutates -and -not $delegates) {
+        # The two halves are composed across the unit/dependency boundary, not
+        # required to sit on one side of it. A unit that writes the bytes itself
+        # and takes its freeze from a dependency performs exactly the operation
+        # this gate exists to inventory, and reading each side alone reports
+        # nothing.
+        $reachesSuspension = (@($unit.suspension_sites).Count -gt 0)
+        $reachesCodeMutation = (@($unit.code_mutation_sites).Count -gt 0)
+        if ($delegates) {
+            foreach ($edge in @($delegatedCrates[$unitRoot])) {
+                $patcher = $classification.classified_patchers[[string]$edge.dependency_root]
+                if ($patcher.reaches_suspension) { $reachesSuspension = $true }
+                if ($patcher.reaches_code_mutation) { $reachesCodeMutation = $true }
+            }
+        }
+        if (-not ($reachesSuspension -and $reachesCodeMutation)) {
             continue
         }
         $nonConforming.Add([ordered]@{
@@ -2572,6 +3071,12 @@ function Get-ProductionSuspendingCodeMutationFindings {
                             package = [string]$_.package
                             manifest = [string]$_.manifest
                             dependency_root = [string]$_.dependency_root
+                            reaches_suspension = [bool]$classification.classified_patchers[
+                                [string]$_.dependency_root
+                            ].reaches_suspension
+                            reaches_code_mutation = [bool]$classification.classified_patchers[
+                                [string]$_.dependency_root
+                            ].reaches_code_mutation
                             capability_digest = [string]$classification.classified_patchers[
                                 [string]$_.dependency_root
                             ].capability_digest
@@ -2579,12 +3084,14 @@ function Get-ProductionSuspendingCodeMutationFindings {
                     }
                 }
             )
-            suspension_sites = @(
-                if ($directlySuspendsAndMutates) { $unit.suspension_sites }
-            )
-            code_mutation_sites = @(
-                if ($directlySuspendsAndMutates) { $unit.code_mutation_sites }
-            )
+            # The unit's own sites are reported whenever the unit is reported,
+            # not only when the unit spells both halves itself. Gating them on
+            # the conjunction is what erased the four lanes' VirtualProtect
+            # evidence from the pin at the same moment their suspender moved
+            # into a shared crate: the calls were still there, and the accepted
+            # inventory stopped naming them.
+            suspension_sites = @($unit.suspension_sites)
+            code_mutation_sites = @($unit.code_mutation_sites)
             delegation_sites = @($unit.delegation_sites)
         })
     }
@@ -2599,6 +3106,12 @@ function Get-ProductionSuspendingCodeMutationFindings {
             $classification.classified_patchers.Keys | ForEach-Object {
                 [ordered]@{
                     root = [string]$_
+                    reaches_suspension =
+                        [bool]$classification.classified_patchers[$_].reaches_suspension
+                    reaches_code_mutation =
+                        [bool]$classification.classified_patchers[$_].reaches_code_mutation
+                    reached_crates =
+                        @($classification.classified_patchers[$_].reached_crates)
                     suspension_sites =
                         @($classification.classified_patchers[$_].suspension_sites)
                     code_mutation_sites =
@@ -2630,35 +3143,41 @@ function Format-ProductionSuspendingCodeMutationFindings {
         'delegating does not make the mutation safer than doing it here.'
     )
     foreach ($patcher in @($Findings.classified_external_patchers)) {
-        $lines.Add("  external primitive classified as a suspending code patcher: $($patcher.root)")
+        $halves = @(
+            if ($patcher.reaches_suspension) { 'suspends threads' }
+            if ($patcher.reaches_code_mutation) { 'mutates live code' }
+        ) -join ' and '
+        $lines.Add("  external primitive classified as a suspending code patcher: $($patcher.root) [$halves]")
         foreach ($site in @($patcher.suspension_sites)) {
-            $lines.Add("      suspends: $($site.path):$($site.line) $($site.capability)")
+            $lines.Add("      suspends: $($site.crate)/$($site.path):$($site.line) $($site.capability)")
         }
         foreach ($site in @($patcher.code_mutation_sites)) {
-            $lines.Add("      mutates code: $($site.path):$($site.line) $($site.capability)")
+            $lines.Add("      mutates code: $($site.crate)/$($site.path):$($site.line) $($site.capability)")
         }
     }
     foreach ($unit in @($Findings.non_conforming_units)) {
         $lines.Add("  unit $($unit.unit):")
-        if ($unit.performs_suspending_code_mutation) {
-            foreach ($site in @($unit.suspension_sites)) {
-                $lines.Add(
-                    "      suspends threads: $($site.path):$($site.line) " +
-                    "$($site.capability) [$($site.kind)]"
-                )
-            }
-            foreach ($site in @($unit.code_mutation_sites)) {
-                $lines.Add(
-                    "      mutates live code: $($site.path):$($site.line) " +
-                    "$($site.capability) [$($site.kind)]"
-                )
-            }
+        foreach ($site in @($unit.suspension_sites)) {
+            $lines.Add(
+                "      suspends threads: $($site.path):$($site.line) " +
+                "$($site.capability) [$($site.kind)]"
+            )
+        }
+        foreach ($site in @($unit.code_mutation_sites)) {
+            $lines.Add(
+                "      mutates live code: $($site.path):$($site.line) " +
+                "$($site.capability) [$($site.kind)]"
+            )
         }
         if ($unit.delegates_suspending_code_mutation) {
             foreach ($patcher in @($unit.delegated_patchers)) {
+                $patcherHalves = @(
+                    if ($patcher.reaches_suspension) { 'suspends threads' }
+                    if ($patcher.reaches_code_mutation) { 'mutates live code' }
+                ) -join ' and '
                 $lines.Add(
                     "      delegates to suspending code patcher " +
-                    "'$($patcher.dependency)' declared in $($patcher.manifest)"
+                    "'$($patcher.dependency)' [$patcherHalves] declared in $($patcher.manifest)"
                 )
             }
             foreach ($site in @($unit.delegation_sites)) {
@@ -2720,6 +3239,13 @@ function Get-ProductionSuspendingCodeMutationBaseline {
                 # change to that inventory and has to be accepted again.
                 dependency = [string]$patcher.dependency
                 package = [string]$patcher.package
+                # Which half of the operation the edge contributes is part of
+                # the accepted inventory: a dependency that stops threads today
+                # and starts writing code tomorrow - or the reverse - has
+                # changed what the unit reaches through it, and that has to be
+                # read by a human again rather than absorbed silently.
+                reaches_suspension = [bool]$patcher.reaches_suspension
+                reaches_code_mutation = [bool]$patcher.reaches_code_mutation
                 capability_digest = [string]$patcher.capability_digest
             })
         }
@@ -2861,6 +3387,21 @@ function Get-ProductionSuspendingCodeMutationBaselineDefects {
                     $missing = $true
                 }
             }
+            # These two are compared with [bool], and [bool] on the STRING
+            # "false" is $true - so is [bool] on "garbage". A pin that spelled
+            # either of them as a string would agree with a measured $true and
+            # read, to a human, as the opposite of what the gate was comparing.
+            # They have to be real booleans in the file, for the same reason the
+            # unit-level flags are.
+            foreach ($field in @('reaches_suspension', 'reaches_code_mutation')) {
+                $property = $entry.PSObject.Properties[$field]
+                if ($null -eq $property -or -not ($property.Value -is [bool])) {
+                    $defects.Add(
+                        "$unitName : delegated patcher $field is missing or is not a boolean"
+                    )
+                    $missing = $true
+                }
+            }
             if ($missing) { continue }
             $key = "$($entry.dependency)|$($entry.package)|$($entry.capability_digest)"
             if (-not $seenPatchers.Add($key)) {
@@ -2979,10 +3520,12 @@ function Compare-ProductionSuspendingCodeMutationBaseline {
             }
         }
         $measuredPatchers = @(@($measuredUnit.delegated_patchers) | ForEach-Object {
-            "$($_.dependency)|$($_.package)|$($_.capability_digest)"
+            "$($_.dependency)|$($_.package)|suspends=$([bool]$_.reaches_suspension)|" +
+            "mutates=$([bool]$_.reaches_code_mutation)|$($_.capability_digest)"
         })
         $pinnedPatchers = @(@($pinnedUnit.delegated_patchers) | ForEach-Object {
-            "$($_.dependency)|$($_.package)|$($_.capability_digest)"
+            "$($_.dependency)|$($_.package)|suspends=$([bool]$_.reaches_suspension)|" +
+            "mutates=$([bool]$_.reaches_code_mutation)|$($_.capability_digest)"
         })
         foreach ($entry in $measuredPatchers) {
             if ($pinnedPatchers -cnotcontains $entry) {
