@@ -17,6 +17,24 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 const MAX_FORWARD_DELTA: i64 = 24 * 32;
 
+/// How many unpublished clock-unreadable intervals the scheduler will hold.
+///
+/// One interval is minted per OUTAGE, and the observer mints them on its own
+/// poll while the capture loop drains them only when it returns to the top of a
+/// sweep -- so the queue depth is bounded by outages per sweep, and nothing in
+/// the tree bounds that. A small cap was therefore reachable by an honest
+/// capture: 257 short outages during one long publication silently lost the
+/// last one, and a lost interval becomes an unexplained hole that fails the
+/// host's gap gate. The number of outages is in turn bounded by the hours of the
+/// capture, so this matches the control lane's own ceiling and cannot be reached
+/// by any bounded run -- while still refusing to grow without limit under a
+/// wedged transport.
+///
+/// A drop is never silent: it is counted in
+/// [`SchedulerTelemetry::clock_unreadable_intervals_dropped`], which reaches the
+/// wire as the `rs_clock_unreadable_intervals_dropped` probe unit.
+const CLOCK_UNREADABLE_INTERVAL_QUEUE_CAP: usize = 65_535;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClockStamp {
     pub epoch: u64,
@@ -135,9 +153,14 @@ pub struct SchedulerTelemetry {
     /// admitted at all. Each leaves a per-domain `Overrun` range.
     pub unobserved_overrun_hours: u64,
     /// Hours that elapsed while the authenticated clock could not be read, and
-    /// so were never admitted. Counted, not published: naming them on the
-    /// control lane would close the last one with a `FRAME_END`.
+    /// so were never admitted. Never named on the CONTROL lane -- a range there
+    /// would close its last hour with a `FRAME_END` -- but published as their
+    /// own frame-level `H4CU` interval record, which closes nothing.
     pub unobserved_clock_unknown_hours: u64,
+    /// Clock-unreadable intervals discarded because the publication queue was
+    /// full. Nonzero means some outage reached no wire record and its hours will
+    /// read as unaccounted; a capture is not allowed to lose that silently.
+    pub clock_unreadable_intervals_dropped: u64,
     /// Forward counter jumps the scheduler refused to believe
     /// (`delta > MAX_FORWARD_DELTA`). Counted as EVENTS, never as hours: the
     /// implied span rests on a value the scheduler has just rejected, so
@@ -260,7 +283,29 @@ pub struct ReadOnlyScheduler {
     next_epoch: u64,
     force_baseline: bool,
     clock_unknown: bool,
+    /// Failed clock reads since the current outage began. Reset when the clock
+    /// reads again, and carried into the interval the recovery publishes -- an
+    /// outage that claims hours must be able to say how many reads failed.
+    clock_unknown_events: u32,
+    /// Clock-unreadable intervals observed and not yet published. Drained by the
+    /// capture loop, which emits one `H4CU` record per entry.
+    ///
+    /// These are NOT control gap ranges and must never be put on that lane: see
+    /// `observe_stable`. They are held here so the interval reaches the wire as
+    /// its own frame-level record, which is what makes those hours ACCOUNTED for
+    /// the host's gap gate instead of an unexplained hole.
+    clock_unreadable_intervals: VecDeque<ClockUnreadableInterval>,
     telemetry: SchedulerTelemetry,
+}
+
+/// One elapsed-but-unobserved interval, exactly as the wire record spells it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClockUnreadableInterval {
+    pub range_start_hour_raw: i32,
+    pub range_end_hour_raw: i32,
+    pub last_observed_hour_raw: i32,
+    pub resumed_hour_raw: i32,
+    pub unreadable_events: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -308,6 +353,8 @@ impl ReadOnlyScheduler {
             next_epoch: 0,
             force_baseline: true,
             clock_unknown: false,
+            clock_unknown_events: 0,
+            clock_unreadable_intervals: VecDeque::new(),
             telemetry: SchedulerTelemetry {
                 request_cap: 1,
                 control_cap: control_cap as u32,
@@ -412,15 +459,18 @@ impl ReadOnlyScheduler {
             // count that hour in `unique_game_hour_count` as observed. Claiming
             // an unobserved hour is worse than the silence it would replace.
             //
-            // CONSEQUENCE, accepted deliberately: these hours therefore carry no
-            // PER-HOUR producer record, so the host counts them `unaccounted`
-            // and the capture fails its gap-acceptance gate. That is the honest
-            // outcome -- the recorder cannot vouch for the interval -- and it is
-            // strictly better than the tautological pass this replaced. Giving
-            // them per-hour evidence needs a transport that can carry a gap
-            // range WITHOUT closing a frame, which is a wire change and not this
-            // lane's to make.
+            // What they DO get is a record of their own. The interval is queued
+            // here and published as one frame-level `H4CU`
+            // (`COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL`), a record that
+            // names a RANGE, closes no hour and publishes no FRAME_END -- so the
+            // host can count these hours as ACCOUNTED without any of them being
+            // claimed as observed. Before that record existed the outage was
+            // counted here and nowhere else, and the host's gap gate, which
+            // demands a typed producer statement for every hole hour, failed the
+            // whole capture over an interval the producer could describe exactly.
             self.count_unobserved_span(self.last, hour_raw, UnobservedCause::ClockUnknown);
+            self.queue_clock_unreadable_interval(self.last, hour_raw);
+            self.clock_unknown_events = 0;
             self.next_epoch = self.next_epoch.saturating_add(1);
             self.force_baseline = true;
             self.clock_unknown = false;
@@ -524,11 +574,101 @@ impl ReadOnlyScheduler {
     pub fn note_clock_unreadable(&mut self) {
         self.telemetry.clock_unreadable_events =
             self.telemetry.clock_unreadable_events.saturating_add(1);
+        // Counted per OUTAGE as well as per capture, because the interval record
+        // has to substantiate its own claim: a range of unobserved hours that
+        // names no failed read is indistinguishable from an ordinary hour jump,
+        // and the wire grammar refuses one.
+        self.clock_unknown_events = self.clock_unknown_events.saturating_add(1);
         if !self.clock_unknown {
             self.gap_all_pending(GapKind::ClockUnreadable);
             self.clock_unknown = true;
             self.force_baseline = true;
         }
+    }
+
+    /// Queue the interval a recovering observation just closed, if it contains
+    /// any hours at all.
+    ///
+    /// An outage that resumes in the SAME hour it started, or in the next one,
+    /// lost no hours: there is nothing to account for and no record is minted.
+    /// The wire grammar refuses an empty range for exactly that reason, so
+    /// emitting one here would be a producer writing a record its own reader
+    /// rejects.
+    fn queue_clock_unreadable_interval(&mut self, from: Option<ClockStamp>, resumed_hour: i32) {
+        let Some(from) = from else {
+            return;
+        };
+        let (Some(range_start), Some(range_end)) =
+            (from.hour_raw.checked_add(1), resumed_hour.checked_sub(1))
+        else {
+            return;
+        };
+        if range_start > range_end {
+            return;
+        }
+        // THE SAME CEILING THE ORDINARY PATH APPLIES.
+        //
+        // A forward jump larger than `MAX_FORWARD_DELTA` is a counter read this
+        // scheduler does not believe: on the ordinary path it is refused as a
+        // terminal anomaly and deliberately NOT converted into elapsed hours,
+        // because the span rests entirely on the rejected value. The recovery
+        // branch runs before that check, so without this a single failed clock
+        // read would turn exactly the same untrusted value into hundreds of
+        // hours -- and, now that the interval reaches the wire, into hundreds of
+        // ACCOUNTED hours. One failed read must not buy a claim the scheduler
+        // would otherwise refuse outright.
+        //
+        // Refusing here leaves those hours with no producer statement, which is
+        // the honest outcome: the recorder cannot vouch for a span it derived
+        // from a read it does not trust.
+        //
+        // Compared as the DELTA between the two observed values, which is what
+        // `observe_stable` compares -- not as the width of the missing span,
+        // which is one smaller. Comparing the span admitted exactly the one
+        // value the ordinary path refuses: a delta of `MAX_FORWARD_DELTA + 1`
+        // leaves a span of `MAX_FORWARD_DELTA`, so the untrusted read would have
+        // minted an interval covering every hour it implied.
+        let delta = i64::from(resumed_hour) - i64::from(from.hour_raw);
+        if delta > MAX_FORWARD_DELTA {
+            self.telemetry.clock_unreadable_intervals_dropped = self
+                .telemetry
+                .clock_unreadable_intervals_dropped
+                .saturating_add(1);
+            return;
+        }
+        // The events counter is what substantiates the claim. It cannot be zero
+        // here -- `clock_unknown` is only set by `note_clock_unreadable`, which
+        // increments it first -- but a saturating counter that somehow read zero
+        // would mint a record the reader refuses, so state the floor.
+        let unreadable_events = self.clock_unknown_events.max(1);
+        if self.clock_unreadable_intervals.len() >= CLOCK_UNREADABLE_INTERVAL_QUEUE_CAP {
+            self.telemetry.clock_unreadable_intervals_dropped = self
+                .telemetry
+                .clock_unreadable_intervals_dropped
+                .saturating_add(1);
+            return;
+        }
+        self.clock_unreadable_intervals
+            .push_back(ClockUnreadableInterval {
+                range_start_hour_raw: range_start,
+                range_end_hour_raw: range_end,
+                last_observed_hour_raw: from.hour_raw,
+                resumed_hour_raw: resumed_hour,
+                unreadable_events,
+            });
+    }
+
+    /// Take every queued interval, in the order the outages happened.
+    pub fn drain_clock_unreadable_intervals(
+        &mut self,
+    ) -> impl Iterator<Item = ClockUnreadableInterval> + '_ {
+        self.clock_unreadable_intervals.drain(..)
+    }
+
+    /// Whether any interval is waiting to be published. Cheap enough to ask on
+    /// every loop iteration.
+    pub fn has_clock_unreadable_intervals(&self) -> bool {
+        !self.clock_unreadable_intervals.is_empty()
     }
 
     pub fn take_current_request(&mut self) -> Option<CaptureRequest> {
@@ -1559,6 +1699,232 @@ mod tests {
         );
         // And the recovery hour is still claimed normally.
         assert!(s.take_current_request().is_some());
+    }
+
+    /// TASK #38: the interval is PUBLISHED, on a lane that closes no hour.
+    ///
+    /// Counting it was never enough. The host's gap accounting demands a typed
+    /// producer statement for every hour that put no data on the wire, and an
+    /// outage the producer knew about, counted, and could describe exactly still
+    /// arrived as silence -- so a capture that hit one clock outage was demoted
+    /// over hours nobody was confused about.
+    ///
+    /// The queued interval carries the whole claim and its own substantiation:
+    /// the range, the hours either side of it, and how many clock reads failed.
+    /// It still does NOT become a control range -- the assertion above this one
+    /// is unchanged and remains the reason this is a separate lane at all.
+    ///
+    /// MUTATION RUN: delete the `queue_clock_unreadable_interval` call from the
+    /// `clock_unknown` branch of `observe_stable`. Observed failure:
+    ///   `an outage must reach the wire as its own interval record: []`.
+    #[test]
+    fn a_clock_outage_is_published_as_an_interval_that_closes_no_hour() {
+        let mut s = scheduler(&[10, 11], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+        let _ = s.drain_control().count();
+
+        s.note_clock_unreadable();
+        s.note_clock_unreadable();
+        s.note_clock_unreadable();
+        s.observe_stable(105, 2);
+
+        assert!(s.has_clock_unreadable_intervals());
+        let intervals: Vec<_> = s.drain_clock_unreadable_intervals().collect();
+        assert_eq!(
+            intervals.len(),
+            1,
+            "an outage must reach the wire as its own interval record: {intervals:?}"
+        );
+        let interval = intervals[0];
+        assert_eq!(interval.range_start_hour_raw, 101);
+        assert_eq!(interval.range_end_hour_raw, 104);
+        assert_eq!(interval.last_observed_hour_raw, 100);
+        assert_eq!(interval.resumed_hour_raw, 105);
+        assert_eq!(
+            interval.unreadable_events, 3,
+            "the record must substantiate its own claim with the failed reads it saw"
+        );
+        // Draining is a handover, not a peek.
+        assert!(!s.has_clock_unreadable_intervals());
+        assert!(s.drain_clock_unreadable_intervals().next().is_none());
+
+        // The control lane is still empty: this interval is deliberately NOT a
+        // gap range, because a range would close its last hour with a FRAME_END.
+        let gaps: Vec<_> = s.drain_control().collect();
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    /// An outage that loses no hours mints no record.
+    ///
+    /// The wire grammar refuses an empty range, so emitting one here would be a
+    /// producer writing a record its own reader rejects -- and it would also
+    /// account for zero hours while looking like evidence.
+    ///
+    /// MUTATION RUN: drop the `range_start > range_end` early return from
+    /// `queue_clock_unreadable_interval`. Observed failure:
+    ///   `an outage that lost no hours must mint no record: [ClockUnreadable
+    ///    Interval { range_start_hour_raw: 101, range_end_hour_raw: 100, .. }]`.
+    #[test]
+    fn an_outage_that_loses_no_hour_mints_no_interval() {
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+
+        s.note_clock_unreadable();
+        // The very next hour reads fine: nothing elapsed unobserved.
+        s.observe_stable(101, 2);
+        let intervals: Vec<_> = s.drain_clock_unreadable_intervals().collect();
+        assert!(
+            intervals.is_empty(),
+            "an outage that lost no hours must mint no record: {intervals:?}"
+        );
+        assert_eq!(s.hour_ledger().unobserved_clock_unknown, 0);
+    }
+
+    /// A FAILED CLOCK READ IS NOT A LICENCE. An outage whose implied span
+    /// exceeds the trusted forward delta mints no interval.
+    ///
+    /// On the ordinary path a jump larger than `MAX_FORWARD_DELTA` is a
+    /// terminal counter anomaly and is deliberately never converted into
+    /// elapsed hours: the span rests on a value the scheduler has just
+    /// rejected. The recovery branch runs BEFORE that check, so one failed read
+    /// would otherwise turn the identical untrusted value into hundreds of hours
+    /// the host then counts as accounted.
+    ///
+    /// MUTATION RUN: delete the `span > MAX_FORWARD_DELTA` refusal from
+    /// `queue_clock_unreadable_interval`. Observed failure:
+    ///   `an untrusted forward jump must not become accounted hours because one
+    ///    clock read failed: [ClockUnreadableInterval { range_start_hour_raw:
+    ///    101, range_end_hour_raw: 1099, ... }]`.
+    #[test]
+    fn an_outage_wider_than_the_trusted_forward_delta_mints_no_interval() {
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+
+        s.note_clock_unreadable();
+        // EXACTLY the first delta the ordinary path refuses. Comparing the
+        // missing SPAN instead of the DELTA admitted this one value, because the
+        // span is one smaller than the delta that produced it.
+        let far = 100 + MAX_FORWARD_DELTA as i32 + 1;
+        s.observe_stable(far, 2);
+
+        let intervals: Vec<_> = s.drain_clock_unreadable_intervals().collect();
+        assert!(
+            intervals.is_empty(),
+            "an untrusted forward jump must not become accounted hours because one clock \
+             read failed: {intervals:?}"
+        );
+        assert_eq!(
+            s.telemetry().clock_unreadable_intervals_dropped,
+            1,
+            "and the refusal is counted, not silent"
+        );
+
+        // The largest delta the ordinary path DOES trust still publishes, so the
+        // refusal above is the ceiling and not the fixture.
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+        s.note_clock_unreadable();
+        s.observe_stable(100 + MAX_FORWARD_DELTA as i32, 2);
+        assert_eq!(
+            s.drain_clock_unreadable_intervals().count(),
+            1,
+            "an outage at the trusted ceiling still reaches the wire"
+        );
+    }
+
+    /// THE QUEUE MUST NOT REFUSE AN HONEST CAPTURE.
+    ///
+    /// The observer mints an interval on its own poll; the capture loop drains
+    /// them only when it returns to the top of a sweep. Nothing in the tree
+    /// bounds outages-per-sweep, so a small ceiling was reachable by an ordinary
+    /// run -- and a dropped interval is not a lost diagnostic, it is hours with
+    /// no producer statement at all, which fails the host's gap gate.
+    ///
+    /// The ceiling now matches the control lane's, which no bounded capture can
+    /// reach: the number of outages is bounded by the hours of the run.
+    ///
+    /// MUTATION RUN: set `CLOCK_UNREADABLE_INTERVAL_QUEUE_CAP` back to 256.
+    /// Observed failure:
+    ///   `assertion `left == right` failed: an ordinary run's outages must all
+    ///    reach the wire
+    ///     left: 256
+    ///    right: 300`.
+    #[test]
+    fn many_undrained_outages_all_survive_to_be_published() {
+        const OUTAGES: usize = 300;
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+
+        // Each recovery skips exactly one hour, so every interval is a valid,
+        // disjoint, single-hour outage -- and NOTHING drains between them.
+        for step in 0..OUTAGES {
+            s.note_clock_unreadable();
+            let resumed = 100 + 2 * (step as i32 + 1);
+            s.observe_stable(resumed, step as u64 + 2);
+            let taken = s.take_current_request();
+            if let Some(request) = taken {
+                s.accept_request(request);
+            }
+        }
+
+        assert_eq!(
+            s.drain_clock_unreadable_intervals().count(),
+            OUTAGES,
+            "an ordinary run's outages must all reach the wire"
+        );
+        assert_eq!(
+            s.telemetry().clock_unreadable_intervals_dropped,
+            0,
+            "and none of them may be dropped"
+        );
+    }
+
+    /// Each outage counts its OWN failed reads. A per-capture total would make
+    /// the second interval claim the first one's evidence.
+    ///
+    /// MUTATION RUN: delete `self.clock_unknown_events = 0;` from the recovery
+    /// branch of `observe_stable`. Observed failure:
+    ///   `assertion `left == right` failed: the second outage must not inherit
+    ///    the first one's failed reads
+    ///     left: 3
+    ///    right: 1`.
+    #[test]
+    fn each_outage_substantiates_itself_with_its_own_failed_reads() {
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(100, 1);
+        let baseline = s.take_current_request().expect("baseline hour is takeable");
+        s.accept_request(baseline);
+
+        s.note_clock_unreadable();
+        s.note_clock_unreadable();
+        s.observe_stable(105, 2);
+        let first = s.take_current_request().expect("recovery hour is takeable");
+        s.accept_request(first);
+
+        s.note_clock_unreadable();
+        s.observe_stable(110, 3);
+
+        let intervals: Vec<_> = s.drain_clock_unreadable_intervals().collect();
+        assert_eq!(intervals.len(), 2, "{intervals:?}");
+        assert_eq!(intervals[0].unreadable_events, 2);
+        assert_eq!(
+            intervals[1].unreadable_events, 1,
+            "the second outage must not inherit the first one's failed reads"
+        );
+        assert_eq!(intervals[0].range_start_hour_raw, 101);
+        assert_eq!(intervals[0].range_end_hour_raw, 104);
+        assert_eq!(intervals[1].range_start_hour_raw, 106);
+        assert_eq!(intervals[1].range_end_hour_raw, 109);
     }
 
     /// A forward counter jump the scheduler refuses to believe is recorded as an

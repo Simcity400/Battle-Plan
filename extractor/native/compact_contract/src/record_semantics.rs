@@ -21,6 +21,20 @@ pub const COMPACT_RECORD_TYPE_FRAME_DEGRADED: u16 = 7;
 /// FRAME_DEGRADED, this closes or qualifies no game hour and claims no domain
 /// coverage. Its H4CR envelope uses domain 1000 and game-hour sentinel zero.
 pub const COMPACT_RECORD_TYPE_CAPTURE_TERMINATED: u16 = 8;
+/// Frame-level record: these hours ELAPSED and were never observed, because the
+/// authenticated clock could not be read across them.
+///
+/// The one record in this family that names a RANGE rather than an hour, and
+/// the reason it had to exist: an outage's hours are never admitted by the
+/// scheduler at all, so no domain gaps over them and no frame is assembled for
+/// them. The per-domain gap vocabulary cannot carry them either -- a control gap
+/// range is closed by `FRAME_END(range_end)`, which would publish a frame for an
+/// hour nobody looked at.
+///
+/// It CLOSES no hour and claims no coverage. Its envelope carries the RESUMED
+/// hour, which is a real hour the producer was observing when it wrote the
+/// record, and `crate::clock_unreadable_interval` requires the two to agree.
+pub const COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL: u16 = 9;
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
@@ -176,6 +190,14 @@ pub fn validate_compact_record_semantics(
                 ));
             }
             crate::capture_termination::CaptureTerminationRecordV1::decode(payload).map(|_| ())
+        }
+        COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "CLOCK_UNREADABLE_INTERVAL domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::clock_unreadable_interval::validate_clock_unreadable_interval_payload(payload)
         }
         COMPACT_RECORD_TYPE_DOMAIN_GAP => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {

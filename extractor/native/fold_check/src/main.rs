@@ -42,8 +42,8 @@ use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance,
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
     parse_compact_record_header, validate_compact_record_semantics, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_DOMAIN_GAP,
+    COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
@@ -727,6 +727,28 @@ impl CompletenessAudit {
                     termination.reasons.names(),
                     termination.detail
                 ));
+            }
+            COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
+                // AN ACCOUNTED ABSENCE OF HOURS, which is why it appears here
+                // and does almost nothing.
+                //
+                // The hours it names were never observed: no request was built
+                // for them, no domain produced an outcome, and no frame was
+                // assembled. So there is no per-domain accounting to do and
+                // nothing to close -- it must NOT clear `current_domains`, which
+                // belong to a real hour that is still open or still being built,
+                // and it must not enter `hours` or `refusals`, which are the two
+                // dispositions of hours that WERE swept.
+                //
+                // What it must not do is fall into the arm below and refuse the
+                // stream. The boundary rules (envelope hour equals the payload's
+                // resumed hour; the range does not reach an already-closed hour)
+                // belong to `BoundaryTracker`, which owns every boundary rule in
+                // this workspace; restating them here is how the last duplicate
+                // of a boundary rule drifted from its original.
+                compact_contract::clock_unreadable_interval::
+                    ClockUnreadableIntervalRecordV1::decode(payload)
+                    .map_err(|error| format!("CLOCK_UNREADABLE_INTERVAL payload: {error}"))?;
             }
             other => {
                 // Not a skip. A record type this audit has not been taught is

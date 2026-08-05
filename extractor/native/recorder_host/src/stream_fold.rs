@@ -28,8 +28,8 @@ use compact_contract::stream_validator::{
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+    COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
+    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_STATUS_FAILURE_MASK,
 };
 use snapshot::sha256::{to_hex, Sha256};
@@ -321,10 +321,35 @@ pub struct BoundaryTracker {
     data_domains: BTreeSet<u16>,
     prev_sequence: Option<u64>,
     termination: Option<compact_contract::capture_termination::CaptureTerminationRecordV1>,
+    /// Every hour range an `H4CU` has declared NEVER OBSERVED, in arrival order.
+    ///
+    /// A declared interval is a forward exclusion, not merely a backward one.
+    /// Checking only that a range starts after the last closed hour left the
+    /// contradiction open in the other direction: `H4CU 101..=104` followed by
+    /// `FRAME_REFUSED(103)` passed, because 103 is greater than the last closed
+    /// hour, and the stream then said one hour was both closed and never
+    /// observed. Two overlapping intervals were accepted for the same reason.
+    unobserved_intervals: Vec<(i32, i32)>,
     violation: Option<String>,
 }
 
 impl BoundaryTracker {
+    /// The declared-unobserved interval containing this hour, if any.
+    fn unobserved_interval_covering(&self, hour: i32) -> Option<(i32, i32)> {
+        self.unobserved_intervals
+            .iter()
+            .find(|(start, end)| *start <= hour && hour <= *end)
+            .copied()
+    }
+
+    /// A declared-unobserved interval this range intersects, if any.
+    fn intersecting_unobserved_interval(&self, start: i32, end: i32) -> Option<(i32, i32)> {
+        self.unobserved_intervals
+            .iter()
+            .find(|(other_start, other_end)| start <= *other_end && *other_start <= end)
+            .copied()
+    }
+
     pub fn observe(
         &mut self,
         header: &compact_contract::CompactRecordHeader,
@@ -525,6 +550,16 @@ impl BoundaryTracker {
                         return;
                     }
                 }
+                if let Some((start, end)) =
+                    self.unobserved_interval_covering(header.game_hour_raw)
+                {
+                    self.violation = Some(format!(
+                        "FRAME_END at byte {at_byte} closes hour {}, which an earlier \
+                         CLOCK_UNREADABLE_INTERVAL declared never observed ({start}..={end})",
+                        header.game_hour_raw
+                    ));
+                    return;
+                }
                 self.open_hour = None;
                 self.pending_perf_hour = None;
                 self.terminal_outcome_domains.clear();
@@ -601,6 +636,19 @@ impl BoundaryTracker {
                         ));
                         return;
                     }
+                }
+                // A refused hour was ASSEMBLED and judged unpublishable, so the
+                // producer read its clock for it. An hour an interval declared
+                // never observed cannot also be one of those.
+                if let Some((start, end)) =
+                    self.unobserved_interval_covering(header.game_hour_raw)
+                {
+                    self.violation = Some(format!(
+                        "FRAME_REFUSED at byte {at_byte} refuses hour {}, which an earlier \
+                         CLOCK_UNREADABLE_INTERVAL declared never observed ({start}..={end})",
+                        header.game_hour_raw
+                    ));
+                    return;
                 }
                 self.open_hour = None;
                 self.pending_perf_hour = None;
@@ -686,6 +734,71 @@ impl BoundaryTracker {
                         ));
                     }
                 }
+            }
+            COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
+                // NOT a boundary record, and the opposite of one. It closes no
+                // hour, opens none, and clears nothing: the hours it names were
+                // never observed, so there is no per-hour state to close and
+                // clearing any would discard a real hour's outcomes.
+                //
+                // Two rules, both of which nothing else can enforce:
+                //
+                // The envelope hour must be the payload's RESUMED hour. That is
+                // the only hour the producer was actually observing when it
+                // wrote the record, and binding the two is what stops a record
+                // from naming a range unrelated to where it was written.
+                let record = match compact_contract::clock_unreadable_interval::
+                    ClockUnreadableIntervalRecordV1::decode(payload)
+                {
+                    Ok(record) => record,
+                    Err(reason) => {
+                        self.violation = Some(format!(
+                            "CLOCK_UNREADABLE_INTERVAL payload at byte {at_byte} is \
+                             unreadable: {reason}"
+                        ));
+                        return;
+                    }
+                };
+                if record.resumed_hour_raw != header.game_hour_raw {
+                    self.violation = Some(format!(
+                        "CLOCK_UNREADABLE_INTERVAL at byte {at_byte} is framed for hour {} but \
+                         its payload resumed at hour {}",
+                        header.game_hour_raw, record.resumed_hour_raw
+                    ));
+                    return;
+                }
+                // And it may not reach back over an hour the stream already
+                // closed. An hour that published cannot also be an hour whose
+                // clock could not be read, and accepting one would let an
+                // interval retroactively reclassify observed hours as lost.
+                if let Some(last_closed) = self.last_closed_hour {
+                    if record.range_start_hour_raw <= last_closed {
+                        self.violation = Some(format!(
+                            "CLOCK_UNREADABLE_INTERVAL at byte {at_byte} claims hours \
+                             {}..={} were never observed, but hour {last_closed} is already \
+                             closed",
+                            record.range_start_hour_raw, record.range_end_hour_raw
+                        ));
+                        return;
+                    }
+                }
+                // Nor may it overlap an interval already declared. Two ranges
+                // that intersect are two statements about the same hours from a
+                // producer that can only have made one of them.
+                if let Some((start, end)) = self.intersecting_unobserved_interval(
+                    record.range_start_hour_raw,
+                    record.range_end_hour_raw,
+                ) {
+                    self.violation = Some(format!(
+                        "CLOCK_UNREADABLE_INTERVAL at byte {at_byte} claims hours {}..={} \
+                         were never observed, overlapping the interval {start}..={end} \
+                         already declared",
+                        record.range_start_hour_raw, record.range_end_hour_raw
+                    ));
+                    return;
+                }
+                self.unobserved_intervals
+                    .push((record.range_start_hour_raw, record.range_end_hour_raw));
             }
             // Not a frame-boundary record: it carries campaign identity and is
             // validated where identity is folded, not here.
@@ -1618,6 +1731,119 @@ mod tests {
             "an untaught record type must be a violation, got {:?}",
             untaught.violation
         );
+    }
+
+    /// A DECLARED-UNOBSERVED INTERVAL IS A FORWARD EXCLUSION.
+    ///
+    /// `H4CU` says hours 101..=104 were never observed. Nothing else in the
+    /// stream may then say one of them WAS: a FRAME_END publishes an hour, a
+    /// FRAME_REFUSED assembles one and judges it, and a second interval
+    /// overlapping the first is two statements about the same hours from a
+    /// producer that can only have made one of them.
+    ///
+    /// Checking only that a range starts after the last CLOSED hour left the
+    /// contradiction open in the forward direction: hour 103 is greater than the
+    /// last closed hour 100, so `FRAME_REFUSED(103)` passed the ordinary
+    /// monotonic check and the stream certified while asserting both.
+    ///
+    /// MUTATION RUN: delete the `unobserved_interval_covering` check from the
+    /// FRAME_REFUSED arm. Observed failure:
+    ///   `a refusal inside a declared-unobserved interval must be a violation,
+    ///    got None`.
+    #[test]
+    fn a_declared_unobserved_interval_excludes_every_later_claim_on_its_hours() {
+        let interval = |last_observed: i32, resumed: i32| {
+            compact_contract::clock_unreadable_interval::ClockUnreadableIntervalRecordV1 {
+                range_start_hour_raw: last_observed + 1,
+                range_end_hour_raw: resumed - 1,
+                last_observed_hour_raw: last_observed,
+                resumed_hour_raw: resumed,
+                unreadable_events: 2,
+            }
+            .encode()
+            .expect("canonical interval fixture")
+        };
+        let observe_interval = |tracker: &mut BoundaryTracker, seq: u64, resumed: i32, payload: &[u8]| {
+            tracker.observe(
+                &boundary_header(
+                    seq,
+                    resumed,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
+                    payload.len(),
+                    0,
+                ),
+                payload,
+                0,
+            );
+        };
+        let base = raw_for(HOUR_A);
+        let (last_observed, resumed) = (base, base + 5);
+
+        // An honest interval folds clean.
+        let payload = interval(last_observed, resumed);
+        let mut clean = BoundaryTracker::default();
+        observe_interval(&mut clean, 1, resumed, &payload);
+        assert!(clean.violation.is_none(), "{:?}", clean.violation);
+
+        // A FRAME_REFUSED for an hour INSIDE the declared range is a violation,
+        // even though that hour is past the last closed one.
+        let refusal_hour = base + 3;
+        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+            refused_hour: refusal_hour,
+            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                domain_id: 64,
+                status_flags: 0x0000_0100,
+                non_tolerated_flags: 0x0000_0100,
+                reason: "d64".to_string(),
+            }],
+        }
+        .encode()
+        .expect("canonical refusal fixture");
+        let mut refused = BoundaryTracker::default();
+        observe_interval(&mut refused, 1, resumed, &payload);
+        refused.observe(
+            &boundary_header(
+                2,
+                refusal_hour,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal.len(),
+                0,
+            ),
+            &refusal,
+            0,
+        );
+        assert!(
+            refused
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("declared never observed")),
+            "a refusal inside a declared-unobserved interval must be a violation, got {:?}",
+            refused.violation
+        );
+
+        // A second interval overlapping the first is a violation too.
+        let mut overlapped = BoundaryTracker::default();
+        observe_interval(&mut overlapped, 1, resumed, &payload);
+        let second = interval(base + 2, base + 8);
+        observe_interval(&mut overlapped, 2, base + 8, &second);
+        assert!(
+            overlapped
+                .violation
+                .as_ref()
+                .is_some_and(|v| v.contains("overlapping the interval")),
+            "two intervals claiming the same hours must be a violation, got {:?}",
+            overlapped.violation
+        );
+
+        // A DISJOINT later interval is fine, so the rejection above is the
+        // overlap and not the second record.
+        let mut disjoint = BoundaryTracker::default();
+        observe_interval(&mut disjoint, 1, resumed, &payload);
+        let later = interval(base + 6, base + 9);
+        observe_interval(&mut disjoint, 2, base + 9, &later);
+        assert!(disjoint.violation.is_none(), "{:?}", disjoint.violation);
     }
 
     /// Law: a probe PERF record beside a domain's GAP is not a duplicate

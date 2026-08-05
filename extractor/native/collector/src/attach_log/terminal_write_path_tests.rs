@@ -411,22 +411,28 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         code_only(capture_loop.1)
             .matches("scheduler_stream_closed_by_write = true")
             .count(),
-        3,
+        4,
         "every site that reaches teardown after a write committed a rollover sets it: the \
-         scheduler DATA publication, the frame-refusal publication, and the terminal DATA \
-         write"
+         scheduler DATA publication, the frame-refusal publication, the clock-unreadable \
+         interval publication, and the terminal DATA write"
     );
-    // THREE, not four. The scheduler H4DG write used to be the fourth, because
-    // it called `write_compact_frame` and so took its own campaign-identity
-    // observation, which could commit a rollover of its own.
+    // FOUR, and the fourth one earned its place. The `H4CU` clock-unreadable
+    // interval publication was added at the top of the sweep, and it calls
+    // `write_compact_frame` -- so it takes its own campaign-identity observation
+    // and can commit a rollover exactly as the DATA and refusal writes can. A
+    // site that CAN commit one must set the flag; the whole point of the flag is
+    // that the terminal sequence's stream-id latch cannot see a rollover
+    // committed before that sequence began.
     //
-    // It no longer observes anything. The gap frames are staged behind the DATA
-    // frame and published under the one boundary result the DATA publication
-    // already admitted, through `write_preboundary_compact_frame` -- which is
-    // exactly the API for "records assembled for the currently admitted
-    // identity", and which has no rollover ending to reach. A site that cannot
-    // commit a rollover has no flag to set, so a fourth assignment here would
-    // be dead code claiming to guard a window that closed.
+    // The scheduler H4DG write is the one that is deliberately NOT here, and the
+    // reason is the opposite: it used to call `write_compact_frame` and now
+    // stages its frames behind the DATA frame, publishing them under the one
+    // boundary result the DATA publication already admitted, through
+    // `write_preboundary_compact_frame` -- the API for "records assembled for
+    // the currently admitted identity", which has no rollover ending to reach. A
+    // site that cannot commit a rollover has no flag to set, so an assignment
+    // there would be dead code claiming to guard a window that closed. The
+    // assertion below is what keeps it that way.
     let gap_publication = capture_loop
         .1
         .split_once("if let Some(runtime) = read_only_scheduler_runtime.as_ref() {")

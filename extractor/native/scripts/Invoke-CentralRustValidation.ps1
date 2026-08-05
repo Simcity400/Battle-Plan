@@ -763,11 +763,38 @@ try {
         Invoke-Checked -Program "python" -Arguments @($worldFoldCitationTests)
         Invoke-Checked -Program "python" -Arguments @($captureScorecardTests)
         Invoke-Checked -Program "python" -Arguments @($clockBaselineSummaryTests)
-        # Runs in EVERY mode, not only Final/Release: this gate sat red for a
-        # week (a 2026-07-29 rename landed with a stale required-substring in
-        # the same commit) because nothing lighter than Final ever executed
-        # it. It costs seconds. The Final/Release path below re-checks the
-        # returned authority object; here an exit or schema failure is enough.
+        Invoke-Checked -Program "python" -Arguments @(
+            $worldFoldCitationVerifier,
+            "--repo-root",
+            $repoRoot
+        )
+    }
+
+    # The passive capture-policy gate runs over a WIDER mode set than the source
+    # checks above, and the difference is deliberate rather than incidental.
+    #
+    # The checks above validate the shipping world fold and the two report
+    # readers: their inputs are the fold citation tables and the Python readers,
+    # and an Evidence run - which requires an explicit -Package/-Lib/-Bin/
+    # -TestTarget/-FilterExpression selection and exists to drive the RE-evidence
+    # binaries - cannot reach them. Running them there would only lengthen a
+    # targeted harness invocation.
+    #
+    # This gate's input is the shipped COLLECTOR SOURCE, which an Evidence run
+    # does compile and can change. Its own history is the argument: it sat red
+    # for a week (a 2026-07-29 rename landed with a stale required-substring in
+    # the same commit) because nothing lighter than Final ever executed it, and
+    # leaving Evidence out reproduces that hole for exactly the tier most likely
+    # to be iterated on. It costs seconds. The Final/Release path below
+    # re-checks the returned authority object; here an exit or schema failure is
+    # enough.
+    #
+    # Soak, Lock and Stats are out for structural reasons, not by omission: Soak
+    # refuses any -Workspace but Replay (see the guard below), so the -Workspace
+    # condition already excludes it, and Lock and Stats are lockfile/cache
+    # utility modes that compile no collector source.
+    if ($Workspace -in @("All", "Extractor") -and
+        $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Evidence", "Final", "Release")) {
         $passivePolicyEveryMode = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $passiveCapturePolicyTest)
         if ($LASTEXITCODE -ne 0) {
             throw "passive capture-policy source tests exited with code $LASTEXITCODE"
@@ -777,11 +804,6 @@ try {
             [string]$passivePolicyEveryModeResult.Status -cne 'pass') {
             throw "passive capture-policy source tests returned no authority"
         }
-        Invoke-Checked -Program "python" -Arguments @(
-            $worldFoldCitationVerifier,
-            "--repo-root",
-            $repoRoot
-        )
     }
 
     if ($Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Final", "Release")) {

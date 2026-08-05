@@ -1543,6 +1543,7 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "rs_torn_domain_hours",
     "rs_worker_panic_domain_hours",
     "rs_clock_unreadable_events",
+    "rs_clock_unreadable_intervals_dropped",
     "rs_control_lane_compactions",
     "rs_reloads",
     // Running maxima maintained by the scheduler, not per-frame depths.
@@ -3035,6 +3036,7 @@ mod tests {
             "rs_torn_domain_hours",
             "rs_worker_panic_domain_hours",
             "rs_clock_unreadable_events",
+            "rs_clock_unreadable_intervals_dropped",
             "rs_control_lane_compactions",
             "rs_max_request_depth",
             "rs_max_publishing_depth",
