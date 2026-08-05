@@ -99,7 +99,7 @@ fn reader_gate_grants_a_freed_lane_to_the_costliest_waiter() {
         }
         let deadline = Instant::now() + GATE_TEST_DEADLINE;
         while gate.waiting() < COSTS.len() && Instant::now() < deadline {
-            std::hint::spin_loop();
+            thread::yield_now();
         }
         assert_eq!(gate.waiting(), COSTS.len(), "every waiter is queued");
         drop(held);
@@ -131,7 +131,7 @@ fn reader_gate_serves_equal_cost_waiters_in_arrival_order() {
             // the test rather than a hope about thread startup.
             let deadline = Instant::now() + GATE_TEST_DEADLINE;
             while gate.waiting() == queued && Instant::now() < deadline {
-                std::hint::spin_loop();
+                thread::yield_now();
             }
             assert_eq!(gate.waiting(), queued + 1, "waiter {id} queued");
         }
@@ -166,7 +166,7 @@ fn reader_gate_hands_its_lane_to_a_parked_waiter_when_the_holder_panics() {
             });
             let deadline = Instant::now() + GATE_TEST_DEADLINE;
             while gate.waiting() == 0 && Instant::now() < deadline {
-                std::hint::spin_loop();
+                thread::yield_now();
             }
             assert_eq!(gate.waiting(), 1, "the waiter is parked behind the permit");
             panic!("reader worker failed under its permit");
@@ -183,7 +183,10 @@ fn reader_gate_hands_its_lane_to_a_parked_waiter_when_the_holder_panics() {
 /// How long a test may spin for a state that should arrive in microseconds.
 /// Bounded so a regression FAILS with a readable assertion instead of hanging
 /// the suite.
-const GATE_TEST_DEADLINE: Duration = Duration::from_secs(5);
+// Generous because it is a failure bound, not a pace: the waits below exit the
+// moment the condition holds, and on a build-loaded machine 5 s starved the
+// very workers the asserting thread was spinning against.
+const GATE_TEST_DEADLINE: Duration = Duration::from_secs(60);
 
 // A held gate must grant NOTHING, even with every lane free. Without this the
 // hold cannot fill the queue it exists to fill: the first worker to arrive
@@ -200,7 +203,7 @@ fn reader_gate_hold_queues_an_acquirer_even_with_every_lane_free() {
         });
         let deadline = Instant::now() + GATE_TEST_DEADLINE;
         while gate.waiting() == 0 && Instant::now() < deadline {
-            std::hint::spin_loop();
+            thread::yield_now();
         }
         assert_eq!(
             gate.waiting(),
@@ -250,7 +253,7 @@ fn reader_gate_open_grants_a_held_queue_costliest_first() {
         }
         let deadline = Instant::now() + GATE_TEST_DEADLINE;
         while gate.waiting() < COSTS.len() && Instant::now() < deadline {
-            std::hint::spin_loop();
+            thread::yield_now();
         }
         assert_eq!(
             gate.waiting(),
@@ -292,7 +295,7 @@ fn reader_gate_counts_promised_arrivals_and_clears_them_as_workers_queue() {
         }
         let deadline = Instant::now() + GATE_TEST_DEADLINE;
         while gate.pending_arrivals() > 0 && Instant::now() < deadline {
-            std::hint::spin_loop();
+            thread::yield_now();
         }
         assert_eq!(
             gate.pending_arrivals(),
@@ -331,7 +334,7 @@ fn reader_gate_arrival_without_a_matching_ticket_redeems_nothing() {
         scope.spawn(|| drop(gate.acquire_ranked(0, Some(stale))));
         let deadline = Instant::now() + GATE_TEST_DEADLINE;
         while gate.waiting() < 2 && Instant::now() < deadline {
-            std::hint::spin_loop();
+            thread::yield_now();
         }
         assert_eq!(
             gate.pending_arrivals(),
