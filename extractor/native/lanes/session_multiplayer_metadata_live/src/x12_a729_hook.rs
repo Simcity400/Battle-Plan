@@ -77,6 +77,22 @@ const EXPECTED_HOOKS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [
     },
 ];
 
+/// The three D57 targets in the install/teardown order used by this lane.
+const HOOK_NAMES: [&str; HOOK_RECEIPT_COUNT] = [
+    "gameplay.d57.speed_setter",
+    "gameplay.d57.pause_toggle",
+    "gameplay.d57.pause_forced",
+];
+
+fn hook_batch(addresses: &InstalledAddresses) -> [(&'static str, *mut c_void); HOOK_RECEIPT_COUNT] {
+    let targets = [
+        addresses.speed_setter,
+        addresses.pause_toggle,
+        addresses.pause_forced,
+    ];
+    core::array::from_fn(|index| (HOOK_NAMES[index], targets[index] as *mut c_void))
+}
+
 type SpeedSetterFn = unsafe extern "system" fn(usize, i32);
 type PauseToggleFn = unsafe extern "system" fn(usize, u8, usize);
 type PauseForcedFn = unsafe extern "system" fn(usize, i32);
@@ -399,15 +415,12 @@ pub fn install() -> Result<InstalledAddresses, String> {
     };
     ORIGINAL_PAUSE_FORCED.store(pause_forced as usize, Ordering::Release);
 
-    for (target, name) in [
-        (addresses.speed_setter, "speed"),
-        (addresses.pause_toggle, "pause-toggle"),
-        (addresses.pause_forced, "forced-pause"),
-    ] {
-        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-            let reason = format!("X12 {name} hook enable failed: {status}");
-            return Err(with_rollback_result(reason, rollback_enabled(&addresses)));
-        }
+    // One batch freezes the process once instead of once per target. The input
+    // order is unchanged, and no game thread can run between the three patches.
+    let enabled = unsafe { inline_detour::enable_batch(&hook_batch(&addresses)) };
+    if let Some((name, status)) = enabled.first_failure() {
+        let reason = format!("X12 {name} hook enable failed: {status}");
+        return Err(with_rollback_result(reason, rollback_enabled(&addresses)));
     }
     if let Err(error) = observe_install_receipts(&addresses) {
         let reason = format!("X12 enabled-hook receipt failed: {error}");
@@ -559,13 +572,17 @@ fn seal_after_final_drain_and_uninstall_locked(
 
     if !disabled.iter().all(|value| *value) {
         let mut fully_reenabled = true;
-        for (index, (target, name)) in targets.iter().copied().enumerate() {
-            if disabled[index] {
-                if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-                    fully_reenabled = false;
-                    errors.push(format!("restore {name} after partial disable: {status}"));
-                }
-            }
+        let restore: Vec<_> = hook_batch(&addresses)
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| disabled[*index])
+            .map(|(_, target)| target)
+            .collect();
+        // Restore every successfully disabled site with one freeze rather than
+        // one per site, preserving the original speed/toggle/forced ordering.
+        for (name, status) in unsafe { inline_detour::enable_batch(&restore) }.failures() {
+            fully_reenabled = false;
+            errors.push(format!("restore {name} after partial disable: {status}"));
         }
         if fully_reenabled {
             match installed_receipts {
@@ -859,31 +876,31 @@ pub fn seal_and_reserve_terminal_batch() -> Result<SpeedPauseDrainReservation, S
         let complete_receipts = observe_install_receipts(&addresses)?;
         reobserve_install_receipts(&addresses, complete_receipts)?;
         ACCEPTING_CALLBACKS.store(false, Ordering::Release);
-        let targets = [
-            (addresses.speed_setter, "speed"),
-            (addresses.pause_toggle, "pause-toggle"),
-            (addresses.pause_forced, "forced-pause"),
-        ];
+        let targets = hook_batch(&addresses);
         let mut disabled = [false; 3];
         let mut failures = Vec::new();
-        for (index, (target, name)) in targets.iter().copied().enumerate() {
-            match unsafe { inline_detour::disable(target as *mut c_void) } {
-                Ok(())
-                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-                
-                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => disabled[index] = true,
+        // The seal now costs one freeze for all three targets. Per-target
+        // outcomes retain the old order, while the freeze prevents interleaving.
+        let sealed = unsafe { inline_detour::disable_batch(&targets) };
+        for (index, (name, outcome)) in sealed.outcomes().iter().enumerate() {
+            match outcome {
+                Ok(()) => disabled[index] = true,
                 Err(status) => failures.push(format!("disable {name}: {status}")),
             }
         }
         if !failures.is_empty() {
             let mut restored = true;
-            for (index, (target, name)) in targets.iter().copied().enumerate() {
-                if disabled[index] {
-                    if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-                        restored = false;
-                        failures.push(format!("restore {name}: {status}"));
-                    }
-                }
+            let restore: Vec<_> = targets
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| disabled[*index])
+                .map(|(_, target)| target)
+                .collect();
+            // The partial-failure restore is also one freeze rather than one
+            // per successfully disabled target, in the same target order.
+            for (name, status) in unsafe { inline_detour::enable_batch(&restore) }.failures() {
+                restored = false;
+                failures.push(format!("restore {name}: {status}"));
             }
             if restored {
                 ACCEPTING_CALLBACKS.store(true, Ordering::Release);
@@ -1491,17 +1508,13 @@ fn with_rollback_result(reason: String, rollback: Result<(), String>) -> String 
 
 fn rollback_created(addresses: &InstalledAddresses) -> Result<(), String> {
     ACCEPTING_CALLBACKS.store(false, Ordering::Release);
-    let mut errors = Vec::new();
-    for target in [
-        addresses.speed_setter,
-        addresses.pause_toggle,
-        addresses.pause_forced,
-    ] {
-        match unsafe { inline_detour::remove(target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => errors.push(format!("remove created hook at 0x{target:X}: {status}")),
-        }
-    }
+    // Removing the three created sites now holds one freeze instead of three;
+    // the batch preserves the original speed/toggle/forced ordering.
+    let mut errors: Vec<_> = unsafe { inline_detour::remove_batch(&hook_batch(addresses)) }
+        .failures()
+        .into_iter()
+        .map(|(name, status)| format!("remove created hook {name}: {status}"))
+        .collect();
     if errors.is_empty() {
         for (target, sentinel, name) in [
             (addresses.speed_setter, &SPEED_SENTINEL, "speed setter"),

@@ -673,6 +673,23 @@ fn expected_hooks() -> [ExpectedRvaHook; 3] {
     ]
 }
 
+const HOOK_NAMES: [&str; 3] = [
+    "gameplay.d55.terminal_normal_writer",
+    "gameplay.d55.terminal_overrun_writer",
+    "gameplay.d55.terminal_record_allocator",
+];
+
+fn hook_batch(targets: &[usize; 3]) -> [(&'static str, *mut c_void); 3] {
+    core::array::from_fn(|index| (HOOK_NAMES[index], targets[index] as *mut c_void))
+}
+
+fn writer_hook_batch(sites: InstalledHookAddresses) -> [(&'static str, *mut c_void); 2] {
+    [
+        (HOOK_NAMES[0], sites.normal_writer as *mut c_void),
+        (HOOK_NAMES[1], sites.overrun_writer as *mut c_void),
+    ]
+}
+
 fn complete_installed_receipts(
     state: &HookReceiptState,
 ) -> Result<[InstalledRvaHookReceipt; 3], String> {
@@ -944,18 +961,20 @@ pub fn install() -> Result<InstalledHookAddresses, String> {
     ORIGINAL_ALLOCATOR.store(allocator as usize, Ordering::Release);
     // Arm the passive nested observer before either writer can publish a
     // context. This prevents a writer from reaching an unhooked allocator in
-    // the installation window.
-    for target in [
-        sites.record_allocator,
-        sites.overrun_writer,
+    // the installation window. The batch keeps that readable order and makes
+    // it atomic to game threads, at the cost of one freeze instead of three.
+    let mut batch = hook_batch(&[
         sites.normal_writer,
-    ] {
-        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-            return Err(fail_open_install(
-                sites,
-                format!("terminal hook enable failed at 0x{target:X}: {status}"),
-            ));
-        }
+        sites.overrun_writer,
+        sites.record_allocator,
+    ]);
+    batch.reverse();
+    let enabled = unsafe { inline_detour::enable_batch(&batch) };
+    if let Some((name, status)) = enabled.first_failure() {
+        return Err(fail_open_install(
+            sites,
+            format!("terminal hook enable failed for {name}: {status}"),
+        ));
     }
     match observe_installed_hook_receipts(sites) {
         Ok(_) => {}
@@ -1220,14 +1239,14 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
         receipts.rollback_relays.clone()
     };
     let mut errors = Vec::new();
-    for target in [sites.normal_writer, sites.overrun_writer] {
-        match unsafe { inline_detour::disable(target as *mut c_void) } {
-            Ok(())
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => errors.push(format!("disable 0x{target:X}: {status}")),
-        }
-    }
+    // Both writers are restored under one freeze rather than two, in their
+    // original order. The allocator remains a separate post-quiescence group.
+    errors.extend(
+        unsafe { inline_detour::disable_batch(&writer_hook_batch(sites)) }
+            .failures()
+            .into_iter()
+            .map(|(name, status)| format!("disable {name}: {status}")),
+    );
     if errors.is_empty() {
         if let Err(error) = wait_for_writer_quiescence() {
             errors.push(error);
@@ -1253,20 +1272,24 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
         return Err(errors.join("; "));
     }
     let _retained_relays = retained_relays;
-    for (index, target) in [
+    let mut removal = hook_batch(&[
         sites.normal_writer,
         sites.overrun_writer,
         sites.record_allocator,
-    ]
-    .into_iter()
-    .enumerate()
-    .rev()
+    ]);
+    removal.reverse();
+    // All three trampoline frees share one freeze instead of three. Reversing
+    // the batch preserves the rollback's allocator/overrun/normal order.
+    for ((name, outcome), index) in unsafe { inline_detour::remove_batch(&removal) }
+        .outcomes()
+        .iter()
+        .zip([2usize, 1, 0])
     {
-        match unsafe { inline_detour::remove(target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {
+        match outcome {
+            Ok(()) => {
                 CREATED_HOOK_MASK.fetch_and(!(1usize << index), Ordering::AcqRel);
             }
-            Err(status) => errors.push(format!("remove 0x{target:X}: {status}")),
+            Err(status) => errors.push(format!("remove {name}: {status}")),
         }
     }
     for (address, expected, label) in [
@@ -1385,25 +1408,30 @@ fn release_hook_receipts(
             CREATED_HOOK_MASK.load(Ordering::Acquire)
         ));
     }
-    for (index, target) in [
+    let mut removal = hook_batch(&[
         sites.normal_writer,
         sites.overrun_writer,
         sites.record_allocator,
-    ]
-    .into_iter()
-    .enumerate()
-    .rev()
-    {
-        match unsafe { inline_detour::remove(target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {
+    ]);
+    removal.reverse();
+    // Production release frees all three relays with one freeze instead of
+    // three, retaining the allocator/overrun/normal reverse order.
+    let removed = unsafe { inline_detour::remove_batch(&removal) };
+    let mut removal_error = None;
+    for ((name, outcome), index) in removed.outcomes().iter().zip([2usize, 1, 0]) {
+        match outcome {
+            Ok(()) => {
                 CREATED_HOOK_MASK.fetch_and(!(1usize << index), Ordering::AcqRel);
             }
             Err(status) => {
-                return Err(format!(
-                    "terminal hook removal failed at 0x{target:X}: {status}"
-                ));
+                removal_error.get_or_insert_with(|| {
+                    format!("terminal hook removal failed for {name}: {status}")
+                });
             }
         }
+    }
+    if let Some(error) = removal_error {
+        return Err(error);
     }
     if CREATED_HOOK_MASK.load(Ordering::Acquire) != 0 {
         return Err(format!(
@@ -1544,17 +1572,12 @@ fn seal_and_reserve_all_impl() -> Result<SealedTerminalReservation, String> {
         state.reservation_admission_sealed = true;
     }
     if let Some(sites) = sites {
-        for target in [sites.normal_writer, sites.overrun_writer] {
-            match unsafe { inline_detour::disable(target as *mut c_void) } {
-                Ok(())
-                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-                Err(status) => {
-                    return Err(format!(
-                        "terminal writer seal failed at 0x{target:X}: {status}"
-                    ))
-                }
-            }
+        // Seal both writers with one freeze rather than two. Their original
+        // order remains visible, and the allocator stays after the wait below.
+        if let Some((name, status)) =
+            unsafe { inline_detour::disable_batch(&writer_hook_batch(sites)) }.first_failure()
+        {
+            return Err(format!("terminal writer seal failed for {name}: {status}"));
         }
         wait_for_writer_quiescence()?;
         match unsafe { inline_detour::disable(sites.record_allocator as *mut c_void) } {

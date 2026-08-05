@@ -7,8 +7,7 @@
 #![cfg(windows)]
 
 use core::{cell::RefCell, ffi::c_void, mem, ptr};
-use inline_detour::InlineDetourReleaseError;
-use minhook::{MinHook, MH_STATUS};
+use minhook::MinHook;
 use production_hook_receipt::{
     bind_detours_by_identity, next_teardown_owner_token, observe_enabled_minhook_rel5,
     observe_released, ExpectedRvaHook, HookTeardownAttestation, InstallAbortDiscard,
@@ -95,6 +94,16 @@ const EXPECTED_HOOKS: [ExpectedRvaHook; 2] = [
         original_prefix: &HOURLY_UPDATE_SENTINEL,
     },
 ];
+
+const HOOK_NAMES: [&str; 2] = [
+    "gameplay.d64.definition_cancel",
+    "gameplay.d64.hourly_delayed_event_update",
+];
+
+fn hook_batch(sites: InstalledHookAddresses) -> [(&'static str, *mut c_void); 2] {
+    let targets = [sites.definition_cancel, sites.hourly_update];
+    core::array::from_fn(|index| (HOOK_NAMES[index], targets[index] as *mut c_void))
+}
 
 type HourlyUpdateFn = unsafe extern "system" fn(usize);
 type DefinitionCancelFn = unsafe extern "system" fn(usize, usize);
@@ -648,17 +657,18 @@ fn install_hooks() -> Result<InstalledHookAddresses, String> {
         }
     };
     ORIGINAL_DEFINITION_CANCEL.store(original_cancel as usize, Ordering::Release);
-    for target in [sites.definition_cancel, sites.hourly_update] {
-        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-            if let Err(cleanup) = cleanup_hooks(sites) {
-                INSTALLED.store(true, Ordering::Release);
-                return Err(format!(
-                    "A19 hook enable failed at 0x{target:X}: {status}; rollback failed: {cleanup}"
-                ));
-            }
-            clear_hook_state();
-            return Err(format!("A19 hook enable failed at 0x{target:X}: {status}"));
+    // Cancellation remains first in the readable roster, while both hooks are
+    // patched inside one freeze instead of two with no intervening game thread.
+    let enabled = unsafe { inline_detour::enable_batch(&hook_batch(sites)) };
+    if let Some((name, status)) = enabled.first_failure() {
+        if let Err(cleanup) = cleanup_hooks(sites) {
+            INSTALLED.store(true, Ordering::Release);
+            return Err(format!(
+                "A19 hook enable failed for {name}: {status}; rollback failed: {cleanup}"
+            ));
         }
+        clear_hook_state();
+        return Err(format!("A19 hook enable failed for {name}: {status}"));
     }
     if let Err(error) = observe_install_receipts(sites) {
         if let Err(cleanup) = cleanup_hooks(sites) {
@@ -2323,20 +2333,18 @@ fn observe_pending_release_receipts() -> Result<(), String> {
 }
 
 fn cleanup_hooks(sites: InstalledHookAddresses) -> Result<(), String> {
-    for target in [sites.hourly_update, sites.definition_cancel] {
-        match unsafe { inline_detour::disable(target as *mut c_void) } {
-            Ok(())
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => return Err(format!("A19 hook disable failed: {status}")),
-        }
+    let mut batch = hook_batch(sites);
+    batch.reverse();
+    // Cleanup keeps hourly/cancellation reverse order while restoring both in
+    // one freeze rather than two. The quiescence boundary remains below it.
+    if let Some((name, status)) = unsafe { inline_detour::disable_batch(&batch) }.first_failure() {
+        return Err(format!("A19 hook disable failed for {name}: {status}"));
     }
     wait_for_callbacks()?;
-    for target in [sites.hourly_update, sites.definition_cancel] {
-        match unsafe { inline_detour::remove(target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => return Err(format!("A19 hook remove failed: {status}")),
-        }
+    // The same reverse-order pair is removed under one freeze instead of two;
+    // it is deliberately not merged across the callback wait above.
+    if let Some((name, status)) = unsafe { inline_detour::remove_batch(&batch) }.first_failure() {
+        return Err(format!("A19 hook remove failed for {name}: {status}"));
     }
     verify_sentinel(sites.definition_cancel, &DEFINITION_CANCEL_SENTINEL)?;
     verify_sentinel(sites.hourly_update, &HOURLY_UPDATE_SENTINEL)?;

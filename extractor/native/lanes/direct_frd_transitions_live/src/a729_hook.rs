@@ -24,8 +24,7 @@
 //!   [`HOOK_ENTRY_OBSERVED_BITS`] only in the entry summary.
 
 use core::ffi::c_void;
-use inline_detour::InlineDetourReleaseError;
-use minhook::{MinHook, MH_STATUS};
+use minhook::MinHook;
 use production_hook_receipt::{
     next_teardown_owner_token, observe_enabled_minhook_rel5, observe_released, ExpectedRvaHook,
     HookTeardownAttestation, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
@@ -516,6 +515,32 @@ struct PreparedRow {
     before: DirectEventStateSummary,
 }
 
+/// The twelve D45 detours, in target order, named once.
+///
+/// One array rather than a literal per call site: the install, the teardown
+/// and the batched enable each need the same names in the same order, and
+/// three copies of a twelve-element list is three chances for one of them to
+/// drift out of step with `targets()`.
+const HOOK_NAMES: [&str; 12] = [
+    "focus",
+    "research",
+    "ordinary decision",
+    "targeted decision",
+    "timed decision",
+    "on action",
+    "decision cancel effect",
+    "decision remove effect",
+    "decision timeout effect",
+    "targeted decision cancel effect",
+    "targeted decision remove effect",
+    "targeted decision timeout effect",
+];
+
+/// Pair each target with its name for a batched `inline_detour` call.
+fn enable_batch_targets(targets: &[usize; 12]) -> [(&'static str, *mut c_void); 12] {
+    core::array::from_fn(|index| (HOOK_NAMES[index], targets[index] as *mut c_void))
+}
+
 pub fn install() -> Result<InstalledRoots, String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
@@ -582,30 +607,34 @@ pub fn install() -> Result<InstalledRoots, String> {
     ACTIVE_HOOK_EPOCH.store(hook_epoch, Ordering::Release);
     EVIDENCE_FIXTURE.store(evidence_fixture, Ordering::Release);
     QUIESCED.store(false, Ordering::Release);
-    for (index, (target, name)) in targets.into_iter().zip([
-        "focus",
-        "research",
-        "ordinary decision",
-        "targeted decision",
-        "timed decision",
-        "on action",
-        "decision cancel effect",
-        "decision remove effect",
-        "decision timeout effect",
-        "targeted decision cancel effect",
-        "targeted decision remove effect",
-        "targeted decision timeout effect",
-    ]).enumerate() {
-        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-            let cleanup = rollback(&targets)
-                .err()
-                .map(|cleanup| format!("; rollback failed: {cleanup}"))
-                .unwrap_or_default();
-            if cleanup.is_empty() {
-                clear_hook_lifecycle_state();
-            }
-            return Err(format!("D45 {name} hook enable failed: {status}{cleanup}"));
+    // ONE freeze for all twelve. Each `inline_detour::enable` freezes the
+    // whole process -- two system-wide thread-list walks and a suspend/resume
+    // of every game thread -- so twelve of them cost twelve freezes at a
+    // moment when the roster is installing 55 detours in total.
+    //
+    // Batching is not merely cheaper here, it is STRICTER. The twelve
+    // callbacks now become live inside a single freeze window, so no game
+    // thread can execute between them; the interleaving where a later detour
+    // is patched while an earlier one is already admitting callbacks does not
+    // exist any more.
+    //
+    // The installed-hook receipts are observed AFTER the batch, not between
+    // enables, because observing one reads that target's patched bytes and the
+    // bytes are not there until the batch applies. Their order is unchanged
+    // and each still names its own target.
+    let batch = enable_batch_targets(&targets);
+    let report = unsafe { inline_detour::enable_batch(&batch) };
+    if let Some((name, status)) = report.first_failure() {
+        let cleanup = rollback(&targets)
+            .err()
+            .map(|cleanup| format!("; rollback failed: {cleanup}"))
+            .unwrap_or_default();
+        if cleanup.is_empty() {
+            clear_hook_lifecycle_state();
         }
+        return Err(format!("D45 {name} hook enable failed: {status}{cleanup}"));
+    }
+    for (index, target) in targets.into_iter().enumerate() {
         if let Err(error) = observe_and_record_install_receipt(index, target) {
             let cleanup = rollback(&targets)
                 .err()
@@ -615,7 +644,8 @@ pub fn install() -> Result<InstalledRoots, String> {
                 clear_hook_lifecycle_state();
             }
             return Err(format!(
-                "D45 {name} installed-hook custody failed: {error}{cleanup}"
+                "D45 {} installed-hook custody failed: {error}{cleanup}",
+                HOOK_NAMES[index]
             ));
         }
     }
@@ -733,29 +763,18 @@ fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
     }
     let base = MODULE_BASE.load(Ordering::Acquire);
     let targets = targets(base)?;
-    let names = [
-        "focus",
-        "research",
-        "ordinary decision",
-        "targeted decision",
-        "timed decision",
-        "on action",
-        "decision cancel effect",
-        "decision remove effect",
-        "decision timeout effect",
-        "targeted decision cancel effect",
-        "targeted decision remove effect",
-        "targeted decision timeout effect",
-    ];
-    let mut disable_errors = Vec::new();
-    for (target, name) in targets.into_iter().zip(names) {
-        match unsafe { inline_detour::disable(target as *mut c_void) } {
-            Ok(())
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => disable_errors.push(format!("disable {name}: {status}")),
-        }
+    // ONE freeze for all twelve restorations, and every one of them still
+    // reported by name: `disable_batch` reads MinHook's already-disabled and
+    // never-created statuses exactly as the per-target match arms here did,
+    // and re-drives the batch target by target if the single apply is refused,
+    // so a refusal still says WHICH hook is still patched.
+    let disable_errors: Vec<String> = unsafe {
+        inline_detour::disable_batch(&enable_batch_targets(&targets))
     }
+    .failures()
+    .into_iter()
+    .map(|(name, status)| format!("disable {name}: {status}"))
+    .collect();
     if !disable_errors.is_empty() {
         return Err(disable_errors.join("; "));
     }
@@ -785,13 +804,16 @@ fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
         }
     }
     INSTALLED.store(false, Ordering::Release);
-    let mut remove_errors = Vec::new();
-    for (target, name) in targets.into_iter().zip(names) {
-        match unsafe { inline_detour::remove(target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => remove_errors.push(format!("remove {name}: {status}")),
-        }
+    // ONE freeze for all twelve removals. `remove_batch` holds the same guard
+    // each single `remove` takes, once instead of twelve times, and reports
+    // each trampoline separately.
+    let remove_errors: Vec<String> = unsafe {
+        inline_detour::remove_batch(&enable_batch_targets(&targets))
     }
+    .failures()
+    .into_iter()
+    .map(|(name, status)| format!("remove {name}: {status}"))
+    .collect();
     if remove_errors.is_empty() {
         verify_pre_target_prefixes(&targets)?;
         observe_release_receipts()?;
@@ -1049,40 +1071,35 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
     if !QUIESCED.load(Ordering::Acquire) {
         let base = MODULE_BASE.load(Ordering::Acquire);
         let hook_targets = targets(base)?;
-        let names = [
-            "focus",
-            "research",
-            "ordinary decision",
-            "targeted decision",
-            "timed decision",
-            "on action",
-            "decision cancel effect",
-            "decision remove effect",
-            "decision timeout effect",
-            "targeted decision cancel effect",
-            "targeted decision remove effect",
-            "targeted decision timeout effect",
-        ];
+        // ONE freeze for the seal, and the per-target verdicts the restore
+        // path needs are still there: `disable_batch` reports each target
+        // separately, so `disabled[index]` is exactly as exact as the
+        // per-target loop that used to build it.
+        let batch = enable_batch_targets(&hook_targets);
+        let sealed = unsafe { inline_detour::disable_batch(&batch) };
         let mut disabled = [false; 12];
         let mut failures = Vec::new();
-        for (index, (target, name)) in hook_targets.into_iter().zip(names).enumerate() {
-            match unsafe { inline_detour::disable(target as *mut c_void) } {
-                Ok(())
-                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-                
-                | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => disabled[index] = true,
+        for (index, (name, outcome)) in sealed.outcomes().iter().enumerate() {
+            match outcome {
+                Ok(()) => disabled[index] = true,
                 Err(status) => failures.push(format!("disable {name}: {status}")),
             }
         }
         if !failures.is_empty() {
             let base = MODULE_BASE.load(Ordering::Acquire);
             if let Ok(hook_targets) = targets(base) {
-                for (index, (target, name)) in hook_targets.into_iter().zip(names).enumerate() {
-                    if disabled[index] {
-                        if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-                            failures.push(format!("restore {name}: {status}"));
-                        }
-                    }
+                // The restore is a batch too, over exactly the sites this
+                // attempt took down. Re-enabling one at a time would freeze
+                // once per restored site on the failure path -- the path
+                // already least able to afford it.
+                let restore: Vec<(&'static str, *mut c_void)> = enable_batch_targets(&hook_targets)
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, _)| disabled[*index])
+                    .map(|(_, entry)| entry)
+                    .collect();
+                for (name, status) in unsafe { inline_detour::enable_batch(&restore) }.failures() {
+                    failures.push(format!("restore {name}: {status}"));
                 }
             }
             return Err(failures.join("; "));
@@ -2129,26 +2146,29 @@ fn observe_release_receipts() -> Result<(), String> {
 
 fn rollback(targets: &[usize; 12]) -> Result<(), String> {
     set_rollback_retry_required(true)?;
-    let mut errors = Vec::new();
-    for target in targets {
-        match unsafe { inline_detour::disable(*target as *mut c_void) } {
-            Ok(())
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => errors.push(format!("disable {target:#x}: {status}")),
-        }
+    let mut errors: Vec<String> = unsafe {
+        inline_detour::disable_batch(&enable_batch_targets(targets))
     }
+    .failures()
+    .into_iter()
+    .map(|(name, status)| format!("disable {name}: {status}"))
+    .collect();
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }
     QUIESCED.store(true, Ordering::Release);
     wait_for_callback_quiescence()?;
-    for target in targets.iter().rev() {
-        match unsafe { inline_detour::remove(*target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => errors.push(format!("remove {target:#x}: {status}")),
-        }
-    }
+    // Reverse order is preserved: every target is disabled by the batch above
+    // before any is removed, so the only thing the order still governs is the
+    // sequence of trampoline frees, and it costs one freeze rather than twelve.
+    let mut reversed = enable_batch_targets(targets);
+    reversed.reverse();
+    errors.extend(
+        unsafe { inline_detour::remove_batch(&reversed) }
+            .failures()
+            .into_iter()
+            .map(|(name, status)| format!("remove {name}: {status}")),
+    );
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }

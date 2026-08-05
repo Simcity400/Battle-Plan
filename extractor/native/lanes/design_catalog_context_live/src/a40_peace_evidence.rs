@@ -11,8 +11,7 @@
 //! engine lifecycle identity.
 
 use core::ffi::c_void;
-use inline_detour::InlineDetourReleaseError;
-use minhook::{MinHook, MH_STATUS};
+use minhook::MinHook;
 use production_hook_receipt::rel5_roster::Rel5HookRoster;
 use production_hook_receipt::{
     ExpectedRvaHook, InstallAbortDiscard, InstalledRvaHookReceipt, ReleasedRvaHookReceipt,
@@ -108,6 +107,20 @@ pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [
         original_prefix: &TERMINAL_SUMMARY_SENTINEL,
     },
 ];
+
+/// Pair a canonical D97 target prefix with the pinned logical names.
+fn hook_batch(targets: &[usize]) -> Vec<(&'static str, *mut c_void)> {
+    targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| {
+            (
+                PRODUCTION_HOOK_SPECS[index].logical_name,
+                *target as *mut c_void,
+            )
+        })
+        .collect()
+}
 
 static HOOK_RECEIPTS: Rel5HookRoster<HOOK_RECEIPT_COUNT> =
     Rel5HookRoster::new("D97", PRODUCTION_HOOK_SPECS);
@@ -356,9 +369,11 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
         let original = match unsafe { MinHook::create_hook(target as *mut c_void, detour) } {
             Ok(original) => original,
             Err(status) => {
-                for rollback in created.iter().rev() {
-                    let _ = unsafe { inline_detour::remove(*rollback as *mut c_void) };
-                }
+                let mut rollback = hook_batch(&created);
+                rollback.reverse();
+                // A partially created prefix is removed in reverse order under
+                // one freeze instead of one freeze per created target.
+                let _ = unsafe { inline_detour::remove_batch(&rollback) };
                 clear_originals();
                 MODULE_BASE.store(0, Ordering::Release);
                 return Err(format!(
@@ -369,51 +384,49 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
         original_slot.store(original as usize, Ordering::Release);
         created.push(target);
     }
-    for target in &created {
-        if let Err(status) = unsafe { inline_detour::enable(*target as *mut c_void) } {
-            let mut cleanup_failures = Vec::new();
-            for rollback in created.iter().rev() {
-                match unsafe { inline_detour::disable(*rollback as *mut c_void) } {
-                    Ok(())
-                    | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-                    | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-                    Err(error) => cleanup_failures.push(format!(
-                        "disable {rollback:#x}: {error}"
-                    )),
-                }
+    // Enable the four canonical sites with one freeze instead of four. The
+    // order is unchanged and no game thread can observe a partial roster.
+    let enabled = unsafe { inline_detour::enable_batch(&hook_batch(&created)) };
+    if let Some((name, status)) = enabled.first_failure() {
+        let mut cleanup_failures = Vec::new();
+        let mut rollback = hook_batch(&created);
+        rollback.reverse();
+        // Disable the rollback set in the same reverse order with one freeze;
+        // receipt observation remains after the successful enable batch.
+        cleanup_failures.extend(
+            unsafe { inline_detour::disable_batch(&rollback) }
+                .failures()
+                .into_iter()
+                .map(|(name, error)| format!("disable {name}: {error}")),
+        );
+        if cleanup_failures.is_empty() {
+            if let Err(error) = wait_for_quiescence() {
+                cleanup_failures.push(error);
             }
-            if cleanup_failures.is_empty() {
-                if let Err(error) = wait_for_quiescence() {
-                    cleanup_failures.push(error);
-                }
-            }
-            if cleanup_failures.is_empty() {
-                for rollback in created.iter().rev() {
-                    match unsafe { inline_detour::remove(*rollback as *mut c_void) } {
-                        Ok(())
-                        | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-                        Err(error) => cleanup_failures.push(format!(
-                            "remove {rollback:#x}: {error}"
-                        )),
-                    }
-                }
-            }
-            if !cleanup_failures.is_empty() {
-                // The enable failed and the rollback could not finish, so one or
-                // more targets may still be patched with `INSTALLED` never set.
-                // Latch it: this is the only remaining record.
-                FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
-                return Err(format!(
-                    "A40 peace hook enable at {target:#x} failed: {status}; rollback failed: {}",
-                    cleanup_failures.join(", ")
-                ));
-            }
-            clear_originals();
-            MODULE_BASE.store(0, Ordering::Release);
+        }
+        if cleanup_failures.is_empty() {
+            // Keep removal after quiescence, but free the reverse-order set
+            // under one freeze rather than one per target.
+            cleanup_failures.extend(
+                unsafe { inline_detour::remove_batch(&rollback) }
+                    .failures()
+                    .into_iter()
+                    .map(|(name, error)| format!("remove {name}: {error}")),
+            );
+        }
+        if !cleanup_failures.is_empty() {
+            // The enable failed and the rollback could not finish, so one or
+            // more targets may still be patched with `INSTALLED` never set.
+            // Latch it: this is the only remaining record.
+            FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(format!(
-                "A40 peace hook enable at {target:#x} failed: {status}"
+                "A40 peace hook enable for {name} failed: {status}; rollback failed: {}",
+                cleanup_failures.join(", ")
             ));
         }
+        clear_originals();
+        MODULE_BASE.store(0, Ordering::Release);
+        return Err(format!("A40 peace hook enable for {name} failed: {status}"));
     }
     // Fail closed on identity, exactly as D94 does. The observation re-derives
     // the module from the running process, refuses anything that is not an
@@ -455,14 +468,16 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
 /// against a live detour.
 fn release_created_sites(created: &[usize]) -> Vec<String> {
     let mut failures = Vec::new();
-    for target in created.iter().rev() {
-        match unsafe { inline_detour::disable(*target as *mut c_void) } {
-            Ok(())
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(error) => failures.push(format!("disable {target:#x}: {error}")),
-        }
-    }
+    let mut batch = hook_batch(created);
+    batch.reverse();
+    // Reverse-order disablement now shares one freeze instead of one per site;
+    // the quiescence barrier below remains between disable and removal.
+    failures.extend(
+        unsafe { inline_detour::disable_batch(&batch) }
+            .failures()
+            .into_iter()
+            .map(|(name, error)| format!("disable {name}: {error}")),
+    );
     if !failures.is_empty() {
         return failures;
     }
@@ -470,12 +485,13 @@ fn release_created_sites(created: &[usize]) -> Vec<String> {
         failures.push(error);
         return failures;
     }
-    for target in created.iter().rev() {
-        match unsafe { inline_detour::remove(*target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(error) => failures.push(format!("remove {target:#x}: {error}")),
-        }
-    }
+    // The same reverse-order sites are removed under one freeze instead of N.
+    failures.extend(
+        unsafe { inline_detour::remove_batch(&batch) }
+            .failures()
+            .into_iter()
+            .map(|(name, error)| format!("remove {name}: {error}")),
+    );
     failures
 }
 
@@ -797,20 +813,24 @@ pub fn uninstall_hooks() -> Result<(), String> {
     }
     let base = MODULE_BASE.load(Ordering::Acquire);
     let addresses = installed_addresses(base);
-    let targets = [
-        addresses.terminal_summary,
-        addresses.contest_breakdown,
-        addresses.claim_breakdown,
+    let canonical_targets = [
         addresses.conference_refresh,
+        addresses.claim_breakdown,
+        addresses.contest_breakdown,
+        addresses.terminal_summary,
     ];
+    let mut targets = hook_batch(&canonical_targets);
+    targets.reverse();
     let mut first_error = None;
     if needs_disable {
-        for target in &targets {
-            if let Err(status) = unsafe { inline_detour::disable(*target as *mut c_void) } {
-                first_error.get_or_insert_with(|| {
-                    format!("A40 peace hook disable at {target:#x} failed: {status}")
-                });
-            }
+        // Teardown retains terminal-to-refresh order while one freeze restores
+        // all four targets; game threads cannot interleave with a partial set.
+        if let Some((name, status)) =
+            unsafe { inline_detour::disable_batch(&targets) }.first_failure()
+        {
+            first_error.get_or_insert_with(|| {
+                format!("A40 peace hook disable for {name} failed: {status}")
+            });
         }
         if let Some(error) = first_error.as_ref() {
             return Err(error.clone());
@@ -818,15 +838,11 @@ pub fn uninstall_hooks() -> Result<(), String> {
         INSTALLED.store(false, Ordering::Release);
     }
     wait_for_quiescence()?;
-    for target in targets {
-        match unsafe { inline_detour::remove(target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => {
-                first_error.get_or_insert_with(|| {
-                    format!("A40 peace hook removal at {target:#x} failed: {status}")
-                });
-            }
-        }
+    // Removal stays after the wait and uses one freeze instead of four, in the
+    // same reverse order.
+    for (name, status) in unsafe { inline_detour::remove_batch(&targets) }.failures() {
+        first_error
+            .get_or_insert_with(|| format!("A40 peace hook removal for {name} failed: {status}"));
     }
     if let Some(error) = first_error {
         return Err(error);
@@ -838,8 +854,8 @@ pub fn uninstall_hooks() -> Result<(), String> {
     // this cannot attest a restoration that did not happen.
     //
     // `relay_freed: true` is the truth of this path: it calls
-    // `inline_detour::remove`, which is MinHook's `MH_RemoveHook` and frees the
-    // trampoline.
+    // `inline_detour::remove_batch`, which applies MinHook removal and frees the
+    // trampolines.
     //
     // A lane that never observed receipts -- an evidence-only install predating
     // this custody, or a second uninstall after the registry already took the
