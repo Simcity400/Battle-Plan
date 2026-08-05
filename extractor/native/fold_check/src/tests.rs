@@ -2115,3 +2115,405 @@ fn an_undeclared_non_tolerated_failure_still_fails_certification() {
         "the verdict must say the declaration was missing, not merely that a bit was set: {err}"
     );
 }
+
+// ---------------------------------------------------------------------
+// A domain's delta baseline must survive another domain's DOMAIN_GAP
+// ---------------------------------------------------------------------
+//
+// This is the fold-side acceptance gate for the collector's DOMAIN-SCOPED
+// rejected-bracket reset. The collector used to drop EVERY domain's delta pin
+// whenever ANY domain's clock bracket was rejected, so after a foreign gap an
+// unrelated domain always re-keyframed. Scoping the reset to the rejected
+// domain means it now emits a DELTA there instead — an interleaving the fold
+// was never previously asked to decode, because the old producer could not
+// produce it.
+//
+// Domain 29 (`ships`) is the subject because its fold takes exactly the path
+// that decides the question: `fold_ships` calls `reject_delta_before_baseline`,
+// so a fold that forgot d29's baseline over d64's gap would refuse hour C's
+// delta and type the domain-hour unknown rather than applying it.
+//
+// The ships payload layout below mirrors `world_fold::fold_ships`. It is not a
+// second source of truth: every byte is handed to the production decoder, and
+// any drift makes the fold return an error that fails these tests loudly.
+
+const SHIPS_DOMAIN: u16 = 29;
+const SHIP_HEADER_LEN: usize = 40;
+/// `world_fold::FIXED_SCALE as u32`, which `ensure_fixed_scale` requires.
+const SHIP_SCALE_RAW: u32 = 100_000;
+const SHIP_ROW_FLAG_DELETED: u32 = 1;
+const SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
+const SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
+
+/// One ship the fold will hold: `(instance_id, strength_raw)`.
+type Ship = (u32, u32);
+
+/// A `ships` DOMAIN_DATA payload carrying `live` ships and tombstoning
+/// `deleted` ones.
+fn ships_payload(live: &[Ship], deleted: &[u32], status_flags: u32) -> Vec<u8> {
+    let row_count = live.len() + deleted.len();
+    let mut payload = Vec::with_capacity(SHIP_HEADER_LEN + row_count * 48);
+    payload.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
+    payload.extend_from_slice(&(row_count as u32).to_le_bytes()); // row_count
+    payload.extend_from_slice(&(row_count as u32).to_le_bytes()); // changed_rows
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&(live.len() as u32).to_le_bytes()); // observed_ship_rows
+    payload.extend_from_slice(&0u32.to_le_bytes()); // (unread by the fold)
+    payload.extend_from_slice(&(deleted.len() as u32).to_le_bytes()); // deleted_rows
+    payload.extend_from_slice(&SHIP_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved0
+    assert_eq!(payload.len(), SHIP_HEADER_LEN, "ships header is 40 bytes");
+
+    let mut push_row = |instance_id: u32, strength_raw: u32, definition: &str, flags: u32| {
+        payload.extend_from_slice(&instance_id.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes()); // task_force_id
+        payload.extend_from_slice(&3u32.to_le_bytes()); // category_enum
+        payload.extend_from_slice(&strength_raw.to_le_bytes());
+        payload.extend_from_slice(&50_000u32.to_le_bytes()); // organisation_raw
+        payload.extend_from_slice(&0u32.to_le_bytes()); // experience_raw
+        payload.extend_from_slice(&0u32.to_le_bytes()); // sunk_convoys
+        payload.extend_from_slice(&47u32.to_le_bytes()); // owner_tag_db_id
+        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        payload.extend_from_slice(&(definition.len() as u16).to_le_bytes());
+        payload.extend_from_slice(definition.as_bytes());
+    };
+    for (instance_id, strength_raw) in live {
+        push_row(
+            *instance_id,
+            *strength_raw,
+            "destroyer_1",
+            SHIP_ROW_FLAG_OWNER | SHIP_ROW_FLAG_DEFINITION,
+        );
+    }
+    for instance_id in deleted {
+        // A tombstone carries no definition, so it must not set the flag that
+        // promises one.
+        push_row(*instance_id, 0, "", SHIP_ROW_FLAG_DELETED);
+    }
+    payload
+}
+
+/// What hour C carries for domain 29.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HourCShape {
+    /// The producer RETAINED its pin across hour B's foreign gap, so hour C is
+    /// a DELTA carrying only the ship whose strength changed. This is what the
+    /// domain-scoped reset makes the collector emit.
+    RetainedPinDelta,
+    /// The producer's pin was wiped by the old blanket reset, so hour C is the
+    /// whole state as a keyframe. This is what the collector emitted before.
+    BlanketResetKeyframe,
+    /// Seeded inequality: a delta carrying a DIFFERENT world, so a comparator
+    /// that always reports equality is caught.
+    DivergentDelta,
+}
+
+/// Three game-hours of a domain 29 delta chain, with domain 64's `DOMAIN_GAP`
+/// optionally interrupting the middle hour.
+///
+/// * Hour A — a keyframe seeds d29's baseline with ship 1 at strength 500.
+/// * Hour B — a delta adds ship 2, and (when `foreign_gap`) domain 64's bracket
+///   is rejected and it emits an H4DG gap in the same hour.
+/// * Hour C — ship 1 moves to strength 900, carried per [`HourCShape`].
+///
+/// Both the retained-pin and blanket-reset shapes describe the SAME world after
+/// hour C: `{1 -> 900, 2 -> 700}`.
+fn ships_delta_chain_stream(foreign_gap: bool, shape: HourCShape) -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, hour: i64, domain: u16, rtype: u16, payload: &[u8]| {
+        push_record(stream, seq, raw_for(hour), domain, rtype, payload);
+        seq += 1;
+    };
+
+    // Hour A — the keyframe that seeds the delta baseline.
+    push(
+        &mut stream,
+        HOUR_A,
+        SHIPS_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ships_payload(&[(1, 500)], &[], 0),
+    );
+    push(
+        &mut stream,
+        HOUR_A,
+        SHIPS_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload(),
+    );
+    push(
+        &mut stream,
+        HOUR_A,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(1, 1, 0),
+    );
+
+    // Hour B — d29 emits a delta; with `foreign_gap`, d64 gaps in the same hour.
+    push(
+        &mut stream,
+        HOUR_B,
+        SHIPS_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &ships_payload(&[(2, 700)], &[], COMPACT_STATUS_DELTA_DATA),
+    );
+    push(
+        &mut stream,
+        HOUR_B,
+        SHIPS_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload_with_status(COMPACT_STATUS_DELTA_DATA),
+    );
+    if foreign_gap {
+        push(
+            &mut stream,
+            HOUR_B,
+            64,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            &clock_unreadable_gap_payload(HOUR_B, 0),
+        );
+    }
+    let hour_b_outcomes = if foreign_gap { 2 } else { 1 };
+    push(
+        &mut stream,
+        HOUR_B,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(hour_b_outcomes, hour_b_outcomes, 0),
+    );
+
+    // Hour C — the two producers part company.
+    let (payload, status) = match shape {
+        HourCShape::RetainedPinDelta => (
+            ships_payload(&[(1, 900)], &[], COMPACT_STATUS_DELTA_DATA),
+            COMPACT_STATUS_DELTA_DATA,
+        ),
+        HourCShape::BlanketResetKeyframe => (ships_payload(&[(1, 900), (2, 700)], &[], 0), 0),
+        HourCShape::DivergentDelta => (
+            ships_payload(&[(1, 111)], &[], COMPACT_STATUS_DELTA_DATA),
+            COMPACT_STATUS_DELTA_DATA,
+        ),
+    };
+    push(
+        &mut stream,
+        HOUR_C,
+        SHIPS_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &payload,
+    );
+    push(
+        &mut stream,
+        HOUR_C,
+        SHIPS_DOMAIN,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        &perf_payload_with_status(status),
+    );
+    push(
+        &mut stream,
+        HOUR_C,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload_with(1, 1, 0),
+    );
+
+    stream
+}
+
+/// **The fold-equivalence gate for the domain-scoped rejected-bracket reset.**
+///
+/// A domain that survived its own clock bracket keeps its delta pin across
+/// another domain's rejected bracket, so it publishes a DELTA in the hour after
+/// that gap where it used to publish a keyframe. This proves the consumer
+/// cannot tell: the delta-carrying stream folds to a world byte-identical to
+/// the keyframe-carrying one, in every hour, through the production
+/// `WorldFold`.
+///
+/// The comparison is on the canonical per-hour snapshot hash, which is the
+/// whole folded world rather than a projection of it.
+///
+/// What production change makes this fail: any fold behaviour that reacts to a
+/// `DOMAIN_GAP` by dropping another domain's delta baseline. Hour C's delta
+/// would then be refused by `reject_delta_before_baseline`, ship 1 would stay
+/// at strength 500, and the two hashes would part.
+#[test]
+fn a_retained_delta_baseline_across_a_foreign_gap_folds_identically_to_the_keyframe() {
+    let retained = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let blanket = fold_bytes(&ships_delta_chain_stream(
+        true,
+        HourCShape::BlanketResetKeyframe,
+    ));
+
+    assert_eq!(
+        retained.hours.len(),
+        blanket.hours.len(),
+        "both producers publish the same three hours"
+    );
+    for (a, b) in retained.hours.iter().zip(blanket.hours.iter()) {
+        assert_eq!(
+            a.hour_index, b.hour_index,
+            "the two streams cover the same hours in the same order"
+        );
+        assert_eq!(
+            a.snapshot_hash, b.snapshot_hash,
+            "hour {} folds to a different world when domain 29's pin is retained across \
+             domain 64's gap: delta {} vs keyframe {}",
+            a.hour_index, a.snapshot_hash, b.snapshot_hash
+        );
+    }
+}
+
+/// The same equivalence must hold with no foreign gap at all, which isolates
+/// the gap as the variable rather than the delta encoding.
+#[test]
+fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
+    for foreign_gap in [true, false] {
+        let delta = fold_bytes(&ships_delta_chain_stream(
+            foreign_gap,
+            HourCShape::RetainedPinDelta,
+        ));
+        let keyframe = fold_bytes(&ships_delta_chain_stream(
+            foreign_gap,
+            HourCShape::BlanketResetKeyframe,
+        ));
+        assert_eq!(
+            delta.hours.last().expect("hour C is published").snapshot_hash,
+            keyframe
+                .hours
+                .last()
+                .expect("hour C is published")
+                .snapshot_hash,
+            "hour C must fold identically whether or not domain 64 gapped (foreign_gap = \
+             {foreign_gap})"
+        );
+    }
+    // And the foreign gap must not move the world by itself.
+    let with_gap = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let without_gap = fold_bytes(&ships_delta_chain_stream(
+        false,
+        HourCShape::RetainedPinDelta,
+    ));
+    for (a, b) in with_gap.hours.iter().zip(without_gap.hours.iter()) {
+        assert_eq!(
+            a.snapshot_hash, b.snapshot_hash,
+            "hour {} changed world merely because domain 64 gapped",
+            a.hour_index
+        );
+    }
+}
+
+/// The seeded-inequality control.
+///
+/// Without it, a comparator that reported equality unconditionally — or a fold
+/// that ignored hour C's payload — would pass the gate above. This stream
+/// differs from the retained-pin stream only in hour C's rows, and its hour C
+/// must hash differently.
+#[test]
+fn the_ships_fold_equivalence_gate_can_tell_two_worlds_apart() {
+    let world = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let other = fold_bytes(&ships_delta_chain_stream(true, HourCShape::DivergentDelta));
+
+    assert_eq!(
+        world.hours[0].snapshot_hash, other.hours[0].snapshot_hash,
+        "the two streams are identical up to hour C, so hour A must still match"
+    );
+    assert_eq!(
+        world.hours[1].snapshot_hash, other.hours[1].snapshot_hash,
+        "hour B is identical in both streams"
+    );
+    assert_ne!(
+        world.hours[2].snapshot_hash, other.hours[2].snapshot_hash,
+        "hour C carries a different world in the two streams, so the gate above is comparing \
+         something that can differ"
+    );
+}
+
+/// Hour C's delta really MERGES onto a retained baseline: ship 2, which hour B
+/// introduced and hour C never mentions, is still in the folded world.
+///
+/// The proof is a tombstone. A keyframe cannot serve here: once a domain has a
+/// delta baseline, `replace_or_sparse_after_first` makes EVERY subsequent d29
+/// record sparse, so even a whole-state record merges and an omitted row is
+/// never dropped. Absence is not deletion on this wire (`DELTA_WIRE_DESIGN.md`
+/// §2.4) — only a tombstone removes a key. So the control stream tombstones
+/// ship 2 explicitly, and its hour C must hash differently from the stream that
+/// kept it.
+///
+/// What production change makes this fail: a fold that replaced rather than
+/// merged on hour C's delta would lose ship 2 and land on the tombstoned
+/// world's hash.
+#[test]
+fn the_hour_c_delta_merges_onto_the_retained_baseline() {
+    let retained = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+
+    // The same three hours, except hour C's delta also tombstones ship 2.
+    let mut tombstoned = Vec::new();
+    let mut seq = 1u64;
+    let mut push = |stream: &mut Vec<u8>, hour: i64, domain: u16, rtype: u16, payload: &[u8]| {
+        push_record(stream, seq, raw_for(hour), domain, rtype, payload);
+        seq += 1;
+    };
+    for (hour, live, deleted, status) in [
+        (HOUR_A, vec![(1u32, 500u32)], vec![], 0u32),
+        (HOUR_B, vec![(2, 700)], vec![], COMPACT_STATUS_DELTA_DATA),
+        (HOUR_C, vec![(1, 900)], vec![2u32], COMPACT_STATUS_DELTA_DATA),
+    ] {
+        push(
+            &mut tombstoned,
+            hour,
+            SHIPS_DOMAIN,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &ships_payload(&live, &deleted, status),
+        );
+        push(
+            &mut tombstoned,
+            hour,
+            SHIPS_DOMAIN,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload_with_status(status),
+        );
+        push(
+            &mut tombstoned,
+            hour,
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload_with(1, 1, 0),
+        );
+    }
+    let without_ship2 = fold_bytes(&tombstoned);
+
+    assert_eq!(
+        retained.hours[1].snapshot_hash, without_ship2.hours[1].snapshot_hash,
+        "the two streams are identical through hour B"
+    );
+    assert_ne!(
+        retained.hours[2].snapshot_hash, without_ship2.hours[2].snapshot_hash,
+        "hour C's delta must have merged onto the retained baseline and KEPT ship 2; a world \
+         that tombstoned it has to hash differently, or the equivalence gate is comparing two \
+         worlds that both lost the same row"
+    );
+}
+
+/// The foreign gap is genuinely present and genuinely accounted, so the gate is
+/// not quietly comparing two streams with no rejected bracket in either.
+#[test]
+fn the_middle_hour_really_carries_the_foreign_domains_gap() {
+    let with_gap = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let without_gap = fold_bytes(&ships_delta_chain_stream(
+        false,
+        HourCShape::RetainedPinDelta,
+    ));
+    assert!(
+        with_gap.hours[1].completeness.domains.contains_key(&64),
+        "domain 64 must be accounted in hour B; its gap is the rejected bracket this gate \
+         exists for"
+    );
+    assert!(
+        !without_gap.hours[1].completeness.domains.contains_key(&64),
+        "the control stream must genuinely lack that gap"
+    );
+    assert!(
+        with_gap.hours[1].completeness.domains.contains_key(&SHIPS_DOMAIN),
+        "domain 29 must still be accounted in the same hour"
+    );
+}

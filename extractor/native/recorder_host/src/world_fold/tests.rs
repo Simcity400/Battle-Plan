@@ -23427,3 +23427,72 @@ fn d43_fold_refuses_a_payload_whose_two_trailers_state_different_widths() {
         "{error}"
     );
 }
+
+/// **No fold path may FORGET a domain's delta baseline.**
+///
+/// The collector's rejected-bracket reset is scoped to the domain that was
+/// rejected, so a domain that survived its own bracket now publishes a DELTA in
+/// the hour after an unrelated domain's `DOMAIN_GAP` where it used to publish a
+/// keyframe. `fold_check`'s
+/// `a_retained_delta_baseline_across_a_foreign_gap_folds_identically_to_the_keyframe`
+/// proves the consumer decodes that correctly for domain 29, which is one
+/// domain — this test is what makes the answer general.
+///
+/// The reason one domain generalises is that the deciding state is a single
+/// shared set: `delta_baselines_seen`. `ingest_record` dispatches only
+/// `DOMAIN_DATA` and `FRAME_END`, so a gap mutates nothing, and every reference
+/// to the set is an insert or a query. If any fold ever REMOVED from it — for
+/// its own domain or another's — a retained producer pin would meet a consumer
+/// that had forgotten the baseline, `reject_delta_before_baseline` would type
+/// that domain-hour unknown, and the hour would silently lose the domain.
+///
+/// What production change makes this fail: any `remove`, `clear`, `retain`,
+/// `drain` or reassignment of `delta_baselines_seen` outside the constructor.
+/// That is exactly the mutation `fold_check`'s gate is proven against, and this
+/// test is what stops it appearing on a domain that gate does not cover.
+#[test]
+fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
+    // Line endings normalised because this repo checks the source out with
+    // CRLF; the patterns below are single-line, so this is insurance rather
+    // than load-bearing, but the idiom is cheap and the trap is silent.
+    let source = include_str!("../world_fold.rs").replace("\r\n", "\n");
+
+    let mut offenders = Vec::new();
+    let mut references = 0usize;
+    let mut from = 0usize;
+    while let Some(at) = source[from..].find("delta_baselines_seen") {
+        let at = from + at;
+        from = at + "delta_baselines_seen".len();
+        references += 1;
+        // What the reference is USED for is the next non-whitespace run.
+        let tail: String = source[from..]
+            .chars()
+            .take(64)
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let permitted = tail.starts_with(".insert(")
+            || tail.starts_with(".contains(")
+            // the field declaration, and the constructor's initialiser
+            || tail.starts_with(": BTreeSet<u16>")
+            || tail.starts_with(": BTreeSet::new()");
+        if !permitted {
+            let line = source[..at].matches('\n').count() + 1;
+            offenders.push(format!("world_fold.rs:{line}: `delta_baselines_seen{tail}`"));
+        }
+    }
+
+    assert!(
+        references > 20,
+        "the delta-baseline set should be consulted by many folds, found {references} \
+         references — the scan is looking at the wrong text"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a fold path can now forget a domain's delta baseline, which would make the collector's \
+         domain-scoped rejected-bracket reset lose that domain's hour instead of decoding its \
+         delta:\n  {}",
+        offenders.join("\n  ")
+    );
+}
