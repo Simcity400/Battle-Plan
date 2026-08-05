@@ -13,7 +13,19 @@ pub const RESERVED_OCCUPIED_DOMAIN_IDS: &[(u16, &str)] = &[
     (51, "scripted_state_live"),
     (52, "occupation_resistance_compliance_live"),
 ];
-pub const SCHEMA_VERSION: u32 = 1;
+/// v1 carried one `KIND_COMPACT_STATE_EVENT` row per `KIND_OPINION` row whose
+/// every field was a copy of, a constant beside, or a hash of that opinion row —
+/// 32 wire bytes to say nothing the 16-byte opinion row had not already said.
+/// See [`derived_opinion_state_event`] for the field-by-field derivation.
+///
+/// A v1 payload still decodes with those rows read from the wire, because
+/// streams already on disk carry them and must keep folding to the same thing.
+pub const SCHEMA_VERSION_V1_OPINION_STATE_EVENTS_ON_WIRE: u32 = 1;
+/// v2 omits that class entirely and the decoder synthesizes it from the opinion
+/// rows. A v2 payload that CARRIES a derived-class row is a parse error, not a
+/// duplicate to be merged: the whole point of the version marker is that "the
+/// row is absent" means "synthesize it", never "the producer lost it".
+pub const SCHEMA_VERSION: u32 = 2;
 pub const HEADER_LEN: usize = 72;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
@@ -886,6 +898,68 @@ pub struct StateEventRow {
     pub value_raw: i64,
 }
 
+/// Is this state event a member of the class v2 stopped putting on the wire?
+///
+/// Membership is decided by the three IDENTITY fields the fold keys on
+/// (`event_kind`, `source_kind`, `object_hash`) and nothing else, so the
+/// producer-side drop and the decoder-side re-synthesis cannot disagree about
+/// which rows are in the class. `read_relation_rows` is the ONLY site in the
+/// tree that ever built a row with this triple (extractor.rs, the opinion arm
+/// of the relation pair loop), so the class is exactly "the derived opinion
+/// state event" and nothing else.
+pub fn is_derived_opinion_state_event(row: &StateEventRow) -> bool {
+    row.event_kind == STATE_EVENT_KIND_OBSERVED
+        && row.source_kind == STATE_EVENT_SOURCE_RELATION_OPINION
+        && row.object_hash == STATE_EVENT_OBJECT_RELATION_OPINION_HASH
+}
+
+/// Rebuild the state-event row v1 carried beside `opinion`, from the opinion
+/// row alone.
+///
+/// FIELD-BY-FIELD, against the v1 producer (`extractor.rs`,
+/// `read_relation_rows`, the `Ok(opinion)` arm of the pair loop — the ONLY site
+/// that produced this class):
+///
+/// | field               | v1 source                                    | derivation |
+/// |---------------------|----------------------------------------------|------------|
+/// | `owner_tag_db_id`   | `src.tag_db_id`                              | copy of `OpinionRow::src_tag_db_id` (the SAME `src.tag_db_id` the opinion row was pushed with, two statements earlier) |
+/// | `target_tag_db_id`  | `Some(target.tag_db_id)`                     | copy of `OpinionRow::target_tag_db_id`, always present |
+/// | `event_kind`        | `STATE_EVENT_KIND_OBSERVED`                  | constant |
+/// | `source_kind`       | `STATE_EVENT_SOURCE_RELATION_OPINION`        | constant |
+/// | `object_hash`       | `stable_hash32("relation_opinion")`          | constant (`STATE_EVENT_OBJECT_RELATION_OPINION_HASH`) |
+/// | `value_hash`        | `opinion_value_hashes[opinion + MAX_OPINION_ABS]`, built as `stable_hash32(&format!("opinion_{opinion}"))` | pure function of `OpinionRow::opinion` |
+/// | `value_raw`         | `i64::from(opinion)`                         | widening of `OpinionRow::opinion` |
+///
+/// Zero fields carry information the opinion row does not. There is no field
+/// sourced from the relation entry, the frame, the clock, or any other read.
+///
+/// TOMBSTONES. A delta frame emits a deleted opinion row for a pair that went
+/// away, and v1 emitted the matching deleted state event beside it
+/// (`domain53_deleted_state_event` in the collector: owner carries the deleted
+/// bit, target/kinds/object_hash come from the key, value fields are zeroed).
+/// A deleted opinion row derives exactly that, which is why this function keys
+/// off `row_id_deleted` rather than assuming a live row.
+pub fn derived_opinion_state_event(opinion: &OpinionRow) -> StateEventRow {
+    let deleted = row_id_deleted(opinion.src_tag_db_id);
+    StateEventRow {
+        owner_tag_db_id: opinion.src_tag_db_id,
+        target_tag_db_id: Some(opinion.target_tag_db_id),
+        event_kind: STATE_EVENT_KIND_OBSERVED,
+        source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
+        object_hash: STATE_EVENT_OBJECT_RELATION_OPINION_HASH,
+        value_hash: if deleted {
+            0
+        } else {
+            stable_hash32(&format!("opinion_{}", opinion.opinion))
+        },
+        value_raw: if deleted {
+            0
+        } else {
+            i64::from(opinion.opinion)
+        },
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Domain53GateSummary {
     pub status_flags_or: u32,
@@ -1205,6 +1279,9 @@ pub fn summarize_snapshot_instrumented(
     let mut intel_map_resisted_rows = 0usize;
     let mut operative_lifecycle_rows = 0usize;
     let mut state_event_source_counts = StateEventSourceCounts::default();
+    // Twin of `decode_payload`'s counter of the same name: one per opinion row,
+    // because `encode_payload` always stamps the current `SCHEMA_VERSION`.
+    let mut synthesized_state_events = 0usize;
 
     // Per-kind duplicate/seen sets (decode_payload:1313..).
     let mut seen_countries = BTreeSet::new();
@@ -1269,13 +1346,21 @@ pub fn summarize_snapshot_instrumented(
     }
     let opinions_started = std::time::Instant::now();
     for row in &snapshot.opinions {
+        let deleted = row_id_deleted(row.src_tag_db_id);
         reject_snapshot_tombstone_outside_delta(
             offset,
             row_index,
             status_flags,
-            row_id_deleted(row.src_tag_db_id),
+            deleted,
             &mut summary,
         );
+        // The decoder synthesizes one derived state event per opinion row (the
+        // encoder always writes `SCHEMA_VERSION`), so the twin must count it
+        // exactly where `decode_payload`'s `KIND_OPINION` arm does.
+        synthesized_state_events = synthesized_state_events.saturating_add(1);
+        if !deleted {
+            state_event_source_counts.add(STATE_EVENT_SOURCE_RELATION_OPINION);
+        }
         summarize_opinion_row(offset, row_index, row, &mut seen_opinions, &mut summary);
         row_index += 1;
     }
@@ -1381,6 +1466,15 @@ pub fn summarize_snapshot_instrumented(
         );
         if !deleted {
             state_event_source_counts.add(row.source_kind);
+        }
+        // Twin of the decoder's v2 rejection: a snapshot handed to the encoder
+        // must not carry the derived class, because the decoder rebuilds it from
+        // the opinion rows and a wire copy would duplicate the fold key.
+        if is_derived_opinion_state_event(row) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: compact state event row {row_index} carries a derived \
+                 relation-opinion event that schema_version {SCHEMA_VERSION} synthesizes"
+            ));
         }
         summarize_state_event_row(offset, row_index, row, &mut seen_state_events, &mut summary);
         row_index += 1;
@@ -1584,10 +1678,13 @@ pub fn summarize_snapshot_instrumented(
         ));
     }
 
-    // Base counts / units (decode_payload:1643..).
-    summary.data_rows_total = row_count as u64;
-    summary.data_changed_rows_total = changed_rows as u64;
-    add_unit(&mut summary, "diplomacy_intel_rows", row_count);
+    // Base counts / units (decode_payload:1643..), carrying the synthesized
+    // derived opinion state events exactly as the decoder does.
+    let content_rows = row_count.saturating_add(synthesized_state_events);
+    let content_changed_rows = changed_rows.saturating_add(synthesized_state_events);
+    summary.data_rows_total = content_rows as u64;
+    summary.data_changed_rows_total = content_changed_rows as u64;
+    add_unit(&mut summary, "diplomacy_intel_rows", content_rows);
     add_unit(
         &mut summary,
         "diplomacy_country_rows",
@@ -1623,7 +1720,10 @@ pub fn summarize_snapshot_instrumented(
     add_unit(
         &mut summary,
         "compact_state_event_rows",
-        snapshot.state_events.len(),
+        snapshot
+            .state_events
+            .len()
+            .saturating_add(synthesized_state_events),
     );
     add_state_event_source_units(&mut summary, state_event_source_counts);
     summary
@@ -3403,7 +3503,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     }
 
     summary.status_flags_or |= status_flags;
-    if schema_version != SCHEMA_VERSION {
+    // BOTH wire generations decode. v1 carries the derived opinion state events;
+    // v2 omits them and they are synthesized below. Anything else is unknown.
+    let synthesizes_opinion_state_events = schema_version == SCHEMA_VERSION;
+    if schema_version != SCHEMA_VERSION
+        && schema_version != SCHEMA_VERSION_V1_OPINION_STATE_EVENTS_ON_WIRE
+    {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel schema_version {schema_version} != {SCHEMA_VERSION}"
         ));
@@ -3446,6 +3551,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut intel_map_resisted_rows = 0usize;
     let mut operative_lifecycle_rows = 0usize;
     let mut state_event_source_counts = StateEventSourceCounts::default();
+    // Derived opinion state events this payload does NOT carry and the decoder
+    // therefore reconstructs — zero on a v1 payload, one per opinion row on v2.
+    let mut synthesized_state_events = 0usize;
 
     if status_flags & !KNOWN_STATUS_FLAGS != 0 {
         summary.parse_errors.push(format!(
@@ -3516,6 +3624,24 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             }
             KIND_OPINION => {
                 decoded_counts.opinion += 1;
+                // Under v2 this opinion row also stands in for the derived state
+                // event row v1 spelled out beside it. Count it in the state-event
+                // families so a v2 payload reports the SAME row/unit totals a v1
+                // payload of the same content reported: the wire shrank, the
+                // decoded content did not, and the domain's accounting describes
+                // the content. `validate_opinion_row` already enforces the
+                // unique valid (src,target) pair that makes the derived row's
+                // fold key unique, so the derived row needs no separate
+                // duplicate check.
+                // NOTE: this deliberately does NOT touch `decoded_counts`, which
+                // is compared against the header's per-kind counts below and
+                // must stay a description of the WIRE.
+                if synthesizes_opinion_state_events {
+                    synthesized_state_events = synthesized_state_events.saturating_add(1);
+                    if !domain53_base_row_deleted(kind, payload, cursor) {
+                        state_event_source_counts.add(STATE_EVENT_SOURCE_RELATION_OPINION);
+                    }
+                }
                 validate_opinion_row(
                     offset,
                     row_index,
@@ -3639,6 +3765,22 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
                 decoded_counts.compact_state_event += 1;
                 if !domain53_base_row_deleted(kind, payload, cursor) {
                     state_event_source_counts.add(read_u16_le(payload, cursor + 14));
+                }
+                // A v2 producer must NOT put the derived class on the wire: the
+                // decoder synthesizes one row per opinion row unconditionally,
+                // so a wire copy would duplicate the fold's key. Rejecting it
+                // here (rather than merging it) is what keeps "absent" meaning
+                // "derive it" instead of "the producer lost it".
+                if synthesizes_opinion_state_events
+                    && read_u16_le(payload, cursor + 12) == STATE_EVENT_KIND_OBSERVED
+                    && read_u16_le(payload, cursor + 14) == STATE_EVENT_SOURCE_RELATION_OPINION
+                    && read_u32_le(payload, cursor + 16)
+                        == STATE_EVENT_OBJECT_RELATION_OPINION_HASH
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: compact state event row {row_index} carries a derived \
+                         relation-opinion event that schema_version {SCHEMA_VERSION} synthesizes"
+                    ));
                 }
                 validate_state_event_row(
                     offset,
@@ -3810,9 +3952,19 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         ));
     }
 
-    summary.data_rows_total = row_count as u64;
-    summary.data_changed_rows_total = changed_rows as u64;
-    add_unit(&mut summary, "diplomacy_intel_rows", row_count);
+    // The row/unit totals describe the DECODED CONTENT, which the v2 wire change
+    // did not shrink — only the bytes did. Every synthesized row is one the v1
+    // wire spelled out and every v1 payload of the same content reported, so
+    // adding them back here is what makes the domain's accounting (and every
+    // gate reading it) blind to the encoding generation. `row_count` and
+    // `changed_rows` stay the raw header words wherever they are used as WIRE
+    // facts (the `changed_rows > row_count` check, the state-event remainder in
+    // `expected_counts`); only the reported totals below carry the synthesis.
+    let content_rows = row_count.saturating_add(synthesized_state_events);
+    let content_changed_rows = changed_rows.saturating_add(synthesized_state_events);
+    summary.data_rows_total = content_rows as u64;
+    summary.data_changed_rows_total = content_changed_rows as u64;
+    add_unit(&mut summary, "diplomacy_intel_rows", content_rows);
     add_unit(
         &mut summary,
         "diplomacy_country_rows",
@@ -3848,7 +4000,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     add_unit(
         &mut summary,
         "compact_state_event_rows",
-        decoded_counts.compact_state_event,
+        decoded_counts
+            .compact_state_event
+            .saturating_add(synthesized_state_events),
     );
     add_state_event_source_units(&mut summary, state_event_source_counts);
     summary
@@ -3872,6 +4026,8 @@ pub fn decode_snapshot_payload(
     let row_count = read_u32_le(payload, 8) as usize;
     let changed_rows = read_u32_le(payload, 12);
     let status_flags = read_u32_le(payload, 16);
+    // `decode_payload` above already rejected any version other than these two.
+    let synthesizes_opinion_state_events = read_u32_le(payload, 20) == SCHEMA_VERSION;
     let mut snapshot = DiplomacyIntelSnapshot {
         elapsed_wall_ms,
         status_flags,
@@ -4037,6 +4193,36 @@ pub fn decode_snapshot_payload(
         if !trailer_errors.is_empty() {
             return Err(trailer_errors);
         }
+    }
+    // SYNTHESIZE THE DERIVED OPINION STATE EVENTS (v2 wire, lane BI).
+    //
+    // v1 spelled these out on the wire at 32 bytes each beside a 16-byte opinion
+    // row that already determined every one of their seven fields; v2 omits them
+    // and rebuilds them here, so everything downstream of the decoder — the fold,
+    // the gate summary, the replay projection — sees the exact snapshot v1
+    // produced. One row per opinion row, live or tombstone, in opinion order.
+    // Appended rather than interleaved: the row's IDENTITY is its
+    // (owner, target, event_kind, source_kind, object_hash) key, which is what
+    // the fold upserts on, and the projection orders by that key rather than by
+    // arrival (see `domain53_state_events_extra`), so position on this vector
+    // carries no information.
+    if synthesizes_opinion_state_events {
+        snapshot.state_events.reserve(snapshot.opinions.len());
+        let derived = snapshot
+            .opinions
+            .iter()
+            .map(derived_opinion_state_event)
+            .collect::<Vec<_>>();
+        // `changed_rows` describes THIS SNAPSHOT's rows, and the snapshot now
+        // holds the derived rows, so it counts them — the same adjustment
+        // `decode_payload` makes to `data_changed_rows_total`. Without it a v2
+        // frame would report fewer changed rows than the v1 frame carrying the
+        // identical delta, and `row_count()` (which counts `state_events`) would
+        // no longer agree with it.
+        snapshot.changed_rows = snapshot
+            .changed_rows
+            .map(|changed| changed.saturating_add(derived.len().min(u32::MAX as usize) as u32));
+        snapshot.state_events.extend(derived);
     }
     if snapshot.subject_autonomy_status_complete
         && snapshot.status_flags & STATUS_DELTA_DATA == 0
@@ -6030,6 +6216,224 @@ mod tests {
         ));
     }
 
+    /// Re-encode a v2 snapshot the way schema v1 encoded it: the derived opinion
+    /// state events spelled out on the wire, and the version word set back to 1.
+    ///
+    /// The byte layout is otherwise version-independent (v2 changed WHICH rows
+    /// are emitted, not how a row is laid out), so patching the header word is a
+    /// faithful v1 stream and not a test-only dialect. `changed_rows` is carried
+    /// up by the same count, mirroring what the v1 collector's
+    /// `domain53_base_row_count(&emitted)` would have produced for the same
+    /// delta.
+    fn v1_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
+        let mut v1 = snapshot.clone();
+        let derived = v1
+            .opinions
+            .iter()
+            .map(derived_opinion_state_event)
+            .collect::<Vec<_>>();
+        let added = derived.len() as u32;
+        v1.state_events.extend(derived);
+        if let Some(changed) = v1.changed_rows.as_mut() {
+            *changed = changed.saturating_add(added);
+        }
+        let mut bytes = encode_payload(&v1);
+        bytes[20..24]
+            .copy_from_slice(&SCHEMA_VERSION_V1_OPINION_STATE_EVENTS_ON_WIRE.to_le_bytes());
+        bytes
+    }
+
+    /// THE DERIVABILITY CLAIM, stated as the v1 producer's own expression.
+    ///
+    /// The right-hand side is a verbatim transcription of the `StateEventRow`
+    /// literal `read_relation_rows` pushed beside every opinion before lane BI
+    /// removed it (extractor.rs, the `Ok(opinion)` arm), with `opinion_value_
+    /// hashes[opinion + MAX_OPINION_ABS]` expanded to the expression that table
+    /// was built from. Swept over the WHOLE guarded opinion domain, so a
+    /// synthesis that is right at 0 and wrong at the extremes cannot pass.
+    #[test]
+    fn derived_opinion_state_event_reproduces_the_v1_producer_row() {
+        for (src, target) in [(1u32, 3u32), (3, 1), (2047, 1), (1, 2048)] {
+            for opinion in -MAX_OPINION_ABS..=MAX_OPINION_ABS {
+                let row = OpinionRow {
+                    src_tag_db_id: src,
+                    target_tag_db_id: target,
+                    opinion,
+                };
+                assert_eq!(
+                    derived_opinion_state_event(&row),
+                    StateEventRow {
+                        owner_tag_db_id: src,
+                        target_tag_db_id: Some(target),
+                        event_kind: STATE_EVENT_KIND_OBSERVED,
+                        source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
+                        object_hash: stable_hash32("relation_opinion"),
+                        value_hash: stable_hash32(&format!("opinion_{opinion}")),
+                        value_raw: i64::from(opinion),
+                    },
+                    "derived row diverges from the v1 producer at {src}->{target} \
+                     opinion {opinion}"
+                );
+                assert!(is_derived_opinion_state_event(&derived_opinion_state_event(
+                    &row
+                )));
+            }
+        }
+
+        // A deleted opinion row derives exactly the collector's state-event
+        // tombstone (`domain53_deleted_state_event`): the deleted bit rides on
+        // the owner, the key fields survive, the value fields are zeroed.
+        let tombstone = derived_opinion_state_event(&OpinionRow {
+            src_tag_db_id: 7 | ROW_ID_DELETED,
+            target_tag_db_id: 9,
+            opinion: 0,
+        });
+        assert_eq!(
+            tombstone,
+            StateEventRow {
+                owner_tag_db_id: 7 | ROW_ID_DELETED,
+                target_tag_db_id: Some(9),
+                event_kind: STATE_EVENT_KIND_OBSERVED,
+                source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
+                object_hash: stable_hash32("relation_opinion"),
+                value_hash: 0,
+                value_raw: 0,
+            }
+        );
+    }
+
+    /// A v1 stream still decodes its derived rows FROM THE WIRE, and a v2 stream
+    /// of the same content decodes to the same snapshot and reports the same
+    /// gate summary. This is the whole compatibility contract in one test: the
+    /// bytes shrank, nothing else did.
+    #[test]
+    fn v1_and_v2_payloads_of_the_same_content_decode_alike() {
+        let snapshot = fixture_snapshot();
+        let v2 = encode_payload(&snapshot);
+        let v1 = v1_payload(&snapshot);
+
+        assert!(
+            v1.len() > v2.len(),
+            "the v1 stream must be the larger one: {} vs {}",
+            v1.len(),
+            v2.len()
+        );
+        assert_eq!(
+            v1.len() - v2.len(),
+            snapshot.opinions.len() * ROW_COMPACT_STATE_EVENT_LEN,
+            "the whole size difference is the dropped derived rows"
+        );
+
+        let v1_summary = decode_payload(0, &v1);
+        let v2_summary = decode_payload(0, &v2);
+        assert!(v1_summary.parse_errors.is_empty(), "{v1_summary:?}");
+        assert!(v2_summary.parse_errors.is_empty(), "{v2_summary:?}");
+        assert_eq!(
+            v1_summary, v2_summary,
+            "a v2 payload must report the same gate summary as the v1 payload of \
+             the same content"
+        );
+
+        let mut v1_rows = decode_snapshot_payload(0, &v1).expect("v1 decodes");
+        let mut v2_rows = decode_snapshot_payload(0, &v2).expect("v2 decodes");
+        v1_rows.state_events.sort_by_key(state_event_sort_key);
+        v2_rows.state_events.sort_by_key(state_event_sort_key);
+        assert_eq!(
+            v1_rows, v2_rows,
+            "a v2 payload must decode to the same snapshot as the v1 payload of \
+             the same content"
+        );
+        assert_eq!(
+            v2_rows
+                .state_events
+                .iter()
+                .filter(|row| is_derived_opinion_state_event(row))
+                .count(),
+            snapshot.opinions.len(),
+            "exactly one derived row per opinion row, no more and no fewer"
+        );
+    }
+
+    fn state_event_sort_key(row: &StateEventRow) -> (u32, Option<u32>, u16, u16, u32) {
+        (
+            row.owner_tag_db_id,
+            row.target_tag_db_id,
+            row.event_kind,
+            row.source_kind,
+            row.object_hash,
+        )
+    }
+
+    /// A v2 payload that CARRIES a derived row is rejected, not merged. Without
+    /// this the decoder would synthesize a second copy of the same fold key and
+    /// "the producer lost the row" would be indistinguishable from "the row is
+    /// derived".
+    #[test]
+    fn v2_payload_rejects_a_derived_opinion_state_event_on_the_wire() {
+        let mut snapshot = fixture_snapshot();
+        snapshot
+            .state_events
+            .push(derived_opinion_state_event(&snapshot.opinions[0].clone()));
+        let payload = encode_payload(&snapshot);
+        let errors = decode_payload(0, &payload).parse_errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("carries a derived relation-opinion event")),
+            "{errors:?}"
+        );
+        // The snapshot-field twin must fire the same error, or the encoder-side
+        // and wire-side gates could disagree about a payload.
+        let twin = summarize_snapshot(0, &snapshot).parse_errors;
+        assert!(
+            twin.iter()
+                .any(|error| error.contains("carries a derived relation-opinion event")),
+            "{twin:?}"
+        );
+    }
+
+    /// A delta frame's opinion TOMBSTONE derives the state-event tombstone the
+    /// v1 wire carried beside it, so the fold still removes the stale key.
+    #[test]
+    fn opinion_tombstone_derives_the_state_event_tombstone() {
+        let snapshot = DiplomacyIntelSnapshot {
+            status_flags: STATUS_DELTA_DATA,
+            changed_rows: Some(2),
+            opinions: vec![
+                OpinionRow {
+                    src_tag_db_id: 1,
+                    target_tag_db_id: 3,
+                    opinion: 15,
+                },
+                OpinionRow {
+                    src_tag_db_id: 4 | ROW_ID_DELETED,
+                    target_tag_db_id: 5,
+                    opinion: 0,
+                },
+            ],
+            ..DiplomacyIntelSnapshot::default()
+        };
+        let decoded = decode_snapshot_payload(0, &encode_payload(&snapshot))
+            .expect("delta payload decodes");
+        assert_eq!(
+            decoded.state_events,
+            vec![
+                derived_opinion_state_event(&snapshot.opinions[0]),
+                derived_opinion_state_event(&snapshot.opinions[1]),
+            ]
+        );
+        assert_eq!(decoded.state_events[1].owner_tag_db_id, 4 | ROW_ID_DELETED);
+        assert_eq!(decoded.state_events[1].value_hash, 0);
+        assert_eq!(decoded.state_events[1].value_raw, 0);
+
+        let v1_decoded = decode_snapshot_payload(0, &v1_payload(&snapshot))
+            .expect("v1 delta payload decodes");
+        assert_eq!(
+            v1_decoded, decoded,
+            "the v1 delta frame's wire tombstones must equal the derived ones"
+        );
+    }
+
     #[test]
     fn rejects_occupied_lower_production_domain_ids() {
         for (domain_id, owner) in RESERVED_OCCUPIED_DOMAIN_IDS {
@@ -7338,15 +7742,13 @@ mod tests {
                     value_hash: stable_hash32("autonomy_ratio_40000"),
                     value_raw: 40_000,
                 },
-                StateEventRow {
-                    owner_tag_db_id: 1,
-                    target_tag_db_id: Some(3),
-                    event_kind: STATE_EVENT_KIND_OBSERVED,
-                    source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
-                    object_hash: stable_hash32("relation_opinion"),
-                    value_hash: stable_hash32("opinion_neg120"),
-                    value_raw: -120,
-                },
+                // The derived relation-opinion event for (1 -> 3, -120) used to
+                // be spelled out here. Under schema v2 the encoder must not
+                // carry it and the decoder rebuilds it from the opinion row
+                // above, so every row/unit count this fixture asserts is
+                // unchanged — the row is still in the DECODED snapshot, just
+                // not in the encoded one. `v1_payload` re-adds it when a test
+                // needs a genuine v1 stream.
                 StateEventRow {
                     owner_tag_db_id: 1,
                     target_tag_db_id: None,

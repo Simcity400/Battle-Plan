@@ -705,15 +705,9 @@ mod tests {
                     value_hash: stable_hash32("autonomy_ratio_50000"),
                     value_raw: 50_000,
                 },
-                StateEventRow {
-                    owner_tag_db_id: 1,
-                    target_tag_db_id: Some(2),
-                    event_kind: STATE_EVENT_KIND_OBSERVED,
-                    source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
-                    object_hash: stable_hash32("relation_opinion"),
-                    value_hash: stable_hash32("opinion_25"),
-                    value_raw: 25,
-                },
+                // The derived relation-opinion event for (1 -> 2, 25) is no
+                // longer encoded (schema v2); the decoder rebuilds it from the
+                // opinion row, so the asserted state-event counts are unchanged.
                 StateEventRow {
                     owner_tag_db_id: 1,
                     target_tag_db_id: None,

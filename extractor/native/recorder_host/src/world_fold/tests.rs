@@ -11263,6 +11263,134 @@ fn folds_d43_trade_contracts_world_and_per_country_views() {
     );
 }
 
+/// THE d53 SCHEMA-v2 COMPATIBILITY PROOF AT THE FOLD (lane BI).
+///
+/// v1 spelled the derived relation-opinion state event out on the wire beside
+/// every opinion row; v2 omits it and the decoder rebuilds it. A stream of each
+/// generation, carrying the same content, must fold to the SAME snapshot.
+///
+/// The v1 twin is built by re-encoding the DECODED v2 snapshot (which already
+/// holds the synthesized rows) and stamping the v1 version word back into the
+/// header — a faithful v1 stream, since v2 changed which rows are emitted and
+/// not how a row is laid out. It deliberately places the derived rows at the
+/// END of the state-event block rather than interleaved per pair the way the v1
+/// producer did, so this also pins that the fold's projection does not depend on
+/// where in the block a state event arrived.
+#[test]
+fn d53_v1_and_v2_streams_fold_to_the_same_snapshot() {
+    let report = diplomacy53::extractor::build_domain53_payload(
+        diplomacy53::extractor::proof_fixture_rows(),
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+    let v2 = report.payload;
+
+    let decoded = diplomacy53::compact::decode_snapshot_payload(0, &v2).expect("v2 decodes");
+    let derived = decoded
+        .state_events
+        .iter()
+        .filter(|row| diplomacy53::compact::is_derived_opinion_state_event(row))
+        .count();
+    assert_eq!(
+        derived,
+        decoded.opinions.len(),
+        "the fixture must exercise the derived class it is meant to prove"
+    );
+    assert!(derived > 0, "fixture carries no opinion rows");
+
+    // Build the v1 twin's derived rows INDEPENDENTLY of the production
+    // synthesis: a verbatim transcription of the `StateEventRow` literal the v1
+    // producer pushed beside each opinion. Calling `derived_opinion_state_event`
+    // here would make both sides of the comparison move together and a wrong
+    // synthesized field would fold identically on both (Codex review finding,
+    // thread 019fcfaf-b34f-71e1-a59d-8371bcfd4449).
+    let mut v1_snapshot = decoded.clone();
+    v1_snapshot
+        .state_events
+        .retain(|row| !diplomacy53::compact::is_derived_opinion_state_event(row));
+    for opinion in &decoded.opinions {
+        v1_snapshot
+            .state_events
+            .push(diplomacy53::compact::StateEventRow {
+                owner_tag_db_id: opinion.src_tag_db_id,
+                target_tag_db_id: Some(opinion.target_tag_db_id),
+                event_kind: diplomacy53::compact::STATE_EVENT_KIND_OBSERVED,
+                source_kind: diplomacy53::compact::STATE_EVENT_SOURCE_RELATION_OPINION,
+                object_hash: diplomacy53::compact::stable_hash32("relation_opinion"),
+                value_hash: diplomacy53::compact::stable_hash32(&format!(
+                    "opinion_{}",
+                    opinion.opinion
+                )),
+                value_raw: i64::from(opinion.opinion),
+            });
+    }
+    // And put them in a DIFFERENT pre-fold order than the v2 stream will, so the
+    // folded-equality assertion below actually exercises the projection sort
+    // rather than being satisfied by two identically-ordered inputs.
+    v1_snapshot.state_events.reverse();
+    assert_ne!(
+        v1_snapshot
+            .state_events
+            .iter()
+            .map(|row| (row.source_kind, row.object_hash))
+            .collect::<Vec<_>>(),
+        decoded
+            .state_events
+            .iter()
+            .map(|row| (row.source_kind, row.object_hash))
+            .collect::<Vec<_>>(),
+        "the two streams must present their state events in different orders"
+    );
+    let mut v1 = diplomacy53::compact::encode_payload(&v1_snapshot);
+    v1[20..24].copy_from_slice(
+        &diplomacy53::compact::SCHEMA_VERSION_V1_OPINION_STATE_EVENTS_ON_WIRE.to_le_bytes(),
+    );
+    assert_eq!(
+        v1.len() - v2.len(),
+        derived * 32,
+        "the v1 stream is exactly one 32-byte state-event row per opinion larger"
+    );
+
+    let identity = country_identity_payload(&[(1, "GER"), (3, "SOV"), (22, "HUN")]);
+    let mut from_v2 = chunk1_one_snapshot(vec![(18, identity.clone()), (53, v2)]);
+    let mut from_v1 = chunk1_one_snapshot(vec![(18, identity), (53, v1)]);
+
+    // `snapshot_payload_sha256` is provenance over the RAW WIRE BYTES, which
+    // this change deliberately alters — it is the one leaf that MUST differ, and
+    // asserting that it does is what stops the rest of this comparison from
+    // being satisfied by two identical inputs.
+    let v2_sha = std::mem::replace(
+        &mut from_v2["diplomacy_world"]["domain53_extra"]["snapshot_payload_sha256"],
+        Value::Null,
+    );
+    let v1_sha = std::mem::replace(
+        &mut from_v1["diplomacy_world"]["domain53_extra"]["snapshot_payload_sha256"],
+        Value::Null,
+    );
+    assert!(v2_sha.is_string() && v1_sha.is_string());
+    assert_ne!(
+        v1_sha, v2_sha,
+        "the two payloads must really be different bytes"
+    );
+    assert_eq!(
+        from_v1, from_v2,
+        "a v1 stream and a v2 stream of the same content folded differently"
+    );
+    // Not vacuous: the derived event must actually reach the folded snapshot.
+    let events = from_v2["countries"]["GER"]["extra"]["_r2_diplomacy_intel_operatives_live"]
+        ["state_events"]
+        .as_array()
+        .expect("GER state events");
+    assert!(
+        events.iter().any(|event| {
+            event["source_kind"]
+                == serde_json::json!(diplomacy53::compact::STATE_EVENT_SOURCE_RELATION_OPINION)
+                && event["value_raw"] == serde_json::json!(-35)
+        }),
+        "the synthesized relation-opinion event never reached the fold: {events:?}"
+    );
+}
+
 #[test]
 fn x3_mtll_joins_d43_contract_to_exact_d53_equipment_purchase_lifecycle() {
     let kind = diplomacy53::compact::REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION;
