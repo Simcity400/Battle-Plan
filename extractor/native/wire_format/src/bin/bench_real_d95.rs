@@ -2334,7 +2334,9 @@ mod tests {
             frame_end_sealed(3, 100, 0, 1, 0, 0),
             frame_end_sealed(3, 100, 1, 0, 0, 0),
         ];
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             bad.push(frame_end_sealed(3, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -2579,7 +2581,9 @@ mod tests {
         // tests the failure mask alone and then commits the roster
         // (`world_fold.rs:13922`). Excluding those hours would exclude hours the
         // recorder measures. The bits are reported instead.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let fold = d18_roster(&d18_payload(1 << bit, &[(368, "D04")], None))
                 .unwrap_or_else(|e| panic!("bit {bit} must not be refused: {e}"));
             assert_eq!(
@@ -2597,7 +2601,7 @@ mod tests {
             100,
             D18,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &d18_payload(1 << 15, &[(1, "GER"), (368, "D04")], None),
+            &d18_payload(1 << 16, &[(1, "GER"), (368, "D04")], None),
         ));
         s.extend(d95_record(2, 100, 10));
         s.extend(frame_end(3, 100));

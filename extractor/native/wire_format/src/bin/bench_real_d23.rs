@@ -1088,7 +1088,9 @@ mod tests {
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure", gets a baseline/delta meaning from the DELTA_DATA
         // read, and the hour is measured as healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             // Alone, combined with a known failure bit, and combined with the
             // informational DELTA_DATA bit. The rejection must not depend on it,
@@ -1573,7 +1575,9 @@ mod tests {
             frame_end_sealed(2, 100, 0, 0, 0, 1),
             frame_end_sealed(2, 100, 0, 1, 0, 0),
         ];
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {

@@ -2494,7 +2494,7 @@ mod tests {
         // vocabulary is not a failure bit, so `validate_snapshot` takes the clean
         // branch and the record reaches the harness's classifier, which is where
         // the rule has to fire.
-        let unassigned = ptw_payload(&[], 1, 1, 0, 1 << 15);
+        let unassigned = ptw_payload(&[], 1, 1, 0, 1 << 16);
         let err = refusal(
             &[(100, d18, p92, unassigned)],
             "an unassigned status bit must refuse the stream",

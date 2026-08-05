@@ -47,8 +47,13 @@ STATUS_BITS = {
     # which is what a BROKEN reader publishes, and this report could not tell
     # them apart.
     1 << 14: "source_empty",
+    # The stream's deliberate RESYNC primitive: clear this one domain's
+    # folded state, then apply this payload as its new whole baseline. Not a
+    # failure and not a keyframe -- a keyframe is merged sparsely, which is
+    # precisely the thing this bit exists to override.
+    1 << 15: "baseline_clear",
 }
-KNOWN_MASK = (1 << 15) - 1
+KNOWN_MASK = (1 << 16) - 1
 FAILURE_MASK = (
     (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 6)
     | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12)

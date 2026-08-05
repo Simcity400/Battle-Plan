@@ -294,26 +294,29 @@ fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
     }
 
     let mut tracker = CompactAirStrengthDeltaTracker::default();
-    let (rows, ..) = compact_air_strength_delta_rows(&mut tracker, vec![sample(100)], 0);
+    let generations = CompactAirWingGenerationAuthority::default();
+    let (rows, ..) = compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(100)], 0);
     assert_eq!(rows.len(), 1);
-    let generation_after_seed = tracker.next_generation;
+    let generation_after_seed = generations.next_generation();
 
     // 100 -> 90 on a discarded frame: the ten losses must not be consumed.
     let (rows, changed_rows, loss_rows, ..) = compact_air_strength_delta_rows(
         &mut tracker,
+        &generations,
         vec![sample(90)],
         COMPACT_STATUS_PARTIAL_DATA,
     );
     assert!(rows.is_empty());
     assert_eq!((changed_rows, loss_rows), (0, 0));
     assert_eq!(
-        tracker.next_generation, generation_after_seed,
-        "a withheld frame must not burn generations"
+        generations.next_generation(),
+        generation_after_seed,
+        "a withheld frame returns before the mint loop, so it reserves nothing"
     );
 
     // Clean frame at 85: the delta must cover the whole 100 -> 85 interval.
     let (rows, changed_rows, loss_rows, ..) =
-        compact_air_strength_delta_rows(&mut tracker, vec![sample(85)], 0);
+        compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(85)], 0);
     assert_eq!((changed_rows, loss_rows), (1, 1));
     assert_eq!(rows[0].count_delta, -15);
     assert_eq!(rows[0].old_count, 100);
@@ -343,15 +346,27 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
     let scaled = |count: u32| (count as i64) * COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE;
 
     let mut tracker = CompactAirStrengthDeltaTracker::default();
-    let _ = compact_air_strength_delta_rows(&mut tracker, vec![sample(4, 100, scaled(100))], 0);
-    let generation_after_seed = tracker.next_generation;
+    let generations = CompactAirWingGenerationAuthority::default();
+    let _ = compact_air_strength_delta_rows(
+        &mut tracker,
+        &generations,
+        vec![sample(4, 100, scaled(100))],
+        0,
+    );
+    let generation_after_seed = generations.next_generation();
 
     // Wing 4 goes 100 -> 99 planes but its equipment sum moves off the
     // whole-plane scale, and wing 5 appears for the first time on the same
-    // frame. The mismatch withholds the whole frame, so wing 5's generation
-    // must be rolled back with it: the fold never saw that generation.
+    // frame. The mismatch withholds the whole frame. Wing 5's number is NOT
+    // rewound with it -- the shared authority binds a number to a wing BODY, not
+    // to the frame that first saw it, so the observable property (wing 5 is
+    // published under that same number when a frame finally carries it) is
+    // preserved by reissue rather than by rollback. Rewinding would be wrong
+    // now: d30 and d32 read the same authority in the same frame and may
+    // already have published that number.
     let (rows, changed_rows, _, _, _, scale_mismatch_rows) = compact_air_strength_delta_rows(
         &mut tracker,
+        &generations,
         vec![sample(4, 99, scaled(99) + 1), sample(5, 20, scaled(20))],
         0,
     );
@@ -367,8 +382,11 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
     assert_eq!(tracker.previous[&(HEAP_LO + 0x400)].count, 100);
     assert!(!tracker.previous.contains_key(&(HEAP_LO + 0x500)));
     assert_eq!(
-        tracker.next_generation, generation_after_seed,
-        "a withheld frame must not burn the generation it handed the new wing"
+        generations.next_generation(),
+        generation_after_seed.saturating_add(1),
+        "the number wing 5 was handed stays RESERVED to wing 5's body across the \
+         withheld frame; the assertion below is that the same number is what \
+         reaches the wire"
     );
 
     // The very next samples are UNCHANGED from the withheld frame. Against an
@@ -379,6 +397,7 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
     let (rows, changed_rows, loss_rows, _, _, scale_mismatch_rows) =
         compact_air_strength_delta_rows(
             &mut tracker,
+            &generations,
             vec![sample(4, 99, scaled(99)), sample(5, 20, scaled(20))],
             0,
         );
@@ -393,7 +412,7 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
     );
     assert_eq!(
         seeded.generation, generation_after_seed,
-        "the rolled-back generation is reissued to the same wing"
+        "the reserved generation is reissued to the same wing body"
     );
 }
 
@@ -438,8 +457,10 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         effective_planes: 70,
     };
     let mut wing_tracker = CompactAirWingTracker::default();
+    let wing_generations = CompactAirWingGenerationAuthority::default();
     let (rows, ..) = compact_air_wing_delta_rows(
         &mut wing_tracker,
+        &wing_generations,
         vec![wing.clone()],
         COMPACT_STATUS_PARTIAL_DATA,
     );
@@ -449,10 +470,13 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         "d30 baseline must not advance"
     );
     assert_eq!(
-        wing_tracker.next_generation, 0,
-        "d30 must not burn a generation on a discarded frame"
+        wing_generations.next_generation(),
+        0,
+        "d30 must not reserve a generation on a discarded frame -- the withheld \
+         branch returns before the mint loop, so nothing is assigned at all"
     );
-    let (rows, ..) = compact_air_wing_delta_rows(&mut wing_tracker, vec![wing], 0);
+    let (rows, ..) =
+        compact_air_wing_delta_rows(&mut wing_tracker, &wing_generations, vec![wing], 0);
     assert_eq!(rows.len(), 1, "d30 re-delivers on the next clean frame");
 
     let loadout = CompactAirWingLoadoutRow {
@@ -471,6 +495,7 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
     let (rows, changed_rows, deleted_rows, emitted_equipment_rows) =
         compact_air_wing_loadout_delta_rows(
             &mut loadout_tracker,
+            &wing_generations,
             vec![loadout.clone()],
             COMPACT_STATUS_PARTIAL_DATA,
         );
@@ -483,7 +508,12 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         loadout_tracker.previous.is_empty(),
         "d32 baseline must not advance"
     );
-    let (rows, ..) = compact_air_wing_loadout_delta_rows(&mut loadout_tracker, vec![loadout], 0);
+    let (rows, ..) = compact_air_wing_loadout_delta_rows(
+        &mut loadout_tracker,
+        &wing_generations,
+        vec![loadout],
+        0,
+    );
     assert_eq!(rows.len(), 1, "d32 re-delivers on the next clean frame");
 
     let air_base = CompactAirBaseStatusRow {

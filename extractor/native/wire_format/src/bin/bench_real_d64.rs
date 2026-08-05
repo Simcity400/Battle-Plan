@@ -210,7 +210,7 @@ fn assert_reachable_status_contract() {
     // `compact_contract` dependency and is machine-checked here.
     // d64 has no lane-local mask and no expected-partial tolerance. Prove the
     // library copy equals the production predicate over every assigned word.
-    for status in 0..(1u32 << 15) {
+    for status in 0..(1u32 << 16) {
         let copied = status & d64::FAILURE_STATUS_MASK;
         let shared = compact_status_failure_flags_after_expected_partial_tolerance(D64, status);
         assert_eq!(copied, shared, "status {status:#x}");
@@ -1060,11 +1060,11 @@ mod tests {
         let mut malformed = vec![0u8; d64::BASE_HEADER_LEN];
         malformed[8..12].copy_from_slice(&1u32.to_le_bytes());
         malformed[12..16].copy_from_slice(&1u32.to_le_bytes());
-        // Bit 15, not 14: the contract assigned bit 14 to the measured-empty
-        // badge, so it is no longer unassigned and this check would find
-        // nothing unknown about it.
-        malformed[16..20].copy_from_slice(&(1u32 << 15).to_le_bytes());
-        assert_eq!(d64_unknown_status(&malformed), Some(1u32 << 15));
+        // Bit 16: bit 14 is the measured-empty badge and bit 15 is
+        // BASELINE_CLEAR, so neither is unassigned any more and this check
+        // would find nothing unknown about either.
+        malformed[16..20].copy_from_slice(&(1u32 << 16).to_le_bytes());
+        assert_eq!(d64_unknown_status(&malformed), Some(1u32 << 16));
         assert!(
             d64::check_authority_payload(&malformed).is_err(),
             "the same payload is also malformed, so scan order is load-bearing"

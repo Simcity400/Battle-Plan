@@ -1152,7 +1152,9 @@ mod tests {
             frame_end_sealed(2, 100, 0, 1, 0, 0),
             frame_end_sealed(2, 100, 1, 0, 0, 0),
         ];
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -1724,7 +1726,9 @@ mod tests {
         // helpers classify the v1 vocabulary and are not validity predicates, so an
         // unassigned bit must be rejected BEFORE classification — otherwise it
         // silently reads as "not a failure" and the hour is measured as healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             // With rows, without rows, and combined with a known failure bit and a
             // known informational bit: the rejection must not depend on any of it.

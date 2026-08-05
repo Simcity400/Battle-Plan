@@ -1001,7 +1001,9 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure" and the hour is measured as healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             // Alone, combined with a known failure bit, and combined with a known
             // informational bit; with rows and without (the capture's own shape is
@@ -1411,7 +1413,9 @@ mod tests {
             s.extend(frame_end_sealed(2, 100, emitted, scheduled, 0, reserved));
             assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
         }
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let mut s = data(1, 100);
             s.extend(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
             assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());

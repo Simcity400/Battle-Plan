@@ -1295,7 +1295,7 @@ fn assert_status_predicates_agree() {
     // as the recipe requires; this proves the two agree on every assigned status
     // word, so following the predicate is following the fold.
     let fold_mask = COMPACT_STATUS_FAILURE_MASK & !COMPACT_STATUS_PARTIAL_DATA;
-    for status in 0u32..(1 << 15) {
+    for status in 0u32..(1 << 16) {
         if compact_status_unknown_flags_v1(status) != 0 {
             continue;
         }

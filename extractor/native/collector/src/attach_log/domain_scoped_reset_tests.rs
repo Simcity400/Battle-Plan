@@ -73,10 +73,12 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "focus_research_decisions_depth_live",
-        "d45's pin is now TRANSACTIONAL -- staged inside the bracket, committed only where the \
-         late custody status is final -- so it can no longer run ahead of the fold. Joining the \
-         allowlist is a separate question with its own fold-equivalence proof to write, and it \
-         stays on the blanket reset until that lands",
+        "d45 takes PRE-FRAME RESTORATION, not the blanket reset and not the allowlist. Its pin \
+         is staged inside the bracket and committed only where the late custody status is \
+         final, so a committed value is by construction one the fold applied; its own rejection \
+         UNDOES this frame's commits and any other domain's rejection leaves them standing. \
+         `Default` is reachable from neither branch -- a wiped pin is BEHIND the fold, which \
+         loses data exactly as being ahead does",
     ),
     (
         "tech_country_delta",
@@ -85,10 +87,33 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
          and the fold's mirror in step",
     ),
     (
+        "air_wings",
+        "d30 is a member of the AIR-WING TRANSACTIONAL UNIT. Its pin is not retained on its own \
+         reader's survival: it rolls back together with d32's and d42's whenever ANY of the \
+         three was rejected, through the joint carve-out keyed on \
+         `AIR_WING_TRANSACTIONAL_UNIT`, because the fold keys all three on one `AirWingKey`",
+    ),
+    (
+        "air_wing_loadouts",
+        "d32, second member of the air-wing transactional unit; same joint carve-out as d30",
+    ),
+    (
+        "air_combat_losses_live",
+        "d42, third member of the air-wing transactional unit; it mints from the same wing \
+         bodies and its rows carry the same `AirWingKey`",
+    ),
+    (
+        "air_wing_generations",
+        "the air-wing unit's SHARED generation authority. Not a per-domain read product and not \
+         a delta pin -- it is the body -> generation identity map all three domains key the \
+         fold on, monotonic by design, and carried across the reset unconditionally by its own \
+         carve-out",
+    ),
+    (
         "land_combat_detail_events_live",
-        "d55 took the same repair as d45: the snapshot baseline is staged and committed against \
-         the same shared contract predicate the fold applies. Also awaiting its own \
-         fold-equivalence proof before it can join the allowlist",
+        "d55 takes the same PRE-FRAME RESTORATION as d45: the snapshot baseline is staged and \
+         committed against the same shared contract predicate the fold applies, its own \
+         rejection undoes this frame's commit, and any other domain's leaves it standing",
     ),
 ];
 
@@ -481,16 +506,22 @@ fn the_two_excluded_root_caches_are_touched_outside_every_reader_bracket() {
 /// must be a decision rather than an edit.
 ///
 /// Both survive their clock bracket and can still acquire a failure-class status
-/// afterwards, from hook-reservation custody settled on the main thread. The
-/// consumer discards a failure-class record whole, so their pin would advance on
-/// a record the fold never applied. Bracket survival — which is the entire
-/// retention predicate — does not decide that question for these two, and the
-/// blanket reset is what currently hides it.
+/// afterwards, from hook-reservation custody settled on the main thread. Bracket
+/// survival — which is the entire retention predicate — does not decide that
+/// question for these two, so the allowlist cannot express what they need.
+///
+/// What they take instead is PRE-FRAME RESTORATION, not the blanket reset: their
+/// pins are staged during the read, committed at emission under the shared
+/// `compact_delta_pin_may_advance` predicate, and their OWN rejection undoes
+/// this frame's commits rather than wiping the tracker. `Default` is the wrong
+/// answer for them in exactly the way an advanced pin is —
+/// `no_transactional_domain_is_default_constructed_on_its_own_rejection` holds
+/// that half. This test holds the allowlist half.
 ///
 /// What production change makes this fail: putting either field back in the
-/// allowlist. If that is intended, the tracker advance has to become
-/// transactional with the late status decision first, and this test is where
-/// that argument gets recorded.
+/// allowlist. That would be a claim about what the fold does with a RETAINED pin
+/// across a rejected frame, which is a different question from the one the
+/// transaction answers and owes its own fold-equivalence proof.
 #[test]
 fn the_two_late_failure_domains_are_not_domain_scoped() {
     for field in [
@@ -501,9 +532,9 @@ fn the_two_late_failure_domains_are_not_domain_scoped() {
             !DOMAIN_SCOPED_TRACKER_RETENTION
                 .iter()
                 .any(|(name, _)| *name == field),
-            "`{field}` must stay on the blanket reset until its tracker advance is transactional \
-             with the hook-custody status that can badge its record failure-class after the \
-             reader's bracket has closed"
+            "`{field}` must stay off the allowlist: bracket survival cannot decide whether the \
+             hook-custody status that settles after the reader's bracket closed badged its \
+             record failure-class. Pre-frame restoration is what it takes instead"
         );
         assert!(
             BLANKET_RESET_TRACKER_FIELDS

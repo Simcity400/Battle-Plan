@@ -24711,7 +24711,8 @@ fn every_apply_and_account_fixture_is_a_payload_the_boundary_decoder_admits() {
             // payload production could carry, and asserting the boundary
             // admits it would assert the hole is still open.
             // `the_capture_boundary_rejects_an_unassigned_status_bit` is where
-            // that bit is now measured, across the whole 15..=31 range.
+            // that bit is now measured, across the whole unassigned 16..=31 range
+            // (bit 15 became the assigned BASELINE_CLEAR resync primitive).
         ] {
             // 100 is the clean-baseline casualties value the pre-existing d17
             // test builds; without it that one instance escapes the check.
@@ -24747,17 +24748,18 @@ fn every_apply_and_account_fixture_is_a_payload_the_boundary_decoder_admits() {
 /// is what still holds the line downstream.
 ///
 /// The whole bit range is swept, not one sample, so a gate that happened to
-/// catch bit 31 (a sign bit, easy to catch by accident) but not bit 15 cannot
+/// catch bit 31 (a sign bit, easy to catch by accident) but not bit 16 cannot
 /// pass.
 ///
 /// What production change makes this fail: removing the
 /// `reject_unassigned_status_bits` call from `summarize_domain_data_payload`, or
-/// narrowing it to a subset of bits 15..=31. The mutation is recorded in the
+/// narrowing it to a subset of bits 16..=31 (bit 15 is now the assigned
+/// `BASELINE_CLEAR` primitive with its own rules and tests). The mutation is recorded in the
 /// lane report.
 #[test]
 fn the_capture_boundary_rejects_an_unassigned_status_bit() {
     for domain in APPLY_AND_ACCOUNT_DOMAINS {
-        for bit in 15..u32::BITS {
+        for bit in 16..u32::BITS {
             let flag = 1_u32 << bit;
             let payload = (domain.payload)(1, flag);
             let error = crate::domain_data_authority::summarize_domain_data_payload(
@@ -24996,7 +24998,7 @@ fn the_degraded_note_names_exactly_the_failure_bits() {
     );
 }
 
-/// An UNASSIGNED status bit (15..=31) has no defined classification, so it is
+/// An UNASSIGNED status bit (16..=31) has no defined classification, so it is
 /// not "clean". Masking to `COMPACT_STATUS_FAILURE_MASK` alone would fold such a
 /// record as a perfectly healthy hour — the unknown-read-as-clean shape the
 /// ruling exists to end.
@@ -25363,7 +25365,771 @@ fn d41_delta_pairing_payload(
                 push_u32(&mut out, value);
             }
             push_u32(&mut out, 0);
+// ---------------------------------------------------------------------
+// COMPACT_STATUS_BASELINE_CLEAR: the stream's deliberate resync primitive
+// ---------------------------------------------------------------------
+
+/// **THE POINT OF THE BIT.** A whole payload the fold would otherwise MERGE
+/// becomes a REPLACEMENT, so a bucket that emptied while the domain was gapped
+/// is actually removed.
+///
+/// Without the bit, `replace_or_sparse_after_first` returns sparse for every
+/// record after the first, so region 99 — present in the baseline, absent from
+/// the later whole payload, and never tombstoned — survives in the folded world
+/// forever. That is `DELTA_WIRE_DESIGN.md` §7.1's defect, and d31 is the domain
+/// where the wire primitive is the answer rather than a producer transaction:
+/// its rows are aggregates recomputed from the whole wing walk, so a clean
+/// record can always make the whole-truth claim a replacement requires.
+///
+/// What production change makes this fail: dropping `&& !resync` from
+/// `fold_air_region_activity`'s `sparse` computation, or removing d31 from
+/// `COMPACT_BASELINE_CLEAR_ADMISSIONS` (which turns the record into a refusal,
+/// not a merge — see the sibling test).
+#[test]
+fn a_d31_baseline_clear_replaces_the_folded_state_instead_of_merging_it() {
+    let baseline = d31_air_region_activity_payload(&[(88, 1, 7, 100), (99, 1, 7, 50)], 0);
+    let whole_without_99 = d31_air_region_activity_payload(&[(88, 1, 7, 140)], 0);
+
+    // Control: the same second record WITHOUT the bit is merged, and region 99
+    // survives. This is what the fold does today and why the bit exists.
+    let merged = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (31, baseline.clone()),
+        ],
+        vec![(31, whole_without_99.clone())],
+    ]);
+    assert_eq!(
+        merged[1]["naval_air"]["_r2_air_region_activity"]
+            .as_array()
+            .map(|rows| rows.len()),
+        Some(2),
+        "a whole payload with no resync bit is MERGED; the vanished bucket survives"
+    );
+
+    let resynced = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (31, baseline),
+        ],
+        vec![(
+            31,
+            d31_air_region_activity_payload(
+                &[(88, 1, 7, 140)],
+                compact_contract::COMPACT_STATUS_BASELINE_CLEAR,
+            ),
+        )],
+    ]);
+    let rows = resynced[1]["naval_air"]["_r2_air_region_activity"]
+        .as_array()
+        .expect("the resync record is applied, not refused");
+    assert_eq!(
+        rows.len(),
+        1,
+        "BASELINE_CLEAR must CLEAR the domain before applying, so the bucket the payload \
+         does not carry is gone: {rows:?}"
+    );
+    assert_eq!(rows[0]["plane_count"], json!(140));
+}
+
+/// **THE FAIL-CLOSED HALF.** A resync a record is not entitled to make is a
+/// REFUSAL, never a downgrade to "ordinary record".
+///
+/// Merging the payload instead would fold a world neither side describes, which
+/// is the exact failure the bit exists to prevent — so the three contract rules
+/// (no patch, no failure-class record, no inadmissible domain) each abort the
+/// stream fold rather than being tolerated.
+///
+/// The inadmissible-domain arm is the d13 case in miniature: d34's absences are
+/// not a whole-extent claim in the way d31's are, so it is not on
+/// `COMPACT_BASELINE_CLEAR_ADMISSIONS` and may not ask for a replacement.
+///
+/// What production change makes this fail: making
+/// `world_fold::baseline_clear_requested` return `Ok(false)` on a refusal
+/// instead of `Err`, or admitting every domain.
+#[test]
+fn an_inadmissible_or_contradictory_d31_resync_refuses_the_record() {
+    use compact_contract::{
+        compact_baseline_clear_requested, COMPACT_STATUS_BASELINE_CLEAR, COMPACT_STATUS_DELTA_DATA,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    };
+
+    // The three refusals, at the contract seam production asks through.
+    assert!(
+        compact_baseline_clear_requested(31, COMPACT_STATUS_BASELINE_CLEAR).unwrap(),
+        "a clean d31 resync is the admitted case, or the arms below prove nothing"
+    );
+    assert!(
+        compact_baseline_clear_requested(
+            31,
+            COMPACT_STATUS_BASELINE_CLEAR | COMPACT_STATUS_DELTA_DATA
+        )
+        .is_err(),
+        "a patch cannot also be a replacement"
+    );
+    assert!(
+        compact_baseline_clear_requested(
+            31,
+            COMPACT_STATUS_BASELINE_CLEAR | COMPACT_STATUS_SOURCE_UNAVAILABLE
+        )
+        .is_err(),
+        "a read that did not complete cannot describe the whole extent it asks the consumer \
+         to discard"
+    );
+    assert!(
+        compact_baseline_clear_requested(34, COMPACT_STATUS_BASELINE_CLEAR).is_err(),
+        "an unlisted domain may not ask for a replacement; the allowlist is the whole point"
+    );
+    assert!(
+        compact_baseline_clear_requested(13, COMPACT_STATUS_BASELINE_CLEAR).is_err(),
+        "d13 above all: a country whose research was not sampled drops out with NO failure \
+         bit, so clear-then-apply would erase research the fold correctly retains"
+    );
+
+    // And end to end through the fold: the refused record's rows must NOT land.
+    // `fold_air_region_activity` returns the refusal with `?`, so the record is
+    // never applied; what a caller does with the error is its own policy, but no
+    // policy may leave the payload merged.
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (31, d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0)),
+        ],
+        vec![(
+            31,
+            d31_air_region_activity_payload(
+                &[(88, 1, 7, 140)],
+                COMPACT_STATUS_BASELINE_CLEAR | COMPACT_STATUS_DELTA_DATA,
+            ),
+        )],
+    ]);
+    let rows = snaps[1]["naval_air"]["_r2_air_region_activity"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        rows.iter().all(|row| row["plane_count"] != json!(140)),
+        "a contradictory resync must not reach the folded world in any form: {rows:?}"
+    );
+}
+
+/// **THE ADMISSION IS ENFORCED FOR EVERY DOMAIN, not only for the one that
+/// consults the predicate by name.**
+///
+/// Bit 15 is an ASSIGNED status now, so the unknown-bit refusal no longer
+/// catches a record that asks for a resync it is not entitled to make. A domain
+/// whose fold never asks would simply apply such a record normally, silently
+/// ignoring the request — which is exactly the "producer and consumer disagree
+/// about what happened" the bit exists to prevent. (Codex review round 1,
+/// finding C1.)
+///
+/// `handle_compact_failure` is the one seam every domain's fold already routes
+/// its own status word through, so the check lives there. The outcome is
+/// fail-closed: the domain-hour is UNKNOWN and the accumulator is retained.
+///
+/// d13 is the case §8.4 is about, and this is it end to end: a d13 record
+/// carrying the bit must NOT have its payload folded.
+///
+/// What production change makes this fail: removing the admission check from
+/// `handle_compact_failure`, or admitting every domain.
+#[test]
+fn an_unadmitted_domain_carrying_the_resync_bit_is_refused_not_folded() {
+    use compact_contract::COMPACT_STATUS_BASELINE_CLEAR;
+
+    // d34 `air_base_status` is not on the admissions list. Its rows must not
+    // reach the folded world when the record asks for a replacement.
+    let snaps = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (34, d34_air_base_status_payload(&[(9001, 64, 6508, 100)], 0)),
+        ],
+        vec![(
+            34,
+            d34_air_base_status_payload(
+                &[(9002, 64, 6508, 100)],
+                COMPACT_STATUS_BASELINE_CLEAR,
+            ),
+        )],
+    ]);
+
+    let bases = snaps[1]["strategic_air"]["air_bases"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        bases.iter().all(|base| base["id"] != json!(9002)),
+        "a domain that is not on COMPACT_BASELINE_CLEAR_ADMISSIONS asked for a replacement; \
+         its payload must not be folded at all: {bases:?}"
+    );
+
+    // The control: without the bit the same record folds normally, so the
+    // refusal above is the bit's doing and not the fixture's.
+    let control = chunk1_snapshots(vec![
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (34, d34_air_base_status_payload(&[(9001, 64, 6508, 100)], 0)),
+        ],
+        vec![(34, d34_air_base_status_payload(&[(9002, 64, 6508, 100)], 0))],
+    ]);
+    let bases = control[1]["strategic_air"]["air_bases"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        bases.iter().any(|base| base["id"] == json!(9002)),
+        "without the bit the same record must fold, or this fixture proves nothing: {bases:?}"
+    );
+}
+
+/// **THE RESYNC IS VALIDATED BEFORE d31's EARLY EXITS.**
+///
+/// Both `handle_compact_failure` and `reject_delta_before_baseline` return
+/// `Ok(())`, so asking after them let a forbidden resync through unrefused:
+/// `BASELINE_CLEAR | SOURCE_UNAVAILABLE` exits at the first, and
+/// `BASELINE_CLEAR | DELTA_DATA` before any baseline exits at the second.
+/// (Codex review round 1, finding C2.)
+///
+/// **This asserts `Err`, not an absent row.** An earlier version of this test
+/// went through `chunk1_snapshots` and checked that the forbidden rows did not
+/// appear — which both arms satisfy under the regression too, because the early
+/// exits fold nothing either. Refusing and quietly folding nothing are different
+/// outcomes and only one of them is correct, so the test has to be able to tell
+/// them apart. (Codex review round 2.)
+///
+/// What production change makes this fail: moving `baseline_clear_requested`
+/// back below either early exit in `fold_air_region_activity`.
+///
+/// MUTATION RUN: exactly that move.
+/// OBSERVED: FAILED -- "a resync on a read that did not complete must be
+/// REFUSED, not quietly dropped by the failure exit: ()"
+/// (The version of this test that went through `chunk1_snapshots` PASSED under
+/// the same mutation, which is why it was rewritten.)
+#[test]
+fn a_forbidden_d31_resync_is_refused_even_on_the_paths_that_exit_early() {
+    use compact_contract::{
+        COMPACT_STATUS_BASELINE_CLEAR, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    };
+
+    // Arm 1: a failure-class resync, on a fold that already holds a baseline so
+    // `handle_compact_failure` is the exit that would swallow it.
+    let mut fold = WorldFold::new("d31_forbidden_resync_failure_arm");
+    fold.fold_air_region_activity(&d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0))
+        .expect("the baseline record folds");
+    let err = fold
+        .fold_air_region_activity(&d31_air_region_activity_payload(
+            &[(88, 1, 7, 140)],
+            COMPACT_STATUS_BASELINE_CLEAR | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        ))
+        .expect_err(
+            "a resync on a read that did not complete must be REFUSED, not quietly dropped by              the failure exit",
+        );
+    assert!(
+        err.contains("BASELINE_CLEAR"),
+        "the refusal must name the rule it enforces: {err}"
+    );
+
+    // Arm 2: a contradictory resync BEFORE any baseline, so
+    // `reject_delta_before_baseline` is the exit that would swallow it.
+    let mut fresh = WorldFold::new("d31_forbidden_resync_delta_arm");
+    let err = fresh
+        .fold_air_region_activity(&d31_air_region_activity_payload(
+            &[(88, 1, 7, 140)],
+            COMPACT_STATUS_BASELINE_CLEAR | COMPACT_STATUS_DELTA_DATA,
+        ))
+        .expect_err(
+            "a patch that is also a replacement must be REFUSED on every path, including the              one that returns before any baseline exists",
+        );
+    assert!(
+        err.contains("BASELINE_CLEAR"),
+        "the refusal must name the rule it enforces: {err}"
+    );
+
+    // The control: the SAME two status words minus the resync bit are ordinary
+    // records that fold without error, so the refusals above are the bit's doing
+    // and not the fixture's.
+    let mut control = WorldFold::new("d31_forbidden_resync_control");
+    control
+        .fold_air_region_activity(&d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0))
+        .expect("baseline");
+    control
+        .fold_air_region_activity(&d31_air_region_activity_payload(
+            &[(88, 1, 7, 140)],
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        ))
+        .expect("an ordinary failure-class record is retained, not refused");
+    let mut control_fresh = WorldFold::new("d31_forbidden_resync_control_fresh");
+    control_fresh
+        .fold_air_region_activity(&d31_air_region_activity_payload(
+            &[(88, 1, 7, 140)],
+            COMPACT_STATUS_DELTA_DATA,
+        ))
+        .expect("an ordinary delta-before-baseline record is typed unknown, not refused");
+}
+
+/// **WHAT THE RESYNC ADMISSION ACTUALLY COVERS.**
+///
+/// Three claims about this check have been wrong in as many review rounds, so
+/// this test states the weaker true one and asserts an EXACT set rather than an
+/// allowlist.
+///
+/// Round 1 put the admission inside `handle_compact_failure` on the claim that
+/// it was "the one seam every domain's fold routes its status word through". It
+/// is not: 36 of the 90 `fold_*` functions never call it. Round 2 fixed the
+/// three record folds that bypass it and then wrote that every remaining fold
+/// "cannot apply a row on the strength of that word alone" — also wrong, and
+/// unverified when written: `fold_divisions` reads `status_flags`, writes its
+/// own failure check, and applies rows.
+///
+/// The position that survives inspection:
+///
+/// * **The safety property is structural, and is asserted below.** A fold can
+///   only CLEAR a domain's state on this bit by calling
+///   `baseline_clear_requested`, which refuses any domain not on
+///   `COMPACT_BASELINE_CLEAR_ADMISSIONS`. There is exactly ONE such call site.
+///   No unadmitted domain can discard anything, whatever a record claims.
+/// * **Strict REFUSAL is partial.** A fold that does not reach
+///   `refuse_inadmissible_baseline_clear` IGNORES the bit and folds the record
+///   normally: the producer's request is silently dropped rather than honoured
+///   or refused. That is a deviation from `DELTA_WIRE_DESIGN.md` §8.2 rule 4,
+///   which says such a record must be REFUSED, and it is recorded there as
+///   found-not-fixed with the remedy rather than papered over here.
+///
+/// `UNREFUSING_FOLDS` is therefore "the folds that ignore the bit", asserted by
+/// EQUALITY. A fold that gains the call must be removed from the list, and one
+/// that loses it must be added — either way the list is edited deliberately.
+///
+/// What production change makes this fail: any change to which folds refuse the
+/// bit, or a second `baseline_clear_requested` call site.
+#[test]
+fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
+    // Comments and string literals are blanked first. A raw substring search
+    // over the source lets a comment mentioning `handle_compact_failure(` make
+    // an uncovered fold look covered, and a block comment containing a line that
+    // starts `    fn ` truncate the body being scanned. (Codex review round 3.)
+    let source = strip_rust_comments_and_strings(
+        &include_str!("../world_fold.rs").replace("\r\n", "\n"),
+    );
+
+    // Folds that legitimately never see a payload status word: the dispatch and
+    // the `fold_domain_*` accounting helpers.
+    const NO_PAYLOAD_STATUS: &[&str] = &[
+        "fold_domain_data",
+        "fold_domain_seen",
+        "fold_domain_seen_in_stream",
+        "fold_domain_unknown",
+        "fold_domain_fresh_this_hour",
+    ];
+
+    // Every declaration spelling, not just `    fn fold_`. A fold that arrives
+    // as `pub(crate) fn`, `async fn`, `unsafe fn` or `const fn` must not slip
+    // past the walk.
+    let declaration_at = |from: usize| -> Option<(usize, usize)> {
+        let mut cursor = from;
+        while let Some(at) = source[cursor..].find("fn fold_") {
+            let at = cursor + at;
+            let line_start = source[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
+            let prefix = &source[line_start..at];
+            // Only a method declaration: the text before `fn` on its line is
+            // indentation plus optional qualifiers, nothing else.
+            let qualifiers_only = prefix.trim_start().split_whitespace().all(|word| {
+                matches!(word, "pub" | "async" | "unsafe" | "const" | "extern")
+                    || word.starts_with("pub(")
+            });
+            if qualifiers_only && prefix.starts_with("    ") {
+                return Some((line_start, at));
+            }
+            cursor = at + "fn fold_".len();
         }
+        None
+    };
+
+    let mut unrefusing: Vec<String> = Vec::new();
+    let mut declared: Vec<(String, usize, usize)> = Vec::new();
+    let mut cursor = 0usize;
+    while let Some((line_start, fn_at)) = declaration_at(cursor) {
+        let name_start = fn_at + "fn ".len();
+        let name_end = name_start
+            + source[name_start..]
+                .find(['(', '<'])
+                .expect("a function name is followed by its parameter list");
+        let name = source[name_start..name_end].to_string();
+        cursor = name_end;
+        declared.push((name, line_start, name_end));
+    }
+    // Each body runs to the next declaration at the same nesting, which is the
+    // next entry's start.
+    for (index, (name, _, name_end)) in declared.iter().enumerate() {
+        let end = declared
+            .get(index + 1)
+            .map(|(_, next_start, _)| *next_start)
+            .unwrap_or(source.len());
+        let body = &source[*name_end..end];
+        if NO_PAYLOAD_STATUS.contains(&name.as_str()) {
+            continue;
+        }
+        if !body.contains("status_flags") {
+            continue;
+        }
+        let refuses = body.contains("handle_compact_failure(")
+            || body.contains("refuse_inadmissible_baseline_clear(");
+        if !refuses {
+            unrefusing.push(name.clone());
+        }
+    }
+    unrefusing.sort();
+    unrefusing.dedup();
+
+    // The EXACT set of folds that read a payload status word and do not refuse
+    // an inadmissible resync. None of them can CLEAR anything -- that is the
+    // assertion below -- but each of them silently ignores the bit instead of
+    // refusing it. See `DELTA_WIRE_DESIGN.md` §8.2, "found, not fixed".
+    const UNREFUSING_FOLDS: &[&str] = &[
+        "fold_capitulation_war_state",
+        "fold_characters_leaders_cabinet_live",
+        "fold_country_identity",
+        "fold_diplomacy",
+        "fold_diplomacy_intel_operatives",
+        "fold_divisions",
+        "fold_dynamic_collection_trace",
+        "fold_focus_research_decisions_depth",
+        "fold_land_combat_detail_events",
+        "fold_land_combats",
+        "fold_map_control",
+        "fold_map_detail",
+        "fold_market_trade",
+        "fold_occupation_resistance_compliance",
+        "fold_scripted_state",
+        "fold_session_multiplayer_metadata",
+        "fold_supply_logistics_attrition",
+    ];
+
+    let expected: Vec<String> = UNREFUSING_FOLDS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        unrefusing, expected,
+        "the set of folds that ignore `COMPACT_STATUS_BASELINE_CLEAR` instead of refusing it has \
+         changed. A fold that gained the refusal must be REMOVED from UNREFUSING_FOLDS; one that \
+         lost it must be ADDED, and adding one is a regression against \
+         `DELTA_WIRE_DESIGN.md` §8.2 rule 4."
+    );
+
+    // THE SAFETY PROPERTY, asserted DIRECTLY rather than inferred from a call
+    // count. Counting `baseline_clear_requested` call sites does not prove it: a
+    // fold that already routes through `handle_compact_failure` could add its
+    // own `if status_flags & COMPACT_STATUS_BASELINE_CLEAR != 0 { .. clear() }`
+    // and stay classified as refusing while the count stayed at one. (Codex
+    // review round 4.)
+    //
+    // So the constant itself must not be read anywhere in the fold except by the
+    // two helpers that hand it to the contract predicate. Both of those name it
+    // only through `compact_baseline_clear_requested`, so the executable text of
+    // `world_fold.rs` should contain the constant zero times.
+    assert_eq!(
+        source.matches("COMPACT_STATUS_BASELINE_CLEAR").count(),
+        0,
+        "`world_fold.rs` reads `COMPACT_STATUS_BASELINE_CLEAR` directly. Every decision this bit \
+         drives must go through `compact_baseline_clear_requested`, which enforces \
+         `COMPACT_BASELINE_CLEAR_ADMISSIONS`; a hand-rolled bit test is a second, unadmitted \
+         clearing path and is exactly what the admission exists to make impossible."
+    );
+    // ...and the NUMERIC spellings of the same bit, because banning one
+    // identifier bans a spelling rather than the property: `global & (1 << 15)`
+    // or `& 0x8000` would drive the same clearing decision and leave the
+    // assertion above at zero. (Codex review rounds 5 and 6.)
+    //
+    // The source is NORMALISED first rather than matched literally, because
+    // literal matching is whack-a-mole: `1u32 << 15`, `1 << 15u32`, `1<<15` and
+    // `0b1000_0000_0000_0000` are all the same bit. Normalising strips integer
+    // type suffixes, digit separators and whitespace around `<<`, which collapses
+    // that family to one form.
+    //
+    // **THIS IS A REGRESSION RATCHET, NOT A PROOF, AND THE DIFFERENCE IS NOT A
+    // CAVEAT — IT IS THE POINT.**
+    //
+    // Five review rounds were spent adding spellings to this matcher, and each
+    // one produced another batch: leading-zero literals (`0x0000_8000`,
+    // `0o0100000`), mixed radices inside the shift (`0x1 << 15`, `1 << 0xf`),
+    // comment-interrupted expressions (`1u32 /* mask */ << 15`), qualified cast
+    // paths (`1 as core::primitive::u32`). That set does not close, because a
+    // textual matcher cannot decide what an expression EVALUATES to. Adding a
+    // sixth batch would buy the appearance of completeness and none of it.
+    //
+    // So the claim is exactly what it delivers: this catches bit 15 written the
+    // plain ways, which is what an accidental regression looks like. It does NOT
+    // stop a spelling chosen to evade it.
+    //
+    // What actually guarantees the safety property is not this matcher:
+    //
+    //  * there is ONE `baseline_clear_requested` call site, asserted below, and
+    //    it is the only place a clearing decision can come from;
+    //  * the adversarial review verified, three times over, that no bit-15-driven
+    //    clearing path exists anywhere in this file today;
+    //  * anything new is a code-review matter, and a reviewer reading
+    //    `& (1 << 15)` in a fold has the same question this comment does.
+    //
+    // Closing the gap mechanically needs AST-level analysis of the fold, which is
+    // recorded as the follow-up in `DELTA_WIRE_DESIGN.md` §8.2 rather than
+    // approximated by a longer list of string literals.
+    let normalised = normalise_integer_literals(&source);
+    // Every radix: hex, binary, OCTAL and decimal, plus the shift form.
+    for spelling in ["1<<15", "0x8000", "0b1000000000000000", "0o100000", "32768"] {
+        let mut from = 0usize;
+        while let Some(at) = normalised[from..].find(spelling) {
+            let at = from + at;
+            let before = normalised[..at].chars().next_back();
+            let after = normalised[at + spelling.len()..].chars().next();
+            // A boundary match only: `0x8000_0000` normalises to `0x80000000`
+            // (bit 31, an unrelated event-state constant) and `32768.0` is a
+            // fixed-point scale, neither of which is a status test.
+            let continues = after.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '.');
+            let joined = before.is_some_and(|ch| ch.is_ascii_alphanumeric());
+            if continues || joined {
+                from = at + 1;
+                continue;
+            }
+            // The three legitimate ROW-flag constants declare this bit; a row
+            // flag is a different field from the payload status word.
+            let line_start = normalised[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
+            let line_end = normalised[at..]
+                .find('\n')
+                .map(|e| at + e)
+                .unwrap_or(normalised.len());
+            let line = normalised[line_start..line_end].trim();
+            assert!(
+                line.starts_with("const ") && line.ends_with("= 1<<15;"),
+                "bit 15 appears in an expression rather than a `const` row-flag declaration: \
+                 `{line}`. Bit 15 of a payload STATUS word is \
+                 `COMPACT_STATUS_BASELINE_CLEAR`, and every decision it drives must go through \
+                 `compact_baseline_clear_requested`, which enforces \
+                 `COMPACT_BASELINE_CLEAR_ADMISSIONS`. If this is a row flag, give it a named \
+                 constant; if it is a status test, it is the unadmitted clearing path this gate \
+                 exists to refuse."
+            );
+            from = at + spelling.len();
+        }
+    }
+
+    // And the three that had to be wired explicitly stay wired.
+    for (fold, domain) in [
+        ("fold_division_equipment", "DIVISION_EQUIPMENT_DOMAIN_ID"),
+        (
+            "fold_construction_buildings_state_damage",
+            "CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID",
+        ),
+        (
+            "fold_army_battleplans_depth",
+            "ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID",
+        ),
+    ] {
+        let at = source
+            .find(&format!("\n    fn {fold}("))
+            .unwrap_or_else(|| panic!("{fold} is declared"));
+        let rest = &source[at + 1..];
+        let end = rest.find("\n    fn ").map(|e| at + 1 + e).unwrap_or(source.len());
+        let body = &source[at..end];
+        assert!(
+            body.contains("refuse_inadmissible_baseline_clear("),
+            "{fold} reaches row application without `handle_compact_failure` (it uses its own \
+             mask or a tolerated-partial branch), so it must ask the admission itself"
+        );
+        assert!(
+            body.contains(domain),
+            "{fold} must ask the admission for its OWN domain id"
+        );
+    }
+}
+
+/// Collapse the spellings of an integer literal that mean the same bit.
+///
+/// Strips `u8`/`u16`/`u32`/`u64`/`usize`/`i*` suffixes and `_` separators from
+/// numeric literals, and removes whitespace around `<<`, so `1u32 << 15`,
+/// `1 << 15u32`, `1<<15` and `1 << 1_5` all become `1<<15`.
+fn normalise_integer_literals(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_digit() {
+            let mut literal = String::from(ch);
+            while let Some(next) = chars.peek() {
+                if next.is_ascii_alphanumeric() || *next == '_' {
+                    literal.push(*next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let literal = literal.replace('_', "");
+            // Drop a trailing integer type suffix, but never mistake the `x`,
+            // `b` or hex digits of the literal itself for one.
+            let cleaned = ["usize", "isize", "u128", "i128", "u64", "i64", "u32", "i32", "u16",
+                           "i16", "u8", "i8"]
+                .iter()
+                .find_map(|suffix| literal.strip_suffix(*suffix))
+                .filter(|stem| !stem.is_empty() && stem.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                .unwrap_or(&literal);
+            out.push_str(cleaned);
+            continue;
+        }
+        out.push(ch);
+    }
+    // Integer CASTS and the parentheses they need: `(1 as u32) << 15` is the
+    // same bit as `1 << 15`, and rustfmt preserves that spelling.
+    // (Codex review round 7.)
+    let mut collapsed = out;
+    for cast in [
+        " as usize", " as isize", " as u128", " as i128", " as u64", " as i64",
+        " as u32", " as i32", " as u16", " as i16", " as u8", " as i8",
+    ] {
+        collapsed = collapsed.replace(cast, "");
+    }
+    // Whitespace around the shift operator.
+    while collapsed.contains(" <<") || collapsed.contains("<< ") {
+        collapsed = collapsed.replace(" <<", "<<").replace("<< ", "<<");
+    }
+    // Parentheses that now wrap a bare integer literal, which a removed cast
+    // leaves behind: `(1)<<15` is `1<<15`.
+    let mut previous = String::new();
+    while previous != collapsed {
+        previous = collapsed.clone();
+        let mut rebuilt = String::with_capacity(collapsed.len());
+        let bytes = collapsed.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'(' {
+                let inner_start = i + 1;
+                let mut j = inner_start;
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'x') {
+                    j += 1;
+                }
+                if j > inner_start && j < bytes.len() && bytes[j] == b')'
+                    && bytes[inner_start].is_ascii_digit()
+                {
+                    rebuilt.push_str(&collapsed[inner_start..j]);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            let ch = collapsed[i..].chars().next().expect("in bounds");
+            rebuilt.push(ch);
+            i += ch.len_utf8();
+        }
+        collapsed = rebuilt;
+    }
+    collapsed
+}
+
+/// Is the quote at `at` a character literal rather than a lifetime?
+///
+/// `'a` in `&'a str` must not open a literal, and `b'"'` must. The test is that
+/// a closing quote arrives within four bytes, which covers `'x'`, `'\\n'`,
+/// `'\\''` and `'\\x41'` while a lifetime never closes at all.
+fn is_char_literal_at(source: &str, at: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut i = at + 1;
+    if bytes.get(i) == Some(&b'\\') {
+        i += 2;
+        while i < bytes.len() && i <= at + 8 {
+            if bytes[i] == b'\'' {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+    // One character, then a closing quote.
+    match source[i..].chars().next() {
+        Some(ch) => bytes.get(i + ch.len_utf8()) == Some(&b'\''),
+        None => false,
+    }
+}
+
+/// Blank every comment and string literal, preserving byte offsets and
+/// newlines, so a structural search cannot be fooled by prose.
+///
+/// Deliberately a small lexer rather than a parser -- it knows line comments,
+/// nested block comments, ordinary and raw strings, and char literals, which is
+/// what the walk above needs and no more.
+fn strip_rust_comments_and_strings(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0usize;
+    let blank = |out: &mut String, slice: &str| {
+        for ch in slice.chars() {
+            out.push(if ch == '\n' { '\n' } else { ' ' });
+        }
+    };
+    while i < bytes.len() {
+        if source[i..].starts_with("//") {
+            let end = source[i..].find('\n').map(|e| i + e).unwrap_or(bytes.len());
+            blank(&mut out, &source[i..end]);
+            i = end;
+        } else if source[i..].starts_with("/*") {
+            let start = i;
+            let mut depth = 1usize;
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if source[i..].starts_with("/*") {
+                    depth += 1;
+                    i += 2;
+                } else if source[i..].starts_with("*/") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            blank(&mut out, &source[start..i]);
+        } else if source[i..].starts_with("r\"") || source[i..].starts_with("r#") {
+            let start = i;
+            i += 1;
+            let hashes = source[i..].chars().take_while(|c| *c == '#').count();
+            i += hashes;
+            if bytes.get(i) == Some(&b'"') {
+                i += 1;
+                let terminator = format!("\"{}", "#".repeat(hashes));
+                let end = source[i..]
+                    .find(&terminator)
+                    .map(|e| i + e + terminator.len())
+                    .unwrap_or(bytes.len());
+                i = end;
+            }
+            blank(&mut out, &source[start..i]);
+        } else if bytes[i] == b'\'' && is_char_literal_at(source, i) {
+            // Character literals, including `b'"'`. Without this the embedded
+            // quote opens a phantom string and blanks live code after it.
+            // (Codex review round 4.)
+            let start = i;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            blank(&mut out, &source[start..i.min(bytes.len())]);
+        } else if bytes[i] == b'"' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            blank(&mut out, &source[start..i.min(bytes.len())]);
+        } else {
+            let ch = source[i..].chars().next().expect("in bounds");
+            out.push(ch);
+            i += ch.len_utf8();        }
     }
     out
 }
@@ -25661,5 +26427,86 @@ fn a_d41_patch_carrying_its_authority_trailer_is_accepted() {
         json!(2),
         "the omitted owner-progress row must survive the patch: {:?}",
         hour_b_snapshot["special_projects"]["project_progress"]
+/// **d26's TOLERATED-PARTIAL BRANCH REFUSES AN INADMISSIBLE RESYNC TOO.**
+///
+/// d26 is an expected-partial domain: a `PARTIAL_DATA` record with rows is
+/// APPLIED sparsely to the retained accumulator rather than discarded. That
+/// branch skips `handle_compact_failure` entirely, so when the admission lived
+/// only inside that function a `BASELINE_CLEAR | PARTIAL_DATA` d26 record — from
+/// a domain that is not admitted — had its rows folded with the resync request
+/// silently ignored. (Codex review round 2.)
+///
+/// The same fold's rowless-partial and partial-before-baseline arms return ahead
+/// of `handle_compact_failure` as well, which is why the explicit call sits
+/// above all three.
+///
+/// What production change makes this fail: removing
+/// `refuse_inadmissible_baseline_clear` from `fold_division_equipment`, or
+/// moving it below the tolerated-partial branch.
+///
+/// MUTATION RUN: the explicit call deleted from `fold_division_equipment`, i.e.
+/// d26 back to inheriting the admission from a seam it does not reach.
+/// OBSERVED: FAILED -- "and none of its rows may reach the accumulator: the
+/// resync was refused, so the record is not folded at all"
+/// (`every_fold_that_can_apply_rows_refuses_an_inadmissible_resync` failed on
+/// the same mutation with "fold_division_equipment reaches row application
+/// without `handle_compact_failure` ... so it must ask the admission itself".)
+#[test]
+fn an_inadmissible_resync_on_d26s_tolerated_partial_path_is_refused() {
+    use compact_contract::{COMPACT_STATUS_BASELINE_CLEAR, COMPACT_STATUS_PARTIAL_DATA};
+
+    let baseline = chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]);
+    let partial_resync = chunk3_division_equipment_payload(
+        COMPACT_STATUS_BASELINE_CLEAR | COMPACT_STATUS_PARTIAL_DATA,
+        &[(47, 17, 0, 0, 0, 1)],
+        &[(11, 990_000)],
     );
+    let ordinary_partial = chunk3_division_equipment_payload(
+        COMPACT_STATUS_PARTIAL_DATA,
+        &[(47, 17, 0, 0, 0, 1)],
+        &[(11, 990_000)],
+    );
+
+    // The CONTROL first, so the fixture is known to exercise the sparse-partial
+    // branch at all: an ordinary tolerated partial IS applied.
+    let mut control = WorldFold::new("d26_tolerated_partial_control");
+    control
+        .fold_division_equipment(&baseline)
+        .expect("the baseline record folds");
+    control
+        .fold_division_equipment(&ordinary_partial)
+        .expect("an expected-partial record with rows is applied, not refused");
+    // The tolerated partial's ROWS reach the accumulator -- that is what makes
+    // this branch a bypass worth caring about. It ALSO types the hour unknown,
+    // per d26's own tolerance, so "unknown" alone cannot tell the two outcomes
+    // apart and the row is the discriminator.
+    assert!(
+        control
+            .division_equipment
+            .values()
+            .flatten()
+            .any(|entry| entry.amount_raw == 990_000),
+        "an expected-partial record with rows must be applied sparsely, or this fixture does \
+         not exercise the branch that bypasses `handle_compact_failure`"
+    );
+
+    // And the same record carrying the resync bit is refused instead.
+    let mut fold = WorldFold::new("d26_tolerated_partial_resync");
+    fold.fold_division_equipment(&baseline)
+        .expect("the baseline record folds");
+    fold.fold_division_equipment(&partial_resync)
+        .expect("the refusal is fail-closed, not a stream abort");
+    assert!(
+        fold.fold_domain_unknown(DIVISION_EQUIPMENT_DOMAIN_ID),
+        "d26 is not on COMPACT_BASELINE_CLEAR_ADMISSIONS, so a d26 record asking for a \
+         replacement must make the domain-hour UNKNOWN"
+    );
+    assert!(
+        !fold
+            .division_equipment
+            .values()
+            .flatten()
+            .any(|entry| entry.amount_raw == 990_000),
+        "and none of its rows may reach the accumulator: the resync was refused, so the record \
+         is not folded at all"    );
 }

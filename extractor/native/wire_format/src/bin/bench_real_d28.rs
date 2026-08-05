@@ -1242,7 +1242,9 @@ mod tests {
             frame_end_sealed(2, 100, 1, 0, 0, 0),
             frame_end_sealed(2, 100, 0, 0, 0, 1),
         ];
-        for bit in 15..32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -1459,7 +1461,9 @@ mod tests {
         // classification — otherwise it silently reads as "not a failure", falls
         // through the three fold-nothing guards, and the hour is measured as
         // healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             // Alone, combined with a known failure bit, combined with the
             // informational DELTA_DATA bit, and combined with the one failure bit

@@ -1391,7 +1391,9 @@ mod tests {
     fn an_unassigned_status_bit_is_refused_not_classified() {
         // Bits 15..=31 have no defined classification, so a record carrying one
         // refuses the stream rather than falling through to "not a failure".
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let mut sequence = 1u64;
             let s = hour(
                 &mut sequence,

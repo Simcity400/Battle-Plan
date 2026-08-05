@@ -1962,7 +1962,9 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure" and the hour is measured as healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             for extra in [
                 0u32,
@@ -2098,10 +2100,10 @@ mod tests {
         for (emitted, scheduled, status, reserved) in [
             (1u32, 2u32, 0u32, 0u32),
             (1, 1, 0, 1),
-            // Bit 15, not 14: bit 14 is the contract's measured-empty badge now
-            // and is a known status, so it is no longer an unassigned bit and a
-            // seal carrying it is not refused on that ground.
-            (1, 1, 1 << 15, 0),
+            // Bit 16: bits 14 and 15 are both ASSIGNED now (measured-empty and
+            // BASELINE_CLEAR), so a seal carrying either names a known status
+            // and is not refused on the unassigned-bit ground.
+            (1, 1, 1 << 16, 0),
             (1, 1, 1 << 9, 0),
         ] {
             let mut s = Vec::new();

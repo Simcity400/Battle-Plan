@@ -1066,7 +1066,9 @@ mod tests {
         // The failure helper classifies the assigned v1 vocabulary and is not a
         // validity predicate, so an unassigned bit must be rejected BEFORE
         // classification — otherwise it silently reads as "not a failure".
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA] {
                 let mut s = Vec::new();
                 s.extend(record(
@@ -1456,10 +1458,10 @@ mod tests {
         for (label, tail) in [
             ("nonzero reserved", seal(0, 0, 0, 1)),
             ("mismatched counts", seal(1, 0, 0, 0)),
-            // Bit 15, not 14: bit 14 is the contract's measured-empty badge now,
-            // so a seal carrying it names an ASSIGNED status and is not an
-            // unknown-bit refusal.
-            ("unknown status bit", seal(0, 0, 1 << 15, 0)),
+            // Bit 16: bits 14 and 15 are both ASSIGNED now (measured-empty and
+            // BASELINE_CLEAR), so a seal carrying either names a known status
+            // and is not an unknown-bit refusal.
+            ("unknown status bit", seal(0, 0, 1 << 16, 0)),
             ("fatal status bit", seal(0, 0, 1, 0)),
             ("counts without PERF records", seal(2, 2, 0, 0)),
         ] {

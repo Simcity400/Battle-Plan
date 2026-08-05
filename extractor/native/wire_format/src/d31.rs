@@ -1,9 +1,9 @@
 //! d31 `air_region_activity` — per-region air activity, aggregated into
 //! `(region, owner, mission)` buckets.
 //!
-//! Derived from `world_fold.rs:15977`-`:16076`
+//! Derived from `world_fold.rs:16071`-`:16184`
 //! (`fold_air_region_activity`), its payload constants at `:977`-`:978`, the
-// @world-fold-authority domain=31 functions=fold_air_region_activity lines=15977-16076 sha256=6fb0eb6162b1fc7d0a074870928c83092f39164d8f2edfadd51bb5bdb0f29978
+// @world-fold-authority domain=31 functions=fold_air_region_activity lines=16071-16184 sha256=4f8197f860a3e88e098fb1f6e1d538946e1660c5ba1cc4a2a8d846e5a7d205b1
 //! accumulator's own JSON projection (`world_fold.rs::insert_air_region_activity`), and the collector read
 //! that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:48122`-`:48160`,
@@ -75,6 +75,16 @@
 //! [`Accumulator`] rather than in a harness. Measured on the capture: 1 record
 //! with `status_flags == 0` followed by 145 with `COMPACT_STATUS_DELTA_DATA`,
 //! 23 of which carry zero rows.
+//!
+//! **The one exception is a DELIBERATE RESYNC.** A record carrying
+//! `COMPACT_STATUS_BASELINE_CLEAR` (bit 15) asks the fold to CLEAR d31's state
+//! and apply the payload whole, and d31 is on
+//! `compact_contract::COMPACT_BASELINE_CLEAR_ADMISSIONS` because its rows are
+//! aggregates over the whole live wing walk: a record with no failure bit is a
+//! complete claim, so an absent bucket means empty rather than unmeasured. The
+//! producer emits it only after its own rejected bracket wiped a pin the fold
+//! already had a baseline for. `DELTA_WIRE_DESIGN.md` §10 is the whole rule;
+//! [`Accumulator::fold_payload`] takes it as the `baseline_clear` parameter.
 //!
 //! **Two paths return without folding**, and they are the caller's to honour
 //! because both are decided before any row is read:
@@ -535,6 +545,7 @@ impl Accumulator {
         collection: &Collection,
         payload: &[u8],
         is_delta: bool,
+        baseline_clear: bool,
         frame_tick: u64,
     ) -> core::result::Result<FoldOutcome, String> {
         // d31 has no derived field; §6's transform input is unused. Named rather
@@ -566,8 +577,22 @@ impl Accumulator {
             parsed.push((row_key(&fields), fields, record));
         }
 
-        // `:14811`-`:14815`: only the first non-delta record clears.
-        let sparse = is_delta || self.baseline_seen;
+        // Only the first non-delta record clears -- UNLESS the record asks for
+        // a DELIBERATE RESYNC. `COMPACT_STATUS_BASELINE_CLEAR` is the one thing
+        // that makes a later whole payload a replacement rather than a merge,
+        // and d31 is on `COMPACT_BASELINE_CLEAR_ADMISSIONS` because its rows are
+        // aggregates over the whole wing walk: a clean record is a complete
+        // claim, so replacing what the fold holds is always sound for it.
+        //
+        // `baseline_clear` is a parameter for the same reason `is_delta` is: the
+        // constant belongs to `compact_contract` and this module is not on that
+        // dependency surface, so copying the literal here would be exactly the
+        // drift the shared-contract rule forbids. The caller must ALSO have
+        // refused the contradictory `BASELINE_CLEAR | DELTA_DATA` pair and a
+        // resync on a failure-class record; `compact_baseline_clear_requested`
+        // is the single predicate that decides all three, and
+        // `world_fold.rs::baseline_clear_requested` is where production asks it.
+        let sparse = (is_delta || self.baseline_seen) && !baseline_clear;
         if !sparse {
             self.rows.clear();
         }
@@ -1120,7 +1145,7 @@ mod tests {
         // First record, no delta bit: a full replace.
         let first = payload(0, &[full_row(), raw_row(9, 3, 1, 0, 2, 30, 0)], 2);
         assert_eq!(
-            acc.fold_payload(&c, &first, false, 0).expect("folds"),
+            acc.fold_payload(&c, &first, false, false, 0).expect("folds"),
             FoldOutcome::FullReplace
         );
         assert!(acc.baseline_seen());
@@ -1129,7 +1154,7 @@ mod tests {
         // A delta record upserts without clearing.
         let second = payload(0, &[raw_row(9, 3, 1, 0, 5, 60, 55)], 2);
         assert_eq!(
-            acc.fold_payload(&c, &second, true, 0).expect("folds"),
+            acc.fold_payload(&c, &second, true, false, 0).expect("folds"),
             FoldOutcome::Sparse
         );
         assert_eq!(acc.rows.len(), 2, "the untouched row survives a delta");
@@ -1142,7 +1167,7 @@ mod tests {
         // clears.
         let third = payload(0, &[raw_row(1, 1, 0, 0, 1, 1, 1)], 3);
         assert_eq!(
-            acc.fold_payload(&c, &third, false, 0).expect("folds"),
+            acc.fold_payload(&c, &third, false, false, 0).expect("folds"),
             FoldOutcome::Sparse
         );
         assert_eq!(
@@ -1158,7 +1183,7 @@ mod tests {
         let mut acc = Accumulator::new();
         let p = payload(0, &[full_row()], 1);
         assert_eq!(
-            acc.fold_payload(&c, &p, true, 0).expect("folds"),
+            acc.fold_payload(&c, &p, true, false, 0).expect("folds"),
             FoldOutcome::DeltaBeforeBaseline
         );
         assert!(acc.rows.is_empty(), "nothing was folded");
@@ -1170,31 +1195,31 @@ mod tests {
         let mut ragged = p.clone();
         ragged.pop();
         assert_eq!(
-            acc.fold_payload(&c, &ragged, true, 0).expect("the fold returns Ok here"),
+            acc.fold_payload(&c, &ragged, true, false, 0).expect("the fold returns Ok here"),
             FoldOutcome::DeltaBeforeBaseline
         );
         // But the header-structural checks that PRECEDE the exclusion still bite.
         let mut bad_header = p.clone();
         bad_header[32..36].copy_from_slice(&1u32.to_le_bytes());
-        assert!(acc.fold_payload(&c, &bad_header, true, 0).is_err());
+        assert!(acc.fold_payload(&c, &bad_header, true, false, 0).is_err());
     }
 
     #[test]
     fn a_delete_row_removes_its_key_and_an_absent_one_is_a_no_op() {
         let c = collection();
         let mut acc = Accumulator::new();
-        acc.fold_payload(&c, &payload(0, &[full_row()], 1), false, 0)
+        acc.fold_payload(&c, &payload(0, &[full_row()], 1), false, false, 0)
             .expect("baseline");
         assert_eq!(acc.rows.len(), 1);
 
         // `world_fold.rs::fold_air_region_activity`.
         let del = payload(0, &[raw_row(37, 12, 512, ROW_FLAG_DELETED, 0, 0, 0)], 0);
-        acc.fold_payload(&c, &del, true, 0).expect("folds");
+        acc.fold_payload(&c, &del, true, false, 0).expect("folds");
         assert!(acc.rows.is_empty());
 
         // A tombstone for a key that is already gone is not an error there, and
         // must not be one here.
-        acc.fold_payload(&c, &del, true, 0).expect("a no-op delete is legal");
+        acc.fold_payload(&c, &del, true, false, 0).expect("a no-op delete is legal");
         assert!(acc.rows.is_empty());
 
         // The mask is a KEY component: deleting `(37, 12, 512)` leaves
@@ -1205,8 +1230,8 @@ mod tests {
             &[raw_row(37, 12, 512, 0, 1, 1, 1), raw_row(37, 12, 1024, 0, 2, 2, 2)],
             2,
         );
-        acc.fold_payload(&c, &two, false, 0).expect("baseline");
-        acc.fold_payload(&c, &del, true, 0).expect("folds");
+        acc.fold_payload(&c, &two, false, false, 0).expect("baseline");
+        acc.fold_payload(&c, &del, true, false, 0).expect("folds");
         assert_eq!(acc.rows.len(), 1);
         assert!(acc.rows.contains_key(&key(&[37, 12, 1024])));
     }
@@ -1222,7 +1247,7 @@ mod tests {
             &[raw_row(1, 1, 0, 0, 1, 1, 1), raw_row(1, 1, 0, 0, 7, 7, 7)],
             2,
         );
-        acc.fold_payload(&c, &p, false, 0).expect("folds");
+        acc.fold_payload(&c, &p, false, false, 0).expect("folds");
         assert_eq!(acc.rows.len(), 1);
         assert_eq!(
             acc.rows[&key(&[1, 1, 0])].values[index_of(&c, field::WING_COUNT)],
@@ -1238,7 +1263,7 @@ mod tests {
             ],
             1,
         );
-        acc.fold_payload(&c, &p, false, 0).expect("folds");
+        acc.fold_payload(&c, &p, false, false, 0).expect("folds");
         assert!(acc.rows.is_empty(), "the delete came last, so the key is gone");
     }
 
@@ -1246,7 +1271,7 @@ mod tests {
     fn a_rejected_payload_leaves_the_accumulator_untouched() {
         let c = collection();
         let mut acc = Accumulator::new();
-        acc.fold_payload(&c, &payload(0, &[full_row()], 1), false, 0)
+        acc.fold_payload(&c, &payload(0, &[full_row()], 1), false, false, 0)
             .expect("baseline");
         let before = acc.rows.clone();
 
@@ -1260,12 +1285,12 @@ mod tests {
             ],
             3,
         );
-        assert!(acc.fold_payload(&c, &bad, true, 0).is_err());
+        assert!(acc.fold_payload(&c, &bad, true, false, 0).is_err());
         assert_eq!(acc.rows, before, "a rejected delta changed nothing");
 
         // And on a would-be full replace, so the clear does not happen either.
         let mut fresh = Accumulator::new();
-        assert!(fresh.fold_payload(&c, &bad, false, 0).is_err());
+        assert!(fresh.fold_payload(&c, &bad, false, false, 0).is_err());
         assert!(fresh.rows.is_empty());
         assert!(!fresh.baseline_seen(), "a rejected frame is not a baseline");
     }
@@ -1275,11 +1300,11 @@ mod tests {
         // 23 of the capture's 146 records carry zero rows.
         let c = collection();
         let mut acc = Accumulator::new();
-        acc.fold_payload(&c, &payload(0, &[full_row()], 1), false, 0)
+        acc.fold_payload(&c, &payload(0, &[full_row()], 1), false, false, 0)
             .expect("baseline");
         let before = acc.rows.clone();
         assert_eq!(
-            acc.fold_payload(&c, &payload(0, &[], 1), true, 0)
+            acc.fold_payload(&c, &payload(0, &[], 1), true, false, 0)
                 .expect("folds"),
             FoldOutcome::Sparse
         );
@@ -1301,6 +1326,7 @@ mod tests {
                 &[raw_row(37, 12, 512, 0, 4, 76, 61), raw_row(9, 3, 1, 0, 2, 30, 0)],
                 2,
             ),
+            false,
             false,
             0,
         )
@@ -1327,6 +1353,7 @@ mod tests {
                 2,
             ),
             true,
+            false,
             0,
         )
         .expect("delta");

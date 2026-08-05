@@ -65,7 +65,7 @@
 //!    (`domain_data_authority.rs:12323`) and adds no parse error for an
 //!    unassigned bit, and an unassigned bit is outside
 //!    `COMPACT_STATUS_FAILURE_MASK`, so production folds such a record
-//!    normally. A payload with `status_flags = 0x8000` is therefore accepted by
+//!    normally. A payload with `status_flags = 0x1_0000` is therefore accepted by
 //!    the recorder and refused here. (This example read `0x4000` until the
 //!    contract assigned bit 14 to `COMPACT_STATUS_SOURCE_EMPTY`; that bit is
 //!    now a KNOWN informational status which both sides accept, and it is no
@@ -1159,7 +1159,9 @@ mod tests {
             frame_end_sealed(2, 100, 0, 1, 0, 0),
             frame_end_sealed(2, 100, 1, 0, 0, 0),
         ];
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -1294,7 +1296,9 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure" and the hour is measured as healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             for extra in [0u32, 1, 1 << 10] {
                 for rows in [Vec::new(), vec![row(68, 14, 12_627, 1)]] {

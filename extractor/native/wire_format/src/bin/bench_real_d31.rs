@@ -504,6 +504,23 @@ fn scan_stream(
 
             check_authority_payload(payload, pos)?;
 
+            // The DELIBERATE RESYNC, asked through the contract's own
+            // predicate rather than a copied bit test, so a contradictory or
+            // inadmissible resync is refused here exactly as production
+            // refuses it in `world_fold::baseline_clear_requested`.
+            //
+            // Asked BEFORE the failure check, because that check `continue`s
+            // and would let `BASELINE_CLEAR | SOURCE_UNAVAILABLE` through
+            // unrefused -- the same ordering defect the production fold had.
+            let baseline_clear = compact_contract::compact_baseline_clear_requested(
+                D31,
+                compact_contract::compact_status_for_global_interpretation(
+                    D31,
+                    payload_header.status_flags,
+                ),
+            )
+            .map_err(|reason| format!("d31 payload at byte {pos}: {reason}"))?;
+
             // `world_fold::handle_compact_failure` (`world_fold.rs:2843`, called
             // at `:14715`) marks the domain-hour unknown and RETAINS the prior
             // accumulator on a failure status, folding nothing from this record.
@@ -525,7 +542,7 @@ fn scan_stream(
             // decision, the row loop, the delete grammar — is the domain module's,
             // in the fold's own order.
             let outcome = acc
-                .fold_payload(collection, payload, is_delta, 0)
+                .fold_payload(collection, payload, is_delta, baseline_clear, 0)
                 .map_err(|e| format!("d31 payload at byte {pos}: {e}"))?;
             if outcome == d31::FoldOutcome::DeltaBeforeBaseline {
                 delta_before_baseline += 1;
@@ -977,7 +994,9 @@ mod tests {
             frame_end_sealed(2, 100, 1, 0, 0, 0),
             frame_end_sealed(2, 100, 0, 0, 0, 1),
         ];
-        for bit in 15..32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32 {
             bad.push(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
         }
         for bit in [0u32, 1, 2, 3, 6, 7, 8, 9, 12] {
@@ -1185,7 +1204,9 @@ mod tests {
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure", gets a baseline/delta meaning, and the hour is measured
         // as healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             // Alone, combined with a known failure bit, and combined with the
             // informational DELTA_DATA bit; as the first record and after a

@@ -1,8 +1,8 @@
 //! d70 `sunk_convoy_history_live` — the global sunk-convoy history table.
 //!
-//! Derived from `world_fold.rs:10963`-`:11023`
+//! Derived from `world_fold.rs:11014`-`:11074`
 //! (`fold_sunk_convoy_history`), its two dispatch sites (`:4737` and `:4801`-`:4806`),
-// @world-fold-authority domain=70 functions=fold_sunk_convoy_history lines=10963-11023 sha256=275d9ee0dc03e03b4c0f5f85f38d7da0f2cb6106a7021ef04e2dbbd21780b54a
+// @world-fold-authority domain=70 functions=fold_sunk_convoy_history lines=11014-11074 sha256=275d9ee0dc03e03b4c0f5f85f38d7da0f2cb6106a7021ef04e2dbbd21780b54a
 //! and the payload codec `extractor/native/compact_contract/src/naval_history.rs`,
 //! which is where this domain's row grammar actually lives. There is no dossier
 //! under `extractor/documents/domains/`, so those three are the whole basis.
@@ -224,7 +224,7 @@ pub const FAILURE_STATUS_MASK: u32 = (1 << 0)   // STATE_UNAVAILABLE
 /// anything classifies the word, so for this domain the rule is part of the
 /// grammar rather than a harness convention. Same drift note as
 /// [`FAILURE_STATUS_MASK`].
-pub const KNOWN_STATUS_MASK_V1: u32 = (1 << 15) - 1;
+pub const KNOWN_STATUS_MASK_V1: u32 = (1 << 16) - 1;
 
 /// `SunkConvoyHistoryAuthority`, `naval_history.rs:84`-`:92`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1533,7 +1533,9 @@ mod tests {
         // classification, so a payload carrying one is refused rather than read
         // as "not a failure" — the validity-before-classification rule, here
         // built into the grammar itself rather than added by a harness.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             for extra in [0u32, 1, 1 << 10] {
                 let status = (1u32 << bit) | extra;
                 assert!(

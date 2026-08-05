@@ -1641,12 +1641,14 @@ mod tests {
     #[test]
     fn an_unassigned_status_bit_is_refused_not_classified() {
         let mut payload = D48Payload::baseline();
-        // Bit 15, not 14: the contract assigned bit 14 to the measured-empty
-        // badge, so it is now a KNOWN informational status and refusing it
+        // Bit 16, not 15: the contract assigned bit 14 to the measured-empty
+        // badge and bit 15 to `COMPACT_STATUS_BASELINE_CLEAR`, the deliberate
+        // resync primitive, so both are now KNOWN statuses and refusing either
         // would reject a valid record. The rule under test is unchanged --
         // unassigned bits have no defined classification and must be rejected
-        // before anything classifies the word.
-        payload.status_flags = 1 << 15;
+        // before anything classifies the word. This chases the top of the
+        // assigned run deliberately: bit 16 is where it is today.
+        payload.status_flags = 1 << 16;
         let stream = stream_of(&[payload]);
         let err = scan(&stream).expect_err("refused");
         assert!(err.contains("unassigned v1 status bits"), "{err}");

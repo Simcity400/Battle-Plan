@@ -1677,7 +1677,9 @@ mod tests {
         // the v1 vocabulary and is not a validity predicate, so an unassigned bit
         // must be rejected BEFORE classification — on d67's own records and on
         // the d18 records this harness classifies to model the roster.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             for extra in [0u32, COMPACT_STATUS_PARTIAL_DATA] {
                 let mut s = Vec::new();
@@ -2448,7 +2450,7 @@ mod tests {
         for (offset, patch) in [
             (COMPACT_RECORD_HEADER_LEN + 28, 1u32.to_le_bytes().to_vec()),
             (COMPACT_RECORD_HEADER_LEN + 16, 1u32.to_le_bytes().to_vec()),
-            (COMPACT_RECORD_HEADER_LEN + 24, (1u32 << 15).to_le_bytes().to_vec()),
+            (COMPACT_RECORD_HEADER_LEN + 24, (1u32 << 16).to_le_bytes().to_vec()),
             (
                 COMPACT_RECORD_HEADER_LEN + 24,
                 COMPACT_STATUS_PARTIAL_DATA.to_le_bytes().to_vec(),

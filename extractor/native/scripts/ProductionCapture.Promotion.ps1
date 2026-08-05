@@ -10,7 +10,7 @@ $script:ProductionPromotionFailureMask = [uint32]0x13CF
 # it. Was 'FFFFC000', which still counted bit 14 as an unassigned wire
 # extension.
 $script:ProductionPromotionUnknownStatusMask =
-    [uint32]::Parse('FFFF8000', [Globalization.NumberStyles]::HexNumber)
+    [uint32]::Parse('FFFF0000', [Globalization.NumberStyles]::HexNumber)
 # Domain-scoped lane-local status vocabulary, mirroring
 # `compact_contract::lane_local_status_mask`. These bits are DEFINED -- they are
 # just defined per domain rather than globally, which is why the manifest tags

@@ -19878,14 +19878,14 @@ mod tests {
     fn a_multi_bit_disagreement_names_every_offending_bit() {
         let reason = refusal_for(
             17,
-            compact_contract::COMPACT_STATUS_PARTIAL_DATA | (1 << 15) | (1 << 20) | (1 << 31),
+            compact_contract::COMPACT_STATUS_PARTIAL_DATA | (1 << 16) | (1 << 20) | (1 << 31),
         )
         .expect("three unassigned bits must be refused");
-        for bit in [15u32, 20, 31] {
+        for bit in [16u32, 20, 31] {
             assert!(reason.contains(&format!("bit {bit}")), "{reason}");
         }
         assert!(
-            reason.contains("0x80108000"),
+            reason.contains("0x80110000"),
             "the mask must be the union of exactly the offending bits: {reason}"
         );
         assert!(

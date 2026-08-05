@@ -1017,7 +1017,9 @@ mod tests {
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure", gets a baseline/delta meaning, and the hour is measured
         // as healthy.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             // Alone, combined with a known failure bit, and combined with the
             // informational DELTA_DATA bit; as the first record and after a
@@ -1488,7 +1490,9 @@ mod tests {
             ));
             assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
         }
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let mut s = data(1, 100);
             s.extend(frame_end_sealed(2, 100, 0, 0, 1 << bit, 0));
             assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());

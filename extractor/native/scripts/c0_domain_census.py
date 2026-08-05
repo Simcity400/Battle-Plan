@@ -619,12 +619,13 @@ STATUS_BITS = {
     # legitimately observed nothing published SOURCE_UNAVAILABLE -- the word
     # a broken reader publishes -- and this census could not separate them.
     14: "SOURCE_EMPTY",
+    15: "BASELINE_CLEAR",
 }
 FAILURE_BITS = {0, 1, 2, 3, 6, 7, 8, 9, 12}
-INFORMATIONAL_BITS = {4, 5, 10, 14}
+INFORMATIONAL_BITS = {4, 5, 10, 14, 15}
 MARKER_BITS = {11}
 BIT13_VALID_DOMAINS = {"diplomacy_live", "diplomacy_intel_operatives_live"}
-KNOWN_MASK = (1 << 15) - 1
+KNOWN_MASK = (1 << 16) - 1
 
 # Lane-local overlays. The AUTHORITY is
 # `compact_contract::lane_local_status_mask` (lib.rs), which registers exactly

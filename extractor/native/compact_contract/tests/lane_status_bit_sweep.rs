@@ -29,7 +29,7 @@ use compact_contract::{assigned_descriptor_by_id, lane_local_status_mask, Compac
 /// Global v1 status-bit names, indexed by bit position
 /// (`status_flags_base.rs`). A lane constant named `STATUS_<name>` declaring
 /// exactly `1 << bit` is a mirror, not a lane-local badge.
-const GLOBAL_V1_BIT_NAMES: [&str; 15] = [
+const GLOBAL_V1_BIT_NAMES: [&str; 16] = [
     "STATE_UNAVAILABLE",
     "PROFILE_MISMATCH",
     "NO_CLOCK",
@@ -45,6 +45,7 @@ const GLOBAL_V1_BIT_NAMES: [&str; 15] = [
     "CONTROL_INVALID",
     "WAR_SEGMENT_ABSENT",
     "SOURCE_EMPTY",
+    "BASELINE_CLEAR",
 ];
 
 /// This table IS a local copy of the contract's vocabulary, which is the drift

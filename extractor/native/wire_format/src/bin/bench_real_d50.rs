@@ -1633,7 +1633,9 @@ mod tests {
         // must be rejected BEFORE classification — otherwise it silently reads as
         // "not a failure" and the hour is measured as healthy. Both status readers
         // in this bin are covered: d50's own pass and the D49 parent mirror.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             let status = 1u32 << bit;
             for extra in [0u32, 1, COMPACT_STATUS_DELTA_DATA] {
                 let mut on_d50 = Vec::new();

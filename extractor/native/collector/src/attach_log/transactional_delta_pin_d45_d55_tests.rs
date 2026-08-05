@@ -566,12 +566,17 @@ fn a_withdrawn_d45_record_does_not_arm_the_fold_mirror() {
 
 /// THE MIRROR MUST SURVIVE THE REJECTED-BRACKET RESET.
 ///
-/// `reset_trackers_after_rejected_bracket` wipes d45's tracker, which is correct
-/// for its PINS -- they are read products. It would be wrong for the two mirror
-/// flags: they record what this STREAM has already published, and no reset can
-/// unpublish it. Dropping them makes the producer believe the fold had never
-/// activated, and it then commits a pin on the next record the fold refuses --
-/// the ahead-divergence, reintroduced by a reset.
+/// The two mirror flags record what this STREAM has already published, and no
+/// reset can unpublish it. Dropping them makes the producer believe the fold had
+/// never activated, and it then commits a pin on the next record the fold
+/// refuses -- the ahead-divergence, reintroduced by a reset.
+///
+/// The second half of this test used to read "the PIN is still dropped by the
+/// reset". It no longer is: d45 takes PRE-FRAME RESTORATION, so its own
+/// rejection UNDOES this frame's commits rather than wiping the pin. The
+/// assertion below is unchanged in form and stronger in meaning -- the key
+/// committed inside this frame is gone because the restoration undid it, which
+/// is also what proves the reset is not a no-op.
 ///
 /// MUTATION RUN: delete the two `direct_baseline_published` / `fold_history
 /// _failed` carry-overs from `reset_trackers_after_rejected_bracket`. Observed
@@ -625,7 +630,8 @@ fn the_d45_fold_mirror_is_carried_across_a_rejected_bracket() {
             .focus_by_tag
             .get(&7)
             .is_none(),
-        "the PIN is still dropped by the reset, or this test proves nothing about scoping"
+        "the commit this frame made must be UNDONE by d45's own rejection, or this test proves \
+         nothing about scoping"
     );
 }
 
@@ -879,4 +885,432 @@ fn the_pin_predicate_matches_what_the_folds_actually_apply() {
         ),
         "and a tolerance never covers a second, untolerated failure"
     );
+}
+
+// ---------------------------------------------------------------------
+// 5. PRE-FRAME RESTORATION: the domain's OWN rejection
+// ---------------------------------------------------------------------
+//
+// `reset_trackers_after_rejected_bracket` used to wipe both trackers to
+// `Default`. That is BEHIND the fold's retained state, and behind loses data
+// exactly as ahead does: once a domain has a baseline the fold treats every
+// later record as a sparse patch, so a pin restarted from empty emits a whole
+// payload the fold MERGES and anything that vanished meanwhile is never
+// tombstoned. An allowlist entry cannot fix it either -- the survival predicate
+// is false for the domain's OWN rejection, which is precisely the case.
+//
+// The repair is restoration: undo this frame's commits, leave the pin where the
+// frame found it, which is where the fold's mirror is when the frame's records
+// were replaced with a `DOMAIN_GAP`.
+//
+// Every gate below is an EQUIVALENCE against a run in which the rejected frame
+// never happened, because that run is by definition what the consumer holds.
+
+/// The production frame seal, in order. Not a convenience wrapper: the order is
+/// load-bearing (the reset restores, then the commit closes the window), and a
+/// test that drove them the other way round would pass on code that cannot.
+fn settle(trackers: &mut CompactPerfGateTrackers, rejected: &[u16]) {
+    let rejected: BTreeSet<u16> = rejected.iter().copied().collect();
+    if !rejected.is_empty() {
+        reset_trackers_after_rejected_bracket(trackers, &rejected);
+    }
+    commit_delta_pin_transactions(trackers);
+}
+
+fn frd_focus(completed: u32, current: &str) -> CountryFocusRow {
+    CountryFocusRow {
+        focus_tree: None,
+        completed: None,
+        completed_count: Some(completed),
+        current: Some(current.to_string()),
+        current_set_measured: true,
+        current_continuous: None,
+        current_continuous_set_measured: false,
+        progress: None,
+        paused: None,
+    }
+}
+
+fn frd_empty_read() -> CompactFrdDepthRead {
+    let mut read = compact_frd_depth_worker_panic_read(0);
+    read.status_flags = 0;
+    read
+}
+
+/// One d45 frame: read the row, commit the pin as the emission site does, and
+/// settle the frame with the given rejection set.
+fn d45_frame(
+    trackers: &mut CompactPerfGateTrackers,
+    hour: i32,
+    row: &CountryObjectRow,
+    focus: &CountryFocusRow,
+    rejected: &[u16],
+) -> usize {
+    let mut read = frd_empty_read();
+    compact_frd_apply_focus_row(
+        &mut read,
+        &mut trackers.focus_research_decisions_depth_live,
+        hour,
+        row,
+        focus,
+    );
+    // The emission site commits when the fold will apply the record. A frame
+    // whose bracket is later torn still reaches this point -- that is the whole
+    // reason restoration is needed.
+    trackers
+        .focus_research_decisions_depth_live
+        .commit_staged_pins();
+    settle(trackers, rejected);
+    read.focus_events.len()
+}
+
+const D45: u16 = COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE;
+const D55: u16 = COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE;
+/// A domain whose bracket is unrelated to d45's and d55's.
+const OTHER: u16 = COMPACT_DOMAIN_WEATHER;
+
+/// **OWN GAP, THEN ACCEPT.** After d45's own bracket is rejected, the next
+/// accepted frame must derive against the baseline the fold still holds — which
+/// is the baseline of the run where the rejected frame never happened.
+///
+/// The pre-fix wipe put the pin at `Default` instead, so the next frame saw
+/// every country as brand new and emitted a seeding record the fold then MERGED.
+///
+/// What production change makes this fail: wiping d45's tracker on its own
+/// rejection instead of restoring it.
+///
+/// MUTATION RUN: `tracker.restore_pins_to_frame_entry()` replaced with
+/// `tracker = CompactFrdDepthTracker::default()` -- the shipped wipe.
+/// OBSERVED: FAILED --
+/// "assertion `left == right` failed: after its own gap, d45 must derive against
+/// the baseline the fold still holds
+///   left: 0
+///  right: 2"
+///
+/// MUTATION RUN: `close_pin_frame_transaction()` deleted from
+/// `commit_delta_pin_transactions`, so the undo journal is cumulative.
+/// OBSERVED: FAILED with the same assertion -- the rejection rewound past the
+/// frame the fold had already applied, leaving the pin empty.
+///
+/// MUTATION RUN: the journal seeded with `self.staged.get(key).cloned()` instead
+/// of `self.committed.get(key).cloned()`.
+/// OBSERVED: FAILED with the same assertion.
+#[test]
+fn d45_restores_its_pin_after_its_own_bracket_is_rejected() {
+    let row = super::tests::test_country_row("GER", 7, 0x1000);
+    let a = frd_focus(1, "FOCUS_A");
+    let b = frd_focus(2, "FOCUS_B");
+
+    // The reference run: the middle frame never happened at all.
+    let mut reference = CompactPerfGateTrackers::default();
+    let _ = d45_frame(&mut reference, 60_787_539, &row, &a, &[]);
+    let reference_events = d45_frame(&mut reference, 60_787_541, &row, &b, &[]);
+
+    // The real run: the middle frame built and committed, then its own bracket
+    // was rejected and its records became a `DOMAIN_GAP`.
+    let mut gapped = CompactPerfGateTrackers::default();
+    let _ = d45_frame(&mut gapped, 60_787_539, &row, &a, &[]);
+    let _ = d45_frame(&mut gapped, 60_787_540, &row, &b, &[D45]);
+    let gapped_events = d45_frame(&mut gapped, 60_787_541, &row, &b, &[]);
+
+    assert_eq!(
+        gapped_events, reference_events,
+        "after its own gap, d45 must derive against the baseline the fold still holds"
+    );
+    // The control that stops this passing trivially: the middle frame really did
+    // change the pin, so a run that KEEPS it emits something different.
+    let mut kept = CompactPerfGateTrackers::default();
+    let _ = d45_frame(&mut kept, 60_787_539, &row, &a, &[]);
+    let _ = d45_frame(&mut kept, 60_787_540, &row, &b, &[]);
+    let kept_events = d45_frame(&mut kept, 60_787_541, &row, &b, &[]);
+    assert_ne!(
+        kept_events, reference_events,
+        "committing the middle frame must change the last one, or this fixture proves nothing"
+    );
+}
+
+/// **DOUBLE REJECTION.** Two consecutive own rejections restore ONE frame each,
+/// not the whole stream — the window is closed by
+/// `commit_delta_pin_transactions` at every frame seal, so a rejection can never
+/// reach back past a frame the fold applied.
+///
+/// This is the arm that catches an undo log that is never cleared: with a
+/// cumulative log the second rejection would rewind past the first frame as
+/// well, and the producer would fall arbitrarily far behind the fold.
+///
+/// What production change makes this fail: dropping
+/// `close_pin_frame_transaction` from `commit_delta_pin_transactions`, or making
+/// it conditional on the frame having rejected nothing.
+///
+/// MUTATION RUN: `close_pin_frame_transaction()` deleted from
+/// `commit_delta_pin_transactions`.
+/// OBSERVED: FAILED --
+/// "assertion `left == right` failed: two rejections must rewind two frames, not
+/// the whole stream: the frame the fold APPLIED is not reachable by any later
+/// rejection
+///   left: None
+///  right: Some(Some(1))"
+///
+/// MUTATION RUN: the journal seeded from `staged` instead of `committed`.
+/// OBSERVED: FAILED --
+/// "  left: Some(Some(3))
+///  right: Some(Some(1))"
+/// -- the restoration became a no-op and the pin kept the last rejected frame's
+/// value.
+#[test]
+fn two_consecutive_d45_rejections_rewind_one_frame_each() {
+    let row = super::tests::test_country_row("GER", 7, 0x1000);
+    let a = frd_focus(1, "FOCUS_A");
+    let b = frd_focus(2, "FOCUS_B");
+    let c = frd_focus(3, "FOCUS_C");
+
+    // Reference: the two rejected frames never happened.
+    let mut reference = CompactPerfGateTrackers::default();
+    let _ = d45_frame(&mut reference, 60_787_539, &row, &a, &[]);
+
+    let mut gapped = CompactPerfGateTrackers::default();
+    let _ = d45_frame(&mut gapped, 60_787_539, &row, &a, &[]);
+    let _ = d45_frame(&mut gapped, 60_787_540, &row, &b, &[D45]);
+    let _ = d45_frame(&mut gapped, 60_787_541, &row, &c, &[D45]);
+
+    // The assertion is on the PIN, not on an emission, because the emission
+    // after a total rewind is indistinguishable from the one after a correct
+    // rewind: `compact_frd_apply_focus_row` emits no event for a country it is
+    // seeing for the first time, so an emptied pin looks quiet.
+    let pinned = gapped
+        .focus_research_decisions_depth_live
+        .focus_by_tag
+        .get(&7)
+        .cloned();
+    let reference_pin = reference
+        .focus_research_decisions_depth_live
+        .focus_by_tag
+        .get(&7)
+        .cloned();
+    assert!(
+        reference_pin.is_some(),
+        "the reference must hold frame 1's pin, or this fixture proves nothing"
+    );
+    assert_eq!(
+        pinned.as_ref().map(|state| state.completed_count),
+        reference_pin.as_ref().map(|state| state.completed_count),
+        "two rejections must rewind two frames, not the whole stream: the frame the fold \
+         APPLIED is not reachable by any later rejection"
+    );
+}
+
+/// **REJECTION DURING THE FIRST BASELINE.** The pin must go back to EMPTY, not
+/// stay seeded: the fold has no baseline for a domain whose only record so far
+/// became a gap, so a producer holding one would emit a patch against a state
+/// that does not exist downstream.
+///
+/// `reject_delta_before_baseline` is the fold's own check for exactly this, and
+/// it types the result as a domain-unknown hour — a cost the producer avoids
+/// only by having no baseline either.
+///
+/// What production change makes this fail: seeding `frame_undo` with the
+/// POST-commit value instead of the pre-frame one, which makes the restoration a
+/// no-op on a first commit.
+///
+/// MUTATION RUN: `frame_undo` seeded with `self.staged.get(key).cloned()`.
+/// OBSERVED: FAILED --
+/// "a domain whose first and only record became a gap has no baseline
+/// downstream, so it must hold none itself"
+#[test]
+fn a_d45_rejection_during_the_first_baseline_leaves_no_pin_at_all() {
+    let row = super::tests::test_country_row("GER", 7, 0x1000);
+    let a = frd_focus(1, "FOCUS_A");
+
+    let mut gapped = CompactPerfGateTrackers::default();
+    let _ = d45_frame(&mut gapped, 60_787_539, &row, &a, &[D45]);
+
+    assert!(
+        gapped
+            .focus_research_decisions_depth_live
+            .focus_by_tag
+            .get(&7)
+            .is_none(),
+        "a domain whose first and only record became a gap has no baseline downstream, so it \
+         must hold none itself"
+    );
+
+    // And the next accepted frame therefore seeds, exactly as a fresh stream does.
+    let mut fresh = CompactPerfGateTrackers::default();
+    let fresh_events = d45_frame(&mut fresh, 60_787_540, &row, &a, &[]);
+    let gapped_events = d45_frame(&mut gapped, 60_787_540, &row, &a, &[]);
+    assert_eq!(
+        gapped_events, fresh_events,
+        "the first accepted frame after a rejected seed must behave like a first frame"
+    );
+}
+
+/// **AN UNRELATED REJECTION LEAVES THE COMMIT STANDING.** Restoration is scoped
+/// to the domain's OWN rejection, and this is the arm that stops it widening.
+///
+/// A frame in which some other reader crossed an hour boundary still PUBLISHED
+/// d45's record, and the fold applied it. Restoring there would put the producer
+/// behind the fold — the same defect, reached from the other side.
+///
+/// What production change makes this fail: restoring unconditionally instead of
+/// on `rejected_domains.contains(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)`.
+///
+/// MUTATION RUN: `d45_owns_this_rejection` forced to `true`.
+/// OBSERVED: FAILED --
+/// "assertion `left == right` failed: d45's record was published on that frame
+/// and the fold applied it, so its pin must stay where the commit put it
+///   left: 2
+///  right: 0"
+#[test]
+fn an_unrelated_rejection_does_not_restore_the_d45_pin() {
+    let row = super::tests::test_country_row("GER", 7, 0x1000);
+    let a = frd_focus(1, "FOCUS_A");
+    let b = frd_focus(2, "FOCUS_B");
+
+    // The middle frame publishes B and something ELSE is rejected. The last
+    // frame re-observes B, so a pin that is where the fold is emits nothing.
+    let mut trackers = CompactPerfGateTrackers::default();
+    let _ = d45_frame(&mut trackers, 60_787_539, &row, &a, &[]);
+    let _ = d45_frame(&mut trackers, 60_787_540, &row, &b, &[OTHER]);
+    let events = d45_frame(&mut trackers, 60_787_541, &row, &b, &[]);
+
+    assert_eq!(
+        events, 0,
+        "d45's record was published on that frame and the fold applied it, so its pin must \
+         stay where the commit put it"
+    );
+}
+
+/// The same property for d55, whose pin is one snapshot vector rather than three
+/// keyed maps, and whose emission is a transition set.
+///
+/// The equivalence is on the EMITTED transitions, because those are what the
+/// fold receives. A d55 tracker that was wiped reports every live combat as
+/// newly observed; one that was restored reports the transitions since the
+/// baseline the fold holds.
+///
+/// What production change makes this fail: wiping d55's tracker on its own
+/// rejection instead of calling `restore_frame_entry_baseline`.
+///
+/// MUTATION RUN: `tracker.restore_frame_entry_baseline()` replaced with
+/// `tracker = land_detail55::LandCombatDetailTracker::default()`.
+/// OBSERVED: FAILED --
+/// "assertion `left == right` failed: after its own gap, d55 must derive against
+/// the baseline the fold still holds
+///   left: 2
+///  right: 1"
+#[test]
+fn d55_restores_its_baseline_after_its_own_bracket_is_rejected() {
+    fn frame(
+        trackers: &mut CompactPerfGateTrackers,
+        memory: &FixedLandCombatMemory,
+        hour: i32,
+        rejected: &[u16],
+    ) -> usize {
+        let capture = land_detail55::collect_transition_capture_frame(
+            memory,
+            &mut trackers.land_combat_detail_events_live,
+            0,
+            hour,
+            1,
+        )
+        .expect("the fixture memory always collects");
+        trackers
+            .land_combat_detail_events_live
+            .commit_staged_baseline();
+        settle(trackers, rejected);
+        capture.rows.len()
+    }
+
+    let one = FixedLandCombatMemory(vec![land_combat_snapshot(1, 60, vec![101])]);
+    let two = FixedLandCombatMemory(vec![
+        land_combat_snapshot(1, 60, vec![101]),
+        land_combat_snapshot(2, 61, vec![102]),
+    ]);
+
+    // Reference: the rejected frame never happened.
+    let mut reference = CompactPerfGateTrackers::default();
+    let _ = frame(&mut reference, &one, 60_787_539, &[]);
+    let reference_rows = frame(&mut reference, &two, 60_787_541, &[]);
+
+    let mut gapped = CompactPerfGateTrackers::default();
+    let _ = frame(&mut gapped, &one, 60_787_539, &[]);
+    let _ = frame(&mut gapped, &two, 60_787_540, &[D55]);
+    let gapped_rows = frame(&mut gapped, &two, 60_787_541, &[]);
+
+    assert_eq!(
+        gapped_rows, reference_rows,
+        "after its own gap, d55 must derive against the baseline the fold still holds"
+    );
+
+    // Control: the rejected frame really did move the baseline.
+    let mut kept = CompactPerfGateTrackers::default();
+    let _ = frame(&mut kept, &one, 60_787_539, &[]);
+    let _ = frame(&mut kept, &two, 60_787_540, &[]);
+    let kept_rows = frame(&mut kept, &two, 60_787_541, &[]);
+    assert_ne!(
+        kept_rows, reference_rows,
+        "committing the middle frame must change the last one, or this fixture proves nothing"
+    );
+}
+
+/// **D29 AND THE AIR-WING UNIT DO NOT HAVE THIS DEFECT**, and this gate records
+/// the assessment rather than leaving it as a claim in a report.
+///
+/// The ruling asked whether d29's pin takes the same own-rejection wipe. It does
+/// not: `reset_trackers_after_rejected_bracket` takes d29's tracker, calls
+/// `roll_back_uncommitted_pin` on it, and puts it BACK — restoration by another
+/// name, reached through `stage_delta_pin_advance`'s uncommitted slot rather
+/// than through a commit-time undo log. The two shapes differ because d29's pin
+/// becomes durable at the READ (so the pre-frame value is captured there), while
+/// d45's and d55's are staged at the read and become durable at EMISSION, which
+/// is where the value that must be undone appears.
+///
+/// The air-wing unit takes d29's shape.
+///
+/// What production change makes this fail: any of these domains being
+/// default-constructed on its own rejection instead of rolled back or restored.
+///
+/// MUTATION RUN: d45's and d55's restorations both replaced with
+/// `= <Tracker>::default()`.
+/// OBSERVED: FAILED -- "d45 no longer restores its pin on its own rejection
+/// (`tracker.restore_pins_to_frame_entry();` is gone). A wiped pin is BEHIND the
+/// fold's retained state, and behind loses data exactly as ahead does."
+#[test]
+fn no_transactional_domain_is_default_constructed_on_its_own_rejection() {
+    let source = super::tests::collector_source_lf();
+    let reset = source
+        .split("\nfn reset_trackers_after_rejected_bracket(")
+        .nth(1)
+        .expect("the reset function is declared at column zero")
+        .split("\n}\n")
+        .next()
+        .expect("its body ends at the first column-zero brace");
+
+    for (what, needle) in [
+        ("d29", "tracker.roll_back_uncommitted_pin();"),
+        ("the air-wing unit", "wings.roll_back_uncommitted_pin();"),
+        ("d45", "tracker.restore_pins_to_frame_entry();"),
+        ("d55", "tracker.restore_frame_entry_baseline();"),
+    ] {
+        assert!(
+            reset.contains(needle),
+            "{what} no longer restores its pin on its own rejection (`{needle}` is gone). A \
+             wiped pin is BEHIND the fold's retained state, and behind loses data exactly as \
+             ahead does."
+        );
+    }
+    for forbidden in [
+        "CompactFrdDepthTracker::default()",
+        "LandCombatDetailTracker::default()",
+        "CompactShipTracker::default()",
+        "CompactAirWingTracker::default()",
+        "CompactAirWingLoadoutTracker::default()",
+        "CompactAirStrengthDeltaTracker::default()",
+    ] {
+        assert!(
+            !reset.contains(forbidden),
+            "`{forbidden}` appears in the rejected-bracket reset. None of the transactional \
+             domains may reach `Default` there."
+        );
+    }
 }

@@ -2159,7 +2159,9 @@ mod tests {
             );
         }
         // Every unassigned v1 bit, 15..=31, alone and beside an informational one.
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             for extra in [0u32, 1 << 10] {
                 let mut s = Vec::new();
                 s.extend(perf(1, 100, D94, (1 << bit) | extra));
@@ -2551,7 +2553,9 @@ mod tests {
             ("emitted != scheduled".to_string(), frame_end_sealed(5, 100, 2, 3, 0, 0)),
             ("counts disagree with observed PERF".to_string(), frame_end_sealed(5, 100, 1, 1, 0, 0)),
         ];
-        for bit in 15..32u32 {
+        // Bit 15 is ASSIGNED (`COMPACT_STATUS_BASELINE_CLEAR`, the stream's deliberate
+        // resync primitive), so the UNASSIGNED run starts at 16.
+        for bit in 16..32u32 {
             bad.push((
                 format!("unknown seal status bit {bit}"),
                 frame_end_sealed(5, 100, 2, 2, 1 << bit, 0),

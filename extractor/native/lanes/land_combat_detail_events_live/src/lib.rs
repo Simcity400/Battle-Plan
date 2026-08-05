@@ -792,6 +792,25 @@ pub struct LandCombatDetailTracker {
     /// old -> newest and emits the union of both frames' transitions. A
     /// superset, never a gap.
     staged: Option<StagedLandCombatDetailBaseline>,
+    /// The baseline this frame STARTED from, kept only while a commit this
+    /// frame performed could still turn out never to have reached the fold.
+    ///
+    /// # The residual this removes
+    ///
+    /// `commit_staged_baseline` runs at the emission site, which is before
+    /// bracket rejection is known. A frame can commit on a status word the fold
+    /// applies and then have its whole record REPLACED WITH A GAP because its
+    /// clock bracket was torn — the fold never saw it, and the producer is
+    /// ahead. The old answer was `reset_trackers_after_rejected_bracket` wiping
+    /// this tracker to `Default`, which put it BEHIND the fold's retained state
+    /// instead: an emptied `previous` makes the next frame report every live
+    /// combat as new, and the transitions that actually happened are gone.
+    ///
+    /// PRE-FRAME RESTORATION undoes just this frame's commit and leaves the
+    /// baseline exactly where the fold's is. It costs nothing: the pre-commit
+    /// `previous` is already moved out by `commit_staged_baseline`, so it is
+    /// kept rather than dropped.
+    frame_entry: Option<StagedLandCombatDetailBaseline>,
 }
 
 /// One frame's uncommitted D55 baseline.
@@ -816,6 +835,13 @@ impl LandCombatDetailTracker {
         // A hard reset outranks an uncommitted successor: the successor
         // describes a read this frame has just decided not to stand behind.
         self.staged = None;
+        // `frame_entry` is deliberately NOT cleared, and cannot be stale here:
+        // this is called from the READER, which always runs before the frame's
+        // commit site, so a frame that resets has not committed yet and the slot
+        // is empty. If the frame is later rejected, restoring to the state this
+        // reset produced -- empty baseline, rebaseline still pending -- is
+        // exactly right, because the announcement the reset would have made was
+        // replaced with a gap and the consumer never saw it either.
     }
 
     pub fn last_frame_rebaselined(&self) -> bool {
@@ -836,9 +862,38 @@ impl LandCombatDetailTracker {
     /// only when that word is one the consumer applies.
     pub fn commit_staged_baseline(&mut self) {
         if let Some(staged) = self.staged.take() {
-            self.previous = staged.previous;
-            self.pending_rebaseline = staged.pending_rebaseline;
+            let previous = std::mem::replace(&mut self.previous, staged.previous);
+            let pending_rebaseline =
+                std::mem::replace(&mut self.pending_rebaseline, staged.pending_rebaseline);
+            // Only the FIRST commit of a frame records the entry state, so a
+            // frame that commits twice still restores to one frame back rather
+            // than to the intermediate value.
+            if self.frame_entry.is_none() {
+                self.frame_entry = Some(StagedLandCombatDetailBaseline {
+                    previous,
+                    pending_rebaseline,
+                });
+            }
         }
+    }
+
+    /// PRE-FRAME RESTORATION: undo this frame's commit and discard anything
+    /// still staged, leaving the baseline where the fold's is when this frame's
+    /// record became a `DOMAIN_GAP`.
+    ///
+    /// Idempotent, and a no-op on a frame that never committed.
+    pub fn restore_frame_entry_baseline(&mut self) {
+        self.staged = None;
+        if let Some(entry) = self.frame_entry.take() {
+            self.previous = entry.previous;
+            self.pending_rebaseline = entry.pending_rebaseline;
+        }
+    }
+
+    /// Seal this frame's commit: it is now what the fold holds, and no later
+    /// frame's rejection may undo it.
+    pub fn close_frame_transaction(&mut self) {
+        self.frame_entry = None;
     }
 
     /// Discard this frame's successor baseline, because the record carrying it
