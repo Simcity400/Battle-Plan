@@ -1546,6 +1546,20 @@ mod tests {
         land: (Option<u64>, &[(u32, u32, u8)]),
         taskforces: (Option<u64>, &[(u32, u32, u8)]),
     ) -> Vec<u8> {
+        d95_payload_with_hours(capture_sequence, pov, land, taskforces, (None, None))
+    }
+
+    /// The same, stamped with the producer hours the SPU1 codec now emits
+    /// (`compact_contract/src/spotted_units.rs:138`-`:147`). Built through the
+    /// codec's own `encode`, never by hand: two hand-built byte strings would
+    /// agree with each other and prove nothing about the codec.
+    fn d95_payload_with_hours(
+        capture_sequence: u64,
+        pov: u32,
+        land: (Option<u64>, &[(u32, u32, u8)]),
+        taskforces: (Option<u64>, &[(u32, u32, u8)]),
+        hours: (Option<i32>, Option<i32>),
+    ) -> Vec<u8> {
         let rows = |src: &[(u32, u32, u8)]| {
             src.iter()
                 .map(|(type_id, stable_id, raw_intel)| SpottedUnitHandle {
@@ -1560,8 +1574,8 @@ mod tests {
             pov_country_id: pov,
             land_frame_sequence: land.0,
             taskforce_frame_sequence: taskforces.0,
-            land_frame_hour_raw: None,
-            taskforce_frame_hour_raw: None,
+            land_frame_hour_raw: hours.0,
+            taskforce_frame_hour_raw: hours.1,
             land: rows(land.1),
             taskforces: rows(taskforces.1),
         }
@@ -1654,12 +1668,74 @@ mod tests {
         }
     }
 
+    /// Every mutation below was run against THIS target alone
+    /// (`cargo test -p wire_format --release --bin bench_real_d95`), because
+    /// cargo's fail-fast means a lib-suite failure would otherwise keep this
+    /// target from running at all and the notes would be unobserved. Baseline
+    /// unmutated: `test result: ok. 29 passed; 0 failed`.
+    ///
+    /// MUTATION RUN: drop the two hour bits from `d95::KNOWN_FLAGS` — the state
+    /// this lane found, where the restatement refused a payload its own codec
+    /// emits. OBSERVED: FAILED -- `codec and port disagree on payload [53, 50,
+    /// 55, 31, 01, 00, 07, 00, ...]: Ok(SpottedUnitsSnapshot { ...
+    /// land_frame_hour_raw: Some(4100), taskforce_frame_hour_raw: None ... })
+    /// vs Err("pov_spotted_units SPU1 invalid: pov_spotted_units carrier
+    /// version 1/flags 0x7 mismatch")`.
+    ///
+    /// MUTATION RUN: widen `d95::KNOWN_FLAGS` to `u16::MAX`. OBSERVED: FAILED
+    /// -- `codec and port disagree on payload [53, 50, 55, 31, 01, 00, 01, 01,
+    /// ...]: Err("spotted-units carrier version/flags mismatch") vs Ok(())`,
+    /// i.e. a byte-patch mutant with bit 8 set that the codec refuses and the
+    /// widened port accepted. `a_malformed_d95_payload_is_refused_not_skipped`
+    /// failed alongside it: `unknown flag bit must refuse the stream, not be
+    /// skipped`.
+    ///
+    /// MUTATION RUN: drop the `hour_words` term from `split_payload`'s expected
+    /// length. OBSERVED: FAILED -- `... vs Err("pov_spotted_units SPU1 invalid:
+    /// pov_spotted_units carrier is truncated or has trailing bytes:
+    /// 76 != 68")`.
+    ///
+    /// MUTATION RUN: slice the task-force rows as `&payload[land_end..]`.
+    /// OBSERVED: FAILED -- `... vs Err("pov_spotted_units taskforce row region
+    /// 20 is not a multiple of 12")`: the 8-byte trailer landed in the
+    /// task-force row region, which is exactly the defect widening the mask
+    /// alone would have introduced.
+    ///
+    /// MUTATION RUN: drop the trailer's `i32::try_from` refusal. OBSERVED:
+    /// FAILED -- `codec and port disagree on payload [... ff, ff, ff, ff, ff,
+    /// ff, ff, 7f, ...]: Err("spotted-units producer hour is outside the
+    /// engine's date range") vs Ok(())`. The distinguishing bytes come from the
+    /// corpus's own patch sweep, not from a hand-written case.
+    ///
+    /// MUTATION RUN: never advance the trailer cursor, so both words are read
+    /// at slot 0. OBSERVED: FAILED -- `... [... 00, 00, 00, 80, ff, ff, ff, ff,
+    /// ff, ff, ff, ff, ...]: Err("spotted-units producer hour is outside the
+    /// engine's date range") vs Ok(())`.
+    ///
+    /// MUTATION RUN: make `d95::PayloadHeader::flags()` blind to the hour bits.
+    /// OBSERVED: FAILED -- ``assertion `left == right` failed: the port must
+    /// re-encode the codec's own flags word / left: 7 / right: 3``.
+    ///
+    /// MUTATION RUN (SURVIVED HERE, recorded rather than hidden): delete the
+    /// orphan-hour refusals from `d95::parse_header`. OBSERVED: `test result:
+    /// ok. 29 passed`. The codec's `validate` refuses an orphan hour, so
+    /// `encode` cannot build one and the corpus's `0x00`/`0x01`/`0xff` patches
+    /// cannot produce a flags word with an hour bit set and its frame bit
+    /// clear. That mutation is killed by the hand-built headers in
+    /// `d95::tests::parse_header_rejects_every_header_the_codec_rejects`, which
+    /// is why both tests exist.
     #[test]
     fn the_harness_agrees_with_the_shipping_codec_on_what_a_payload_is() {
         // The differential check the recipe's "one derivation" rule is about: the
         // port's boundary and `compact_contract`'s own decoder must accept and
         // reject the same bytes, and agree field for field on what they carry.
         // Corpus: every structural case the codec distinguishes, plus mutations.
+        //
+        // Both halves are built through the CODEC's `encode`, so this compares a
+        // restatement against the producer rather than two hand-built byte
+        // strings against each other. The stamped entries below cover all three
+        // trailer shapes the codec can emit (land only, task force only, both)
+        // and the `i32` edges it admits.
         let mut corpus: Vec<Vec<u8>> = vec![
             d95_payload(1, 1, (Some(1), &[]), (None, &[])),
             d95_payload(9, 368, (Some(1), &[(3, 11, 250)]), (Some(2), &[(4, 1, 150)])),
@@ -1670,6 +1746,40 @@ mod tests {
                 (None, &[]),
             ),
             d95_payload(u64::MAX, 368, (None, &[]), (Some(u64::MAX), &[(9, 9, 255)])),
+            // The producer-hour trailer, one word.
+            d95_payload_with_hours(
+                9,
+                368,
+                (Some(1), &[(3, 11, 250)]),
+                (Some(2), &[(4, 1, 150)]),
+                (Some(4_100), None),
+            ),
+            d95_payload_with_hours(
+                9,
+                368,
+                (Some(1), &[(3, 11, 250)]),
+                (Some(2), &[(4, 1, 150)]),
+                (None, Some(4_099)),
+            ),
+            // Two words, in (land, taskforce) order — the shape that catches a
+            // trailer read at one fixed offset.
+            d95_payload_with_hours(
+                9,
+                368,
+                (Some(1), &[(3, 11, 250), (5, 2, 251)]),
+                (Some(2), &[(4, 1, 150)]),
+                (Some(4_100), Some(4_099)),
+            ),
+            // The `i32` edges the codec admits, and a hour on a rowless but
+            // FLAGGED surface — a measured-empty frame may still be dated.
+            d95_payload_with_hours(
+                9,
+                368,
+                (Some(1), &[]),
+                (Some(2), &[]),
+                (Some(i32::MIN), Some(i32::MAX)),
+            ),
+            d95_payload_with_hours(1, 1, (Some(1), &[]), (None, &[]), (Some(0), None)),
         ];
         let mutations = corpus.clone();
         for base in mutations {
@@ -1712,6 +1822,24 @@ mod tests {
             assert_eq!(
                 stored.header.taskforce_frame_sequence,
                 snapshot.taskforce_frame_sequence
+            );
+            // The trailer the codec wrote and the trailer the port read are the
+            // same trailer: presence per surface, and therefore the flags word
+            // the header encodes back to.
+            assert_eq!(
+                stored.header.land_frame_hour,
+                snapshot.land_frame_hour_raw.is_some(),
+                "land producer-hour trailer"
+            );
+            assert_eq!(
+                stored.header.taskforce_frame_hour,
+                snapshot.taskforce_frame_hour_raw.is_some(),
+                "taskforce producer-hour trailer"
+            );
+            assert_eq!(
+                u16::from_le_bytes([payload[6], payload[7]]),
+                stored.header.flags(),
+                "the port must re-encode the codec's own flags word"
             );
             let state = hour.state(&schema).expect("builds").expect("stored");
             assert_eq!(state.land.len(), snapshot.land.len());

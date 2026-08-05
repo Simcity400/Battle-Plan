@@ -12,21 +12,46 @@
 //! `:234`-`:266`). `extractor/documents/domains/` carries no d95 dossier, which
 //! `domains/UNDOCUMENTED_DOMAINS.md` says is expected and not a blocker.
 //!
-//! **Payload grammar** (`spotted_units.rs:88`-`:141`): a 44-byte header, then
-//! `land_count` 12-byte rows, then `taskforce_count` 12-byte rows. One row form;
-//! there is no legacy shorter row.
+//! **Payload grammar** (`spotted_units.rs:102`-`:149`): a 44-byte header, then
+//! `land_count` 12-byte rows, then `taskforce_count` 12-byte rows, then the
+//! producer-hour trailer. One row form; there is no legacy shorter row.
 //!
 //! | offset | width | header word | gate |
 //! |---|---|---|---|
 //! | `+0`  | 4  | magic `SPU1`              | — |
 //! | `+4`  | u16 | `version` (must be 1)    | — |
 //! | `+6`  | u16 | `flags`                  | — |
-//! | `+8`  | u64 | `capture_sequence`       | none; zero rejected (`:36`-`:37`) |
-//! | `+16` | u32 | `pov_country_id`         | none; `1..=2048` (`:39`-`:40`) |
+//! | `+8`  | u64 | `capture_sequence`       | none; zero rejected (`:74`-`:76`) |
+//! | `+16` | u32 | `pov_country_id`         | none; `1..=2048` (`:77`-`:79`) |
 //! | `+20` | u32 | `land_count`             | — |
 //! | `+24` | u32 | `taskforce_count`        | — |
 //! | `+28` | u64 | `land_frame_sequence`    | `FLAG_LAND_FRAME` (`1<<0`) |
 //! | `+36` | u64 | `taskforce_frame_sequence` | `FLAG_TASKFORCE_FRAME` (`1<<1`) |
+//!
+//! **The producer-hour trailer** (`spotted_units.rs:138`-`:147`, read back at
+//! `:169`-`:213`). After the last row, one 8-byte little-endian `i64` per SET
+//! hour flag, in `(land, taskforce)` order — so the payload is exactly
+//! `44 + 12·(land_count + taskforce_count) + 8·hour_words` bytes and nothing a
+//! pre-existing reader walks moved.
+//!
+//! | trailer slot | width | word | gate |
+//! |---|---|---|---|
+//! | `+0` | i64 | `land_frame_hour_raw`      | `FLAG_LAND_FRAME_HOUR` (`1<<2`); must fit `i32` (`:202`-`:204`) |
+//! | next | i64 | `taskforce_frame_hour_raw` | `FLAG_TASKFORCE_FRAME_HOUR` (`1<<3`); must fit `i32` |
+//!
+//! Each hour word is a **statement by** its producer frame: the codec refuses a
+//! payload whose hour flag is set while the matching frame flag is clear
+//! (`spotted_units.rs:90`-`:98`), because an hour with no frame would let a
+//! consumer age an observation the payload does not carry.
+//!
+//! The hour is carried as a **presence bit** here and its value is checked and
+//! then dropped, which is exactly what `world_fold.rs` does with it: the
+//! shipping fold decodes `land_frame_hour_raw`/`taskforce_frame_hour_raw` and
+//! reads neither, so nothing this port would encode depends on them and the
+//! schema does not move. Carrying them into the stored `capture` record would
+//! make the port publish a field the shipping arm does not, which is the one
+//! thing a byte-for-byte comparison against the shipping stream may not do.
+//! d94's restatement of the same trailer holds the same line (`d94.rs:258`-`:266`).
 //!
 //! | offset | width | row field | scale |
 //! |---|---|---|---|
@@ -154,17 +179,36 @@ pub mod field {
 pub const MAGIC: [u8; 4] = *b"SPU1";
 /// `CARRIER_VERSION`, `spotted_units.rs:8`.
 pub const CARRIER_VERSION: u16 = 1;
-/// `HEADER_LEN`, `spotted_units.rs:14`.
+/// `HEADER_LEN`, `spotted_units.rs:45`.
 pub const HEADER_LEN: usize = 44;
-/// `ROW_LEN`, `spotted_units.rs:15`.
+/// `ROW_LEN`, `spotted_units.rs:46`.
 pub const ROW_LEN: usize = 12;
+/// `HOUR_LEN`, `spotted_units.rs:47`: the width of ONE producer-hour trailer
+/// word. The codec writes an `i64` (`:146`) and narrows it back to `i32` on the
+/// way in (`:202`-`:204`), so the wire width and the admitted range differ and
+/// both are restated.
+pub const HOUR_LEN: usize = 8;
 /// `FLAG_LAND_FRAME`, `spotted_units.rs:11`.
 pub const FLAG_LAND_FRAME: u16 = 1 << 0;
 /// `FLAG_TASKFORCE_FRAME`, `spotted_units.rs:12`.
 pub const FLAG_TASKFORCE_FRAME: u16 = 1 << 1;
-/// `KNOWN_FLAGS`, `spotted_units.rs:13`. Any other bit means the payload is not
-/// this grammar (`:94`-`:95`).
-pub const KNOWN_FLAGS: u16 = FLAG_LAND_FRAME | FLAG_TASKFORCE_FRAME;
+/// `FLAG_LAND_FRAME_HOUR`, `spotted_units.rs:40`. The land frame carries the
+/// hour its PRODUCER observed at, in a trailer word after the rows — additive,
+/// so the carrier version does not move and a payload written before the field
+/// existed decodes byte-identically.
+pub const FLAG_LAND_FRAME_HOUR: u16 = 1 << 2;
+/// `FLAG_TASKFORCE_FRAME_HOUR`, `spotted_units.rs:42`. The task-force frame's
+/// own hour; the two producers publish on different engine calls, so a drain
+/// routinely serves one fresh frame beside one retained one and each surface's
+/// hour is an independent fact.
+pub const FLAG_TASKFORCE_FRAME_HOUR: u16 = 1 << 3;
+/// `KNOWN_FLAGS`, `spotted_units.rs:43`-`:44`. Any other bit means the payload
+/// is not this grammar (`:157`-`:159`). The two hour bits are DEFINED here, so
+/// a stamped payload is admitted for its bits and judged on its length and its
+/// words — every bit from `1<<4` up is still refused, which is what keeps
+/// widening this mask from being a relaxation.
+pub const KNOWN_FLAGS: u16 =
+    FLAG_LAND_FRAME | FLAG_TASKFORCE_FRAME | FLAG_LAND_FRAME_HOUR | FLAG_TASKFORCE_FRAME_HOUR;
 /// `MAX_POV_COUNTRY_ID`, `spotted_units.rs:9`; the admitted POV range is
 /// `1..=2048` (`:39`-`:40`).
 pub const MAX_POV_COUNTRY_ID: u32 = 2_048;
@@ -387,10 +431,28 @@ pub struct PayloadHeader {
     pub taskforce_count: u32,
     pub land_frame_sequence: Option<u64>,
     pub taskforce_frame_sequence: Option<u64>,
+    /// `FLAG_LAND_FRAME_HOUR` (`spotted_units.rs:40`, `:111`-`:113`): this
+    /// payload carries a land producer-hour word in its trailer.
+    ///
+    /// The BIT is a header fact and lives here; the WORD is not, because it
+    /// rides after the rows at an offset the two row counts decide, so
+    /// [`split_payload`] — which is the only function that sees the whole
+    /// payload — is what reads and range-checks it. Keeping the bit here is
+    /// what makes [`flags`](Self::flags) a faithful round trip instead of a
+    /// lossy one that would re-encode a stamped payload as an unstamped one.
+    pub land_frame_hour: bool,
+    /// `FLAG_TASKFORCE_FRAME_HOUR` (`spotted_units.rs:42`, `:114`-`:116`); see
+    /// [`land_frame_hour`](Self::land_frame_hour).
+    pub taskforce_frame_hour: bool,
 }
 
 impl PayloadHeader {
-    /// The flags word this header encodes back to (`spotted_units.rs:57`-`:63`, `:72`).
+    /// The flags word this header encodes back to
+    /// (`spotted_units.rs:104`-`:116`, `:125`).
+    ///
+    /// All four defined bits, not just the two frame bits: a `flags()` that
+    /// dropped the hour bits would re-encode a stamped payload into a shorter
+    /// one whose trailer the codec then reads as missing.
     pub fn flags(&self) -> u16 {
         let mut flags = 0u16;
         if self.land_frame_sequence.is_some() {
@@ -399,7 +461,19 @@ impl PayloadHeader {
         if self.taskforce_frame_sequence.is_some() {
             flags |= FLAG_TASKFORCE_FRAME;
         }
+        if self.land_frame_hour {
+            flags |= FLAG_LAND_FRAME_HOUR;
+        }
+        if self.taskforce_frame_hour {
+            flags |= FLAG_TASKFORCE_FRAME_HOUR;
+        }
         flags
+    }
+
+    /// How many 8-byte trailer words this payload carries
+    /// (`spotted_units.rs:169`-`:170`).
+    pub fn hour_words(&self) -> usize {
+        usize::from(self.land_frame_hour) + usize::from(self.taskforce_frame_hour)
     }
 
     pub fn frame_sequence(&self, surface: Surface) -> Option<u64> {
@@ -462,6 +536,8 @@ pub fn parse_header(payload: &[u8]) -> core::result::Result<PayloadHeader, Strin
         taskforce_count,
         land_frame_sequence: (flags & FLAG_LAND_FRAME != 0).then_some(land_sequence),
         taskforce_frame_sequence: (flags & FLAG_TASKFORCE_FRAME != 0).then_some(taskforce_sequence),
+        land_frame_hour: flags & FLAG_LAND_FRAME_HOUR != 0,
+        taskforce_frame_hour: flags & FLAG_TASKFORCE_FRAME_HOUR != 0,
     };
     // `validate`, `spotted_units.rs:35`-`:53`.
     if header.capture_sequence == 0 {
@@ -501,32 +577,57 @@ pub fn parse_header(payload: &[u8]) -> core::result::Result<PayloadHeader, Strin
             _ => {}
         }
     }
-    // `spotted_units.rs:49`-`:51`: a snapshot with neither frame is refused
+    // `spotted_units.rs:87`-`:89`: a snapshot with neither frame is refused
     // outright — the producer published nothing at all.
     if header.land_frame_sequence.is_none() && header.taskforce_frame_sequence.is_none() {
         return Err("pov_spotted_units snapshot has no complete producer frame".into());
+    }
+    // `spotted_units.rs:90`-`:98`, and the last two rules `validate` applies. A
+    // producer hour is a statement BY a producer frame: without the frame there
+    // is nothing for it to date, and admitting the pair would let a consumer age
+    // an observation that is not in the payload. This is a FLAG-only rule — both
+    // halves are bits at `+6` — so it belongs in the header parse even though
+    // the word it guards lives in the trailer, and it is the refusal that stops
+    // widening `KNOWN_FLAGS` from admitting `1<<2` as a free-floating bit.
+    if header.land_frame_hour && header.land_frame_sequence.is_none() {
+        return Err("pov_spotted_units land producer hour has no land frame".into());
+    }
+    if header.taskforce_frame_hour && header.taskforce_frame_sequence.is_none() {
+        return Err("pov_spotted_units taskforce producer hour has no taskforce frame".into());
     }
     Ok(header)
 }
 
 /// Split a d95 DATA payload into its header and its two row slices, applying the
-/// codec's structural checks (`spotted_units.rs:103`-`:111`).
+/// codec's structural checks (`spotted_units.rs:166`-`:213`).
 ///
 /// This lives here rather than in each caller so the header grammar has exactly
 /// one implementation: a measurement harness that re-derives it is a harness that
 /// can drift from the recorder without anything failing.
+///
+/// The producer-hour trailer is sized and range-checked HERE and nowhere else,
+/// because it is the only boundary that sees the whole payload: its offset is
+/// `44 + 12·(land_count + taskforce_count)`, which the header alone does not fix
+/// a position for. The two row slices this returns therefore stop at the last
+/// row — a trailer folded into the task-force slice would be read as rows.
 pub fn split_payload(
     payload: &[u8],
 ) -> core::result::Result<(PayloadHeader, &[u8], &[u8]), String> {
     let header = parse_header(payload)?;
     // Checked arithmetic: the counts are attacker-shaped input from a stream on
-    // disk (`spotted_units.rs:103`-`:108` does the same).
+    // disk (`spotted_units.rs:166`-`:178` does the same).
     let row_count = (header.land_count as usize)
         .checked_add(header.taskforce_count as usize)
         .ok_or("pov_spotted_units row count overflow")?;
-    let expected = ROW_LEN
+    let rows_end = ROW_LEN
         .checked_mul(row_count)
         .and_then(|len| len.checked_add(HEADER_LEN))
+        .ok_or("pov_spotted_units length overflow")?;
+    // `spotted_units.rs:169`-`:178`: one 8-byte word per SET hour flag, and the
+    // total is exact in both directions — a trailing byte is as much a refusal
+    // as a truncation.
+    let expected = rows_end
+        .checked_add(HOUR_LEN.saturating_mul(header.hour_words()))
         .ok_or("pov_spotted_units length overflow")?;
     if payload.len() != expected {
         return Err(format!(
@@ -534,8 +635,35 @@ pub fn split_payload(
             payload.len()
         ));
     }
+    // `spotted_units.rs:199`-`:213`: the codec writes an `i64` and narrows it
+    // back to `i32`, refusing a word that does not fit. Checking the trailer's
+    // PRESENCE but not its VALUE would leave a payload the recorder's own
+    // authority refuses and this restatement accepts — precisely the drift the
+    // restatement exists to make impossible. Land first, then task force, which
+    // is both the order the words are written in and the order they are read.
+    let mut at = rows_end;
+    for (present, surface) in [
+        (header.land_frame_hour, Surface::Land),
+        (header.taskforce_frame_hour, Surface::Taskforce),
+    ] {
+        if !present {
+            continue;
+        }
+        let word = i64::from_le_bytes(payload[at..at + HOUR_LEN].try_into().expect("8 bytes"));
+        if i32::try_from(word).is_err() {
+            return Err(format!(
+                "pov_spotted_units {} producer hour {word} is outside the engine's date range",
+                surface.name()
+            ));
+        }
+        at += HOUR_LEN;
+    }
     let land_end = HEADER_LEN + ROW_LEN * header.land_count as usize;
-    Ok((header, &payload[HEADER_LEN..land_end], &payload[land_end..]))
+    Ok((
+        header,
+        &payload[HEADER_LEN..land_end],
+        &payload[land_end..rows_end],
+    ))
 }
 
 /// The key of the `capture` row: the POV country (`world_fold.rs::fold_pov_spotted_units`).
@@ -1034,12 +1162,25 @@ mod tests {
     }
 
     /// A raw 44-byte header, built the way the codec packs one
-    /// (`spotted_units.rs:70`-`:78`).
+    /// (`spotted_units.rs:123`-`:131`).
     fn raw_header(
         capture_sequence: u64,
         pov_country_id: u32,
         land: (Option<u64>, u32),
         taskforce: (Option<u64>, u32),
+    ) -> Vec<u8> {
+        raw_header_with_hours(capture_sequence, pov_country_id, land, taskforce, (false, false))
+    }
+
+    /// The same, with the two producer-hour FLAG bits set independently of the
+    /// trailer — so a test can build a header whose bits and whose length
+    /// disagree, which is the malformed shape the length check must catch.
+    fn raw_header_with_hours(
+        capture_sequence: u64,
+        pov_country_id: u32,
+        land: (Option<u64>, u32),
+        taskforce: (Option<u64>, u32),
+        hours: (bool, bool),
     ) -> Vec<u8> {
         let mut flags = 0u16;
         if land.0.is_some() {
@@ -1047,6 +1188,12 @@ mod tests {
         }
         if taskforce.0.is_some() {
             flags |= FLAG_TASKFORCE_FRAME;
+        }
+        if hours.0 {
+            flags |= FLAG_LAND_FRAME_HOUR;
+        }
+        if hours.1 {
+            flags |= FLAG_TASKFORCE_FRAME_HOUR;
         }
         let mut out = Vec::with_capacity(HEADER_LEN);
         out.extend_from_slice(&MAGIC);
@@ -1068,14 +1215,37 @@ mod tests {
         land: (Option<u64>, &[Vec<u8>]),
         taskforce: (Option<u64>, &[Vec<u8>]),
     ) -> Vec<u8> {
-        let mut out = raw_header(
+        payload_with_hours(
+            capture_sequence,
+            pov_country_id,
+            land,
+            taskforce,
+            (None, None),
+        )
+    }
+
+    /// A whole payload with the producer-hour trailer appended AFTER the rows,
+    /// one 8-byte little-endian `i64` per carried hour, land first
+    /// (`spotted_units.rs:138`-`:147`).
+    fn payload_with_hours(
+        capture_sequence: u64,
+        pov_country_id: u32,
+        land: (Option<u64>, &[Vec<u8>]),
+        taskforce: (Option<u64>, &[Vec<u8>]),
+        hours: (Option<i32>, Option<i32>),
+    ) -> Vec<u8> {
+        let mut out = raw_header_with_hours(
             capture_sequence,
             pov_country_id,
             (land.0, land.1.len() as u32),
             (taskforce.0, taskforce.1.len() as u32),
+            (hours.0.is_some(), hours.1.is_some()),
         );
         for row in land.1.iter().chain(taskforce.1.iter()) {
             out.extend_from_slice(row);
+        }
+        for hour in [hours.0, hours.1].into_iter().flatten() {
+            out.extend_from_slice(&i64::from(hour).to_le_bytes());
         }
         out
     }
@@ -1269,6 +1439,10 @@ mod tests {
         );
     }
 
+    /// MUTATION RUN: make `flags()` blind to the two hour bits, so the header
+    /// re-encodes a stamped payload into an unstamped one. OBSERVED: FAILED --
+    /// ``assertion `left == right` failed: the header must encode back to the
+    /// flags word it was read from / left: 3 / right: 7``.
     #[test]
     fn every_header_word_reads_at_its_own_offset() {
         // The header IS the `capture` row, so this is both the header test the
@@ -1283,7 +1457,57 @@ mod tests {
         assert_eq!(header.taskforce_count, 0);
         assert_eq!(header.land_frame_sequence, Some(0x2a));
         assert_eq!(header.taskforce_frame_sequence, Some(0x2b));
-        assert_eq!(header.flags(), KNOWN_FLAGS);
+        assert!(!header.land_frame_hour && !header.taskforce_frame_hour);
+        assert_eq!(header.flags(), FLAG_LAND_FRAME | FLAG_TASKFORCE_FRAME);
+        assert_eq!(header.hour_words(), 0);
+
+        // The flags word round-trips through the header for all four defined
+        // bits, one at a time as well as together — a `flags()` blind to the
+        // hour bits would re-encode a stamped payload into a shorter one whose
+        // trailer the codec then reads as missing. `1<<2` and `1<<3` only ever
+        // read back as themselves if they are read at their own bit positions.
+        for (land_hour, taskforce_hour) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let bytes = raw_header_with_hours(
+                9,
+                368,
+                (Some(0x2a), 0),
+                (Some(0x2b), 0),
+                (land_hour, taskforce_hour),
+            );
+            let mut stamped = bytes.clone();
+            for hour in [land_hour, taskforce_hour].iter().filter(|set| **set) {
+                let _ = hour;
+                stamped.extend_from_slice(&0i64.to_le_bytes());
+            }
+            let header = parse_header(&stamped).expect("parses");
+            assert_eq!(header.land_frame_hour, land_hour);
+            assert_eq!(header.taskforce_frame_hour, taskforce_hour);
+            assert_eq!(
+                header.flags(),
+                u16_at(&stamped, 6),
+                "the header must encode back to the flags word it was read from"
+            );
+            assert_eq!(
+                header.hour_words(),
+                usize::from(land_hour) + usize::from(taskforce_hour)
+            );
+            assert!(split_payload(&stamped).is_ok());
+        }
+        assert_eq!(
+            parse_header(&raw_header_with_hours(
+                9,
+                368,
+                (Some(0x2a), 0),
+                (Some(0x2b), 0),
+                (true, true)
+            ))
+            .expect("parses")
+            .flags(),
+            KNOWN_FLAGS,
+            "all four defined bits at once IS `KNOWN_FLAGS`"
+        );
 
         let r = record_from_capture_row(&c, &header_bytes, 0).expect("maps");
         assert_eq!(
@@ -1468,6 +1692,22 @@ mod tests {
         }
     }
 
+    /// MUTATION RUN: delete the two orphan-hour refusals from `parse_header`,
+    /// so an hour flag may outlive the frame flag it dates. OBSERVED: FAILED --
+    /// `assertion failed: parse_header(&raw_header_with_hours(9, 368, (None, 0),
+    /// (Some(1), 0), (true, false))).is_err()`.
+    ///
+    /// This is the ONE mutation in this lane the differential test in
+    /// `bin/bench_real_d95.rs` does not also kill, and the reason is worth
+    /// stating rather than leaving as a coincidence: the codec's `validate`
+    /// refuses an orphan hour, so `encode` can never build one, and the
+    /// differential corpus's byte patches (`0x00`, `0x01`, `0xff`) cannot reach
+    /// a flags word with an hour bit set and its frame bit clear. An orphan
+    /// payload only exists if something hand-builds it, which is what this test
+    /// does.
+    ///
+    /// MUTATION RUN: widen `KNOWN_FLAGS` to `u16::MAX`. OBSERVED: FAILED --
+    /// `flag bit 4`.
     #[test]
     fn parse_header_rejects_every_header_the_codec_rejects() {
         // Short of the header, at every length.
@@ -1487,11 +1727,55 @@ mod tests {
             bytes[4..6].copy_from_slice(&version.to_le_bytes());
             assert!(parse_header(&bytes).is_err(), "version {version}");
         }
-        // Every unknown flag bit, not one sample.
-        for bit in 2..16u16 {
+        // Every unknown flag bit, not one sample. The carrier now DEFINES four
+        // bits, so the sweep starts at `1<<4`: widening `KNOWN_FLAGS` moved the
+        // boundary and did not remove it.
+        for bit in 4..16u16 {
             let mut bytes = raw_header(9, 368, (Some(1), 0), (Some(1), 0));
             bytes[6..8].copy_from_slice(&(KNOWN_FLAGS | (1 << bit)).to_le_bytes());
             assert!(parse_header(&bytes).is_err(), "flag bit {bit}");
+        }
+        // And the mask really is exactly those four: a payload carrying only the
+        // undefined bit — with no other bit set — is refused for the bit and not
+        // as a side effect of some other rule.
+        for bit in 4..16u16 {
+            let mut bytes = raw_header(9, 368, (Some(1), 0), (Some(1), 0));
+            bytes[6..8]
+                .copy_from_slice(&(FLAG_LAND_FRAME | FLAG_TASKFORCE_FRAME | (1 << bit)).to_le_bytes());
+            let reason = parse_header(&bytes).expect_err("flag bit {bit}");
+            assert!(reason.contains("flags"), "flag bit {bit}: {reason}");
+        }
+        // A producer hour with no producer frame (`spotted_units.rs:90`-`:98`):
+        // the hour bit is DEFINED, so this must be refused by its own rule
+        // rather than by the unknown-bit mask. Both surfaces, and the surviving
+        // frame keeps the payload otherwise well-formed.
+        assert!(parse_header(&raw_header_with_hours(
+            9,
+            368,
+            (None, 0),
+            (Some(1), 0),
+            (true, false)
+        ))
+        .is_err());
+        assert!(parse_header(&raw_header_with_hours(
+            9,
+            368,
+            (Some(1), 0),
+            (None, 0),
+            (false, true)
+        ))
+        .is_err());
+        // ...and the matching frame makes each of them legal, so the rule is a
+        // pairing rule and not a ban on the bit.
+        for hours in [(true, false), (false, true), (true, true)] {
+            assert!(parse_header(&raw_header_with_hours(
+                9,
+                368,
+                (Some(1), 0),
+                (Some(1), 0),
+                hours
+            ))
+            .is_ok());
         }
         // Zero capture sequence, zero and out-of-range POV.
         assert!(parse_header(&raw_header(0, 368, (Some(1), 0), (Some(1), 0))).is_err());
@@ -1562,6 +1846,132 @@ mod tests {
         huge[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
         huge[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(split_payload(&huge).is_err());
+    }
+
+    /// Law: the producer-hour trailer is sized, range-checked and kept OUT of
+    /// the row slices — the restatement accepts exactly the stamped payloads the
+    /// SPU1 codec emits and no others.
+    ///
+    /// This is the defect this test exists for: the codec grew the trailer and
+    /// `KNOWN_FLAGS` here still read `bit0|bit1`, so `parse_header` hard-refused
+    /// every payload the codec now stamps. Widening the mask alone would have
+    /// traded that refusal for a worse one — a trailer read as task-force rows.
+    ///
+    /// MUTATION RUN: drop `FLAG_LAND_FRAME_HOUR|FLAG_TASKFORCE_FRAME_HOUR` from
+    /// `KNOWN_FLAGS`, i.e. the state this lane found. OBSERVED: FAILED --
+    /// `a land-stamped payload splits: "pov_spotted_units carrier version
+    /// 1/flags 0x7 mismatch"`.
+    ///
+    /// MUTATION RUN: widen `KNOWN_FLAGS` to `u16::MAX`, the lazy fix. OBSERVED:
+    /// FAILED in `every_header_word_reads_at_its_own_offset` -- ``assertion
+    /// `left == right` failed: all four defined bits at once IS `KNOWN_FLAGS` /
+    /// left: 15 / right: 65535``, and in
+    /// `parse_header_rejects_every_header_the_codec_rejects` -- `flag bit 4`.
+    ///
+    /// MUTATION RUN: drop the `hour_words` term from `expected` in
+    /// `split_payload`, i.e. mis-size the trailer. OBSERVED: FAILED --
+    /// `a land-stamped payload splits: "pov_spotted_units carrier is truncated
+    /// or has trailing bytes: 88 != 80"`.
+    ///
+    /// MUTATION RUN: slice the task-force rows as `&payload[land_end..]` again.
+    /// OBSERVED: FAILED -- ``assertion `left == right` failed: the trailer is
+    /// not a row / left: 20 / right: 12``.
+    ///
+    /// MUTATION RUN: check the trailer's presence but not its value, i.e. drop
+    /// the `i32::try_from` refusal. OBSERVED: FAILED --
+    /// `hour word 4294967296 at slot 0`.
+    ///
+    /// MUTATION RUN: read both trailer words at `rows_end` instead of advancing
+    /// `at` by `HOUR_LEN`. OBSERVED: FAILED --
+    /// `hour word 4294967296 at slot 1`, the task-force slot: slot 0 still
+    /// reads its own legal word, so only the SECOND word exposes the cursor.
+    #[test]
+    fn split_payload_carries_the_producer_hour_trailer_the_codec_emits() {
+        let rows = [raw_row(3, 11, 250), raw_row(4, 2, 255)];
+        let taskforce_rows = [raw_row(5, 9, 150)];
+        for (land_hour, taskforce_hour, words) in [
+            (None, None, 0usize),
+            (Some(4_100), None, 1),
+            (None, Some(4_099), 1),
+            (Some(4_100), Some(4_099), 2),
+            (Some(-7), Some(0), 2),
+            (Some(i32::MIN), Some(i32::MAX), 2),
+        ] {
+            let p = payload_with_hours(
+                9,
+                368,
+                (Some(7), &rows),
+                (Some(8), &taskforce_rows),
+                (land_hour, taskforce_hour),
+            );
+            assert_eq!(p.len(), HEADER_LEN + 3 * ROW_LEN + HOUR_LEN * words);
+            let (header, land, taskforces) =
+                split_payload(&p).expect("a land-stamped payload splits");
+            assert_eq!(header.land_frame_hour, land_hour.is_some());
+            assert_eq!(header.taskforce_frame_hour, taskforce_hour.is_some());
+            assert_eq!(header.hour_words(), words);
+            assert_eq!(land.len(), 2 * ROW_LEN);
+            assert_eq!(taskforces.len(), ROW_LEN, "the trailer is not a row");
+            // And it folds end to end: the trailer must not reach `check_rows`.
+            let hour = folded(&p);
+            let stored = hour.stored().expect("a stamped payload stores");
+            assert_eq!(stored.rows(Surface::Taskforce).len(), ROW_LEN);
+            let state = hour.state(&schema()).expect("builds").expect("stored");
+            assert_eq!(state.land.len(), 2);
+            assert_eq!(state.taskforces.len(), 1);
+        }
+
+        // The trailer is exact in both directions, exactly as the rows are.
+        let stamped = payload_with_hours(
+            9,
+            368,
+            (Some(7), &rows),
+            (Some(8), &taskforce_rows),
+            (Some(4_100), Some(4_099)),
+        );
+        for cut in 1..=(2 * HOUR_LEN) {
+            assert!(
+                split_payload(&stamped[..stamped.len() - cut]).is_err(),
+                "a trailer short by {cut} bytes must not split"
+            );
+        }
+        let mut padded = stamped.clone();
+        padded.push(0);
+        assert!(split_payload(&padded).is_err());
+
+        // A flag with no trailer at all, and a trailer with no flag: the bit and
+        // the word are one fact.
+        let mut flag_without_trailer = both_surfaces_payload();
+        flag_without_trailer[6..8].copy_from_slice(&KNOWN_FLAGS.to_le_bytes());
+        assert!(split_payload(&flag_without_trailer).is_err());
+        let mut trailer_without_flag = both_surfaces_payload();
+        trailer_without_flag.extend_from_slice(&0i64.to_le_bytes());
+        assert!(split_payload(&trailer_without_flag).is_err());
+
+        // The trailer's VALUE, not only its presence: the codec narrows the
+        // `i64` to `i32` and refuses a word that does not fit, so a restatement
+        // that accepted one would drift from the recorder's own authority.
+        for word in [1i64 << 32, i64::MIN, i64::MAX, i64::from(i32::MAX) + 1] {
+            // ...at BOTH trailer slots, which only advancing `at` can get right.
+            for slot in 0..2usize {
+                let mut out_of_range = stamped.clone();
+                let at = out_of_range.len() - (2 - slot) * HOUR_LEN;
+                out_of_range[at..at + HOUR_LEN].copy_from_slice(&word.to_le_bytes());
+                assert!(
+                    split_payload(&out_of_range).is_err(),
+                    "hour word {word} at slot {slot}"
+                );
+            }
+        }
+        // ...and the two edges that DO fit are still accepted, so the bound is
+        // not off by one.
+        for word in [i64::from(i32::MIN), i64::from(i32::MAX)] {
+            let mut edge = stamped.clone();
+            let at = edge.len() - 2 * HOUR_LEN;
+            edge[at..at + HOUR_LEN].copy_from_slice(&word.to_le_bytes());
+            edge[at + HOUR_LEN..].copy_from_slice(&word.to_le_bytes());
+            assert!(split_payload(&edge).is_ok(), "hour word {word}");
+        }
     }
 
     #[test]
