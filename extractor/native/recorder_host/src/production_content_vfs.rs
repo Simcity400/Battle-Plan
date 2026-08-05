@@ -771,13 +771,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp() -> PathBuf {
+        // The Windows clock ticks at ~100 ns, so two parallel test threads can
+        // observe the same nanosecond and share this directory — and the one
+        // test that removes `root.parent()` then deletes the other's fixture
+        // mid-run. The process-wide serial makes every call unique regardless
+        // of clock resolution.
+        static TEMP_SERIAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         std::env::temp_dir().join(format!(
-            "recorder_production_content_vfs_{}_{}",
+            "recorder_production_content_vfs_{}_{}_{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            TEMP_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ))
     }
 

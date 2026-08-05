@@ -37,8 +37,8 @@ went, and a lagging cache never means lost evidence.
 
 **Recording is not optional.** The index saves Ghidra's *output* automatically —
 decompiled C, disassembly, p-code, call graphs — but it cannot save what you
-worked out. As of 2026-08-03 the registry holds **12 claims against 65,464
-exported functions**, so the next agent to open a function you already understood
+worked out. As of 2026-08-05 the registry holds **15 claims against 110,803
+indexed functions**, so the next agent to open a function you already understood
 sees the same raw decompile and pays your analysis cost again. Exports no longer
 get repeated; conclusions still do. An investigation that ends without a claim has
 not finished, it has only been done privately.
