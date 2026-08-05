@@ -1308,18 +1308,9 @@ pub fn build_certified_replay_artifacts(
         expected_source_sha256,
     )
     .map_err(|error| OpenError::Certification(error.to_string()))?;
-    let mut max_seek_deltas = 0u32;
-    for hour in replay_index.hours() {
-        let (_, receipt) = parity_reader
-            .reconstruct_json(hour.hour_index())
-            .map_err(|error| {
-                OpenError::Certification(format!(
-                    "binary reconstruction parity failed for hour {}: {error}",
-                    hour.hour_index()
-                ))
-            })?;
-        max_seek_deltas = max_seek_deltas.max(receipt.applied_deltas);
-    }
+    let max_seek_deltas = parity_reader.verify_every_hour().map_err(|error| {
+        OpenError::Certification(format!("binary reconstruction parity failed: {error}"))
+    })?;
     if max_seek_deltas >= checkpoint_interval_hours {
         return Err(OpenError::Certification(format!(
             "binary seek bound failed: observed {max_seek_deltas} delta(s) for interval {checkpoint_interval_hours}"

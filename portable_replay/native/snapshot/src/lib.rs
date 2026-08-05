@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 pub mod canon;
+pub mod canon_value;
 pub mod container;
 pub mod design_catalog;
 mod dir_store;

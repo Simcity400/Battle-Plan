@@ -2186,6 +2186,90 @@ fn binary_persistence_reconstruction_is_exact_at_every_checkpoint_distance() {
     }
 }
 
+/// Capture t26 hour 17032314, bytes 808196..808271 of that hour's world JSON,
+/// verbatim. This is the object the byte-exactness of the whole binary
+/// persistence path turned on: `"current"` is spelled `189352.52932739258` and
+/// `serde_json` cannot give that spelling back.
+const T26_HOUR_17032314_FUEL_OBJECT: &str =
+    r#"{"cost":0.0,"current":189352.52932739258,"gain":6.103515625,"max":207000.0}"#;
+
+/// The certified seek path returns the fold's bytes for a REAL captured hour's
+/// number spellings, and the thing it used to do instead is still wrong.
+///
+/// The cross-path golden tests above run the production parallel fold and
+/// compare its spilled bytes to a reconstruction, which is the stronger test of
+/// the plumbing — but the synthesized wire fixtures those tests drive emit no
+/// floating-point domain field, so they cannot witness a spelling defect. This
+/// one supplies the real spelling instead, at the `CacheBuildHour` seam the
+/// fold hands to, and asserts BOTH halves:
+///
+/// * the `serde_json::Value` round trip the cache used to perform still moves
+///   the token (so this fixture cannot decay into a tautology), and
+/// * the certified cache hands back the source bytes exactly.
+///
+/// A census of all 644 sealed t26 hours — 16,337,177,524 bytes of world JSON,
+/// 2,990,242 distinct number tokens — found 510 tokens that move this way.
+#[test]
+fn a_real_captured_hours_float_spelling_survives_a_certified_seek() {
+    // Half one: the defect is real, measured against the library the fold and
+    // the old cache both used.
+    let reparsed: serde_json::Value =
+        serde_json::from_str(T26_HOUR_17032314_FUEL_OBJECT).unwrap();
+    let reserialized = serde_json::to_string(&reparsed).unwrap();
+    assert_ne!(
+        reserialized, T26_HOUR_17032314_FUEL_OBJECT,
+        "the t26 fixture no longer witnesses the round-trip defect"
+    );
+    assert!(
+        reserialized.contains("189352.52932739255"),
+        "expected the one-ULP-low spelling, got {reserialized}"
+    );
+
+    // Half two: through the certified cache, at a checkpoint AND at a delta.
+    let bodies = [
+        format!(r#"{{"fuel":{}}}"#, r#"{"cost":0.0,"current":0.0,"gain":0.0,"max":207000.0}"#),
+        format!(r#"{{"fuel":{T26_HOUR_17032314_FUEL_OBJECT}}}"#),
+        format!(r#"{{"fuel":{T26_HOUR_17032314_FUEL_OBJECT}}}"#),
+    ];
+    let world_json = |hour: i64, body: &str| {
+        format!(
+            r#"{{"date":"1936.1.1.{}","game_id":"t26","hour_index":{hour},"schema_version":"1","world":{body}}}"#,
+            hour + 1
+        )
+        .into_bytes()
+    };
+    let source_sha = to_hex(&Sha256::digest(b"t26 fixture"));
+    let mut encoder = snapshot::ReplayCacheEncoder::new(Vec::new(), &source_sha, 2).unwrap();
+    for (position, body) in bodies.iter().enumerate() {
+        encoder
+            .push(snapshot::CacheBuildHour {
+                hour_index: 17_032_314 + position as i64,
+                date: format!("1936.1.1.{}", 17_032_314 + position as i64 + 1),
+                h4cr_start_offset: position as u64 * 100,
+                h4cr_end_offset: (position as u64 + 1) * 100,
+                world_json: world_json(17_032_314 + position as i64, body),
+            })
+            .unwrap_or_else(|error| panic!("push hour {position}: {error}"));
+    }
+    let (cache, index) = encoder
+        .finish("t26", "1", snapshot::CacheIdentityMode::Legacy, 300)
+        .unwrap();
+    let index_bytes = index.to_bytes().unwrap();
+    let cache = snapshot::CertifiedReplayCache::open(&index_bytes, cache, 300, &source_sha).unwrap();
+    for (position, body) in bodies.iter().enumerate() {
+        let hour = 17_032_314 + position as i64;
+        let (reconstructed, _) = cache.reconstruct_json(hour).unwrap();
+        assert_eq!(
+            reconstructed,
+            world_json(hour, body),
+            "hour {hour} did not come back byte-exact"
+        );
+    }
+    // The middle hour is a delta, not a keyframe, so the spelling survived the
+    // diff/patch round as well as the checkpoint encoding.
+    assert_eq!(index.hours()[1].delta_steps(), 1);
+}
+
 #[test]
 fn certified_artifacts_publish_the_retained_campaign_identity() {
     // Legacy-protocol streams must retain no CID1 at all; the seal-time join
