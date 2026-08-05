@@ -36,7 +36,14 @@ param(
     # A full Release without this path emits only fresh candidate artifacts for
     # a real capture. Supplying the resulting production receipt on a second
     # full Release is the only route to a portable package/production receipt.
-    [string]$ProductionCaptureReceiptPath = ""
+    [string]$ProductionCaptureReceiptPath = "",
+
+    # Where the C07 gate looks for the hash-pinned shipped installed content. Empty
+    # means the generator's own default install path. A machine without the game
+    # runs the reduced committed-artifact check and says so; this switch is for
+    # a machine that HAS the game somewhere else, so it can carry the full
+    # game-derived authority rather than the reduced one.
+    [string]$C07GameRoot = ""
 )
 
 Set-StrictMode -Version Latest
@@ -348,6 +355,139 @@ function Assert-C07GeneratedTreeLibraryReceipt {
 
     Write-Host ("C07 generated tree-library check: PASS ({0} artifacts, {1} buckets, {2} cells)" -f `
             $reportedOutputs.Count, $counts["bucket_count"], $counts["cell_count"])
+}
+
+function Assert-C07CommittedArtifactReceipt {
+    <#
+    .SYNOPSIS
+    Bind the reduced C07 check to what it reports, when the game is not here.
+
+    .DESCRIPTION
+    A hosted CI runner has no the game install, so the game-file-derived half of the
+    C07 gate genuinely cannot run there. The failure mode this function exists to
+    prevent is the one this repo keeps being bitten by: absence quietly reading
+    as a pass. Two things stop that here.
+
+    First, the generator does not exit zero. It exits 3, so nothing that binds
+    success to a zero exit code -- including a future caller that forgets this
+    distinction entirely -- can record the full gate as having passed.
+
+    Second, this function refuses anything but the reduced receipt, by schema and
+    by its explicit list of checks. The reduced check is not weak: it re-derives
+    the packed digest and the canonical library payload digest from the committed
+    artifacts through the same serializer the real run uses, and both must equal
+    the literals the crate compiles. What it cannot do is prove those bytes are
+    what the exact producer derives from the shipped BMPs, and that gap is
+    printed rather than glossed.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$ReceiptJson,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PinSource
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ReceiptJson)) {
+        throw "C07 tree-library generator reported the game absent but printed no committed-artifact receipt."
+    }
+    try {
+        $receipt = $ReceiptJson | ConvertFrom-Json
+    }
+    catch {
+        throw "C07 committed-artifact receipt is not JSON: $($_.Exception.Message)"
+    }
+
+    $schema = Get-RequiredReceiptScalar -Receipt $receipt -Field "schema"
+    if ($schema -cne "hoi4-c07-committed-artifact-self-consistency-v1") {
+        throw "C07 committed-artifact receipt states schema '$schema'; this gate only accepts hoi4-c07-committed-artifact-self-consistency-v1."
+    }
+    $mode = Get-RequiredReceiptScalar -Receipt $receipt -Field "mode"
+    if ($mode -cne "verify-committed") {
+        throw "C07 committed-artifact receipt states mode '$mode', not 'verify-committed'."
+    }
+    # The receipt must say, in its own words, that the game-derived half did not
+    # run. A receipt that omits this is not the reduced receipt.
+    $notRun = Get-RequiredReceiptScalar -Receipt $receipt -Field "game_derived_verification"
+    if (-not $notRun.StartsWith("NOT RUN")) {
+        throw "C07 committed-artifact receipt does not declare the game-derived half unrun: '$notRun'."
+    }
+
+    # Naming every check keeps this gate from silently shrinking: a reduced run
+    # that stopped re-deriving the payload digest would still be a valid JSON
+    # receipt with a zero-length checks list, and would pass a shape-only test.
+    $expectedChecks = @(
+        "bucket_record_counts_sum_to_pinned_cell_count",
+        "bucket_table_complete_and_ordinal_dense",
+        "bucket_table_sorted_by_bucket_id",
+        "generated_rust_sources_round_trip",
+        "library_payload_sha256_matches_pin",
+        "missing_cell_set_pin_is_the_empty_digest",
+        "packed_length_equals_bucket_table_total",
+        "packed_sha256_matches_pin",
+        "per_bucket_instance_sha256_matches_packed_slice"
+    )
+    $reportedChecksList = Get-RequiredReceiptList -Receipt $receipt -Field "checks"
+    $reportedChecks = @($reportedChecksList | Sort-Object)
+    if (Compare-Object -ReferenceObject $expectedChecks -DifferenceObject $reportedChecks -CaseSensitive) {
+        throw "C07 committed-artifact receipt reported checks [$($reportedChecks -join ', ')], not the nine this gate requires."
+    }
+
+    $counts = @{}
+    foreach ($count in @(
+            @{ Field = "bucket_count"; Expected = 296 },
+            @{ Field = "cell_count"; Expected = 99056 },
+            @{ Field = "packed_bytes"; Expected = 2377344 }
+        )) {
+        $observed = Get-RequiredReceiptScalar -Receipt $receipt -Field $count.Field
+        if ($observed -ne $count.Expected) {
+            throw "C07 committed artifacts report $($count.Field) = $observed, expected $($count.Expected). Library content moved; this is a finding, not a re-stamp."
+        }
+        $counts[$count.Field] = $observed
+    }
+
+    # The same pin binding as the full gate. The digests are re-derived from the
+    # committed artifacts rather than from the game, but they are still compared
+    # against the literals the crate compiles, read out of that source.
+    if (-not (Test-Path -LiteralPath $PinSource -PathType Leaf)) {
+        throw "C07 pin source is missing: $PinSource"
+    }
+    $pinText = Get-Content -LiteralPath $PinSource -Raw
+    foreach ($pin in @(
+            @{ Constant = "C07_TREE_CONTENT_LIBRARY_PACKED_BYTES_SHA256"; Field = "packed_sha256" },
+            @{ Constant = "C07_TREE_CONTENT_LIBRARY_PAYLOAD_SHA256"; Field = "content_library_payload_sha256" }
+        )) {
+        $pattern = '(?m)^pub const {0}\s*:\s*&str\s*=\s*"([0-9a-f]{{64}})"\s*;' -f $pin.Constant
+        $pinMatches = [regex]::Matches($pinText, $pattern)
+        if ($pinMatches.Count -eq 0) {
+            throw "C07 pin $($pin.Constant) was not found as a top-level 'pub const' declaration in $PinSource."
+        }
+        if ($pinMatches.Count -ne 1) {
+            throw "C07 pin $($pin.Constant) is declared $($pinMatches.Count) times in $PinSource; this gate cannot tell which one the crate compiles."
+        }
+        $rederived = Get-RequiredReceiptScalar -Receipt $receipt -Field $pin.Field
+        if ($pinMatches[0].Groups[1].Value -cne $rederived) {
+            throw "C07 committed artifacts re-derive $($pin.Field) = $rederived but $PinSource pins $($pinMatches[0].Groups[1].Value). Never edit a pin literal to match new content."
+        }
+    }
+
+    # Assigned before it is used, never wrapped inline: the helper comma-wraps to
+    # preserve list shape, and `@(...)` around the call would nest that wrapper
+    # and print the type name instead of the items.
+    $uncheckedList = Get-RequiredReceiptList -Receipt $receipt -Field "unchecked_without_the_game"
+    $unchecked = @($uncheckedList)
+    Write-Host ("C07 generated tree-library check: REDUCED ({0} checks, {1} buckets, {2} cells)" -f `
+            $reportedChecks.Count, $counts["bucket_count"], $counts["cell_count"])
+    Write-Host (
+        'C07 GAME-DERIVED HALF DID NOT RUN: the pinned the game files are absent ' +
+        'from this machine, so the committed artifacts were held only to each ' +
+        'other and to the pins the crate compiles. This validation carries NO ' +
+        'authority that the packed library is what the exact producer derives ' +
+        'from the shipped map files. Unchecked here: ' + ($unchecked -join ', ') + '. ' +
+        'To carry that authority, run this validation on a machine with the ' +
+        'pinned the game install, or pass -C07GameRoot pointing at one.'
+    )
 }
 
 function Get-DetourIdentityLanePackages {
@@ -665,14 +805,45 @@ try {
         if (-not $c07Python) {
             throw "python is not on PATH; the C07 generated tree-library gate cannot run."
         }
-        Write-Host ("> python {0} --verify" -f $c07TreeLibraryGenerator)
-        $c07ReceiptLines = & python $c07TreeLibraryGenerator "--verify"
-        if ($LASTEXITCODE -ne 0) {
-            throw "C07 generated tree-library artifacts drifted from the exact producer (generator exited $LASTEXITCODE)."
+        # `--allow-committed-fallback` does NOT weaken the gate on a machine with
+        # the game: that path still runs the full exact-producer verify and still
+        # exits zero, and the assertion below is unchanged. The switch only
+        # changes what happens when the pinned installed content are ABSENT, which used
+        # to be reported as artifact drift -- a false statement, and the reason
+        # master CI was red on every run. Absence now takes the reduced
+        # committed-artifact check and a non-zero exit of its own.
+        $c07Arguments = @("--verify", "--allow-committed-fallback")
+        if (-not [string]::IsNullOrWhiteSpace($C07GameRoot)) {
+            if (-not (Test-Path -LiteralPath $C07GameRoot -PathType Container)) {
+                throw "-C07GameRoot is not an existing directory: $C07GameRoot"
+            }
+            $c07Arguments += @("--game-root", $C07GameRoot)
         }
-        Assert-C07GeneratedTreeLibraryReceipt `
-            -ReceiptJson (($c07ReceiptLines | Out-String)) `
-            -PinSource $c07TreeLibraryPinSource
+        Write-Host ("> python {0} {1}" -f $c07TreeLibraryGenerator, ($c07Arguments -join " "))
+        $c07ReceiptLines = & python $c07TreeLibraryGenerator @c07Arguments
+        $c07Exit = $LASTEXITCODE
+        if ($c07Exit -eq 0) {
+            Assert-C07GeneratedTreeLibraryReceipt `
+                -ReceiptJson (($c07ReceiptLines | Out-String)) `
+                -PinSource $c07TreeLibraryPinSource
+        }
+        elseif ($c07Exit -eq 3) {
+            # Release is the one tier that MINTS AUTHORITY, and the reduced check
+            # cannot carry the claim a release makes: that the compiled tree
+            # library is what the exact producer derives from the shipped map
+            # files. A release cut on a machine without the game would ship that
+            # claim unproven, so absence is fatal here even though it is
+            # survivable everywhere else.
+            if ($Mode -eq "Release") {
+                throw "the C07 tree-library gate cannot run without the pinned the game install, and Release will not accept the reduced committed-artifact check. Cut the release on a machine with the game, or pass -C07GameRoot pointing at one."
+            }
+            Assert-C07CommittedArtifactReceipt `
+                -ReceiptJson (($c07ReceiptLines | Out-String)) `
+                -PinSource $c07TreeLibraryPinSource
+        }
+        else {
+            throw "C07 generated tree-library artifacts drifted from the exact producer (generator exited $c07Exit)."
+        }
     }
 
     $extractorReleaseRequested = $Mode -eq "Release" -and $Workspace -in @("All", "Extractor")

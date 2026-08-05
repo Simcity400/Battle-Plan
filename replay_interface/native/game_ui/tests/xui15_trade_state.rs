@@ -681,6 +681,63 @@ fn xui15_trade_panel_renders_a_modded_eight_resource_set_in_the_recordings_order
     }
 }
 
+/// A REORDERED resource table still builds every card, including oil's.
+///
+/// `common/resources` is moddable, so a mod may prepend to it and move oil off
+/// slot 0. The recorder identifies oil from the engine's own cached oil
+/// descriptor and stamps the current/max needed model on whichever slot that
+/// turns out to be; the panel must key on that stamp.
+///
+/// Restoring the `expected_order == 0` conjunct in `measured_resource_card`
+/// makes this red: the oil card fails its needed-semantics check, one card of
+/// eight comes back unbuilt, and the whole panel withholds its resource cards.
+#[test]
+fn xui15_trade_panel_builds_the_oil_card_when_a_mod_moves_oil_off_the_first_slot() {
+    const OIL_SLOT: usize = 3;
+    let modded = [
+        "aether", "bauxite", "cobalt", "oil", "steel", "rubber", "tungsten", "uranium",
+    ];
+    let mut view = view();
+    view.resource_rows = Leaf::Measured(resource_rows_for_with_oil_slot(&modded, OIL_SLOT));
+    let pools = pool_map_for(&modded);
+    view.produced = pools.clone();
+    view.imported = pools.clone();
+    view.used = pools.clone();
+    view.exported = pools.clone();
+    view.to_export = pools.clone();
+    view.base_export = pools.clone();
+    view.available_derived = pools;
+
+    let AdmittedTradeScreen::Visible(screen) =
+        admit_trade_screen(ViewStatus::Present, "GER", Some(&view))
+    else {
+        panic!("a reordered resource table must still be visible");
+    };
+
+    let TradeData::Available(cards) = &screen.resource_cards else {
+        panic!("resource cards unavailable: {:?}", screen.resource_cards);
+    };
+    assert_eq!(cards.len(), 8);
+    for (index, resource) in modded.iter().enumerate() {
+        assert_eq!(cards[index].resource, *resource);
+        assert_eq!(cards[index].visible_order, index as i64);
+        // The current/max pair is on the slot the recording marked, and on no
+        // other -- in particular not on slot 0, which a positional panel would
+        // have insisted on.
+        let is_oil = index == OIL_SLOT;
+        assert_eq!(
+            cards[index].needed_type,
+            if is_oil { "current_max" } else { "surplus" },
+            "slot {index} ({resource})"
+        );
+        assert_eq!(
+            cards[index].needed_current.is_some(),
+            is_oil,
+            "slot {index} ({resource}) current/max presence"
+        );
+    }
+}
+
 /// The pools are keyed by name and carry no order of their own. Without rows
 /// there is no stated order, and the panel must say so rather than invent one:
 /// rendering the map's own key order would put cards in a sequence the game
@@ -747,11 +804,19 @@ fn pool_map_for(resources: &[&str]) -> Leaf<BTreeMap<String, f64>> {
 /// slot 0 -- the engine's cached first resource -- and every other slot carries
 /// the surplus/deficit form; nothing here depends on a resource's name.
 fn resource_rows_for(resources: &[&str]) -> Vec<TradeResourceRow> {
+    resource_rows_for_with_oil_slot(resources, 0)
+}
+
+/// The same rows with the OIL SLOT as a parameter. Vanilla puts oil first, so
+/// the caller above passes 0; a mod that prepends to `common/resources` does
+/// not, and the panel has to key on the stamped needed-model rather than on the
+/// position.
+fn resource_rows_for_with_oil_slot(resources: &[&str], oil_slot: usize) -> Vec<TradeResourceRow> {
     resources
         .iter()
         .enumerate()
         .map(|(visible_order, resource)| {
-            let first = visible_order == 0;
+            let first = visible_order == oil_slot;
             TradeResourceRow {
                 resource: Leaf::Measured((*resource).to_string()),
                 visible_order: Leaf::Measured(visible_order as i64),

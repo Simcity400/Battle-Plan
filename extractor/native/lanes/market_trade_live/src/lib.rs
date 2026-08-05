@@ -1924,6 +1924,22 @@ fn decode_resource_row_trailer(
     }
     let mut seen = BTreeSet::new();
     let mut per_country = BTreeMap::<u32, BTreeSet<u32>>::new();
+    // WHICH SLOT IS OIL IS READ OFF THE ROW, NEVER OFF ITS POSITION.
+    //
+    // The producer identifies oil from the engine's own cached oil descriptor
+    // (`CStrategicResourceDatabase+0x60`) and stamps the answer on the row it
+    // belongs to, as the oil-only needed model: `NEEDED_CURRENT_MAX` with
+    // `FLAGS_KNOWN`, or -- from v4 -- `NEEDED_UNAVAILABLE` with
+    // `FLAG_NEEDED_UNAVAILABLE`. No other row may carry either shape.
+    //
+    // This decoder used to ask `resource_index == 0` instead, which assumes oil
+    // is the FIRST resource `common/resources` defines. That is true of vanilla
+    // and false of any mod that reorders or prepends a resource, and the failure
+    // was not a mislabelling but a total refusal: the real oil row would have
+    // been judged under the non-oil rule and the slot-0 row under the oil rule,
+    // so both would have raised a parse error.
+    let mut oil_slots = BTreeSet::new();
+    let mut oil_row_count = 0u32;
     for row_index in 0..row_count {
         let row = ResourceViewRow {
             tag_db_id: read_u32_le(trailer, cursor),
@@ -1960,7 +1976,20 @@ fn decode_resource_row_trailer(
                 "offset {offset}: MTRR row {row_index} has invalid shape"
             ));
         }
-        let oil = row.resource_index == 0;
+        // Oil-shaped means "carries a vocabulary only the oil row may use".
+        // Both the type and the flag word are tested, so a row that sets one
+        // without the other is still routed to the oil rule and refused by it
+        // rather than slipping through the non-oil rule.
+        let oil = matches!(
+            row.needed_type,
+            MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX | MARKET_TRADE_RESOURCE_NEEDED_UNAVAILABLE
+        ) || row.flags
+            & (MARKET_TRADE_RESOURCE_FLAGS_KNOWN | MARKET_TRADE_RESOURCE_FLAG_NEEDED_UNAVAILABLE)
+            != 0;
+        if oil {
+            oil_slots.insert(row.resource_index);
+            oil_row_count += 1;
+        }
         // The oil slot's needed-trio is either derived or explicitly unobserved.
         // The unobserved shape is checked EXACTLY -- type, flags and all three
         // zeroed fields -- so a zeroed trio can never pass as a derived one.
@@ -2010,6 +2039,30 @@ fn decode_resource_row_trailer(
             .or_default()
             .insert(row.visible_order);
         summary.resource_view_rows.push(row);
+    }
+    // Oil is ONE resource, and it is the same one for every country in a record.
+    // Reading the slot off the rows is only sound if the rows agree on it, so
+    // that agreement is checked rather than assumed: exactly one slot may wear
+    // the oil model, and every country must present it exactly once. Combined
+    // with the country/resource uniqueness above and the dense visible-order
+    // check below, this pins the oil slot to a single discovered value --
+    // whatever position the mod's `common/resources` put it in.
+    if country_count > 0 {
+        if oil_slots.len() != 1 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRR states {} oil slots, expected exactly 1",
+                oil_slots.len()
+            ));
+        }
+        if oil_row_count != country_count {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRR states {oil_row_count} oil rows for {country_count} countries"
+            ));
+        }
+    } else if oil_row_count != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: MTRR states an oil row with no countries"
+        ));
     }
     if per_country.len() != country_count as usize {
         summary.parse_errors.push(format!(
@@ -4120,6 +4173,22 @@ mod tests {
         tokens: &[String],
         version: u16,
     ) {
+        append_test_mtrr_with_oil_slot(payload, countries, resource_count, tokens, version, 0);
+    }
+
+    /// The same trailer with the OIL SLOT as a parameter. Vanilla puts oil
+    /// first, so every other fixture here passes 0; a mod that reorders or
+    /// prepends a resource in `common/resources` does not, and that is the case
+    /// the decoder must resolve from the row's own stamped model rather than
+    /// from its position.
+    fn append_test_mtrr_with_oil_slot(
+        payload: &mut Vec<u8>,
+        countries: &[u32],
+        resource_count: u32,
+        tokens: &[String],
+        version: u16,
+        oil_slot: u32,
+    ) {
         let carries_identity = version == MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION;
         payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
         payload.extend_from_slice(&version.to_le_bytes());
@@ -4150,7 +4219,7 @@ mod tests {
         }
         for &tag_db_id in countries {
             for resource_index in 0..resource_count {
-                let oil = resource_index == 0;
+                let oil = resource_index == oil_slot;
                 let balance = if oil { -10 } else { resource_index as i32 };
                 for value in [
                     tag_db_id,
@@ -5740,6 +5809,115 @@ mod tests {
         assert!(decoded.ok(), "{:?}", decoded.parse_errors);
         assert_eq!(decoded.resource_row_resource_count, 7);
         assert_eq!(decoded.resource_view_rows.len(), 7);
+    }
+
+    /// (c2) A REORDERED resource table decodes, with oil resolved at its real
+    /// slot rather than at slot 0.
+    ///
+    /// `common/resources` is an ordinary game file and a mod may prepend to it,
+    /// which moves oil off the first slot. The producer already identifies oil
+    /// from the database's own cached oil descriptor and stamps the oil
+    /// needed-model on that row; this asserts the decoder reads the stamp.
+    ///
+    /// Reverting `let oil = ...` to `row.resource_index == 0` makes this red:
+    /// the real oil row is then judged under the non-oil rule and the slot-0 row
+    /// under the oil rule, so BOTH raise parse errors and the record is refused
+    /// outright -- a modded game would publish nothing for D43.
+    #[test]
+    fn d43_mtrr_resolves_oil_at_its_real_slot_when_a_mod_reorders_the_table() {
+        let tokens: Vec<String> = [
+            "aether", "bauxite", "cobalt", "oil", "steel", "rubber", "tungsten",
+        ]
+        .iter()
+        .map(|token| (*token).to_string())
+        .collect();
+        let mut payload = complete_market_payload(1);
+        append_test_mtrr_with_oil_slot(
+            &mut payload,
+            &[47, 51],
+            7,
+            &tokens,
+            MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION,
+            3,
+        );
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded.ok(), "{:?}", decoded.parse_errors);
+        assert_eq!(decoded.resource_tokens, tokens);
+        assert_eq!(decoded.resource_view_rows.len(), 14);
+        // Exactly the slot-3 rows wear the oil model, one per country.
+        let oil_rows: Vec<&ResourceViewRow> = decoded
+            .resource_view_rows
+            .iter()
+            .filter(|row| row.needed_type == MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX)
+            .collect();
+        assert_eq!(oil_rows.len(), 2, "one oil row per country");
+        for row in oil_rows {
+            assert_eq!(row.resource_index, 3);
+            assert_eq!(row.flags, MARKET_TRADE_RESOURCE_FLAGS_KNOWN);
+            assert_eq!(row.needed_current, -12);
+            assert_eq!(row.needed_max, -8);
+        }
+        // And slot 0, which a positional decoder would have called oil, is an
+        // ordinary non-oil row with no needed pair.
+        for row in decoded
+            .resource_view_rows
+            .iter()
+            .filter(|row| row.resource_index == 0)
+        {
+            assert_eq!(row.flags, 0);
+            assert_eq!(row.needed_current, 0);
+            assert_eq!(row.needed_max, 0);
+        }
+    }
+
+    /// (c3) Two slots wearing the oil model is refused.
+    ///
+    /// Reading the oil slot off the rows is only sound because the rows are made
+    /// to agree on it, so the disagreement is checked rather than resolved to
+    /// whichever slot the decoder saw first.
+    #[test]
+    fn d43_mtrr_refuses_a_trailer_that_states_two_oil_slots() {
+        let tokens: Vec<String> = (0..7).map(|slot| format!("res_{slot}")).collect();
+        let mut payload = complete_market_payload(1);
+        let mtrr_at = payload.len();
+        append_test_mtrr_with_oil_slot(
+            &mut payload,
+            &[47],
+            7,
+            &tokens,
+            MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION,
+            2,
+        );
+        assert!(
+            decode_payload(0, &payload).ok(),
+            "the single-oil-slot fixture is accepted"
+        );
+
+        let rows_at = mtrr_at
+            + MARKET_TRADE_RESOURCE_ROW_HEADER_LEN
+            + 7 * STRATEGIC_RESOURCE_IDENTITY_STRIDE;
+        let second_oil = rows_at + 5 * MARKET_TRADE_RESOURCE_ROW_LEN;
+        payload[second_oil + 12..second_oil + 16]
+            .copy_from_slice(&MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX.to_le_bytes());
+        payload[second_oil + 40..second_oil + 44].copy_from_slice(&(-12i32).to_le_bytes());
+        payload[second_oil + 44..second_oil + 48].copy_from_slice(&(-12i32).to_le_bytes());
+        payload[second_oil + 48..second_oil + 52].copy_from_slice(&(-8i32).to_le_bytes());
+        payload[second_oil + 52..second_oil + 56]
+            .copy_from_slice(&MARKET_TRADE_RESOURCE_FLAGS_KNOWN.to_le_bytes());
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(!decoded.ok());
+        assert!(
+            decoded
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("MTRR states 2 oil slots")),
+            "{:?}",
+            decoded.parse_errors
+        );
     }
 
     /// (d) The decisive one for version safety. A stream one version PAST what

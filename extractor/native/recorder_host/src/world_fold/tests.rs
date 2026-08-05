@@ -10485,6 +10485,28 @@ fn append_d43_mtrr_resource_rows_with_identity(
     tokens: &[String],
     version: u16,
 ) {
+    append_d43_mtrr_resource_rows_with_oil_slot(
+        payload,
+        tag_db_ids,
+        resource_count,
+        tokens,
+        version,
+        0,
+    );
+}
+
+/// The same trailer with the OIL SLOT as a parameter. Vanilla puts oil first,
+/// so every other fixture here passes 0; a mod that reorders or prepends a
+/// resource in `common/resources` does not, and that is the case the decoder
+/// must resolve from the row's own stamped model rather than from its position.
+fn append_d43_mtrr_resource_rows_with_oil_slot(
+    payload: &mut Vec<u8>,
+    tag_db_ids: &[u32],
+    resource_count: u32,
+    tokens: &[String],
+    version: u16,
+    oil_slot: u32,
+) {
     let carries_identity = version == MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION;
     payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
     payload.extend_from_slice(&version.to_le_bytes());
@@ -10515,7 +10537,7 @@ fn append_d43_mtrr_resource_rows_with_identity(
     }
     for tag_db_id in tag_db_ids {
         for resource_index in 0..resource_count {
-            let oil = resource_index == 0;
+            let oil = resource_index == oil_slot;
             let balance = if oil { -4 } else { resource_index as i32 };
             payload.extend_from_slice(&tag_db_id.to_le_bytes());
             payload.extend_from_slice(&resource_index.to_le_bytes());
@@ -22866,6 +22888,148 @@ fn d43_fold_projects_a_renamed_first_resource_under_its_new_token() {
         .expect("resource rows");
     assert_eq!(rows[0]["resource"].as_str(), Some("petroleum"));
     assert_eq!(rows[6]["resource"].as_str(), Some("coal"));
+}
+
+/// (b2) A REORDERED resource table resolves oil at its real slot.
+///
+/// This is the mod case the positional test could not survive. `common/resources`
+/// is an ordinary game file: a mod may prepend to it, and then oil is no longer
+/// the first ACTIVE descriptor, so the producer's dense zero-based
+/// `resource_index` for oil is 3 rather than 0. The producer already got this
+/// right -- it identifies oil from the database's own cached oil descriptor and
+/// stamps the oil needed-model on that row -- and this asserts the fold reads
+/// the stamp instead of the position.
+///
+/// Reverting either decoder site to `resource_index == 0` makes this red, and
+/// not subtly: the parser judges the real oil row under the non-oil rule and
+/// refuses the whole record, so the domain publishes NOTHING for a modded game.
+#[test]
+fn d43_fold_resolves_oil_at_its_real_slot_when_a_mod_reorders_the_resource_table() {
+    const OIL_SLOT: u32 = 3;
+    let tokens: Vec<String> = [
+        "aether", "bauxite", "cobalt", "oil", "steel", "rubber", "tungsten",
+    ]
+    .iter()
+    .map(|token| (*token).to_string())
+    .collect();
+    let mut payload = d43_empty_payload();
+    append_d43_mtrr_resource_rows_with_oil_slot(
+        &mut payload,
+        &[67, 34],
+        7,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+        OIL_SLOT,
+    );
+
+    let mut fold = WorldFold::new("d43_reordered_resource_table");
+    fold.fold_market_trade(&payload)
+        .expect("a reordered resource table must fold, not be refused");
+
+    let mut countries = Map::new();
+    let mut unresolved = BTreeSet::new();
+    fold.project_market_trade_resource_rows(&mut countries, &mut unresolved);
+    assert_eq!(countries.len(), 2, "both countries projected");
+    for country in countries.values() {
+        let rows = country["economy"]["resource_trade"]["resource_rows"]
+            .as_array()
+            .expect("resource rows");
+        assert_eq!(rows.len(), 7);
+        // The oil-only pair hangs on the slot the wire says is oil, and on no
+        // other. A positional decoder would have hung it on `aether`.
+        for (slot, row) in rows.iter().enumerate() {
+            let carries_pair = row.get("needed_current").is_some();
+            assert_eq!(
+                carries_pair,
+                slot as u32 == OIL_SLOT,
+                "slot {slot} ({}) carries the oil needed pair: {carries_pair}",
+                row["resource"]
+            );
+        }
+        assert_eq!(rows[OIL_SLOT as usize]["resource"].as_str(), Some("oil"));
+        assert_eq!(rows[OIL_SLOT as usize]["needed_current"].as_f64(), Some(-12.0));
+        assert_eq!(rows[OIL_SLOT as usize]["needed_max"].as_f64(), Some(-8.0));
+        // And the resources that merely MOVED are still ordinary non-oil rows.
+        assert_eq!(rows[0]["resource"].as_str(), Some("aether"));
+        assert_eq!(rows[0]["needed_type"].as_str(), Some("surplus"));
+    }
+}
+
+/// (b3) The oil model is refused on two slots at once.
+///
+/// Reading the oil slot off the rows is only sound because the rows are made to
+/// agree on it. A payload whose countries disagree -- or one country carrying
+/// two oil rows -- must be refused rather than resolved to whichever slot the
+/// decoder happened to see first.
+#[test]
+fn d43_fold_refuses_an_mtrr_that_states_two_oil_slots() {
+    let tokens: Vec<String> = (0..7).map(|slot| format!("res_{slot}")).collect();
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_oil_slot(
+        &mut payload,
+        &[67],
+        7,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+        2,
+    );
+    parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect("the single-oil-slot fixture is accepted");
+
+    // Promote slot 5 to the oil needed-model as well, exactly as the producer
+    // would write it, leaving slot 2's row untouched.
+    let rows_at = mtrr_at + MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN
+        + 7 * STRATEGIC_RESOURCE_IDENTITY_STRIDE;
+    let second_oil = rows_at + 5 * MARKET_TRADE_RESOURCE_ROW_LEN;
+    payload[second_oil + 12..second_oil + 16]
+        .copy_from_slice(&MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX.to_le_bytes());
+    payload[second_oil + 40..second_oil + 44].copy_from_slice(&(-12i32).to_le_bytes());
+    payload[second_oil + 44..second_oil + 48].copy_from_slice(&(-12i32).to_le_bytes());
+    payload[second_oil + 48..second_oil + 52].copy_from_slice(&(-8i32).to_le_bytes());
+    payload[second_oil + 52..second_oil + 56]
+        .copy_from_slice(&MARKET_TRADE_RESOURCE_FLAGS_OIL.to_le_bytes());
+
+    let error = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect_err("two oil slots must be refused");
+    assert!(error.contains("states 2 oil slots"), "{error}");
+}
+
+/// (b4) A record with no oil row at all is refused.
+///
+/// The producer refuses to build descriptors when `common/resources` defines no
+/// oil, so a row set that reaches a reader without one did not come from a
+/// healthy producer. Accepting it would leave the fold with no slot to hang the
+/// oil model on and no way to say so.
+#[test]
+fn d43_fold_refuses_an_mtrr_with_no_oil_row() {
+    let tokens: Vec<String> = (0..7).map(|slot| format!("res_{slot}")).collect();
+    let mut payload = d43_empty_payload();
+    let mtrr_at = payload.len();
+    append_d43_mtrr_resource_rows_with_oil_slot(
+        &mut payload,
+        &[67],
+        7,
+        &tokens,
+        MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+        1,
+    );
+
+    // Demote the one oil row to an ordinary surplus row.
+    let rows_at = mtrr_at + MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN
+        + 7 * STRATEGIC_RESOURCE_IDENTITY_STRIDE;
+    let oil_row = rows_at + MARKET_TRADE_RESOURCE_ROW_LEN;
+    let balance = read_i32(&payload, oil_row + 16);
+    payload[oil_row + 12..oil_row + 16]
+        .copy_from_slice(&MARKET_TRADE_RESOURCE_NEEDED_DEFICIT.to_le_bytes());
+    payload[oil_row + 40..oil_row + 44].copy_from_slice(&balance.to_le_bytes());
+    payload[oil_row + 44..oil_row + 48].copy_from_slice(&0i32.to_le_bytes());
+    payload[oil_row + 48..oil_row + 52].copy_from_slice(&0i32.to_le_bytes());
+    payload[oil_row + 52..oil_row + 56].copy_from_slice(&0u32.to_le_bytes());
+
+    let error = parse_market_trade_resource_row_trailer(&payload, mtrr_at)
+        .expect_err("a row set with no oil row must be refused");
+    assert!(error.contains("states 0 oil slots"), "{error}");
 }
 
 /// (c) A v3 stream meeting a decoder that knows only v1/v2 refuses TYPED and

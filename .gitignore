@@ -151,3 +151,9 @@ __pycache__/
 *.pdb
 .merge-target/
 /.lane_tmp/
+
+# Per-lane evidence scratch (cargo logs, bench output, audit JSON). Lane
+# evidence belongs in the commit that cited it, not in the working tree: a
+# lane that needs to quote its own numbers cites the commit, not a path here.
+lane_*_analysis/
+/.lane_be/

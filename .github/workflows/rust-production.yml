@@ -87,7 +87,12 @@ jobs:
         run: |
           $tests = @(
             'ProductionCapture.Validation.ps1',
-            'Get-FullGameSizeProjection.ps1'
+            'Get-FullGameSizeProjection.ps1',
+            # This runner has no the game install, so the C07 gate below takes its
+            # reduced committed-artifact path. That path is only safe because
+            # the reduced receipt cannot be admitted as the full one, which is
+            # what this test proves.
+            'Test-C07GateReceiptAdmission.ps1'
           )
           foreach ($test in $tests) {
             $path = Join-Path '${{ github.workspace }}\extractor\native\scripts' $test

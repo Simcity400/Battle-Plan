@@ -355,13 +355,18 @@ fn measured_resource_card(
     let needed_current = row.needed_current.measured().copied();
     let needed_max = row.needed_max.measured().copied();
     let needed_type = measured(&row.needed_type)?.clone();
-    // The current/max needed form belongs to the engine's cached first
-    // resource -- vanilla's oil -- and the producer emits it for slot 0 only.
-    // Keying on `needed_type` plus that slot keeps the rule exactly as strong
-    // as it was without naming a resource a mod is free to rename.
+    // The current/max needed form belongs to the resource the ENGINE caches as
+    // oil, and `needed_type` is how the recording says which one that is.
+    //
+    // This used to also require `expected_order == 0`. That was true of vanilla
+    // -- oil is the first resource `common/resources` defines -- and false of
+    // any mod that reorders or prepends to that file, and it is not a slot the
+    // panel gets to choose: the producer identifies oil from the database's own
+    // cached oil descriptor, and the fold refuses any record in which more than
+    // one slot wears the current/max model. So the slot test added nothing on a
+    // well-formed record and silently dropped the oil card on a modded one.
     let needed_semantics = if needed_type == "current_max" {
-        expected_order == 0
-            && needed_current.is_some_and(exact_trade_i32_value)
+        needed_current.is_some_and(exact_trade_i32_value)
             && needed_max.is_some_and(exact_trade_i32_value)
             && needed_current == Some(needed)
     } else {

@@ -788,6 +788,34 @@ mod tests {
         ))
     }
 
+    /// Delete a uniquely-named scratch tree without letting the delete decide
+    /// the test's verdict.
+    ///
+    /// On Windows a file written moments ago is routinely still open in an
+    /// indexer or scanner, and `remove_dir_all` then returns
+    /// `PermissionDenied`. `.unwrap()` on that turned a cleanup hiccup into a
+    /// failure of an assertion about VFS relocation stability, which is a
+    /// different claim entirely -- it made this test flaky in the release gate
+    /// and said nothing true when it fired.
+    ///
+    /// The VFS reads its layers eagerly and holds no file handles, so a
+    /// lingering handle here is never ours; there is nothing for the test to
+    /// report. Retry briefly, then leave the directory to the OS: the name
+    /// carries the pid and a nanosecond stamp, so nothing else can collide with
+    /// what is left behind.
+    fn remove_scratch_tree(path: &Path) {
+        for attempt in 0..10 {
+            match fs::remove_dir_all(path) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(_) => return,
+            }
+        }
+    }
+
     #[test]
     fn directory_mod_override_is_relocation_stable() {
         let mut results = Vec::new();
@@ -839,7 +867,7 @@ mod tests {
                 vfs.resolve_required("interface/topbar.gui", "topbar")
                     .unwrap(),
             );
-            fs::remove_dir_all(root.parent().unwrap()).unwrap();
+            remove_scratch_tree(root.parent().unwrap());
         }
         assert_eq!(results[0], results[1]);
         assert_eq!(results[0].bytes, b"mod");
