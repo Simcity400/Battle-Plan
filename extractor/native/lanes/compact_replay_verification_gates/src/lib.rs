@@ -555,8 +555,11 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
-    // Domain 47 (`characters_leaders_cabinet_live`) folds as a FULL
-    // REPLACEMENT, so a rowless frame deletes the world's characters. On
+    // Domain 47 (`characters_leaders_cabinet_live`) folds as a full
+    // replacement of every family its payload declares it OBSERVED — which is
+    // all eight unless the header carries a family-presence mask saying
+    // otherwise. A rowless frame under a complete declaration therefore still
+    // deletes the world's characters, which is what this contract guards. On
     // 2026-07-10 a single dead cached character root failed every frame for a
     // whole session while the adapter kept processing ~11k characters/frame —
     // 39.5M rows in, 0 out — behind a tolerated rowless PARTIAL. The

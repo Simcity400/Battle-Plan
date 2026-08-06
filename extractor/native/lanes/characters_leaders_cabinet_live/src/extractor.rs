@@ -169,11 +169,19 @@ pub struct CharacterPortraitRecord {
     pub gfx: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaneFrame {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub schema_flags: u32,
+    /// Which row families this frame OBSERVED. A family whose bit is clear
+    /// carries no rows and is published as unknown, not as empty.
+    ///
+    /// Deliberately not `Default`-derived to zero: zero would mean "observed
+    /// nothing", and a frame built by `..Default::default()` somewhere that
+    /// forgot this field would silently declare a total gap. [`FAMILY_ALL`] is
+    /// the value every pre-existing construction meant.
+    pub known_families: u32,
     pub characters: Vec<CharacterRecord>,
     pub unit_leaders: Vec<UnitLeaderRecord>,
     pub unit_leader_traits: Vec<UnitLeaderTraitRecord>,
@@ -182,6 +190,25 @@ pub struct LaneFrame {
     pub advisor_roster: Vec<AdvisorRecord>,
     pub appointed_advisors: Vec<AdvisorRecord>,
     pub character_portraits: Vec<CharacterPortraitRecord>,
+}
+
+impl Default for LaneFrame {
+    fn default() -> Self {
+        Self {
+            elapsed_wall_ms: 0,
+            status_flags: 0,
+            schema_flags: 0,
+            known_families: compact::FAMILY_ALL,
+            characters: Vec::new(),
+            unit_leaders: Vec::new(),
+            unit_leader_traits: Vec::new(),
+            country_leader_roles: Vec::new(),
+            active_rulers: Vec::new(),
+            advisor_roster: Vec::new(),
+            appointed_advisors: Vec::new(),
+            character_portraits: Vec::new(),
+        }
+    }
 }
 
 impl LaneFrame {
@@ -369,10 +396,11 @@ pub fn appointed_advisors_from_active_ideas(
 
 pub fn encode_frame_payload(frame: &LaneFrame) -> Vec<u8> {
     let rows = frame.compact_rows();
-    compact::encode_payload(
+    compact::encode_payload_with_families(
         frame.elapsed_wall_ms,
         frame.status_flags,
         frame.schema_flags,
+        frame.known_families,
         &rows,
     )
 }
@@ -519,6 +547,15 @@ pub enum ExtractError {
         expected: u32,
         observed: u32,
     },
+    /// The ruling party's country-leader vector was read successfully and is
+    /// EMPTY: this country has no country leader.
+    ///
+    /// An outcome, not a failure. It is an `Err` only because the caller's
+    /// return type is one record, and it is kept apart from [`Self::BadVector`]
+    /// so that "there is no ruler" cannot be counted as "the ruler could not be
+    /// read" — the count that decides whether the active-ruler family may be
+    /// declared observed.
+    EmptyLeaderVector,
 }
 
 impl fmt::Display for ExtractError {
@@ -566,6 +603,10 @@ impl fmt::Display for ExtractError {
                 f,
                 "identity mismatch for {field} at 0x{addr:X}: observed {observed}, \
                  census read {expected}"
+            ),
+            Self::EmptyLeaderVector => write!(
+                f,
+                "CPoliticalParty.country_leaders is empty: this country has no country leader"
             ),
         }
     }
@@ -876,17 +917,30 @@ pub fn read_active_ruler_from_country<M: LaneMemory>(
         CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF,
         "CPoliticalParty.country_leaders.capacity",
     )?;
-    if size == 0
-        || size > capacity
-        || size > MAX_PARTY_LEADER_VEC
-        || capacity > MAX_PARTY_LEADER_VEC
-    {
+    // A ruling party with an EMPTY leader vector is a country that has no
+    // country leader. That is an OBSERVATION — the walk read the vector and
+    // found it empty — and it is the ordinary state of a great many minor
+    // countries.
+    //
+    // It shared an error variant with unreadable and malformed vectors, which
+    // made `active_ruler_unresolved_roots` count both and left nothing able to
+    // tell "no ruler" from "could not tell". That distinction decides whether
+    // the active-ruler family may be declared observed, so the two are now
+    // separate errors.
+    // MALFORMED FIRST. A zero size is only an observation if the vector around
+    // it is coherent: `size == 0` with a corrupt capacity is a torn or garbage
+    // read, and calling it "this country has no leader" would let it clear a
+    // ruler the walk never actually looked at.
+    if size > capacity || size > MAX_PARTY_LEADER_VEC || capacity > MAX_PARTY_LEADER_VEC {
         return Err(ExtractError::BadVector {
             field: "CPoliticalParty.country_leaders",
             begin: data,
             end: data.saturating_add((capacity as u64).saturating_mul(8)),
             size: size as u64,
         });
+    }
+    if size == 0 {
+        return Err(ExtractError::EmptyLeaderVector);
     }
     let country_leader = read_nonzero_u64_at(mem, data, "CCountryLeader[0]")?;
     require_vtable(
@@ -1332,5 +1386,57 @@ mod tests {
             u16::from_le_bytes(record[20..22].try_into().unwrap()),
             DOMAIN_ID
         );
+    }
+
+    /// A zero-size leader vector is "this country has no leader" only when the
+    /// vector around it is coherent. With a corrupt capacity it is a torn or
+    /// garbage read and must stay `BadVector`.
+    ///
+    /// The distinction decides whether the active-ruler family may be declared
+    /// observed, and therefore whether the fold replaces or retains every
+    /// country's `commanders.leader`. Calling a garbage read "no leader" would
+    /// let it delete a leader nothing actually looked at.
+    ///
+    /// MUTATION: move the `size == 0` arm back above the structural bounds
+    /// check in `read_active_ruler_from_country` and the second case below
+    /// returns `EmptyLeaderVector`.
+    #[test]
+    fn a_zero_size_leader_vector_is_absence_only_when_its_capacity_is_sane() {
+        let roots = ResolvedTypeRoots {
+            ccharacter_vtable: CHAR_VT,
+            carmy_leader_vtable: 0,
+            cnavy_leader_vtable: 0,
+            ccountry_leader_vtable: CL_VT,
+            cadvisor_vtable: ADV_VT,
+            cunit_leader_trait_vtable: 0,
+        };
+        let country = 0x9000u64;
+        let status = 0x9100u64;
+        let party = 0x9200u64;
+        let leader_vec = 0x9300u64;
+
+        let build = |capacity: u32| {
+            let mut mem = FakeMemory::default();
+            mem.write_u64(country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
+            mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
+            mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, leader_vec);
+            mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 0);
+            mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, capacity);
+            mem
+        };
+
+        // Coherent: an observation.
+        let mem = build(4);
+        assert!(matches!(
+            read_active_ruler_from_country(&mem, &roots, 2, country, None, None, None),
+            Err(ExtractError::EmptyLeaderVector)
+        ));
+
+        // Capacity beyond the bound: nothing here was read reliably.
+        let mem = build(MAX_PARTY_LEADER_VEC + 1);
+        assert!(matches!(
+            read_active_ruler_from_country(&mem, &roots, 2, country, None, None, None),
+            Err(ExtractError::BadVector { .. })
+        ));
     }
 }

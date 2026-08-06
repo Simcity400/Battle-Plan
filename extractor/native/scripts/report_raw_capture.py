@@ -339,9 +339,18 @@ def main() -> int:
     stream = manifest.get("compact_stream", {})
     per_domain = stream.get("per_domain", {})
 
+    # A tolerated domain has no residual failure flags, so without the reason
+    # and the frame count it reads as an ordinary clean domain. It is not one:
+    # it published an incomplete hour that somebody wrote an integrity argument
+    # for, and that argument is the only thing saying WHAT was missing. The
+    # manifest has carried both fields all along; this report threw them away.
     tolerated = {}
+    tolerated_reason = {}
+    tolerated_frames = {}
     for entry in manifest.get("expected_partial_tolerances_applied", []) or []:
         tolerated[entry.get("domain")] = int(entry.get("tolerated_flags", 0))
+        tolerated_reason[entry.get("domain")] = entry.get("reason") or ""
+        tolerated_frames[entry.get("domain")] = int(entry.get("frames_affected", 0))
 
     rows = []
     for name, info in sorted(per_domain.items()):
@@ -359,6 +368,8 @@ def main() -> int:
                 raw & LANE_LOCAL_MASK.get(domain_id, 0), domain_id
             ),
             "tolerated_flags": tolerated.get(name, 0),
+            "tolerated_reason": tolerated_reason.get(name, ""),
+            "tolerated_frames_affected": tolerated_frames.get(name, 0),
             "residual_failure_flags": residual_failure,
             "residual_failure_names": decode(residual_failure, domain_id),
             "unknown_bits": undefined_bits(domain_id, raw),
@@ -522,7 +533,10 @@ def main() -> int:
             print(f"    {'UNDEFINED:':10s} 0x{row['unknown_bits']:x}")
         if row["tolerated_flags"]:
             print(f"    {'tolerated:':10s} "
-                  f"{', '.join(decode(row['tolerated_flags'], row['domain_id']))}")
+                  f"{', '.join(decode(row['tolerated_flags'], row['domain_id']))}"
+                  f" over {row['tolerated_frames_affected']} frame(s)")
+            if row["tolerated_reason"]:
+                print(f"    {'because:':10s} {row['tolerated_reason']}")
         print(f"    {'RESIDUAL:':10s} {', '.join(row['residual_failure_names']) or 'none'}")
         print(f"    {'volume:':10s} records={row['data_record_count']} rows={row['row_count_total']}")
         if row["problems"]:

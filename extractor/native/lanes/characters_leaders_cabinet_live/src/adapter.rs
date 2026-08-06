@@ -197,14 +197,31 @@ pub struct AdapterBuildStats {
     pub country_leader_role_rows: u32,
     pub country_roots_seen: u32,
     pub active_ruler_rows: u32,
-    /// Countries whose active-ruler chain did not resolve this frame
-    /// (structurally empty ruling-party leader vector — e.g. rebels — or a
-    /// malformed vector). The ruler row for such a country is ABSENT, never
-    /// fabricated, and this is NOT a frame-failing rejection: every emitted
-    /// ruler row is individually vtable/type/tag-validated, and the live
-    /// 870ebf D04 re-probe resolved 435/437 countries with two expected
-    /// structural outliers.
+    /// Countries whose active-ruler chain COULD NOT BE READ this frame: an
+    /// unreadable pointer in the country/status/party chain, or a malformed
+    /// leader vector. The ruler row is absent and nothing is fabricated.
+    ///
+    /// Nonzero here now clears `FAMILY_ACTIVE_RULER` from the frame's declared
+    /// families (see `scheduled::read_native_scheduled_frame`), because the
+    /// fold full-replaces `commanders.leader` for every family it is told was
+    /// observed — so declaring the family whole while one country's read failed
+    /// deleted that country's leader and dated the deletion to this hour.
+    ///
+    /// That is why the empty-vector case had to move out of this counter. The
+    /// live 870ebf D04 re-probe resolved 435/437 countries with two expected
+    /// STRUCTURAL outliers — rebels and the like, whose ruling party simply has
+    /// no leaders. Those two are observations, and while they were counted here
+    /// this number was nonzero on every frame and could not be evidence of
+    /// anything. They are `active_ruler_absent_roots` now, and on that measured
+    /// world this counter is zero.
     pub active_ruler_unresolved_roots: u32,
+    /// Countries whose ruling party was READ and holds no country leader.
+    ///
+    /// Separated from `active_ruler_unresolved_roots` so the latter means only
+    /// "could not tell". Kept as its own count rather than discarded because a
+    /// sudden change in how many countries have no leader is a real signal
+    /// about the walk, just not a failure one.
+    pub active_ruler_absent_roots: u32,
     pub advisor_roots_seen: u32,
     pub advisor_roster_rows: u32,
     pub appointed_advisor_rows: u32,
@@ -509,6 +526,14 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
                     known_characters.insert((row.country_tag_db_id, row.char_id));
                 }
                 frame.active_rulers.push(row);
+            }
+            // A country whose ruling party has no leaders emits no row, and
+            // that is a complete answer rather than a missing one. Counting it
+            // as unresolved is what made `active_ruler_unresolved_roots`
+            // nonzero on essentially every frame, which in turn made the
+            // counter useless as evidence that the family was observed whole.
+            Err(ExtractError::EmptyLeaderVector) => {
+                stats.active_ruler_absent_roots = stats.active_ruler_absent_roots.saturating_add(1)
             }
             Err(_) => {
                 stats.active_ruler_unresolved_roots =

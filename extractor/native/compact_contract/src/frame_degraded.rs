@@ -544,9 +544,29 @@ mod tests {
         // And a domain with NO tolerance entry: the same PARTIAL_DATA is a
         // degradation, not an expected partial.
         assert_eq!(
-            compact_domain_completeness(47, COMPACT_STATUS_PARTIAL_DATA),
+            compact_domain_completeness(29, COMPACT_STATUS_PARTIAL_DATA),
             CompactDomainCompleteness::Degraded {
                 non_tolerated_flags: COMPACT_STATUS_PARTIAL_DATA
+            }
+        );
+        // d47 used to be that example. It has a tolerance now — for a payload
+        // that DECLARES which row families it did not observe — so the shape
+        // that must stay degraded is the one carrying a second bit. Every d47
+        // reader that publishes nothing sets `SOURCE_UNAVAILABLE` for exactly
+        // this reason: it is what keeps an undeclared loss outside a tolerance
+        // written for a declared one.
+        assert_eq!(
+            compact_domain_completeness(47, COMPACT_STATUS_PARTIAL_DATA),
+            CompactDomainCompleteness::ExpectedPartial
+        );
+        assert_eq!(
+            compact_domain_completeness(
+                47,
+                COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE
+            ),
+            CompactDomainCompleteness::Degraded {
+                non_tolerated_flags: COMPACT_STATUS_PARTIAL_DATA
+                    | COMPACT_STATUS_SOURCE_UNAVAILABLE
             }
         );
     }

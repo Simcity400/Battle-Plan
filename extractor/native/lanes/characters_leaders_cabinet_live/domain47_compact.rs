@@ -31,6 +31,23 @@ pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const SCHEMA_ROOTS_VALIDATED: u32 = 1;
 pub const SCHEMA_STATIC_NAME_CLOSURE: u32 = 1 << 1;
 pub const SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS: u32 = 1 << 2;
+/// The header word at offset 60 carries a [`FAMILY_ALL`]-domain presence mask
+/// naming which row families this payload OBSERVED.
+///
+/// Without this flag the word is reserved and must be zero, and the payload
+/// means what every d47 payload has always meant: a full snapshot of all eight
+/// families. That is why the flag is additive rather than a version bump —
+/// `schema_flags` is already this domain's capability-declaration axis, and the
+/// fold already conditions on two of its bits.
+pub const SCHEMA_FAMILY_PRESENCE_DECLARED: u32 = 1 << 3;
+
+/// Every assigned `schema_flags` bit. An unassigned bit has no defined meaning,
+/// so a payload carrying one is refused rather than interpreted — the same rule
+/// the shared status vocabulary applies to unassigned status bits.
+pub const SCHEMA_ALL_ASSIGNED: u32 = SCHEMA_ROOTS_VALIDATED
+    | SCHEMA_STATIC_NAME_CLOSURE
+    | SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS
+    | SCHEMA_FAMILY_PRESENCE_DECLARED;
 
 pub const ROW_CHARACTER: u8 = 1;
 pub const ROW_UNIT_LEADER: u8 = 2;
@@ -40,6 +57,86 @@ pub const ROW_ACTIVE_RULER: u8 = 5;
 pub const ROW_ADVISOR_ROSTER: u8 = 6;
 pub const ROW_APPOINTED_ADVISOR: u8 = 7;
 pub const ROW_CHARACTER_PORTRAIT: u8 = 8;
+
+/// One bit per row family, positionally derived from the row kind so the two
+/// vocabularies cannot drift: family bit `n` is row kind `n + 1`.
+///
+/// # What a family bit means, and what it does not
+///
+/// A SET bit says the producer observed that family this frame. The family may
+/// still be legitimately EMPTY — a country with no advisors carries no advisor
+/// rows — and that emptiness is an observation.
+///
+/// A CLEAR bit says the producer did NOT observe that family: its rows are
+/// unknown, not absent. This is the whole distinction the mask exists to carry.
+/// A consumer must retain whatever it already knew about a clear family and
+/// must never read the missing rows as deletions.
+///
+/// The mask is a WHOLE-FAMILY vocabulary. A family declared present whose rows
+/// were partially lost is a defect, not a gap, and must carry an untolerated
+/// status bit; clearing an unrelated family's bit does not launder it.
+pub const FAMILY_CHARACTER: u32 = 1 << (ROW_CHARACTER - 1);
+pub const FAMILY_UNIT_LEADER: u32 = 1 << (ROW_UNIT_LEADER - 1);
+pub const FAMILY_UNIT_LEADER_TRAIT: u32 = 1 << (ROW_UNIT_LEADER_TRAIT - 1);
+pub const FAMILY_COUNTRY_LEADER_ROLE: u32 = 1 << (ROW_COUNTRY_LEADER_ROLE - 1);
+pub const FAMILY_ACTIVE_RULER: u32 = 1 << (ROW_ACTIVE_RULER - 1);
+pub const FAMILY_ADVISOR_ROSTER: u32 = 1 << (ROW_ADVISOR_ROSTER - 1);
+pub const FAMILY_APPOINTED_ADVISOR: u32 = 1 << (ROW_APPOINTED_ADVISOR - 1);
+pub const FAMILY_CHARACTER_PORTRAIT: u32 = 1 << (ROW_CHARACTER_PORTRAIT - 1);
+
+/// All eight families observed. This is what an undeclared payload decodes to,
+/// so legacy streams keep their exact meaning.
+pub const FAMILY_ALL: u32 = FAMILY_CHARACTER
+    | FAMILY_UNIT_LEADER
+    | FAMILY_UNIT_LEADER_TRAIT
+    | FAMILY_COUNTRY_LEADER_ROLE
+    | FAMILY_ACTIVE_RULER
+    | FAMILY_ADVISOR_ROSTER
+    | FAMILY_APPOINTED_ADVISOR
+    | FAMILY_CHARACTER_PORTRAIT;
+
+/// The families whose roots come from the shared background heap sweep rather
+/// than from the exact engine-owned character-manager census.
+///
+/// The sweep needs seconds to complete its first pass over process memory, and
+/// until it has, these four families are unknown while the census families are
+/// exactly known. That asymmetry — not any property of the data — is why the
+/// mask exists.
+///
+/// Appointed advisors are in the set because they are an intersection of the
+/// advisor roster with each country's active ideas: no roster, no appointment
+/// claim. Active rulers are NOT, because they are read from the same-frame
+/// country politics roots, which the sweep has nothing to do with.
+pub const FAMILY_HEAP_SWEEP_DERIVED: u32 = FAMILY_UNIT_LEADER_TRAIT
+    | FAMILY_COUNTRY_LEADER_ROLE
+    | FAMILY_ADVISOR_ROSTER
+    | FAMILY_APPOINTED_ADVISOR;
+
+/// What a prewarm that censused the character manager but found the heap sweep
+/// cold can honestly claim to have observed.
+pub const FAMILY_CENSUS_ONLY: u32 = FAMILY_ALL & !FAMILY_HEAP_SWEEP_DERIVED;
+
+/// The wire name of each family bit, ascending. Used by the fold and by replay
+/// to spell a gap in the snapshot rather than as a number nobody can read.
+pub const FAMILY_NAMES: &[(u32, &str)] = &[
+    (FAMILY_CHARACTER, "characters"),
+    (FAMILY_UNIT_LEADER, "unit_leaders"),
+    (FAMILY_UNIT_LEADER_TRAIT, "unit_leader_traits"),
+    (FAMILY_COUNTRY_LEADER_ROLE, "country_leader_roles"),
+    (FAMILY_ACTIVE_RULER, "active_rulers"),
+    (FAMILY_ADVISOR_ROSTER, "advisor_roster"),
+    (FAMILY_APPOINTED_ADVISOR, "appointed_advisors"),
+    (FAMILY_CHARACTER_PORTRAIT, "character_portraits"),
+];
+
+/// The families this payload did NOT observe, by wire name, ascending.
+pub fn absent_family_names(family_presence_mask: u32) -> Vec<&'static str> {
+    FAMILY_NAMES
+        .iter()
+        .filter(|(bit, _)| (family_presence_mask & bit) == 0)
+        .map(|(_, name)| *name)
+        .collect()
+}
 
 pub const UNIT_LEADER_ARMY: u8 = 1;
 pub const UNIT_LEADER_NAVY: u8 = 2;
@@ -158,6 +255,10 @@ pub enum CharacterLaneRow<'a> {
 pub struct Domain44GateSummary {
     pub status_flags_or: u32,
     pub schema_flags_or: u32,
+    /// Which row families this payload observed. Zero only when the header was
+    /// too short to decode at all; every decoded payload — declared or not —
+    /// leaves a real mask here, and an undeclared one leaves [`FAMILY_ALL`].
+    pub family_presence_mask: u32,
     pub row_count_total: u64,
     pub character_rows: u64,
     pub unit_leader_rows: u64,
@@ -177,6 +278,10 @@ pub struct Domain44GateSummary {
 pub struct DecodedDomain47Payload {
     pub status_flags: u32,
     pub schema_flags: u32,
+    /// Which row families this payload observed; see [`FAMILY_CHARACTER`].
+    /// [`FAMILY_ALL`] for every payload that carries no declaration, so a fold
+    /// written against this field needs no legacy branch.
+    pub family_presence_mask: u32,
     pub rows: Vec<DecodedDomain47Row>,
 }
 
@@ -342,10 +447,70 @@ struct RowCounts {
     character_portraits: u32,
 }
 
+/// Encode a payload that observed every family.
+///
+/// This is the shape d47 has always emitted, byte for byte: the declaration
+/// flag stays clear and offset 60 stays zero. Every fixture, gate and
+/// verification helper that predates per-family admission still calls this.
 pub fn encode_payload(
     elapsed_wall_ms: u64,
     status_flags: u32,
     schema_flags: u32,
+    rows: &[CharacterLaneRow<'_>],
+) -> Vec<u8> {
+    encode_payload_with_families(elapsed_wall_ms, status_flags, schema_flags, FAMILY_ALL, rows)
+}
+
+/// The one place a d47 payload is built, and therefore the one place the status
+/// word and the family declaration are derived from the same fact.
+///
+/// # Why the status is decided here and not by the caller
+///
+/// The tolerance table admits a d47 record whose only failure-class bit is
+/// `PARTIAL_DATA`. If a caller could set that bit without declaring a family
+/// gap — or declare a gap without setting it — a genuine defect would be
+/// admitted as a reviewed partial, which is the one failure mode the shared
+/// degraded vocabulary says is worse than refusing outright. So the bit is a
+/// FUNCTION of `family_presence_mask` here, and [`decode_payload`] checks the
+/// implication in both directions. A new emit site cannot get this wrong,
+/// because there is nothing for it to get wrong.
+///
+/// Callers keep their own failure bits: a declared partial that ALSO lost rows
+/// inside a family it claims to have observed still carries whatever bit says
+/// so, which puts it back outside the tolerance where it belongs.
+pub fn encode_payload_with_families(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    schema_flags: u32,
+    family_presence_mask: u32,
+    rows: &[CharacterLaneRow<'_>],
+) -> Vec<u8> {
+    let declared = family_presence_mask != FAMILY_ALL;
+    let schema_flags = if declared {
+        schema_flags | SCHEMA_FAMILY_PRESENCE_DECLARED
+    } else {
+        schema_flags & !SCHEMA_FAMILY_PRESENCE_DECLARED
+    };
+    let status_flags = if declared {
+        status_flags | STATUS_PARTIAL_DATA
+    } else {
+        status_flags
+    };
+    let reserved_or_families = if declared { family_presence_mask } else { 0 };
+    encode_payload_inner(
+        elapsed_wall_ms,
+        status_flags,
+        schema_flags,
+        reserved_or_families,
+        rows,
+    )
+}
+
+fn encode_payload_inner(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    schema_flags: u32,
+    reserved_or_families: u32,
     rows: &[CharacterLaneRow<'_>],
 ) -> Vec<u8> {
     let mut strings = StringTable::default();
@@ -480,7 +645,7 @@ pub fn encode_payload(
     push_u32(&mut out, counts.traits);
     push_u32(&mut out, row_bytes.len().min(u32::MAX as usize) as u32);
     push_u32(&mut out, schema_flags);
-    push_u32(&mut out, 0);
+    push_u32(&mut out, reserved_or_families);
     strings.encode_into(&mut out);
     out.extend_from_slice(&row_bytes);
     out
@@ -499,6 +664,149 @@ pub fn encode_compact_data_record(sequence: u64, game_hour_raw: i32, payload: &[
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(payload);
     out
+}
+
+/// Read the header's family declaration and refuse every spelling of it that
+/// would let a consumer read a gap as a fact.
+///
+/// Returns the presence mask the rest of the decode should believe. On any
+/// refusal it returns [`FAMILY_ALL`] — the conservative value, because it makes
+/// the row-side checks below demand a complete payload rather than excusing
+/// missing rows on the strength of a declaration that was just rejected.
+///
+/// # The status coupling
+///
+/// Both directions are enforced, and they are what binds the shared tolerance
+/// table to this payload's own words:
+///
+///  * a declared payload MUST carry `PARTIAL_DATA`, so it can never certify as
+///    a complete hour while admitting it did not observe a family;
+///  * a payload whose only failure-class bit is `PARTIAL_DATA` MUST be
+///    declared, so the tolerance entry can never absorb an undeclared defect.
+///
+/// The second is the load-bearing one. `COMPACT_EXPECTED_PARTIAL_TOLERANCES`
+/// classifies from the status word alone; without this rule any d47 reader that
+/// set `PARTIAL_DATA` for its own reasons would silently inherit a tolerance
+/// written for a completely different situation.
+fn decode_family_presence_mask(
+    offset: usize,
+    schema_flags: u32,
+    status_flags: u32,
+    reserved_or_families: u32,
+    parse_errors: &mut Vec<String>,
+) -> u32 {
+    let unassigned_schema = schema_flags & !SCHEMA_ALL_ASSIGNED;
+    if unassigned_schema != 0 {
+        parse_errors.push(format!(
+            "offset {offset}: character lane schema_flags carry unassigned bits {unassigned_schema:#010x}"
+        ));
+        return FAMILY_ALL;
+    }
+    let declared = (schema_flags & SCHEMA_FAMILY_PRESENCE_DECLARED) != 0;
+    // The failure-class bits this payload spells for itself. Kept local rather
+    // than imported so this crate's wire grammar does not take a dependency on
+    // the shared contract crate purely to name three constants it already has.
+    let failure_flags = status_flags
+        & (STATUS_WORKER_PANIC
+            | STATUS_BRIDGE_UNAVAILABLE
+            | STATUS_SOURCE_UNAVAILABLE
+            | STATUS_PARTIAL_DATA);
+    if !declared {
+        if reserved_or_families != 0 {
+            parse_errors.push(format!(
+                "offset {offset}: character lane reserved header field is nonzero"
+            ));
+        }
+        if failure_flags == STATUS_PARTIAL_DATA {
+            parse_errors.push(format!(
+                "offset {offset}: character lane declares partial data with no family-presence \
+                 declaration, so nothing names what it failed to observe"
+            ));
+        }
+        return FAMILY_ALL;
+    }
+    if (status_flags & STATUS_PARTIAL_DATA) == 0 {
+        parse_errors.push(format!(
+            "offset {offset}: character lane declares a family-presence mask without partial data \
+             status, so an incomplete hour would certify complete"
+        ));
+    }
+    let unassigned_families = reserved_or_families & !FAMILY_ALL;
+    if unassigned_families != 0 {
+        parse_errors.push(format!(
+            "offset {offset}: character lane family-presence mask carries unassigned bits \
+             {unassigned_families:#010x}"
+        ));
+        return FAMILY_ALL;
+    }
+    if reserved_or_families == FAMILY_ALL {
+        // Two spellings of "complete" would make the byte-identity of an
+        // ordinary payload unprovable: the same snapshot could arrive declared
+        // or undeclared and nothing would say which was intended.
+        parse_errors.push(format!(
+            "offset {offset}: character lane declares every family present; a complete snapshot is \
+             spelled by omitting the declaration"
+        ));
+        return FAMILY_ALL;
+    }
+    if reserved_or_families == 0 {
+        parse_errors.push(format!(
+            "offset {offset}: character lane family-presence mask observes no family at all"
+        ));
+        return FAMILY_ALL;
+    }
+    if (reserved_or_families & FAMILY_CHARACTER) == 0 {
+        // Every other family's rows carry a (country, char_id) that must join
+        // this payload's own character census; without it nothing in the
+        // payload can be validated at all.
+        parse_errors.push(format!(
+            "offset {offset}: character lane family-presence mask omits the character census that \
+             every other family joins against"
+        ));
+        return FAMILY_ALL;
+    }
+    if (reserved_or_families & FAMILY_UNIT_LEADER_TRAIT) != 0
+        && (reserved_or_families & FAMILY_UNIT_LEADER) == 0
+    {
+        parse_errors.push(format!(
+            "offset {offset}: character lane observes unit-leader traits without the unit leaders \
+             they attach to"
+        ));
+        return FAMILY_ALL;
+    }
+    if (reserved_or_families & FAMILY_APPOINTED_ADVISOR) != 0
+        && (reserved_or_families & FAMILY_ADVISOR_ROSTER) == 0
+    {
+        // An appointed advisor is a member of the roster it was appointed from;
+        // consumers validate exactly that subset relation.
+        parse_errors.push(format!(
+            "offset {offset}: character lane observes appointed advisors without the advisor roster \
+             they are a subset of"
+        ));
+        return FAMILY_ALL;
+    }
+    if (reserved_or_families & FAMILY_APPOINTED_ADVISOR) != 0
+        && (schema_flags & SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS) == 0
+    {
+        // Checked on the FAMILY and not on the rows: an appointed family
+        // observed to be empty is still an appointment claim, and it needs the
+        // same identity-intersection authority a non-empty one does.
+        parse_errors.push(format!(
+            "offset {offset}: character lane observes appointed advisors without the active-idea \
+             identity-intersection authority"
+        ));
+        return FAMILY_ALL;
+    }
+    if (reserved_or_families & FAMILY_CHARACTER_PORTRAIT) != 0
+        && (schema_flags & SCHEMA_STATIC_NAME_CLOSURE) == 0
+    {
+        parse_errors.push(format!(
+            "offset {offset}: character lane observes character portraits without static \
+             name-closure authority"
+        ));
+        return FAMILY_ALL;
+    }
+    reserved_or_families
 }
 
 pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
@@ -523,15 +831,18 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let expected_traits = read_u32(payload, 48) as u64;
     let row_bytes = read_u32(payload, 52) as usize;
     let schema_flags = read_u32(payload, 56);
-    let reserved0 = read_u32(payload, 60);
+    let reserved_or_families = read_u32(payload, 60);
     summary.status_flags_or |= status_flags;
     summary.schema_flags_or |= schema_flags;
 
-    if reserved0 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: character lane reserved header field is nonzero"
-        ));
-    }
+    let family_presence_mask = decode_family_presence_mask(
+        offset,
+        schema_flags,
+        status_flags,
+        reserved_or_families,
+        &mut summary.parse_errors,
+    );
+    summary.family_presence_mask = family_presence_mask;
 
     let mut cursor = HEADER_LEN;
     let string_start = cursor;
@@ -1034,7 +1345,57 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         observed_traits,
     );
 
+    // A row of a family the header says was NOT observed is a payload
+    // contradicting itself: the mask would tell a consumer to retain its prior
+    // state for that family while the rows told it to replace it.
+    for (family, name, observed) in [
+        (FAMILY_CHARACTER, "character", observed_characters),
+        (FAMILY_UNIT_LEADER, "unit leader", observed_unit_leaders),
+        (FAMILY_UNIT_LEADER_TRAIT, "unit leader trait", observed_traits),
+        (
+            FAMILY_COUNTRY_LEADER_ROLE,
+            "country leader role",
+            observed_country_leader_roles,
+        ),
+        (FAMILY_ACTIVE_RULER, "active ruler", observed_active_rulers),
+        (
+            FAMILY_ADVISOR_ROSTER,
+            "advisor roster",
+            observed_advisor_roster,
+        ),
+        (
+            FAMILY_APPOINTED_ADVISOR,
+            "appointed advisor",
+            observed_appointed_advisors,
+        ),
+        (
+            FAMILY_CHARACTER_PORTRAIT,
+            "character portrait",
+            summary.character_portrait_rows,
+        ),
+    ] {
+        if (family_presence_mask & family) == 0 && observed != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: character lane carries {observed} {name} row(s) for a family its \
+                 header declares it did not observe"
+            ));
+        }
+    }
+
     for (unit_id, expected) in declared_trait_counts {
+        // A unit-leader row's `trait_count` is a statement about the trait
+        // family. When that family was not observed the producer never walked
+        // the trait vector, so the only honest value is zero — and zero here
+        // means "not observed", never "this leader has no traits". Without this
+        // the UnitLeader family would be declared present while quietly
+        // asserting a trait count nobody read.
+        if (family_presence_mask & FAMILY_UNIT_LEADER_TRAIT) == 0 && expected != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: unit leader {unit_id} declares {expected} traits although the \
+                 trait family was not observed"
+            ));
+            continue;
+        }
         let observed = observed_trait_counts.get(&unit_id).copied().unwrap_or(0);
         if observed != expected {
             summary.parse_errors.push(format!(
@@ -1093,6 +1454,14 @@ fn decode_payload_rows_checked(payload: &[u8]) -> Result<DecodedDomain47Payload,
     let string_bytes = read_u32(payload, 20) as usize;
     let row_bytes = read_u32(payload, 52) as usize;
     let schema_flags = read_u32(payload, 56);
+    // Not re-validated here: `decode_payload_rows` runs the full
+    // `decode_payload` gate first and returns its errors, so by this point the
+    // declaration is either valid or the caller never got here.
+    let family_presence_mask = if (schema_flags & SCHEMA_FAMILY_PRESENCE_DECLARED) != 0 {
+        read_u32(payload, 60)
+    } else {
+        FAMILY_ALL
+    };
 
     let mut cursor = HEADER_LEN;
     let string_end = cursor
@@ -1265,6 +1634,7 @@ fn decode_payload_rows_checked(payload: &[u8]) -> Result<DecodedDomain47Payload,
     Ok(DecodedDomain47Payload {
         status_flags,
         schema_flags,
+        family_presence_mask,
         rows,
     })
 }
@@ -2089,5 +2459,361 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("ambiguous flag disagrees")));
+    }
+
+    /// The family bits and the row kinds are one vocabulary, not two lists that
+    /// have to be kept in step by hand.
+    #[test]
+    fn every_row_kind_has_exactly_one_family_bit() {
+        let kinds = [
+            ROW_CHARACTER,
+            ROW_UNIT_LEADER,
+            ROW_UNIT_LEADER_TRAIT,
+            ROW_COUNTRY_LEADER_ROLE,
+            ROW_ACTIVE_RULER,
+            ROW_ADVISOR_ROSTER,
+            ROW_APPOINTED_ADVISOR,
+            ROW_CHARACTER_PORTRAIT,
+        ];
+        assert_eq!(kinds.len(), FAMILY_NAMES.len());
+        let mut union = 0u32;
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let bit = 1u32 << (kind - 1);
+            assert_eq!(
+                FAMILY_NAMES[index].0, bit,
+                "row kind {kind} and family name table disagree"
+            );
+            assert_eq!(union & bit, 0, "family bit for row kind {kind} is duplicated");
+            union |= bit;
+        }
+        assert_eq!(union, FAMILY_ALL);
+        assert_eq!(
+            FAMILY_CENSUS_ONLY | FAMILY_HEAP_SWEEP_DERIVED,
+            FAMILY_ALL,
+            "the census and sweep sets must partition the families, or a family belongs to neither"
+        );
+        assert_eq!(FAMILY_CENSUS_ONLY & FAMILY_HEAP_SWEEP_DERIVED, 0);
+    }
+
+    fn declared(mask: u32, rows: &[CharacterLaneRow<'_>]) -> Vec<String> {
+        let payload = encode_payload_with_families(
+            0,
+            0,
+            SCHEMA_ROOTS_VALIDATED
+                | SCHEMA_STATIC_NAME_CLOSURE
+                | SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
+            mask,
+            rows,
+        );
+        decode_payload(0, &payload).parse_errors
+    }
+
+    /// A declared census-only payload is the ordinary new shape and must decode
+    /// cleanly, carrying its mask through to the consumer.
+    #[test]
+    fn a_declared_census_only_payload_decodes_and_carries_its_mask() {
+        let rows = vec![CharacterLaneRow::Character(CharacterRow {
+            country_tag_db_id: 3,
+            char_id: 2450,
+            name: Some("Iosif Stalin"),
+            token: Some("SOV_iosif_stalin"),
+        })];
+        let payload = encode_payload_with_families(
+            0,
+            0,
+            SCHEMA_ROOTS_VALIDATED
+                | SCHEMA_STATIC_NAME_CLOSURE
+                | SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
+            FAMILY_CENSUS_ONLY,
+            &rows,
+        );
+        let summary = decode_payload(0, &payload);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert_eq!(summary.family_presence_mask, FAMILY_CENSUS_ONLY);
+        // The encoder derives the status from the mask, so the two can never
+        // disagree about whether this hour is complete.
+        assert_eq!(summary.status_flags_or & STATUS_PARTIAL_DATA, STATUS_PARTIAL_DATA);
+        assert_eq!(summary.status_flags_or & STATUS_SOURCE_UNAVAILABLE, 0);
+        assert_eq!(
+            summary.schema_flags_or & SCHEMA_FAMILY_PRESENCE_DECLARED,
+            SCHEMA_FAMILY_PRESENCE_DECLARED
+        );
+        assert_eq!(
+            absent_family_names(summary.family_presence_mask),
+            vec![
+                "unit_leader_traits",
+                "country_leader_roles",
+                "advisor_roster",
+                "appointed_advisors"
+            ]
+        );
+    }
+
+    /// Undeclared payloads keep their old meaning exactly: every family
+    /// observed, and the reserved word still refused when non-zero.
+    #[test]
+    fn an_undeclared_payload_still_means_every_family() {
+        let payload = encode_payload(0, 0, SCHEMA_ROOTS_VALIDATED, &[]);
+        let summary = decode_payload(0, &payload);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert_eq!(summary.family_presence_mask, FAMILY_ALL);
+        assert_eq!(summary.schema_flags_or & SCHEMA_FAMILY_PRESENCE_DECLARED, 0);
+
+        let mut tampered = payload.clone();
+        tampered[60..64].copy_from_slice(&FAMILY_CENSUS_ONLY.to_le_bytes());
+        assert!(decode_payload(0, &tampered)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("reserved header field is nonzero")));
+    }
+
+    /// Every spelling the declaration must refuse, and why each one matters.
+    #[test]
+    fn the_family_declaration_refuses_every_incoherent_spelling() {
+        let character = CharacterLaneRow::Character(CharacterRow {
+            country_tag_db_id: 3,
+            char_id: 2450,
+            name: None,
+            token: None,
+        });
+
+        // Omitting the census every other family joins against.
+        assert!(declared(FAMILY_UNIT_LEADER | FAMILY_ACTIVE_RULER, &[])
+            .iter()
+            .any(|error| error.contains("omits the character census")));
+
+        // Traits without the unit leaders they attach to.
+        assert!(
+            declared(FAMILY_CHARACTER | FAMILY_UNIT_LEADER_TRAIT, &[])
+                .iter()
+                .any(|error| error.contains("without the unit leaders")),
+        );
+
+        // Appointed advisors without the roster they are a subset of.
+        assert!(
+            declared(FAMILY_CHARACTER | FAMILY_APPOINTED_ADVISOR, &[])
+                .iter()
+                .any(|error| error.contains("without the advisor roster")),
+        );
+
+        // A row belonging to a family the header says went unobserved.
+        let trait_row = CharacterLaneRow::UnitLeaderTrait(UnitLeaderTraitRow {
+            unit_leader_id: 77,
+            ordinal: 0,
+            trait_token: "old_guard",
+        });
+        assert!(
+            declared(FAMILY_CENSUS_ONLY, &[character.clone(), trait_row])
+                .iter()
+                .any(|error| error.contains("did not observe")),
+        );
+
+        // A unit leader asserting a trait count while the trait family was
+        // never walked: zero is the only honest value there.
+        let leader_claiming_traits = CharacterLaneRow::UnitLeader(UnitLeaderRow {
+            country_tag_db_id: 3,
+            unit_leader_id: 77,
+            char_id: 2450,
+            leader_kind: UNIT_LEADER_ARMY,
+            skill: None,
+            experience_raw: None,
+            attack: None,
+            defense: None,
+            planning: None,
+            logistics: None,
+            maneuvering: None,
+            coordination: None,
+            token: None,
+            name: None,
+            trait_count: 2,
+        });
+        assert!(
+            declared(FAMILY_CENSUS_ONLY, &[character, leader_claiming_traits])
+                .iter()
+                .any(|error| error.contains("although the trait family was not observed")),
+        );
+    }
+
+    /// A complete snapshot has exactly one spelling, and a declared one has
+    /// exactly one status word. Both directions are what bind d47's
+    /// expected-partial tolerance to the payload's own declaration.
+    #[test]
+    fn the_declaration_and_the_status_word_cannot_disagree() {
+        let payload = encode_payload(0, 0, SCHEMA_ROOTS_VALIDATED, &[]);
+
+        // Declared, but every family present: two encodings for "complete".
+        let mut both = payload.clone();
+        both[56..60].copy_from_slice(
+            &(SCHEMA_ROOTS_VALIDATED | SCHEMA_FAMILY_PRESENCE_DECLARED).to_le_bytes(),
+        );
+        both[60..64].copy_from_slice(&FAMILY_ALL.to_le_bytes());
+        both[8..12].copy_from_slice(&STATUS_PARTIAL_DATA.to_le_bytes());
+        assert!(decode_payload(0, &both)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("declares every family present")));
+
+        // Declared a gap, but the status says the hour is complete.
+        let mut silent = payload.clone();
+        silent[56..60].copy_from_slice(
+            &(SCHEMA_ROOTS_VALIDATED | SCHEMA_FAMILY_PRESENCE_DECLARED).to_le_bytes(),
+        );
+        silent[60..64].copy_from_slice(&FAMILY_CENSUS_ONLY.to_le_bytes());
+        assert!(decode_payload(0, &silent)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("without partial data status")));
+
+        // Partial with no declaration: the shape the tolerance would otherwise
+        // absorb without anything naming what was lost.
+        let mut bare = payload.clone();
+        bare[8..12].copy_from_slice(&STATUS_PARTIAL_DATA.to_le_bytes());
+        assert!(decode_payload(0, &bare)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("no family-presence declaration")));
+
+        // Partial alongside another failure bit needs no declaration: it is not
+        // a family gap and the tolerance does not reach it.
+        let mut source_failed = payload.clone();
+        source_failed[8..12]
+            .copy_from_slice(&(STATUS_PARTIAL_DATA | STATUS_SOURCE_UNAVAILABLE).to_le_bytes());
+        assert!(decode_payload(0, &source_failed).parse_errors.is_empty());
+
+        // An unassigned schema bit is refused rather than interpreted.
+        let mut future = payload;
+        future[56..60].copy_from_slice(&(SCHEMA_ROOTS_VALIDATED | 1 << 20).to_le_bytes());
+        assert!(decode_payload(0, &future)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unassigned bits")));
+    }
+
+    /// One row of every family, with every optional field on both sides of its
+    /// present/absent switch, encoded through the ordinary four-argument
+    /// [`encode_payload`].
+    ///
+    /// This exists to be hashed, not read: it is the fixture behind
+    /// `a_fully_present_payload_is_byte_identical`, and it must stay
+    /// deterministic — no map iteration order, no time, no addresses.
+    fn byte_identity_fixture_rows() -> Vec<CharacterLaneRow<'static>> {
+        vec![
+            CharacterLaneRow::Character(CharacterRow {
+                country_tag_db_id: 3,
+                char_id: 2450,
+                name: Some("Iosif Stalin"),
+                token: Some("SOV_iosif_stalin"),
+            }),
+            CharacterLaneRow::Character(CharacterRow {
+                country_tag_db_id: 3,
+                char_id: 2451,
+                name: None,
+                token: None,
+            }),
+            CharacterLaneRow::UnitLeader(UnitLeaderRow {
+                country_tag_db_id: 3,
+                unit_leader_id: 77,
+                char_id: 2450,
+                leader_kind: UNIT_LEADER_NAVY,
+                skill: Some(4),
+                experience_raw: Some(123_456),
+                attack: Some(2),
+                defense: Some(3),
+                planning: None,
+                logistics: Some(1),
+                maneuvering: Some(5),
+                coordination: None,
+                token: Some("SOV_iosif_stalin"),
+                name: Some("Iosif Stalin"),
+                trait_count: 1,
+            }),
+            CharacterLaneRow::UnitLeaderTrait(UnitLeaderTraitRow {
+                unit_leader_id: 77,
+                ordinal: 0,
+                trait_token: "old_guard",
+            }),
+            CharacterLaneRow::CountryLeaderRole(CountryLeaderRoleRow {
+                country_tag_db_id: 3,
+                char_id: 2450,
+                name: Some("Iosif Stalin"),
+                token: Some("SOV_iosif_stalin"),
+            }),
+            CharacterLaneRow::ActiveRuler(ActiveRulerRow {
+                country_tag_db_id: 3,
+                char_id: 2450,
+                ruling_party: Some("communism"),
+                name: Some("Iosif Stalin"),
+                token: Some("SOV_iosif_stalin"),
+                leader_vec_size: 1,
+                ambiguous: false,
+            }),
+            CharacterLaneRow::AdvisorRoster(AdvisorRow {
+                country_tag_db_id: 3,
+                char_id: 2451,
+                slot: None,
+                ledger: Some("political_advisor"),
+                idea_token: "SOV_lavrentiy_beria",
+            }),
+            CharacterLaneRow::AppointedAdvisor(AdvisorRow {
+                country_tag_db_id: 3,
+                char_id: 2451,
+                slot: Some("political_advisor"),
+                ledger: Some("high_command"),
+                idea_token: "SOV_lavrentiy_beria",
+            }),
+            CharacterLaneRow::CharacterPortrait(CharacterPortraitRow {
+                country_tag_db_id: 3,
+                char_id: 2450,
+                role: "navy",
+                size: "large",
+                gfx: "gfx/leaders/SOV/portrait_sov_iosif_stalin.dds",
+            }),
+        ]
+    }
+
+    fn to_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// A d47 payload that observed every family is byte-for-byte what it was
+    /// before per-family partial admission existed.
+    ///
+    /// # Why a literal and not a round-trip
+    ///
+    /// A round-trip test re-derives the expectation from the same encoder it is
+    /// testing, so it passes through any change the encoder makes to itself.
+    /// This literal was produced by the encoder as it stood BEFORE the
+    /// family-presence declaration was added, and it is the only artifact in
+    /// this crate that can still tell you so. If a change to `encode_payload`
+    /// moves one byte of a fully-present payload, this is where it is caught —
+    /// and a fully-present payload moving is a stream-format break for every
+    /// capture already on disk, never a cosmetic diff.
+    ///
+    /// A DECLARED partial payload is deliberately not pinned here: it is a new
+    /// shape, so it has no prior bytes to be identical to.
+    const FULLY_PRESENT_PAYLOAD_HEX: &str = "070000000000000000000000090000000a000000a800000002000000010000000100000001000000010000000100000001000000da00000007000000000000000c00496f736966205374616c696e1000534f565f696f7369665f7374616c696e09006f6c645f67756172640900636f6d6d756e69736d1100706f6c69746963616c5f61647669736f721300534f565f6c617672656e7469795f62657269610c00686967685f636f6d6d616e6404006e61767905006c617267652d006766782f6c6561646572732f534f562f706f7274726169745f736f765f696f7369665f7374616c696e2e6464730114000003000000920900000000000001000000011400000300000093090000ffffffffffffffff022a0600030000004d000000920900000400000040e20100010000000000000001000203ff0105ff0200031000004d00000000000000020000000414000003000000920900000000000001000000051c0000030000009209000003000000000000000100000001000000061800000300000093090000ffffffff0400000005000000071800000300000093090000040000000600000005000000081800000300000092090000070000000800000009000000";
+
+    #[test]
+    fn a_fully_present_payload_is_byte_identical() {
+        let payload = encode_payload(
+            7,
+            0,
+            SCHEMA_ROOTS_VALIDATED
+                | SCHEMA_STATIC_NAME_CLOSURE
+                | SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
+            &byte_identity_fixture_rows(),
+        );
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "the byte-identity fixture must itself be a valid payload: {:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            to_hex(&payload),
+            FULLY_PRESENT_PAYLOAD_HEX,
+            "a fully-present d47 payload changed shape; every capture already on \
+             disk decodes under the old bytes"
+        );
     }
 }

@@ -373,6 +373,7 @@ fn build_live_scale_fixture(
         roots: Some(roots()),
         roots_validated: true,
         skipped_root_rows: 0,
+        known_families: characters_leaders_cabinet_live_lane::FAMILY_ALL,
         characters,
         unit_leaders,
         unit_leader_trait_tokens: trait_defs,

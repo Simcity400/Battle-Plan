@@ -10,17 +10,51 @@ use crate::extractor::{
     encode_frame_payload, LaneFrame, LaneMemory, ResolvedTypeRoots, DOMAIN_ID, DOMAIN_NAME,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeRootCache {
     pub roots: Option<ResolvedTypeRoots>,
     pub roots_validated: bool,
     pub skipped_root_rows: u32,
+    /// Which row families the prewarm that adopted these roots actually
+    /// OBSERVED.
+    ///
+    /// The character census and the unit leaders it reaches through
+    /// `CCharacter+0xA8` come from an exact engine-owned manager roster; the
+    /// country-leader-role, advisor and trait-definition roots come from the
+    /// shared heap sweep, which needs seconds to complete its first pass. Those
+    /// two sources fail independently, and this field is what lets a prewarm
+    /// adopt the half it did read instead of discarding both.
+    ///
+    /// A clear bit means the frame walk must not emit that family AND the fold
+    /// must not treat its absence as a deletion — see
+    /// [`compact::FAMILY_CHARACTER`].
+    ///
+    /// Not `Default`-derived: zero would mean "observed nothing" and would turn
+    /// every `..Default::default()` construction into a silent total gap.
+    pub known_families: u32,
     pub characters: Vec<CharacterRoot>,
     pub unit_leaders: Vec<UnitLeaderRoot>,
     pub unit_leader_trait_tokens: Vec<TraitDefinitionRoot>,
     pub country_leader_roles: Vec<CountryLeaderRoleRoot>,
     pub advisors: Vec<AdvisorRoot>,
     pub portraits: Vec<CharacterPortraitInput>,
+}
+
+impl Default for NativeRootCache {
+    fn default() -> Self {
+        Self {
+            roots: None,
+            roots_validated: false,
+            skipped_root_rows: 0,
+            known_families: compact::FAMILY_ALL,
+            characters: Vec::new(),
+            unit_leaders: Vec::new(),
+            unit_leader_trait_tokens: Vec::new(),
+            country_leader_roles: Vec::new(),
+            advisors: Vec::new(),
+            portraits: Vec::new(),
+        }
+    }
 }
 
 impl NativeRootCache {
@@ -95,17 +129,66 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
         // owned value for the fixture/benchmark entry points; both forms feed
         // the identical builder over the identical data.
         let adapter_input = adapter_input_ref_from_cache(cache, &frame_input);
-        let adapter_result = build_lane_frame_from_adapter_input_ref(
+        let mut adapter_result = build_lane_frame_from_adapter_input_ref(
             mem,
             &cache.roots.expect("checked by has_stable_roots"),
             &adapter_input,
         );
+        // The frame can only have observed what the roots that fed it did. The
+        // adapter builds every family it is given input for and cannot tell an
+        // empty family from an unobserved one — that distinction lives in the
+        // cache, which knows which prewarm sources succeeded, so it is applied
+        // here rather than inferred from row counts.
+        //
+        // The active-ruler family is the exception, and it is decided HERE
+        // because it is the only family whose source is not the root cache: it
+        // is walked fresh from this frame's country politics roots. A country
+        // whose ruler chain could not be read produces no row, and the fold
+        // full-replaces `commanders.leader` for every family it is told was
+        // observed — so declaring the family observed while one country's read
+        // failed would DELETE that country's leader and call it current. The
+        // frame says it did not observe the family instead, and the fold keeps
+        // the last leader it was told about.
+        //
+        // A country that has no leader at all is not a failure and does not
+        // reach this: `active_ruler_absent_roots` counts those separately.
+        adapter_result.frame.known_families = if adapter_result.stats.active_ruler_unresolved_roots
+            == 0
+        {
+            cache.known_families
+        } else {
+            // The rows go with the bit. A family declared unobserved carries no
+            // rows — the decoder refuses a payload that says otherwise, and a
+            // refused payload costs the WHOLE d47 hour, census included. So the
+            // successfully-read rulers are dropped here rather than emitted
+            // under a declaration that disowns them.
+            //
+            // Losing them is the honest price of a whole-family vocabulary: the
+            // mask can say "this family was not observed" and cannot say "these
+            // three countries of it were". Retaining the previous hour's
+            // leaders for every country beats publishing a set that silently
+            // omits the ones that failed.
+            adapter_result.frame.active_rulers.clear();
+            cache.known_families & !compact::FAMILY_ACTIVE_RULER
+        };
         if cache.skipped_root_rows != 0
             || adapter_result.stats.has_rejections()
             || adapter_input.skipped_input_rows != 0
         {
+            // A torn root, an adapter rejection or a skipped country row is
+            // ROW-level loss inside families this frame did observe. The
+            // family-presence mask cannot describe it — it is a whole-family
+            // vocabulary — so this frame must stay OUTSIDE the expected-partial
+            // tolerance, and `SOURCE_UNAVAILABLE` is what keeps it there.
+            //
+            // Before per-family admission this branch set `PARTIAL_DATA` alone,
+            // which was harmless only because no tolerance covered it. It does
+            // now, and a tolerance written for a declared family gap must never
+            // absorb an undeclared row loss.
             let mut frame = LaneFrame::new(adapter_input.elapsed_wall_ms);
-            frame.status_flags = adapter_input.status_flags | compact::STATUS_PARTIAL_DATA;
+            frame.status_flags = adapter_input.status_flags
+                | compact::STATUS_SOURCE_UNAVAILABLE
+                | compact::STATUS_PARTIAL_DATA;
             (frame, adapter_result.stats)
         } else {
             (adapter_result.frame, adapter_result.stats)
@@ -314,6 +397,7 @@ mod tests {
             roots: Some(roots()),
             roots_validated: true,
             skipped_root_rows: 0,
+            known_families: compact::FAMILY_ALL,
             characters: vec![CharacterRoot {
                 character_addr: character,
                 char_id: 1458,
@@ -410,6 +494,11 @@ mod tests {
         assert_eq!(read.data_units_total, 0);
         let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
         assert_ne!(decoded.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        // Row-level loss is not a family gap. It must keep the second failure
+        // bit that holds it outside d47's expected-partial tolerance, and it
+        // must declare no mask — there is nothing it can honestly name.
+        assert_ne!(read.status_flags & compact::STATUS_SOURCE_UNAVAILABLE, 0);
+        assert_eq!(decoded.family_presence_mask, compact::FAMILY_ALL);
         assert!(decoded.rows.is_empty());
     }
 
@@ -467,6 +556,213 @@ mod tests {
         assert_ne!(read.status_flags & compact::STATUS_PARTIAL_DATA, 0);
     }
 
+    /// A cache built from the character manager census while the heap sweep was
+    /// still cold publishes its characters, and says on the wire which families
+    /// it never looked at.
+    ///
+    /// This is the frame the whole change exists to produce. Before it, the
+    /// identical cache state published a rowless
+    /// `SOURCE_UNAVAILABLE|PARTIAL_DATA` record for every hour of a capture's
+    /// first ~12 seconds.
+    ///
+    /// MUTATION: drop the `adapter_result.frame.known_families = cache.known_families`
+    /// assignment in `read_native_scheduled_frame` and the payload claims to
+    /// have observed the advisor and role families it never read.
+    #[test]
+    fn a_census_only_cache_publishes_its_characters_and_declares_the_rest_unknown() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        write_character(&mut mem, character, 1458, 2);
+
+        let cache = NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            skipped_root_rows: 0,
+            known_families: compact::FAMILY_CENSUS_ONLY,
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 1458,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            // The sweep-derived families are EMPTY because they were never
+            // read, which is exactly the state the mask exists to describe.
+            ..NativeRootCache::default()
+        };
+
+        // A real country politics root, so the bridge is available and the
+        // status word is decided by the family gap alone. An empty `countries`
+        // vector would set `BRIDGE_UNAVAILABLE` and the "only PARTIAL"
+        // assertion below would be passing for the wrong reason.
+        let country = 0x4000;
+        let status = 0x4100;
+        let party = 0x4200;
+        let leader_vec = 0x4300;
+        let country_leader = 0x4400;
+        mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+        mem.write_u64(
+            country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF,
+            character,
+        );
+        mem.write_u64(country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
+        mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
+        mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, leader_vec);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 1);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, 1);
+        mem.write_u64(leader_vec, country_leader);
+        let read = read_native_scheduled_frame(
+            &mem,
+            &cache,
+            NativeFrameInput {
+                countries: vec![CountryPoliticsRoot {
+                    country_addr: country,
+                    country_tag_db_id: 2,
+                    ruling_party: Some("democratic".to_string()),
+                    ruler_name: Some("Maxwell Aitken".to_string()),
+                    ruler_token: Some("ENG_maxwell_aitken".to_string()),
+                    active_idea_tokens: vec![],
+                }],
+                ..NativeFrameInput::default()
+            },
+        );
+        assert!(read.parse_errors.is_empty(), "{:?}", read.parse_errors);
+        assert_ne!(read.row_count, 0, "the character census must be published");
+
+        // PARTIAL and ONLY partial, against the SHARED failure mask rather than
+        // a list of bits written here. Any other failure-class bit would take
+        // this record out of d47's expected-partial tolerance and the fold
+        // would discard the census this whole change exists to deliver — and a
+        // hand-written list would not notice a bit added to the vocabulary
+        // later.
+        assert_eq!(
+            read.status_flags & compact_contract::COMPACT_STATUS_FAILURE_MASK,
+            compact::STATUS_PARTIAL_DATA
+        );
+
+        let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
+        assert_eq!(decoded.family_presence_mask, compact::FAMILY_CENSUS_ONLY);
+        assert_eq!(
+            compact::absent_family_names(decoded.family_presence_mask),
+            vec![
+                "unit_leader_traits",
+                "country_leader_roles",
+                "advisor_roster",
+                "appointed_advisors"
+            ]
+        );
+        assert!(decoded.rows.iter().any(|row| matches!(
+            row,
+            compact::DecodedDomain47Row::Character { char_id: 1458, .. }
+        )));
+        assert!(
+            !decoded.rows.iter().any(|row| matches!(
+                row,
+                compact::DecodedDomain47Row::AdvisorRoster { .. }
+                    | compact::DecodedDomain47Row::CountryLeaderRole { .. }
+                    | compact::DecodedDomain47Row::UnitLeaderTrait { .. }
+            )),
+            "a family declared unobserved must carry no rows"
+        );
+    }
+
+    /// One country's ruler resolves and another's does not: the active-ruler
+    /// family is declared unobserved, its rows go with the declaration, and the
+    /// rest of the payload still publishes.
+    ///
+    /// This is the shape that made the first version of the fix worse than the
+    /// bug. Clearing `FAMILY_ACTIVE_RULER` while leaving the successful rows in
+    /// the frame produced a payload the canonical decoder refuses — rows for a
+    /// declared-unobserved family — and the collector replaces a refused
+    /// payload with a rowless `SOURCE_UNAVAILABLE|PARTIAL_DATA` record, losing
+    /// the entire d47 hour including the character census.
+    ///
+    /// MUTATION: delete the `active_rulers.clear()` in
+    /// `read_native_scheduled_frame` and this test fails on `parse_errors`.
+    #[test]
+    fn a_partly_unresolved_ruler_walk_drops_the_family_and_still_publishes() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        write_character(&mut mem, character, 1458, 2);
+
+        // A country whose whole chain reads.
+        let good_country = 0x4000;
+        let status = 0x4100;
+        let party = 0x4200;
+        let leader_vec = 0x4300;
+        let country_leader = 0x4400;
+        mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+        mem.write_u64(
+            country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF,
+            character,
+        );
+        mem.write_u64(good_country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
+        mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
+        mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, leader_vec);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 1);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, 1);
+        mem.write_u64(leader_vec, country_leader);
+
+        // And one whose political-status pointer is unreadable.
+        let unreadable_country = 0x5000;
+
+        let cache = NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            known_families: compact::FAMILY_ALL,
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 1458,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..NativeRootCache::default()
+        };
+        let politics = |addr: u64, tag: u32| CountryPoliticsRoot {
+            country_addr: addr,
+            country_tag_db_id: tag,
+            ruling_party: Some("democratic".to_string()),
+            ruler_name: Some("Maxwell Aitken".to_string()),
+            ruler_token: Some("ENG_maxwell_aitken".to_string()),
+            active_idea_tokens: vec![],
+        };
+        let read = read_native_scheduled_frame(
+            &mem,
+            &cache,
+            NativeFrameInput {
+                countries: vec![politics(good_country, 2), politics(unreadable_country, 3)],
+                ..NativeFrameInput::default()
+            },
+        );
+
+        // The payload is VALID. Before the rows were dropped alongside the bit,
+        // this was a decoder refusal and the whole hour was lost.
+        assert!(read.parse_errors.is_empty(), "{:?}", read.parse_errors);
+        assert_eq!(read.adapter_stats.active_ruler_unresolved_roots, 1);
+
+        let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
+        assert_eq!(
+            decoded.family_presence_mask & compact::FAMILY_ACTIVE_RULER,
+            0,
+            "a family with an unreadable member is not observed"
+        );
+        assert!(
+            !decoded
+                .rows
+                .iter()
+                .any(|row| matches!(row, compact::DecodedDomain47Row::ActiveRuler { .. })),
+            "the rows must go with the declaration"
+        );
+        // The census still publishes: that is the whole point.
+        assert!(decoded.rows.iter().any(|row| matches!(
+            row,
+            compact::DecodedDomain47Row::Character { char_id: 1458, .. }
+        )));
+        assert_eq!(
+            read.status_flags & compact_contract::COMPACT_STATUS_FAILURE_MASK,
+            compact::STATUS_PARTIAL_DATA
+        );
+    }
+
     /// Fixture with EVERY root family populated, so an equality assertion over
     /// the adapter input cannot pass vacuously.
     fn borrowed_input_fixture() -> (FakeMemory, NativeRootCache, NativeFrameInput) {
@@ -506,6 +802,7 @@ mod tests {
             roots: Some(roots()),
             roots_validated: true,
             skipped_root_rows: 0,
+            known_families: compact::FAMILY_ALL,
             characters: vec![CharacterRoot {
                 character_addr: character,
                 char_id: 1458,
@@ -619,10 +916,25 @@ mod tests {
                 || owned.skipped_input_rows != 0
             {
                 let mut frame = LaneFrame::new(owned.elapsed_wall_ms);
-                frame.status_flags = owned.status_flags | compact::STATUS_PARTIAL_DATA;
+                // Row-level loss inside an observed family is not a family gap,
+                // so it must stay outside d47's expected-partial tolerance;
+                // `SOURCE_UNAVAILABLE` is what holds it there.
+                frame.status_flags = owned.status_flags
+                    | compact::STATUS_SOURCE_UNAVAILABLE
+                    | compact::STATUS_PARTIAL_DATA;
                 frame
             } else {
-                owned_result.frame.clone()
+                let mut frame = owned_result.frame.clone();
+                // The fixture's country has no readable political-status chain,
+                // so its ruler is unresolved and the active-ruler family cannot
+                // be declared observed. Mirrored here rather than hard-coded so
+                // the rule, not this fixture's shape, is what is being pinned.
+                frame.known_families = if owned_result.stats.active_ruler_unresolved_roots == 0 {
+                    cache.known_families
+                } else {
+                    cache.known_families & !compact::FAMILY_ACTIVE_RULER
+                };
+                frame
             };
             assert_eq!(
                 read.payload,

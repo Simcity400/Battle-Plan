@@ -7717,7 +7717,15 @@ fn domain47_rowless_partial_status_retains_previous_character_state() {
         raw_b,
         47,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
-        &domain47_payload(COMPACT_STATUS_PARTIAL_DATA, &[]),
+        // The shape every d47 reader emits when it publishes nothing:
+        // `SOURCE_UNAVAILABLE` alongside `PARTIAL_DATA`. The pair is what keeps
+        // an undeclared loss outside the expected-partial tolerance d47 gained
+        // for DECLARED per-family gaps — a bare `PARTIAL_DATA` here would be
+        // spelling this frame the way a census-only publication spells itself.
+        &domain47_payload(
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            &[],
+        ),
     );
     push_record(
         &mut stream,
@@ -7743,6 +7751,380 @@ fn domain47_rowless_partial_status_retains_previous_character_state() {
         .iter()
         .any(|problem| problem["domain_id"] == json!(47)
             && problem["problem"] == json!("failure_status")));
+}
+
+/// A d47 payload spelling `PARTIAL_DATA` and nothing else, with no
+/// family-presence declaration, is REFUSED — not folded, and above all not
+/// admitted through the tolerance entry.
+///
+/// This is the failure mode the tolerance created and the decoder closes.
+/// `COMPACT_EXPECTED_PARTIAL_TOLERANCES` classifies from the status word alone,
+/// so once d47 had an entry, any record carrying that one bit would have been
+/// applied as a reviewed sparse patch — including records that lost rows for
+/// reasons nobody reviewed and that name nothing.
+///
+/// The refusal is deliberately doubled, so no single mutation fells it: the
+/// canonical decoder refuses the payload, and the fold refuses it again on its
+/// own. Removing EITHER guard alone leaves this test passing, which is the
+/// point of having two — a producer that stops emitting the shape and a fold
+/// that would apply it are different failures.
+///
+/// MUTATION: remove BOTH the `failure_flags == STATUS_PARTIAL_DATA` arm of
+/// `decode_family_presence_mask` and the `!declared_gap &&
+/// compact_status_is_failure` guard in `fold_characters_leaders_cabinet_live`,
+/// and this payload decodes, folds through the new tolerance, and silently
+/// replaces POR's whole cabinet with nothing.
+#[test]
+fn domain47_undeclared_partial_is_refused_rather_than_tolerated() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let rows = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::ActiveRuler(domain47_lane::ActiveRulerRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            ruling_party: Some("neutrality"),
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+            leader_vec_size: 1,
+            ambiguous: false,
+        }),
+    ];
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &rows),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(COMPACT_STATUS_PARTIAL_DATA, &[]),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_undeclared_partial");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let second = parse(&snaps[1].2);
+
+    // The record was NOT applied: the prior hour's cabinet survives whole.
+    assert_eq!(
+        second["countries"]["POR"]["commanders"]["leader"]["token"],
+        json!("POR_salazar"),
+        "an undeclared partial must not replace the state it says nothing about"
+    );
+    let problems = second["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .expect("domain problems are always an array")
+        .iter()
+        .filter(|problem| problem["domain_id"] == json!(47))
+        .map(|problem| problem["problem"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !problems.contains(&json!("partial_data")),
+        "an undeclared d47 partial must NOT be recorded as an applied expected-partial; \
+         the tolerance covers a DECLARED family gap and nothing else. problems: {problems:?}"
+    );
+    assert!(
+        !problems.contains(&json!("family_gap")),
+        "nothing declared a family gap here. problems: {problems:?}"
+    );
+}
+
+/// The whole point of the change: a record that observed the character census
+/// but not the heap-sweep families publishes its characters, and the families
+/// it did not observe keep whatever was last known instead of being wiped.
+///
+/// MUTATION: make `clear_domain47_country_fields` ignore its `families`
+/// argument and clear everything — POR's advisor roster disappears and the
+/// second half of this test fails.
+#[test]
+fn domain47_declared_family_gap_replaces_what_it_saw_and_retains_what_it_did_not() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let complete = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: None,
+            ledger: Some("political_advisor"),
+            idea_token: "POR_advisor",
+        }),
+    ];
+    // The census-only hour: a NEW character, and no advisor rows at all,
+    // because the advisor family was never observed.
+    let census_only = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1002,
+            name: Some("Francisco Craveiro Lopes"),
+            token: Some("POR_craveiro_lopes"),
+        },
+    )];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &complete),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_lane::encode_payload_with_families(
+            0,
+            0,
+            domain47_lane::SCHEMA_ROOTS_VALIDATED
+                | domain47_lane::SCHEMA_STATIC_NAME_CLOSURE
+                | domain47_lane::SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
+            domain47_lane::FAMILY_CENSUS_ONLY,
+            &census_only,
+        ),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_family_gap");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let second = parse(&snaps[1].2);
+    let sidecar = &second["countries"]["POR"]["extra"]["_r2_characters_leaders_cabinet_live"];
+
+    // The observed family was REPLACED: the new census, and only the new
+    // census. A merge would have left char 1001 behind.
+    let characters = sidecar["characters"].as_array().expect("characters array");
+    assert_eq!(characters.len(), 1);
+    assert_eq!(characters[0]["char_id"], json!(1002));
+
+    // The unobserved family was RETAINED, not wiped.
+    let advisors = sidecar["advisor_roster"]
+        .as_array()
+        .expect("the unobserved advisor roster must still be there");
+    assert_eq!(advisors.len(), 1);
+    assert_eq!(advisors[0]["idea_token"], json!("POR_advisor"));
+
+    // And it is retained HONESTLY: named as a gap, and no longer claiming to
+    // be exact for this hour.
+    let gaps = sidecar["family_gaps"]
+        .as_array()
+        .expect("a retained family must be named")
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(gaps.contains(&"advisor_roster".to_string()), "gaps: {gaps:?}");
+    assert_eq!(sidecar["advisor_roster_complete"], json!(false));
+
+    // `commanders.counts` needs the advisor family, so it is not rebuilt from a
+    // fresh census joined against a retained roster: it still reads exactly as
+    // the last complete hour left it. A recompute would have counted the one
+    // new character and ZERO advisors, which is the mixed-vintage answer.
+    assert_eq!(
+        second["countries"]["POR"]["commanders"]["counts"],
+        json!({"admirals": 0, "advisors": 1, "roster_size": 1}),
+        "counts must be retained whole across a family gap, not recomputed"
+    );
+
+    let problems = second["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .expect("domain problems are always an array")
+        .iter()
+        .filter(|problem| problem["domain_id"] == json!(47))
+        .map(|problem| problem["problem"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        problems.contains(&json!("family_gap")),
+        "a census-only hour is accounted, never silently complete. problems: {problems:?}"
+    );
+}
+
+/// The hour the heap sweep finishes: a complete record takes the whole domain
+/// back, and takes the gap declaration with it.
+///
+/// A gap that outlives the record that declared it is the mirror of a wipe —
+/// the consumer would keep refusing a family the producer has been publishing
+/// for hours. `clear_domain47_country_fields` rewrites `family_gaps` every hour
+/// for exactly this reason.
+///
+/// MUTATION: make the `FAMILY_ALL` branch of `clear_domain47_country_fields`
+/// leave the sidecar's `family_gaps` in place and the last assertion fails.
+#[test]
+fn domain47_a_complete_hour_after_a_gap_clears_the_declaration() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let census_only = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        },
+    )];
+    let complete = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: None,
+            ledger: Some("political_advisor"),
+            idea_token: "POR_advisor",
+        }),
+    ];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_lane::encode_payload_with_families(
+            0,
+            0,
+            domain47_lane::SCHEMA_ROOTS_VALIDATED
+                | domain47_lane::SCHEMA_STATIC_NAME_CLOSURE
+                | domain47_lane::SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
+            domain47_lane::FAMILY_CENSUS_ONLY,
+            &census_only,
+        ),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &complete),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_gap_then_complete");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let first = parse(&snaps[0].2);
+    let first_sidecar =
+        &first["countries"]["POR"]["extra"]["_r2_characters_leaders_cabinet_live"];
+    assert!(
+        first_sidecar["family_gaps"].is_array(),
+        "the census-only hour declares its gap"
+    );
+
+    let second = parse(&snaps[1].2);
+    let sidecar = &second["countries"]["POR"]["extra"]["_r2_characters_leaders_cabinet_live"];
+    assert!(
+        sidecar["family_gaps"].is_null(),
+        "a complete hour leaves no gap declaration behind: {sidecar:?}"
+    );
+    assert_eq!(sidecar["advisor_roster_complete"], json!(true));
+    assert_eq!(
+        sidecar["advisor_roster"][0]["idea_token"],
+        json!("POR_advisor")
+    );
+    assert_eq!(
+        second["countries"]["POR"]["commanders"]["counts"],
+        json!({"admirals": 0, "advisors": 1, "roster_size": 1}),
+        "the derived joins are this record's to rebuild again"
+    );
 }
 
 #[test]
@@ -26489,7 +26871,10 @@ fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
     // refusing it. See `DELTA_WIRE_DESIGN.md` §8.2, "found, not fixed".
     const UNREFUSING_FOLDS: &[&str] = &[
         "fold_capitulation_war_state",
-        "fold_characters_leaders_cabinet_live",
+        // fold_characters_leaders_cabinet_live LEFT this set when lane DI gave
+        // d47 per-family partial admission: it classifies through
+        // `handle_compact_failure` and calls `refuse_inadmissible_baseline_clear`
+        // outright, so an inadmissible resync is refused rather than ignored.
         "fold_country_identity",
         "fold_diplomacy",
         "fold_diplomacy_intel_operatives",

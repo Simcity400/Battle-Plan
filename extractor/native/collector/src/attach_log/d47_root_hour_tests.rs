@@ -103,6 +103,7 @@ fn stale_root_world() -> (FakeMemory, NativeRootCache) {
     mem.write_u64(trait_def, TRAIT_VT);
 
     let cache = NativeRootCache {
+        known_families: characters_leaders_cabinet_live_lane::FAMILY_ALL,
         roots: Some(ResolvedTypeRoots {
             ccharacter_vtable: CHAR_VT,
             carmy_leader_vtable: ARMY_VT,
@@ -746,4 +747,38 @@ fn an_unscheduled_prewarm_is_not_a_clock_failure() {
         cache.roots.skipped_root_rows, 0,
         "a domain that was never read must not be refused"
     );
+}
+
+/// The cold-window policy, as a unit: a COMPLETE retained cache is held, and
+/// anything less is re-censused.
+///
+/// The production branch this decides is reachable only through live process
+/// memory and a running heap-sweep service, so the policy is tested here and
+/// the branch simply calls it — the arrangement
+/// `domain47_prewarm_adoption_blocked` already uses, and for the same reason.
+///
+/// MUTATION: drop the `retained_families` term (hold whenever roots exist) and
+/// the third case below fails. That mutation is the whole cold window: the
+/// first frame adopts a census-only cache, `had_stable_roots` becomes true, and
+/// every frame after it holds — publishing the rowless record this change
+/// exists to eliminate, under hours it never observed.
+#[test]
+fn only_a_complete_retained_cache_is_held_through_a_cold_sweep() {
+    // Nothing adopted yet: the ordinary start of a capture.
+    assert!(!domain47_prewarm_holds_instead_of_recensusing(
+        false,
+        domain47::FAMILY_ALL
+    ));
+    // A complete world already in hand: retaining all eight families beats
+    // degrading them to the census.
+    assert!(domain47_prewarm_holds_instead_of_recensusing(
+        true,
+        domain47::FAMILY_ALL
+    ));
+    // A census-only cache: re-census instead. Holding would republish the
+    // adopting hour's character text under this one.
+    assert!(!domain47_prewarm_holds_instead_of_recensusing(
+        true,
+        domain47::FAMILY_CENSUS_ONLY
+    ));
 }
