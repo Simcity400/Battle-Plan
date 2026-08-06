@@ -241,6 +241,41 @@ function Get-SelfTestBuilderWorkerCount {
     return [Math]::Max(2, [Math]::Min(8, [int]([Environment]::ProcessorCount / 2)))
 }
 
+function Stop-SelfTestWorkerProcessTree {
+    # Ends the worker AND the child it is blocked on.
+    #
+    # Process.Kill() ends exactly one process. Every worker in this suite spends
+    # nearly all of its time inside a `& powershell.exe` child running the
+    # package builder or the receipt verifier, and that child holds open handles
+    # on the very tree the pool is about to remove. Killing only the worker
+    # leaves its child reading and writing a fixture that is being deleted
+    # underneath it, which turns a timeout in one worker into unrelated failures
+    # and leftover directories.
+    #
+    # Process.Kill($true) is the .NET Core overload and does not exist on the
+    # .NET Framework this shell runs on, so the tree is ended with taskkill /T,
+    # which walks the live parent-PID chain. Kill() stays as the fallback for a
+    # machine where taskkill cannot be run at all.
+    param([Parameter(Mandatory = $true)]$Process)
+
+    if ($Process.HasExited) { return }
+    $treeEnded = $false
+    try {
+        # Deliberately NOT redirected. On this shell, redirecting a native
+        # command's stderr wraps each line in an ErrorRecord, which under
+        # $ErrorActionPreference = 'Stop' would make a janitorial message
+        # terminating -- inside a finally, that would replace the real failure.
+        $null = & taskkill.exe /PID $Process.Id /T /F
+        $treeEnded = ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        $treeEnded = $false
+    }
+    if (-not $treeEnded -and -not $Process.HasExited) {
+        $Process.Kill()
+    }
+}
+
 function New-SelfTestPrivateTreeSet {
     # Full copies of the fixture tree, each PROVED faithful by the parent before
     # any worker is allowed to speak from it.
@@ -652,7 +687,7 @@ function Invoke-SelfTestBuilderCasePool {
             $remaining = $BudgetMs - [int]$clock.Elapsed.TotalMilliseconds
             if ($remaining -lt 1) { $remaining = 1 }
             if (-not $worker.Process.WaitForExit($remaining)) {
-                try { $worker.Process.Kill() } catch { }
+                try { Stop-SelfTestWorkerProcessTree -Process $worker.Process } catch { }
                 throw (
                     "self-test builder case worker $($worker.Index) of '$Label' did " +
                     "not finish within the $BudgetMs ms budget"
@@ -728,7 +763,9 @@ function Invoke-SelfTestBuilderCasePool {
         # outlive this pool and are torn down once, with the container.
         foreach ($worker in $workers) {
             try {
-                if (-not $worker.Process.HasExited) { $worker.Process.Kill() }
+                if (-not $worker.Process.HasExited) {
+                    Stop-SelfTestWorkerProcessTree -Process $worker.Process
+                }
             }
             catch {
                 $cleanupProblems.Add(
@@ -822,6 +859,582 @@ function New-SelfTestBuilderCaseByteWrite {
         RelativePath = $RelativePath
         Encoding = 'base64'
         Content = [Convert]::ToBase64String($Bytes)
+    }
+}
+
+# Body of the receipt-case worker, materialised beside the fixture at run time.
+# It lives here rather than as its own file under scripts/ so it cannot be
+# copied into a fixture tree and cannot drift from the pool that dispatches it.
+#
+# One case is: put my own corruption in my own file, ask the receipt verifier
+# (or the package builder), record whether it refused, take my file away again.
+# That is exactly what the serial sites did, including how a refusal is
+# recognised -- a non-zero exit, or output the parent could not parse as the
+# script's JSON. Both scripts are still child processes, so the exit-code path
+# stays proved rather than replaced by an in-process call.
+$script:PortablePackageReceiptCaseWorkerScript = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$RequestPath
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+$root = [string]$request.Root
+$outPath = [string]$request.OutPath
+$releaseRoot = Join-Path $root '.cargo-target\release'
+$canonicalReceipt = Join-Path $releaseRoot 'hoi4-portable-package-receipt.json'
+$verifier = Join-Path $root 'extractor\native\scripts\Test-PortableProductPackageReceipt.ps1'
+$builder = Join-Path $root 'extractor\native\scripts\New-PortableProductPackage.ps1'
+$utf8 = [Text.UTF8Encoding]::new($false)
+
+foreach ($required in @($verifier, $builder, $canonicalReceipt)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+        throw "self-test receipt case worker is missing an input: $required"
+    }
+}
+
+function Invoke-FixtureScriptOnce {
+    # The parent's Invoke-JsonScript, restated for one script: a non-zero exit
+    # is a refusal, and so is output that does not parse as the script's JSON.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $stdout = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments)
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{
+            Accepted = $false
+            Message = "fixture script exited $LASTEXITCODE"
+            Output = $null
+        }
+    }
+    $parsed = $null
+    try {
+        $parsed = (($stdout -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+    }
+    catch {
+        return [pscustomobject]@{
+            Accepted = $false
+            Message = "fixture script output did not parse: $($_.Exception.Message)"
+            Output = $null
+        }
+    }
+    return [pscustomobject]@{ Accepted = $true; Message = ''; Output = $parsed }
+}
+
+function Set-SelfTestReceiptProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Receipt,
+        [Parameter(Mandatory = $true)][string]$Property,
+        [Parameter(Mandatory = $true)][string]$ValueKind,
+        $Value
+    )
+
+    $segments = @($Property -split '\.')
+    $node = $Receipt
+    for ($index = 0; $index -lt $segments.Count - 1; $index++) {
+        # Strict mode makes a segment this receipt does not have a terminating
+        # error here, rather than a mutation that silently plants nothing. A
+        # rejection case that stopped planting its corruption is the one way
+        # this family could keep reporting refusals that mean nothing.
+        $node = $node.($segments[$index])
+    }
+    $leaf = $segments[$segments.Count - 1]
+    # Reading it first is the same guard for the LAST segment, which the loop
+    # above never touches.
+    [void]$node.$leaf
+    if ($ValueKind -ceq 'string') { $node.$leaf = [string]$Value }
+    elseif ($ValueKind -ceq 'bool') { $node.$leaf = [bool]$Value }
+    elseif ($ValueKind -ceq 'releasePath') {
+        $node.$leaf = [IO.Path]::GetFullPath((Join-Path $releaseRoot ([string]$Value)))
+    }
+    elseif ($ValueKind -ceq 'emptyArray') {
+        # Assigned from a variable, not inline: an @() produced by a switch or
+        # a pipeline is dropped to $null on its way out, and a receipt whose
+        # marker roster went missing instead of empty is a different mutation
+        # from the one this case exists to plant.
+        $emptyRoster = @()
+        $node.$leaf = $emptyRoster
+    }
+    else { throw "self-test receipt mutation has an unknown value kind: $ValueKind" }
+}
+
+$results = [Collections.Generic.List[object]]::new()
+$cleanupFailures = [Collections.Generic.List[string]]::new()
+$canonicalText = [IO.File]::ReadAllText($canonicalReceipt)
+
+foreach ($item in @($request.Items)) {
+    $name = [string]$item.Name
+    $kind = [string]$item.Kind
+    $outcome = $null
+    $written = [Collections.Generic.List[string]]::new()
+    try {
+        if ($kind -ceq 'builder') {
+            $arguments = @(
+                @($item.Arguments) | ForEach-Object { ([string]$_).Replace('@ROOT@', $root) }
+            )
+            $outcome = Invoke-FixtureScriptOnce -Path $builder -Arguments ([string[]]$arguments)
+        }
+        elseif ($kind -ceq 'verifier_canonical') {
+            $outcome = Invoke-FixtureScriptOnce -Path $verifier -Arguments @(
+                '-RepoRoot', $root, '-ReceiptPath', $canonicalReceipt
+            )
+        }
+        elseif ($kind -ceq 'verifier_candidate') {
+            # Both sides of the comparison are round-trips of the same text, so
+            # the difference this reports is the mutation and nothing else --
+            # not ConvertTo-Json's formatting.
+            $baselineText = ($canonicalText | ConvertFrom-Json | ConvertTo-Json -Depth 12)
+            $mutated = $canonicalText | ConvertFrom-Json
+            foreach ($mutation in @($item.Mutations)) {
+                Set-SelfTestReceiptProperty `
+                    -Receipt $mutated `
+                    -Property ([string]$mutation.Property) `
+                    -ValueKind ([string]$mutation.ValueKind) `
+                    -Value $mutation.Value
+            }
+            $mutatedText = ($mutated | ConvertTo-Json -Depth 12)
+            if (@($item.Mutations).Count -eq 0) {
+                if ($mutatedText -cne $baselineText) {
+                    throw (
+                        "self-test receipt control '$name' changed the receipt it " +
+                        'is supposed to leave alone'
+                    )
+                }
+            }
+            elseif ($mutatedText -ceq $baselineText) {
+                throw (
+                    "self-test receipt case '$name' planted a mutation that " +
+                    'changed nothing'
+                )
+            }
+            if ($null -ne $item.ZipCopy) {
+                $copySource = Join-Path $releaseRoot ([string]$item.ZipCopy.SourceName)
+                $copyDestination =
+                    Join-Path $releaseRoot ([string]$item.ZipCopy.DestinationName)
+                $copyBytes = [byte[]][IO.File]::ReadAllBytes($copySource)
+                if ($copyBytes.Length -lt 1) {
+                    throw "self-test receipt case '$name' has an empty package to copy"
+                }
+                if ($item.ZipCopy.TamperLastByte) {
+                    $copyBytes[$copyBytes.Length - 1] =
+                        $copyBytes[$copyBytes.Length - 1] -bxor 0xff
+                }
+                [IO.File]::WriteAllBytes($copyDestination, $copyBytes)
+                $written.Add($copyDestination)
+                # Proved planted, not assumed. A tamper that produced the same
+                # bytes would leave this case asking the verifier to reject a
+                # package that is byte-identical to its receipt.
+                $observedCopy = [IO.File]::ReadAllBytes($copyDestination)
+                $sourceBytes = [IO.File]::ReadAllBytes($copySource)
+                $copyDiffers = ($observedCopy.Length -ne $sourceBytes.Length)
+                if (-not $copyDiffers) {
+                    for ($byteIndex = 0; $byteIndex -lt $observedCopy.Length; $byteIndex++) {
+                        if ($observedCopy[$byteIndex] -ne $sourceBytes[$byteIndex]) {
+                            $copyDiffers = $true
+                            break
+                        }
+                    }
+                }
+                if ([bool]$item.ZipCopy.TamperLastByte -ne $copyDiffers) {
+                    throw (
+                        "self-test receipt case '$name' did not plant the package-byte " +
+                        'difference it declares'
+                    )
+                }
+            }
+            $candidate = Join-Path $releaseRoot ([string]$item.CandidateName)
+            if ([IO.File]::Exists($candidate)) {
+                throw "self-test receipt candidate already exists: $candidate"
+            }
+            [IO.File]::WriteAllText($candidate, $mutatedText, $utf8)
+            $written.Add($candidate)
+            $outcome = Invoke-FixtureScriptOnce -Path $verifier -Arguments @(
+                '-RepoRoot', $root, '-ReceiptPath', $candidate, '-AllowStagedReceipt'
+            )
+        }
+        else {
+            throw "self-test receipt case '$name' has an unknown kind: $kind"
+        }
+    }
+    finally {
+        # Every file this case put into the shared release directory is taken
+        # back out and proved gone. A candidate left behind is a receipt at the
+        # canonical location that nobody published.
+        #
+        # Each removal is guarded. An exception raised here would replace
+        # whatever failure is already propagating out of the try above, abandon
+        # the remaining files, and never reach cleanup_failures -- so the parent
+        # would be told a janitorial story instead of the real one and would not
+        # learn that the release directory is still dirty.
+        foreach ($path in $written) {
+            try {
+                if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+                if ([IO.File]::Exists($path)) {
+                    $cleanupFailures.Add("case '$name' could not remove $path")
+                }
+            }
+            catch {
+                $cleanupFailures.Add(
+                    "case '$name' could not remove $path ($($_.Exception.Message))"
+                )
+            }
+        }
+    }
+    $status = ''
+    $packageSha256 = ''
+    if ($outcome.Accepted -and $null -ne $outcome.Output) {
+        # Both reads are guarded, because the two scripts this worker runs emit
+        # different documents. The package builder's JSON has neither `status`
+        # nor `package_sha256`, and under StrictMode reading a property a
+        # PSObject does not have is terminating -- so an unguarded read here
+        # would kill the worker whenever a BUILDER case was accepted. That is
+        # precisely the case where the builder stopped refusing something it
+        # must refuse, and the parent would then report "worker N exited 1"
+        # instead of naming the case that regressed.
+        if ($null -ne $outcome.Output.PSObject.Properties['status']) {
+            $status = [string]$outcome.Output.status
+        }
+        if ($null -ne $outcome.Output.PSObject.Properties['package_sha256']) {
+            $packageSha256 = [string]$outcome.Output.package_sha256
+        }
+    }
+    $results.Add([ordered]@{
+        name = $name
+        accepted = [bool]$outcome.Accepted
+        message = [string]$outcome.Message
+        output_status = $status
+        output_package_sha256 = $packageSha256
+    })
+}
+
+$response = [ordered]@{
+    schema = 'battle-plan.selftest_receipt_case_worker.v1'
+    results = @($results)
+    cleanup_failures = @($cleanupFailures)
+}
+[IO.File]::WriteAllText(
+    $outPath,
+    ($response | ConvertTo-Json -Depth 6),
+    $utf8
+)
+'@
+
+function Invoke-SelfTestReceiptCasePool {
+    # Runs the receipt-verifier family across worker processes on ONE fixture
+    # root, and returns name -> the row that case produced.
+    #
+    # Unlike the builder pool above there are no private trees here, because
+    # these cases do not need one: a receipt case's corruption lives entirely in
+    # its OWN candidate file (and, for the package-bytes case, its own copy of
+    # the package), and a builder case's output is its own uniquely named ZIP.
+    # Nothing any case writes is read by another, and neither the verifier nor
+    # the builder writes anything else under the root. What made these serial
+    # was one shared receipt file, not shared state in general.
+    #
+    # The guards are the ones the serial form got for free and a pool has to
+    # state: worker exit status, response presence, an exact bijection between
+    # dispatched and returned cases on an ORDINAL key, a boolean verdict type,
+    # and every planted file proved removed.
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][object[]]$Cases,
+        [Parameter(Mandatory = $true)][string]$ContainerRoot,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [int]$BudgetMs = 3600000
+    )
+
+    if ($Cases.Count -lt 1) {
+        throw "self-test receipt case pool '$Label' was given no cases"
+    }
+    $dispatched = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($case in $Cases) {
+        if (-not $dispatched.Add([string]$case.Name)) {
+            throw (
+                "self-test receipt case pool '$Label' has a duplicate case name: " +
+                [string]$case.Name
+            )
+        }
+    }
+    $candidateNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($case in $Cases) {
+        $candidateName = [string]$case.CandidateName
+        if ([string]::IsNullOrEmpty($candidateName)) { continue }
+        # Two cases sharing a candidate name would be two cases writing one
+        # file, which is exactly the serialisation this pool exists to remove.
+        if (-not $candidateNames.Add($candidateName)) {
+            throw (
+                "self-test receipt case pool '$Label' reuses a staged candidate " +
+                "name: $candidateName"
+            )
+        }
+        # The verifier's staged-receipt rule is the guard being relied on, so it
+        # is restated where the names are minted: anything else is refused by
+        # the verifier for its NAME, and every case in the pool would then be
+        # rejected for a reason that has nothing to do with its corruption.
+        if ($candidateName -cnotmatch
+            '^hoi4-portable-package-receipt\.json\.[0-9a-f]{32}\.candidate$') {
+            throw (
+                "self-test receipt case pool '$Label' minted a noncanonical staged " +
+                "candidate name: $candidateName"
+            )
+        }
+    }
+    $workerScriptPath = Join-Path $ContainerRoot 'receipt-case-worker.ps1'
+    [IO.File]::WriteAllText(
+        $workerScriptPath,
+        $script:PortablePackageReceiptCaseWorkerScript,
+        [Text.UTF8Encoding]::new($false)
+    )
+    $workerCount = [Math]::Min((Get-SelfTestGateWorkerCount), $Cases.Count)
+    $workers = [Collections.Generic.List[object]]::new()
+    $cleanupProblems = [Collections.Generic.List[string]]::new()
+    $rows = [Collections.Generic.Dictionary[string, object]]::new(
+        [StringComparer]::Ordinal
+    )
+    try {
+        for ($workerIndex = 0; $workerIndex -lt $workerCount; $workerIndex++) {
+            # Round robin, not contiguous blocks: two of these cases are decided
+            # by the verifier's first few lines and the rest re-derive the whole
+            # source tree, so a contiguous block can leave one worker with every
+            # expensive case while another has already finished.
+            $slice = @(
+                0..($Cases.Count - 1) |
+                    Where-Object { ($_ % $workerCount) -eq $workerIndex } |
+                    ForEach-Object { $Cases[$_] }
+            )
+            if ($slice.Count -eq 0) { continue }
+            $requestPath = Join-Path $ContainerRoot ("$Label-request$workerIndex.json")
+            $responsePath = Join-Path $ContainerRoot ("$Label-response$workerIndex.json")
+            if (Test-Path -LiteralPath $responsePath -PathType Leaf) {
+                # A stale response from an earlier pool would be read as this
+                # pool's answer if this worker died before writing its own.
+                Remove-Item -LiteralPath $responsePath -Force -ErrorAction Stop
+            }
+            [IO.File]::WriteAllText(
+                $requestPath,
+                ([ordered]@{
+                    Root = $Root
+                    OutPath = $responsePath
+                    Items = @($slice)
+                } | ConvertTo-Json -Depth 8),
+                [Text.UTF8Encoding]::new($false)
+            )
+            # Quoted. Start-Process flattens -ArgumentList into one command
+            # line, so an unquoted path splits on the first space in %TEMP%.
+            $process = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
+                -ArgumentList @(
+                    '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', ('"{0}"' -f $workerScriptPath),
+                    '-RequestPath', ('"{0}"' -f $requestPath)
+                )
+            $workers.Add([pscustomobject]@{
+                Index = $workerIndex
+                Process = $process
+                ResponsePath = $responsePath
+                Expected = @($slice)
+            })
+        }
+        # Bounded: a wedged worker fails the suite with a named reason instead
+        # of holding the run open until something outside it intervenes.
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($worker in $workers) {
+            $remaining = $BudgetMs - [int]$clock.Elapsed.TotalMilliseconds
+            if ($remaining -lt 1) { $remaining = 1 }
+            if (-not $worker.Process.WaitForExit($remaining)) {
+                try { Stop-SelfTestWorkerProcessTree -Process $worker.Process } catch { }
+                throw (
+                    "self-test receipt case worker $($worker.Index) of '$Label' did " +
+                    "not finish within the $BudgetMs ms budget"
+                )
+            }
+            # The bool overload can return before the exit-code cache is filled.
+            $worker.Process.WaitForExit()
+            if ($worker.Process.ExitCode -ne 0) {
+                throw (
+                    "self-test receipt case worker $($worker.Index) of '$Label' " +
+                    "exited $($worker.Process.ExitCode)"
+                )
+            }
+        }
+        foreach ($worker in $workers) {
+            if (-not (Test-Path -LiteralPath $worker.ResponsePath -PathType Leaf)) {
+                throw (
+                    "self-test receipt case worker $($worker.Index) of '$Label' " +
+                    'produced no response'
+                )
+            }
+            $response = Get-Content -LiteralPath $worker.ResponsePath -Raw |
+                ConvertFrom-Json
+            if (@($response.cleanup_failures).Count -ne 0) {
+                throw (
+                    "self-test receipt case worker $($worker.Index) of '$Label' left " +
+                    'the release directory mutated: ' +
+                    (@($response.cleanup_failures) -join '; ')
+                )
+            }
+            $outstanding = [Collections.Generic.HashSet[string]]::new(
+                [StringComparer]::Ordinal
+            )
+            foreach ($case in @($worker.Expected)) {
+                [void]$outstanding.Add([string]$case.Name)
+            }
+            foreach ($row in @($response.results)) {
+                $name = [string]$row.name
+                # Remove returns false for a name that was never dispatched AND
+                # for one already consumed, so this is the duplicate check too.
+                if (-not $outstanding.Remove($name)) {
+                    throw (
+                        "self-test receipt case worker $($worker.Index) of '$Label' " +
+                        "returned a verdict for unrequested or duplicated case '$name'"
+                    )
+                }
+                if ($row.accepted -isnot [bool]) {
+                    throw (
+                        "self-test receipt case worker $($worker.Index) of '$Label' " +
+                        "returned a non-boolean verdict for '$name'"
+                    )
+                }
+                $rows[$name] = $row
+            }
+            if ($outstanding.Count -ne 0) {
+                throw (
+                    "self-test receipt case worker $($worker.Index) of '$Label' " +
+                    "returned no verdict for $($outstanding.Count) dispatched case(s)"
+                )
+            }
+        }
+        if ($rows.Count -ne $Cases.Count) {
+            throw (
+                "self-test receipt case pool '$Label' dispatched $($Cases.Count) " +
+                "case(s) and collected $($rows.Count) verdict(s)"
+            )
+        }
+    }
+    finally {
+        # Cleanup problems are RECORDED here, not thrown: throwing from a
+        # finally would replace the real failure with a janitorial one. They are
+        # raised after the block instead, where they can only be reached if the
+        # main path succeeded.
+        foreach ($worker in $workers) {
+            try {
+                if (-not $worker.Process.HasExited) {
+                    Stop-SelfTestWorkerProcessTree -Process $worker.Process
+                }
+            }
+            catch {
+                $cleanupProblems.Add(
+                    "worker $($worker.Index) could not be terminated: $($_.Exception.Message)"
+                )
+            }
+        }
+        foreach ($worker in $workers) {
+            try {
+                if (-not $worker.Process.WaitForExit(30000)) {
+                    $cleanupProblems.Add(
+                        "worker $($worker.Index) was still running 30000 ms after being terminated"
+                    )
+                }
+            }
+            catch {
+                $cleanupProblems.Add(
+                    "worker $($worker.Index) could not be waited on: $($_.Exception.Message)"
+                )
+            }
+        }
+        # Warned here as well as thrown below, because those are different
+        # paths: if the block above threw, that exception propagates the moment
+        # this finally returns and the check below is never reached.
+        if ($cleanupProblems.Count -ne 0) {
+            Write-Warning (
+                "self-test receipt case pool '$Label' cleanup failed: " +
+                ($cleanupProblems -join '; ')
+            ) -WarningAction Continue
+        }
+    }
+    if ($cleanupProblems.Count -ne 0) {
+        throw (
+            "self-test receipt case pool '$Label' cleanup failed: " +
+            ($cleanupProblems -join '; ')
+        )
+    }
+    # Comma on purpose: the dictionary is written as the single element of an
+    # array, which the pipeline unrolls back to the dictionary. Without it the
+    # caller is at the mercy of how PowerShell decides to enumerate the type.
+    return ,$rows
+}
+
+function New-SelfTestReceiptCandidateName {
+    # The one shape the verifier's staged-receipt rule admits. Minted per case
+    # so no two cases can name the same file.
+    return 'hoi4-portable-package-receipt.json.{0}.candidate' -f
+        [guid]::NewGuid().ToString('N')
+}
+
+function New-SelfTestReceiptMutation {
+    param(
+        [Parameter(Mandatory = $true)][string]$Property,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('string', 'bool', 'releasePath', 'emptyArray')]
+        [string]$ValueKind,
+        $Value = $null
+    )
+    return [pscustomobject]@{
+        Property = $Property
+        ValueKind = $ValueKind
+        Value = $Value
+    }
+}
+
+function New-SelfTestReceiptCase {
+    # One pooled receipt case. Builder arguments carry the @ROOT@ token so the
+    # worker rebases them onto the root it was given, exactly as the builder
+    # pool above requires.
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('verifier_canonical', 'verifier_candidate', 'builder')]
+        [string]$Kind,
+        [AllowEmptyCollection()][object[]]$Mutations = @(),
+        [AllowEmptyCollection()][string[]]$Arguments = @(),
+        $ZipCopy = $null
+    )
+
+    foreach ($argument in $Arguments) {
+        if ([IO.Path]::IsPathRooted([string]$argument)) {
+            throw (
+                "self-test receipt case '$Name' carries an absolute path argument " +
+                "instead of an @ROOT@-relative one: $argument"
+            )
+        }
+    }
+    if ($Kind -cne 'verifier_candidate' -and
+        (@($Mutations).Count -ne 0 -or $null -ne $ZipCopy)) {
+        throw (
+            "self-test receipt case '$Name' plants a receipt mutation but is not a " +
+            'staged-candidate case'
+        )
+    }
+    if ($Kind -cne 'builder' -and @($Arguments).Count -ne 0) {
+        throw (
+            "self-test receipt case '$Name' carries builder arguments but is not a " +
+            'builder case'
+        )
+    }
+    return [pscustomobject]@{
+        Name = $Name
+        Kind = $Kind
+        CandidateName = $(
+            if ($Kind -ceq 'verifier_candidate') { New-SelfTestReceiptCandidateName }
+            else { '' }
+        )
+        Mutations = @($Mutations)
+        Arguments = @($Arguments)
+        ZipCopy = $ZipCopy
     }
 }
 
@@ -1997,7 +2610,10 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
     )
 
     $fixtureBuilder = Join-Path $fixtureScripts 'New-PortableProductPackage.ps1'
-    $fixtureVerifier = Join-Path $fixtureScripts 'Test-PortableProductPackageReceipt.ps1'
+    # The fixture's receipt verifier is not named here: every case that runs it
+    # is dispatched to the receipt-case pool, whose workers resolve it from the
+    # root they are given. A second spelling of that path in this file would be
+    # free to disagree with the one the workers actually run.
     $fixtureHelper = Join-Path $fixtureNeutralScripts 'ProductionArtifact.Attestation.ps1'
     . $fixtureHelper
     . (Join-Path $fixtureScripts 'PassiveCapture.Lifecycle.ps1')
@@ -3272,7 +3888,7 @@ pub fn observer_only() {}
                 [int]$sourceRejectionClock.Elapsed.TotalMilliseconds
             if ($remaining -lt 1) { $remaining = 1 }
             if (-not $worker.Process.WaitForExit($remaining)) {
-                try { $worker.Process.Kill() } catch { }
+                try { Stop-SelfTestWorkerProcessTree -Process $worker.Process } catch { }
                 throw (
                     "self-test source-rejection worker $($worker.Index) did not " +
                     "finish within the $sourceRejectionBudgetMs ms budget"
@@ -3346,7 +3962,9 @@ pub fn observer_only() {}
         # main path succeeded.
         foreach ($worker in $sourceRejectionWorkers) {
             try {
-                if (-not $worker.Process.HasExited) { $worker.Process.Kill() }
+                if (-not $worker.Process.HasExited) {
+                    Stop-SelfTestWorkerProcessTree -Process $worker.Process
+                }
             }
             catch {
                 $sourceRejectionCleanupProblems.Add(
@@ -4385,131 +5003,283 @@ fn synthetic_structural_d71_passive_gate() {
         [Text.UTF8Encoding]::new($false)
     )
 
-    $verified = Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath)
-    Assert-Case 'verifier accepts authentic fixture' ([string]$verified.status -ceq 'PASS_CENTRAL_RELEASE_PORTABLE_PACKAGE')
-    Assert-Case 'verifier returns builder package hash' ([string]$verified.package_sha256 -ceq [string]$builderResult.sha256)
-
-    $zipOriginal = [IO.File]::ReadAllBytes($zip)
-    $zipTampered = [byte[]]$zipOriginal.Clone()
-    $zipTampered[$zipTampered.Length - 1] = $zipTampered[$zipTampered.Length - 1] -bxor 0xff
-    [IO.File]::WriteAllBytes($zip, $zipTampered)
-    Invoke-ExpectFailure 'tampered package bytes are rejected' {
-        Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath) | Out-Null
-    }
-    [IO.File]::WriteAllBytes($zip, $zipOriginal)
-
-    $receiptOriginal = [IO.File]::ReadAllText($packageReceiptPath)
-    $tamperedReceipt = $receiptOriginal | ConvertFrom-Json
-    $tamperedReceipt.status = 'PASS_WITHOUT_AUTHORITY'
-    [IO.File]::WriteAllText(
-        $packageReceiptPath,
-        ($tamperedReceipt | ConvertTo-Json -Depth 12),
-        [Text.UTF8Encoding]::new($false)
+    # ----------------------------------------------------------------------
+    # The receipt-verifier family.
+    #
+    # Twelve child processes -- nine receipt verifications and three package
+    # builds -- against the SAME fixture root. Measured serially on this
+    # repository they were 177 s of a 770 s suite, because almost every one of
+    # them re-derives the whole production source tree before it reaches the
+    # check it exists to exercise.
+    #
+    # What made them serial was one FILE, not shared state in general: the
+    # canonical receipt under .cargo-target\release, which is the only receipt
+    # the verifier will look at, so a case that wanted a corrupt receipt had to
+    # corrupt that one and put it back.
+    #
+    # -AllowStagedReceipt removes that constraint without loosening anything.
+    # It is not a switch invented here and it is not a debug affordance: it is
+    # the mode the release pipeline uses to verify a receipt it has staged but
+    # not yet published, and it is exactly as strict about where the file may
+    # live -- the same release directory, and a name that must match
+    # hoi4-portable-package-receipt.json.<32 hex>.candidate. Everything between
+    # that path rule and the emitted status string -- the package, the artifact
+    # attestation, the promotion evidence, the source-capability closure, the
+    # ZIP entry bytes -- is the same code reading the same tree. Production
+    # receipt verification is the invocation WITHOUT this switch, and neither it
+    # nor any line of Test-PortableProductPackageReceipt.ps1 is changed.
+    #
+    # So each case gets its own candidate file, its own corruption, and its own
+    # worker. The package-bytes case additionally gets its own PACKAGE: it
+    # declares a distinct version, which is what the verifier derives the
+    # expected ZIP path from, so the corrupt copy it plants is a file no other
+    # case reads and the check it fires -- ZIP bytes against the receipt's
+    # sha256 -- is the same one it fired serially. The three builder cases
+    # already wrote to uniquely named output ZIPs and are dispatched unchanged.
+    #
+    # The control is what makes a refusal mean something. An unmutated candidate
+    # is verified in the same batch and MUST be accepted. Without it, a
+    # candidate rejected merely for being staged -- or a receipt that no longer
+    # survives the ConvertFrom-Json/ConvertTo-Json round trip through which
+    # every one of these mutations is applied -- would make each rejection below
+    # true for a reason that has nothing to do with its planted corruption. That
+    # hole was open while these cases were serial: they all round-tripped the
+    # receipt and none of them ever asked whether a round trip alone still
+    # verified. It is a precondition rather than a case, so it throws instead of
+    # reporting a verdict, and it adds no name to the sequence.
+    # ----------------------------------------------------------------------
+    $receiptPoolControlName = 'control: staged candidate with no mutation'
+    $stagedPackageVersion = '0.1.0-staged-package-bytes'
+    $stagedPackageZipName =
+        'battle-plan-{0}-windows-x86_64.zip' -f $stagedPackageVersion
+    $receiptCases = @(
+        (New-SelfTestReceiptCase `
+            -Name $receiptPoolControlName `
+            -Kind 'verifier_candidate'),
+        (New-SelfTestReceiptCase `
+            -Name 'verifier accepts authentic fixture' `
+            -Kind 'verifier_canonical'),
+        (New-SelfTestReceiptCase `
+            -Name 'tampered package bytes are rejected' `
+            -Kind 'verifier_candidate' `
+            -Mutations @(
+                (New-SelfTestReceiptMutation `
+                    -Property 'package.version' `
+                    -ValueKind 'string' `
+                    -Value $stagedPackageVersion),
+                (New-SelfTestReceiptMutation `
+                    -Property 'package.path' `
+                    -ValueKind 'releasePath' `
+                    -Value $stagedPackageZipName)
+            ) `
+            -ZipCopy ([pscustomobject]@{
+                SourceName = 'battle-plan-0.1.0-windows-x86_64.zip'
+                DestinationName = $stagedPackageZipName
+                TamperLastByte = $true
+            })),
+        (New-SelfTestReceiptCase `
+            -Name 'tampered central receipt is rejected' `
+            -Kind 'verifier_candidate' `
+            -Mutations @(
+                (New-SelfTestReceiptMutation `
+                    -Property 'status' `
+                    -ValueKind 'string' `
+                    -Value 'PASS_WITHOUT_AUTHORITY')
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'tampered production source-capability closure is rejected' `
+            -Kind 'verifier_candidate' `
+            -Mutations @(
+                (New-SelfTestReceiptMutation `
+                    -Property 'package.interaction_closure.source_capability.collector_fixture_hooks_default_off' `
+                    -ValueKind 'bool' `
+                    -Value $false)
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'tampered production feature closure is rejected' `
+            -Kind 'verifier_candidate' `
+            -Mutations @(
+                (New-SelfTestReceiptMutation `
+                    -Property 'central_validation.production_feature_closure.collector_dll.built_last' `
+                    -ValueKind 'bool' `
+                    -Value $false)
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'tampered interaction-closure verdict is rejected' `
+            -Kind 'verifier_candidate' `
+            -Mutations @(
+                (New-SelfTestReceiptMutation `
+                    -Property 'package.interaction_closure.recorder_host.forbidden_symbols_absent' `
+                    -ValueKind 'bool' `
+                    -Value $false)
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'tampered interaction-closure marker roster is rejected' `
+            -Kind 'verifier_candidate' `
+            -Mutations @(
+                (New-SelfTestReceiptMutation `
+                    -Property 'package.interaction_closure.collector_dll.required_markers' `
+                    -ValueKind 'emptyArray')
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'tampered passive policy-input digest is rejected' `
+            -Kind 'verifier_candidate' `
+            -Mutations @(
+                (New-SelfTestReceiptMutation `
+                    -Property 'package.interaction_closure.policy_inputs.read_only_game_state_witness_sha256' `
+                    -ValueKind 'string' `
+                    -Value (('f' * 64) -join ''))
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'DLL cannot masquerade as recorder executable' `
+            -Kind 'builder' `
+            -Arguments @(
+                '-RecorderExe', "@ROOT@\$collectorRelative",
+                '-ReplayExe', "@ROOT@\$replayRelative",
+                '-CollectorDll', "@ROOT@\$collectorRelative",
+                '-OutputZip', "@ROOT@\$releaseRelative\wrong-kind.zip",
+                '-Version', '0.1.0'
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'post-temp builder failure is rejected' `
+            -Kind 'builder' `
+            -Arguments @(
+                '-RecorderExe', "@ROOT@\$recorderRelative",
+                '-ReplayExe', "@ROOT@\$replayRelative",
+                '-CollectorDll', "@ROOT@\$collectorRelative",
+                '-OutputZip', "@ROOT@\$releaseRelative\post-temp-cleanup.zip",
+                '-Version', '0.1.0',
+                '-TestOnlyFailAfterTemporaryWrite'
+            )),
+        (New-SelfTestReceiptCase `
+            -Name 'post-publication builder failure is rejected' `
+            -Kind 'builder' `
+            -Arguments @(
+                '-RecorderExe', "@ROOT@\$recorderRelative",
+                '-ReplayExe', "@ROOT@\$replayRelative",
+                '-CollectorDll', "@ROOT@\$collectorRelative",
+                '-OutputZip', "@ROOT@\$releaseRelative\post-publish-cleanup.zip",
+                '-Version', '0.1.0',
+                '-TestOnlyFailAfterPublishedWrite'
+            ))
     )
-    Invoke-ExpectFailure 'tampered central receipt is rejected' {
-        Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath) | Out-Null
-    }
-    [IO.File]::WriteAllText($packageReceiptPath, $receiptOriginal, [Text.UTF8Encoding]::new($false))
 
-    $tamperedSourceCapability = $receiptOriginal | ConvertFrom-Json
-    $tamperedSourceCapability.package.interaction_closure.source_capability.collector_fixture_hooks_default_off = $false
-    [IO.File]::WriteAllText(
-        $packageReceiptPath,
-        ($tamperedSourceCapability | ConvertTo-Json -Depth 12),
-        [Text.UTF8Encoding]::new($false)
+    # The pool's request and response files are NOT put under the fixture root.
+    # The production input digest the verifier recomputes covers every .json and
+    # .ps1 under extractor\native, so a request file landing there would change
+    # the tree these cases are measuring while they measure it.
+    $receiptPoolContainer = Join-Path ([IO.Path]::GetTempPath()) (
+        'hoi4pr' + [guid]::NewGuid().ToString('N').Substring(0, 8)
     )
-    Invoke-ExpectFailure 'tampered production source-capability closure is rejected' {
-        Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath) | Out-Null
+    if (Test-Path -LiteralPath $receiptPoolContainer) {
+        throw "self-test receipt pool container already exists: $receiptPoolContainer"
     }
-    [IO.File]::WriteAllText($packageReceiptPath, $receiptOriginal, [Text.UTF8Encoding]::new($false))
-
-    $tamperedFeatureClosure = $receiptOriginal | ConvertFrom-Json
-    $tamperedFeatureClosure.central_validation.production_feature_closure.collector_dll.built_last = $false
-    [IO.File]::WriteAllText(
-        $packageReceiptPath,
-        ($tamperedFeatureClosure | ConvertTo-Json -Depth 12),
-        [Text.UTF8Encoding]::new($false)
+    [IO.Directory]::CreateDirectory($receiptPoolContainer) | Out-Null
+    $receiptPoolContainerInfo = [IO.DirectoryInfo]::new($receiptPoolContainer)
+    if (($receiptPoolContainerInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "self-test receipt pool container is a reparse point: $receiptPoolContainer"
+    }
+    # ONE filesystem operation that can only succeed for one caller; see the
+    # private-tree container above for why "check then create" is a race.
+    $receiptPoolClaim = [IO.File]::Open(
+        (Join-Path $receiptPoolContainer '.selftest-owner'),
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None
     )
-    Invoke-ExpectFailure 'tampered production feature closure is rejected' {
-        Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath) | Out-Null
+    # Recorded the instant the claim is won, so anything that fails below leaves
+    # a container the outer teardown will remove rather than an orphan.
+    $receiptPoolContainerOwned = $receiptPoolContainer
+    try { $receiptPoolClaim.WriteByte(0) } finally { $receiptPoolClaim.Dispose() }
+    $receiptRows = $null
+    $receiptPoolCleanupProblem = ''
+    try {
+        $receiptRows = Invoke-SelfTestReceiptCasePool `
+            -Root $root `
+            -Cases @($receiptCases) `
+            -ContainerRoot $receiptPoolContainer `
+            -Label 'receipts'
     }
-    [IO.File]::WriteAllText($packageReceiptPath, $receiptOriginal, [Text.UTF8Encoding]::new($false))
+    finally {
+        # Recorded, not thrown: throwing from a finally would replace the real
+        # failure with a janitorial one. Warned here as well as thrown below,
+        # because a leak on a FAILING run would otherwise be recorded and then
+        # silently discarded when the primary exception propagates.
+        try {
+            Remove-Item -LiteralPath $receiptPoolContainer -Recurse -Force `
+                -ErrorAction Stop
+            # Ownership ENDS here, so the outer teardown cannot remove a
+            # container a later run has since claimed under the same short name.
+            $receiptPoolContainerOwned = $null
+        }
+        catch {
+            $receiptPoolCleanupProblem = [string]$_.Exception.Message
+            Write-Warning (
+                'self-test receipt pool container was left behind: ' +
+                "$receiptPoolContainer ($receiptPoolCleanupProblem)"
+            ) -WarningAction Continue
+        }
+    }
+    if ($receiptPoolCleanupProblem) {
+        throw (
+            'self-test receipt pool container was left behind: ' +
+            "$receiptPoolContainer ($receiptPoolCleanupProblem)"
+        )
+    }
 
-    $tamperedClosure = $receiptOriginal | ConvertFrom-Json
-    $tamperedClosure.package.interaction_closure.recorder_host.forbidden_symbols_absent = $false
-    [IO.File]::WriteAllText(
-        $packageReceiptPath,
-        ($tamperedClosure | ConvertTo-Json -Depth 12),
-        [Text.UTF8Encoding]::new($false)
+    Write-SelfTestCaseTiming -Name 'receipt-verifier family (parallel workers)'
+
+    # The control, before any verdict from this pool is trusted.
+    $receiptControlRow = $receiptRows[$receiptPoolControlName]
+    if (-not [bool]$receiptControlRow.accepted) {
+        throw (
+            'self-test receipt pool control failed: the receipt verifier refused an ' +
+            'unmutated staged candidate (' + [string]$receiptControlRow.message + ')'
+        )
+    }
+    if ([string]$receiptControlRow.output_status -cne
+        'PASS_STAGED_CENTRAL_RELEASE_PORTABLE_PACKAGE') {
+        throw (
+            'self-test receipt pool control returned an unexpected staged verdict: ' +
+            [string]$receiptControlRow.output_status
+        )
+    }
+
+    # Named individually, in the order the serial form ran them, so the case
+    # names, their order and their count are exactly what they were.
+    $verified = $receiptRows['verifier accepts authentic fixture']
+    Assert-Case 'verifier accepts authentic fixture' (
+        [bool]$verified.accepted -and
+        [string]$verified.output_status -ceq 'PASS_CENTRAL_RELEASE_PORTABLE_PACKAGE'
     )
-    Invoke-ExpectFailure 'tampered interaction-closure verdict is rejected' {
-        Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath) | Out-Null
-    }
-    [IO.File]::WriteAllText($packageReceiptPath, $receiptOriginal, [Text.UTF8Encoding]::new($false))
-
-    $tamperedMarkers = $receiptOriginal | ConvertFrom-Json
-    $tamperedMarkers.package.interaction_closure.collector_dll.required_markers = @()
-    [IO.File]::WriteAllText(
-        $packageReceiptPath,
-        ($tamperedMarkers | ConvertTo-Json -Depth 12),
-        [Text.UTF8Encoding]::new($false)
+    Assert-Case 'verifier returns builder package hash' (
+        [string]$verified.output_package_sha256 -ceq [string]$builderResult.sha256
     )
-    Invoke-ExpectFailure 'tampered interaction-closure marker roster is rejected' {
-        Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath) | Out-Null
+    foreach ($refusedCaseName in @(
+        'tampered package bytes are rejected',
+        'tampered central receipt is rejected',
+        'tampered production source-capability closure is rejected',
+        'tampered production feature closure is rejected',
+        'tampered interaction-closure verdict is rejected',
+        'tampered interaction-closure marker roster is rejected',
+        'tampered passive policy-input digest is rejected',
+        'DLL cannot masquerade as recorder executable',
+        'post-temp builder failure is rejected'
+    )) {
+        Assert-Case $refusedCaseName (
+            -not [bool]$receiptRows[$refusedCaseName].accepted
+        )
     }
-    [IO.File]::WriteAllText($packageReceiptPath, $receiptOriginal, [Text.UTF8Encoding]::new($false))
-
-    $tamperedPolicyInput = $receiptOriginal | ConvertFrom-Json
-    $tamperedPolicyInput.package.interaction_closure.policy_inputs.read_only_game_state_witness_sha256 = ('f' * 64) -join ''
-    [IO.File]::WriteAllText(
-        $packageReceiptPath,
-        ($tamperedPolicyInput | ConvertTo-Json -Depth 12),
-        [Text.UTF8Encoding]::new($false)
-    )
-    Invoke-ExpectFailure 'tampered passive policy-input digest is rejected' {
-        Invoke-JsonScript -Path $fixtureVerifier -Arguments @('-RepoRoot', $root, '-ReceiptPath', $packageReceiptPath) | Out-Null
-    }
-    [IO.File]::WriteAllText($packageReceiptPath, $receiptOriginal, [Text.UTF8Encoding]::new($false))
-
-    $wrongKindZip = Join-Path $releaseRoot 'wrong-kind.zip'
-    Invoke-ExpectFailure 'DLL cannot masquerade as recorder executable' {
-        Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-            '-RecorderExe', $collector,
-            '-ReplayExe', $replay,
-            '-CollectorDll', $collector,
-            '-OutputZip', $wrongKindZip,
-            '-Version', '0.1.0'
-        ) | Out-Null
-    }
-
     $cleanupZip = Join-Path $releaseRoot 'post-temp-cleanup.zip'
-    Invoke-ExpectFailure 'post-temp builder failure is rejected' {
-        Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-            '-RecorderExe', $recorder,
-            '-ReplayExe', $replay,
-            '-CollectorDll', $collector,
-            '-OutputZip', $cleanupZip,
-            '-Version', '0.1.0',
-            '-TestOnlyFailAfterTemporaryWrite'
-        ) | Out-Null
-    }
     Assert-Case 'post-temp failure publishes no package' (-not (Test-Path -LiteralPath $cleanupZip))
     $cleanupTemporary = @(
         Get-ChildItem -LiteralPath $releaseRoot -Filter '.post-temp-cleanup.zip.*.tmp' -Force
     )
     Assert-Case 'post-temp failure removes unpublished temporary package' ($cleanupTemporary.Count -eq 0)
-
+    Assert-Case 'post-publication builder failure is rejected' (
+        -not [bool]$receiptRows['post-publication builder failure is rejected'].accepted
+    )
     $publishedCleanupZip = Join-Path $releaseRoot 'post-publish-cleanup.zip'
-    Invoke-ExpectFailure 'post-publication builder failure is rejected' {
-        Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-            '-RecorderExe', $recorder,
-            '-ReplayExe', $replay,
-            '-CollectorDll', $collector,
-            '-OutputZip', $publishedCleanupZip,
-            '-Version', '0.1.0',
-            '-TestOnlyFailAfterPublishedWrite'
-        ) | Out-Null
-    }
     Assert-Case 'post-publication failure removes published package' (
         -not (Test-Path -LiteralPath $publishedCleanupZip)
     )
@@ -4531,20 +5301,28 @@ finally {
     # candidate path this run may never have owned, and removing another run's
     # container while its workers are reading it is exactly the corruption the
     # atomic claim exists to prevent.
-    $containerVariable = Get-Variable -Name 'privateTreeContainerOwned' `
-        -Scope Script -ErrorAction SilentlyContinue
-    if ($containerVariable -and
-        -not [string]::IsNullOrEmpty([string]$containerVariable.Value) -and
-        (Test-Path -LiteralPath ([string]$containerVariable.Value))) {
-        try {
-            Remove-Item -LiteralPath ([string]$containerVariable.Value) `
-                -Recurse -Force -ErrorAction Stop
-        }
-        catch {
-            Write-Warning (
-                'self-test private tree container was left behind: ' +
-                [string]$containerVariable.Value + ' (' + $_.Exception.Message + ')'
-            ) -WarningAction Continue
+    # Same reasoning for the receipt pool's own container, which is claimed the
+    # same way, released the same way on its success path, and is therefore only
+    # still owned here on a run that died inside the pool.
+    foreach ($ownedVariableName in @(
+        'privateTreeContainerOwned',
+        'receiptPoolContainerOwned'
+    )) {
+        $containerVariable = Get-Variable -Name $ownedVariableName `
+            -Scope Script -ErrorAction SilentlyContinue
+        if ($containerVariable -and
+            -not [string]::IsNullOrEmpty([string]$containerVariable.Value) -and
+            (Test-Path -LiteralPath ([string]$containerVariable.Value))) {
+            try {
+                Remove-Item -LiteralPath ([string]$containerVariable.Value) `
+                    -Recurse -Force -ErrorAction Stop
+            }
+            catch {
+                Write-Warning (
+                    'self-test temporary container was left behind: ' +
+                    [string]$containerVariable.Value + ' (' + $_.Exception.Message + ')'
+                ) -WarningAction Continue
+            }
         }
     }
     if (Test-Path -LiteralPath $root) {
