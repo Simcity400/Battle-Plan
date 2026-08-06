@@ -1603,12 +1603,21 @@ function Wait-Hoi4WorldReady {
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
         [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc
     )
+    # Captured as a VALUE, not called by name: `.GetNewClosure()` parents the
+    # closure's dynamic module on the GLOBAL scope, so a script-scoped function
+    # resolves only when the script itself was run with `powershell -File` (which
+    # makes its functions global). Run via `-Command "& .\script"` the script
+    # keeps its own scope and a by-name call inside the closure dies with
+    # CommandNotFound -- which is how t27's world-ready wait spent its whole
+    # 600 s budget failing every probe. A variable IS captured by the closure,
+    # in every invocation mode.
+    $observeFn = ${function:Invoke-BoundedHoi4Observation}
     return (Wait-Hoi4WorldReadyState `
         -TargetProcessId $TargetProcessId `
         -TimeoutSeconds $TimeoutSeconds `
         -Observe {
             param($RemainingSeconds)
-            Invoke-BoundedHoi4Observation `
+            & $observeFn `
                 -TargetProcessId $TargetProcessId `
                 -TimeoutSeconds $RemainingSeconds `
                 -ExpectedCreationFiletimeUtc $ExpectedCreationFiletimeUtc
