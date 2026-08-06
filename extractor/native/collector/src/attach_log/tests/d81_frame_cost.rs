@@ -2016,6 +2016,9 @@ fn the_restricted_index_reports_the_same_foreign_maximum_for_every_query() {
         let restricted = D81ForeignSource {
             values_by_province: restricted_map,
             witnesses: Vec::new(),
+            // Not under test here: `related_count` prices a fold this assertion
+            // does not run, and `maximum_excluding_controller` never reads it.
+            ..D81ForeignSource::default()
         };
         let unrestricted = unrestricted_foreign_index(&tables);
 
@@ -2023,6 +2026,7 @@ fn the_restricted_index_reports_the_same_foreign_maximum_for_every_query() {
             for (controller_raw_handle, controller_equivalence_id, _) in &tables {
                 assert_eq!(
                     restricted.maximum_excluding_controller(
+                        &D81PhaseAccum::default(),
                         province_id,
                         *controller_raw_handle,
                         *controller_equivalence_id,
@@ -2343,6 +2347,144 @@ fn the_staged_foreign_read_publishes_the_unrestricted_entries_and_the_same_witne
 /// Restored. Offset 608 is inside a hub-simulation continuation row, which is
 /// where `foreign_max_raw` is encoded -- the drift reached the wire, and the
 /// test names the byte.
+/// `hub_query_probes` is `Σ_POV rows(POV) x related(POV)`, and the caller can
+/// only form that product if the foreign read hands back the POV's related
+/// count. The count therefore has to survive out of
+/// [`d81_read_foreign_source`] as a value, not be re-derived at the call site
+/// from anything the wire already sums.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: leaving `related_count` at its
+/// `Default` (the field was added to a struct that is constructed with `..`
+/// in three places, so this is the live failure mode) makes every
+/// `hub_query_probes` zero, and the counter that exists to decide between the
+/// eager and the query-time fold silently answers "the query-time fold is
+/// free". Deriving it from `seen_handles.len()` instead would also pass today
+/// and is not what the header authenticated, so the assertion is written
+/// against the staged related count.
+#[test]
+fn the_foreign_read_reports_the_related_count_its_probes_are_priced_from() {
+    let mut seed = 0x0081_C0DEu64;
+    let fixture = stage_foreign_fixture(6, 48, 96, &mut seed);
+    let queried: BTreeSet<u32> = (1..=48u32).collect();
+
+    let source = d81_read_foreign_source(
+        fixture.supply_system,
+        0,
+        8,
+        &fixture.authority,
+        &mut BTreeMap::new(),
+        &mut Vec::new(),
+        &queried,
+        &D81PhaseAccum::default(),
+    )
+    .expect("the staged foreign tree is complete and readable");
+
+    assert_eq!(
+        source.related_count, 6,
+        "the POV's related-country count must reach the caller that prices its probes"
+    );
+    // The product the production call site forms. Stated here so the counter's
+    // meaning is pinned to an example rather than only to its declaration: 48
+    // queried provinces answered against 6 related tables is 288 probes, which
+    // is what a query-time fold would pay for this POV.
+    assert_eq!(queried.len() as u64 * source.related_count, 288);
+}
+
+/// The accumulator's own contract: `hub_query_probes` is a sum of per-POV
+/// PRODUCTS, so it separates shapes that the per-capture totals cannot.
+///
+/// WHAT THIS DOES AND DOES NOT COVER, said plainly. It drives the two cells the
+/// way the production call site does — one bump pair per
+/// `maximum_excluding_controller` invocation — and asserts the sum over two
+/// deliberately ASYMMETRIC POVs (2 queries against 5 related, then 4 against 1)
+/// is the correlated 14 and not the 18 an uncorrelated estimate from the
+/// totals would give. That asymmetry is the whole reason the counter exists on
+/// the wire rather than being computed offline, so it is worth pinning.
+///
+/// It exercises the PRODUCTION query, `maximum_excluding_controller`, which is
+/// where the charge now lives. A POV whose routes never reach a query cannot be
+/// charged, because charging is not a statement that sits near the query — it
+/// is part of it.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL:
+///  * deleting either `D81PhaseAccum::bump` from
+///    `maximum_excluding_controller` — the counter goes to zero and d81's fold
+///    decision is answered by silence;
+///  * charging a constant instead of `self.related_count` — the totals stop
+///    being a sum of per-POV products, which is the only reason the unit is on
+///    the wire rather than computed offline (here that shows up as 12 or 6
+///    instead of 14);
+///  * hoisting the charge back to the caller, which no longer type-checks
+///    without also removing it from the query, i.e. the first mutation above.
+#[test]
+fn the_probe_charges_for_queries_performed_not_for_routes_planned() {
+    let phases = D81PhaseAccum::default();
+    let source = |related_count: u64| D81ForeignSource {
+        related_count,
+        ..D81ForeignSource::default()
+    };
+
+    // A POV with many related countries answering few routes, then one with the
+    // opposite shape. DELIBERATELY ASYMMETRIC: the correlated sum is 14 while
+    // the uncorrelated estimate anyone would form from the published totals
+    // (calls x related_total / povs = 6 x 6 / 2 = 18) is not, and telling those
+    // two apart is the whole reason the counter exists.
+    let wide = source(5);
+    for _ in 0..2 {
+        wide.maximum_excluding_controller(&phases, 1, 0, 0);
+    }
+    let narrow = source(1);
+    for _ in 0..4 {
+        narrow.maximum_excluding_controller(&phases, 1, 0, 0);
+    }
+    // The POV that refused before its first query -- one of the four failure
+    // paths between a route and its query. It is never asked, so it pays
+    // nothing, which is precisely what the pre-loop charge got wrong.
+    let _aborted = source(9);
+
+    let snapshot = phases.snapshot();
+    assert_eq!(snapshot.hub_query_calls, 6);
+    assert_eq!(
+        snapshot.hub_query_probes, 14,
+        "2 queries x 5 related plus 4 queries x 1 related"
+    );
+    assert_ne!(
+        snapshot.hub_query_probes, 18,
+        "the counter must not be reconstructible from the per-capture totals"
+    );
+}
+
+/// A POV with no related countries folds nothing, so a query-time fold would
+/// probe nothing — and the counter must say ZERO rather than inherit a count
+/// from the header it never used.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: setting `related_count` from
+/// `country_count` (8 here) or from the related vector's CAPACITY rather than
+/// from its authenticated count. Either reads plausibly and would charge this
+/// POV for probes no query-time fold would ever perform, biasing the whole
+/// decision toward keeping the index.
+#[test]
+fn a_pov_with_no_related_countries_prices_no_probes() {
+    let mut seed = 0x0081_0000u64;
+    let fixture = stage_foreign_fixture(0, 48, 96, &mut seed);
+    let queried: BTreeSet<u32> = (1..=48u32).collect();
+
+    let source = d81_read_foreign_source(
+        fixture.supply_system,
+        0,
+        8,
+        &fixture.authority,
+        &mut BTreeMap::new(),
+        &mut Vec::new(),
+        &queried,
+        &D81PhaseAccum::default(),
+    )
+    .expect("a POV with an empty related vector is a complete read, not a refusal");
+
+    assert_eq!(source.related_count, 0);
+    assert!(source.values_by_province.is_empty());
+}
+
 #[test]
 fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
     use compact_contract::rail_replay::{
@@ -2370,6 +2512,7 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
     let unrestricted = D81ForeignSource {
         values_by_province: unrestricted_foreign_index(&fixture.staged_rows),
         witnesses: Vec::new(),
+        ..D81ForeignSource::default()
     };
 
     // A province carrier, so the payload exercises the whole encoder and not
@@ -2417,6 +2560,7 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
                     available_raw: i64::from(province_id) * 7,
                     consumed_raw: i64::from(province_id) * 3,
                     foreign_max_raw: source.maximum_excluding_controller(
+                        &D81PhaseAccum::default(),
                         province_id,
                         controller_raw_handle,
                         controller_country_id,
