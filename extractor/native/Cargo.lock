@@ -910,6 +910,7 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "compact_stream",
+ "mimalloc",
  "recorder_host",
  "serde_json",
  "snapshot",

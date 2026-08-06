@@ -24,7 +24,9 @@ ce-cache-anatomy = ["snapshot/ce-cache-anatomy"]
 # wall time to the phases of `build_certified_replay_artifacts` on an existing
 # capture, so the blocker is argued from a profile rather than a model. Never on
 # by default and never packaged.
-cz-finalize-profile = []
+# The instrument installs the same global allocator the production recorder
+# installs, so it measures that process and not the Windows system heap.
+cz-finalize-profile = ["dep:mimalloc"]
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -32,6 +34,8 @@ compact_contract = { path = "../compact_contract" }
 recorder_host = { path = "../recorder_host" }
 snapshot = { path = "../snapshot" }
 serde_json = "1"
+# Instrument-only; pulled in solely by the `cz-finalize-profile` feature.
+mimalloc = { version = "0.1.52", optional = true }
 
 [[bin]]
 name = "replay_prefold_worker"

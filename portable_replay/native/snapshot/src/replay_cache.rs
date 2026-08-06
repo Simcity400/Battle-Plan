@@ -25,6 +25,19 @@
 //! it re-serializes each parse and requires the original bytes before the hour
 //! is admitted, so a token shape nobody anticipated fails the build loudly
 //! instead of corrupting a seek quietly.
+//!
+//! # What certifies a cache
+//!
+//! The encoder is not self-certifying and does not claim to be. It proves the
+//! value model preserves each hour's spelling, and it writes records; whether
+//! the RECORDS it wrote reconstruct those hours is proved by
+//! [`ReplayCacheReader::verify_every_hour`], which decodes the finished
+//! artifact's own bytes and compares every reconstructed hour against its
+//! recorded `world_json_sha256`. A caller that builds a cache and skips that
+//! call has an unverified cache, whatever `push` returned. The production seal
+//! path (`replay_decoder::build_certified_replay_artifacts`) runs it
+//! unconditionally before it returns artifacts, and nothing else in this
+//! repository publishes a cache.
 
 use crate::canon_value::{
     is_json_number_token, is_json_string_body, is_valid_object_key, key_cmp, CanonValue,
@@ -391,6 +404,80 @@ pub struct CacheBuildHour {
     pub world_json: Vec<u8>,
 }
 
+/// Everything about one build hour except its world body.
+///
+/// Exists so [`ReplayCacheEncoder::push_prepared`] can take a body that is
+/// already parsed without also taking a second, unrelated copy of the bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheBuildHourMeta {
+    pub hour_index: i64,
+    pub date: String,
+    pub h4cr_start_offset: u64,
+    pub h4cr_end_offset: u64,
+}
+
+/// One hour's canonical world JSON together with the cache value model's parse
+/// of it, proven at construction to re-emit exactly those bytes.
+///
+/// The pair is the point. A caller that needs to READ the world document -- to
+/// externalize an inline render texture, say -- would otherwise parse the same
+/// tens of megabytes a second time, with a second parser, purely because the
+/// encoder's parse is private to `push`. This type hands that one parse out
+/// while keeping the bytes and the tree welded together: the only constructor
+/// takes the bytes, parses them, requires the re-serialization to match, and
+/// then owns both, so no caller can pair a value with a body it did not come
+/// from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalWorldHour {
+    world_json: Vec<u8>,
+    value: CanonValue,
+}
+
+impl CanonicalWorldHour {
+    /// Parse an hour's canonical world JSON, proving the value model preserves
+    /// its spelling.
+    ///
+    /// `hour_index` names the hour in the error only; the value's own identity
+    /// members are checked against the index later, by the encoder.
+    pub fn parse(world_json: Vec<u8>, hour_index: i64) -> Result<Self, ReplayCacheError> {
+        let value = CanonValue::parse(&world_json).map_err(|error| {
+            ReplayCacheError::new(format!(
+                "hour {hour_index} is not strict canonical world JSON: {error}"
+            ))
+        })?;
+        // The representation claims to carry every spelling the fold emitted.
+        // Prove it on THESE bytes rather than trusting the claim: if some token
+        // shape survives parsing but not serialization, this is where the build
+        // stops, with the byte offset, instead of a seek returning a document
+        // that merely looks right.
+        let round_trip = value.to_json_bytes();
+        if round_trip != world_json {
+            let divergence = round_trip
+                .iter()
+                .zip(&world_json)
+                .position(|(a, b)| a != b)
+                .unwrap_or_else(|| round_trip.len().min(world_json.len()));
+            return Err(ReplayCacheError::new(format!(
+                "hour {hour_index} canonical JSON is not preserved by the cache value model: \
+                 first divergence at byte {divergence} ({} source bytes, {} re-emitted)",
+                world_json.len(),
+                round_trip.len()
+            )));
+        }
+        Ok(Self { world_json, value })
+    }
+
+    /// The parsed world body. Guaranteed to re-serialize to [`Self::json`].
+    pub fn value(&self) -> &CanonValue {
+        &self.value
+    }
+
+    /// The exact canonical world JSON this value was parsed from.
+    pub fn json(&self) -> &[u8] {
+        &self.world_json
+    }
+}
+
 pub struct ReplayCacheEncoder<W: Write> {
     writer: W,
     hasher: Sha256,
@@ -433,44 +520,71 @@ impl<W: Write> ReplayCacheEncoder<W> {
     }
 
     pub fn push(&mut self, hour: CacheBuildHour) -> Result<(), ReplayCacheError> {
-        if hour.date.trim().is_empty()
-            || hour.h4cr_start_offset >= hour.h4cr_end_offset
+        let CacheBuildHour {
+            hour_index,
+            date,
+            h4cr_start_offset,
+            h4cr_end_offset,
+            world_json,
+        } = hour;
+        let meta = CacheBuildHourMeta {
+            hour_index,
+            date,
+            h4cr_start_offset,
+            h4cr_end_offset,
+        };
+        self.check_ordered_and_contiguous(&meta)?;
+        let prepared = CanonicalWorldHour::parse(world_json, meta.hour_index)?;
+        self.encode_prepared(meta, prepared)
+    }
+
+    /// Encode an hour whose world body the caller has already parsed.
+    ///
+    /// Identical to [`Self::push`] in every byte it writes and every check it
+    /// runs -- [`CanonicalWorldHour::parse`] IS the parse and round-trip proof
+    /// `push` performs inline. The seam exists so the one consumer that also
+    /// has to read the world document does not parse it twice.
+    pub fn push_prepared(
+        &mut self,
+        meta: CacheBuildHourMeta,
+        prepared: CanonicalWorldHour,
+    ) -> Result<(), ReplayCacheError> {
+        self.check_ordered_and_contiguous(&meta)?;
+        self.encode_prepared(meta, prepared)
+    }
+
+    fn check_ordered_and_contiguous(
+        &self,
+        meta: &CacheBuildHourMeta,
+    ) -> Result<(), ReplayCacheError> {
+        if meta.date.trim().is_empty()
+            || meta.h4cr_start_offset >= meta.h4cr_end_offset
             || self.entries.last().is_some_and(|previous| {
-                hour.hour_index <= previous.hour_index
-                    || hour.h4cr_start_offset != previous.h4cr_end_offset
+                meta.hour_index <= previous.hour_index
+                    || meta.h4cr_start_offset != previous.h4cr_end_offset
             })
-            || (self.entries.is_empty() && hour.h4cr_start_offset != 0)
+            || (self.entries.is_empty() && meta.h4cr_start_offset != 0)
         {
             return Err(ReplayCacheError::new(
                 "cache input hours are not strictly ordered and contiguous",
             ));
         }
-        let value = CanonValue::parse(&hour.world_json).map_err(|error| {
-            ReplayCacheError::new(format!(
-                "hour {} is not strict canonical world JSON: {error}",
-                hour.hour_index
-            ))
-        })?;
-        // The representation claims to carry every spelling the fold emitted.
-        // Prove it on THESE bytes rather than trusting the claim: if some token
-        // shape survives parsing but not serialization, this is where the build
-        // stops, with the byte offset, instead of a seek returning a document
-        // that merely looks right.
-        let round_trip = value.to_json_bytes();
-        if round_trip != hour.world_json {
-            let divergence = round_trip
-                .iter()
-                .zip(&hour.world_json)
-                .position(|(a, b)| a != b)
-                .unwrap_or_else(|| round_trip.len().min(hour.world_json.len()));
-            return Err(ReplayCacheError::new(format!(
-                "hour {} canonical JSON is not preserved by the cache value model: \
-                 first divergence at byte {divergence} ({} source bytes, {} re-emitted)",
-                hour.hour_index,
-                hour.world_json.len(),
-                round_trip.len()
-            )));
-        }
+        Ok(())
+    }
+
+    fn encode_prepared(
+        &mut self,
+        meta: CacheBuildHourMeta,
+        prepared: CanonicalWorldHour,
+    ) -> Result<(), ReplayCacheError> {
+        let CanonicalWorldHour { world_json, value } = prepared;
+        let hour = CacheBuildHour {
+            hour_index: meta.hour_index,
+            date: meta.date,
+            h4cr_start_offset: meta.h4cr_start_offset,
+            h4cr_end_offset: meta.h4cr_end_offset,
+            world_json,
+        };
         validate_world_identity(&value, hour.hour_index, &hour.date)?;
         let position = self.entries.len();
         let is_checkpoint = position % self.checkpoint_interval_hours as usize == 0;
@@ -484,14 +598,17 @@ impl<W: Write> ReplayCacheEncoder<W> {
                 .expect("a non-checkpoint cache record has a previous hour");
             let patch = diff_value(previous, &value, 0)?;
             let payload = encode_patch(&patch)?;
-            let mut reconstructed = previous.clone();
-            apply_patch(&mut reconstructed, &patch, 0)?;
-            if reconstructed != value {
-                return Err(ReplayCacheError::new(format!(
-                    "binary delta parity failed while encoding hour {}",
-                    hour.hour_index
-                )));
-            }
+            // No in-memory replay of the patch here. The delta a reader will
+            // actually follow is the one DECODED from `payload`, applied to a
+            // value decoded from the cache -- and that is exactly what
+            // `ReplayCacheReader::verify_every_hour` does, over every record of
+            // the finished artifact, against each hour's recorded
+            // `world_json_sha256`. Re-applying the in-memory `patch` to a clone
+            // of the in-memory `previous` proves a strictly weaker statement
+            // (it never touches the encoding) at the price of cloning a
+            // whole-world `CanonValue` -- tens of megabytes of `String`
+            // allocations -- once per delta hour. The seal path runs
+            // `verify_every_hour` unconditionally, so nothing is left unproved.
             (
                 RECORD_DELTA,
                 payload,

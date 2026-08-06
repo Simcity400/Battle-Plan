@@ -263,6 +263,160 @@ fn render_blob_preservation_skips_only_documents_without_the_member() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The certified finalize path preserves render blobs from the SAME parse the
+/// checkpoint cache makes, and must find exactly what the bytes-taking helper
+/// finds.
+///
+/// This is the path that actually runs on a capture, so a wrong member name, a
+/// wrong nesting level, or a string read that returns the escaped body instead
+/// of the decoded text would drop render artifacts on every real seal -- and
+/// nothing downstream would notice, because the canonical JSON the cache stores
+/// is identical either way. Both helpers are driven over the same document and
+/// required to produce the same content-addressed blob, so the two cannot drift
+/// apart silently.
+#[test]
+fn canon_render_blob_preservation_matches_the_bytes_path() {
+    let root = std::env::temp_dir().join(format!(
+        "world_fold_canon_render_blob_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+
+    // Four inline textures, deliberately spread one per level of the nesting --
+    // second submit, second packet, second subresource -- so a helper that
+    // stopped at the first element of ANY of those three lists would write
+    // fewer blobs than this asserts. The first body carries a character
+    // `serde_json` escapes, so reading the member as its raw string BODY rather
+    // than its decoded text would hash different bytes and fail here too.
+    let encoded = "QUJDRA==\n\"tail\"";
+    let second_subresource = "U0VDT05E";
+    let second_packet = "UEFDS0VU";
+    let second_submit = "U1VCTUlU";
+    let rendered = serde_json::to_vec(&json!({
+        "date": "1936.01.01",
+        "hour_index": 7,
+        "production_render": {
+            "submits": [
+                {
+                    "authenticated_texture_snapshots": [
+                        {
+                            "resource": {
+                                "subresources": [
+                                    {"source": {"kind": "external", "bytes": "SKIPPED"}},
+                                    {"source": {"kind": "inline", "bytes": encoded}},
+                                    {"source": {"kind": "inline", "bytes": second_subresource}},
+                                ]
+                            }
+                        },
+                        {
+                            "resource": {
+                                "subresources": [
+                                    {"source": {"kind": "inline", "bytes": second_packet}},
+                                ]
+                            }
+                        },
+                    ]
+                },
+                {
+                    "authenticated_texture_snapshots": [{
+                        "resource": {
+                            "subresources": [
+                                {"source": {"kind": "inline", "bytes": second_submit}},
+                            ]
+                        }
+                    }]
+                },
+            ]
+        },
+        "schema_version": "1",
+    }))
+    .unwrap();
+    assert!(
+        String::from_utf8_lossy(&rendered).contains("\\n"),
+        "the fixture must carry an escaped character, or it proves nothing"
+    );
+    let digest = snapshot::sha256::Sha256::hex(encoded.as_bytes());
+
+    let from_bytes = root.join("bytes");
+    std::fs::create_dir_all(&from_bytes).unwrap();
+    preserve_production_render_blobs_from_json(&from_bytes, &rendered)
+        .expect("an inline texture must be preserved from bytes");
+
+    let from_canon = root.join("canon");
+    std::fs::create_dir_all(&from_canon).unwrap();
+    let parsed = snapshot::canon_value::CanonValue::parse(&rendered)
+        .expect("the fixture is canonical world JSON");
+    preserve_production_render_blobs_from_canon(&from_canon, &parsed)
+        .expect("an inline texture must be preserved from the shared parse");
+
+    let name = format!("{digest}.base64");
+    let bytes_blob = from_bytes.join("production_render_blobs").join(&name);
+    let canon_blob = from_canon.join("production_render_blobs").join(&name);
+    assert!(
+        canon_blob.exists(),
+        "the shared-parse path must write the same content-addressed blob at {}",
+        canon_blob.display()
+    );
+    assert_eq!(
+        std::fs::read(&canon_blob).unwrap(),
+        encoded.as_bytes(),
+        "the shared-parse path must write the DECODED string, not its escaped body"
+    );
+    for (label, body) in [
+        ("second subresource", second_subresource),
+        ("second packet", second_packet),
+        ("second submit", second_submit),
+    ] {
+        let digest = snapshot::sha256::Sha256::hex(body.as_bytes());
+        assert!(
+            from_canon
+                .join("production_render_blobs")
+                .join(format!("{digest}.base64"))
+                .exists(),
+            "the shared-parse path stopped before the {label} texture"
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(from_canon.join("production_render_blobs"))
+            .unwrap()
+            .count(),
+        4,
+        "exactly the four inline textures, and not the external one"
+    );
+    assert_eq!(
+        std::fs::read_dir(from_canon.join("production_render_blobs"))
+            .unwrap()
+            .count(),
+        std::fs::read_dir(from_bytes.join("production_render_blobs"))
+            .unwrap()
+            .count(),
+        "the two paths must select the same set of subresources"
+    );
+    assert!(bytes_blob.exists(), "fixture sanity: the bytes path wrote it too");
+
+    // A document with no `production_render` member creates no directory on the
+    // shared-parse path either.
+    let plain = serde_json::to_vec(&json!({
+        "date": "1936.01.01",
+        "hour_index": 7,
+        "schema_version": "1",
+    }))
+    .unwrap();
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let parsed_plain = snapshot::canon_value::CanonValue::parse(&plain).unwrap();
+    preserve_production_render_blobs_from_canon(&empty, &parsed_plain).unwrap();
+    assert!(
+        !empty.join("production_render_blobs").exists(),
+        "no blob directory may be created for a document that carries no render member"
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 // --- synthetic H4CR stream builders --------------------------------------
 
 fn push_record(

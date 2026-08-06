@@ -1152,23 +1152,55 @@ fn lower_current_thread_priority() {
 
 /// Apply the two per-hour operations the sequential finalize applied, in order:
 /// preserve any inline render blobs, then hand the hour to the cache encoder.
+///
+/// Both operations need the hour's world document as a TREE, and until this
+/// seam existed each built its own: `preserve_production_render_blobs_from_json`
+/// ran `parse_json_strict` over the whole hour, and `ReplayCacheEncoder::push`
+/// then ran `CanonValue::parse` over the same bytes again. On capture t30 that
+/// is 4.44 GB of world JSON parsed twice. Here it is parsed once, by the value
+/// model the cache actually stores, and both operations read that parse.
+///
+/// The order the sequential path established is unchanged: render blobs are
+/// preserved before any cache byte for the hour is written.
+///
+/// What DID change is how a REJECTED hour behaves, in two separate ways that
+/// land on two different inputs:
+///
+/// * An hour that is valid JSON the cache value model nonetheless refuses --
+///   members not in canonical order, or a spelling that does not survive the
+///   round trip, such as a space after a name separator -- and that carries
+///   inline render textures, used to have those textures written and then be
+///   rejected by the encoder's parse. It is now rejected first, so it writes
+///   nothing. Its error was, and still is, `Certification`.
+/// * An hour whose JSON is malformed used to be reported as `Io(InvalidData)`
+///   when the blob pass's byte scan sent it into `parse_json_strict`, and as
+///   `Certification` when the scan short-circuited past it. It is now always
+///   `Certification`. It wrote no blobs before and writes none now.
+///
+/// Both differences are confined to a build that is already aborting: the spill
+/// directory of a failed build is never published, and the artifacts a
+/// successful build returns are unaffected.
 fn emit_cache_hour(
     output_dir: &Path,
     cache_encoder: &mut ReplayCacheEncoderFile,
     job: CacheEmitJob,
 ) -> Result<(), OpenError> {
-    recorder_host::world_fold::preserve_production_render_blobs_from_json(
+    let prepared = snapshot::CanonicalWorldHour::parse(job.world_json, job.hour_index)
+        .map_err(|error| OpenError::Certification(error.to_string()))?;
+    recorder_host::world_fold::preserve_production_render_blobs_from_canon(
         output_dir,
-        &job.world_json,
+        prepared.value(),
     )?;
     cache_encoder
-        .push(snapshot::CacheBuildHour {
-            hour_index: job.hour_index,
-            date: job.date,
-            h4cr_start_offset: job.start_offset,
-            h4cr_end_offset: job.end_offset,
-            world_json: job.world_json,
-        })
+        .push_prepared(
+            snapshot::CacheBuildHourMeta {
+                hour_index: job.hour_index,
+                date: job.date,
+                h4cr_start_offset: job.start_offset,
+                h4cr_end_offset: job.end_offset,
+            },
+            prepared,
+        )
         .map_err(|error| OpenError::Certification(error.to_string()))
 }
 
