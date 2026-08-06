@@ -143,33 +143,26 @@ fn scheduler_probe_is_inserted_before_physical_final_frame_end() {
     ));
 }
 
-// Serializes the tests in this module: they toggle the process-global
-// RC_ENABLED, so running two concurrently can disable the gate under
-// the other's feet mid-assertion.
-static RC_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-// Tests OUTSIDE this module also store RC_ENABLED (frame assembly
-// stores the control's perf gate at every fixture frame), so even
-// lock-serialized tests here can see the gate flip mid-loop. The
-// counter tests are deterministic when undisturbed; retry a few times
-// so a rare concurrent flip degrades to a re-run, not a flake.
-fn eventually(mut attempt: impl FnMut() -> bool) {
-    for _ in 0..4 {
-        if attempt() {
-            return;
-        }
-    }
-    assert!(
-        attempt(),
-        "failed 5 straight attempts — not plausible as RC_ENABLED contention"
-    );
-}
+// The tests below toggle the process-global RC_ENABLED and drain the
+// process-global per-domain sink, so they take
+// `super::lock_rc_counters()` — the ONE lock over the whole read-counter
+// family, whose doc enumerates every entry point.
+//
+// A module-private lock stood here and did not work. It serialised these
+// tests against each other but not against the 36 tests OUTSIDE this
+// module that drive a production frame, and frame assembly stores the
+// control's perf gate into RC_ENABLED at the top of every frame. The
+// residual flip was covered by an `eventually()` helper that re-ran each
+// body up to five times; it is gone, along with every retry, because a
+// retry loop around a race also swallows a genuine regression that
+// breaks the counters four times in five. Every assertion here now runs
+// ONCE and must hold on the first attempt.
 
 // Uses domain ids 213/214, which no production code tags, so parallel
 // tests bumping the GLOBAL counters cannot contaminate these slots.
 #[test]
 fn rc_domain_scope_attributes_nested_counts_and_drains() {
-    let _serial = RC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _rc_counters = super::lock_rc_counters();
     RC_ENABLED.store(true, Ordering::Relaxed);
     // Pre-drain our slots in case of a previous run in this process.
     let _ = rc_domain_take_and_reset();
@@ -222,41 +215,41 @@ fn rc_domain_unit_names_are_stable_and_formatted() {
 // the sampled-time accumulator moves. Domain id 215 is test-reserved.
 #[test]
 fn rc_read_probe_samples_every_64th_and_routes_per_domain() {
-    let _serial = RC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eventually(|| {
-        RC_ENABLED.store(true, Ordering::Relaxed);
-        let _ = rc_domain_take_and_reset();
-        // Pin a NONZERO phase (0 would trigger the lazy re-seed).
-        RC_LOCAL.with(|r| r.spl_ctr.set(64));
-        {
-            let _scope = RcDomainScope::new(215);
-            for _ in 0..128 {
-                let probe = rc_read_probe(16);
-                // Give a sampled window a measurable body so elapsed
-                // nanos cannot floor to 0 at QPC resolution.
-                let mut acc = 0u64;
-                for i in 0..2_000u64 {
-                    acc = std::hint::black_box(acc.wrapping_add(i));
-                }
-                std::hint::black_box(acc);
-                rc_read_probe_end(probe);
+    let _rc_counters = super::lock_rc_counters();
+    RC_ENABLED.store(true, Ordering::Relaxed);
+    let _ = rc_domain_take_and_reset();
+    // Pin a NONZERO phase (0 would trigger the lazy re-seed).
+    RC_LOCAL.with(|r| r.spl_ctr.set(64));
+    {
+        let _scope = RcDomainScope::new(215);
+        for _ in 0..128 {
+            let probe = rc_read_probe(16);
+            // Give a sampled window a measurable body so elapsed
+            // nanos cannot floor to 0 at QPC resolution.
+            let mut acc = 0u64;
+            for i in 0..2_000u64 {
+                acc = std::hint::black_box(acc.wrapping_add(i));
             }
+            std::hint::black_box(acc);
+            rc_read_probe_end(probe);
         }
-        rc_flush_current_thread();
-        RC_ENABLED.store(false, Ordering::Relaxed);
-        let drained = rc_domain_take_and_reset();
-        let Some(d215) = drained.iter().find(|(d, _)| *d == 215).map(|(_, v)| *v) else {
-            return false;
-        };
-        // From phase 64, counts run 65..=192: samples at exactly 128
-        // and 192. (A phase-shifted stride would see 3; see the
-        // boundary test below for the 63-stride discriminator.)
-        d215[RC_PD_READS] == 128
-            && d215[RC_PD_BULK_BYTES] == 128 * 16
-            && d215[RC_PD_GUARDED_SPL_N] == 2
-            && d215[RC_PD_GUARDED_SPL_NS] > 0
-            && d215[RC_PD_GUARDED_SPL_N] <= d215[RC_PD_READS]
-    });
+    }
+    rc_flush_current_thread();
+    RC_ENABLED.store(false, Ordering::Relaxed);
+    let drained = rc_domain_take_and_reset();
+    let d215 = drained
+        .iter()
+        .find(|(d, _)| *d == 215)
+        .map(|(_, v)| *v)
+        .expect("slot 215 drained");
+    // From phase 64, counts run 65..=192: samples at exactly 128
+    // and 192. (A phase-shifted stride would see 3; see the
+    // boundary test below for the 63-stride discriminator.)
+    assert_eq!(d215[RC_PD_READS], 128);
+    assert_eq!(d215[RC_PD_BULK_BYTES], 128 * 16);
+    assert_eq!(d215[RC_PD_GUARDED_SPL_N], 2);
+    assert!(d215[RC_PD_GUARDED_SPL_NS] > 0);
+    assert!(d215[RC_PD_GUARDED_SPL_N] <= d215[RC_PD_READS]);
 }
 
 // Exact stride boundary (1R review finding 3: the aggregate-count
@@ -266,28 +259,31 @@ fn rc_read_probe_samples_every_64th_and_routes_per_domain() {
 // 128%63=2); a shifted 64 samples the wrong one.
 #[test]
 fn rc_read_probe_stride_boundary_is_exact() {
-    let _serial = RC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eventually(|| {
-        RC_ENABLED.store(true, Ordering::Relaxed);
-        let _ = rc_domain_take_and_reset();
-        RC_LOCAL.with(|r| r.spl_ctr.set(126));
-        let mut sampled = [false; 2];
-        {
-            let _scope = RcDomainScope::new(215);
-            for slot in sampled.iter_mut() {
-                let probe = rc_read_probe(0);
-                *slot = probe.is_some();
-                rc_read_probe_end(probe);
-            }
+    let _rc_counters = super::lock_rc_counters();
+    RC_ENABLED.store(true, Ordering::Relaxed);
+    let _ = rc_domain_take_and_reset();
+    RC_LOCAL.with(|r| r.spl_ctr.set(126));
+    let mut sampled = [false; 2];
+    {
+        let _scope = RcDomainScope::new(215);
+        for slot in sampled.iter_mut() {
+            let probe = rc_read_probe(0);
+            *slot = probe.is_some();
+            rc_read_probe_end(probe);
         }
-        rc_flush_current_thread();
-        RC_ENABLED.store(false, Ordering::Relaxed);
-        let drained = rc_domain_take_and_reset();
-        let Some(d215) = drained.iter().find(|(d, _)| *d == 215).map(|(_, v)| *v) else {
-            return false;
-        };
-        !sampled[0] && sampled[1] && d215[RC_PD_READS] == 2 && d215[RC_PD_GUARDED_SPL_N] == 1
-    });
+    }
+    rc_flush_current_thread();
+    RC_ENABLED.store(false, Ordering::Relaxed);
+    let drained = rc_domain_take_and_reset();
+    let d215 = drained
+        .iter()
+        .find(|(d, _)| *d == 215)
+        .map(|(_, v)| *v)
+        .expect("slot 215 drained");
+    assert!(!sampled[0], "count 127 must not sample");
+    assert!(sampled[1], "count 128 must sample");
+    assert_eq!(d215[RC_PD_READS], 2);
+    assert_eq!(d215[RC_PD_GUARDED_SPL_N], 1);
 }
 
 // Fresh threads must NOT start at phase 0, and DIFFERENT fresh threads
@@ -295,7 +291,7 @@ fn rc_read_probe_stride_boundary_is_exact() {
 // pass a mere nonzero check while preserving frame-wide phase lock).
 #[test]
 fn rc_read_probe_seeds_fresh_threads_with_distinct_phases() {
-    let _serial = RC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _rc_counters = super::lock_rc_counters();
     RC_ENABLED.store(true, Ordering::Relaxed);
     let grab = || {
         std::thread::spawn(|| {
@@ -330,90 +326,90 @@ fn rc_read_probe_seeds_fresh_threads_with_distinct_phases() {
 // Reads our own live buffer via the real RPM path.
 #[test]
 fn read_bytes_scan_integrates_scan_probe() {
-    let _serial = RC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eventually(|| {
-        RC_ENABLED.store(true, Ordering::Relaxed);
-        let _ = rc_domain_take_and_reset();
-        let src = vec![0xA5u8; 4096];
-        let mut scratch: Vec<u8> = Vec::with_capacity(4096);
-        let mut ok = true;
-        {
-            let _scope = RcDomainScope::new(218);
-            let got = read_bytes_scan(src.as_ptr() as usize, src.len(), &mut scratch);
-            ok &= matches!(got, Some(b) if b.len() == src.len() && b[0] == 0xA5);
-        }
-        rc_flush_current_thread();
-        RC_ENABLED.store(false, Ordering::Relaxed);
-        let drained = rc_domain_take_and_reset();
-        let hit = drained
-            .iter()
-            .find(|(d, _)| *d == 218)
-            .map(|(_, v)| v[RC_PD_SCAN_GUARDED_NS] > 0)
-            .unwrap_or(false);
-        ok && hit
-    });
+    let _rc_counters = super::lock_rc_counters();
+    RC_ENABLED.store(true, Ordering::Relaxed);
+    let _ = rc_domain_take_and_reset();
+    let src = vec![0xA5u8; 4096];
+    let mut scratch: Vec<u8> = Vec::with_capacity(4096);
+    {
+        let _scope = RcDomainScope::new(218);
+        let got = read_bytes_scan(src.as_ptr() as usize, src.len(), &mut scratch);
+        assert!(
+            matches!(got, Some(b) if b.len() == src.len() && b[0] == 0xA5),
+            "the scan must return the whole buffer it was asked for"
+        );
+    }
+    rc_flush_current_thread();
+    RC_ENABLED.store(false, Ordering::Relaxed);
+    let drained = rc_domain_take_and_reset();
+    let d218 = drained
+        .iter()
+        .find(|(d, _)| *d == 218)
+        .map(|(_, v)| *v)
+        .expect("slot 218 drained");
+    // Unsampled: a 4 KiB guarded scan is microseconds, three orders above
+    // QPC's ~100 ns tick, so this cannot floor to zero.
+    assert!(
+        d218[RC_PD_SCAN_GUARDED_NS] > 0,
+        "read_bytes_scan must charge its own scan probe"
+    );
 }
 
-// Self-cost of the gate-ON probe machinery (1R2 finding: the pre-QPC
-// branch work lands in lane_wall but not in sampled guarded time, so
-// it must be MEASURED, not asserted small). Run explicitly:
-//   cargo test --release rc_probe_self_cost_measure -- --ignored --nocapture
 // Scan probes are unsampled: EVERY call accumulates. Draining after
 // each call (1R review finding 3: a single aggregate >0 assert would
 // pass even if 2 of 3 calls were dropped) proves per-call coverage.
 #[test]
 fn rc_scan_probe_accumulates_every_call() {
-    let _serial = RC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eventually(|| {
-        RC_ENABLED.store(true, Ordering::Relaxed);
-        let _ = rc_domain_take_and_reset();
-        let mut per_call_ok = true;
-        for _ in 0..3 {
-            {
-                let _scope = RcDomainScope::new(216);
-                let probe = rc_scan_probe();
-                per_call_ok &= probe.is_some();
-                let mut acc = 0u64;
-                for i in 0..2_000u64 {
-                    acc = std::hint::black_box(acc.wrapping_add(i));
-                }
-                std::hint::black_box(acc);
-                rc_scan_probe_end(probe);
+    let _rc_counters = super::lock_rc_counters();
+    RC_ENABLED.store(true, Ordering::Relaxed);
+    let _ = rc_domain_take_and_reset();
+    for call in 0..3 {
+        {
+            let _scope = RcDomainScope::new(216);
+            let probe = rc_scan_probe();
+            assert!(probe.is_some(), "call {call}: gate is ON, probe must arm");
+            let mut acc = 0u64;
+            for i in 0..2_000u64 {
+                acc = std::hint::black_box(acc.wrapping_add(i));
             }
-            rc_flush_current_thread();
-            let drained = rc_domain_take_and_reset();
-            let hit = drained
-                .iter()
-                .find(|(d, _)| *d == 216)
-                .map(|(_, v)| v[RC_PD_SCAN_GUARDED_NS] > 0)
-                .unwrap_or(false);
-            per_call_ok &= hit;
+            std::hint::black_box(acc);
+            rc_scan_probe_end(probe);
         }
-        RC_ENABLED.store(false, Ordering::Relaxed);
-        per_call_ok
-    });
+        rc_flush_current_thread();
+        let drained = rc_domain_take_and_reset();
+        let d216 = drained
+            .iter()
+            .find(|(d, _)| *d == 216)
+            .map(|(_, v)| *v)
+            .unwrap_or_else(|| panic!("call {call}: slot 216 drained"));
+        assert!(
+            d216[RC_PD_SCAN_GUARDED_NS] > 0,
+            "call {call} accumulated no guarded scan time"
+        );
+    }
+    RC_ENABLED.store(false, Ordering::Relaxed);
 }
 
 // Gate OFF is the production path: no probe, no counts, no timing —
 // the primitives pay only the relaxed-load early-return.
 #[test]
 fn rc_probes_are_inert_when_gate_off() {
-    let _serial = RC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    eventually(|| {
-        RC_ENABLED.store(false, Ordering::Relaxed);
-        let _ = rc_domain_take_and_reset();
-        let mut all_inert = true;
-        {
-            let _scope = RcDomainScope::new(217);
-            for _ in 0..70 {
-                let probe = rc_read_probe(8);
-                all_inert &= probe.is_none();
-                rc_read_probe_end(probe);
-            }
-            all_inert &= rc_scan_probe().is_none();
+    let _rc_counters = super::lock_rc_counters();
+    RC_ENABLED.store(false, Ordering::Relaxed);
+    let _ = rc_domain_take_and_reset();
+    {
+        let _scope = RcDomainScope::new(217);
+        for read in 0..70 {
+            let probe = rc_read_probe(8);
+            assert!(probe.is_none(), "read {read}: gate is OFF, probe must not arm");
+            rc_read_probe_end(probe);
         }
-        rc_flush_current_thread();
-        // Gate OFF must accumulate nothing, not even read counts.
-        all_inert && rc_domain_take_and_reset().iter().all(|(d, _)| *d != 217)
-    });
+        assert!(rc_scan_probe().is_none(), "gate is OFF, scan must not arm");
+    }
+    rc_flush_current_thread();
+    // Gate OFF must accumulate nothing, not even read counts.
+    assert!(
+        rc_domain_take_and_reset().iter().all(|(d, _)| *d != 217),
+        "slot 217 accumulated with the gate OFF"
+    );
 }

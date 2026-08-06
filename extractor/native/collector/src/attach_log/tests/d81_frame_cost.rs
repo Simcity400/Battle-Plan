@@ -1608,10 +1608,13 @@ fn the_surviving_closing_slot_read_is_the_later_of_the_two() {
 /// read counter under a domain id production never tags.
 ///
 /// `rc_domain_take_and_reset` drains every domain slot, and `RC_ENABLED` is
-/// process-global, so this must not run beside other tests -- which is why its
-/// only caller is `#[ignore]`d.
+/// process-global, so this must not run beside anything else that touches the
+/// read-counter family. `#[ignore]` on the only caller is not that guarantee --
+/// `--ignored` runs the ignored tests concurrently with each other, and with
+/// everything else under `--include-ignored`. The lock is.
 fn guarded_reads(body: impl FnOnce()) -> u64 {
     const UNUSED_DOMAIN_ID: u16 = 219;
+    let _rc_counters = super::super::lock_rc_counters();
     RC_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = rc_domain_take_and_reset();
     {
