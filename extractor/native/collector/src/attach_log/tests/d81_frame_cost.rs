@@ -1777,14 +1777,28 @@ fn d81_elided_read_count_model() {
 // decides what `foreign_max_raw` reports on every emitted row, the obligation
 // is byte-for-byte equality of what d81 publishes -- not "close enough".
 
+/// One entry of the per-POV index the production reader used to materialise.
+///
+/// TEST-ONLY SINCE LANE DA (2026-08-06). Production stopped building the index
+/// — `maximum_excluding_controller` probes the related tables directly — so the
+/// entry type survives only here, as the shape the ORACLES are written in. That
+/// is the right place for it: an oracle that shared production's data structure
+/// would stop being independent of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct D81ForeignValue {
+    pub(crate) raw_handle: u32,
+    pub(crate) equivalence_id: u32,
+    pub(crate) value: i64,
+}
+
 /// The index the fold built BEFORE the restriction: every province of every
 /// related country's table, unconditionally.
 ///
 /// This is an INDEPENDENT ORACLE, deliberately written out here rather than
-/// obtained by calling the production fold with a permissive argument. A test
+/// obtained by calling a production fold with a permissive argument. A test
 /// whose two arms are the same function in two configurations cannot fail when
 /// that function is wrong in both; this one can. It is a faithful transcription
-/// of the loop body that `d81_merge_foreign_values` replaced.
+/// of the loop body lane CW restricted and lane DA deleted.
 fn unrestricted_foreign_index(
     tables: &[(u32, u32, BTreeMap<u32, i64>)],
 ) -> BTreeMap<u32, Vec<D81ForeignValue>> {
@@ -1814,49 +1828,86 @@ fn cw_splitmix(seed: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The restricted fold answers every query the unrestricted one answered, with
-/// the same value and the same per-province order.
+/// Build the lazy source the production read hands back, from tables a test
+/// owns.
 ///
-/// THE SHAPES ARE THE POINT. `d81_merge_foreign_values` picks between driving
-/// from the needed set and driving from the table by comparing their sizes, so
-/// a differential that only ever exercised one side would leave the other
-/// unproved. These shapes deliberately straddle the threshold: needed sets from
-/// 0 to 200 against tables from 1 to 400, over a province space small enough
-/// that the two sets genuinely overlap.
+/// The identity pairs and their ORDER are the ones the related-handle vector
+/// gave the read, which is what makes a differential against
+/// [`unrestricted_foreign_index`] an entry-for-entry comparison and not just a
+/// comparison of maxima.
+fn lazy_source_over<'tables>(
+    tables: &'tables [(u32, u32, BTreeMap<u32, i64>)],
+) -> D81ForeignSource<'tables> {
+    D81ForeignSource {
+        related: tables
+            .iter()
+            .map(|(raw_handle, equivalence_id, rows)| D81ForeignRelated {
+                raw_handle: *raw_handle,
+                equivalence_id: *equivalence_id,
+                rows,
+            })
+            .collect(),
+        witnesses: Vec::new(),
+    }
+}
+
+/// The probe looks in every related table and reports exactly which of them
+/// held the province -- over shapes that cover every population the fold used
+/// to branch on.
 ///
-/// TWO MUTATION RUNS, because the test makes two separate claims and each needs
-/// its own falsification. Both were run; the excerpts below are abridged only
-/// where the harness prints the full thread path.
+/// WHAT THIS REPLACED, AND WHY IT HAD TO CHANGE (lane DA, 2026-08-06). CW's
+/// `the_restricted_foreign_fold_agrees_with_the_unrestricted_one_on_every_shape`
+/// asserted that the restricted fold's `values_by_province` equalled the
+/// unrestricted one's on every queried province and held nothing outside it.
+/// Its subject -- a materialised index -- no longer exists, so the assertion
+/// cannot be kept as written. The CLAIM behind it survives as two: the ANSWER
+/// must match the unrestricted index's (asserted here and, over the real read,
+/// in the two tests that follow) and the probe must have looked in exactly the
+/// tables that hold the province, which is what `hub_probe_hits` publishes.
 ///
-/// 1. The fold keeps too MUCH -- `queried_provinces.contains(&province_id)`
-///    deleted from the table-driven branch:
+/// BOTH ORACLES ARE INDEPENDENT OF PRODUCTION, which the first draft of this
+/// test got wrong: it reconstructed the entry list from `source.related` --
+/// production's own vector -- and compared it to the oracle, an assertion no
+/// production change could break because both sides were test code. The
+/// expected hit count is now taken from `unrestricted_foreign_index`, where the
+/// number of entries a province carries IS the number of tables that hold it.
+///
+/// THE SHAPES ARE STILL THE POINT, for a different reason. CW's fold branched
+/// on `|queried| < |table|`, so its shapes had to straddle that threshold; the
+/// probe has no such branch, but the shapes are kept anyway -- 1..8 tables of
+/// 1..400 rows against 0..200 queried provinces over a 512-province space --
+/// because they cover empty query sets and provinces held by none, one and
+/// several tables.
+///
+/// MUTATION RUNS, both performed against production and observed:
+///
+///  * `for related in &self.related` restricted to `.take(1)`:
 ///
 /// ```text
-/// thread '...the_restricted_foreign_fold_agrees_with_the_unrestricted_one_on_every_shape'
-/// panicked at collector\src\attach_log\tests\d81_frame_cost.rs:1900:13:
-/// trial 1: province 96 was indexed but never queried
+/// assertion `left == right` failed: trial 0: every related table is probed
+/// for province 0
+///   left: 1
+///  right: 2
 /// ```
 ///
-/// 2. The fold keeps too LITTLE -- the lookup branch given an `if value > 0`
-///    guard, so it silently drops entries it should carry:
+///  * the probe's `hits += 1` moved above the `else { continue }`:
 ///
 /// ```text
-/// assertion `left == right` failed: trial 0: the restricted fold must publish
-/// exactly the unrestricted fold's entries for every queried province (province 58)
-///   left: []
-///  right: [D81ForeignValue { raw_handle: 2, equivalence_id: 1002, value: -94 }]
+/// assertion `left == right` failed: trial 0: the hits must be the tables that
+/// held province 0
+///   left: 2
+///  right: 0
 /// ```
 ///
-/// Both restored. Note what does NOT fail: replacing the
-/// `queried_provinces.len() < table_rows.len()` test by `true` forces the
-/// lookup branch onto every shape and the test still passes. That is the branch
-/// selection doing its job -- the two sides are meant to agree -- and it is why
-/// the branch choice is a performance decision and not a semantic one.
+/// Both restored. And one that deliberately does NOT fail: `probes += 1`
+/// hoisted out of the loop to a single `bump(self.related.len())`. The two are
+/// equal while the loop has no early exit, which is the fact
+/// `the_probe_charges_for_queries_performed_not_for_routes_planned` documents.
 #[test]
-fn the_restricted_foreign_fold_agrees_with_the_unrestricted_one_on_every_shape() {
+fn the_query_time_probe_counts_exactly_the_tables_it_looked_in() {
     const PROVINCE_SPACE: u32 = 512;
     let mut seed = 0x0D81_0C00_u64;
-    let mut shapes_seen = (0usize, 0usize);
+    let mut provinces_with_several = 0usize;
 
     for trial in 0..400u32 {
         let table_count = 1 + (cw_splitmix(&mut seed) % 8) as usize;
@@ -1879,47 +1930,49 @@ fn the_restricted_foreign_fold_agrees_with_the_unrestricted_one_on_every_shape()
             .map(|_| (cw_splitmix(&mut seed) % u64::from(PROVINCE_SPACE)) as u32)
             .collect();
 
-        let mut restricted: BTreeMap<u32, Vec<D81ForeignValue>> = BTreeMap::new();
-        for (raw_handle, equivalence_id, rows) in &tables {
-            if queried.len() < rows.len() {
-                shapes_seen.0 += 1;
-            } else {
-                shapes_seen.1 += 1;
-            }
-            d81_merge_foreign_values(
-                &mut restricted,
-                rows,
-                &queried,
-                *raw_handle,
-                *equivalence_id,
-            );
-        }
-
+        let source = lazy_source_over(&tables);
         let unrestricted = unrestricted_foreign_index(&tables);
-        for province_id in &queried {
-            let expected = unrestricted.get(province_id).cloned().unwrap_or_default();
-            let actual = restricted.get(province_id).cloned().unwrap_or_default();
+        let phases = D81PhaseAccum::default();
+
+        for &province_id in &queried {
+            // THE ORACLE. In the unrestricted index a province's entry list has
+            // exactly one element per table that holds it, so its length is the
+            // hit count the probe must report -- derived from the transcribed
+            // fold, never from the vector production walks.
+            let expected_hits = unrestricted
+                .get(&province_id)
+                .map(Vec::len)
+                .unwrap_or_default();
+            if expected_hits > 1 {
+                provinces_with_several += 1;
+            }
+
+            let before = phases.snapshot();
+            let answer = source.maximum_excluding_controller(&phases, province_id, 0, 0);
+            let after = phases.snapshot();
             assert_eq!(
-                actual, expected,
-                "trial {trial}: the restricted fold must publish exactly the \
-                 unrestricted fold's entries for every queried province \
-                 (province {province_id})"
+                answer,
+                reference_maximum(&unrestricted, province_id, 0, 0),
+                "trial {trial}: province {province_id} must answer as the index did"
             );
-        }
-        // And NOTHING outside the queried set is indexed -- that is the whole
-        // saving, and a fold that quietly kept indexing everything would still
-        // pass the equality above.
-        for province_id in restricted.keys() {
-            assert!(
-                queried.contains(province_id),
-                "trial {trial}: province {province_id} was indexed but never queried"
+            assert_eq!(
+                after.hub_query_probes - before.hub_query_probes,
+                tables.len() as u64,
+                "trial {trial}: every related table is probed for province {province_id}"
+            );
+            assert_eq!(
+                after.hub_probe_hits - before.hub_probe_hits,
+                expected_hits as u64,
+                "trial {trial}: the hits must be the tables that held province {province_id}"
             );
         }
     }
 
+    // Non-vacuous: the hit count is only a claim about LOOKING when some
+    // province is held by several of the tables and missing from others.
     assert!(
-        shapes_seen.0 > 0 && shapes_seen.1 > 0,
-        "the shapes must exercise BOTH branches of the fold, saw {shapes_seen:?}"
+        provinces_with_several > 0,
+        "the shapes must produce provinces held by several related tables"
     );
 }
 
@@ -1952,30 +2005,38 @@ fn reference_maximum(
     best
 }
 
-/// Every query the hub can put to the index returns what it returned before.
+/// Every query the hub can put to the source returns what the index returned.
 ///
-/// `maximum_excluding_controller` is the ONLY reader of the index, and its
-/// answer is what lands in a published row's `foreign_max_raw`. Comparing the
-/// maps alone would leave open the possibility of a difference the predicate
-/// happens to expose; this drives the production predicate over the RESTRICTED
-/// index against [`reference_maximum`] over the UNRESTRICTED one, for every
-/// controller identity the staged data can produce -- including the two
-/// zero-handle special cases the filter singles out.
+/// `maximum_excluding_controller` is the only thing that ever read the index,
+/// and its answer is what lands in a published row's `foreign_max_raw`.
+/// Comparing the reachable FACTS alone (the test above) would leave open a
+/// difference the predicate happens to expose; this drives the production
+/// predicate over the query-time source against [`reference_maximum`] over the
+/// UNRESTRICTED index, for every controller identity the staged data can
+/// produce -- including the two zero-handle special cases the filter singles
+/// out.
 ///
-/// MUTATION RUN: the `&& entry.value > 0` term deleted from
-/// `maximum_excluding_controller`'s filter -- the exact mutation the first,
-/// circular draft of this test could NOT see. Observed:
+/// THE TWO ARMS ARE INDEPENDENT, which is the property CW's version had and
+/// this one keeps: one arm is production's probe loop, the other is a
+/// transcription of the predicate over a map built by a transcription of the
+/// deleted fold. A mutation inside the production filter moves one arm only.
+///
+/// MUTATION RUN: the `related.raw_handle != controller_raw_handle` term deleted
+/// from `maximum_excluding_controller` -- the controller's own supply then wins
+/// its own query. Observed:
 ///
 /// ```text
-/// assertion `left == right` failed: trial 0: province 0 controller (4, 1002)
-/// must report the same foreign maximum before and after the restriction
-///   left: -13
+/// assertion `left == right` failed: trial 0: province 8 controller (0, 1000)
+/// must report the same foreign maximum as the index did
+///   left: 11
 ///  right: 0
 /// ```
 ///
-/// Restored.
+/// Restored. Note WHICH case caught it: controller handle 0, where the
+/// remaining disjunction admits everything, so the deleted term was the only
+/// thing keeping the controller's own table out of its own answer.
 #[test]
-fn the_restricted_index_reports_the_same_foreign_maximum_for_every_query() {
+fn the_query_time_probe_reports_the_same_foreign_maximum_for_every_query() {
     const PROVINCE_SPACE: u32 = 64;
     let mut seed = 0x51_9F_C0_DEu64;
 
@@ -2003,29 +2064,13 @@ fn the_restricted_index_reports_the_same_foreign_maximum_for_every_query() {
             .filter(|_province| cw_splitmix(&mut seed) % 3 == 0)
             .collect();
 
-        let mut restricted_map: BTreeMap<u32, Vec<D81ForeignValue>> = BTreeMap::new();
-        for (raw_handle, equivalence_id, rows) in &tables {
-            d81_merge_foreign_values(
-                &mut restricted_map,
-                rows,
-                &queried,
-                *raw_handle,
-                *equivalence_id,
-            );
-        }
-        let restricted = D81ForeignSource {
-            values_by_province: restricted_map,
-            witnesses: Vec::new(),
-            // Not under test here: `related_count` prices a fold this assertion
-            // does not run, and `maximum_excluding_controller` never reads it.
-            ..D81ForeignSource::default()
-        };
+        let source = lazy_source_over(&tables);
         let unrestricted = unrestricted_foreign_index(&tables);
 
         for &province_id in &queried {
             for (controller_raw_handle, controller_equivalence_id, _) in &tables {
                 assert_eq!(
-                    restricted.maximum_excluding_controller(
+                    source.maximum_excluding_controller(
                         &D81PhaseAccum::default(),
                         province_id,
                         *controller_raw_handle,
@@ -2039,7 +2084,7 @@ fn the_restricted_index_reports_the_same_foreign_maximum_for_every_query() {
                     ),
                     "trial {trial}: province {province_id} controller \
                      ({controller_raw_handle}, {controller_equivalence_id}) must \
-                     report the same foreign maximum before and after the restriction"
+                     report the same foreign maximum as the index did"
                 );
             }
         }
@@ -2187,15 +2232,35 @@ fn stage_foreign_fixture(
     }
 }
 
-/// The production read over staged memory publishes, for every queried
-/// province, exactly what the unrestricted fold published -- and the same
-/// witnesses, in the same order.
+/// The production read over staged memory answers, for every province, exactly
+/// what the unrestricted fold's index answered -- and mints the same witnesses,
+/// in the same order.
 ///
 /// THIS IS THE READ, NOT A MODEL OF IT. `d81_read_foreign_source` is called
 /// exactly as the hub calls it, over real memory, so the witnesses it mints,
 /// the order it mints them in, and the table-cache population it performs are
 /// all the production ones. The oracle is the independent
 /// `unrestricted_foreign_index` transcription of the loop this change replaced.
+///
+/// WHAT LANE DA CHANGED HERE. The read no longer takes a queried set and no
+/// longer returns an index, so what is asserted is the ANSWER for every
+/// province in the fixture's space against `reference_maximum` over the
+/// unrestricted index -- a superset of what the old assertion covered, since
+/// the old one only looked at the queried set. Everything about the witnesses
+/// and the cache is unchanged, including the mutation below.
+///
+/// A SECOND MUTATION, on the read rather than on the witnesses:
+/// `resolved.push` guarded by `if index != 0`, so one authenticated related
+/// table never reaches the probe. Observed:
+///
+/// ```text
+/// assertion `left == right` failed: the staged read must answer province 3 for
+/// controller (2, 1002) exactly as the unrestricted index did
+///   left: 55
+///  right: 84
+/// ```
+///
+/// Restored.
 ///
 /// MUTATION RUN: the related-header and related-blob witness pushes SWAPPED in
 /// `d81_read_foreign_source`, i.e. exactly the reordering that would change the
@@ -2216,19 +2281,17 @@ fn stage_foreign_fixture(
 /// and the reason the assertion now compares all three ordered pairs rather
 /// than the count plus two spot checks.
 #[test]
-fn the_staged_foreign_read_publishes_the_unrestricted_entries_and_the_same_witnesses() {
+fn the_staged_foreign_read_answers_like_the_unrestricted_index_and_mints_the_same_witnesses() {
     let mut seed = 0xF0_1E_16_4Eu64;
-    // Shapes on both sides of the fold's branch threshold.
-    for &(related_count, rows_per_table, province_space, queried_len) in &[
-        (4u32, 12u32, 64u32, 40usize),
-        (6, 200, 512, 24),
-        (3, 4, 32, 30),
-        (5, 64, 128, 64),
+    // The same four shapes CW used, which straddle every table/query size ratio
+    // the deleted fold branched on.
+    for &(related_count, rows_per_table, province_space) in &[
+        (4u32, 12u32, 64u32),
+        (6, 200, 512),
+        (3, 4, 32),
+        (5, 64, 128),
     ] {
         let fixture = stage_foreign_fixture(related_count, rows_per_table, province_space, &mut seed);
-        let queried: BTreeSet<u32> = (0..queried_len)
-            .map(|_| 1 + (cw_splitmix(&mut seed) % u64::from(province_space)) as u32)
-            .collect();
 
         let mut table_cache = BTreeMap::new();
         let mut scratch = Vec::new();
@@ -2239,31 +2302,42 @@ fn the_staged_foreign_read_publishes_the_unrestricted_entries_and_the_same_witne
             &fixture.authority,
             &mut table_cache,
             &mut scratch,
-            &queried,
             &D81PhaseAccum::default(),
         )
         .expect("the staged foreign tree is complete and readable");
 
         let oracle = unrestricted_foreign_index(&fixture.staged_rows);
-        for province_id in &queried {
-            let expected = oracle.get(province_id).cloned().unwrap_or_default();
-            let actual = source
-                .values_by_province
-                .get(province_id)
-                .cloned()
-                .unwrap_or_default();
-            assert_eq!(
-                actual, expected,
-                "the staged read must publish the unrestricted entries for \
-                 queried province {province_id}"
-            );
+        // EVERY province in the fixture's space, and every controller identity
+        // the staged handles can present -- including the handles that are not
+        // related to this POV at all, which is how a province held by no table
+        // is covered.
+        for province_id in 0..=province_space {
+            for &(controller_raw_handle, controller_equivalence_id, _) in &fixture.staged_rows {
+                assert_eq!(
+                    source.maximum_excluding_controller(
+                        &D81PhaseAccum::default(),
+                        province_id,
+                        controller_raw_handle,
+                        controller_equivalence_id,
+                    ),
+                    reference_maximum(
+                        &oracle,
+                        province_id,
+                        controller_raw_handle,
+                        controller_equivalence_id,
+                    ),
+                    "the staged read must answer province {province_id} for \
+                     controller ({controller_raw_handle}, \
+                     {controller_equivalence_id}) exactly as the unrestricted \
+                     index did"
+                );
+            }
         }
-        for province_id in source.values_by_province.keys() {
-            assert!(
-                queried.contains(province_id),
-                "province {province_id} was indexed but never queried"
-            );
-        }
+        assert_eq!(
+            source.related.len(),
+            related_count as usize,
+            "the read must offer every related country's table to the probe"
+        );
 
         // THE WITNESSES ARE THE CLOSING GATE. Three of them, in this order, at
         // these addresses -- the order is what makes the gate's re-read span a
@@ -2315,79 +2389,83 @@ fn the_staged_foreign_read_publishes_the_unrestricted_entries_and_the_same_witne
     }
 }
 
-/// The wire bytes d81 publishes are identical, byte for byte.
+/// The read hands back one probe target per related handle the header
+/// authenticated, and the probe charge is that many per query.
 ///
-/// The two previous tests compare the index and the predicate. This one closes
-/// the loop the domain actually cares about: it assembles
-/// `RailHubSimulationState` rows from both indexes exactly as the hub's
-/// row-emission loop does, encodes them through the production payload encoder,
-/// and compares the resulting payloads as bytes. A semantic drift anywhere in
-/// the fold reaches `foreign_max_raw`, and `foreign_max_raw` is in the payload.
+/// WHY THIS SURVIVED LANE DA IN A CHANGED FORM. CW's version asserted a
+/// `related_count` FIELD carried beside the fold, because a fold cannot count
+/// probes it does not perform. There is no such field now — the probe walks
+/// `source.related`, so the count IS the vector's length, and the failure mode
+/// CW's note described (the field left at its `Default` by a `..` construction,
+/// silently zeroing `hub_query_probes`) cannot be expressed. What CAN still go
+/// wrong is the vector: a read that skipped a related handle, or that pushed a
+/// handle twice, changes both what the queries see and what they are charged.
 ///
-/// WHICH BRANCH THIS FIXTURE EXERCISES (corrected against Codex review
-/// 019fd618-5241-73b0-af78-470bbee000d6, finding 3). 48 queried keys against
-/// 48-row tables makes `queried_provinces.len() < table_rows.len()` false, so
-/// this test drives the TABLE-driven branch. The lookup branch is covered by
-/// `the_restricted_foreign_fold_agrees_with_the_unrestricted_one_on_every_shape`
-/// and by the staged read above, whose shapes straddle the threshold; the
-/// mutation below is therefore applied to the branch this fixture actually
-/// takes rather than to the one the first draft of this note named.
-///
-/// MUTATION RUN: `push(province_id, value)` in the fold's table-driven branch
-/// given `value.saturating_add(1)`, i.e. the smallest possible drift in the one
-/// field the fold decides. Observed:
+/// MUTATION RUN: `resolved.push(...)` guarded by `if index != 0`, i.e. the
+/// first authenticated related handle is validated and then never offered to
+/// the probe. Observed:
 ///
 /// ```text
-/// assertion `left == right` failed: the restricted fold must produce a
-/// byte-identical d81 payload (offset, restricted byte, unrestricted byte)
-///   left: Some((608, 58, 57))
-///  right: None
+/// assertion `left == right` failed: every authenticated related handle must be
+/// probeable
+///   left: 5
+///  right: 6
 /// ```
 ///
-/// Restored. Offset 608 is inside a hub-simulation continuation row, which is
-/// where `foreign_max_raw` is encoded -- the drift reached the wire, and the
-/// test names the byte.
-/// `hub_query_probes` is `Σ_POV rows(POV) x related(POV)`, and the caller can
-/// only form that product if the foreign read hands back the POV's related
-/// count. The count therefore has to survive out of
-/// [`d81_read_foreign_source`] as a value, not be re-derived at the call site
-/// from anything the wire already sums.
+/// The same mutation also reaches the wire, which is the point of it being a
+/// read-level defect rather than a counting one -- it failed
+/// `the_query_time_probe_produces_a_byte_identical_d81_payload` at
+/// `Some((1248, 0, 97))` and the staged answer differential at province 3
+/// (55 against 84). Restored.
 ///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: leaving `related_count` at its
-/// `Default` (the field was added to a struct that is constructed with `..`
-/// in three places, so this is the live failure mode) makes every
-/// `hub_query_probes` zero, and the counter that exists to decide between the
-/// eager and the query-time fold silently answers "the query-time fold is
-/// free". Deriving it from `seen_handles.len()` instead would also pass today
-/// and is not what the header authenticated, so the assertion is written
-/// against the staged related count.
+/// The other live failure mode: sizing `related` from the related vector's
+/// CAPACITY (8 here, against the authenticated count of 6) rather than from the
+/// handles the loop admitted. That reads plausibly and would let a POV see
+/// supply values from countries it is not related to.
 #[test]
-fn the_foreign_read_reports_the_related_count_its_probes_are_priced_from() {
+fn the_foreign_read_offers_one_probe_target_per_authenticated_handle() {
     let mut seed = 0x0081_C0DEu64;
     let fixture = stage_foreign_fixture(6, 48, 96, &mut seed);
-    let queried: BTreeSet<u32> = (1..=48u32).collect();
 
+    // The cache is a NAMED local, not a temporary, because the source borrows
+    // it -- which is the query-time fold's ownership rule showing up in a test.
+    let mut table_cache = BTreeMap::new();
     let source = d81_read_foreign_source(
         fixture.supply_system,
         0,
         8,
         &fixture.authority,
-        &mut BTreeMap::new(),
+        &mut table_cache,
         &mut Vec::new(),
-        &queried,
         &D81PhaseAccum::default(),
     )
     .expect("the staged foreign tree is complete and readable");
 
     assert_eq!(
-        source.related_count, 6,
-        "the POV's related-country count must reach the caller that prices its probes"
+        source.related.len(),
+        6,
+        "every authenticated related handle must be probeable"
     );
-    // The product the production call site forms. Stated here so the counter's
-    // meaning is pinned to an example rather than only to its declaration: 48
-    // queried provinces answered against 6 related tables is 288 probes, which
-    // is what a query-time fold would pay for this POV.
-    assert_eq!(queried.len() as u64 * source.related_count, 288);
+    assert_eq!(
+        source
+            .related
+            .iter()
+            .map(|related| related.raw_handle)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5, 6],
+        "in the order the related-handle vector listed them"
+    );
+
+    // The charge the production call site now pays, stated against an example
+    // rather than only against a declaration: 48 queries against 6 related
+    // tables is 288 probes.
+    let phases = D81PhaseAccum::default();
+    for province_id in 1..=48u32 {
+        source.maximum_excluding_controller(&phases, province_id, 0, 0);
+    }
+    let snapshot = phases.snapshot();
+    assert_eq!(snapshot.hub_query_calls, 48);
+    assert_eq!(snapshot.hub_query_probes, 288);
 }
 
 /// The accumulator's own contract: `hub_query_probes` is a sum of per-POV
@@ -2410,37 +2488,47 @@ fn the_foreign_read_reports_the_related_count_its_probes_are_priced_from() {
 ///  * deleting either `D81PhaseAccum::bump` from
 ///    `maximum_excluding_controller` — the counter goes to zero and d81's fold
 ///    decision is answered by silence;
-///  * charging a constant instead of `self.related_count` — the totals stop
-///    being a sum of per-POV products, which is the only reason the unit is on
-///    the wire rather than computed offline (here that shows up as 12 or 6
-///    instead of 14);
+///  * charging `self.related.len()` once instead of counting the loop's own
+///    iterations — indistinguishable TODAY, since the loop has no early exit,
+///    and the reason the assertion below also pins the per-POV asymmetry rather
+///    than only the total;
 ///  * hoisting the charge back to the caller, which no longer type-checks
-///    without also removing it from the query, i.e. the first mutation above.
+///    without also removing it from the query, i.e. the first mutation above;
+///  * counting a miss as a hit (`hits += 1` moved above the probe's
+///    `else { continue }`), run and observed:
+///
+/// ```text
+/// assertion `left == right` failed: no table holds province 1, so every one of
+/// those 14 probes missed
+///   left: 14
+///  right: 0
+/// ```
 #[test]
 fn the_probe_charges_for_queries_performed_not_for_routes_planned() {
     let phases = D81PhaseAccum::default();
-    let source = |related_count: u64| D81ForeignSource {
-        related_count,
-        ..D81ForeignSource::default()
-    };
+    // Tables holding nothing: this test is about the CHARGE, and an empty table
+    // is probed exactly as a full one is.
+    let empty: Vec<(u32, u32, BTreeMap<u32, i64>)> = (0..9u32)
+        .map(|handle| (handle + 1, handle + 1001, BTreeMap::new()))
+        .collect();
 
     // A POV with many related countries answering few routes, then one with the
     // opposite shape. DELIBERATELY ASYMMETRIC: the correlated sum is 14 while
     // the uncorrelated estimate anyone would form from the published totals
     // (calls x related_total / povs = 6 x 6 / 2 = 18) is not, and telling those
     // two apart is the whole reason the counter exists.
-    let wide = source(5);
+    let wide = lazy_source_over(&empty[..5]);
     for _ in 0..2 {
         wide.maximum_excluding_controller(&phases, 1, 0, 0);
     }
-    let narrow = source(1);
+    let narrow = lazy_source_over(&empty[..1]);
     for _ in 0..4 {
         narrow.maximum_excluding_controller(&phases, 1, 0, 0);
     }
     // The POV that refused before its first query -- one of the four failure
     // paths between a route and its query. It is never asked, so it pays
     // nothing, which is precisely what the pre-loop charge got wrong.
-    let _aborted = source(9);
+    let _aborted = lazy_source_over(&empty[..9]);
 
     let snapshot = phases.snapshot();
     assert_eq!(snapshot.hub_query_calls, 6);
@@ -2452,41 +2540,108 @@ fn the_probe_charges_for_queries_performed_not_for_routes_planned() {
         snapshot.hub_query_probes, 18,
         "the counter must not be reconstructible from the per-capture totals"
     );
+    assert_eq!(
+        snapshot.hub_probe_hits, 0,
+        "no table holds province 1, so every one of those 14 probes missed"
+    );
 }
 
 /// A POV with no related countries folds nothing, so a query-time fold would
 /// probe nothing — and the counter must say ZERO rather than inherit a count
 /// from the header it never used.
 ///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: setting `related_count` from
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: filling `related` from
 /// `country_count` (8 here) or from the related vector's CAPACITY rather than
-/// from its authenticated count. Either reads plausibly and would charge this
-/// POV for probes no query-time fold would ever perform, biasing the whole
-/// decision toward keeping the index.
+/// from its authenticated count. Either reads plausibly, and would both charge
+/// this POV for probes it never performs and — far worse — let it see supply
+/// values from countries it is not related to.
 #[test]
 fn a_pov_with_no_related_countries_prices_no_probes() {
     let mut seed = 0x0081_0000u64;
     let fixture = stage_foreign_fixture(0, 48, 96, &mut seed);
-    let queried: BTreeSet<u32> = (1..=48u32).collect();
 
+    let mut table_cache = BTreeMap::new();
     let source = d81_read_foreign_source(
         fixture.supply_system,
         0,
         8,
         &fixture.authority,
-        &mut BTreeMap::new(),
+        &mut table_cache,
         &mut Vec::new(),
-        &queried,
         &D81PhaseAccum::default(),
     )
     .expect("a POV with an empty related vector is a complete read, not a refusal");
 
-    assert_eq!(source.related_count, 0);
-    assert!(source.values_by_province.is_empty());
+    assert!(source.related.is_empty());
+
+    let phases = D81PhaseAccum::default();
+    for province_id in 1..=48u32 {
+        assert_eq!(
+            source.maximum_excluding_controller(&phases, province_id, 0, 0),
+            0,
+            "a POV with no related countries has no foreign maximum anywhere"
+        );
+    }
+    let snapshot = phases.snapshot();
+    assert_eq!(snapshot.hub_query_calls, 48);
+    assert_eq!(snapshot.hub_query_probes, 0);
+    assert_eq!(snapshot.hub_probe_hits, 0);
 }
 
+/// The wire bytes d81 publishes are identical, byte for byte.
+///
+/// (THIS DOC WAS ATTACHED TO THE WRONG TEST until lane DA moved it: CW's file
+/// had these paragraphs sitting above
+/// `the_foreign_read_reports_the_related_count_its_probes_are_priced_from`,
+/// whose own doc followed them in the same `///` block, leaving the
+/// byte-identity test with no doc at all.)
+///
+/// The two previous tests compare the reachable facts and the predicate. This
+/// one closes the loop the domain actually cares about: it assembles
+/// `RailHubSimulationState` rows from both forms exactly as the hub's
+/// row-emission loop does, encodes them through the production payload encoder,
+/// and compares the resulting payloads as bytes. A semantic drift anywhere in
+/// the probe reaches `foreign_max_raw`, and `foreign_max_raw` is in the payload.
+///
+/// THE TWO ARMS SHARE NEITHER STRUCTURE NOR PREDICATE, which lane DA
+/// strengthened from CW's version: CW drove BOTH arms through the production
+/// `maximum_excluding_controller`, so a mutation inside the filter moved both
+/// arms equally and this test could not see it (it was covered only by the
+/// separate maximum differential). Arm one is now the production read over
+/// staged memory answering through its probe loop; arm two is
+/// `reference_maximum` over `unrestricted_foreign_index`. A mutation in either
+/// the probe loop or the filter moves exactly one arm.
+///
+/// MUTATION RUN: `best = value` given `value.saturating_add(1)` -- the smallest
+/// possible drift in the one field the probe decides. Observed:
+///
+/// ```text
+/// assertion `left == right` failed: the query-time probe must produce a
+/// byte-identical d81 payload (offset, probe byte, index byte)
+///   left: Some((608, 58, 57))
+///  right: None
+/// ```
+///
+/// Restored. Offset 608 is inside a hub-simulation continuation row, which is
+/// where `foreign_max_raw` is encoded -- the drift reached the wire, and the
+/// test names the byte.
+///
+/// A SECOND MUTATION, run to establish what this test does NOT cover: `hits +=
+/// 1` moved above the `let Some(&value) = ... else { continue }`, so misses are
+/// counted as hits. No published byte moves and this test correctly passes;
+/// `the_query_time_probe_counts_exactly_the_tables_it_looked_in`,
+/// `the_probe_charges_for_queries_performed_not_for_routes_planned` and
+/// `d81_foreign_maximum_excludes_raw_and_equivalent_controller_handles` are the
+/// three that fail on it. Byte-identity and counter-truthfulness are separate
+/// claims and are separately tested.
+///
+/// A THIRD, which this test DOES catch even though it is a read defect rather
+/// than a predicate one: `resolved.push` guarded by `if index != 0`, so one
+/// authenticated related table never reaches the probe. Observed here as
+/// `Some((1248, 0, 97))` -- a foreign maximum that fell to zero because the
+/// only table holding that province was the one withheld.
 #[test]
-fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
+fn the_query_time_probe_produces_a_byte_identical_d81_payload() {
     use compact_contract::rail_replay::{
         encode_payload_with_hub_simulation, RailHubSimulationState, RailNeighborState,
         RailProvinceState,
@@ -2498,22 +2653,17 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
 
     let mut table_cache = BTreeMap::new();
     let mut scratch = Vec::new();
-    let restricted = d81_read_foreign_source(
+    let probed = d81_read_foreign_source(
         fixture.supply_system,
         0,
         8,
         &fixture.authority,
         &mut table_cache,
         &mut scratch,
-        &queried,
         &D81PhaseAccum::default(),
     )
     .expect("the staged foreign tree is complete and readable");
-    let unrestricted = D81ForeignSource {
-        values_by_province: unrestricted_foreign_index(&fixture.staged_rows),
-        witnesses: Vec::new(),
-        ..D81ForeignSource::default()
-    };
+    let index = unrestricted_foreign_index(&fixture.staged_rows);
 
     // A province carrier, so the payload exercises the whole encoder and not
     // only its hub tail. The encoder REQUIRES every directed edge to have its
@@ -2540,7 +2690,12 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
         })
         .collect();
 
-    let rows_from = |source: &D81ForeignSource| -> Vec<RailHubSimulationState> {
+    // ONE row builder, driven by whichever way of obtaining a foreign maximum
+    // it is handed -- the production probe for one arm, the transcribed
+    // predicate over the transcribed index for the other. Everything else about
+    // the row is identical by construction, so the ONLY field that can differ
+    // is the one under test.
+    let rows_from = |maximum: &dyn Fn(u32, u32, u32) -> i64| -> Vec<RailHubSimulationState> {
         let mut rows = Vec::new();
         for (subtype, route_class) in [(0u8, 2u8), (1u8, 1u8)] {
             for &province_id in &queried {
@@ -2559,8 +2714,7 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
                     node_flag: (province_id % 2) as u8,
                     available_raw: i64::from(province_id) * 7,
                     consumed_raw: i64::from(province_id) * 3,
-                    foreign_max_raw: source.maximum_excluding_controller(
-                        &D81PhaseAccum::default(),
+                    foreign_max_raw: maximum(
                         province_id,
                         controller_raw_handle,
                         controller_country_id,
@@ -2574,15 +2728,24 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
         rows
     };
 
-    let restricted_rows = rows_from(&restricted);
-    let unrestricted_rows = rows_from(&unrestricted);
+    let probed_rows = rows_from(&|province_id, raw_handle, equivalence_id| {
+        probed.maximum_excluding_controller(
+            &D81PhaseAccum::default(),
+            province_id,
+            raw_handle,
+            equivalence_id,
+        )
+    });
+    let index_rows = rows_from(&|province_id, raw_handle, equivalence_id| {
+        reference_maximum(&index, province_id, raw_handle, equivalence_id)
+    });
 
     let encode = |rows: &[RailHubSimulationState]| {
         encode_payload_with_hub_simulation(&provinces, rows, 0, 0, provinces.len() as u32, 8)
             .expect("the staged snapshot encodes")
     };
-    let restricted_payload = encode(&restricted_rows);
-    let unrestricted_payload = encode(&unrestricted_rows);
+    let probed_payload = encode(&probed_rows);
+    let index_payload = encode(&index_rows);
 
     // THE BYTES ARE CHECKED FIRST, and reported as ONE offset rather than as two
     // whole buffers. `assert_eq!` on the payloads (or on the row vectors) prints
@@ -2591,35 +2754,270 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
     // claim. The first differing offset is the diagnostic that identifies the
     // field.
     assert_eq!(
-        restricted_payload.len(),
-        unrestricted_payload.len(),
-        "the restricted fold must produce a d81 payload of the same length"
+        probed_payload.len(),
+        index_payload.len(),
+        "the query-time probe must produce a d81 payload of the same length"
     );
-    let first_difference = restricted_payload
+    let first_difference = probed_payload
         .iter()
-        .zip(&unrestricted_payload)
+        .zip(&index_payload)
         .position(|(left, right)| left != right);
     assert_eq!(
-        first_difference.map(|at| (at, restricted_payload[at], unrestricted_payload[at])),
+        first_difference.map(|at| (at, probed_payload[at], index_payload[at])),
         None,
-        "the restricted fold must produce a byte-identical d81 payload \
-         (offset, restricted byte, unrestricted byte)"
+        "the query-time probe must produce a byte-identical d81 payload \
+         (offset, probe byte, index byte)"
     );
     // Only now the rows, as the finer-grained statement behind the bytes.
     assert_eq!(
-        restricted_rows, unrestricted_rows,
-        "the restricted fold must produce identical hub simulation rows"
+        probed_rows, index_rows,
+        "the query-time probe must produce identical hub simulation rows"
     );
     // Non-vacuous: the payload has to actually carry a non-zero foreign
     // maximum, or byte-identity would be a statement about zeros.
     assert!(
-        restricted_rows.iter().any(|row| row.foreign_max_raw > 0),
+        probed_rows.iter().any(|row| row.foreign_max_raw > 0),
         "the fixture must produce at least one non-zero foreign maximum"
     );
 }
 
-/// Price the foreign-value fold at t27's shape, before and after the
-/// restriction.
+// ---------------------------------------------------------------------
+// Job 5 -- the query-time fold, priced on t31's MEASURED shape
+// ---------------------------------------------------------------------
+
+/// t31's per-frame d81 hub shape, p50 over the 260 frames that published a
+/// trailer (`runs/live_unlock/t31`, read back with
+/// `sweep_span_audit.exe collector_stream.bin --domain 81`).
+///
+/// EVERY ONE OF THESE IS A MEASUREMENT, which is what separates this bench from
+/// the t27 model it replaces. That model had 93 POVs and 11,570 rows measured,
+/// the related count ASSUMED at 92, and the queried-set size a PROXY of
+/// unknown error direction. All four are now counters on the wire.
+mod t31 {
+    pub(super) const POV_COUNT: u64 = 439;
+    pub(super) const RELATED_VISITS: u64 = 2_005;
+    pub(super) const QUERY_CALLS: u64 = 11_586;
+    pub(super) const QUERY_PROBES: u64 = 345_704;
+    pub(super) const TABLE_ROWS_VISITED: u64 = 552_492;
+    /// Published as `d81_phase_hub_index_entries` in t31; lane DA renamed the
+    /// unit to `d81_phase_hub_probe_hits` (see `D81PhaseTimes`).
+    pub(super) const PROBE_HITS: u64 = 281_693;
+    pub(super) const READ_US: u64 = 48_449;
+    pub(super) const HUB_US: u64 = 32_766;
+    pub(super) const HUB_FOREIGN_US: u64 = 19_740;
+    pub(super) const HUB_NODES_US: u64 = 2_014;
+    pub(super) const HUB_CLOSE_US: u64 = 1_388;
+    pub(super) const PROVINCES_VISITED: u32 = 13_413;
+}
+
+/// The three POV tiers that reproduce t31's four hub totals simultaneously.
+///
+/// `(count, related countries, queries)`. WHY TIERS AND NOT A MEAN: the totals
+/// are only reproducible by a CORRELATED distribution, which is CX's whole
+/// point about `hub_query_probes`. A uniform 439-POV shape carrying the
+/// measured means (4.57 related, 26.4 queries) yields 52,900 probes against the
+/// measured 345,704 -- 6.5x low. These tiers were solved against the four sums,
+/// and the realised shape is ASSERTED against t31 below rather than assumed.
+const T31_TIERS: [(usize, usize, usize); 3] = [(20, 48, 330), (89, 8, 38), (330, 1, 5)];
+
+/// `hub_table_rows_visited / hub_related_visits` = 552,492 / 2,005 = 275.6.
+///
+/// One size for every table, which is the fixture's stated simplification: t31
+/// publishes the SUM over visits, not the distribution, so per-country table
+/// size variance is not recoverable from the wire and is not reproduced here.
+const T31_ROWS_PER_TABLE: usize = 276;
+
+/// `hub_probe_hits / hub_query_probes` = 281,693 / 345,704 = 81.48%: a queried
+/// province is present in four out of five of the tables its POV probes.
+///
+/// THIS IS THE FIXTURE'S HARDEST CONSTRAINT and the reason it is not built from
+/// uniform random draws. Tables hold 276 of 13,413 provinces, so an
+/// independent-draw model gives a 2% hit rate, not 81%. The real cause is
+/// geographic: a POV's supply routes run through provinces its neighbours'
+/// supply tables also carry. The fixture reproduces that with a CORRIDOR -- a
+/// pool of 339 province ids shared by one group of countries -- from which both
+/// the tables (276 of 339 = 81.4%) and the queries are drawn.
+const T31_CORRIDOR: usize = 339;
+/// Countries per corridor. Must be at least the widest tier's related count
+/// (48) or a major power's related set would span corridors and the hit rate
+/// would collapse.
+const T31_GROUP: usize = 55;
+
+/// CW's restricted eager fold, transcribed. This is the BEFORE arm, and it is a
+/// transcription for the same reason `unrestricted_foreign_index` is: the
+/// production function was deleted, and a bench arm has to be able to outlive
+/// the code it prices.
+///
+/// Returns the entries it added, exactly as the deleted production fold did, so
+/// the eager arm can make the `hub_index_entries` charge that fold made.
+fn cw_restricted_foreign_fold(
+    values_by_province: &mut BTreeMap<u32, Vec<D81ForeignValue>>,
+    table_rows: &BTreeMap<u32, i64>,
+    queried_provinces: &BTreeSet<u32>,
+    raw_handle: u32,
+    equivalence_id: u32,
+) -> u64 {
+    let mut added = 0u64;
+    let mut push = |province_id: u32, value: i64| {
+        values_by_province
+            .entry(province_id)
+            .or_default()
+            .push(D81ForeignValue {
+                raw_handle,
+                equivalence_id,
+                value,
+            });
+    };
+    if queried_provinces.len() < table_rows.len() {
+        for &province_id in queried_provinces {
+            if let Some(&value) = table_rows.get(&province_id) {
+                push(province_id, value);
+                added += 1;
+            }
+        }
+    } else {
+        for (&province_id, &value) in table_rows {
+            if queried_provinces.contains(&province_id) {
+                push(province_id, value);
+                added += 1;
+            }
+        }
+    }
+    added
+}
+
+/// A whole frame's hub inputs at t31's shape: one table per country, and per
+/// POV the countries it is related to and the provinces it queries.
+struct T31Frame {
+    tables: Vec<(u32, u32, BTreeMap<u32, i64>)>,
+    /// Per POV: indices into `tables`.
+    related: Vec<Vec<usize>>,
+    /// Per POV: the province ids its row-emission loop queries, in order.
+    queries: Vec<Vec<u32>>,
+}
+
+impl T31Frame {
+    fn build(seed: &mut u64) -> Self {
+        let country_count = T31_GROUP * ((t31::POV_COUNT as usize).div_ceil(T31_GROUP));
+        let group_count = country_count / T31_GROUP;
+
+        // One corridor per group: 339 distinct province ids out of the 13,413
+        // the walk visits.
+        let corridors: Vec<Vec<u32>> = (0..group_count)
+            .map(|_| {
+                let mut pool = BTreeSet::new();
+                while pool.len() < T31_CORRIDOR {
+                    pool.insert(1 + (cw_splitmix(seed) % u64::from(t31::PROVINCES_VISITED)) as u32);
+                }
+                pool.into_iter().collect()
+            })
+            .collect();
+
+        // One supply table per country: 276 of its corridor's 339 provinces.
+        let tables: Vec<(u32, u32, BTreeMap<u32, i64>)> = (0..country_count)
+            .map(|country| {
+                let corridor = &corridors[country / T31_GROUP];
+                let mut rows = BTreeMap::new();
+                while rows.len() < T31_ROWS_PER_TABLE {
+                    let province = corridor[(cw_splitmix(seed) % T31_CORRIDOR as u64) as usize];
+                    rows.insert(province, (cw_splitmix(seed) % 4_000) as i64 - 1_000);
+                }
+                (country as u32 + 1, country as u32 / 2 + 1_000, rows)
+            })
+            .collect();
+
+        // Tiers, shuffled across the roster so the majors are not all in one
+        // corridor.
+        let mut tiers: Vec<usize> = T31_TIERS
+            .iter()
+            .enumerate()
+            .flat_map(|(tier, (count, _, _))| std::iter::repeat_n(tier, *count))
+            .collect();
+        assert_eq!(tiers.len(), t31::POV_COUNT as usize);
+        for index in (1..tiers.len()).rev() {
+            tiers.swap(index, (cw_splitmix(seed) % (index as u64 + 1)) as usize);
+        }
+
+        let mut related = Vec::with_capacity(tiers.len());
+        let mut queries = Vec::with_capacity(tiers.len());
+        for (pov, &tier) in tiers.iter().enumerate() {
+            let (_, related_count, query_count) = T31_TIERS[tier];
+            let group = pov / T31_GROUP;
+            // The POV's related countries are members of its own group, so
+            // every table it probes draws from its own corridor.
+            related.push(
+                (0..T31_GROUP)
+                    .map(|offset| group * T31_GROUP + offset)
+                    .filter(|&country| country != pov)
+                    .take(related_count)
+                    .collect::<Vec<_>>(),
+            );
+            let corridor = &corridors[group];
+            let mut picked = BTreeSet::new();
+            while picked.len() < query_count {
+                picked.insert(corridor[(cw_splitmix(seed) % T31_CORRIDOR as u64) as usize]);
+            }
+            queries.push(picked.into_iter().collect::<Vec<_>>());
+        }
+
+        Self {
+            tables,
+            related,
+            queries,
+        }
+    }
+
+    /// The controller identity the hub would have resolved for a province.
+    /// Deterministic and shared by both arms, so it cannot bias one of them.
+    fn controller(province_id: u32) -> (u32, u32) {
+        (province_id % 7, 1_000 + province_id % 11)
+    }
+
+    fn related_visits(&self) -> u64 {
+        self.related.iter().map(|list| list.len() as u64).sum()
+    }
+
+    fn table_rows_visited(&self) -> u64 {
+        self.related
+            .iter()
+            .flat_map(|list| list.iter())
+            .map(|&country| self.tables[country].2.len() as u64)
+            .sum()
+    }
+
+    fn query_calls(&self) -> u64 {
+        self.queries.iter().map(|list| list.len() as u64).sum()
+    }
+
+    fn query_probes(&self) -> u64 {
+        self.related
+            .iter()
+            .zip(&self.queries)
+            .map(|(related, queries)| related.len() as u64 * queries.len() as u64)
+            .sum()
+    }
+}
+
+/// Order statistics for a bench arm, in microseconds.
+fn percentiles_us(mut samples: Vec<u64>) -> String {
+    samples.sort_unstable();
+    let at = |fraction: f64| {
+        let index = ((samples.len() - 1) as f64 * fraction).round() as usize;
+        samples[index] as f64 / 1e3
+    };
+    format!(
+        "min {:>8.2}  p25 {:>8.2}  p50 {:>8.2}  p75 {:>8.2}  p90 {:>8.2}  max {:>8.2}",
+        at(0.0),
+        at(0.25),
+        at(0.5),
+        at(0.75),
+        at(0.9),
+        at(1.0),
+    )
+}
+
+/// Price the eager index against the query-time probe, per FRAME, at t31's
+/// measured shape.
 ///
 /// WHY A BENCH AND NOT AN ASSERTION. `#[ignore]` on purpose, for the reason
 /// `d81_guarded_read_cost_model` gives: this is a measurement, and a wall-clock
@@ -2629,170 +3027,530 @@ fn the_restricted_fold_produces_a_byte_identical_d81_payload() {
 /// cargo test -p collector --release d81_foreign_fold_cost_model -- --ignored --nocapture
 /// ```
 ///
-/// TWO OF THE THREE SHAPE NUMBERS ARE t27's; THE THIRD IS A PROXY, and the
-/// difference matters (corrected against Codex review
-/// 019fd618-5241-73b0-af78-470bbee000d6, findings 4 and, in the second round,
-/// 1). MEASURED, decoded from t27's own d81 payloads: 93 POV countries per
-/// frame, and 11,570 hub output rows per frame. ASSUMED: that each POV is
-/// related to the other 92 — the related-country count is not on the wire.
-/// PROXY: `QUERIED_PER_POV = 124` is the per-POV MEAN of output rows,
-/// 11,570/93 rounded down from 124.41. It is NOT the p50 (that is 83), and it
-/// is NOT a measured count of distinct queried provinces, which the wire never
-/// carried at all.
+/// WHAT EACH ARM CONTAINS, stated because the boundary is the whole result:
+///  * EAGER is what lane CW shipped and lane DA deleted -- per POV, build the
+///    queried-province `BTreeSet`, fold every related table into
+///    `values_by_province` through it, then answer every query by looking the
+///    province up in that map and scanning its vector. The set build is INSIDE
+///    the arm because the fold cannot run without it, and its removal is part
+///    of what the lazy form buys.
+///  * LAZY is production's `maximum_excluding_controller` walking the POV's
+///    related tables per query.
 ///
-/// THE DIRECTION OF THIS PROXY'S ERROR IS UNKNOWN, and saying otherwise was the
-/// last thing wrong with this note (Codex review
-/// 019fd618-5241-73b0-af78-470bbee000d6, third round). An earlier draft called
-/// 124 an upper bound and the speedup columns "no better than this". Neither
-/// follows: 124 is a rounded-down mean rather than any kind of bound, per-POV
-/// output rows run from 1 to 365 so 124 bounds no individual POV's set, and
-/// deduplicating the draws only relates this bench to a hypothetical
-/// exact-124 model, not to the real distribution. Read the columns as a
-/// measurement of THIS shape, and read the shape as a guess.
+/// WHAT NEITHER ARM CONTAINS: the guarded reads, the witnesses, and the
+/// hash-table decode that fills the frame's table cache. Those are IDENTICAL in
+/// both forms -- the same 439 tables are decoded either way -- so including
+/// them would only dilute the difference. They are measured separately by
+/// `d81_copy_only_manifest_census`, which is where the copy-only architecture
+/// question needs them.
 ///
-/// The bench draws 124 province ids and collects them into a `BTreeSet`, so the
-/// queried set it actually uses is 124 DRAWS and fewer distinct ids than that.
+/// BOTH ARMS ARE CHECKED AGAINST EACH OTHER on every trial: the frame checksum
+/// is the sum of every foreign maximum published, and a bench that reported a
+/// speedup for a fold that answers differently would be worse than no bench.
 ///
-/// `d81_phase_hub_queried_provinces` replaces the 124 proxy on the next capture,
-/// and `d81_phase_hub_related_visits` replaces the 92 assumption; both are units
-/// this lane put on the wire precisely because neither number could be
-/// recovered from anything d81 already published. The only
-/// free parameter is `R`, the number of provinces in one country's supply
-/// table, which is not on the wire; the sweep brackets it rather than guessing
-/// one value, and the per-frame cost is what the sweep reports.
-///
-/// WHAT IS AND IS NOT MEASURED. This times the fold and nothing else: no
-/// guarded reads, no witnesses, no hash-table decode. Those are unchanged by
-/// this lane and are measured elsewhere (`d81_guarded_read_cost_model`). The
-/// number to carry to the wire is the DIFFERENCE between the two arms, which is
-/// the part of `d81_phase_hub_us` this change removes.
-///
-/// ARMS INTERLEAVED, MEDIAN OF SEVEN, same discipline as the guarded-read
-/// model: running one arm's trials and then the other confounds the arm with
-/// anything that drifts across the run.
+/// ARMS INTERLEAVED, order flipped every other trial, distributions reported
+/// rather than a single number -- same discipline as the guarded-read model.
 #[test]
 #[ignore]
 fn d81_foreign_fold_cost_model() {
     use std::time::Instant;
 
-    // t27, decoded from the capture's own d81 payloads.
-    const POV_COUNT: usize = 93;
-    const RELATED_PER_POV: usize = 92;
-    const QUERIED_PER_POV: usize = 124;
-    const PROVINCE_SPACE: u32 = 13_413; // provinces_visited, t27
-    const TRIALS: usize = 7;
+    const TRIALS: usize = 15;
+    let mut seed = 0xD8_1D_A0_31u64;
+    let frame = T31Frame::build(&mut seed);
 
-    println!(
-        "d81 foreign-value fold, per FRAME \
-         ({POV_COUNT} POVs measured, {RELATED_PER_POV} related assumed, \
-         {QUERIED_PER_POV} query draws as a proxy of unknown error direction)"
+    // THE FIXTURE IS T31's, OR THIS BENCH MEANS NOTHING. Every aggregate the
+    // wire published for the hub is reproduced here within 1%, and the
+    // assertion is what makes that a fact rather than an intention.
+    let close_to = |realised: u64, measured: u64, name: &str| {
+        let error = (realised as f64 - measured as f64).abs() / measured as f64;
+        assert!(
+            error < 0.01,
+            "the fixture must reproduce t31's {name}: realised {realised}, \
+             measured {measured} ({:.2}% off)",
+            error * 100.0
+        );
+    };
+    close_to(frame.related.len() as u64, t31::POV_COUNT, "hub_pov_count");
+    close_to(frame.related_visits(), t31::RELATED_VISITS, "hub_related_visits");
+    close_to(
+        frame.table_rows_visited(),
+        t31::TABLE_ROWS_VISITED,
+        "hub_table_rows_visited",
     );
-    println!(
-        "{:>8}  {:>14}  {:>14}  {:>9}  {:>14}",
-        "R", "unrestricted", "restricted", "speedup", "entries kept"
-    );
+    close_to(frame.query_calls(), t31::QUERY_CALLS, "hub_query_calls");
+    close_to(frame.query_probes(), t31::QUERY_PROBES, "hub_query_probes");
 
-    // THE LOW END IS THE INTERESTING END, and that is a finding rather than a
-    // convenience. The unrestricted arm costs 49 ms/frame at R=50 -- MORE than
-    // the whole 35,317 us `d81_phase_hub_us` t27 actually measured -- so the
-    // real table size must sit BELOW 50, and a sweep that started there would
-    // have been extrapolating above the observed point instead of bracketing
-    // it. These values bracket it from underneath.
-    for rows_per_table in [5usize, 10, 20, 30, 40, 50, 100, 250] {
-        let mut seed = 0xC0_57_0D_81u64 ^ (rows_per_table as u64);
-        // One table per related country, shared across POVs exactly as the
-        // production `foreign_table_cache` shares them within a frame.
-        let tables: Vec<(u32, u32, BTreeMap<u32, i64>)> = (0..RELATED_PER_POV)
-            .map(|index| {
-                let raw_handle = index as u32 + 1;
-                let rows = (0..rows_per_table)
-                    .map(|_| {
-                        (
-                            1 + (cw_splitmix(&mut seed) % u64::from(PROVINCE_SPACE)) as u32,
-                            (cw_splitmix(&mut seed) % 4_000) as i64 - 1_000,
-                        )
-                    })
-                    .collect::<BTreeMap<u32, i64>>();
-                (raw_handle, raw_handle + 1000, rows)
-            })
-            .collect();
-        // A different queried set per POV, as in production: every POV's routes
-        // reach a different slice of the map. `QUERIED_PER_POV` DRAWS, collected
-        // into a set, so the realised set is smaller than the draw count. How
-        // that compares to a real POV's queried set is unknown -- see the proxy
-        // note in this test's doc.
-        let queried_per_pov: Vec<BTreeSet<u32>> = (0..POV_COUNT)
-            .map(|_| {
-                (0..QUERIED_PER_POV)
-                    .map(|_| 1 + (cw_splitmix(&mut seed) % u64::from(PROVINCE_SPACE)) as u32)
-                    .collect()
-            })
-            .collect();
-
-        let unrestricted_frame = || {
-            let mut kept = 0usize;
-            for _pov in 0..POV_COUNT {
-                let index = unrestricted_foreign_index(&tables);
-                kept += index.values().map(Vec::len).sum::<usize>();
-            }
-            kept
-        };
-        let restricted_frame = || {
-            let mut kept = 0usize;
-            for queried in &queried_per_pov {
-                let mut index: BTreeMap<u32, Vec<D81ForeignValue>> = BTreeMap::new();
-                for (raw_handle, equivalence_id, rows) in &tables {
-                    d81_merge_foreign_values(
+    // EACH ARM CARRIES ITS OWN PRODUCTION'S INSTRUMENTATION, and that is a
+    // correction (Codex review 019fd6d8-8df3-71a1-96db-41c9be0fcf35, round 1).
+    // The first draft gave the lazy arm production's three `Cell` updates per
+    // query and the eager arm none, which charged the new form for diagnostics
+    // the old form also paid. The eager arm now makes, into its own
+    // accumulator, every charge the deleted code made inside the work these
+    // arms contain: `hub_query_calls` and `hub_query_probes` per query, from
+    // the deleted `maximum_excluding_controller`, and the entries-kept charge
+    // per related visit, from the deleted fold.
+    //
+    // WHAT ASYMMETRY REMAINS, since exact is better claimed than assumed: the
+    // lazy arm makes 3 cell writes per query (11,632 x 3) against the eager
+    // arm's 2 per query plus 1 per related visit (11,632 x 2 + 2,002), i.e.
+    // ~9.6k more cell writes -- about 10 us on an 8 ms arm, and it biases
+    // AGAINST the lazy arm, so the reported saving is the conservative one.
+    // The per-visit `hub_related_visits` / `hub_table_rows_visited` charges are
+    // in neither arm because they are in `d81_read_foreign_source`, which is in
+    // neither arm.
+    let eager_phases = D81PhaseAccum::default();
+    let eager_frame = || {
+        let mut checksum = 0i64;
+        for pov in 0..frame.related.len() {
+            let queried: BTreeSet<u32> = frame.queries[pov].iter().copied().collect();
+            let mut index: BTreeMap<u32, Vec<D81ForeignValue>> = BTreeMap::new();
+            for &country in &frame.related[pov] {
+                let (raw_handle, equivalence_id, rows) = &frame.tables[country];
+                // The charge the deleted fold made per related visit, which is
+                // where the old form's equivalent of `hub_probe_hits` lived.
+                D81PhaseAccum::bump(
+                    &eager_phases.hub_probe_hits,
+                    cw_restricted_foreign_fold(
                         &mut index,
                         rows,
-                        queried,
+                        &queried,
                         *raw_handle,
                         *equivalence_id,
-                    );
-                }
-                kept += index.values().map(Vec::len).sum::<usize>();
+                    ),
+                );
             }
-            kept
-        };
-
-        let mut unrestricted_ns = Vec::new();
-        let mut restricted_ns = Vec::new();
-        let mut unrestricted_kept = 0usize;
-        let mut restricted_kept = 0usize;
-        for trial in 0..TRIALS {
-            // Interleaved, and the order flipped every other trial so neither
-            // arm systematically runs on a warmer cache than the other.
-            if trial % 2 == 0 {
-                let start = Instant::now();
-                unrestricted_kept = unrestricted_frame();
-                unrestricted_ns.push(start.elapsed().as_nanos() as u64);
-                let start = Instant::now();
-                restricted_kept = restricted_frame();
-                restricted_ns.push(start.elapsed().as_nanos() as u64);
-            } else {
-                let start = Instant::now();
-                restricted_kept = restricted_frame();
-                restricted_ns.push(start.elapsed().as_nanos() as u64);
-                let start = Instant::now();
-                unrestricted_kept = unrestricted_frame();
-                unrestricted_ns.push(start.elapsed().as_nanos() as u64);
+            let related_count = frame.related[pov].len() as u64;
+            for &province_id in &frame.queries[pov] {
+                let (raw_handle, equivalence_id) = T31Frame::controller(province_id);
+                D81PhaseAccum::bump(&eager_phases.hub_query_calls, 1);
+                D81PhaseAccum::bump(&eager_phases.hub_query_probes, related_count);
+                checksum = checksum.wrapping_add(reference_maximum(
+                    &index,
+                    province_id,
+                    raw_handle,
+                    equivalence_id,
+                ));
             }
         }
-        unrestricted_ns.sort_unstable();
-        restricted_ns.sort_unstable();
-        let before = unrestricted_ns[TRIALS / 2];
-        let after = restricted_ns[TRIALS / 2];
-        println!(
-            "{rows_per_table:>8}  {:>11.2} ms  {:>11.2} ms  {:>8.1}x  {:>6} -> {:<6}",
-            before as f64 / 1e6,
-            after as f64 / 1e6,
-            before as f64 / after.max(1) as f64,
-            unrestricted_kept,
-            restricted_kept,
+        checksum
+    };
+
+    let phases = D81PhaseAccum::default();
+    let lazy_frame = || {
+        let mut checksum = 0i64;
+        for pov in 0..frame.related.len() {
+            let source = D81ForeignSource {
+                related: frame.related[pov]
+                    .iter()
+                    .map(|&country| {
+                        let (raw_handle, equivalence_id, rows) = &frame.tables[country];
+                        D81ForeignRelated {
+                            raw_handle: *raw_handle,
+                            equivalence_id: *equivalence_id,
+                            rows,
+                        }
+                    })
+                    .collect(),
+                witnesses: Vec::new(),
+            };
+            for &province_id in &frame.queries[pov] {
+                let (raw_handle, equivalence_id) = T31Frame::controller(province_id);
+                checksum = checksum.wrapping_add(source.maximum_excluding_controller(
+                    &phases,
+                    province_id,
+                    raw_handle,
+                    equivalence_id,
+                ));
+            }
+        }
+        checksum
+    };
+
+    // The set build on its own, so the part of the saving that is NOT the fold
+    // is separable rather than inferred.
+    let queried_sets_only = || {
+        let mut total = 0usize;
+        for queries in &frame.queries {
+            let queried: BTreeSet<u32> = queries.iter().copied().collect();
+            total += queried.len();
+        }
+        total
+    };
+
+    let mut eager_ns = Vec::with_capacity(TRIALS);
+    let mut lazy_ns = Vec::with_capacity(TRIALS);
+    let mut sets_ns = Vec::with_capacity(TRIALS);
+    let mut agreed = 0usize;
+    for trial in 0..TRIALS {
+        let (eager, lazy) = if trial % 2 == 0 {
+            let start = Instant::now();
+            let eager = eager_frame();
+            eager_ns.push(start.elapsed().as_nanos() as u64);
+            let start = Instant::now();
+            let lazy = lazy_frame();
+            lazy_ns.push(start.elapsed().as_nanos() as u64);
+            (eager, lazy)
+        } else {
+            let start = Instant::now();
+            let lazy = lazy_frame();
+            lazy_ns.push(start.elapsed().as_nanos() as u64);
+            let start = Instant::now();
+            let eager = eager_frame();
+            eager_ns.push(start.elapsed().as_nanos() as u64);
+            (eager, lazy)
+        };
+        assert_eq!(
+            eager, lazy,
+            "trial {trial}: the two arms must publish the same foreign maxima"
         );
+        agreed += 1;
+        let start = Instant::now();
+        let distinct = queried_sets_only();
+        sets_ns.push(start.elapsed().as_nanos() as u64);
+        assert!(distinct > 0);
     }
+    assert_eq!(agreed, TRIALS);
+
+    // The probe accounting the lazy arm produced, divided by the trials it ran.
+    let snapshot = phases.snapshot();
+    let per_frame = |total: u64| total / TRIALS as u64;
+    // Both arms charged the same probe total, which is the arithmetic claim
+    // behind "the two forms perform the same table lookups" -- and the check
+    // that the eager arm's instrumentation really is the deleted one's.
+    let eager_snapshot = eager_phases.snapshot();
+    assert_eq!(
+        eager_snapshot.hub_query_probes, snapshot.hub_query_probes,
+        "the eager and lazy arms must be charged the same probe total"
+    );
+    assert_eq!(eager_snapshot.hub_query_calls, snapshot.hub_query_calls);
+    // The entries the index kept against the probes that hit, which is the
+    // renamed unit's continuity claim measured rather than asserted in prose:
+    // the fold counted a match once per distinct queried province, the probe
+    // counts it once per query, and this fixture's queries are distinct, so the
+    // two must be EQUAL here.
+    assert_eq!(
+        eager_snapshot.hub_probe_hits, snapshot.hub_probe_hits,
+        "the index's entries-kept and the probe's hits must be the same quantity"
+    );
+
+    println!("d81 foreign fold, per FRAME at t31's measured shape");
     println!(
-        "\nThe DIFFERENCE between the two arms is the share of d81_phase_hub_us \
-         (35,317 us p50 in t27) this change removes."
+        "  fixture: {} POVs, {} related visits, {} table rows visited, \
+         {} query calls, {} probes, {} hits ({:.2}% hit rate)",
+        frame.related.len(),
+        frame.related_visits(),
+        frame.table_rows_visited(),
+        frame.query_calls(),
+        frame.query_probes(),
+        per_frame(snapshot.hub_probe_hits),
+        per_frame(snapshot.hub_probe_hits) as f64 * 100.0 / frame.query_probes() as f64,
+    );
+    println!(
+        "  t31   : {} POVs, {} related visits, {} table rows visited, \
+         {} query calls, {} probes, {} hits ({:.2}% hit rate)",
+        t31::POV_COUNT,
+        t31::RELATED_VISITS,
+        t31::TABLE_ROWS_VISITED,
+        t31::QUERY_CALLS,
+        t31::QUERY_PROBES,
+        t31::PROBE_HITS,
+        t31::PROBE_HITS as f64 * 100.0 / t31::QUERY_PROBES as f64,
+    );
+    println!("  EAGER (index)  us  {}", percentiles_us(eager_ns.clone()));
+    println!("  LAZY  (probe)  us  {}", percentiles_us(lazy_ns.clone()));
+    println!("  of which the queried-set build alone:");
+    println!("                 us  {}", percentiles_us(sets_ns));
+
+    eager_ns.sort_unstable();
+    lazy_ns.sort_unstable();
+    let eager_p50 = eager_ns[TRIALS / 2];
+    let lazy_p50 = lazy_ns[TRIALS / 2];
+    println!(
+        "\n  p50 delta {:+.2} ms  ({:.2}x)",
+        (lazy_p50 as f64 - eager_p50 as f64) / 1e6,
+        eager_p50 as f64 / lazy_p50.max(1) as f64,
+    );
+    println!(
+        "  t31 published hub_us {} us, of which hub_foreign_us {}, hub_nodes_us {}, \
+         hub_close_us {}; d81 read_time_us {}.",
+        t31::HUB_US,
+        t31::HUB_FOREIGN_US,
+        t31::HUB_NODES_US,
+        t31::HUB_CLOSE_US,
+        t31::READ_US,
+    );
+    println!(
+        "  Projected d81 read after the delta: {:.2} ms.",
+        (t31::READ_US as f64 - (eager_p50 as f64 - lazy_p50 as f64) / 1e3) / 1e3,
+    );
+}
+
+// ---------------------------------------------------------------------
+// Job 6 -- what a copy-only bracket would have to move, and what it costs
+// ---------------------------------------------------------------------
+
+/// One range the hub read consumes: an address and a length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct D81Range {
+    address: usize,
+    len: usize,
+}
+
+/// Coalesce a manifest: sort, merge overlapping and adjacent ranges, and report
+/// what survived.
+///
+/// This is the step finding 5 of the copy-only architecture review asks for
+/// between "what the reader consumed" and "what a scatter/gather pass would
+/// copy" -- a reader that reads the same header twice, or reads two adjacent
+/// windows, pays for one range here.
+fn coalesce(mut ranges: Vec<D81Range>) -> Vec<D81Range> {
+    ranges.sort_unstable();
+    let mut merged: Vec<D81Range> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.address <= last.address + last.len => {
+                let end = (range.address + range.len).max(last.address + last.len);
+                last.len = end - last.address;
+            }
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
+/// What a copy-only bracket would have to acquire for d81's FOREIGN SUBTREE,
+/// and what the optimistic scatter/gather copy of it costs.
+///
+/// WHY THIS EXISTS (owner architecture ruling + Codex review, 2026-08-06). The
+/// proposed rule is that a clock bracket may contain only bulk copies, with all
+/// parsing and folding moved after it. The review's finding 5 asks for the
+/// cheapest disproof FIRST: take the manifest the validated reader actually
+/// consumes, coalesce it, and time a bracket containing nothing but the copies.
+/// If that alone exceeds the budget, copy-only is disproved before anyone
+/// rewrites a reader.
+///
+/// WHAT THIS MEASURES, AND WHAT IT DELIBERATELY DOES NOT.
+///
+///  * IT IS A LOWER BOUND, not d81's manifest. It covers the foreign subtree
+///    this lane owns -- the per-POV vector/related headers and handle blobs,
+///    and the companion supply tables -- at t31's counters. d81's topology walk
+///    over 13,413 provinces, its per-province rail objects, route maps and
+///    supply nodes are NOT here and are strictly additive. A lower bound is the
+///    right instrument for a disproof: if the bound exceeds the budget the
+///    question is settled, and if it does not, nothing is settled.
+///  * THE ADDRESSES ARE THE FIXTURE'S, which flatters the copy: a staged region
+///    is contiguous and hot, while the engine's tables are scattered across a
+///    multi-gigabyte heap with TLB and page-fault costs this cannot see. Again
+///    optimistic, again the right direction for a disproof.
+///  * THE DOUBLE READ IS INCLUDED. `d81_read_stable_bytes` copies every window
+///    TWICE and compares, which is the structural-coherence check finding 3
+///    says a copy-only bracket must keep. The manifest below therefore reports
+///    unique bytes AND the bytes actually moved.
+///
+/// THE STRUCTURE CENSUS finding 2 asks for, for this subtree:
+///  * `supply_system + 0x40` vector header -- FIXED offset from an already-held
+///    pointer: flat-copyable.
+///  * the foreign row at `rows_data + slot * 0x78` and its related header --
+///    BOUNDED ARENA once `rows_data` is decoded, but `rows_data` comes out of
+///    the header above: one level of in-bracket discovery.
+///  * the packed related-handle blob -- length decoded from the related header:
+///    a second level.
+///  * each companion's table header at `companion + 0x08`, where `companion`
+///    comes from the country-table join -- a third level, and the join itself
+///    is a fourth.
+///  * each table's bucket array, whose address AND length are decoded from that
+///    header -- a fifth.
+/// So d81's foreign subtree is GRAPH-SHAPED at depth five. It cannot be
+/// acquired by a bounded set of copies planned before the bracket opens; a
+/// copy-only bracket for it is really a copy/discover/copy pipeline, and
+/// calling the discovery steps "not compute" would be exactly the silent
+/// heavy-parsing-in-bracket the review warns against.
+///
+/// ```text
+/// cargo test -p collector --release d81_copy_only_manifest_census -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn d81_copy_only_manifest_census() {
+    use std::time::Instant;
+
+    const TRIALS: usize = 51;
+    // The engine's bucket array is a power-of-two-masked open-addressed table
+    // plus its probe slack and sentinel; 276 occupied rows sits inside a
+    // 512-bucket table at 54% load.
+    const BUCKETS: usize = 512;
+    const BUCKET_STRIDE: usize = 0x18;
+    const TABLE_BLOB: usize = (BUCKETS - 1 + 1 + 2) * BUCKET_STRIDE;
+    const TABLE_HEADER: usize = 0x11;
+    const POV_HEADER: usize = 16;
+
+    // A gap between every staged object, so the manifest does NOT coalesce
+    // into a handful of megabyte runs. The engine's tables are separate heap
+    // allocations reached through separate pointers; a fixture that laid them
+    // end to end would let `coalesce` merge 2,195 ranges into a few dozen and
+    // then report a sequential-copy bandwidth that no real manifest can reach.
+    // The real heap's scatter is WORSE than this, never better.
+    const GAP: usize = 64;
+
+    let distinct_tables = t31::POV_COUNT as usize;
+    let pov_count = t31::POV_COUNT as usize;
+    let related_visits = t31::RELATED_VISITS as usize;
+
+    let tables_bytes = distinct_tables * (TABLE_HEADER.next_multiple_of(8) + TABLE_BLOB + 2 * GAP);
+    let povs_bytes = pov_count * (2 * POV_HEADER + 3 * GAP) + related_visits * 8;
+    let region_len = tables_bytes + povs_bytes + 0x1000;
+    let region = FixtureRegion::new(region_len);
+    let base = region.addr();
+
+    let mut manifest: Vec<D81Range> = Vec::new();
+    let mut cursor = 0usize;
+    let mut place = |manifest: &mut Vec<D81Range>, cursor: &mut usize, len: usize| {
+        manifest.push(D81Range {
+            address: base + *cursor,
+            len,
+        });
+        *cursor += len.next_multiple_of(8) + GAP;
+    };
+    for _ in 0..distinct_tables {
+        place(&mut manifest, &mut cursor, TABLE_HEADER);
+        place(&mut manifest, &mut cursor, TABLE_BLOB);
+    }
+    // The per-POV related counts, taken from the SAME tier table the fold bench
+    // fits to t31 rather than from modular arithmetic over the POV index.
+    //
+    // THE MODULAR FORM WAS WRONG (Codex review
+    // 019fd6d8-8df3-71a1-96db-41c9be0fcf35, round 1): `pov % 22 == 0` and
+    // `pov % 5 == 1` overlap on four POVs, so it produced 20x48 + 84x8 + 335x1
+    // = 1,967 handles against t31's 2,005 -- and nothing checked, because the
+    // region was sized from the constant while the manifest was built from the
+    // branches. The sum is now asserted.
+    let handle_counts: Vec<usize> = T31_TIERS
+        .iter()
+        .flat_map(|(count, related, _)| std::iter::repeat_n(*related, *count))
+        .collect();
+    assert_eq!(handle_counts.len(), pov_count);
+    let staged_visits: usize = handle_counts.iter().sum();
+    let visits_error =
+        (staged_visits as f64 - related_visits as f64).abs() / (related_visits as f64);
+    assert!(
+        visits_error < 0.01,
+        "the staged manifest must carry t31's related visits: {staged_visits} against \
+         {related_visits} ({:.2}% off)",
+        visits_error * 100.0
+    );
+    for &handles in &handle_counts {
+        place(&mut manifest, &mut cursor, POV_HEADER);
+        place(&mut manifest, &mut cursor, POV_HEADER);
+        // The POV's own related-handle blob.
+        place(&mut manifest, &mut cursor, handles * 4);
+    }
+    assert!(
+        cursor < region_len,
+        "the staged manifest must fit its region: {cursor} >= {region_len}"
+    );
+    // The last staged byte must be inside the region, checked through the
+    // fixture's own bounds check rather than by arithmetic alone.
+    let _ = region.at(cursor - 1);
+
+    let coalesced = coalesce(manifest.clone());
+    let unique_bytes: usize = coalesced.iter().map(|range| range.len).sum();
+    let moved_bytes = unique_bytes * 2; // the tear-check second copy
+    let pages: BTreeSet<usize> = coalesced
+        .iter()
+        .flat_map(|range| (range.address..range.address + range.len).step_by(4096))
+        .map(|address| address / 4096)
+        .collect();
+
+    // Preallocated destination, as finding 5 specifies -- the copy pass is
+    // being priced, not the allocator.
+    let mut destination = vec![0u8; moved_bytes + 4096];
+    // A buffer big enough to evict the staged region from L2/L3 between cold
+    // trials.
+    let mut evictor = vec![0u8; 64 << 20];
+
+    // THE DESTINATION IS MADE OBSERVABLE OR THE WHOLE PASS IS DELETED. The
+    // first version of this bench reported 10.39 MiB copied in 0.4 us -- 26
+    // TB/s, which is not a memory bandwidth, it is dead-store elimination: the
+    // destination was never read, so every `copy_from_slice` was provably
+    // unobservable and LLVM removed all of them, leaving only the byte counter
+    // it could fold to a constant. `black_box` on the buffer is what makes the
+    // stores live, and it is inside the timed span because a copy nobody can
+    // observe is not the thing being priced.
+    let copy_pass = |destination: &mut [u8]| {
+        let mut written = 0usize;
+        for range in &coalesced {
+            // TWO copies per range: the read and its tear-check confirmation,
+            // which is the structural-coherence pair a copy-only bracket must
+            // keep (review finding 3).
+            for _ in 0..2 {
+                let source =
+                    unsafe { std::slice::from_raw_parts(range.address as *const u8, range.len) };
+                destination[written..written + range.len].copy_from_slice(source);
+                written += range.len;
+            }
+        }
+        std::hint::black_box(&destination[..written]);
+        written
+    };
+
+    let mut hot_ns = Vec::with_capacity(TRIALS);
+    let mut cold_ns = Vec::with_capacity(TRIALS);
+    for trial in 0..TRIALS {
+        // COLD first, so the hot arm is warmed by the cold one rather than the
+        // other way round.
+        for (index, byte) in evictor.iter_mut().enumerate() {
+            *byte = (index ^ trial) as u8;
+        }
+        std::hint::black_box(&evictor[..]);
+        let start = Instant::now();
+        let written = copy_pass(&mut destination);
+        cold_ns.push(start.elapsed().as_nanos() as u64);
+        assert_eq!(written, moved_bytes);
+
+        let start = Instant::now();
+        let written = copy_pass(&mut destination);
+        hot_ns.push(start.elapsed().as_nanos() as u64);
+        assert_eq!(written, moved_bytes);
+    }
+
+    let tail = |mut samples: Vec<u64>| {
+        samples.sort_unstable();
+        let at = |fraction: f64| {
+            samples[((samples.len() - 1) as f64 * fraction).round() as usize] as f64 / 1e3
+        };
+        format!(
+            "p50 {:>8.2}  p90 {:>8.2}  p99 {:>8.2}  max {:>8.2}",
+            at(0.5),
+            at(0.9),
+            at(0.99),
+            at(1.0)
+        )
+    };
+
+    println!("d81 copy-only manifest census -- FOREIGN SUBTREE ONLY (a lower bound)");
+    println!(
+        "  ranges consumed {}, coalesced {}, unique {:.2} MiB, moved (with tear check) {:.2} MiB, \
+         4 KiB pages {}",
+        manifest.len(),
+        coalesced.len(),
+        unique_bytes as f64 / (1 << 20) as f64,
+        moved_bytes as f64 / (1 << 20) as f64,
+        pages.len(),
+    );
+    println!("  optimistic scatter/gather, HOT   us  {}", tail(hot_ns.clone()));
+    println!("  optimistic scatter/gather, COLD  us  {}", tail(cold_ns.clone()));
+    println!(
+        "  t31 d81: read_time {} us, hub {} us, hub_foreign {} us; the sweep's \
+         critical lane sat at 48.5 ms p50.",
+        t31::READ_US,
+        t31::HUB_US,
+        t31::HUB_FOREIGN_US,
+    );
+    println!(
+        "  DEPTH: five levels of pointer discovery stand between the bracket \
+         opening and the last of these ranges being addressable (see this \
+         test's doc). None of them can be planned from a previous hour without \
+         risking a freed or relocated object."
     );
 }
