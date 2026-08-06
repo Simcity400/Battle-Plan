@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 Passive, uncompressed, no-debug-scaffolding recorder test loop.
 
@@ -55,8 +55,42 @@ param(
 
     # Startup + finalize headroom allowed on top of -DurationSeconds before the
     # recorder is treated as wedged rather than slow.
+    #
+    # This is the STARTING bound only. It is a wall clock with no relation to
+    # the amount of post-capture work, and on 2026-08-06 that cost three live
+    # trials: t27/t28/t29 were declared unresolved here while their folds were
+    # provably still incomplete (443/542, 149/577 and 194/459 hours present in
+    # `checkpoints.h4cp`, none of them having reached `hour_index.h4ix`). Once
+    # the recorder publishes RECORDER_FINALIZE_PROGRESS_V1.json this budget
+    # gives way to the progress bound below, which is the fact rather than the
+    # guess. Raising this number was never the fix -- a wall clock cannot be
+    # made correct, only made longer.
     [ValidateRange(30, 3600)]
     [int]$RecorderOverheadSeconds = 300,
+
+    # How long the recorder's published finalize work quantity may stand STILL
+    # before finalization is called wedged rather than slow.
+    #
+    # This bounds `work_unchanged_ms` from the progress receipt, never elapsed
+    # time: a fold that is still writing checkpoint bytes extends its own wait
+    # for as long as it keeps writing them, and one that stops moving is out of
+    # budget however early in the run it is.
+    [ValidateRange(15, 1800)]
+    [int]$FinalizeNoProgressSeconds = 180,
+
+    # Ceiling on GRANTED finalize extensions, measured from the recorder's READY
+    # anchor. Backstop only: a recorder reporting progress forever (a fold
+    # looping over work it never finishes) is still bounded, and the harness
+    # still never terminates it after injection.
+    #
+    # It caps what the progress receipt can BUY; it is deliberately not a cap on
+    # the recorder's whole lifetime. `-DurationSeconds + -RecorderOverheadSeconds`
+    # is its own bound and is never reduced here, so a caller who sets that pair
+    # beyond this ceiling keeps the longer of the two. Lowering an operator's
+    # explicit budget from inside the extension path would be a surprise, and no
+    # evidence this function reads is a reason to shorten a wait.
+    [ValidateRange(300, 86400)]
+    [int]$FinalizeCeilingSeconds = 7200,
 
     # Seconds of continuously-advancing clock required before the recorder is
     # allowed to inject. All settle observations are read-only.
@@ -1059,6 +1093,11 @@ $recorderDeadline = $null
 # Start-Process and the budget assignment would itself be a terminating error
 # inside the cleanup.
 $recorderBudgetSeconds = 0
+# Absolute backstop for the progress-extended finalize wait, and the reason the
+# last extension was granted. Both are read by the cleanup path, so both are
+# declared with the deadline for the same StrictMode reason.
+$recorderFinalizeCeiling = $null
+$recorderFinalizeExtensionReason = $null
 $scriptExitCode = 1
 # Set only by the raw-capture report's UNDEFINED-STATUS-BIT verdict (exit 2).
 # Declared here so the teardown path can read it whatever happened upstream.
@@ -1236,6 +1275,184 @@ $harnessPolicy = [ordered]@{
 }
 $harnessPolicy | ConvertTo-Json -Depth 8 |
     Set-Content -LiteralPath $harnessPolicyPath -Encoding UTF8
+
+# Extend the recorder deadline for as long as finalization is demonstrably
+# advancing, and refuse to extend it when it is not.
+#
+# The recorder publishes RECORDER_FINALIZE_PROGRESS_V1.json throughout the
+# post-teardown fold. Its `sample_ordinal` is LIVENESS ONLY and is deliberately
+# not consulted here -- a recorder spinning on an unsatisfiable condition would
+# tick it forever. The only field that grants time is `work_unchanged_ms`: how
+# long the recorder's own finalize outputs have stood still.
+#
+# Identity is checked against this attempt's session/capture ids. The harness
+# already learned this lesson on the teardown receipt: a file left in a reused
+# OutDir by an earlier attempt proves nothing about this one, and here it would
+# be worse than nothing, because it would hand out real time.
+#
+# Absence is not failure. A recorder that predates the receipt, or one whose
+# publisher could not start, simply keeps the fixed budget it has today.
+function Update-RecorderFinalizeDeadline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$SessionId,
+        [Parameter(Mandatory = $true)][string]$CaptureId,
+        [Parameter(Mandatory = $true)][ref]$Deadline,
+        [Parameter(Mandatory = $true)][AllowNull()][object]$Ceiling,
+        [Parameter(Mandatory = $true)][int]$NoProgressSeconds,
+        [Parameter(Mandatory = $true)][ref]$Reason,
+        # A receipt older than this is a dead publisher, not a slow one.
+        [int]$MaxReceiptAgeSeconds = 30,
+        # One-shot window granted by a terminal `complete` sample.
+        [int]$ExitGraceSeconds = 30
+    )
+    if ($null -eq $Ceiling) { return $false }
+    $path = Join-Path $RunDir 'RECORDER_FINALIZE_PROGRESS_V1.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    # Flattened into a hashtable before anything is read out of it. Under
+    # `Set-StrictMode -Version Latest` a missing property on the PSCustomObject
+    # ConvertFrom-Json returns is a TERMINATING error, and this function is
+    # called from the cleanup `finally` -- where a terminating error abandons
+    # the compact-status arbitration and leaves the run at exit 1. A missing
+    # hashtable key is just $null, which every check below already treats as
+    # "grants nothing".
+    $fields = @{}
+    $writtenUtc = $null
+    try {
+        # The publisher republishes by rename, so content and metadata read
+        # separately can come from DIFFERENT generations. Straddling a rename
+        # can pair one sample's staleness with another sample's timestamp,
+        # which grants either far too much or -- worse -- almost nothing, on a
+        # receipt that was perfectly healthy.
+        #
+        # Two defences, because neither alone is conclusive:
+        #
+        #  * The content is read TWICE and must come back identical. Every
+        #    generation changes `sample_ordinal`, `elapsed_ms` and
+        #    `sample_unix_ms`, so two different generations cannot produce equal
+        #    text. This is the real generation identity; last-write-time plus
+        #    length is not, since two same-length publications can land inside
+        #    one clock tick and be indistinguishable.
+        #  * The metadata values are materialised the instant each `Get-Item`
+        #    returns. `FileInfo` populates its properties on FIRST ACCESS and
+        #    caches thereafter, so reading `$before.LastWriteTimeUtc` after the
+        #    content read would sample the file at that later moment and compare
+        #    it against itself -- a check that can never fail.
+        $beforeItem = Get-Item -LiteralPath $path -ErrorAction Stop
+        $beforeWriteUtc = $beforeItem.LastWriteTimeUtc
+        $beforeLength = $beforeItem.Length
+        $rawFirst = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $rawSecond = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $afterItem = Get-Item -LiteralPath $path -ErrorAction Stop
+        $afterWriteUtc = $afterItem.LastWriteTimeUtc
+        $afterLength = $afterItem.Length
+        if ($rawFirst -ne $rawSecond -or
+            $beforeWriteUtc -ne $afterWriteUtc -or
+            $beforeLength -ne $afterLength) {
+            # Republished mid-read. Not evidence, and not an error either --
+            # the next tick reads a settled generation.
+            return $false
+        }
+        $receipt = $rawFirst | ConvertFrom-Json
+        if ($null -eq $receipt) { return $false }
+        $writtenUtc = $afterWriteUtc
+        foreach ($property in $receipt.PSObject.Properties) {
+            $fields[$property.Name] = $property.Value
+        }
+    } catch {
+        # A torn or unparseable read is transient, not evidence. Grant nothing
+        # and let the caller try again on its next tick.
+        return $false
+    }
+    try {
+        if ($fields['schema'] -ne 'battle-plan-recorder-finalize-progress-v1') { return $false }
+        if ($fields['session_id'] -ne $SessionId -or $fields['capture_id'] -ne $CaptureId) {
+            $Reason.Value = 'foreign_progress_receipt'
+            return $false
+        }
+        # Only the phases this protocol defines. An unrecognised phase with
+        # matching ids and a low staleness would otherwise buy time.
+        $phase = [string]$fields['phase']
+        if ($phase -ne 'finalizing' -and $phase -ne 'complete') { return $false }
+        # A receipt carrying no staleness at all states nothing about progress,
+        # so it buys nothing -- absent is not zero.
+        if ($null -eq $fields['work_unchanged_ms']) { return $false }
+        $unchangedMs = [int64]$fields['work_unchanged_ms']
+        if ($unchangedMs -lt 0) { return $false }
+
+        # FRESHNESS -- a question about the PUBLISHER, answered by the file.
+        # The publisher republishes every couple of seconds, so a receipt that
+        # has stopped being rewritten means the publisher is gone: its thread
+        # failed to start, or its writes are failing. Its content is then a
+        # photograph, and a photograph showing "work was advancing" would keep
+        # buying time forever. This is measured on the file precisely because a
+        # dead publisher cannot update a field inside it.
+        $ageSeconds = ([DateTime]::UtcNow - $writtenUtc).TotalSeconds
+        if ($ageSeconds -gt $MaxReceiptAgeSeconds -or $ageSeconds -lt -60) {
+            $Reason.Value = "progress_receipt_stale_$([Math]::Floor([Math]::Abs($ageSeconds)))s"
+            return $false
+        }
+
+        # ANCHOR -- a question about the WORK, answered by the sample.
+        # `sample_unix_ms` is stamped next to the monotonic reading that
+        # produced `work_unchanged_ms`. The file's modified time is NOT that
+        # instant: it trails it by the metering walk plus serialize, write,
+        # sync and rename. Using the file here would push the reconstructed
+        # last-progress instant forward by that latency and grant time the
+        # recorder never earned -- and the freshness gate could not catch it,
+        # because such a receipt is genuinely newly written.
+        if ($null -eq $fields['sample_unix_ms']) { return $false }
+        $sampleUnixMs = [int64]$fields['sample_unix_ms']
+        if ($sampleUnixMs -le 0) { return $false }
+        $sampleUtc = [DateTimeOffset]::FromUnixTimeMilliseconds($sampleUnixMs).UtcDateTime
+        # Cross-check the sample against the file that carries it. The sample is
+        # taken BEFORE the write, so it can legitimately be older than the file
+        # -- that is just publication latency, and being older only ever costs
+        # the recorder time. It must never be materially NEWER: that means the
+        # wall clock stepped backwards between the sample and the write, and an
+        # apparently-future sample would grant time up to the ceiling while the
+        # freshness gate saw a perfectly fresh file.
+        if ($sampleUtc -gt $writtenUtc.AddSeconds(60)) {
+            $Reason.Value = 'progress_sample_ahead_of_its_receipt'
+            return $false
+        }
+
+        # The candidate is ABSOLUTE, derived from when progress last happened,
+        # never `now + window`. A rolling `now + window` grants a fresh full
+        # window on every poll, so a stall that has already consumed most of its
+        # allowance still buys another whole one -- a 180 s window would admit
+        # nearly 360 s -- and a terminal receipt would renew as a lease on every
+        # read until the ceiling. Anchoring on the sample makes a frozen receipt
+        # yield a FIXED deadline that the loop simply walks past.
+        if ($phase -eq 'complete') {
+            # The fold is done and the process is on its way out. One bounded
+            # exit grace, anchored on the sample so it cannot renew.
+            $candidate = $sampleUtc.AddSeconds($ExitGraceSeconds)
+        } else {
+            if ($unchangedMs -ge ([int64]$NoProgressSeconds * 1000)) {
+                $Reason.Value = "no_progress_for_$([Math]::Floor($unchangedMs / 1000))s"
+                return $false
+            }
+            $lastProgressUtc = $sampleUtc.AddMilliseconds(-$unchangedMs)
+            $candidate = $lastProgressUtc.AddSeconds($NoProgressSeconds)
+        }
+        if ($candidate -gt $Ceiling) { $candidate = $Ceiling }
+        if ($candidate -le $Deadline.Value) { return $false }
+        $Deadline.Value = $candidate
+        $Reason.Value = if ($phase -eq 'complete') {
+            'finalize_complete_exit_grace'
+        } else {
+            "work_advancing_unchanged_${unchangedMs}ms"
+        }
+        return $true
+    } catch {
+        # Any unexpected shape or conversion is no evidence, never a throw:
+        # this runs inside the cleanup `finally`, where a terminating error
+        # abandons the compact-status arbitration.
+        return $false
+    }
+}
 
 try {
     if ($DryRun) {
@@ -2080,7 +2297,10 @@ $recorderReadyDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
 if ($recorderReadyDeadline -gt $recorderDeadline) {
     $recorderDeadline = $recorderReadyDeadline
 }
-Write-Host "phase=recorder_budget_anchored_at_ready budget_s=$recorderBudgetSeconds duration_s=$DurationSeconds overhead_s=$RecorderOverheadSeconds deadline_utc=$($recorderDeadline.ToString('o'))"
+# The progress bound never runs past this, so a recorder that keeps reporting
+# work forever is still bounded. Anchored at READY like the budget above.
+$recorderFinalizeCeiling = [DateTime]::UtcNow.AddSeconds($FinalizeCeilingSeconds)
+Write-Host "phase=recorder_budget_anchored_at_ready budget_s=$recorderBudgetSeconds duration_s=$DurationSeconds overhead_s=$RecorderOverheadSeconds deadline_utc=$($recorderDeadline.ToString('o')) finalize_no_progress_s=$FinalizeNoProgressSeconds finalize_ceiling_utc=$($recorderFinalizeCeiling.ToString('o'))"
 
 $expectedDurationMilliseconds = [uint32](
     [decimal]::Parse(
@@ -2136,9 +2356,12 @@ $nextPassiveWitnessDeadline = [DateTime]::UtcNow.AddSeconds(
 )
 Write-Host "phase=injection_ready receipt=$readyReceiptPath ready_sha256=$readyPayloadSha256 policy=zero_client_writes"
 
-# Bound the wait: capture duration plus a startup/finalize margin. A recorder
-# that outlives this budget is wedged, not slow, and hanging forever here is
-# what previously left orphaned recorders holding machine-wide capture state.
+# Bound the wait: capture duration plus a startup/finalize margin, EXTENDED for
+# as long as post-capture finalization is demonstrably advancing. Hanging here
+# forever is what previously left orphaned recorders holding machine-wide
+# capture state; treating "slow" as "wedged" is what made t27/t28/t29 unresolved
+# with their folds provably part-done. The progress receipt is what separates
+# the two, and the ceiling is what keeps the wait bounded either way.
 #
 # Also watch the game itself. Collector injection can kill the game, and the
 # recorder does not always notice promptly -- it sat idle for the whole budget,
@@ -2146,9 +2369,17 @@ Write-Host "phase=injection_ready receipt=$readyReceiptPath ready_sha256=$readyP
 # capture once the target is gone, so end the attempt immediately.
 $captureProgressDeadline = [DateTime]::UtcNow
 while (-not $recorderProcess.HasExited) {
+    [void](Update-RecorderFinalizeDeadline `
+        -RunDir $OutDir `
+        -SessionId $sessionId `
+        -CaptureId $captureId `
+        -Deadline ([ref]$recorderDeadline) `
+        -Ceiling $recorderFinalizeCeiling `
+        -NoProgressSeconds $FinalizeNoProgressSeconds `
+        -Reason ([ref]$recorderFinalizeExtensionReason))
     if ([DateTime]::UtcNow -ge $recorderDeadline) {
-        Write-Host 'phase=capture_timeout'
-        throw "collector_record exceeded its $recorderBudgetSeconds s natural duration/teardown budget. Post-injection termination is forbidden; the attempt remains unresolved until the recorder publishes authenticated teardown."
+        Write-Host "phase=capture_timeout finalize_bound=$recorderFinalizeExtensionReason"
+        throw "collector_record exceeded its $recorderBudgetSeconds s natural duration/teardown budget (finalize progress bound: $(if ($recorderFinalizeExtensionReason) { $recorderFinalizeExtensionReason } else { 'no progress receipt published' })). Post-injection termination is forbidden; the attempt remains unresolved until the recorder publishes authenticated teardown."
     }
     if (-not (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
         $gameDied = $true
@@ -2431,27 +2662,52 @@ $scriptExitCode = [int]$recorderExit
         try {
             $recorderProcess.Refresh()
             $nextPassiveCleanupNotice = [DateTime]::UtcNow
+            # Consult the receipt ONCE before the loop condition is first
+            # evaluated. Entering cleanup a moment after the current deadline
+            # would otherwise skip the loop entirely and never read a receipt
+            # that justified going on -- the extension would be lost to the
+            # instant the run happened to arrive here.
+            [void](Update-RecorderFinalizeDeadline `
+                -RunDir $OutDir `
+                -SessionId $sessionId `
+                -CaptureId $captureId `
+                -Deadline ([ref]$recorderDeadline) `
+                -Ceiling $recorderFinalizeCeiling `
+                -NoProgressSeconds $FinalizeNoProgressSeconds `
+                -Reason ([ref]$recorderFinalizeExtensionReason))
             # The progress line used to name only the PID, so the two ways this
             # loop can end -- the recorder finished, or the budget ran out --
             # looked identical from the transcript and a run that waited its
             # full budget and then some was read as one that gave up early.
             # Print what the capture wait prints: how much budget is left.
+            # This loop is where a run that threw upstream still gives the fold
+            # its chance to land, so it extends on the same published progress
+            # the capture wait uses. Without that, an attempt that reached here
+            # with minutes of fold left is abandoned on the same fixed clock.
             while (-not $recorderProcess.HasExited -and
                 $null -ne $recorderDeadline -and
                 [DateTime]::UtcNow -lt $recorderDeadline) {
+                [void](Update-RecorderFinalizeDeadline `
+                    -RunDir $OutDir `
+                    -SessionId $sessionId `
+                    -CaptureId $captureId `
+                    -Deadline ([ref]$recorderDeadline) `
+                    -Ceiling $recorderFinalizeCeiling `
+                    -NoProgressSeconds $FinalizeNoProgressSeconds `
+                    -Reason ([ref]$recorderFinalizeExtensionReason))
                 if ([DateTime]::UtcNow -ge $nextPassiveCleanupNotice) {
                     $finalizeRemaining = [Math]::Max(
                         0,
                         [Math]::Ceiling(($recorderDeadline - [DateTime]::UtcNow).TotalSeconds)
                     )
-                    Write-Host "phase=passive_recorder_finalize_wait recorder_pid=$($recorderProcess.Id) remaining_budget_s=$finalizeRemaining"
+                    Write-Host "phase=passive_recorder_finalize_wait recorder_pid=$($recorderProcess.Id) remaining_budget_s=$finalizeRemaining finalize_bound=$recorderFinalizeExtensionReason"
                     $nextPassiveCleanupNotice = [DateTime]::UtcNow.AddSeconds(10)
                 }
                 [void]$recorderProcess.WaitForExit(500)
                 $recorderProcess.Refresh()
             }
             if (-not $recorderProcess.HasExited) {
-                Write-Host "phase=passive_recorder_finalize_wait_end reason=budget_exhausted recorder_pid=$($recorderProcess.Id) budget_s=$recorderBudgetSeconds"
+                Write-Host "phase=passive_recorder_finalize_wait_end reason=budget_exhausted recorder_pid=$($recorderProcess.Id) budget_s=$recorderBudgetSeconds finalize_bound=$recorderFinalizeExtensionReason"
                 Write-SettingsGuardNonThrowingWarning -Message "collector_record PID $($recorderProcess.Id) remains live after its bounded natural-stop budget. The harness will not terminate it after injection; this attempt is unresolved until CAPTURE_TEARDOWN_V1.json authenticates cleanup."
             } else {
                 Write-Host "phase=passive_recorder_finalize_wait_end reason=recorder_exited recorder_pid=$($recorderProcess.Id)"

@@ -8,6 +8,7 @@ pub mod duplex_session;
 pub mod early_render_host_channel;
 pub mod early_render_launch;
 pub mod emitted_token_inventory;
+pub mod finalize_progress;
 pub mod mmap;
 pub mod modset;
 pub mod portable_content_manifest;
