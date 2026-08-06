@@ -15,17 +15,20 @@ dev-prefold-worker-bin = []
 # artifacts for an existing capture at a chosen checkpoint interval so the
 # checkpoint-density curve can be measured rather than modelled. Never on by
 # default and never packaged.
-cc-cache-probe = []
+# Each of these three instruments installs the same global allocator the
+# production recorder installs (`dep:mimalloc`), so each measures that process
+# and not the Windows system heap; the fold they stand in for is
+# allocation-bound, and the system heap inflates its allocation-heavy phases
+# more than the rest. Allocator choice cannot change a produced byte.
+cc-cache-probe = ["dep:mimalloc"]
 # Lane CE cache-size measurement instrument. Decomposes an already-built
 # checkpoint cache and prices candidate encodings in container bytes. Never on
 # by default and never packaged.
-ce-cache-anatomy = ["snapshot/ce-cache-anatomy"]
+ce-cache-anatomy = ["snapshot/ce-cache-anatomy", "dep:mimalloc"]
 # Lane CZ finalize-cost measurement instrument. Attributes post-capture finalize
 # wall time to the phases of `build_certified_replay_artifacts` on an existing
 # capture, so the blocker is argued from a profile rather than a model. Never on
 # by default and never packaged.
-# The instrument installs the same global allocator the production recorder
-# installs, so it measures that process and not the Windows system heap.
 cz-finalize-profile = ["dep:mimalloc"]
 
 [dependencies]
@@ -34,7 +37,7 @@ compact_contract = { path = "../compact_contract" }
 recorder_host = { path = "../recorder_host" }
 snapshot = { path = "../snapshot" }
 serde_json = "1"
-# Instrument-only; pulled in solely by the `cz-finalize-profile` feature.
+# Instrument-only; pulled in solely by the three instrument features.
 mimalloc = { version = "0.1.52", optional = true }
 
 [[bin]]

@@ -1192,12 +1192,16 @@ fn lower_current_thread_priority() {
 /// What DID change is how a REJECTED hour behaves, in two separate ways that
 /// land on two different inputs:
 ///
-/// * An hour that is valid JSON the cache value model nonetheless refuses --
-///   members not in canonical order, or a spelling that does not survive the
-///   round trip, such as a space after a name separator -- and that carries
-///   inline render textures, used to have those textures written and then be
-///   rejected by the encoder's parse. It is now rejected first, so it writes
-///   nothing. Its error was, and still is, `Certification`.
+/// * An hour that is valid JSON whose MEMBER ORDER the cache value model
+///   refuses, and that carries inline render textures, used to have those
+///   textures written and then be rejected by the encoder's parse. It is now
+///   rejected first, so it writes nothing. Its error was, and still is,
+///   `Certification`. (A spelling that parses but does not re-serialize --
+///   a space after a name separator, say -- is no longer refused here at all:
+///   `CanonicalWorldHour::parse` stopped re-serializing the document to check.
+///   Such an hour writes its blobs, encodes, and is refused by
+///   `verify_every_hour` when the artifact is sealed, still as `Certification`
+///   and still without publishing anything.)
 /// * An hour whose JSON is malformed used to be reported as `Io(InvalidData)`
 ///   when the blob pass's byte scan sent it into `parse_json_strict`, and as
 ///   `Certification` when the scan short-circuited past it. It is now always

@@ -21,16 +21,17 @@
 //! for the full argument, the alternatives that were rejected, and the token
 //! classes involved.
 //!
-//! [`ReplayCacheEncoder::push`] does not assume the representation is lossless:
-//! it re-serializes each parse and requires the original bytes before the hour
-//! is admitted, so a token shape nobody anticipated fails the build loudly
-//! instead of corrupting a seek quietly.
+//! Nothing here assumes the representation is lossless. The encoder takes each
+//! hour's `world_json_sha256` from the SOURCE bytes while the record it writes
+//! carries the PARSE, so any token shape nobody anticipated makes the two
+//! disagree and fails the seal loudly instead of corrupting a seek quietly.
 //!
 //! # What certifies a cache
 //!
-//! The encoder is not self-certifying and does not claim to be. It proves the
-//! value model preserves each hour's spelling, and it writes records; whether
-//! the RECORDS it wrote reconstruct those hours is proved by
+//! The encoder is not self-certifying and does not claim to be. It parses each
+//! hour, and it writes records; whether the RECORDS it wrote reconstruct those
+//! hours -- and therefore whether the value model preserved their spelling at
+//! all -- is proved by
 //! [`ReplayCacheReader::verify_every_hour`], which decodes the finished
 //! artifact's own bytes and compares every reconstructed hour against its
 //! recorded `world_json_sha256`. A caller that builds a cache and skips that
@@ -431,16 +432,15 @@ pub struct CacheBuildHourMeta {
 }
 
 /// One hour's canonical world JSON together with the cache value model's parse
-/// of it, proven at construction to re-emit exactly those bytes.
+/// of it.
 ///
 /// The pair is the point. A caller that needs to READ the world document -- to
 /// externalize an inline render texture, say -- would otherwise parse the same
 /// tens of megabytes a second time, with a second parser, purely because the
 /// encoder's parse is private to `push`. This type hands that one parse out
 /// while keeping the bytes and the tree welded together: the only constructor
-/// takes the bytes, parses them, requires the re-serialization to match, and
-/// then owns both, so no caller can pair a value with a body it did not come
-/// from.
+/// takes the bytes, parses them, and then owns both, so no caller can pair a
+/// value with a body it did not come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalWorldHour {
     world_json: Vec<u8>,
@@ -448,40 +448,33 @@ pub struct CanonicalWorldHour {
 }
 
 impl CanonicalWorldHour {
-    /// Parse an hour's canonical world JSON, proving the value model preserves
-    /// its spelling.
+    /// Parse an hour's canonical world JSON.
     ///
     /// `hour_index` names the hour in the error only; the value's own identity
     /// members are checked against the index later, by the encoder.
+    ///
+    /// No whole-document RE-SERIALIZATION happens here. Proving the value model
+    /// spells THIS body back was once done inline, by re-emitting the parse and
+    /// comparing it against the source -- a second pass over tens of megabytes,
+    /// once per hour, entirely in memory. The claim it proved is strictly weaker
+    /// than what the seal path proves anyway:
+    /// [`ReplayCacheReader::verify_every_hour`] decodes every record of the
+    /// FINISHED artifact, applies the decoded patches, re-serializes each
+    /// reconstructed hour and requires the recorded `world_json_sha256` -- and
+    /// that digest is taken from THESE source bytes, never from the parse. So a
+    /// token shape that survives parsing but not serialization still fails the
+    /// build loudly, and it fails it on the bytes a reader will actually follow
+    /// instead of on an in-memory copy of them.
     pub fn parse(world_json: Vec<u8>, hour_index: i64) -> Result<Self, ReplayCacheError> {
         let value = CanonValue::parse(&world_json).map_err(|error| {
             ReplayCacheError::new(format!(
                 "hour {hour_index} is not strict canonical world JSON: {error}"
             ))
         })?;
-        // The representation claims to carry every spelling the fold emitted.
-        // Prove it on THESE bytes rather than trusting the claim: if some token
-        // shape survives parsing but not serialization, this is where the build
-        // stops, with the byte offset, instead of a seek returning a document
-        // that merely looks right.
-        let round_trip = value.to_json_bytes();
-        if round_trip != world_json {
-            let divergence = round_trip
-                .iter()
-                .zip(&world_json)
-                .position(|(a, b)| a != b)
-                .unwrap_or_else(|| round_trip.len().min(world_json.len()));
-            return Err(ReplayCacheError::new(format!(
-                "hour {hour_index} canonical JSON is not preserved by the cache value model: \
-                 first divergence at byte {divergence} ({} source bytes, {} re-emitted)",
-                world_json.len(),
-                round_trip.len()
-            )));
-        }
         Ok(Self { world_json, value })
     }
 
-    /// The parsed world body. Guaranteed to re-serialize to [`Self::json`].
+    /// The parsed world body.
     pub fn value(&self) -> &CanonValue {
         &self.value
     }
@@ -555,9 +548,9 @@ impl<W: Write> ReplayCacheEncoder<W> {
     /// Encode an hour whose world body the caller has already parsed.
     ///
     /// Identical to [`Self::push`] in every byte it writes and every check it
-    /// runs -- [`CanonicalWorldHour::parse`] IS the parse and round-trip proof
-    /// `push` performs inline. The seam exists so the one consumer that also
-    /// has to read the world document does not parse it twice.
+    /// runs -- [`CanonicalWorldHour::parse`] IS the parse `push` performs
+    /// inline. The seam exists so the one consumer that also has to read the
+    /// world document does not parse it twice.
     pub fn push_prepared(
         &mut self,
         meta: CacheBuildHourMeta,
@@ -1851,10 +1844,18 @@ mod tests {
         }
     }
 
-    /// A world body the cache model cannot spell back is a BUILD failure with
-    /// the byte offset, never a silently different seek.
+    /// A world body the cache model cannot spell back is a BUILD failure, never
+    /// a silently different seek.
+    ///
+    /// `push` no longer re-serializes each hour to prove that inline -- it is
+    /// the SEAL that proves it, over the finished artifact, and this test holds
+    /// that seal to the same defect. The recorded `world_json_sha256` is taken
+    /// from the source bytes; the record carries the parse; so a body whose
+    /// spelling the value model does not preserve makes the two disagree and
+    /// `verify_every_hour` refuses the artifact. Delete the digest comparison
+    /// in `verify_every_hour` and this test fails.
     #[test]
-    fn a_body_that_does_not_round_trip_is_refused_at_push_with_its_offset() {
+    fn a_body_that_does_not_round_trip_is_refused_when_the_artifact_is_sealed() {
         let source_sha = "cd".repeat(32);
         let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 2).unwrap();
         let mut hour = world(0, r#"{"v":1}"#);
@@ -1864,10 +1865,19 @@ mod tests {
             .unwrap()
             .replace(r#""world":"#, r#""world": "#)
             .into_bytes();
-        let error = encoder.push(hour).unwrap_err().to_string();
+        let source_len = hour.h4cr_end_offset;
+        encoder
+            .push(hour)
+            .expect("the body parses; only its spelling is unreproducible");
+        let (cache, index) = encoder
+            .finish("g", "1", CacheIdentityMode::IdentityV1, source_len)
+            .unwrap();
+        let index_bytes = index.to_bytes().unwrap();
+        let reader =
+            ReplayCacheReader::open(&index_bytes, &cache, source_len, &source_sha).unwrap();
+        let error = reader.verify_every_hour().unwrap_err().to_string();
         assert!(
-            error.contains("is not preserved by the cache value model")
-                && error.contains("first divergence at byte"),
+            error.contains("does not byte-match replay_decoder parity hash"),
             "{error}"
         );
     }

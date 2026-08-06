@@ -11,6 +11,19 @@
 
 use std::path::PathBuf;
 
+/// mimalloc, because the process this instrument stands in for uses mimalloc.
+///
+/// This instrument TIMES `build_certified_replay_artifacts` end to end, and
+/// that work is allocation-bound -- whole-world `serde_json::Value` and
+/// `CanonValue` trees, millions of small `String`s per game hour. The Windows
+/// system heap serializes badly under that load, so an instrument on the
+/// default allocator reports a wall time the production recorder (which
+/// installs mimalloc in its own `main`) never pays. Allocator choice cannot
+/// change a produced byte, so the artifact digests this instrument reports are
+/// unaffected.
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() != 7 {

@@ -26,6 +26,18 @@ use snapshot::replay_cache::ce_anatomy::{
 };
 use snapshot::replay_cache::ReplayHourIndex;
 
+/// mimalloc, because the process this instrument stands in for uses mimalloc.
+///
+/// Every candidate encoding here walks a whole-world `CanonValue` tree and
+/// rebuilds millions of small `String`s per record, which is exactly the load
+/// the Windows system heap serializes badly under; the production recorder
+/// installs mimalloc in its own `main` for that reason. The reported BYTE
+/// counts are allocator-independent, but the mode-to-mode wall times an owner
+/// reads off a run are not, so measure on the production heap. Allocator
+/// choice cannot change a produced byte.
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() != 3 {

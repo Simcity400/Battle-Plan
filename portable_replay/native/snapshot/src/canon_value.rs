@@ -30,9 +30,11 @@
 //! the quotes, escapes and all); [`CanonValue::write_json`] emits those bytes
 //! back verbatim in `serde_json`'s compact layout. The round trip is then
 //! exact by construction for any compact JSON document, and
-//! `ReplayCacheEncoder::push` *proves* it per hour by re-serializing the parse
-//! and requiring the original bytes, so an unanticipated token shape fails a
-//! build loudly instead of corrupting a seek quietly.
+//! `ReplayCacheReader::verify_every_hour` *proves* it per hour over the sealed
+//! artifact -- it re-serializes each reconstructed hour and requires the
+//! `world_json_sha256` the encoder took from the SOURCE bytes -- so an
+//! unanticipated token shape fails a build loudly instead of corrupting a seek
+//! quietly.
 
 use std::cmp::Ordering;
 
