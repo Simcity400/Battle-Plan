@@ -689,6 +689,7 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
             &external_manifest,
             &external_manifest_bytes,
             &options.run_dir,
+            options.max_stream_bytes,
         ) {
             Ok(authority) => {
                 details.insert("replay_verify".to_string(), authority.details.clone());
@@ -844,20 +845,7 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
             &mut errors,
         );
         if let Some(authority) = replay_authority.as_ref() {
-            let independently_scanned_sha256 = Sha256::hex(&artifact.decoded);
-            if independently_scanned_sha256 != authority.container_stream_sha256 {
-                errors.push(format!(
-                    "independently hashed decoded H4CR stream {independently_scanned_sha256} is not bound to verified container entry digest {}",
-                    authority.container_stream_sha256
-                ));
-            }
-            if authority.container_stream != artifact.decoded {
-                errors.push(format!(
-                    "replay container decoded collector stream differs from decoded run stream (container sha256 {}, run sha256 {})",
-                    Sha256::hex(&authority.container_stream),
-                    artifact.decoded_sha256,
-                ));
-            }
+            bind_run_stream_to_certification(&authority.stream_certification, artifact, &mut errors);
         }
     }
 
@@ -2131,9 +2119,98 @@ fn validate_scanned_hours(
 #[derive(Debug)]
 struct VerifiedReplayAuthority {
     manifest: Value,
-    container_stream: Vec<u8>,
-    container_stream_sha256: String,
+    stream_certification: StreamCertification,
     details: Value,
+}
+
+/// Which proof bound this run's raw collector stream to the sealed container.
+///
+/// The two are NOT of equal strength and are never reported as one thing: a
+/// consumer reading a gate report can always tell whether the stream's own
+/// bytes were compared or whether its identity rests on a container-signed
+/// claim.
+#[derive(Debug)]
+enum StreamCertification {
+    /// The container carries the raw stream. The gate reads those bytes back
+    /// out of the verified container and byte-compares them against the
+    /// run-dir stream, so the proof is over the source bytes themselves.
+    ByteComparedAgainstPackagedStream {
+        container_stream: Vec<u8>,
+        container_stream_sha256: String,
+    },
+    /// The container ships the delta cache alone (owner ruling 2026-08-06: the
+    /// certified cache is the replay source, the raw stream is optional).
+    ///
+    /// No source bytes travel inside such a container, so nothing in it can
+    /// re-hash them: its H4CR identity is MANIFEST-ATTESTED, not independently
+    /// demonstrated. What IS demonstrated here is that the run directory's
+    /// stream hashes to the identity the container-authenticated recorder
+    /// manifest claims, and that H4IX and H4CP were both built over that same
+    /// identity. This value carries that agreed identity.
+    ManifestAttestedThroughDeltaCache {
+        attested_source_sha256: String,
+        attested_source_bytes: u64,
+    },
+}
+
+/// Wire spelling of the byte-comparison certification path.
+const STREAM_CERTIFICATION_BYTE_COMPARED: &str = "byte_compared_against_packaged_stream";
+/// Wire spelling of the cache-only certification path.
+const STREAM_CERTIFICATION_MANIFEST_ATTESTED: &str = "manifest_attested_through_delta_cache";
+
+impl StreamCertification {
+    /// The self-describing name a report carries, in CN's composition style:
+    /// downstream never infers the path from which fields happen to be set.
+    fn path_name(&self) -> &'static str {
+        match self {
+            Self::ByteComparedAgainstPackagedStream { .. } => STREAM_CERTIFICATION_BYTE_COMPARED,
+            Self::ManifestAttestedThroughDeltaCache { .. } => {
+                STREAM_CERTIFICATION_MANIFEST_ATTESTED
+            }
+        }
+    }
+}
+
+/// The links of the cache-only attestation chain, in the order they are proved.
+/// A refusal names exactly one of these, so an operator reads which binding
+/// broke instead of a bare mismatch.
+const CACHE_ONLY_LINK_COMPOSITION: &str = "container_composition";
+const CACHE_ONLY_LINK_NO_PACKAGED_STREAM: &str = "no_packaged_stream_entry";
+const CACHE_ONLY_LINK_SOURCE_READABLE: &str = "run_dir_source_readable";
+const CACHE_ONLY_LINK_STREAM_STORAGE: &str = "stream_storage_identity";
+const CACHE_ONLY_LINK_HOUR_INDEX: &str = "h4ix_source_identity";
+const CACHE_ONLY_LINK_CHECKPOINT_CACHE: &str = "h4cp_source_digest";
+
+/// The refusal wording every broken cache-only link shares.
+fn cache_only_link_refusal(link: &str, detail: impl AsRef<str>) -> String {
+    format!(
+        "cache-only replay certification failed at attestation link {link:?}: {}",
+        detail.as_ref()
+    )
+}
+
+/// The DISTINCT outcome for a consumer holding the sealed container but not the
+/// capture's run directory.
+///
+/// This is deliberately neither a pass nor one of the broken-link refusals.
+/// Nothing disagreed — there were simply no local source bytes to hash, so the
+/// chain was never run. This gate certifies a capture RUN: every other input it
+/// reads (the container, the manifest, the stream) is resolved inside the run
+/// directory, and passing here would report a certification that measured
+/// nothing. The remedy is also different: supply the run directory, rather than
+/// treat the recording as corrupt.
+const CACHE_ONLY_SOURCE_ABSENT_OUTCOME: &str = "run_dir_source_stream_absent";
+
+fn cache_only_source_absent(path: &Path) -> String {
+    format!(
+        "cache-only replay certification is not applicable here ({CACHE_ONLY_SOURCE_ABSENT_OUTCOME}): \
+         the recording declares the {:?} composition, so the raw collector stream lives only in the \
+         capture run directory, and {} does not exist. Nothing disagreed — there were no local \
+         source bytes to hash, so no attestation link was proved or broken. Run this gate against \
+         the capture's own run directory; a sealed container alone cannot be certified by it.",
+        snapshot::RawStreamPackaging::Omitted.as_str(),
+        path.display(),
+    )
 }
 
 #[derive(Debug)]
@@ -3369,30 +3446,33 @@ fn load_verified_replay_authority(
     external_manifest: &Value,
     external_manifest_bytes: &[u8],
     run_dir: &Path,
+    max_stream_bytes: u64,
 ) -> Result<VerifiedReplayAuthority, String> {
-    // This gate certifies the capture by byte-comparing the run-dir H4CR
-    // against the copy packaged in the container. That proof is over the raw
-    // stream's own bytes, so it is GATED on the composition rather than
-    // weakened: a cache-only recording is refused with the cause named.
+    // The recording's declared composition decides WHICH proof this gate can
+    // run. It is never inferred from a missing entry.
     //
-    // It is not inherently a stream-only gate — the equivalent cache-only
-    // certification is to bind the independently hashed run-dir stream to the
-    // recorder manifest's `stream_storage` and then to the H4IX and H4CP source
-    // identities. That binding is not implemented here, so this refuses rather
-    // than passing a capture it did not actually certify.
-    if let Some(object) = external_manifest.as_object() {
-        if matches!(
-            snapshot::read_raw_stream_packaging_with_legacy_default(object),
-            Ok(snapshot::RawStreamPackaging::Omitted)
-        ) {
-            return Err(format!(
-                "compact replay verification gate {}",
-                snapshot::raw_stream_unavailable_message(
-                    "byte-compare the run-dir H4CR against the packaged container copy"
-                ),
-            ));
-        }
-    }
+    //  * `packaged` — the container carries the raw stream, so the gate reads
+    //    those bytes back out and byte-compares them against the run-dir copy.
+    //    That path is unchanged.
+    //  * `omitted` — the container ships the delta cache alone. Nothing inside
+    //    it can re-hash source bytes it does not carry, so the gate hashes the
+    //    RUN-DIR stream and binds that identity through the
+    //    container-authenticated recorder manifest (`stream_storage`) to the
+    //    H4IX and H4CP source identities.
+    //
+    // The declaration is read HERE from the run-dir manifest only to route.
+    // Both routes then require that manifest to be byte-identical to the
+    // container's embedded recorder manifest, and the cache-only route
+    // additionally re-reads the composition from the container's own recorder
+    // manifest and requires the container to carry no stream entry at all. A
+    // packaged container therefore cannot be talked onto the weaker
+    // manifest-attested route by rewriting the file on disk.
+    let declared_object = external_manifest
+        .as_object()
+        .ok_or_else(|| "external native_session_manifest.json is not a JSON object".to_string())?;
+    let declared_packaging =
+        snapshot::read_raw_stream_packaging_with_legacy_default(declared_object)
+            .map_err(|error| format!("external native_session_manifest.json: {error}"))?;
     let replay_path = required_run_file(run_dir, external_manifest, "replay_file")?;
     let expected = ExpectedIdentity {
         schema_version: Some("native_collector_session_v1".to_string()),
@@ -3419,15 +3499,12 @@ fn load_verified_replay_authority(
             replay_game_id
         ));
     }
-    let layout = replay_layout(external_manifest)?;
+    let layout = replay_layout(external_manifest, declared_packaging)?;
 
-    let stream_entries = container.entries_by_role("collector_compact_stream");
-    if stream_entries.len() != 1 {
-        return Err(format!(
-            "replay container has {} collector_compact_stream entries, expected 1",
-            stream_entries.len()
-        ));
-    }
+    // The recorder manifest is proved first on BOTH routes, because it is what
+    // makes `stream_storage` a container-authenticated claim rather than a
+    // mutable file on disk. The cache-only chain reads its source identity out
+    // of this exact copy.
     let manifest_entries = container.entries_by_role("recorder_manifest");
     if manifest_entries.len() != 1 {
         return Err(format!(
@@ -3435,36 +3512,12 @@ fn load_verified_replay_authority(
             manifest_entries.len()
         ));
     }
-    let expected_stream_path = format!("payload/{replay_game_id}/{}", layout.stream);
     let expected_manifest_path = format!("payload/{replay_game_id}/{}", layout.session_manifest);
-    let stream_entry = &stream_entries[0];
     let manifest_entry = &manifest_entries[0];
-    if stream_entry.path != expected_stream_path {
-        return Err(format!(
-            "collector_compact_stream path {:?} != replay_entries.stream authority {:?}",
-            stream_entry.path, expected_stream_path
-        ));
-    }
     if manifest_entry.path != expected_manifest_path {
         return Err(format!(
             "recorder_manifest path {:?} != replay_entries.session_manifest authority {:?}",
             manifest_entry.path, expected_manifest_path
-        ));
-    }
-
-    let container_stream = container
-        .read_entry_bytes(&stream_entry.path)
-        .map_err(|err| {
-            format!(
-                "cannot read collector_compact_stream {} from replay container: {err}",
-                stream_entry.path
-            )
-        })?;
-    let independently_observed_stream_sha256 = Sha256::hex(&container_stream);
-    if independently_observed_stream_sha256 != stream_entry.sha256 {
-        return Err(format!(
-            "verified collector_compact_stream bytes independently hash to {independently_observed_stream_sha256}, not container entry digest {}",
-            stream_entry.sha256
         ));
     }
     let embedded_manifest_bytes =
@@ -3494,6 +3547,71 @@ fn load_verified_replay_authority(
             "embedded recorder_manifest replay_game_id changed after identity binding".into(),
         );
     }
+    let stream_entries = container.entries_by_role("collector_compact_stream");
+    let (stream_certification, mut stream_details) = match declared_packaging {
+        snapshot::RawStreamPackaging::Packaged => {
+            // UNCHANGED byte-comparison proof: the packaged stream is read back
+            // out of the verified container, independently re-hashed, and later
+            // byte-compared against the run-dir stream by the caller.
+            if stream_entries.len() != 1 {
+                return Err(format!(
+                    "replay container has {} collector_compact_stream entries, expected 1",
+                    stream_entries.len()
+                ));
+            }
+            let stream_entry = &stream_entries[0];
+            let Some(stream_relative) = layout.stream else {
+                return Err(
+                    "packaged composition resolved no replay_entries.stream layout".to_string()
+                );
+            };
+            let expected_stream_path = format!("payload/{replay_game_id}/{stream_relative}");
+            if stream_entry.path != expected_stream_path {
+                return Err(format!(
+                    "collector_compact_stream path {:?} != replay_entries.stream authority {:?}",
+                    stream_entry.path, expected_stream_path
+                ));
+            }
+            let container_stream = container
+                .read_entry_bytes(&stream_entry.path)
+                .map_err(|err| {
+                    format!(
+                        "cannot read collector_compact_stream {} from replay container: {err}",
+                        stream_entry.path
+                    )
+                })?;
+            let independently_observed_stream_sha256 = Sha256::hex(&container_stream);
+            if independently_observed_stream_sha256 != stream_entry.sha256 {
+                return Err(format!(
+                    "verified collector_compact_stream bytes independently hash to {independently_observed_stream_sha256}, not container entry digest {}",
+                    stream_entry.sha256
+                ));
+            }
+            let details = json!({
+                "collector_compact_stream": stream_entry.path,
+                "collector_compact_stream_bytes": stream_entry.bytes,
+                "collector_compact_stream_sha256": stream_entry.sha256,
+                "independently_observed_stream_sha256": independently_observed_stream_sha256,
+                "h4cr_stream_digest_bound": true,
+                "h4cr_stream_bytes_compared": true,
+            });
+            (
+                StreamCertification::ByteComparedAgainstPackagedStream {
+                    container_stream,
+                    container_stream_sha256: independently_observed_stream_sha256,
+                },
+                details,
+            )
+        }
+        snapshot::RawStreamPackaging::Omitted => certify_cache_only_recording(
+            &container,
+            &embedded_manifest,
+            &stream_entries,
+            run_dir,
+            max_stream_bytes,
+        )?,
+    };
+
     let static_artifacts =
         validate_required_static_artifacts(&container, &embedded_manifest, container.game_id())?;
     let container_content = container.content_manifest().ok_or_else(|| {
@@ -3508,36 +3626,531 @@ fn load_verified_replay_authority(
                 .into(),
         );
     }
+    let mut details = json!({
+        "file": replay_path.display().to_string(),
+        "game_id": container.game_id(),
+        "recorder_manifest": manifest_entry.path,
+        "recorder_manifest_bytes": embedded_manifest_bytes.len(),
+        "recorder_manifest_sha256": embedded_sha256,
+        "external_manifest_exact_match": true,
+        "static_artifacts": static_artifacts,
+        "signed": container.signed,
+        "unsigned": container.unsigned,
+        // Self-describing, in CN's composition style: a report never infers
+        // which proof ran from which fields happen to be present.
+        snapshot::RAW_STREAM_PACKAGING_FIELD: declared_packaging.as_str(),
+        "stream_certification_path": stream_certification.path_name(),
+    });
+    details
+        .as_object_mut()
+        .expect("replay authority details is an object")
+        .append(
+            stream_details
+                .as_object_mut()
+                .expect("stream certification details is an object"),
+        );
     Ok(VerifiedReplayAuthority {
         manifest: embedded_manifest,
-        container_stream,
-        container_stream_sha256: independently_observed_stream_sha256.clone(),
-        details: json!({
-            "file": replay_path.display().to_string(),
-            "game_id": container.game_id(),
-            "collector_compact_stream": stream_entry.path,
-            "collector_compact_stream_bytes": stream_entry.bytes,
-            "collector_compact_stream_sha256": stream_entry.sha256,
-            "independently_observed_stream_sha256": independently_observed_stream_sha256,
-            "h4cr_stream_digest_bound": true,
-            "recorder_manifest": manifest_entry.path,
-            "recorder_manifest_bytes": embedded_manifest_bytes.len(),
-            "recorder_manifest_sha256": embedded_sha256,
-            "external_manifest_exact_match": true,
-            "static_artifacts": static_artifacts,
-            "signed": container.signed,
-            "unsigned": container.unsigned,
-        }),
+        stream_certification,
+        details,
     })
+}
+
+/// Certify a cache-only recording: the container ships the delta cache alone,
+/// so there are no packaged source bytes to compare against.
+///
+/// The chain proved here, link by link:
+///
+/// 1. `container_composition` — the container's OWN recorder manifest declares
+///    the cache-only composition. Routing read the run-dir copy; this reads the
+///    container-authenticated copy, so the two must agree.
+/// 2. `no_packaged_stream_entry` — the container carries no stream entry at
+///    all. A container that actually packages the stream can never be certified
+///    by this weaker route; it belongs on the byte-comparison path.
+/// 3. `run_dir_source_readable` — the run directory's raw stream exists, its
+///    on-disk storage matches the declared compression, and it decodes.
+/// 4. `stream_storage_identity` — hashing that stream locally reproduces the
+///    `decoded_sha256` and `decoded_bytes` the container-authenticated recorder
+///    manifest states. This is the only place the source bytes are actually
+///    touched.
+/// 5. `h4ix_source_identity` — the packaged H4IX states that same source hash
+///    AND the same source length, and its own cache binding (`cache_len`,
+///    `cache_sha256`) matches the packaged H4CP bytes.
+/// 6. `h4cp_source_digest` — the packaged H4CP header carries that same source
+///    digest. NOTE: H4CP carries the source DIGEST but NOT the length, so the
+///    length link rests on H4IX alone; that is why link 5 checks both.
+///
+/// What this DOES NOT do, and must never be reported as doing: re-hash the
+/// source bytes from inside the container. A cache-only recording cannot do
+/// that — it does not carry them. Its H4CR identity here is MANIFEST-ATTESTED
+/// (the container-signed recorder manifest claims it, and H4IX/H4CP were built
+/// over it), not independently demonstrated from packaged bytes.
+fn certify_cache_only_recording(
+    container: &Container,
+    embedded_manifest: &Value,
+    stream_entries: &[snapshot::container::ContainerEntry],
+    run_dir: &Path,
+    max_stream_bytes: u64,
+) -> Result<(StreamCertification, Value), String> {
+    // Link 1: the container's own recorder manifest states the composition.
+    //
+    // While the caller's byte-identity binding holds, this cannot disagree with
+    // the routing declaration — both read the same single `recorder_manifest`
+    // entry. It is kept deliberately: this route states its own premise through
+    // CN's shared reader instead of inheriting it from a check made elsewhere,
+    // so a future change that admits a second manifest copy, relaxes the
+    // byte-identity binding, or resolves the composition from `index.json`
+    // cannot silently hand a packaged container to the weaker proof.
+    let container_packaging = snapshot::container_raw_stream_packaging(container)
+        .map_err(|error| cache_only_link_refusal(CACHE_ONLY_LINK_COMPOSITION, error))?;
+    if container_packaging != snapshot::RawStreamPackaging::Omitted {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_COMPOSITION,
+            format!(
+                "the run manifest routes this recording as {:?}, but the container's own recorder \
+                 manifest declares {:?}",
+                snapshot::RawStreamPackaging::Omitted.as_str(),
+                container_packaging.as_str(),
+            ),
+        ));
+    }
+
+    // Link 2: nothing that packages a stream may take this route.
+    if !stream_entries.is_empty() {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_NO_PACKAGED_STREAM,
+            format!(
+                "the recording declares the {:?} composition but the container carries {} \
+                 collector_compact_stream entr{}; a packaged stream must be byte-compared, not \
+                 manifest-attested",
+                snapshot::RawStreamPackaging::Omitted.as_str(),
+                stream_entries.len(),
+                if stream_entries.len() == 1 { "y" } else { "ies" },
+            ),
+        ));
+    }
+
+    // The source identity the recorder committed to, read out of the copy the
+    // container authenticates.
+    let storage = embedded_manifest
+        .get("stream_storage")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_STREAM_STORAGE,
+                "the container-authenticated recorder manifest has no stream_storage object, so \
+                 the cache has no source identity to be bound to",
+            )
+        })?;
+    let attested_sha256 = storage
+        .get("decoded_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_STREAM_STORAGE,
+                "stream_storage.decoded_sha256 is missing or empty",
+            )
+        })?
+        .to_string();
+    let attested_bytes = storage.get("decoded_bytes").and_then(Value::as_u64).ok_or_else(|| {
+        cache_only_link_refusal(
+            CACHE_ONLY_LINK_STREAM_STORAGE,
+            "stream_storage.decoded_bytes is missing or not a u64",
+        )
+    })?;
+    // The attested length is read out of the recording, so it is only as
+    // trustworthy as the recording. It never becomes the decode budget on its
+    // own: the gate's own configured maximum bounds it first, so a container
+    // declaring an absurd length over a highly compressible stored file cannot
+    // buy unbounded decoding before the later full read applies the same limit.
+    if attested_bytes > max_stream_bytes {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_STREAM_STORAGE,
+            format!(
+                "stream_storage.decoded_bytes {attested_bytes} exceeds the configured maximum \
+                 {max_stream_bytes}"
+            ),
+        ));
+    }
+
+    // Link 3: the run directory's copy of the source. Only its NONEXISTENCE is
+    // the distinct outcome — see `cache_only_source_absent`. A directory, a
+    // special file, or an unreadable object at that path is a broken link,
+    // because in each of those cases something IS there and it is wrong.
+    let relative = validate_relative_path(
+        required_nonempty_str(embedded_manifest, "raw_stream").map_err(|error| {
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_SOURCE_READABLE,
+                format!("{error}; a cache-only recording must name its run-dir source stream"),
+            )
+        })?,
+        "raw_stream",
+    )
+    .map_err(|error| cache_only_link_refusal(CACHE_ONLY_LINK_SOURCE_READABLE, error))?;
+    let candidate = run_dir.join(&relative);
+    match fs::metadata(&candidate) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(cache_only_source_absent(&candidate))
+        }
+        Err(error) => {
+            return Err(cache_only_link_refusal(
+                CACHE_ONLY_LINK_SOURCE_READABLE,
+                format!("cannot stat run-dir source stream {}: {error}", candidate.display()),
+            ))
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(cache_only_link_refusal(
+                CACHE_ONLY_LINK_SOURCE_READABLE,
+                format!(
+                    "run-dir source stream {} is not a regular file",
+                    candidate.display()
+                ),
+            ))
+        }
+        Ok(_) => {}
+    }
+    let stream_path = required_run_file(run_dir, embedded_manifest, "raw_stream")
+        .map_err(|error| cache_only_link_refusal(CACHE_ONLY_LINK_SOURCE_READABLE, error))?;
+    // The stored form must be the one the recording declares. Compression is
+    // part of READING the source, so it is this link rather than the identity
+    // link that follows.
+    let compression_name = storage
+        .get("compression")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_SOURCE_READABLE,
+                "stream_storage.compression is missing",
+            )
+        })?;
+    let compression = match compression_name {
+        "none" => compact_stream::StreamCompression::None,
+        "zstd" => compact_stream::StreamCompression::Zstd,
+        other => {
+            return Err(cache_only_link_refusal(
+                CACHE_ONLY_LINK_SOURCE_READABLE,
+                format!("unsupported manifest stream compression {other:?}"),
+            ))
+        }
+    };
+    let detected = compact_stream::detect(&stream_path).map_err(|error| {
+        cache_only_link_refusal(
+            CACHE_ONLY_LINK_SOURCE_READABLE,
+            format!(
+                "detect compact stream storage {} failed: {error}",
+                stream_path.display()
+            ),
+        )
+    })?;
+    if detected != compression {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_SOURCE_READABLE,
+            format!(
+                "manifest stream compression {} does not match stored file detection {}",
+                compression.as_str(),
+                detected.as_str()
+            ),
+        ));
+    }
+
+    // Link 4: hash the run-dir source locally. This is the whole reason the
+    // route is admissible at all — the identity is not merely copied between
+    // container documents, it is recomputed here from bytes on disk.
+    let (observed_sha256, observed_bytes) =
+        hash_decoded_source_stream(&stream_path, compression, attested_bytes).map_err(|error| {
+            cache_only_link_refusal(CACHE_ONLY_LINK_SOURCE_READABLE, error)
+        })?;
+    if observed_bytes > attested_bytes {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_STREAM_STORAGE,
+            format!(
+                "the run-dir source stream {} decodes to more than the {attested_bytes} bytes the \
+                 container-authenticated recorder manifest states",
+                stream_path.display(),
+            ),
+        ));
+    }
+    if observed_sha256 != attested_sha256 || observed_bytes != attested_bytes {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_STREAM_STORAGE,
+            format!(
+                "the run-dir source stream {} independently hashes to {observed_sha256} over \
+                 {observed_bytes} decoded bytes, but the container-authenticated recorder manifest \
+                 states {attested_sha256} over {attested_bytes}",
+                stream_path.display(),
+            ),
+        ));
+    }
+
+    // Link 5: H4IX. It is the ONLY artifact that carries the source LENGTH.
+    let index_entry = single_cache_entry(
+        container,
+        snapshot::HOUR_INDEX_ROLE,
+        snapshot::HOUR_INDEX_FILE,
+        CACHE_ONLY_LINK_HOUR_INDEX,
+    )?;
+    let index_bytes = container.read_entry_bytes(&index_entry.path).map_err(|error| {
+        cache_only_link_refusal(
+            CACHE_ONLY_LINK_HOUR_INDEX,
+            format!("cannot read {} from the container: {error}", index_entry.path),
+        )
+    })?;
+    let hour_index = snapshot::ReplayHourIndex::from_bytes(&index_bytes).map_err(|error| {
+        cache_only_link_refusal(
+            CACHE_ONLY_LINK_HOUR_INDEX,
+            format!("{} is not a readable H4IX: {error}", index_entry.path),
+        )
+    })?;
+    if hour_index.source_sha256() != attested_sha256 {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_HOUR_INDEX,
+            format!(
+                "H4IX was folded over source {} but the attested run source is {attested_sha256}",
+                hour_index.source_sha256(),
+            ),
+        ));
+    }
+    if hour_index.source_len() != attested_bytes {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_HOUR_INDEX,
+            format!(
+                "H4IX states source length {} but the attested run source is {attested_bytes} \
+                 bytes; H4CP carries the source digest only, so this length link rests on H4IX \
+                 alone",
+                hour_index.source_len(),
+            ),
+        ));
+    }
+    if hour_index.game_id() != container.game_id() {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_HOUR_INDEX,
+            format!(
+                "H4IX game_id {:?} != container game_id {:?}",
+                hour_index.game_id(),
+                container.game_id(),
+            ),
+        ));
+    }
+
+    // Link 6: H4CP. Its header carries the source digest (and not the length),
+    // and the index's own cache binding must hold over these exact bytes.
+    let cache_entry = single_cache_entry(
+        container,
+        snapshot::CHECKPOINT_CACHE_ROLE,
+        snapshot::CHECKPOINT_CACHE_FILE,
+        CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+    )?;
+    let cache_bytes = container.read_entry_bytes(&cache_entry.path).map_err(|error| {
+        cache_only_link_refusal(
+            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+            format!("cannot read {} from the container: {error}", cache_entry.path),
+        )
+    })?;
+    if hour_index.cache_len() != cache_bytes.len() as u64 {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+            format!(
+                "H4IX states a {}-byte cache but the packaged H4CP is {} bytes",
+                hour_index.cache_len(),
+                cache_bytes.len(),
+            ),
+        ));
+    }
+    let observed_cache_sha256 = Sha256::hex(&cache_bytes);
+    if hour_index.cache_sha256() != observed_cache_sha256 {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+            format!(
+                "the packaged H4CP hashes to {observed_cache_sha256}, not the {} H4IX is bound to",
+                hour_index.cache_sha256(),
+            ),
+        ));
+    }
+    // Everything the shared reader checks except the H4CP header identity has
+    // now been proved with its own name, so a failure here IS the header.
+    snapshot::ReplayCacheReader::open(&index_bytes, &cache_bytes, attested_bytes, &attested_sha256)
+        .map_err(|error| {
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+                format!(
+                    "the packaged H4CP header is not bound to source {attested_sha256}: {error}"
+                ),
+            )
+        })?;
+
+    let details = json!({
+        "stream_certification_chain": [
+            CACHE_ONLY_LINK_COMPOSITION,
+            CACHE_ONLY_LINK_NO_PACKAGED_STREAM,
+            CACHE_ONLY_LINK_SOURCE_READABLE,
+            CACHE_ONLY_LINK_STREAM_STORAGE,
+            CACHE_ONLY_LINK_HOUR_INDEX,
+            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+        ],
+        // The container carries no source bytes, so none were compared. Stated
+        // explicitly so a report can never read this as the stronger proof.
+        "h4cr_stream_digest_bound": false,
+        "h4cr_stream_bytes_compared": false,
+        "h4cr_identity_is_manifest_attested": true,
+        "raw_stream_absence_reason": snapshot::RAW_STREAM_OMITTED_REASON,
+        "attested_source_sha256": attested_sha256,
+        "attested_source_bytes": attested_bytes,
+        "run_dir_source_stream": stream_path.display().to_string(),
+        "hour_index_entry": index_entry.path,
+        "hour_index_sha256": index_entry.sha256,
+        "checkpoint_cache_entry": cache_entry.path,
+        "checkpoint_cache_sha256": cache_entry.sha256,
+        "indexed_hours": hour_index.hours().len(),
+    });
+    Ok((
+        StreamCertification::ManifestAttestedThroughDeltaCache {
+            attested_source_sha256: attested_sha256,
+            attested_source_bytes: attested_bytes,
+        },
+        details,
+    ))
+}
+
+/// Bind the gate's own full read of the run-dir stream back to whichever proof
+/// certified the recording.
+///
+/// The two routes bind to different things and say so:
+///
+///  * byte-compared — the run bytes must equal the container's packaged copy,
+///    which is the strongest statement available and is UNCHANGED here;
+///  * manifest-attested — there are no packaged bytes, so what is bound is that
+///    this read landed on the same source identity the attestation chain hashed
+///    at load time. A stream swapped between the two reads cannot pass.
+fn bind_run_stream_to_certification(
+    certification: &StreamCertification,
+    artifact: &StreamArtifact,
+    errors: &mut Vec<String>,
+) {
+    let independently_scanned_sha256 = Sha256::hex(&artifact.decoded);
+    match certification {
+        StreamCertification::ByteComparedAgainstPackagedStream {
+            container_stream,
+            container_stream_sha256,
+        } => {
+            if independently_scanned_sha256 != *container_stream_sha256 {
+                errors.push(format!(
+                    "independently hashed decoded H4CR stream {independently_scanned_sha256} is not bound to verified container entry digest {}",
+                    container_stream_sha256
+                ));
+            }
+            if container_stream != &artifact.decoded {
+                errors.push(format!(
+                    "replay container decoded collector stream differs from decoded run stream (container sha256 {}, run sha256 {})",
+                    Sha256::hex(container_stream),
+                    artifact.decoded_sha256,
+                ));
+            }
+        }
+        StreamCertification::ManifestAttestedThroughDeltaCache {
+            attested_source_sha256,
+            attested_source_bytes,
+        } => {
+            if independently_scanned_sha256 != *attested_source_sha256 {
+                errors.push(format!(
+                    "independently hashed decoded H4CR stream {independently_scanned_sha256} is not the manifest-attested source identity {attested_source_sha256} the delta cache is bound to"
+                ));
+            }
+            if artifact.decoded.len() as u64 != *attested_source_bytes {
+                errors.push(format!(
+                    "decoded run stream is {} bytes, not the manifest-attested source length {attested_source_bytes} the delta cache is bound to",
+                    artifact.decoded.len()
+                ));
+            }
+        }
+    }
+}
+
+/// Resolve exactly one delta-cache entry, at its canonical payload path.
+fn single_cache_entry(
+    container: &Container,
+    role: &str,
+    canonical_file: &str,
+    link: &str,
+) -> Result<snapshot::container::ContainerEntry, String> {
+    let entries = container.entries_by_role(role);
+    let entry = match entries.as_slice() {
+        [entry] => entry.clone(),
+        entries => {
+            return Err(cache_only_link_refusal(
+                link,
+                format!(
+                    "replay container has {} entries with role {role:?}, expected exactly 1; a \
+                     cache-only recording replays from this artifact alone",
+                    entries.len()
+                ),
+            ))
+        }
+    };
+    let expected = format!("payload/{}/{canonical_file}", container.game_id());
+    if entry.path != expected {
+        return Err(cache_only_link_refusal(
+            link,
+            format!(
+                "role {role:?} is packaged at {:?}, not the canonical {expected:?}",
+                entry.path
+            ),
+        ));
+    }
+    Ok(entry)
+}
+
+/// Hash the DECODED bytes of a stored collector stream without holding the
+/// whole stream in memory.
+///
+/// `stream_storage`, H4IX and H4CP all speak in the decoded H4CR identity,
+/// while the file on disk may be zstd-stored, so this decodes through the same
+/// reader the gate's later full read uses and hashes as bytes arrive.
+///
+/// Decoding stops one byte past `attested_bytes`, which the caller has already
+/// bounded by the gate's own configured maximum. The attested length is the
+/// only thing this read can ever agree with, so a stored file that expands
+/// beyond it is already a refusal; the cap keeps a mis-sized or maliciously
+/// compressible file from being decompressed without bound. The returned length
+/// is therefore `attested_bytes + 1` when the cap was hit, which the caller
+/// reports as an over-length source rather than as a digest mismatch.
+fn hash_decoded_source_stream(
+    path: &Path,
+    compression: compact_stream::StreamCompression,
+    attested_bytes: u64,
+) -> Result<(String, u64), String> {
+    let reader = compact_stream::open_with_compression(path, compression)
+        .map_err(|error| format!("open decoded compact stream {} failed: {error}", path.display()))?;
+    let mut reader = reader.take(attested_bytes.saturating_add(1));
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("decode compact stream {} failed: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        total += read as u64;
+    }
+    Ok((snapshot::sha256::to_hex(&hasher.finalize()), total))
 }
 
 #[derive(Debug)]
 struct ReplayLayout<'a> {
-    stream: &'a str,
+    /// The packaged stream's game-relative path. `None` only under the
+    /// cache-only composition, where `replay_entries` deliberately names no
+    /// stream because the container carries none.
+    stream: Option<&'a str>,
     session_manifest: &'a str,
 }
 
-fn replay_layout(manifest: &Value) -> Result<ReplayLayout<'_>, String> {
+fn replay_layout(
+    manifest: &Value,
+    packaging: snapshot::RawStreamPackaging,
+) -> Result<ReplayLayout<'_>, String> {
     let entries = manifest
         .get("replay_entries")
         .and_then(Value::as_object)
@@ -3549,6 +4162,8 @@ fn replay_layout(manifest: &Value) -> Result<ReplayLayout<'_>, String> {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| format!("manifest replay_entries.{key} is missing or empty"))
     };
+    // `stream_role` names the recording FLAVOR and is stated whatever the
+    // composition, so it stays required on both routes.
     if string("stream_role")? != "collector_compact_stream" {
         return Err("manifest replay_entries.stream_role must be collector_compact_stream".into());
     }
@@ -3557,9 +4172,27 @@ fn replay_layout(manifest: &Value) -> Result<ReplayLayout<'_>, String> {
             "manifest replay_entries.session_manifest_role must be recorder_manifest".into(),
         );
     }
-    let stream = string("stream")?;
+    // `replay_entries.stream` names an ENTRY the container carries. It is
+    // required exactly when the declared composition packages one, and refused
+    // when it does not — the layout never points at bytes that are not there,
+    // and a cache-only recording never quietly drops a stream it did package.
+    let stream = match packaging {
+        snapshot::RawStreamPackaging::Packaged => {
+            let stream = string("stream")?;
+            validate_relative_path(stream, "replay_entries.stream")?;
+            Some(stream)
+        }
+        snapshot::RawStreamPackaging::Omitted => {
+            if entries.contains_key("stream") {
+                return Err(format!(
+                    "manifest declares the {:?} composition but replay_entries.stream still names a packaged entry",
+                    snapshot::RawStreamPackaging::Omitted.as_str()
+                ));
+            }
+            None
+        }
+    };
     let session_manifest = string("session_manifest")?;
-    validate_relative_path(stream, "replay_entries.stream")?;
     validate_relative_path(session_manifest, "replay_entries.session_manifest")?;
     Ok(ReplayLayout {
         stream,
@@ -4830,6 +5463,11 @@ mod tests {
         assert_eq!(super::domain_status_unknown_bits(53, 1 << 30), 1 << 30);
         assert_eq!(super::domain_status_unknown_bits(60, 1 << 23), 1 << 23);
     }
+
+    /// The gate's own configured decode ceiling, as tests supply it. It must be
+    /// the production default so a test can never certify a stream the shipped
+    /// gate would refuse as oversized.
+    const TEST_MAX_STREAM_BYTES: u64 = 128 * 1024 * 1024;
 
     struct TmpDir(PathBuf);
 
@@ -6948,7 +7586,7 @@ mod tests {
         let manifest = replay_test_manifest("g", &dir.0);
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
-        let authority = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0).unwrap();
+        let authority = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap();
         assert_eq!(authority.manifest, manifest);
         assert_eq!(
             authority.details["static_artifacts"]["required_count"],
@@ -6962,9 +7600,531 @@ mod tests {
         let mut rewritten = manifest.clone();
         rewritten["duration_ms"] = json!(999_999);
         let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
-        let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0)
+        let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("mutable disk rewrite must fail");
         assert!(error.contains("not byte-identical"), "{error}");
+    }
+
+    /// The DEFAULT recording composition certifies. The container ships no raw
+    /// stream, so the proof is the attestation chain: the run-dir stream is
+    /// hashed locally, bound to the container-authenticated
+    /// `stream_storage`, and that identity is cross-checked against H4IX
+    /// (source hash AND length) and H4CP (source digest).
+    ///
+    /// Production change that would make this fail: refusing the `omitted`
+    /// composition outright, which is exactly the state this lane started from.
+    #[test]
+    fn cache_only_capture_certifies_through_the_manifest_attested_chain() {
+        let dir = TmpDir::new("cache_only_authority");
+        let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
+        let authority =
+            load_verified_replay_authority(
+            &recording.manifest,
+            &recording.manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+                .expect("a default cache-only recording must certify");
+        assert!(matches!(
+            authority.stream_certification,
+            StreamCertification::ManifestAttestedThroughDeltaCache { .. }
+        ));
+        assert_eq!(
+            authority.details["stream_certification_path"],
+            json!(STREAM_CERTIFICATION_MANIFEST_ATTESTED)
+        );
+        assert_eq!(
+            authority.details[snapshot::RAW_STREAM_PACKAGING_FIELD],
+            json!(snapshot::RawStreamPackaging::Omitted.as_str())
+        );
+        // The certification must never claim the byte comparison happened.
+        assert_eq!(authority.details["h4cr_stream_bytes_compared"], json!(false));
+        assert_eq!(authority.details["h4cr_stream_digest_bound"], json!(false));
+        assert_eq!(
+            authority.details["h4cr_identity_is_manifest_attested"],
+            json!(true)
+        );
+        assert!(authority.details["collector_compact_stream"].is_null());
+        assert_eq!(
+            authority.details["attested_source_sha256"],
+            json!(recording.stream_sha256)
+        );
+        assert_eq!(
+            authority.details["attested_source_bytes"],
+            json!(recording.stream_bytes)
+        );
+    }
+
+    /// The packaged composition is untouched: it still reads the container's
+    /// own stream bytes back out and reports the STRONGER path by name.
+    ///
+    /// Production change that would make this fail: routing a packaged
+    /// container onto the manifest-attested chain, or dropping the path
+    /// indicator so the two proofs read alike downstream.
+    #[test]
+    fn packaged_capture_still_certifies_by_byte_comparison_and_says_so() {
+        let dir = TmpDir::new("packaged_authority_path");
+        let manifest = replay_test_manifest("g", &dir.0);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let authority =
+            load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap();
+        let StreamCertification::ByteComparedAgainstPackagedStream {
+            container_stream, ..
+        } = &authority.stream_certification
+        else {
+            panic!("a packaged recording must be byte-compared");
+        };
+        assert_eq!(container_stream, b"stream");
+        assert_eq!(
+            authority.details["stream_certification_path"],
+            json!(STREAM_CERTIFICATION_BYTE_COMPARED)
+        );
+        assert_eq!(
+            authority.details[snapshot::RAW_STREAM_PACKAGING_FIELD],
+            json!(snapshot::RawStreamPackaging::Packaged.as_str())
+        );
+        assert_eq!(authority.details["h4cr_stream_bytes_compared"], json!(true));
+        assert_eq!(authority.details["h4cr_stream_digest_bound"], json!(true));
+        assert_eq!(
+            authority.details["independently_observed_stream_sha256"],
+            json!(Sha256::hex(b"stream"))
+        );
+    }
+
+    /// A tampered packaged stream still refuses. The manifest-attested route
+    /// must not have opened a door for the packaged one.
+    ///
+    /// Production change that would make this fail: dropping the container
+    /// entry re-hash, or falling back to the manifest-attested chain when the
+    /// packaged comparison fails.
+    #[test]
+    fn a_tampered_packaged_stream_still_refuses() {
+        let dir = TmpDir::new("packaged_tampered");
+        let manifest = replay_test_manifest("g", &dir.0);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture_with_static_mutation(
+            &dir.0,
+            "g",
+            &manifest_bytes,
+            true,
+            |_, _| {},
+        );
+        let replay_path = dir.0.join("native_session.battleplan");
+        let mut packed = fs::read(&replay_path).unwrap();
+        // Flip the packaged stream's PAYLOAD in place — the literal b"stream",
+        // not the two copies of "collector_stream.bin" in the zip headers — so
+        // the container entry digest no longer covers these bytes.
+        let position = packed
+            .windows(6)
+            .enumerate()
+            .find(|(offset, window)| {
+                *window == b"stream"
+                    && *offset >= 10
+                    && &packed[offset - 10..*offset] != b"collector_"
+            })
+            .map(|(offset, _)| offset)
+            .expect("the fixture packages the literal stream payload");
+        packed[position] ^= 0xff;
+        fs::write(&replay_path, &packed).unwrap();
+        let error = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect_err("a tampered packaged stream must refuse");
+        assert!(
+            error.contains("verify_all failed")
+                || error.contains("independently hash")
+                || error.contains("not container entry digest"),
+            "{error}"
+        );
+        assert!(
+            !error.contains(STREAM_CERTIFICATION_MANIFEST_ATTESTED),
+            "a packaged container must never fall back to the weaker route: {error}"
+        );
+    }
+
+    /// A container that declares the cache-only composition but PACKAGES a
+    /// stream anyway must not be certified by the weaker route.
+    ///
+    /// Production change that would make this fail: admitting any number of
+    /// stream entries on the cache-only route instead of exactly zero.
+    #[test]
+    fn a_packaged_stream_can_never_take_the_manifest_attested_route() {
+        let error = cache_only_authority_error(
+            "cache_only_with_a_stream",
+            CacheOnlyBreak {
+                package_stream_entry: true,
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_LINK_NO_PACKAGED_STREAM), "{error}");
+        assert!(error.contains("byte-compared, not manifest-attested"), "{error}");
+    }
+
+    /// Each link of the attestation chain refuses BY NAME when it is the one
+    /// that breaks.
+    ///
+    /// Production change that would make this fail: collapsing the chain into
+    /// one `ReplayCacheReader::open` call, which reports a single generic
+    /// "not bound to the selected canonical H4CR source" for every link.
+    #[test]
+    fn every_broken_attestation_link_refuses_by_its_own_name() {
+        // stream_storage: the run-dir stream is not what the container-
+        // authenticated manifest says it is.
+        let error = cache_only_authority_error(
+            "cache_only_storage_hash",
+            CacheOnlyBreak {
+                stream_storage: Some(json!({
+                    "compression": "none",
+                    "stored_bytes": 140,
+                    "decoded_bytes": 140,
+                    "decoded_sha256": "b".repeat(64),
+                })),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_LINK_STREAM_STORAGE), "{error}");
+        assert!(error.contains("independently hashes to"), "{error}");
+
+        // stream_storage, over-length: decoding stops one byte past the
+        // attested length, so an over-long source is refused as over-long
+        // rather than decompressed without bound and reported as a digest
+        // mismatch.
+        let mut longer = b"H4CRcache-only-run-directory-source".repeat(4);
+        longer.extend_from_slice(b"and then some more");
+        let error = cache_only_authority_error(
+            "cache_only_storage_overlong",
+            CacheOnlyBreak {
+                run_dir_stream_override: Some(longer),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_LINK_STREAM_STORAGE), "{error}");
+        assert!(error.contains("decodes to more than"), "{error}");
+
+        // h4ix source hash: the cache was folded from OTHER bytes of the same
+        // length, so only the hash link can catch it.
+        let mut other = b"H4CRcache-only-run-directory-source".repeat(4);
+        other[0] ^= 0xff;
+        let error = cache_only_authority_error(
+            "cache_only_index_hash",
+            CacheOnlyBreak {
+                cache_folded_from: Some(other),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_LINK_HOUR_INDEX), "{error}");
+        assert!(error.contains("was folded over source"), "{error}");
+
+        // h4ix source length: the hash agrees and only the length does not.
+        // H4CP cannot see this at all, which is exactly why H4IX carries it.
+        let error = cache_only_authority_error(
+            "cache_only_index_length",
+            CacheOnlyBreak {
+                index_source_len: Some(139),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_LINK_HOUR_INDEX), "{error}");
+        assert!(error.contains("states source length"), "{error}");
+        assert!(
+            error.contains("H4CP carries the source digest only"),
+            "the length refusal must say why H4IX alone carries it: {error}"
+        );
+
+        // h4cp: the packaged cache bytes are not the ones H4IX is bound to.
+        let error = cache_only_authority_error(
+            "cache_only_cache_bytes",
+            CacheOnlyBreak {
+                corrupt_cache_bytes: true,
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_LINK_CHECKPOINT_CACHE), "{error}");
+        assert!(error.contains("hashes to"), "{error}");
+
+        // h4cp header digest: index and cache agree on everything EXCEPT the
+        // source the cache header was built over.
+        let error = cache_only_authority_error(
+            "cache_only_cache_header",
+            CacheOnlyBreak {
+                cache_header_digest_of: Some(b"a different canonical H4CR".to_vec()),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_LINK_CHECKPOINT_CACHE), "{error}");
+        assert!(error.contains("header is not bound to source"), "{error}");
+    }
+
+    /// The recording never gets to choose the decode budget. An attested length
+    /// above the gate's configured maximum is refused BEFORE any decoding, so a
+    /// container declaring an absurd length over a highly compressible stored
+    /// file cannot buy unbounded decompression.
+    ///
+    /// Production change that would make this fail: capping the decode with the
+    /// attested length alone instead of bounding that length by
+    /// `GateOptions.max_stream_bytes` first.
+    #[test]
+    fn the_attested_length_is_bounded_by_the_gates_own_maximum() {
+        let dir = TmpDir::new("cache_only_absurd_length");
+        let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
+        let error = load_verified_replay_authority(
+            &recording.manifest,
+            &recording.manifest_bytes,
+            &dir.0,
+            // A ceiling below the honest recording's own length.
+            recording.stream_bytes - 1,
+        )
+        .expect_err("an attested length above the configured maximum must refuse");
+        assert!(error.contains(CACHE_ONLY_LINK_STREAM_STORAGE), "{error}");
+        assert!(error.contains("exceeds the configured maximum"), "{error}");
+    }
+
+    /// Only NONEXISTENCE is the distinct absent outcome. A directory sitting
+    /// where the source stream should be is something that IS there and is
+    /// wrong, so it breaks the readable link instead.
+    ///
+    /// Production change that would make this fail: testing the path with
+    /// `Path::is_file()`, which reports a directory and a stat failure
+    /// identically to a missing file.
+    #[test]
+    fn a_non_file_at_the_source_path_breaks_the_link_it_is_not_absence() {
+        let dir = TmpDir::new("cache_only_source_is_a_dir");
+        let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
+        let stream_path = dir.0.join("collector_stream.bin");
+        fs::remove_file(&stream_path).unwrap();
+        fs::create_dir(&stream_path).unwrap();
+        let error = load_verified_replay_authority(
+            &recording.manifest,
+            &recording.manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .expect_err("a directory at the source path must refuse");
+        assert!(error.contains(CACHE_ONLY_LINK_SOURCE_READABLE), "{error}");
+        assert!(error.contains("not a regular file"), "{error}");
+        assert!(
+            !error.contains(CACHE_ONLY_SOURCE_ABSENT_OUTCOME),
+            "something IS there, so this is not the absent outcome: {error}"
+        );
+    }
+
+    /// Reading the source is the readable link, so the declared compression
+    /// belongs to it and not to the identity link that follows.
+    ///
+    /// Production change that would make this fail: attributing a missing or
+    /// unsupported `stream_storage.compression` to `stream_storage_identity`,
+    /// which claims a digest comparison that never ran.
+    #[test]
+    fn declared_compression_belongs_to_the_readable_link() {
+        for (label, compression) in [
+            ("cache_only_compression_missing", None),
+            ("cache_only_compression_unsupported", Some("brotli")),
+        ] {
+            let mut storage = json!({
+                "stored_bytes": 140,
+                "decoded_bytes": 140,
+                "decoded_sha256": "c".repeat(64),
+            });
+            if let Some(compression) = compression {
+                storage["compression"] = json!(compression);
+            }
+            let error = cache_only_authority_error(
+                label,
+                CacheOnlyBreak {
+                    stream_storage: Some(storage),
+                    ..CacheOnlyBreak::default()
+                },
+            );
+            assert!(error.contains(CACHE_ONLY_LINK_SOURCE_READABLE), "{error}");
+            assert!(
+                !error.contains(CACHE_ONLY_LINK_STREAM_STORAGE),
+                "no digest comparison ran, so the identity link must not be blamed: {error}"
+            );
+        }
+    }
+
+    /// A run directory with the sealed container but no source stream is a
+    /// DISTINCT outcome: not a pass, and not one of the broken-link refusals.
+    ///
+    /// Production change that would make this fail: certifying on the strength
+    /// of the container's internal agreement alone, or reporting the absence as
+    /// a broken binding.
+    #[test]
+    fn a_missing_run_dir_source_is_its_own_named_outcome() {
+        let error = cache_only_authority_error(
+            "cache_only_no_source",
+            CacheOnlyBreak {
+                omit_run_dir_stream: true,
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(error.contains(CACHE_ONLY_SOURCE_ABSENT_OUTCOME), "{error}");
+        assert!(error.contains("Nothing disagreed"), "{error}");
+        for link in [
+            CACHE_ONLY_LINK_STREAM_STORAGE,
+            CACHE_ONLY_LINK_HOUR_INDEX,
+            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+            CACHE_ONLY_LINK_SOURCE_READABLE,
+        ] {
+            assert!(
+                !error.contains(link),
+                "the absent-source outcome must not alias link {link}: {error}"
+            );
+        }
+    }
+
+    /// The composition is routed from the run-dir manifest, so a rewritten
+    /// file on disk must not be able to choose which proof runs. In BOTH
+    /// directions the rewrite is refused, and neither refusal reports the
+    /// weaker path as having certified anything.
+    ///
+    /// Production change that would make this fail: routing on the disk
+    /// declaration without still requiring the run-dir manifest to be
+    /// byte-identical to the container's embedded recorder manifest — that
+    /// would let an operator downgrade a packaged capture to the
+    /// manifest-attested chain with one edit.
+    #[test]
+    fn a_rewritten_disk_composition_cannot_choose_the_proof() {
+        // Cache-only container, disk manifest claiming it packages a stream.
+        let dir = TmpDir::new("cache_only_composition_rewrite");
+        let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
+        let mut rewritten = recording.manifest.clone();
+        rewritten[snapshot::RAW_STREAM_PACKAGING_FIELD] =
+            json!(snapshot::RawStreamPackaging::Packaged.as_str());
+        let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
+        let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect_err("a rewritten composition must not certify");
+        assert!(
+            error.contains("replay_entries.stream is missing"),
+            "{error}"
+        );
+
+        // Packaged container, disk manifest rewritten to claim cache-only.
+        // The manifest-authenticity binding catches it before the weaker chain
+        // can run at all.
+        let dir = TmpDir::new("packaged_composition_rewrite");
+        let manifest = replay_test_manifest("g", &dir.0);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let mut rewritten = manifest.clone();
+        rewritten[snapshot::RAW_STREAM_PACKAGING_FIELD] =
+            json!(snapshot::RawStreamPackaging::Omitted.as_str());
+        rewritten["replay_entries"]
+            .as_object_mut()
+            .unwrap()
+            .remove("stream");
+        let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
+        let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect_err("a packaged container must never take the weaker route");
+        assert!(error.contains("not byte-identical"), "{error}");
+        assert!(
+            !error.contains(STREAM_CERTIFICATION_MANIFEST_ATTESTED),
+            "the weaker route must not be reported as having run: {error}"
+        );
+    }
+
+    /// The gate's own full read of the run-dir stream is bound back to
+    /// whichever proof certified the recording — and to the RIGHT thing on each
+    /// route.
+    ///
+    /// Production change that would make this fail: dropping either arm, or
+    /// reusing the packaged wording (and so the packaged claim) on the
+    /// manifest-attested route.
+    #[test]
+    fn the_run_stream_is_bound_back_to_the_proof_that_certified_it() {
+        let decoded = b"H4CRthe run directory stream".to_vec();
+        let artifact = StreamArtifact {
+            path: PathBuf::from("collector_stream.bin"),
+            compression: compact_stream::StreamCompression::None,
+            stored: decoded.clone(),
+            stored_sha256: Sha256::hex(&decoded),
+            decoded_sha256: Sha256::hex(&decoded),
+            decoded: decoded.clone(),
+        };
+
+        // Byte-compared, agreeing: silent.
+        let mut errors = Vec::new();
+        bind_run_stream_to_certification(
+            &StreamCertification::ByteComparedAgainstPackagedStream {
+                container_stream: decoded.clone(),
+                container_stream_sha256: Sha256::hex(&decoded),
+            },
+            &artifact,
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+
+        // Byte-compared, container copy differs: BOTH the digest binding and
+        // the byte comparison fire, exactly as before this lane.
+        let mut errors = Vec::new();
+        let mut other = decoded.clone();
+        other[4] ^= 0xff;
+        bind_run_stream_to_certification(
+            &StreamCertification::ByteComparedAgainstPackagedStream {
+                container_stream: other.clone(),
+                container_stream_sha256: Sha256::hex(&other),
+            },
+            &artifact,
+            &mut errors,
+        );
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].contains("verified container entry digest"), "{errors:?}");
+        assert!(errors[1].contains("differs from decoded run stream"), "{errors:?}");
+
+        // Manifest-attested, agreeing: silent.
+        let mut errors = Vec::new();
+        bind_run_stream_to_certification(
+            &StreamCertification::ManifestAttestedThroughDeltaCache {
+                attested_source_sha256: Sha256::hex(&decoded),
+                attested_source_bytes: decoded.len() as u64,
+            },
+            &artifact,
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+
+        // Manifest-attested, a different stream was read the second time.
+        let mut errors = Vec::new();
+        bind_run_stream_to_certification(
+            &StreamCertification::ManifestAttestedThroughDeltaCache {
+                attested_source_sha256: Sha256::hex(&other),
+                attested_source_bytes: decoded.len() as u64 + 1,
+            },
+            &artifact,
+            &mut errors,
+        );
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(
+            errors[0].contains("manifest-attested source identity"),
+            "{errors:?}"
+        );
+        assert!(
+            errors[1].contains("manifest-attested source length"),
+            "{errors:?}"
+        );
+        // It must never claim the container copy was compared.
+        assert!(
+            errors.iter().all(|error| !error.contains("container")),
+            "{errors:?}"
+        );
+    }
+
+    /// A malformed composition value is a hard error rather than a silent fall
+    /// through to the packaged route, matching the fail-closed-at-the-decoder
+    /// law the composition vocabulary is built on.
+    ///
+    /// Production change that would make this fail: restoring the
+    /// `matches!(..., Ok(Omitted))` routing, which treats every parse failure
+    /// as "not cache-only" and carries on.
+    #[test]
+    fn an_unassigned_composition_spelling_refuses_at_the_gate() {
+        let dir = TmpDir::new("gate_unassigned_composition");
+        let mut manifest = replay_test_manifest("g", &dir.0);
+        manifest[snapshot::RAW_STREAM_PACKAGING_FIELD] = json!("sometimes");
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let error = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect_err("an unassigned composition must refuse");
+        assert!(error.contains("unassigned"), "{error}");
     }
 
     #[test]
@@ -7289,7 +8449,7 @@ mod tests {
         manifest["static_bundle"]["manifest"]["sha256"] = json!(Sha256::hex(&forged_bytes));
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
-        let error = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0)
+        let error = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("internally shaped non-canonical bundle identity must fail");
         assert!(
             error.contains("canonical retained manifest identity"),
@@ -7410,11 +8570,11 @@ mod tests {
         let manifest = replay_test_manifest("expected", &dir.0);
         let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "foreign", &bytes, true);
-        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0).unwrap_err();
+        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap_err();
         assert!(error.contains("game_id"), "{error}");
 
         write_replay_fixture(&dir.0, "expected", &bytes, false);
-        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0).unwrap_err();
+        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap_err();
         assert!(error.contains("recorder_manifest entries"), "{error}");
     }
 
@@ -7426,7 +8586,15 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("stream_role");
-        assert!(replay_layout(&manifest).is_err());
+        // `stream_role` names the recording flavor, so it is required whatever
+        // the composition — including the cache-only one, which packages no
+        // stream entry at all.
+        for packaging in [
+            snapshot::RawStreamPackaging::Packaged,
+            snapshot::RawStreamPackaging::Omitted,
+        ] {
+            assert!(replay_layout(&manifest, packaging).is_err(), "{packaging:?}");
+        }
     }
 
     #[test]
@@ -8442,6 +9610,243 @@ mod tests {
         fs::write(dir.join("native_session.battleplan"), packed).unwrap();
     }
 
+    /// One default-composition (cache-only) recording, in the two places the
+    /// gate reads it from: the run directory and the sealed container.
+    ///
+    /// This is what the recorder itself produces without `--package-raw-stream`
+    /// — the run dir keeps the raw collector stream it captured, and the
+    /// container ships the delta cache folded from that stream with no
+    /// raw-stream entry at all.
+    struct CacheOnlyRecording {
+        manifest: Value,
+        manifest_bytes: Vec<u8>,
+        stream_sha256: String,
+        stream_bytes: u64,
+    }
+
+    /// How a test bends exactly ONE link of the cache-only attestation chain.
+    /// Every field defaults to the honest recording.
+    #[derive(Default)]
+    struct CacheOnlyBreak {
+        /// Fold the delta cache from these bytes instead of the run-dir stream.
+        cache_folded_from: Option<Vec<u8>>,
+        /// State this source length in H4IX instead of the folded length.
+        index_source_len: Option<u64>,
+        /// Leave the H4CP header bound to the digest of these bytes while H4IX
+        /// still states the real source. H4CP carries the source DIGEST only,
+        /// so this is the one link that catches it.
+        cache_header_digest_of: Option<Vec<u8>>,
+        /// Rewrite the container-authenticated `stream_storage` block.
+        stream_storage: Option<Value>,
+        /// Package a raw-stream entry anyway, contradicting the declaration.
+        package_stream_entry: bool,
+        /// Leave the raw stream out of the run directory (the portable
+        /// consumer that holds only the sealed container).
+        omit_run_dir_stream: bool,
+        /// Corrupt the packaged H4CP bytes after the index was built over them.
+        corrupt_cache_bytes: bool,
+        /// Write these bytes into the run directory instead of the stream every
+        /// other artifact was built over.
+        run_dir_stream_override: Option<Vec<u8>>,
+    }
+
+    /// Replace the single occurrence of one raw 32-byte digest inside an H4IX
+    /// image with another. Used only to build the contrived artifact where the
+    /// index and the cache header disagree about the source.
+    fn replace_unique_digest(bytes: &mut [u8], from_hex: &str, to_hex: &str) {
+        let from = hex32(from_hex);
+        let to = hex32(to_hex);
+        let positions = bytes
+            .windows(32)
+            .enumerate()
+            .filter(|(_, window)| *window == from.as_slice())
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            positions.len(),
+            1,
+            "the fixture digest must appear exactly once in the H4IX image"
+        );
+        bytes[positions[0]..positions[0] + 32].copy_from_slice(&to);
+    }
+
+    fn hex32(value: &str) -> Vec<u8> {
+        assert_eq!(value.len(), 64, "sha256 hex is 64 characters");
+        (0..32)
+            .map(|index| u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn write_cache_only_replay_fixture(
+        dir: &Path,
+        game_id: &str,
+        breakage: CacheOnlyBreak,
+    ) -> CacheOnlyRecording {
+        let stream = b"H4CRcache-only-run-directory-source".repeat(4);
+        let stream_sha256 = Sha256::hex(&stream);
+
+        let mut manifest = replay_test_manifest(game_id, dir);
+        {
+            let object = manifest.as_object_mut().unwrap();
+            object.insert(
+                snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
+                json!(snapshot::RawStreamPackaging::Omitted.as_str()),
+            );
+            object.insert(
+                "stream_storage".to_string(),
+                breakage.stream_storage.clone().unwrap_or_else(|| {
+                    json!({
+                        "compression": "none",
+                        "stored_bytes": stream.len(),
+                        "decoded_bytes": stream.len(),
+                        "decoded_sha256": stream_sha256,
+                    })
+                }),
+            );
+            // `replay_entries.stream` names a PACKAGED entry; a cache-only
+            // recording has none, exactly as the recorder writes it.
+            let entries = object
+                .get_mut("replay_entries")
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            entries.remove("stream");
+            entries.insert(
+                "raw_stream_absence_reason".to_string(),
+                json!(snapshot::RAW_STREAM_OMITTED_REASON),
+            );
+        }
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+
+        let folded_from = breakage
+            .cache_folded_from
+            .clone()
+            .unwrap_or_else(|| stream.clone());
+        let folded_sha256 = Sha256::hex(&folded_from);
+        let header_sha256 = breakage
+            .cache_header_digest_of
+            .as_ref()
+            .map(|bytes| Sha256::hex(bytes))
+            .unwrap_or_else(|| folded_sha256.clone());
+        let source_len = breakage
+            .index_source_len
+            .unwrap_or(folded_from.len() as u64);
+        let world = serde_json::to_vec(&json!({
+            "date": "1936.1.1.12",
+            "hour_index": 0,
+        }))
+        .unwrap();
+        let mut encoder =
+            snapshot::ReplayCacheEncoder::new(Vec::new(), &header_sha256, 168).unwrap();
+        encoder
+            .push(snapshot::CacheBuildHour {
+                hour_index: 0,
+                date: "1936.1.1.12".into(),
+                h4cr_start_offset: 0,
+                h4cr_end_offset: source_len,
+                world_json: world,
+            })
+            .unwrap();
+        let (mut cache_bytes, replay_index) = encoder
+            .finish(game_id, "1", snapshot::CacheIdentityMode::Legacy, source_len)
+            .unwrap();
+        let mut index_bytes = replay_index.to_bytes().unwrap();
+        if breakage.cache_header_digest_of.is_some() {
+            // The index now states the real source while only the H4CP header
+            // still carries the other digest. The index's own `cache_sha256`
+            // stays correct, so the H4CP link is the ONLY one this breaks.
+            replace_unique_digest(&mut index_bytes, &header_sha256, &folded_sha256);
+        }
+        if breakage.corrupt_cache_bytes {
+            *cache_bytes.last_mut().unwrap() ^= 0xff;
+        }
+
+        let (static_artifacts, mut static_entries) = replay_test_static_artifacts(game_id);
+        let container_index = serde_json::to_vec(&json!({
+            "game_id": game_id,
+            "schema_version": "1",
+            "snapshots": [],
+            "static_artifacts": static_artifacts,
+            snapshot::RAW_STREAM_PACKAGING_FIELD: snapshot::RawStreamPackaging::Omitted.as_str(),
+            "raw_stream_absence_reason": snapshot::RAW_STREAM_OMITTED_REASON,
+        }))
+        .unwrap();
+        let mut entries = vec![
+            snapshot::PackEntry {
+                path: format!("payload/{game_id}/index.json"),
+                bytes: container_index,
+                role: "index",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game_id}/recorder/native_session_manifest.json"),
+                bytes: manifest_bytes.clone(),
+                role: "recorder_manifest",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game_id}/{}", snapshot::HOUR_INDEX_FILE),
+                bytes: index_bytes,
+                role: snapshot::HOUR_INDEX_ROLE,
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game_id}/{}", snapshot::CHECKPOINT_CACHE_FILE),
+                bytes: cache_bytes,
+                role: snapshot::CHECKPOINT_CACHE_ROLE,
+                hour_index: None,
+            },
+        ];
+        if breakage.package_stream_entry {
+            entries.push(snapshot::PackEntry {
+                path: format!("payload/{game_id}/collector_raw/collector_stream.bin"),
+                bytes: stream.clone(),
+                role: "collector_compact_stream",
+                hour_index: None,
+            });
+        }
+        entries.append(&mut static_entries);
+        let product_modset_sha256 = manifest
+            .pointer("/portable_content_manifest/product_modset_sha256")
+            .and_then(Value::as_str)
+            .expect("fixture recorder manifest product-modset key");
+        let packed = snapshot::pack(
+            game_id,
+            &entries,
+            &snapshot::PackIdentity {
+                schema_version: Some("native_collector_session_v1".to_string()),
+                content_manifest: Some(replay_test_content_manifest(product_modset_sha256)),
+                ..snapshot::PackIdentity::default()
+            },
+            false,
+        )
+        .unwrap();
+        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
+        if !breakage.omit_run_dir_stream {
+            let on_disk = breakage.run_dir_stream_override.as_ref().unwrap_or(&stream);
+            fs::write(dir.join("collector_stream.bin"), on_disk).unwrap();
+        }
+        fs::write(dir.join("native_session_manifest.json"), &manifest_bytes).unwrap();
+        CacheOnlyRecording {
+            manifest,
+            manifest_bytes,
+            stream_sha256,
+            stream_bytes: stream.len() as u64,
+        }
+    }
+
+    fn cache_only_authority_error(label: &str, breakage: CacheOnlyBreak) -> String {
+        let dir = TmpDir::new(label);
+        let recording = write_cache_only_replay_fixture(&dir.0, "g", breakage);
+        load_verified_replay_authority(
+            &recording.manifest,
+            &recording.manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+            .expect_err("a broken attestation link must refuse")
+    }
+
     fn static_authority_error<M, F>(label: &str, mutate_manifest: M, mutate: F) -> String
     where
         M: FnOnce(&mut Value),
@@ -8452,7 +9857,7 @@ mod tests {
         mutate_manifest(&mut manifest);
         let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture_with_static_mutation(&dir.0, "g", &bytes, true, mutate);
-        load_verified_replay_authority(&manifest, &bytes, &dir.0)
+        load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("forged static authority must fail closed")
     }
 
@@ -8465,7 +9870,7 @@ mod tests {
         mutate(&manifest);
         let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &bytes, true);
-        load_verified_replay_authority(&manifest, &bytes, &dir.0)
+        load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("retained static evidence drift must fail closed")
     }
 

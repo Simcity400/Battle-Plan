@@ -1572,6 +1572,45 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                     else None
                 )
                 replay_file_value = replay_verify.get("file")
+                # The gate states WHICH proof certified the recording. A
+                # packaged container is byte-compared against its own stream
+                # entry; a cache-only container carries none, so its source
+                # identity is the one the recorder manifest, H4IX and H4CP all
+                # agree on. Absence means "written before the gate stated its
+                # path", and every such report was byte-compared.
+                certification_path = replay_verify.get(
+                    "stream_certification_path",
+                    "byte_compared_against_packaged_stream",
+                )
+                if certification_path == "byte_compared_against_packaged_stream":
+                    source_binding = (
+                        replay_verify.get("collector_compact_stream")
+                        == expected_container_stream
+                        and replay_verify.get("h4cr_stream_digest_bound") is True
+                        and replay_verify.get("collector_compact_stream_bytes")
+                        == manifest_storage.get("decoded_bytes")
+                        and replay_verify.get("collector_compact_stream_sha256")
+                        == manifest_storage.get("decoded_sha256")
+                        and replay_verify.get("independently_observed_stream_sha256")
+                        == manifest_storage.get("decoded_sha256")
+                    )
+                elif certification_path == "manifest_attested_through_delta_cache":
+                    source_binding = (
+                        # A cache-only recording names no packaged stream, in
+                        # the manifest or in the gate report.
+                        expected_container_stream is None
+                        and replay_verify.get("collector_compact_stream") is None
+                        and replay_verify.get("h4cr_stream_bytes_compared") is False
+                        and replay_verify.get("h4cr_identity_is_manifest_attested")
+                        is True
+                        and replay_verify.get("attested_source_bytes")
+                        == manifest_storage.get("decoded_bytes")
+                        and replay_verify.get("attested_source_sha256")
+                        == manifest_storage.get("decoded_sha256")
+                    )
+                else:
+                    # Fail closed on a spelling this reader cannot describe.
+                    source_binding = False
                 require(
                     isinstance(replay_file_value, str)
                     and Path(replay_file_value).resolve() == replay_path_for_binding
@@ -1580,8 +1619,6 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                     == "collector_compact_stream"
                     and replay_entries.get("session_manifest_role")
                     == "recorder_manifest"
-                    and replay_verify.get("collector_compact_stream")
-                    == expected_container_stream
                     and replay_verify.get("recorder_manifest")
                     == expected_container_manifest
                     and replay_verify.get("recorder_manifest_bytes")
@@ -1589,13 +1626,7 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                     and replay_verify.get("recorder_manifest_sha256")
                     == sha256(manifest_path)
                     and replay_verify.get("external_manifest_exact_match") is True
-                    and replay_verify.get("h4cr_stream_digest_bound") is True
-                    and replay_verify.get("collector_compact_stream_bytes")
-                    == manifest_storage.get("decoded_bytes")
-                    and replay_verify.get("collector_compact_stream_sha256")
-                    == manifest_storage.get("decoded_sha256")
-                    and replay_verify.get("independently_observed_stream_sha256")
-                    == manifest_storage.get("decoded_sha256"),
+                    and source_binding,
                     "independent_compact_gate_replay_authority_unbound",
                     problems,
                 )

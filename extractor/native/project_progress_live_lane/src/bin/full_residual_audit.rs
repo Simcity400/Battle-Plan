@@ -317,6 +317,37 @@ fn validate_authority_binding(
     if !bool_value(replay, "external_manifest_exact_match")? {
         return Err("compact gate did not bind the exact external manifest".to_string());
     }
+    // The gate states WHICH proof certified the recording, and the source
+    // identity it publishes is named differently on each route: a cache-only
+    // container carries no packaged stream entry to describe, so its identity
+    // is the one the recorder manifest, H4IX and H4CP all agree on.
+    //
+    // Absence means "written before the gate stated its certification path",
+    // and every such report was byte-compared — that was the only route. A
+    // PRESENT but unassigned value is still a hard error.
+    let (source_hash_key, source_bytes_key) = match replay
+        .get("stream_certification_path")
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                "compact gate stream_certification_path is not a string".to_string()
+            })
+        })
+        .transpose()?
+        .unwrap_or("byte_compared_against_packaged_stream")
+    {
+        "byte_compared_against_packaged_stream" => (
+            "collector_compact_stream_sha256",
+            "collector_compact_stream_bytes",
+        ),
+        "manifest_attested_through_delta_cache" => {
+            ("attested_source_sha256", "attested_source_bytes")
+        }
+        other => {
+            return Err(format!(
+                "compact gate reported unassigned stream certification path {other:?}"
+            ))
+        }
+    };
 
     let session_id = nonempty_string(manifest, "session_id")?;
     let replay_game_id = nonempty_string(manifest, "replay_game_id")?;
@@ -380,10 +411,7 @@ fn validate_authority_binding(
             string_value(manifest_storage, "decoded_sha256")?,
         ),
         ("gate", string_value(gate_storage, "decoded_sha256")?),
-        (
-            "replay container",
-            string_value(replay, "collector_compact_stream_sha256")?,
-        ),
+        ("certified replay source", string_value(replay, source_hash_key)?),
     ];
     for (label, hash) in &stream_hashes {
         validate_lower_sha256(hash).map_err(|error| format!("{label} stream hash: {error}"))?;
@@ -402,8 +430,8 @@ fn validate_authority_binding(
         ("manifest compact", number(compact, "total_bytes")?),
         ("gate", number(gate_storage, "decoded_bytes")?),
         (
-            "replay container",
-            number(replay, "collector_compact_stream_bytes")?,
+            "certified replay source",
+            number(replay, source_bytes_key)?,
         ),
     ];
     let expected_length = stream_lengths[0].1;
@@ -733,6 +761,53 @@ mod tests {
         let binding = validate_authority_binding(&lifecycle, &manifest, &gate, &bytes).unwrap();
         assert_eq!(binding["ok"], json!(true));
         assert_eq!(binding["session_id"], json!("session-a"));
+    }
+
+    /// A cache-only (default composition) capture publishes its source
+    /// identity under the manifest-attested names, because its container
+    /// carries no packaged stream entry to describe. The audit must bind
+    /// against those, and must refuse a certification path it cannot describe.
+    ///
+    /// Production change that would make this fail: hard-coding the
+    /// `collector_compact_stream_*` keys again, which would make every default
+    /// capture unauditable, or defaulting an unknown path to either route.
+    #[test]
+    fn binds_a_cache_only_capture_through_its_attested_source_identity() {
+        let (lifecycle, manifest, mut gate, bytes) = authority_fixture();
+        let stream_hash = gate["details"]["replay_verify"]["collector_compact_stream_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let replay = gate["details"]["replay_verify"].as_object_mut().unwrap();
+        replay.remove("collector_compact_stream_sha256");
+        replay.remove("collector_compact_stream_bytes");
+        replay.insert(
+            "stream_certification_path".to_string(),
+            json!("manifest_attested_through_delta_cache"),
+        );
+        replay.insert("attested_source_sha256".to_string(), json!(stream_hash));
+        replay.insert("attested_source_bytes".to_string(), json!(16));
+        let binding = validate_authority_binding(&lifecycle, &manifest, &gate, &bytes).unwrap();
+        assert_eq!(binding["ok"], json!(true));
+
+        // A drifted attested identity is still caught.
+        let mut drifted = gate.clone();
+        drifted["details"]["replay_verify"]["attested_source_sha256"] =
+            json!(sha256_hex(b"other"));
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &drifted, &bytes)
+                .unwrap_err()
+                .contains("decoded stream sha256 mismatch")
+        );
+
+        // An unassigned certification path is a hard error, not a default.
+        let mut unassigned = gate;
+        unassigned["details"]["replay_verify"]["stream_certification_path"] = json!("whatever");
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &unassigned, &bytes)
+                .unwrap_err()
+                .contains("unassigned stream certification path")
+        );
     }
 
     #[test]
