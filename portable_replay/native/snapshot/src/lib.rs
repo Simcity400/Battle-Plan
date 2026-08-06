@@ -66,6 +66,7 @@ pub use replay_cache::{
     CertifiedReplayCache, ReplayCacheEncoder, ReplayCacheError,
     ReplayCacheReader, ReplayHourEntry, ReplayHourIndex, ReplaySeekReceipt,
     CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_ROLE, DEFAULT_CHECKPOINT_INTERVAL_HOURS,
+    PUBLISHED_COVERAGE_FILE, PUBLISHED_COVERAGE_SCHEMA,
     HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CHECKPOINT_INTERVAL_HOURS,
 };
 pub use stream_verify::{

@@ -5,7 +5,7 @@
 //! standard Zstandard frame. Callers auto-detect the storage encoding by magic.
 
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use zstd::stream::raw::{DParameter, Decoder as RawDecoder, InBuffer, Operation, OutBuffer};
@@ -13,6 +13,28 @@ use zstd::stream::raw::{DParameter, Decoder as RawDecoder, InBuffer, Operation, 
 pub const ZSTD_FRAME_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
 pub const ZSTD_WINDOW_LOG: u32 = 27;
+/// Default decoded span covered by one independently-decodable storage frame.
+///
+/// A frame is the smallest unit a spool can be trimmed to: the storage bytes
+/// before a frame boundary can be released without making the remaining tail
+/// undecodable, because every frame carries its own zstd header, window and
+/// content checksum. Rotation is not free — it discards the match window — so
+/// the size is chosen from measurement, on 1 GiB of the t31 max-speed capture
+/// at level 3 (steady state, one core):
+///
+/// | frame     | ratio | MB/s/core | 8 h spool |
+/// |-----------|-------|-----------|-----------|
+/// | 64 MiB    | 18.35 |     1 137 |  62.06 GB |
+/// | 128 MiB   | 21.37 |     1 332 |  53.29 GB |
+/// | 256 MiB   | 23.70 |     1 483 |  48.07 GB |
+/// | no frames | 27.47 |     1 576 |  41.47 GB |
+///
+/// 256 MiB keeps 86 % of the unrotated ratio and costs under 6 % of the
+/// unrotated throughput, while still being a fine trim granularity: at the
+/// 39.55 MB/s max-speed input rate one frame is 6.5 seconds of capture, some
+/// 550 times finer than the game hour the checkpoint cache works in. Below
+/// this the ratio falls away faster than the granularity buys anything.
+pub const DEFAULT_FRAME_BYTES: u64 = 256 << 20;
 /// Maximum decoded input accepted between zstd flushes. A successful flush
 /// pushes the compressed prefix through the underlying 1 MiB `BufWriter`, so a
 /// process kill can strand at most this much decoded tail in application memory.
@@ -78,7 +100,107 @@ impl Read for DecodedFile {
     }
 }
 
+/// Sidecar that marks a storage file whose leading bytes were released.
+///
+/// Its mere presence next to `<stream>` is the fail-closed signal; this crate
+/// never parses it. The owner of the sidecar (the recorder host) records the
+/// live offset and the evidence inside it.
+pub const RELEASED_PREFIX_SIDECAR_SUFFIX: &str = ".trim.json";
+
+pub fn released_prefix_sidecar(path: impl AsRef<Path>) -> std::path::PathBuf {
+    sidecar_beside(path.as_ref())
+}
+
+fn sidecar_beside(path: &Path) -> std::path::PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    name.push_str(RELEASED_PREFIX_SIDECAR_SUFFIX);
+    path.with_file_name(name)
+}
+
+/// The names for this storage file that the guard is able to check.
+///
+/// Deriving the sidecar from the caller's spelling alone lets an alias check a
+/// DIFFERENT sidecar and then follow the alias to the released file, so the
+/// canonicalised name is checked too.
+///
+/// WHAT THIS COVERS: relative spellings, `.`/`..` components, a symbolic link,
+/// a directory junction, and a Win32 8.3 short name -- everything
+/// `fs::canonicalize` resolves to one final path.
+///
+/// WHAT IT DOES NOT COVER, stated plainly rather than implied away: an NTFS
+/// HARD LINK. A hard link is a second directory entry for the same file
+/// record, not an alias that resolves to the first, so `fs::canonicalize`
+/// returns the hard link's own path and the sidecar beside the ORIGINAL name
+/// is never consulted. Reading a released spool through a pre-existing hard
+/// link therefore bypasses this guard. Closing it needs the file's identity
+/// rather than its name -- enumerating every link with `FindFirstFileNameW`,
+/// which is Windows-only in a deliberately portable crate, or scanning the
+/// directory on every open -- so it is a known, documented residual, not a
+/// covered case. Nothing in this repository creates a hard link to a spool.
+///
+/// When canonicalisation fails (the file does not exist yet, or the volume
+/// refuses) the caller's spelling is still checked, so the guard is never
+/// weaker than deriving from the spelling alone.
+pub fn released_prefix_sidecars(path: impl AsRef<Path>) -> Vec<std::path::PathBuf> {
+    sidecar_candidates(path.as_ref())
+}
+
+fn sidecar_candidates(path: &Path) -> Vec<std::path::PathBuf> {
+    let mut candidates = vec![sidecar_beside(path)];
+    if let Ok(canonical) = fs::canonicalize(path) {
+        let canonical = sidecar_beside(&canonical);
+        if !candidates.contains(&canonical) {
+            candidates.push(canonical);
+        }
+    }
+    candidates
+}
+
+/// Refuse any read that would start at byte zero of a released storage file.
+///
+/// After a release the leading bytes are zeros. Zeros are not the zstd frame
+/// magic, so [`detect`] would classify a compressed spool as RAW and a raw
+/// consumer would then ingest the hole plus the still-compressed tail as if it
+/// were content — silently, and even "successfully" for a straight copy. So
+/// every zero-offset entry point fails closed here, and only the explicit
+/// [`open_with_compression_at`] path, whose caller has read the sidecar and
+/// supplies the live offset, may proceed.
+fn refuse_released_prefix(path: &Path) -> io::Result<()> {
+    for sidecar in sidecar_candidates(path) {
+        match fs::symlink_metadata(&sidecar) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("stat {}: {error}", sidecar.display()),
+                ))
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{} had its leading storage released: {} names the live region, and \
+                         reading from byte zero would decode the hole as stream content",
+                        path.display(),
+                        sidecar.display()
+                    ),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn detect(path: impl AsRef<Path>) -> io::Result<StreamCompression> {
+    let path = path.as_ref();
+    refuse_released_prefix(path)?;
+    detect_storage(path)
+}
+
+fn detect_storage(path: &Path) -> io::Result<StreamCompression> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 4];
     let read = read_up_to(&mut file, &mut magic)?;
@@ -91,7 +213,8 @@ pub fn detect(path: impl AsRef<Path>) -> io::Result<StreamCompression> {
 
 pub fn open(path: impl AsRef<Path>) -> io::Result<DecodedFile> {
     let path = path.as_ref();
-    open_with_compression(path, detect(path)?)
+    refuse_released_prefix(path)?;
+    open_with_compression(path, detect_storage(path)?)
 }
 
 pub fn open_with_compression(
@@ -99,8 +222,41 @@ pub fn open_with_compression(
     compression: StreamCompression,
 ) -> io::Result<DecodedFile> {
     let path = path.as_ref();
-    let file = File::open(path)?;
+    refuse_released_prefix(path)?;
+    open_with_compression_at(path, compression, 0)
+}
+
+/// Open a stream whose storage prefix is no longer live.
+///
+/// `stored_offset` must be a frame boundary reported by [`StreamWriter`]
+/// (offset 0 is always one). Every frame is self-contained, so decoding
+/// resumes exactly at the first record of that frame. This is the read side of
+/// spool trimming: the released prefix is never touched, so a deallocated or
+/// zero-filled prefix cannot be mistaken for stream content.
+pub fn open_with_compression_at(
+    path: impl AsRef<Path>,
+    compression: StreamCompression,
+    stored_offset: u64,
+) -> io::Result<DecodedFile> {
+    let path = path.as_ref();
+    // Offset zero is not "the journal-aware caller chose the start"; it is a
+    // read of the released prefix wearing the explicit API's clothes.
+    if stored_offset == 0 {
+        refuse_released_prefix(path)?;
+    }
+    let mut file = File::open(path)?;
     let encoded_len = file.metadata()?.len();
+    if stored_offset > encoded_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "stream live offset {stored_offset} is past the {encoded_len}-byte storage file"
+            ),
+        ));
+    }
+    if stored_offset != 0 {
+        file.seek(SeekFrom::Start(stored_offset))?;
+    }
     let reader: Box<dyn Read> = match compression {
         StreamCompression::None => Box::new(BufReader::with_capacity(BUFFER_BYTES, file)),
         StreamCompression::Zstd => {
@@ -115,13 +271,79 @@ pub fn open_with_compression(
     })
 }
 
+/// Start of one independently-decodable storage frame.
+///
+/// `stored_offset` is where the frame begins in the storage file and
+/// `decoded_offset` is the canonical H4CR byte the frame starts at. The pair is
+/// what lets a trimmer release storage bytes while still naming, in decoded
+/// terms, exactly which stream prefix it gave up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameBoundary {
+    pub decoded_offset: u64,
+    pub stored_offset: u64,
+}
+
+/// What a finished [`StreamWriter`] proved about the bytes it stored.
+#[derive(Debug, Clone)]
+pub struct StreamWriteReceipt {
+    pub decoded_len: u64,
+    pub stored_len: u64,
+    pub compression: StreamCompression,
+    /// Frame starts in ascending order. Always begins with `{0, 0}`.
+    pub frame_boundaries: Vec<FrameBoundary>,
+}
+
+/// Counts the bytes handed to the storage sink so a frame boundary can be
+/// named in stored coordinates without querying (and therefore without
+/// flushing) the file underneath.
+struct CountingWriter<W> {
+    inner: W,
+    written: u64,
+}
+
+impl<W: Write> CountingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self { inner, written: 0 }
+    }
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.written = self.written.saturating_add(written as u64);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Ceiling on retained frame boundaries, so a writer's memory does not grow
+/// with capture length. On reaching it the list is halved — every second
+/// boundary is dropped, doubling the effective release granularity — which
+/// keeps every retained entry a true frame start. At `DEFAULT_FRAME_BYTES`
+/// this first bites after 1 TiB of decoded input.
+pub const MAX_RETAINED_FRAME_BOUNDARIES: usize = 4096;
+
 pub struct StreamWriter {
     inner: WriterInner,
+    compression: StreamCompression,
+    decoded_len: u64,
+    /// `None` keeps the historical single-frame layout byte-for-byte.
+    frame_bytes: Option<u64>,
+    decoded_since_frame: u64,
+    frame_boundaries: Vec<FrameBoundary>,
+    /// A rotation failure cannot be reported from the `write` that triggered
+    /// it: that write already consumed its bytes, and `Write` says `Err` means
+    /// nothing was consumed. It is held here and raised on the next
+    /// write/flush/finish, exactly as the periodic flush error is.
+    deferred_error: Option<(io::ErrorKind, String)>,
 }
 
 enum WriterInner {
-    Raw(BufWriter<File>),
-    Zstd(PeriodicZstdWriter<BufWriter<File>>),
+    Raw(CountingWriter<BufWriter<File>>),
+    Zstd(PeriodicZstdWriter<CountingWriter<BufWriter<File>>>),
 }
 
 /// Pull decoder that owns the physical-EOF rule instead of delegating it to
@@ -217,29 +439,80 @@ impl<R: BufRead> Read for StrictZstdReader<R> {
     }
 }
 
+fn new_frame_encoder<W: Write>(
+    writer: W,
+    level: i32,
+) -> io::Result<zstd::stream::write::Encoder<'static, W>> {
+    let mut encoder = zstd::stream::write::Encoder::new(writer, level)?;
+    encoder.window_log(ZSTD_WINDOW_LOG)?;
+    encoder.include_checksum(true)?;
+    Ok(encoder)
+}
+
 struct PeriodicZstdWriter<W: Write> {
-    encoder: zstd::stream::write::Encoder<'static, W>,
+    /// `None` only while a frame is being rotated; every public entry point
+    /// restores it before returning.
+    encoder: Option<zstd::stream::write::Encoder<'static, W>>,
+    level: i32,
     decoded_since_flush: usize,
     deferred_error: Option<(io::ErrorKind, String)>,
 }
 
 impl<W: Write> PeriodicZstdWriter<W> {
     fn new(writer: W) -> io::Result<Self> {
-        let mut encoder = zstd::stream::write::Encoder::new(writer, DEFAULT_ZSTD_LEVEL)?;
-        encoder.window_log(ZSTD_WINDOW_LOG)?;
-        encoder.include_checksum(true)?;
+        Self::with_level(writer, DEFAULT_ZSTD_LEVEL)
+    }
+
+    fn with_level(writer: W, level: i32) -> io::Result<Self> {
         Ok(Self {
-            encoder,
+            encoder: Some(new_frame_encoder(writer, level)?),
+            level,
             decoded_since_flush: 0,
             deferred_error: None,
         })
+    }
+
+    fn encoder_mut(&mut self) -> io::Result<&mut zstd::stream::write::Encoder<'static, W>> {
+        self.encoder.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "zstd frame writer was left without an encoder by a failed rotation",
+            )
+        })
+    }
+
+    /// Close the current zstd frame and open a fresh one over the same sink.
+    ///
+    /// The result is a storage file that is a concatenation of complete,
+    /// independently-decodable frames — the property spool trimming relies on.
+    fn rotate_frame(&mut self) -> io::Result<()> {
+        if let Some((kind, message)) = self.deferred_error.take() {
+            return Err(io::Error::new(kind, message));
+        }
+        let encoder = self.encoder.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "zstd frame rotation found no encoder to close",
+            )
+        })?;
+        let sink = encoder.finish()?;
+        self.encoder = Some(new_frame_encoder(sink, self.level)?);
+        self.decoded_since_flush = 0;
+        Ok(())
     }
 
     fn finish(self) -> io::Result<W> {
         if let Some((kind, message)) = self.deferred_error {
             return Err(io::Error::new(kind, message));
         }
-        self.encoder.finish()
+        self.encoder
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "zstd frame writer was finished without an encoder",
+                )
+            })?
+            .finish()
     }
 
     fn pending_error(&self) -> Option<io::Error> {
@@ -255,15 +528,15 @@ impl<W: Write> Write for PeriodicZstdWriter<W> {
             return Err(err);
         }
         if buf.is_empty() {
-            return self.encoder.write(buf);
+            return self.encoder_mut()?.write(buf);
         }
 
         let remaining = ZSTD_FLUSH_INTERVAL_BYTES - self.decoded_since_flush;
         let accepted = remaining.min(buf.len());
-        let written = self.encoder.write(&buf[..accepted])?;
+        let written = self.encoder_mut()?.write(&buf[..accepted])?;
         self.decoded_since_flush += written;
         if self.decoded_since_flush == ZSTD_FLUSH_INTERVAL_BYTES {
-            if let Err(err) = self.encoder.flush() {
+            if let Err(err) = self.encoder_mut()?.flush() {
                 // The encoder already consumed `written` bytes, so the Write
                 // contract requires returning Ok(written). Defer this hard error
                 // to the next write/flush/finish instead of inviting a retry that
@@ -280,48 +553,280 @@ impl<W: Write> Write for PeriodicZstdWriter<W> {
         if let Some(err) = self.pending_error() {
             return Err(err);
         }
-        self.encoder.flush()?;
+        self.encoder_mut()?.flush()?;
         self.decoded_since_flush = 0;
         Ok(())
     }
 }
 
 impl StreamWriter {
+    /// Single-frame layout, byte-for-byte identical to every stream stored
+    /// before frame rotation existed.
     pub fn create(path: impl AsRef<Path>, compression: StreamCompression) -> io::Result<Self> {
+        Self::create_with_frames(path, compression, None)
+    }
+
+    /// `frame_bytes` closes the current storage frame every N decoded bytes so
+    /// the storage prefix in front of a boundary can later be released. `None`
+    /// keeps the historical single-frame layout.
+    pub fn create_with_frames(
+        path: impl AsRef<Path>,
+        compression: StreamCompression,
+        frame_bytes: Option<u64>,
+    ) -> io::Result<Self> {
+        if frame_bytes == Some(0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stream frame size must be non-zero",
+            ));
+        }
+        let path = path.as_ref();
+        // A leftover sidecar from a previous, trimmed spool at this same path
+        // would make the brand-new stream unreadable by every guarded entry
+        // point. Say so at creation rather than at the first read.
+        for sidecar in sidecar_candidates(path) {
+            match fs::symlink_metadata(&sidecar) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("stat {}: {error}", sidecar.display()),
+                    ))
+                }
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!(
+                            "{} still carries the released-prefix sidecar {} of an earlier \
+                             trimmed spool; retire that run's artifacts before writing here",
+                            path.display(),
+                            sidecar.display()
+                        ),
+                    ))
+                }
+            }
+        }
         let file = File::create(path)?;
-        let buffered = BufWriter::with_capacity(BUFFER_BYTES, file);
+        let buffered = CountingWriter::new(BufWriter::with_capacity(BUFFER_BYTES, file));
         let inner = match compression {
             StreamCompression::None => WriterInner::Raw(buffered),
             StreamCompression::Zstd => WriterInner::Zstd(PeriodicZstdWriter::new(buffered)?),
         };
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            compression,
+            decoded_len: 0,
+            frame_bytes,
+            decoded_since_frame: 0,
+            frame_boundaries: vec![FrameBoundary {
+                decoded_offset: 0,
+                stored_offset: 0,
+            }],
+            deferred_error: None,
+        })
     }
 
-    pub fn finish(self) -> io::Result<()> {
-        match self.inner {
-            WriterInner::Raw(mut writer) => writer.flush(),
+    /// Frame starts retained so far, including the implicit `{0, 0}`.
+    ///
+    /// Bounded by [`MAX_RETAINED_FRAME_BOUNDARIES`]; see `push_boundary`.
+    pub fn frame_boundaries(&self) -> &[FrameBoundary] {
+        &self.frame_boundaries
+    }
+
+    fn pending_error(&self) -> Option<io::Error> {
+        self.deferred_error
+            .as_ref()
+            .map(|(kind, message)| io::Error::new(*kind, message.clone()))
+    }
+
+    /// Retain a frame start in bounded memory.
+    ///
+    /// When the cap is reached every second entry is dropped. The survivors are
+    /// still exact frame starts - dropping one only means that boundary can no
+    /// longer be chosen as a release point - so the structure stays correct and
+    /// simply becomes coarser, never wrong.
+    fn push_boundary(&mut self, boundary: FrameBoundary) {
+        if self.frame_boundaries.last() == Some(&boundary) {
+            return;
+        }
+        if self.frame_boundaries.len() >= MAX_RETAINED_FRAME_BOUNDARIES {
+            let mut kept = Vec::with_capacity(self.frame_boundaries.len() / 2 + 1);
+            for (index, retained) in self.frame_boundaries.iter().enumerate() {
+                if index % 2 == 0 {
+                    kept.push(*retained);
+                }
+            }
+            self.frame_boundaries = kept;
+        }
+        self.frame_boundaries.push(boundary);
+    }
+
+    pub fn decoded_len(&self) -> u64 {
+        self.decoded_len
+    }
+
+    fn stored_len(&self) -> u64 {
+        match &self.inner {
+            WriterInner::Raw(writer) => writer.written,
+            WriterInner::Zstd(writer) => match writer.encoder.as_ref() {
+                Some(encoder) => encoder.get_ref().written,
+                None => 0,
+            },
+        }
+    }
+
+    /// Close the storage frame that ends at the current decoded position.
+    ///
+    /// Called on the frame cadence, never mid-`write`, so a boundary is always
+    /// recorded after the sink has actually received the frame's last byte.
+    fn rotate_frame(&mut self) -> io::Result<()> {
+        match &mut self.inner {
+            // Every offset of a raw stream is already a valid resume point;
+            // recording the boundary is all a rotation means.
+            WriterInner::Raw(writer) => writer.flush()?,
+            WriterInner::Zstd(writer) => writer.rotate_frame()?,
+        }
+        self.decoded_since_frame = 0;
+        let boundary = FrameBoundary {
+            decoded_offset: self.decoded_len,
+            stored_offset: self.stored_len(),
+        };
+        self.push_boundary(boundary);
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> io::Result<StreamWriteReceipt> {
+        if let Some(error) = self.pending_error() {
+            return Err(error);
+        }
+        let decoded_len = self.decoded_len;
+        let compression = self.compression;
+        let frame_boundaries = std::mem::take(&mut self.frame_boundaries);
+        let stored_len = match self.inner {
+            WriterInner::Raw(mut writer) => {
+                writer.flush()?;
+                writer.written
+            }
             WriterInner::Zstd(encoder) => {
                 let mut writer = encoder.finish()?;
-                writer.flush()
+                writer.flush()?;
+                writer.written
             }
-        }
+        };
+        Ok(StreamWriteReceipt {
+            decoded_len,
+            stored_len,
+            compression,
+            frame_boundaries,
+        })
     }
 }
 
 impl Write for StreamWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match &mut self.inner {
-            WriterInner::Raw(writer) => writer.write(buf),
-            WriterInner::Zstd(writer) => writer.write(buf),
+        if let Some(error) = self.pending_error() {
+            return Err(error);
         }
+        // A frame boundary must land on an exact decoded multiple, so a write
+        // that would straddle one is truncated to the boundary. `write_all`
+        // supplies the remainder on the next call.
+        let buf = match self.frame_bytes {
+            Some(frame_bytes) => {
+                let room = frame_bytes.saturating_sub(self.decoded_since_frame);
+                let room = usize::try_from(room).unwrap_or(usize::MAX);
+                &buf[..room.min(buf.len())]
+            }
+            None => buf,
+        };
+        let written = match &mut self.inner {
+            WriterInner::Raw(writer) => writer.write(buf)?,
+            WriterInner::Zstd(writer) => writer.write(buf)?,
+        };
+        self.decoded_len = self.decoded_len.saturating_add(written as u64);
+        self.decoded_since_frame = self.decoded_since_frame.saturating_add(written as u64);
+        if let Some(frame_bytes) = self.frame_bytes {
+            if self.decoded_since_frame >= frame_bytes && written > 0 {
+                if let Err(error) = self.rotate_frame() {
+                    // These bytes ARE consumed, so `Write` requires Ok(written).
+                    // Defer the hard error rather than invite a retry that would
+                    // duplicate decoded input.
+                    self.deferred_error = Some((error.kind(), error.to_string()));
+                    return Ok(written);
+                }
+            }
+        }
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if let Some(error) = self.pending_error() {
+            return Err(error);
+        }
         match &mut self.inner {
             WriterInner::Raw(writer) => writer.flush(),
             WriterInner::Zstd(writer) => writer.flush(),
         }
     }
+}
+
+/// Encode `reader` exactly as the spool writer does, into `sink`.
+///
+/// Same encoder parameters, same 1 MiB periodic flush and same frame cadence,
+/// so a measurement taken through this entry point is a measurement of the
+/// production storage path — not of a differently-configured zstd.
+pub fn encode_to_writer(
+    reader: &mut impl Read,
+    sink: &mut impl Write,
+    compression: StreamCompression,
+    level: i32,
+    frame_bytes: Option<u64>,
+) -> io::Result<(u64, u64)> {
+    if frame_bytes == Some(0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stream frame size must be non-zero",
+        ));
+    }
+    let mut counting = CountingWriter::new(sink);
+    let decoded = match compression {
+        StreamCompression::None => io::copy(reader, &mut counting)?,
+        StreamCompression::Zstd => {
+            let mut writer = PeriodicZstdWriter::with_level(counting, level)?;
+            let mut decoded = 0u64;
+            let mut since_frame = 0u64;
+            let mut buf = vec![0u8; 65_536];
+            loop {
+                let read = reader.read(&mut buf)?;
+                if read == 0 {
+                    break;
+                }
+                let mut offset = 0usize;
+                while offset < read {
+                    let room = match frame_bytes {
+                        Some(frame_bytes) => usize::try_from(
+                            frame_bytes.saturating_sub(since_frame),
+                        )
+                        .unwrap_or(usize::MAX)
+                        .min(read - offset),
+                        None => read - offset,
+                    };
+                    debug_assert!(room > 0, "a non-zero frame size always leaves room");
+                    writer.write_all(&buf[offset..offset + room])?;
+                    offset += room;
+                    decoded = decoded.saturating_add(room as u64);
+                    since_frame = since_frame.saturating_add(room as u64);
+                    if frame_bytes.is_some_and(|frame_bytes| since_frame >= frame_bytes) {
+                        writer.rotate_frame()?;
+                        since_frame = 0;
+                    }
+                }
+            }
+            counting = writer.finish()?;
+            decoded
+        }
+    };
+    counting.flush()?;
+    Ok((decoded, counting.written))
 }
 
 pub fn encode_file(
@@ -495,17 +1000,263 @@ mod tests {
         writer
             .write_all(&vec![0x5a; ZSTD_FLUSH_INTERVAL_BYTES - 1])
             .unwrap();
-        assert_eq!(writer.encoder.get_ref().flushes, 0);
+        assert_eq!(writer.encoder.as_ref().unwrap().get_ref().flushes,0);
 
         writer.write_all(&[0x5a; 2]).unwrap();
-        assert_eq!(writer.encoder.get_ref().flushes, 1);
+        assert_eq!(writer.encoder.as_ref().unwrap().get_ref().flushes,1);
         assert_eq!(writer.decoded_since_flush, 1);
 
         writer
             .write_all(&vec![0xa5; ZSTD_FLUSH_INTERVAL_BYTES - 1])
             .unwrap();
-        assert_eq!(writer.encoder.get_ref().flushes, 2);
+        assert_eq!(writer.encoder.as_ref().unwrap().get_ref().flushes,2);
         assert_eq!(writer.decoded_since_flush, 0);
+    }
+
+    fn framed_fixture(records: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for i in 0..records {
+            bytes.extend_from_slice(b"H4CR");
+            bytes.extend_from_slice(&i.to_le_bytes());
+            bytes.extend_from_slice(&[0x5a; 128]);
+        }
+        bytes
+    }
+
+    fn write_framed(path: &Path, bytes: &[u8], compression: StreamCompression, frame: u64) -> StreamWriteReceipt {
+        let mut writer = StreamWriter::create_with_frames(path, compression, Some(frame)).unwrap();
+        // 64 KiB bursts: exactly the pipe read size the recorder host uses.
+        for chunk in bytes.chunks(65_536) {
+            writer.write_all(chunk).unwrap();
+        }
+        writer.finish().unwrap()
+    }
+
+    #[test]
+    fn rotated_frames_decode_as_one_stream_and_report_their_boundaries() {
+        let dir = TmpDir::new("frames");
+        let bytes = framed_fixture(16_384); // 2 MiB of decoded input
+        for compression in [StreamCompression::None, StreamCompression::Zstd] {
+            let path = dir.0.join(format!("framed_{}.bin", compression.as_str()));
+            let frame = 512 * 1024;
+            let receipt = write_framed(&path, &bytes, compression, frame);
+
+            assert_eq!(receipt.decoded_len, bytes.len() as u64);
+            assert_eq!(receipt.stored_len, fs::metadata(&path).unwrap().len());
+            assert_eq!(receipt.compression, compression);
+            assert_eq!(receipt.frame_boundaries.first().unwrap().decoded_offset, 0);
+            assert_eq!(receipt.frame_boundaries.first().unwrap().stored_offset, 0);
+            assert!(
+                receipt.frame_boundaries.len() >= 4,
+                "2 MiB of input at a 512 KiB frame must rotate: {:?}",
+                receipt.frame_boundaries
+            );
+            for pair in receipt.frame_boundaries.windows(2) {
+                assert_eq!(
+                    pair[1].decoded_offset - pair[0].decoded_offset,
+                    frame,
+                    "frames must close on exact decoded multiples"
+                );
+                assert!(pair[1].stored_offset > pair[0].stored_offset);
+            }
+
+            // Whole-stream read is unaffected by rotation.
+            let mut whole = Vec::new();
+            open(&path).unwrap().read_to_end(&mut whole).unwrap();
+            assert_eq!(whole, bytes, "{} rotation changed decoded bytes", compression.as_str());
+
+            // And every boundary is a legal resume point: reading from it
+            // yields exactly the decoded suffix it names.
+            for boundary in &receipt.frame_boundaries {
+                let mut suffix = Vec::new();
+                open_with_compression_at(&path, compression, boundary.stored_offset)
+                    .unwrap()
+                    .read_to_end(&mut suffix)
+                    .unwrap();
+                assert_eq!(
+                    suffix,
+                    bytes[boundary.decoded_offset as usize..],
+                    "resume at stored {} / decoded {} lost bytes",
+                    boundary.stored_offset,
+                    boundary.decoded_offset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rotation_ratio_cost_at_64_mib_frames_is_negligible() {
+        let dir = TmpDir::new("frame_ratio");
+        let bytes = framed_fixture(262_144); // 32 MiB of decoded input
+        let single = dir.0.join("single.bin");
+        let framed = dir.0.join("framed.bin");
+
+        let single_receipt = write_framed(&single, &bytes, StreamCompression::Zstd, u64::MAX);
+        // 4 MiB frames over 32 MiB of input: eight times the boundary density
+        // an eight-hour capture sees at DEFAULT_FRAME_BYTES.
+        let framed_receipt = write_framed(&framed, &bytes, StreamCompression::Zstd, 4 << 20);
+        // Eight rotations plus the implicit start; the eighth lands on EOF.
+        assert_eq!(single_receipt.frame_boundaries.len(), 1);
+        assert_eq!(framed_receipt.frame_boundaries.len(), 9);
+
+        let overhead = framed_receipt.stored_len as f64 - single_receipt.stored_len as f64;
+        let overhead_percent = overhead * 100.0 / single_receipt.stored_len as f64;
+        eprintln!(
+            "frame_ratio decoded={} single_frame_bytes={} rotated_bytes={} overhead_percent={:.6}",
+            bytes.len(),
+            single_receipt.stored_len,
+            framed_receipt.stored_len,
+            overhead_percent
+        );
+        assert!(
+            overhead_percent <= 1.0,
+            "frame rotation ratio cost unexpectedly high: {overhead_percent:.6}%"
+        );
+    }
+
+    #[test]
+    fn a_released_storage_prefix_is_never_read_back_as_content() {
+        let dir = TmpDir::new("released_prefix");
+        let bytes = framed_fixture(16_384);
+        let path = dir.0.join("collector_stream.bin");
+        let receipt = write_framed(&path, &bytes, StreamCompression::Zstd, 512 * 1024);
+        let boundary = receipt.frame_boundaries[2];
+
+        // Simulate the trimmed prefix the recorder host deallocates: zeros.
+        let mut stored = fs::read(&path).unwrap();
+        for byte in &mut stored[..boundary.stored_offset as usize] {
+            *byte = 0;
+        }
+        fs::write(&path, &stored).unwrap();
+
+        // WITHOUT the sidecar the storage layer cannot tell: the zeros are not
+        // the zstd magic, so `detect` calls a compressed spool RAW and a copy
+        // succeeds while producing something that is not the stream. This is
+        // the exact silent-corruption path the sidecar exists to close.
+        assert_eq!(detect(&path).unwrap(), StreamCompression::None);
+        let mut misread = Vec::new();
+        open(&path).unwrap().read_to_end(&mut misread).unwrap();
+        assert_ne!(misread, bytes, "the hole is not the stream");
+
+        // WITH the sidecar every zero-offset entry point fails closed.
+        fs::write(released_prefix_sidecar(&path), b"{}").unwrap();
+        for error in [
+            open(&path).err().expect("open must fail closed"),
+            open_with_compression(&path, StreamCompression::Zstd)
+                .err()
+                .expect("a typed zero-offset open must fail closed"),
+            detect(&path).err().expect("detect must fail closed"),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("released"), "{error}");
+        }
+        let decoded_path = dir.0.join("decoded.bin");
+        decode_file(&path, &decoded_path)
+            .expect_err("a plain decompress must not copy a released prefix");
+
+        // Only the explicit journal-aware path proceeds, and it returns the
+        // exact decoded suffix.
+        let mut suffix = Vec::new();
+        open_with_compression_at(&path, StreamCompression::Zstd, boundary.stored_offset)
+            .unwrap()
+            .read_to_end(&mut suffix)
+            .unwrap();
+        assert_eq!(suffix, bytes[boundary.decoded_offset as usize..]);
+    }
+
+    /// Offset zero through the explicit API is still a read of the hole.
+    #[test]
+    fn the_explicit_resume_api_still_refuses_offset_zero_on_a_released_prefix() {
+        let dir = TmpDir::new("explicit_zero");
+        let bytes = framed_fixture(4_096);
+        let path = dir.0.join("collector_stream.bin");
+        let receipt = write_framed(&path, &bytes, StreamCompression::Zstd, 128 * 1024);
+        let boundary = receipt
+            .frame_boundaries
+            .iter()
+            .copied()
+            .find(|boundary| boundary.stored_offset > 0)
+            .expect("the fixture must rotate");
+        fs::write(released_prefix_sidecar(&path), b"{}").unwrap();
+
+        let error = open_with_compression_at(&path, StreamCompression::Zstd, 0)
+            .err()
+            .expect("offset zero must fail closed even through the explicit API");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("released"), "{error}");
+
+        // A real live offset still works.
+        let mut suffix = Vec::new();
+        open_with_compression_at(&path, StreamCompression::Zstd, boundary.stored_offset)
+            .unwrap()
+            .read_to_end(&mut suffix)
+            .unwrap();
+        assert_eq!(suffix, bytes[boundary.decoded_offset as usize..]);
+    }
+
+    /// A stale sidecar must be caught when the new spool is created, not when
+    /// something later tries to read a stream that can never be opened.
+    #[test]
+    fn a_leftover_sidecar_refuses_the_next_spool_at_creation() {
+        let dir = TmpDir::new("stale_sidecar");
+        let path = dir.0.join("collector_stream.bin");
+        fs::write(released_prefix_sidecar(&path), b"{}").unwrap();
+
+        let error = StreamWriter::create_with_frames(
+            &path,
+            StreamCompression::Zstd,
+            Some(DEFAULT_FRAME_BYTES),
+        )
+        .err()
+        .expect("a run directory holding a trimmed spool's sidecar must not be written into");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("released-prefix sidecar"), "{error}");
+
+        // Retire the sidecar and the same call succeeds.
+        fs::remove_file(released_prefix_sidecar(&path)).unwrap();
+        let mut writer =
+            StreamWriter::create_with_frames(&path, StreamCompression::Zstd, Some(1 << 20))
+                .unwrap();
+        writer.write_all(b"H4CR").unwrap();
+        writer.finish().unwrap();
+        let mut decoded = Vec::new();
+        open(&path).unwrap().read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, b"H4CR");
+    }
+
+    #[test]
+    fn live_offset_past_the_storage_file_is_rejected() {
+        let dir = TmpDir::new("bad_offset");
+        let path = dir.0.join("collector_stream.bin");
+        fs::write(&path, [0u8; 16]).unwrap();
+        let error = match open_with_compression_at(&path, StreamCompression::None, 17) {
+            Ok(_) => panic!("an offset past EOF must not open"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn encode_to_writer_matches_the_file_writer_byte_for_byte() {
+        let dir = TmpDir::new("encode_to_writer");
+        let bytes = framed_fixture(8_192);
+        let path = dir.0.join("file.bin");
+        let mut writer = StreamWriter::create(&path, StreamCompression::Zstd).unwrap();
+        writer.write_all(&bytes).unwrap();
+        writer.finish().unwrap();
+
+        let mut sink = Vec::new();
+        let (decoded, stored) = encode_to_writer(
+            &mut bytes.as_slice(),
+            &mut sink,
+            StreamCompression::Zstd,
+            DEFAULT_ZSTD_LEVEL,
+            None,
+        )
+        .unwrap();
+        assert_eq!(decoded, bytes.len() as u64);
+        assert_eq!(stored, sink.len() as u64);
+        assert_eq!(sink, fs::read(&path).unwrap());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Passive, uncompressed, no-debug-scaffolding recorder test loop.
+Passive, no-debug-scaffolding recorder test loop.
 
 By default, attaches the production recorder to one already-running speed-5
 campaign and never drives that user-owned client. An explicitly opted-in,
@@ -9,9 +9,13 @@ window. From recorder attach through authenticated teardown, every mode is
 strictly read-only toward the client. A separate independent VM_READ witness
 records speed, pause, and hour progression throughout that window.
 
-Deliberately NOT included: zstd stream compression, the debug capture
-profile, sidecar logs, per-read RC counters. The point of this loop is a
-plain stream plus a plain manifest.
+The spool is stored with streaming zstd as it is captured (-StreamCompression
+none restores the old uncompressed storage for a byte-level debugging run).
+Storage is a codec: the decoded H4CR bytes, the fold, and every sealed
+artifact are identical either way.
+
+Deliberately NOT included: the debug capture profile, sidecar logs, per-read
+RC counters. The point of this loop is a plain stream plus a plain manifest.
 #>
 [CmdletBinding()]
 param(
@@ -48,6 +52,13 @@ param(
 
     [ValidateRange(1, 1)]
     [int]$SchedulerQueueCapacity = 1,
+
+    # Storage encoding for collector_stream.bin. Level 3 zstd measured 1 483
+    # MB/s on one core against this corpus (2.7 % of a core at the 39.55 MB/s
+    # max-speed input rate) for a 23.7x storage saving; 'none' is for runs that
+    # need the raw H4CR bytes readable straight off disk.
+    [ValidateSet('zstd', 'none')]
+    [string]$StreamCompression = 'zstd',
 
     # Seconds to wait for the loaded campaign to expose stable world singletons.
     [ValidateRange(30, 1800)]
@@ -2139,7 +2150,7 @@ if ($null -ne [Environment]::GetEnvironmentVariable(
 $gradedWindowStarted = $true
 Write-Host "phase=graded_window_start policy=zero_client_writes speed=$Speed pid=$gamePid"
 
-# --- Phase 3: raw uncompressed capture --------------------------------------
+# --- Phase 3: raw H4CR capture --------------------------------------
 $sessionId = [guid]::NewGuid().ToString('D').ToLowerInvariant()
 $captureId = "headless-raw-capture-$stamp"
 $durationArg = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.###}', $DurationSeconds)
@@ -2151,7 +2162,7 @@ $recorderArgs = @(
     '--sample-ms', "$SampleMilliseconds",
     '--min-game-hours', "$MinGameHours",
     '--stream-format', 'compact',
-    '--stream-compression', 'none',
+    '--stream-compression', $StreamCompression,
     '--compact-country-frame',
     '--read-only-scheduler',
     '--read-only-scheduler-poll-ms', "$SchedulerPollMilliseconds",

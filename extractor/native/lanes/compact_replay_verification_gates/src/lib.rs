@@ -4297,6 +4297,11 @@ fn read_stream_artifact(
         "zstd" => compact_stream::StreamCompression::Zstd,
         other => return Err(format!("unsupported manifest stream compression {other:?}")),
     };
+    // This gate re-derives the stream identity from byte zero. A spool whose
+    // storage prefix was released after the checkpoint cache took ownership of
+    // it can no longer answer that, and its zeroed prefix must not be scanned
+    // as content.
+    recorder_host::spool_trim::require_whole_spool(path, "compact replay verification gate")?;
     let detected = compact_stream::detect(path).map_err(|err| {
         format!(
             "detect compact stream storage {} failed: {err}",

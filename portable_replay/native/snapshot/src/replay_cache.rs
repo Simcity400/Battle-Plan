@@ -52,6 +52,20 @@ pub const HOUR_INDEX_ROLE: &str = "replay_decoder_hour_index";
 pub const CHECKPOINT_CACHE_ROLE: &str = "replay_decoder_checkpoint_cache";
 pub const HOUR_INDEX_FILE: &str = "replay_decoder/hour_index.h4ix";
 pub const CHECKPOINT_CACHE_FILE: &str = "replay_decoder/checkpoints.h4cp";
+/// Certifier-produced receipt for how far the fold's PUBLISHED hours reach.
+///
+/// A sibling of the two artifacts above because it answers a question neither
+/// can. The hour index stretches its LAST hour's `h4cr_end_offset` to the
+/// decoded length so a seek can replay that hour, so "the index covers byte N"
+/// is not the same claim as "the cache holds an hour built from byte N". On a
+/// stream ending in a terminal `FRAME_REFUSED` the two disagree by exactly the
+/// refused hour, whose bytes reached no published hour at all.
+///
+/// The receipt is bound to the decoded source identity and to both artifact
+/// digests, so a consumer verifies it instead of being told it. Anything that
+/// deletes source bytes because the cache holds them must read this.
+pub const PUBLISHED_COVERAGE_FILE: &str = "replay_decoder/published_coverage.json";
+pub const PUBLISHED_COVERAGE_SCHEMA: &str = "battle-plan-published-coverage-v1";
 pub const DEFAULT_CHECKPOINT_INTERVAL_HOURS: u32 = 168;
 pub const MAX_CHECKPOINT_INTERVAL_HOURS: u32 = 24 * 31;
 

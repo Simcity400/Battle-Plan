@@ -1837,6 +1837,482 @@ fn certified_binary_artifacts_reconstruct_every_hour_and_bound_all_seeks() {
     );
 }
 
+/// A terminal `FRAME_REFUSED`'s bytes are in NO cache hour, so a spool trim
+/// must not release them.
+///
+/// This is the defect this test was written for. `close_refused_hour` closes a
+/// refused hour without publishing a `WorldHour`, so the refused tail reaches
+/// the cache nowhere -- but `build_certified_replay_artifacts` stretches the
+/// LAST PUBLISHED hour's `h4cr_end_offset` to the decoded length so a seek can
+/// still replay it. Reading that stretched end offset as "the cache holds
+/// these bytes" let the trim deallocate storage whose only copy was the
+/// refused hour, breaking "every captured hour is either durably in the cache
+/// or still present in the spool" for exactly the hours the engine refused.
+///
+/// The fixture is the shape the reviewer named: one accepted hour, then a
+/// terminal refusal whose bytes CROSS a storage-frame boundary, so a release
+/// bounded by the false watermark would really deallocate them rather than
+/// merely mis-state the watermark. Production frames are 256 MiB; the frame
+/// size is a parameter and a 256 MiB fixture would buy nothing but minutes, so
+/// the boundary is placed inside the refused span with a small frame instead --
+/// the code path taken is identical.
+///
+/// Production change that would make this fail: reverting
+/// `durable_decoded_end_offset` to `expected_source_len`, or dropping the
+/// `min` in `verify_durable_receipt`.
+#[test]
+fn a_terminal_frame_refusal_keeps_its_bytes_in_the_spool() {
+    let dir = TmpDir::new("terminal_refusal_trim");
+
+    // One accepted hour, then a long refused hour: enough DOMAIN_DATA to push
+    // the refusal well past a storage-frame boundary.
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_for(HOUR_A),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_for(HOUR_A),
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    let accepted_hour_end = stream.len() as u64;
+
+    let mut sequence = 3u64;
+    for _ in 0..64 {
+        push_record(
+            &mut stream,
+            sequence,
+            raw_for(HOUR_A + 1),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER"), (48, "FRA")]),
+        );
+        sequence += 1;
+    }
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: raw_for(HOUR_A + 1),
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id: 64,
+            status_flags: 0x0000_0100,
+            non_tolerated_flags: 0x0000_0100,
+            reason: "d64_rejected_timed_effect_frames=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("canonical refusal fixture");
+    push_record(
+        &mut stream,
+        sequence,
+        raw_for(HOUR_A + 1),
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal,
+    );
+    let decoded_len = stream.len() as u64;
+    assert!(
+        decoded_len > accepted_hour_end,
+        "the refused hour must contribute bytes"
+    );
+
+    // A frame size that puts at least one boundary strictly inside the refused
+    // span, so the false watermark would have released refused bytes.
+    let frame_bytes = accepted_hour_end + (decoded_len - accepted_hour_end) / 2;
+    let spool = dir.0.join("collector_stream.bin");
+    let mut writer = compact_stream::StreamWriter::create_with_frames(
+        &spool,
+        compact_stream::StreamCompression::Zstd,
+        Some(frame_bytes),
+    )
+    .unwrap();
+    writer.write_all(&stream).unwrap();
+    let write_receipt = writer.finish().unwrap();
+    let crossing = write_receipt
+        .frame_boundaries
+        .iter()
+        .find(|boundary| {
+            boundary.decoded_offset > accepted_hour_end && boundary.decoded_offset < decoded_len
+        })
+        .copied()
+        .expect("a storage frame must close inside the refused hour");
+
+    // The real fold, over the real stream.
+    let artifact_root = dir.0.join("artifacts");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+    let artifacts = build_certified_replay_artifacts(
+        &spool,
+        &artifact_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        decoded_len,
+        &source_sha256,
+        168,
+    )
+    .expect("a stream ending on a canonical refusal still certifies");
+
+    // The refusal published no hour, and the index stretched the accepted
+    // hour to EOF -- which is exactly the trap.
+    assert_eq!(artifacts.hour_count, 1);
+    assert_eq!(
+        artifacts.durable_decoded_end_offset, accepted_hour_end,
+        "published coverage must stop at the accepted hour, not at EOF"
+    );
+    assert!(
+        artifacts.durable_decoded_end_offset < decoded_len,
+        "the fixture must actually exercise the gap"
+    );
+
+    let receipt = recorder_host::spool_trim::DurableHourReceipt {
+        checkpoint_cache_path: artifacts.checkpoint_cache_path.clone(),
+        hour_index_path: artifacts.hour_index_path.clone(),
+        decoded_len,
+        decoded_sha256: source_sha256.clone(),
+        // Both halves, produced by the real fold above - nothing in this test
+        // gets to name the coverage.
+        published_coverage_path: artifacts.published_coverage_path.clone(),
+        fold_covered_decoded_end: artifacts.durable_decoded_end_offset,
+    };
+
+    // The index's ceiling really is EOF: without the minimum, the boundary
+    // inside the refused hour would have been selected and released.
+    let verified = recorder_host::spool_trim::verify_durable_receipt(&receipt).unwrap();
+    assert_eq!(verified.indexed_decoded_end_offset, decoded_len);
+    assert_eq!(verified.durable_decoded_end_offset, accepted_hour_end);
+    let frames = recorder_host::spool_trim::SpoolFrames::from_receipt(&write_receipt);
+    assert_eq!(
+        frames
+            .releasable_boundary(verified.indexed_decoded_end_offset)
+            .map(|boundary| boundary.decoded_offset),
+        Some(crossing.decoded_offset),
+        "the pre-fix watermark would have chosen the boundary inside the refused hour"
+    );
+
+    let outcome =
+        recorder_host::spool_trim::trim_spool_prefix(&spool, &frames, &receipt).unwrap();
+    match &outcome {
+        recorder_host::spool_trim::TrimOutcome::NothingReleasable { reason } => {
+            // No frame boundary falls at or below the accepted hour's end, so
+            // nothing is releasable at all. That is the correct answer.
+            assert!(reason.contains("no storage frame boundary"), "{reason}");
+        }
+        recorder_host::spool_trim::TrimOutcome::Released { journal, .. } => {
+            assert!(
+                journal.live_decoded_offset <= accepted_hour_end,
+                "released decoded bytes {} reach into the refused hour that starts at {}",
+                journal.live_decoded_offset,
+                accepted_hour_end
+            );
+        }
+    }
+
+    // Whatever was released, every refused byte is still readable from the
+    // spool -- the recording was not lost.
+    let (offset, compression) = match &outcome {
+        recorder_host::spool_trim::TrimOutcome::Released { journal, .. } => {
+            journal.live_region().unwrap()
+        }
+        _ => (0, compact_stream::StreamCompression::Zstd),
+    };
+    let mut surviving = Vec::new();
+    compact_stream::open_with_compression_at(&spool, compression, offset)
+        .unwrap()
+        .read_to_end(&mut surviving)
+        .unwrap();
+    let surviving_start = match &outcome {
+        recorder_host::spool_trim::TrimOutcome::Released { journal, .. } => {
+            journal.live_decoded_offset as usize
+        }
+        _ => 0,
+    };
+    assert_eq!(surviving, stream[surviving_start..]);
+    assert!(
+        surviving_start <= accepted_hour_end as usize,
+        "the refused hour's bytes must all survive"
+    );
+    assert!(
+        surviving.ends_with(&stream[accepted_hour_end as usize..]),
+        "the whole refused span must still be in the spool"
+    );
+}
+
+/// The other stream shapes that put bytes in the index but in no cache hour.
+///
+/// The terminal-refusal test above covers the case the review found. These are
+/// the neighbours, checked so the fix is not just right for the one shape that
+/// was reported:
+///
+/// * a MID-STREAM refusal is NOT one of them. `close_refused_hour`
+///   deliberately does not advance `cur_hour_start`, so a refused hour's bytes
+///   land inside the NEXT published hour's range and really are in the cache.
+///   Coverage must therefore reach the decoded end.
+/// * several accepted hours followed by a terminal refusal: coverage stops at
+///   the last accepted hour, wherever that is.
+/// * an hour left OPEN at EOF (no closing `FRAME_END`) behaves like a terminal
+///   refusal: nothing published for it, so coverage stops short.
+#[test]
+fn published_coverage_is_conservative_for_every_unpublished_tail() {
+    // Mid-stream refusal, then a normal closing hour: the refused bytes belong
+    // to the hour that follows them, so coverage reaches EOF.
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: raw_for(HOUR_B),
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id: 64,
+            status_flags: 0x0000_0100,
+            non_tolerated_flags: 0x0000_0100,
+            reason: "d64_rejected_timed_effect_frames=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("canonical refusal fixture");
+
+    let mut mid = Vec::new();
+    let mut sequence = 1u64;
+    let mut push_hour = |bytes: &mut Vec<u8>, hour: i64, sequence: &mut u64| {
+        push_record(
+            bytes,
+            *sequence,
+            raw_for(hour),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        *sequence += 1;
+        push_record(
+            bytes,
+            *sequence,
+            raw_for(hour),
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        *sequence += 1;
+    };
+    push_hour(&mut mid, HOUR_A, &mut sequence);
+    push_record(
+        &mut mid,
+        sequence,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    sequence += 1;
+    push_record(
+        &mut mid,
+        sequence,
+        raw_for(HOUR_B),
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal,
+    );
+    sequence += 1;
+    push_hour(&mut mid, HOUR_C, &mut sequence);
+
+    let mut cursor = open_reader(Cursor::new(mid.clone()), mid.len() as u64, "fold_check");
+    assert_eq!(cursor.by_ref().count(), 2);
+    assert_eq!(
+        cursor.published_hour_coverage_end(),
+        mid.len() as u64,
+        "a mid-stream refusal's bytes are inside the next published hour, so \
+         coverage must still reach the decoded end"
+    );
+
+    // An hour left open at EOF: the trailing DOMAIN_DATA closed nothing, so
+    // coverage stops at the last hour that did close.
+    let mut open_tail = Vec::new();
+    let mut sequence = 1u64;
+    push_hour(&mut open_tail, HOUR_A, &mut sequence);
+    let closed_end = open_tail.len() as u64;
+    push_record(
+        &mut open_tail,
+        sequence,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+
+    let mut cursor = open_reader(
+        Cursor::new(open_tail.clone()),
+        open_tail.len() as u64,
+        "fold_check",
+    );
+    let _ = cursor.by_ref().count();
+    assert_eq!(
+        cursor.published_hour_coverage_end(),
+        closed_end,
+        "an hour left open at EOF published nothing, so its bytes are not covered"
+    );
+    assert!(cursor.published_hour_coverage_end() < open_tail.len() as u64);
+}
+
+/// The sealed artifacts must not know how the spool was stored.
+///
+/// This is the byte-identity proof for inline spool compression: the same
+/// decoded H4CR bytes, folded once from a raw spool and once from a zstd spool
+/// (including a frame-rotated one), must produce `checkpoints.h4cp` and
+/// `hour_index.h4ix` that are equal byte-for-byte — not merely equivalent.
+#[test]
+fn certified_artifacts_are_byte_identical_across_raw_and_compressed_storage() {
+    let dir = TmpDir::new("storage_byte_identity");
+    let stream = three_hour_stream();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+
+    let raw_path = dir.0.join("raw_stream.bin");
+    std::fs::write(&raw_path, &stream).unwrap();
+
+    let zstd_path = dir.0.join("zstd_stream.bin");
+    compact_stream::encode_file(
+        &raw_path,
+        &zstd_path,
+        compact_stream::StreamCompression::Zstd,
+    )
+    .unwrap();
+
+    // A frame-rotated spool: the layout an eight-hour capture actually
+    // produces, where the storage file is a concatenation of independently
+    // decodable frames so its prefix can later be released.
+    let framed_path = dir.0.join("framed_stream.bin");
+    let mut framed_writer = compact_stream::StreamWriter::create_with_frames(
+        &framed_path,
+        compact_stream::StreamCompression::Zstd,
+        Some(64),
+    )
+    .unwrap();
+    framed_writer.write_all(&stream).unwrap();
+    let framed_receipt = framed_writer.finish().unwrap();
+    assert!(
+        framed_receipt.frame_boundaries.len() > 2,
+        "the framed arm must actually rotate: {:?}",
+        framed_receipt.frame_boundaries
+    );
+
+    let mut digests = Vec::new();
+    for (label, source) in [
+        ("raw", &raw_path),
+        ("zstd", &zstd_path),
+        ("zstd_framed", &framed_path),
+    ] {
+        let artifact_root = dir.0.join(format!("spill_{label}"));
+        std::fs::create_dir(&artifact_root).unwrap();
+        let artifacts = build_certified_replay_artifacts(
+            source,
+            &artifact_root,
+            "fold_check",
+            StreamIdentityMode::Legacy,
+            stream.len() as u64,
+            &source_sha256,
+            2,
+        )
+        .unwrap_or_else(|error| panic!("{label} storage failed certification: {error}"));
+        assert_eq!(artifacts.source_len, stream.len() as u64);
+        assert_eq!(artifacts.source_sha256, source_sha256);
+        digests.push((
+            label,
+            std::fs::read(&artifacts.checkpoint_cache_path).unwrap(),
+            std::fs::read(&artifacts.hour_index_path).unwrap(),
+            artifacts.checkpoint_cache_sha256.clone(),
+            artifacts.hour_index_sha256.clone(),
+        ));
+    }
+
+    let (_, base_cache, base_index, base_cache_sha, base_index_sha) = digests[0].clone();
+    for (label, cache, index, cache_sha, index_sha) in digests.iter().skip(1) {
+        assert_eq!(
+            cache, &base_cache,
+            "{label} spool produced different checkpoints.h4cp bytes"
+        );
+        assert_eq!(
+            index, &base_index,
+            "{label} spool produced different hour_index.h4ix bytes"
+        );
+        assert_eq!(cache_sha, &base_cache_sha);
+        assert_eq!(index_sha, &base_index_sha);
+    }
+    eprintln!(
+        "storage_byte_identity checkpoints_sha256={base_cache_sha} hour_index_sha256={base_index_sha}"
+    );
+}
+
+/// A compressed spool whose decoded content does not match the receipt is
+/// still refused — relaxing the stored-length check must not relax identity.
+#[test]
+fn compressed_storage_still_enforces_the_decoded_receipt() {
+    let dir = TmpDir::new("storage_receipt");
+    let stream = three_hour_stream();
+    let raw_path = dir.0.join("raw_stream.bin");
+    std::fs::write(&raw_path, &stream).unwrap();
+    let zstd_path = dir.0.join("zstd_stream.bin");
+    compact_stream::encode_file(
+        &raw_path,
+        &zstd_path,
+        compact_stream::StreamCompression::Zstd,
+    )
+    .unwrap();
+
+    let artifact_root = dir.0.join("spill_wrong_sha");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let wrong_sha = "0".repeat(64);
+    let error = build_certified_replay_artifacts(
+        &zstd_path,
+        &artifact_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &wrong_sha,
+        2,
+    )
+    .expect_err("a compressed source must still be bound to its decoded sha256");
+    assert!(
+        error.to_string().contains("certified H4CR identity"),
+        "unexpected error: {error}"
+    );
+
+    let artifact_root = dir.0.join("spill_wrong_len");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let error = build_certified_replay_artifacts(
+        &zstd_path,
+        &artifact_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64 + 1,
+        &to_hex(&Sha256::digest(&stream)),
+        2,
+    )
+    .expect_err("a compressed source must still be bound to its decoded length");
+    // A length that overshoots is caught by the certification of the fold's own
+    // index (the declared total is never reached), before the identity join.
+    assert!(
+        error.to_string().contains("certified H4CR identity")
+            || error.to_string().contains("not certifiable"),
+        "unexpected error: {error}"
+    );
+
+    let artifact_root = dir.0.join("spill_empty");
+    std::fs::create_dir(&artifact_root).unwrap();
+    let empty_path = dir.0.join("empty.zst");
+    std::fs::write(&empty_path, compact_stream::ZSTD_FRAME_MAGIC).unwrap();
+    let error = build_certified_replay_artifacts(
+        &empty_path,
+        &artifact_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &to_hex(&Sha256::digest(&stream)),
+        2,
+    )
+    .expect_err("a truncated compressed source must not certify");
+    eprintln!("truncated compressed source rejected: {error}");
+}
+
 #[test]
 fn portable_decoder_contract_drives_the_same_certified_world_fold() {
     let request =

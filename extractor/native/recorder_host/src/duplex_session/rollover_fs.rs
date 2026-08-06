@@ -1311,7 +1311,7 @@ fn hash_file(path: &Path) -> Result<[u8; 32], String> {
     Ok(digest.finalize().into())
 }
 
-fn sync_directory(path: &Path) -> Result<(), String> {
+pub fn sync_directory(path: &Path) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         File::open(path).and_then(|file| file.sync_all())

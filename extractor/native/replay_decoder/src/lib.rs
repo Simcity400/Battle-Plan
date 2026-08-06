@@ -112,6 +112,7 @@ const CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v2";
 /// Manifest role of the compact stream inside a `.battleplan` container.
 pub const STREAM_ROLE: &str = "collector_compact_stream";
 
+
 /// Default fold game id for a raw stream that carries no container manifest.
 /// (Containers use their manifest `game_id` unless [`OpenOptions::game_id`]
 /// overrides it.) It participates in the folded snapshot's `game_id` field and
@@ -822,6 +823,13 @@ impl Source {
         match self {
             Source::StreamFile(path) => {
                 let canonical_path = fs::canonicalize(path)?;
+                // Every file-based decoder consumer arrives here, so this is
+                // where a spool whose storage prefix was released is refused.
+                // Its leading bytes are zeros, which no H4CR record and no zstd
+                // frame can be; saying so beats letting each consumer discover
+                // it as an unexplained framing error.
+                recorder_host::spool_trim::require_whole_spool(&canonical_path, "replay decoder")
+                    .map_err(OpenError::Certification)?;
                 let file = compact_stream::open(&canonical_path)?;
                 let compressed = file.compression() == compact_stream::StreamCompression::Zstd;
                 let total_len = if compressed { 0 } else { file.encoded_len() };
@@ -1100,6 +1108,24 @@ pub struct CertifiedReplayArtifacts {
     /// could be joined, so every binary-persistence capture published without
     /// that check.
     pub campaign_identity_manifest: Option<serde_json::Value>,
+    /// Decoded offset through which the fold actually PUBLISHED hours into the
+    /// cache.
+    ///
+    /// Normally the decoded length. It is SHORTER whenever the stream ended
+    /// with bytes that reached no published hour -- a terminal `FRAME_REFUSED`
+    /// is the real case, a trailing `FRAME_END` that closed nothing is the
+    /// other. The certified index still stretches the last hour's
+    /// `h4cr_end_offset` to the decoded length, because a seek must be able to
+    /// replay that hour; this field is the separate, honest answer to the
+    /// different question "how far does the cache's own coverage reach".
+    ///
+    /// Anything that deletes source bytes on the strength of the cache holding
+    /// them must bound itself by THIS, not by the index's last end offset --
+    /// and must read it from `published_coverage_path`, not from here, because
+    /// this struct is an in-memory claim by whoever is asking.
+    pub durable_decoded_end_offset: u64,
+    /// On-disk, verifiable form of `durable_decoded_end_offset`.
+    pub published_coverage_path: PathBuf,
 }
 
 /// Concrete encoder type the finalize pipeline's consumer owns and hands back.
@@ -1204,8 +1230,14 @@ fn emit_cache_hour(
         .map_err(|error| OpenError::Certification(error.to_string()))
 }
 
-/// Fold a complete raw H4CR source once and build the certified production
-/// hour index/checkpoint cache. No per-hour JSON file is written.
+/// Fold a complete H4CR source once and build the certified production hour
+/// index/checkpoint cache. No per-hour JSON file is written.
+///
+/// `expected_source_len`/`expected_source_sha256` always describe the DECODED
+/// canonical H4CR bytes, never the storage encoding. Compression is a storage
+/// codec: a raw and a zstd spool carrying the same decoded bytes produce
+/// byte-identical `hour_index.h4ix` and `checkpoints.h4cp`, because every
+/// offset this function records is a decoded offset.
 ///
 /// The output directory must already exist and be empty. Artifacts are written
 /// with `create_new`, flushed, and synced. They remain caller-owned after this
@@ -1237,14 +1269,35 @@ pub fn build_certified_replay_artifacts(
         ));
     }
     let source_meta = fs::symlink_metadata(&raw_h4cr_path)?;
-    if !source_meta.file_type().is_file()
-        || source_meta.file_type().is_symlink()
-        || source_meta.len() != expected_source_len
-    {
+    if !source_meta.file_type().is_file() || source_meta.file_type().is_symlink() {
         return Err(OpenError::Certification(format!(
-            "raw H4CR source metadata disagrees with its receipt: {}",
+            "H4CR source is not a regular file: {}",
             raw_h4cr_path.display()
         )));
+    }
+    recorder_host::spool_trim::require_whole_spool(&raw_h4cr_path, "certified artifact build")
+        .map_err(OpenError::Certification)?;
+    let source_compression = compact_stream::detect(&raw_h4cr_path)?;
+    match source_compression {
+        // Raw storage: the file length IS the decoded length, so the cheap
+        // pre-read metadata check stays exactly as strict as it always was.
+        compact_stream::StreamCompression::None if source_meta.len() != expected_source_len => {
+            return Err(OpenError::Certification(format!(
+                "raw H4CR source metadata disagrees with its receipt: {}",
+                raw_h4cr_path.display()
+            )));
+        }
+        // Compressed storage: the file length is the STORED length and carries
+        // no information about the decoded receipt. Decoded length and SHA-256
+        // are still both enforced below, against the index the fold itself
+        // built while reading, so nothing is taken on trust here.
+        compact_stream::StreamCompression::Zstd if source_meta.len() == 0 => {
+            return Err(OpenError::Certification(format!(
+                "compressed H4CR source is empty: {}",
+                raw_h4cr_path.display()
+            )));
+        }
+        _ => {}
     }
     let game_id = game_id.into();
     if game_id.trim().is_empty() {
@@ -1269,11 +1322,12 @@ pub fn build_certified_replay_artifacts(
     )
     .map_err(|error| OpenError::Certification(error.to_string()))?;
 
-    let source_file = fs::File::open(&raw_h4cr_path)?;
-    let mut cursor = HourCursor::from_reader_with_source(
+    let source_file = compact_stream::open_with_compression(&raw_h4cr_path, source_compression)?;
+    let mut cursor = HourCursor::from_reader_compressed_with_source(
         Box::new(source_file),
         expected_source_len,
         game_id.clone(),
+        source_compression == compact_stream::StreamCompression::Zstd,
         identity_mode,
         Some(IndexSourceDescriptor {
             kind: "stream_file".to_string(),
@@ -1374,6 +1428,9 @@ pub fn build_certified_replay_artifacts(
                     &recorder_host::campaign_identity::resolve_validated_cid1(identity),
                 )
             });
+            // Read before `take_index` consumes the cursor, for the same
+            // reason the retained CID1 is.
+            let published_hour_coverage_end = cursor.published_hour_coverage_end();
             let stream_index = cursor
                 .take_index()
                 .map_err(|error| OpenError::Certification(error.to_string()))?;
@@ -1405,7 +1462,12 @@ pub fn build_certified_replay_artifacts(
                 end_offset: expected_source_len,
                 world_json: last.snapshot,
             });
-            Ok((excluded, identity, stream_index))
+            Ok((
+                excluded,
+                identity,
+                stream_index,
+                published_hour_coverage_end,
+            ))
         });
         drop(jobs_tx);
 
@@ -1417,14 +1479,21 @@ pub fn build_certified_replay_artifacts(
         // Consumer errors win: when both fail, the producer's is usually the
         // "receiver hung up" symptom of the consumer's real failure.
         let cache_encoder = consumed?;
-        let (excluded, identity, stream_index) = producer_result?;
-        Ok::<_, OpenError>((cache_encoder, excluded, identity, stream_index))
+        let (excluded, identity, stream_index, published_hour_coverage_end) = producer_result?;
+        Ok::<_, OpenError>((
+            cache_encoder,
+            excluded,
+            identity,
+            stream_index,
+            published_hour_coverage_end,
+        ))
     });
     let (
         cache_encoder,
         excluded_domain_data_records,
         campaign_identity_manifest,
         stream_index,
+        published_hour_coverage_end,
     ) = pipeline_result?;
 
     let cache_identity_mode = match identity_mode {
@@ -1489,6 +1558,37 @@ pub fn build_certified_replay_artifacts(
         )));
     }
 
+    // Bound to the decoded source identity and to BOTH artifact digests, so a
+    // consumer can check that this coverage belongs to these artifacts and this
+    // capture before trusting it. Written with the same create_new + flush +
+    // sync discipline as the artifacts themselves.
+    let published_coverage_path = output_dir.join(snapshot::PUBLISHED_COVERAGE_FILE);
+    let published_coverage = serde_json::json!({
+        "schema": snapshot::PUBLISHED_COVERAGE_SCHEMA,
+        "source_len": expected_source_len,
+        "source_sha256": expected_source_sha256,
+        "checkpoint_cache_sha256": replay_index.cache_sha256(),
+        "hour_index_sha256": Sha256::hex(&index_bytes),
+        "hour_count": replay_index.hours().len() as u64,
+        "published_decoded_end_offset": published_hour_coverage_end,
+        "note": "published_decoded_end_offset is where the fold's PUBLISHED hours stop. \
+                 It is SHORTER than source_len whenever the stream ended in bytes that \
+                 reached no published hour - a terminal FRAME_REFUSED, or a trailing \
+                 FRAME_END that closed nothing. The hour index deliberately stretches its \
+                 last hour to source_len so a seek can replay it; that is not a statement \
+                 that the cache holds those bytes.",
+    });
+    let published_coverage_bytes = serde_json::to_vec_pretty(&published_coverage)
+        .map_err(|error| OpenError::Certification(error.to_string()))?;
+    let mut coverage_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&published_coverage_path)?;
+    coverage_file.write_all(&published_coverage_bytes)?;
+    coverage_file.flush()?;
+    coverage_file.sync_all()?;
+    drop(coverage_file);
+
     let production_render_blob_dir = output_dir.join("production_render_blobs");
     let mut production_render_blob_count = 0u64;
     let mut production_render_blob_bytes = 0u64;
@@ -1537,6 +1637,10 @@ pub fn build_certified_replay_artifacts(
         production_render_blob_bytes,
         excluded_domain_data_records,
         campaign_identity_manifest,
+        // Never `expected_source_len` by default: a stream whose tail reached
+        // no published hour must report the shorter, honest coverage.
+        durable_decoded_end_offset: published_hour_coverage_end,
+        published_coverage_path,
     })
 }
 
@@ -1757,6 +1861,8 @@ pub fn fold_raw_h4cr_file_spooled_with_identity_mode(
             raw_path.display()
         )));
     }
+    recorder_host::spool_trim::require_whole_spool(&raw_path, "spooled prefold")
+        .map_err(OpenError::Certification)?;
     let source = fs::File::open(&raw_path)?;
     fold_raw_h4cr_open_file_spooled_with_identity_mode(request, source, identity_mode)
 }
@@ -2150,6 +2256,21 @@ pub struct HourCursor {
     // --- index building (free during a normal pass) ---
     /// Decoded offset of the first record of the hour currently being assembled.
     cur_hour_start: u64,
+    /// Decoded offset one past the last hour this cursor actually PUBLISHED.
+    ///
+    /// Not the same thing as `cur_hour_start`, and the difference is the whole
+    /// point. `cur_hour_start` advances on every `FRAME_END` whether or not an
+    /// hour closed, and deliberately does NOT advance on a `FRAME_REFUSED` --
+    /// so it can sit above the last published hour's true end, with the bytes
+    /// in between belonging to no published hour. This is the conservative
+    /// value: it only ever moves when an hour was really handed to the caller,
+    /// so bytes past it are, by construction, in no cache hour.
+    ///
+    /// A terminal `FRAME_REFUSED` is exactly that case. The certified index
+    /// stretches the LAST hour's `h4cr_end_offset` to the decoded length so a
+    /// seek can still replay it, which is correct for reconstruction but must
+    /// never be read as "the cache holds these bytes".
+    published_hour_coverage_end: u64,
     index_hours: Vec<HourOffset>,
     first_hour_seen: bool,
     /// The same hour/sequence/boundary state machine used by the production
@@ -2257,6 +2378,7 @@ impl HourCursor {
             done: false,
             compressed,
             cur_hour_start: 0,
+            published_hour_coverage_end: 0,
             index_hours: Vec::new(),
             first_hour_seen: false,
             boundary_tracker: BoundaryTracker::default(),
@@ -2303,6 +2425,16 @@ impl HourCursor {
     }
 
     /// Pass totals. Meaningful during iteration; final once it returns `None`.
+    /// Decoded offset through which this cursor's PUBLISHED hours reach.
+    ///
+    /// Bytes at or after this offset were read but ended up in no published
+    /// hour -- a terminal `FRAME_REFUSED`, or a trailing `FRAME_END` that
+    /// closed nothing. They are therefore in no checkpoint-cache hour either,
+    /// whatever the certified index's last `h4cr_end_offset` says.
+    pub fn published_hour_coverage_end(&self) -> u64 {
+        self.published_hour_coverage_end
+    }
+
     pub fn stats(&self) -> &DecodeStats {
         &self.stats
     }
@@ -2739,6 +2871,7 @@ impl HourCursor {
     fn drain_finished_hours(&mut self, next_hour_start: u64) {
         let counts = std::mem::take(&mut self.cur_counts);
         let finished = self.fold.take_finished();
+        let published_any = !finished.is_empty();
         for (hour_index, date, bytes) in finished {
             let cheap = !self.first_hour_seen;
             self.first_hour_seen = true;
@@ -2758,6 +2891,12 @@ impl HourCursor {
             });
         }
         self.cur_hour_start = next_hour_start;
+        // ONLY when an hour was really published. A `FRAME_END` that closed no
+        // hour advances the assembly cursor but adds nothing to the cache, so
+        // its bytes must not be claimed as covered.
+        if published_any {
+            self.published_hour_coverage_end = next_hour_start;
+        }
     }
 }
 

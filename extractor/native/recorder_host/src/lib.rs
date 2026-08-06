@@ -18,6 +18,7 @@ pub mod production_map_content_index;
 pub mod production_vfs_winner_binding;
 pub mod runtime_dlc_roster;
 pub mod scientist_source_report;
+pub mod spool_trim;
 pub mod static_bundle_gate;
 pub mod stitching;
 pub mod stream_fold;
