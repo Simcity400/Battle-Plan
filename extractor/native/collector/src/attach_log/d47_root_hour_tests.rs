@@ -195,7 +195,13 @@ fn first_refresh_hold_stops_the_previous_hours_roots_from_publishing() {
     let mut cache = adopted_cache(roots);
     assert!(cache.roots.has_stable_roots(), "fixture must have roots");
 
-    let summary = domain47_prewarm_hold(&mut cache, true, false, true);
+    let summary = domain47_prewarm_hold(
+        &mut cache,
+        true,
+        false,
+        true,
+        Domain47PrewarmHoldReason::SweepCoverageIncomplete,
+    );
 
     assert!(summary.refresh_held_roots, "this is a refresh hold");
     assert_ne!(
