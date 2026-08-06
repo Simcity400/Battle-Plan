@@ -882,6 +882,127 @@ fn d47_cost_frame_walk() {
     );
 }
 
+/// WHAT A COPY-ONLY BRACKET WOULD HAVE TO GATHER FOR DOMAIN 47
+/// (lane DB, 2026-08-06). Derived, not modelled: the per-object WINDOW is the
+/// furthest field offset this lane actually reads out of each structure (the
+/// `domain47::extractor` offset constants), and the per-frame COUNT is t28's
+/// own wire (`sweep_span_audit --domain 47`, populated frames).
+///
+///   CCharacter        13_394 x 0xB0   =  2.248 MiB   (furthest field: unit
+///                                                     leader ptr at 0xA8)
+///   CUnitLeader        1_361 x 0xF50  =  5.088 MiB   (furthest field: the
+///                                                     char-id copy at 0xF4C)
+///   CAdvisor           8_615 x 0xA0   =  1.315 MiB
+///   CCountryLeader     1_879 x 0x10   =  0.029 MiB
+///   CUnitLeaderTrait     194 x 0x30   =  0.009 MiB
+///   ------------------------------------------------
+///   primary bodies                      8.688 MiB
+///   heap string payloads               ~1.07 MiB in ~46_900 SEPARATE buffers
+///
+/// TWO NUMBERS DECIDE THE SHAPE, and neither is the megabytes:
+///
+///  * ~75_500 DISTINCT RANGES per frame before any coalescing. These are
+///    individually heap-allocated engine objects and separately allocated
+///    string buffers; they are not adjacent and cannot be gathered as a
+///    handful of bulk copies. The 5.4M "rows" the domain publishes are
+///    repeated computation over these objects, NOT unique bytes — reading a
+///    row count as a byte count overstates the copy by an order of magnitude
+///    in one direction and understates the RANGE count in the other.
+///  * The CUnitLeader window is 3_920 bytes to reach ONE `u32` at 0xF4C, and
+///    at 1_361 leaders that single decision is 5.09 MiB — 59% of the primary
+///    bytes for a structure that is 10% of the objects. Copying the four
+///    sub-windows this lane actually reads (0x00..0x60, 0x1B8, 0xDC8..0xDD8,
+///    0xE60, 0xF4C) instead of one contiguous span is a ~16x difference on
+///    the largest single term, so a copy-only conversion must be specified in
+///    sub-windows or it will be dominated by bytes nothing reads.
+///
+/// This census is a bound on the COPY. It says nothing about the pointer
+/// chasing needed to DISCOVER those addresses (party -> leader -> character,
+/// character -> unit leader, leader -> trait vector, skill-source), which is
+/// graph walking and stays in-bracket.
+///
+/// SPLIT DOMAIN 47'S SCHEDULED READ INTO OBSERVATION AND COMPUTE
+/// (lane DB, 2026-08-06).
+///
+/// WHY THIS SPLIT AND NO OTHER. Under the copy-only bracket rule a clock
+/// bracket may hold engine OBSERVATIONS and nothing else: everything that only
+/// touches bytes this process already owns belongs after the bracket closes.
+/// `read_native_scheduled_frame` (scheduled.rs) runs three phases back to back
+/// inside the ONE `ReaderClockBracketGuard` that `spawn_gated` opens around the
+/// whole worker, and only the first of them names an engine address:
+///
+///  1. `build_lane_frame_from_adapter_input_ref` — the only phase that reads
+///     the game's memory.
+///  2. `encode_frame_payload` — serialises the frame phase 1 just built.
+///  3. `compact::decode_payload` — re-parses those same bytes to derive the
+///     record's row and unit counts, its status/schema flags and its parse
+///     errors.
+///
+/// Phases 2 and 3 cannot observe a torn read, cannot straddle an hour, and
+/// cannot be misattributed, because they never touch the engine. Every
+/// microsecond they cost is a microsecond the bracket is held open for no
+/// observation, and it is exactly the quantity the copy-only conversion would
+/// move out. This measures it rather than asserting it.
+///
+/// WHAT THIS IS NOT — three separate reasons, all of which inflate the
+/// compute share rather than the observation share, so the printed percentage
+/// is an UPPER bound on the live one and never a measurement of it:
+///
+///  * The absolute microseconds are this fixture's, on this machine, over a
+///    CONTIGUOUS arena. The live heap is scattered and phase 1's cost there is
+///    several times higher (see the module header), while phases 2 and 3 touch
+///    only our own freshly written, cache-warm bytes and do not grow.
+///  * The three phases are not timed as production runs them (Codex review
+///    019fd6bf-a0af-7ca2-a974-880b6832bba6, OPEN 1). Each timed body also
+///    DROPS what it built — phase 1 destroys the whole owned frame, phase 2
+///    destroys a payload production hands onward — and `time_us` bumps the
+///    page-cache epoch once per iteration where production bumps it once per
+///    frame, outside this worker. So `total` is the sum of three
+///    separately-timed bodies, not a reconstruction of one bracket.
+///  * Consequently the RATIO between phases within a single run is the durable
+///    reading (it survives a machine that is busy, which this one usually is);
+///    the absolute numbers are not comparable across runs.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_read_bracket_observation_vs_compute() {
+    let world = bench_world();
+    let mem = Domain47InProcessMemory;
+
+    let (walk_us, walk_sink) = time_us_median(5, || frame_walk_with(&world, &mem));
+
+    // Phase 1's output, built once and reused, so phases 2 and 3 are timed
+    // over the SAME frame the live read would encode rather than over a
+    // fixture of their own.
+    let frame = build_bench_frame(&world, &mem).frame;
+    let (encode_us, _encode_sink) = time_us_median(5, || {
+        domain47::extractor::encode_frame_payload(&frame).len()
+    });
+    let payload = domain47::extractor::encode_frame_payload(&frame);
+    let (decode_us, decode_sink) = time_us_median(5, || {
+        domain47::domain47_characters_leaders_cabinet_live::decode_payload(0, &payload)
+            .row_count_total as usize
+    });
+
+    // A decode that parsed no row would make phase 3 look free for the wrong
+    // reason, and would mean phases 1 and 2 had produced an empty frame.
+    // Deliberately NOT asserted on the payload's length: a ROWLESS domain-47
+    // payload still carries its fixed header, so `len() > 0` holds for a
+    // frame that observed nothing and would pass here vacuously (Codex review
+    // 019fd6bf-a0af-7ca2-a974-880b6832bba6, cosmetic). The decoded row count
+    // is the only one of the two that can distinguish them.
+    assert!(decode_sink > 0, "phase 3 decoded no rows");
+
+    let total = walk_us + encode_us + decode_us;
+    println!(
+        "d47_cost read_bracket: observe(walk) {walk_us:.1} us | compute(encode) {encode_us:.1} us \
+         | compute(decode gate) {decode_us:.1} us | total {total:.1} us -- compute is {:.1}% of \
+         the bracket on this fixture ({} payload bytes, {decode_sink} rows decoded, \
+         walk sink={walk_sink})",
+        (encode_us + decode_us) / total * 100.0,
+        payload.len(),
+    );
+}
+
 /// The two read paths must not merely cost differently — they must produce
 /// the SAME frame. Same fixture, same roots, both memories, byte-for-byte
 /// equal `LaneFrame` and equal build stats.

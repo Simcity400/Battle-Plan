@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 #[cfg(not(test))]
 use compact_contract::{parse_compact_record_header, RecordFramingError};
@@ -54,6 +55,12 @@ const COUNTRY_LEADER_ROLE_ROW_LEN: u8 = 20;
 const ACTIVE_RULER_ROW_LEN: u8 = 28;
 const ADVISOR_ROW_LEN: u8 = 24;
 const CHARACTER_PORTRAIT_ROW_LEN: u8 = 24;
+/// The widest row `encode_payload` can emit, used ONLY to size the row buffer
+/// up front. Asserted against every row-length constant by
+/// `max_row_len_covers_every_row_kind`, so adding a wider row kind without
+/// updating this is a test failure rather than a silent re-introduction of the
+/// reallocation it exists to avoid.
+const MAX_ROW_LEN: u8 = UNIT_LEADER_ROW_LEN;
 const ADVISOR_CABINET_BUCKETS: &[&[u8]] = &[
     b"political_advisor",
     b"army_chief",
@@ -240,10 +247,43 @@ pub enum DecodedDomain47Row {
     },
 }
 
+/// Interning side table for the payload's string block.
+///
+/// `values` IS the encoded block: `encode_into` walks it in order and the ids
+/// handed back are indices into it, so its contents and its order are wire
+/// state. `by_value` is a pure lookup accelerator over the same strings and
+/// is never iterated — nothing about the emitted bytes can depend on how it
+/// is keyed or ordered.
+///
+/// WHY IT IS SHAPED LIKE THIS (lane DB, 2026-08-06). Domain 47 emits ~28k
+/// rows and ~25k distinct strings per frame, and `intern` is called on nearly
+/// every row field, so this is the encoder's whole hot loop. The offline cost
+/// bench (`d47_cost_read_bracket_observation_vs_compute`) measured
+/// `encode_frame_payload` at 6.87 ms against 1.85 ms for the engine walk it
+/// serialises — the encoder cost 3.7x as much as reading the game. Three
+/// things in the previous shape caused that, and each is fixed here WITHOUT
+/// changing a single emitted byte:
+///
+///  * The map was a `BTreeMap<String, _>`, so every lookup was O(log n) FULL
+///    STRING COMPARISONS — ~15 memcmps against a 25k-entry table, ~28k times
+///    a frame. A hash map answers the same question in one.
+///  * Every distinct string was allocated TWICE, once for `values` and once
+///    for the map key. `Rc<str>` stores it once and the map holds a second
+///    handle to the same bytes.
+///  * `is_domain47_string_value` — which DECODES the whole string as UTF-8
+///    chars — ran ahead of the lookup, so it re-validated every repeat
+///    occurrence of an already-interned string.
+///
+/// The validation move is the only one that changes WHEN work happens rather
+/// than how fast it is, so it is worth stating why it is not a relaxation: the
+/// checks are pure functions of the string's bytes, and an id is only ever
+/// returned for a value that passed them the first time it was seen. A value
+/// that would fail still fails, on its first occurrence, with the same panic —
+/// there is no input for which the old shape rejects and this one accepts.
 #[derive(Default)]
 struct StringTable {
-    values: Vec<String>,
-    by_value: BTreeMap<String, u32>,
+    values: Vec<Rc<str>>,
+    by_value: HashMap<Rc<str>, u32>,
 }
 
 impl StringTable {
@@ -251,6 +291,11 @@ impl StringTable {
         let Some(value) = value else {
             return STRING_NONE;
         };
+        // Already interned => already validated, by construction: the only
+        // path that inserts an id runs both asserts below first.
+        if let Some(id) = self.by_value.get(value) {
+            return *id;
+        }
         assert!(
             value.len() <= MAX_STRING_BYTES,
             "character lane string exceeds max length"
@@ -259,12 +304,12 @@ impl StringTable {
             is_domain47_string_value(value),
             "character lane string must be valid non-control UTF-8"
         );
-        if let Some(id) = self.by_value.get(value) {
-            return *id;
-        }
         let id = self.values.len().min(u32::MAX as usize) as u32;
-        self.values.push(value.to_string());
-        self.by_value.insert(value.to_string(), id);
+        // ONE allocation, two handles: `values` owns the encode order and the
+        // map owns the lookup, over the same bytes.
+        let shared: Rc<str> = Rc::from(value);
+        self.values.push(Rc::clone(&shared));
+        self.by_value.insert(shared, id);
         id
     }
 
@@ -304,7 +349,13 @@ pub fn encode_payload(
     rows: &[CharacterLaneRow<'_>],
 ) -> Vec<u8> {
     let mut strings = StringTable::default();
-    let mut row_bytes = Vec::new();
+    // ONE allocation for the row block instead of ~20 doubling reallocations,
+    // each of which memcpy'd everything written so far. `MAX_ROW_LEN` is the
+    // widest row this encoder can emit, so the reservation is an upper bound
+    // and the buffer is never grown again; it is transient and dropped at the
+    // end of this call. Purely an allocation decision — a capacity hint cannot
+    // change a byte of what is written into it.
+    let mut row_bytes = Vec::with_capacity(rows.len().saturating_mul(MAX_ROW_LEN as usize));
     let mut counts = RowCounts::default();
 
     for row in rows {
@@ -1583,6 +1634,102 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `MAX_ROW_LEN` sizes the row buffer up front. If a row kind is ever
+    /// wider than it, the reservation stops being an upper bound and the
+    /// buffer silently starts reallocating again — the exact cost it was
+    /// introduced to remove, with nothing observable to say so.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: widening any of the seven
+    /// EXISTING row-length constants past `MAX_ROW_LEN` without updating it.
+    ///
+    /// WHAT IT DOES NOT CATCH, stated because the list below is maintained by
+    /// hand (Codex review 019fd6bf-a0af-7ca2-a974-880b6832bba6, OPEN 2): a
+    /// NEW row kind whose constant is never added here, and a row arm that
+    /// writes more bytes than its own constant declares. Neither is a
+    /// byte-correctness defect — a capacity that is too small only makes
+    /// `Vec` reallocate, which is the cost this reservation exists to avoid,
+    /// not a wrong payload — so this is a coverage gap in a performance
+    /// guard, and it is named rather than papered over.
+    #[test]
+    fn max_row_len_covers_every_row_kind() {
+        for (name, len) in [
+            ("character", CHARACTER_ROW_LEN),
+            ("unit_leader", UNIT_LEADER_ROW_LEN),
+            ("trait", TRAIT_ROW_LEN),
+            ("country_leader_role", COUNTRY_LEADER_ROLE_ROW_LEN),
+            ("active_ruler", ACTIVE_RULER_ROW_LEN),
+            ("advisor", ADVISOR_ROW_LEN),
+            ("character_portrait", CHARACTER_PORTRAIT_ROW_LEN),
+        ] {
+            assert!(
+                len <= MAX_ROW_LEN,
+                "{name} row is {len} bytes, wider than MAX_ROW_LEN {MAX_ROW_LEN}"
+            );
+        }
+    }
+
+    /// The string table's IDs are indices into the encode-order block, so
+    /// they must follow FIRST-USE order and repeats must return the id the
+    /// first occurrence got. The lookup side is a hash map, which has no
+    /// order at all — this pins the property the emitted bytes actually
+    /// depend on, rather than the container that happens to provide it.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: handing out ids from the
+    /// lookup map's iteration order (or sorting `values`) instead of
+    /// appending to `values` — which is exactly the mistake available now
+    /// that the map is unordered, and which the previous `BTreeMap` shape
+    /// would have masked by being sorted anyway.
+    #[test]
+    fn string_ids_follow_first_use_order_and_repeats_reuse_them() {
+        let mut table = StringTable::default();
+        // Deliberately NOT in sorted order: under the old BTreeMap a test
+        // that used sorted inputs could not tell insertion order from key
+        // order.
+        assert_eq!(table.intern(Some("zulu")), 0);
+        assert_eq!(table.intern(Some("alpha")), 1);
+        assert_eq!(table.intern(Some("mike")), 2);
+        assert_eq!(table.intern(Some("alpha")), 1, "repeat must reuse its id");
+        assert_eq!(table.intern(Some("zulu")), 0, "repeat must reuse its id");
+        assert_eq!(table.intern(None), STRING_NONE);
+        assert_eq!(
+            table.values.iter().map(|v| &**v).collect::<Vec<_>>(),
+            vec!["zulu", "alpha", "mike"],
+            "the encoded block must be in first-use order"
+        );
+
+        // The block the decoder will read back, byte for byte.
+        let mut out = Vec::new();
+        table.encode_into(&mut out);
+        assert_eq!(out.len(), table.encoded_len());
+        assert_eq!(
+            out,
+            b"\x04\x00zulu\x05\x00alpha\x04\x00mike".to_vec(),
+            "the encoded string block changed"
+        );
+    }
+
+    /// The validity checks moved BEHIND the interned-value lookup, so this
+    /// pins that a bad string is still refused on its FIRST occurrence —
+    /// i.e. that the move traded no rejection away.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: dropping either assert, or
+    /// interning the value before checking it.
+    #[test]
+    #[should_panic(expected = "character lane string must be valid non-control UTF-8")]
+    fn a_control_character_is_still_refused_on_first_sight() {
+        let mut table = StringTable::default();
+        table.intern(Some("has a \u{7} bell"));
+    }
+
+    /// The same, for the length bound.
+    #[test]
+    #[should_panic(expected = "character lane string exceeds max length")]
+    fn an_overlong_string_is_still_refused_on_first_sight() {
+        let mut table = StringTable::default();
+        let overlong = "x".repeat(MAX_STRING_BYTES + 1);
+        table.intern(Some(&overlong));
+    }
 
     #[test]
     fn row_len_literals_are_stable() {
