@@ -1206,12 +1206,26 @@ fn audit_source(
             let entries = container.entries_by_role(replay_decoder::STREAM_ROLE);
             let entry = match entries.as_slice() {
                 [entry] => entry,
+                // fold_check audits the RAW WIRE RECORDS — framing, per-domain
+                // record counts, refusals — which the delta cache does not
+                // carry at all: the cache proves reconstructed-world parity,
+                // not record completeness. So this cannot degrade to a
+                // cache-only audit; it degrades to a refusal that names why.
                 [] => {
-                    return Err(format!(
-                        "{} has no entry with role {:?}",
-                        path.display(),
-                        replay_decoder::STREAM_ROLE
-                    ))
+                    return Err(match snapshot::container_raw_stream_packaging(&container) {
+                        Ok(snapshot::RawStreamPackaging::Omitted) => format!(
+                            "{}: {}",
+                            path.display(),
+                            snapshot::raw_stream_unavailable_message(
+                                "audit raw record completeness"
+                            ),
+                        ),
+                        _ => format!(
+                            "{} has no entry with role {:?}",
+                            path.display(),
+                            replay_decoder::STREAM_ROLE
+                        ),
+                    })
                 }
                 many => {
                     return Err(format!(

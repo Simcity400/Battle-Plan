@@ -95,6 +95,56 @@ Telemetry fields:
 - `fold_check hash|compare` — the G1 fold-equivalence gate (see `../fold_check`); raw and zstd stream files are transparent inputs.
 - `compact_stream compress|decompress <input> <output>` — lossless standalone utility. Use `cargo run --release -p compact_stream -- decompress ...` for header-only Python tools that expect byte zero to be `H4CR`; those tools do not automatically understand a production `collector_stream.bin`, whose byte zero is the zstd frame magic.
 
+## Recording composition (`--package-raw-stream`, DEFAULT OFF)
+
+A recording is composed of three things: the **delta cache**
+(`hour_index.h4ix` + `checkpoints.h4cp`) which is what replay consumes, the
+**raw wire stream** (`collector_raw/collector_stream.bin`, role
+`collector_compact_stream`), and fixed overhead. Projected to a full campaign
+those are 8.376 GB, 6.002 GB and 0.087 GB (`documents/DELTA_WIRE_DESIGN.md`
+§8.5).
+
+By default the recorder does **not** package the raw stream. The run-dir
+`collector_stream.bin` is still captured and is still what the certified cache
+is folded from — only the sealed container omits it, which is the ~40% cut.
+Replay is unaffected: hours reconstruct from the cache, and the cache's source
+binding (length + SHA-256) is taken from the recorder manifest's
+`stream_storage`, a container-authenticated entry. `CertifiedReplayCache::open`
+then cross-checks that identity — the length against the H4IX header, the
+SHA-256 against both the H4IX and the H4CP header — before any hour is served.
+(H4CP carries the source digest but not the source length, so the length rests
+on H4IX alone.)
+
+What a cache-only recording does **not** do, and cannot, is re-hash the source's
+own bytes: they are not in the container. The packaged composition does that via
+`Container::authenticate_entry`. So cache integrity is identical either way,
+while the claimed H4CR source identity is *attested by the recorder manifest*
+rather than *independently demonstrated from source bytes*. Use
+`--package-raw-stream` where that independent demonstration is required.
+
+The stream is optional only where the cache replaces it. A run that derives
+neither a certified cache nor per-hour snapshots (the legacy `--skip-host-fold`
+route) is refused at seal time rather than sealing a container with no
+replayable source at all.
+
+`--package-raw-stream` turns the stream back on, for verification and debugging
+runs whose consumers need the wire records themselves. It is also accepted by
+`--fold-and-repack-existing-run-dir`.
+
+Every sealed recording **states** its composition — never implies it by an
+entry's absence. `index.json`, `timeline.json` and the recorder manifest each
+carry `raw_stream_packaging`, spelled `packaged` or `omitted`; the cache-only
+spelling is accompanied by a `raw_stream_absence_reason`. Readers reject any
+other spelling, a non-string value, or a disagreement between those documents,
+and the recorder refuses to seal a container whose manifest declares a
+composition different from the one it is producing.
+
+Consumers that need the raw wire records — `fold_check`'s completeness audit,
+the raw-stream decoder seams, `replay_decoder`'s container-stream API, the
+rollover package-set binding and the compact replay verification gate — refuse a
+cache-only recording by name, quoting the reason and the flag, rather than
+reporting a bare missing entry.
+
 ## Capture profiles (`--profile production|debug`)
 
 `--profile` selects one coherent preset cluster instead of hand-assembling the

@@ -30,6 +30,7 @@ mod dir_store;
 pub mod pack;
 pub mod prefolded;
 pub mod prefolded_decoder;
+pub mod recording_composition;
 pub mod replay_cache;
 pub mod sha256;
 pub mod stream_verify;
@@ -55,6 +56,11 @@ pub use prefolded_decoder::{
     PrefoldSourceReceipt, PrefoldStreamIdentityMode, PrefoldedSpool, PrefoldedSpoolEntry,
     COMPACT_STREAM_ROLE,
 };
+pub use recording_composition::{
+    container_raw_stream_packaging, raw_stream_unavailable_message, read_raw_stream_packaging,
+    read_raw_stream_packaging_with_legacy_default, CompositionError, RawStreamPackaging,
+    RAW_STREAM_OMITTED_REASON, RAW_STREAM_PACKAGING_FIELD,
+};
 pub use replay_cache::{
     CacheBuildHour, CacheIdentityMode, CertifiedReplayCache, ReplayCacheEncoder, ReplayCacheError,
     ReplayCacheReader, ReplayHourEntry, ReplayHourIndex, ReplaySeekReceipt,
@@ -63,7 +69,9 @@ pub use replay_cache::{
 };
 pub use stream_verify::{
     verify_replay_container_streaming, verify_replay_container_streaming_file,
-    verify_replay_container_streaming_file_at_path, StreamVerifyReport,
+    verify_replay_container_streaming_file_at_path,
+    verify_replay_container_streaming_file_at_path_with_policy, StreamEntryPolicy,
+    StreamVerifyReport,
 };
 pub use strict_json::from_slice as parse_json_strict;
 

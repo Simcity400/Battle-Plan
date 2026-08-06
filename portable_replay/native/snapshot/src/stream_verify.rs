@@ -298,13 +298,55 @@ pub fn verify_replay_container_streaming_file(
     )
 }
 
+/// Whether the sealed container is required to carry the raw collector stream.
+///
+/// A recording is composed of the delta cache (what replay consumes), the raw
+/// wire stream, and fixed overhead. The raw stream is optional in the sealed
+/// container: the recorder builds the cache from the run-dir stream and then
+/// decides whether to package the stream itself. This selector is how a caller
+/// states which composition it is verifying, so an ABSENT stream is either the
+/// declared composition or a hard error — never an unnoticed gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEntryPolicy {
+    /// The stream role must be present exactly once at the canonical path.
+    Required,
+    /// The stream role may be absent. When present it is still held to the
+    /// exact same uniqueness and canonical-path rules as [`Self::Required`];
+    /// only the zero-entry case is admitted.
+    Optional,
+}
+
 /// Verify through a caller-owned handle while binding the requested stream role
 /// to an explicit game-relative payload path.
+///
+/// The raw stream is REQUIRED by this entry point. Callers that seal a
+/// cache-only recording must use
+/// [`verify_replay_container_streaming_file_at_path_with_policy`] and pass
+/// [`StreamEntryPolicy::Optional`] explicitly, so omitting the stream is always
+/// a stated decision rather than a silent absence.
 pub fn verify_replay_container_streaming_file_at_path(
+    file: &mut File,
+    game_id: &str,
+    stream_role: &str,
+    stream_payload_path: &str,
+) -> Result<StreamVerifyReport, String> {
+    verify_replay_container_streaming_file_at_path_with_policy(
+        file,
+        game_id,
+        stream_role,
+        stream_payload_path,
+        StreamEntryPolicy::Required,
+    )
+}
+
+/// Verify through a caller-owned handle, stating whether the raw collector
+/// stream is part of this recording's composition.
+pub fn verify_replay_container_streaming_file_at_path_with_policy(
     mut file: &mut File,
     game_id: &str,
     stream_role: &str,
     stream_payload_path: &str,
+    stream_policy: StreamEntryPolicy,
 ) -> Result<StreamVerifyReport, String> {
     let file_len = file
         .metadata()
@@ -423,6 +465,10 @@ pub fn verify_replay_container_streaming_file_at_path(
     stream_role_paths.sort_unstable();
     match stream_role_paths.as_slice() {
         [path] if *path == canonical_stream_path => {}
+        // A cache-only recording carries no raw stream entry. Admitted only
+        // when the caller declared that composition; a Required verification
+        // still falls through to the exact same error as before.
+        [] if stream_policy == StreamEntryPolicy::Optional => {}
         [path] => {
             return Err(format!(
                 "stream role {stream_role:?} must occur at canonical path {canonical_stream_path:?}, found {path:?}"
@@ -502,7 +548,7 @@ pub fn verify_replay_container_streaming_file_at_path(
             report.stream_entry_bytes = uncomp;
         }
     }
-    if report.stream_entry_sha256.is_none() {
+    if report.stream_entry_sha256.is_none() && stream_policy == StreamEntryPolicy::Required {
         return Err(format!(
             "canonical stream entry {canonical_stream_path:?} was not verified"
         ));

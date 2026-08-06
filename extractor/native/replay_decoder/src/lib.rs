@@ -1904,11 +1904,23 @@ fn extract_container_stream(path: &Path) -> Result<(Vec<u8>, String), OpenError>
     let game_id = container.game_id().to_string();
     let entries = container.entries_by_role(STREAM_ROLE);
     let bytes = match entries.len() {
+        // This API exists to decode the raw stream, so a cache-only recording
+        // is out of its reach by construction. Callers that only need the world
+        // go through the replay-cache API instead; this says so by name.
         0 => {
-            return Err(OpenError::Container(format!(
-                "{} has no entry with role {STREAM_ROLE:?}",
-                path.display()
-            )))
+            return Err(OpenError::Container(
+                match snapshot::container_raw_stream_packaging(&container) {
+                    Ok(snapshot::RawStreamPackaging::Omitted) => format!(
+                        "{}: {}",
+                        path.display(),
+                        snapshot::raw_stream_unavailable_message("decode the raw H4CR stream"),
+                    ),
+                    _ => format!(
+                        "{} has no entry with role {STREAM_ROLE:?}",
+                        path.display()
+                    ),
+                },
+            ))
         }
         1 => {
             let expected_prefix = format!("payload/{game_id}/");

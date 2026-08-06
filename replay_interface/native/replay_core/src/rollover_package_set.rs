@@ -564,6 +564,23 @@ fn validate_selected_container(
     }
     let compact = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
     if compact.len() != 1 {
+        // The package-set admission proves the selected member carries the
+        // exact raw stream the set descriptor recorded. That proof is over the
+        // stream's own bytes, so it is gated on the composition rather than
+        // weakened: a cache-only member is refused here with the reason named.
+        if compact.is_empty()
+            && matches!(
+                snapshot::container_raw_stream_packaging(&container),
+                Ok(snapshot::RawStreamPackaging::Omitted)
+            )
+        {
+            return Err(format!(
+                "selected replay package {}",
+                snapshot::raw_stream_unavailable_message(
+                    "re-prove the package-set raw-stream binding from the packaged member"
+                ),
+            ));
+        }
         return Err(format!(
             "selected replay package must contain exactly one {:?} entry; found {}",
             snapshot::COMPACT_STREAM_ROLE,

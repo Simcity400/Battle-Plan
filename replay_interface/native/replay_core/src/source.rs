@@ -579,11 +579,27 @@ fn open_compact_stream_with_decoder(
     let entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
     let entry = match entries.as_slice() {
         [entry] => entry,
+        // This route folds the raw H4CR itself, so it needs the stream's
+        // CONTENT and cannot serve a cache-only recording. A recording that
+        // omitted the stream is normally served by the packaged-cache route
+        // instead (its H4IX/H4CP roles are selected first), so reaching here
+        // means the cache roles are missing too — say which of the two is
+        // actually wrong rather than reporting a bare absent entry.
         [] => {
-            return Err(SourceError::Unsupported(format!(
-                "recording {game_id:?} has an empty snapshot index but no manifest entry with role {:?}",
-                snapshot::COMPACT_STREAM_ROLE
-            )))
+            return Err(SourceError::Unsupported(
+                match declared_raw_stream_packaging(metadata.recorder_manifest.as_ref()) {
+                    Ok(snapshot::RawStreamPackaging::Omitted) => format!(
+                        "recording {game_id:?} {}",
+                        snapshot::raw_stream_unavailable_message(
+                            "be folded through the raw-stream decoder seam"
+                        ),
+                    ),
+                    _ => format!(
+                        "recording {game_id:?} has an empty snapshot index but no manifest entry with role {:?}",
+                        snapshot::COMPACT_STREAM_ROLE
+                    ),
+                },
+            ))
         }
         _ => {
             return Err(SourceError::Open(format!(
@@ -676,6 +692,106 @@ fn packaged_replay_cache_roles_present(store: &Store) -> bool {
     })
 }
 
+/// Canonical lowercase hex SHA-256, the spelling every recorder receipt uses.
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// What the recorder says this recording is composed of.
+///
+/// Read from the authenticated recorder manifest, strictly: a present value
+/// must be one of the assigned spellings. A recording with no composition field
+/// predates the field, and every such recording packaged the stream, so absence
+/// resolves to `Packaged` — never to "whatever is in the container".
+fn declared_raw_stream_packaging(
+    recorder_manifest: Option<&Map<String, Value>>,
+) -> Result<snapshot::RawStreamPackaging, SourceError> {
+    let Some(recorder_manifest) = recorder_manifest else {
+        // No recorder authority at all is the pre-existing legacy shape; the
+        // stream-entry rules below are unchanged for it.
+        return Ok(snapshot::RawStreamPackaging::Packaged);
+    };
+    snapshot::read_raw_stream_packaging_with_legacy_default(recorder_manifest).map_err(|error| {
+        SourceError::Open(format!("recorder manifest states no usable composition: {error}"))
+    })
+}
+
+/// Refuse a cache-only recording whose own documents still name a packaged
+/// stream path.
+fn validate_no_stream_path_is_claimed(
+    recorder_manifest: Option<&Map<String, Value>>,
+    timeline: Option<&Value>,
+) -> Result<(), SourceError> {
+    let claimed = |label: &str| {
+        SourceError::Open(format!(
+            "recording declares the {:?} composition but its {label} still names a packaged \
+             stream path",
+            snapshot::RawStreamPackaging::Omitted.as_str(),
+        ))
+    };
+    // Present-but-malformed is not absent. `and_then(as_object)` would let
+    // `"replay_entries": "garbage"` skip this check entirely, so a non-object
+    // is rejected rather than waved through.
+    if let Some(value) = recorder_manifest.and_then(|manifest| manifest.get("replay_entries")) {
+        let entries = value.as_object().ok_or_else(|| {
+            SourceError::Open("recorder replay_entries authority is not an object".to_string())
+        })?;
+        if entries.contains_key("stream") {
+            return Err(claimed("recorder manifest replay_entries"));
+        }
+    }
+    if let Some(timeline) = timeline {
+        let timeline = timeline.as_object().ok_or_else(|| {
+            SourceError::Open("recorder-owned timeline is not an object".to_string())
+        })?;
+        if timeline.contains_key("stream") {
+            return Err(claimed("timeline"));
+        }
+    }
+    Ok(())
+}
+
+/// The source length and SHA-256 the certified cache is bound to, taken from
+/// the recorder manifest's capture receipt.
+///
+/// This is the same CLAIMED length and digest the packaged stream entry would
+/// have carried — the recorder writes `stream_storage` from the very capture
+/// receipt it also packs the stream against. What it is not is an independent
+/// demonstration: with the stream absent there are no source bytes to re-hash,
+/// so this identity is attested by the authenticated recorder manifest rather
+/// than proven from the source itself.
+fn recorder_manifest_source_identity(
+    recorder_manifest: Option<&Map<String, Value>>,
+) -> Result<(u64, String), SourceError> {
+    let missing = || {
+        SourceError::Open(format!(
+            "recording declares the {:?} composition, so its source identity must come from the \
+             recorder manifest, but stream_storage.decoded_bytes/decoded_sha256 is missing or \
+             malformed",
+            snapshot::RawStreamPackaging::Omitted.as_str(),
+        ))
+    };
+    let storage = recorder_manifest
+        .ok_or_else(missing)?
+        .get("stream_storage")
+        .and_then(Value::as_object)
+        .ok_or_else(missing)?;
+    let bytes = storage
+        .get("decoded_bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(missing)?;
+    let sha256 = storage
+        .get("decoded_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| is_lower_sha256(value))
+        .ok_or_else(missing)?
+        .to_string();
+    Ok((bytes, sha256))
+}
+
 fn open_packaged_replay_cache(
     store: Store,
     game_id: String,
@@ -703,7 +819,6 @@ fn open_packaged_replay_cache(
                 ))),
             }
         };
-        let source_entry = select(snapshot::COMPACT_STREAM_ROLE)?;
         let index_entry = select(snapshot::HOUR_INDEX_ROLE)?;
         let cache_entry = select(snapshot::CHECKPOINT_CACHE_ROLE)?;
         let expected_prefix = format!("payload/{game_id}/");
@@ -716,33 +831,103 @@ fn open_packaged_replay_cache(
                     .to_string(),
             ));
         }
-        validate_compact_stream_entry_identity(
-            &source_entry.path,
-            &game_id,
-            metadata.timeline.as_ref(),
-        )?;
-        validate_recorder_compact_stream_join(
-            &source_entry.path,
-            source_entry.bytes,
-            &source_entry.sha256,
-            &game_id,
-            metadata.recorder_manifest.as_ref(),
-        )?;
-        let source_receipt = container
-            .authenticate_entry(&source_entry.path)
-            .map_err(|error| {
-                SourceError::Open(format!(
-                    "authenticate canonical H4CR role before replay-cache admission: {error}"
-                ))
-            })?;
-        if source_receipt.uncompressed_len() != source_entry.bytes
-            || source_receipt.sha256() != source_entry.sha256
-        {
-            return Err(SourceError::Open(
-                "canonical H4CR authentication receipt disagrees with its container role"
-                    .to_string(),
-            ));
-        }
+        // What this recording says it is made of, read strictly from the
+        // authenticated recorder manifest. A recording that states nothing is
+        // treated as pre-composition, and those all carried the stream.
+        let packaging = declared_raw_stream_packaging(metadata.recorder_manifest.as_ref())?;
+        let stream_entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
+        // The cache is bound to its source by LENGTH and SHA-256, not by the
+        // source's bytes: hours are reconstructed from H4IX/H4CP, and the H4CR
+        // entry is never parsed on this route. So a cache-only recording is
+        // admitted on that identity, taken from the recorder manifest — itself
+        // a container-authenticated entry — and `CertifiedReplayCache::open`
+        // cross-checks it before a single hour is served: the length against
+        // the H4IX header, and the SHA-256 against BOTH the H4IX header and the
+        // H4CP header. (H4CP carries the source digest but not the source
+        // length, so the length rests on H4IX alone.)
+        //
+        // What is NOT done for a cache-only recording, and cannot be, is
+        // re-hashing the source's own bytes: they are not in the container.
+        // The packaged branch below does that via `authenticate_entry`. So the
+        // cache's internal integrity is identical under both compositions,
+        // while the claimed H4CR source identity is attested by the recorder
+        // manifest rather than independently demonstrated from source bytes.
+        // That is the price of the composition, and it is stated here rather
+        // than left for a reader to discover.
+        //
+        // The composition is authority in BOTH directions: a declared stream
+        // that is missing, and an undeclared stream that is present, are each a
+        // hard error. Neither can be reached by an entry silently appearing or
+        // disappearing.
+        let source_identity = match (packaging, stream_entries.as_slice()) {
+            (snapshot::RawStreamPackaging::Packaged, [source_entry]) => {
+                validate_compact_stream_entry_identity(
+                    &source_entry.path,
+                    &game_id,
+                    metadata.timeline.as_ref(),
+                )?;
+                validate_recorder_compact_stream_join(
+                    &source_entry.path,
+                    source_entry.bytes,
+                    &source_entry.sha256,
+                    &game_id,
+                    metadata.recorder_manifest.as_ref(),
+                )?;
+                let source_receipt = container
+                    .authenticate_entry(&source_entry.path)
+                    .map_err(|error| {
+                        SourceError::Open(format!(
+                            "authenticate canonical H4CR role before replay-cache admission: {error}"
+                        ))
+                    })?;
+                if source_receipt.uncompressed_len() != source_entry.bytes
+                    || source_receipt.sha256() != source_entry.sha256
+                {
+                    return Err(SourceError::Open(
+                        "canonical H4CR authentication receipt disagrees with its container role"
+                            .to_string(),
+                    ));
+                }
+                (source_entry.bytes, source_entry.sha256.clone())
+            }
+            (snapshot::RawStreamPackaging::Packaged, []) => {
+                return Err(SourceError::Open(format!(
+                    "packaged replay_decoder container omits required role {:?}, but the recorder \
+                     manifest declares the {:?} composition",
+                    snapshot::COMPACT_STREAM_ROLE,
+                    snapshot::RawStreamPackaging::Packaged.as_str(),
+                )))
+            }
+            (snapshot::RawStreamPackaging::Omitted, []) => {
+                // A cache-only recording must not NAME a stream entry either.
+                // The composition and the paths are two ways of saying the same
+                // thing, and a document that still points at
+                // `collector_raw/collector_stream.bin` is describing a
+                // container that does not exist.
+                validate_no_stream_path_is_claimed(
+                    metadata.recorder_manifest.as_ref(),
+                    metadata.timeline.as_ref(),
+                )?;
+                recorder_manifest_source_identity(metadata.recorder_manifest.as_ref())?
+            }
+            (snapshot::RawStreamPackaging::Omitted, _) => {
+                return Err(SourceError::Open(format!(
+                    "recorder manifest declares the {:?} composition, but the container carries \
+                     {} entries with role {:?}",
+                    snapshot::RawStreamPackaging::Omitted.as_str(),
+                    stream_entries.len(),
+                    snapshot::COMPACT_STREAM_ROLE,
+                )))
+            }
+            (_, entries) => {
+                return Err(SourceError::Open(format!(
+                    "packaged replay_decoder container has {} entries for unique role {:?}",
+                    entries.len(),
+                    snapshot::COMPACT_STREAM_ROLE,
+                )))
+            }
+        };
+        let (source_len, source_sha256) = source_identity;
         let index_bytes = container
             .read_entry_bytes(&index_entry.path)
             .map_err(|error| {
@@ -757,12 +942,8 @@ fn open_packaged_replay_cache(
                     "read certified replay_decoder checkpoint cache: {error}"
                 ))
             })?;
-        let cache = snapshot::CertifiedReplayCache::open(
-            &index_bytes,
-            cache_bytes,
-            source_entry.bytes,
-            &source_entry.sha256,
-        )
+        let cache =
+            snapshot::CertifiedReplayCache::open(&index_bytes, cache_bytes, source_len, &source_sha256)
         .map_err(|error| {
             SourceError::Open(format!(
                 "admit packaged replay_decoder binary artifacts: {error}"
@@ -791,6 +972,7 @@ fn open_packaged_replay_cache(
             cache.index(),
             &index_entry,
             &cache_entry,
+            packaging,
         )?;
         let hours = cache
             .index()
@@ -800,8 +982,8 @@ fn open_packaged_replay_cache(
             .collect::<Vec<_>>();
         let receipt = snapshot::PrefoldSourceReceipt::try_new(
             "extractor.replay_decoder.binary_seek.v1",
-            source_entry.bytes,
-            source_entry.sha256,
+            source_len,
+            source_sha256,
             identity_mode,
         )
         .map_err(|error| SourceError::Open(error.to_string()))?;
@@ -858,6 +1040,7 @@ fn validate_packaged_replay_cache_index_descriptor(
     replay_index: &snapshot::ReplayHourIndex,
     index_entry: &snapshot::container::ContainerEntry,
     cache_entry: &snapshot::container::ContainerEntry,
+    declared_packaging: snapshot::RawStreamPackaging,
 ) -> Result<(), SourceError> {
     let bytes = store
         .read_game_file_bytes(game_id, "index.json")
@@ -865,6 +1048,25 @@ fn validate_packaged_replay_cache_index_descriptor(
         .ok_or_else(|| SourceError::Open("replay index descriptor disappeared".to_string()))?;
     let value = snapshot::parse_json_strict(&bytes)
         .map_err(|error| SourceError::Open(format!("strict replay index descriptor: {error}")))?;
+    // index.json is the third document that states the composition. The
+    // timeline and the recorder manifest are already cross-checked against each
+    // other; without this, index.json would be the one copy a rewrite could
+    // change unnoticed.
+    let index_packaging = value
+        .as_object()
+        .ok_or_else(|| SourceError::Open("replay index descriptor is not an object".to_string()))
+        .and_then(|object| {
+            snapshot::read_raw_stream_packaging_with_legacy_default(object).map_err(|error| {
+                SourceError::Open(format!("replay index descriptor composition: {error}"))
+            })
+        })?;
+    if index_packaging != declared_packaging {
+        return Err(SourceError::Open(format!(
+            "replay index descriptor declares the {:?} composition but the recorder authority              declares {:?}",
+            index_packaging.as_str(),
+            declared_packaging.as_str(),
+        )));
+    }
     let no_legacy_snapshots = value
         .get("snapshots")
         .and_then(Value::as_array)
@@ -964,11 +1166,23 @@ fn open_compact_stream_with_spooled_decoder(
         let entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
         let entry = match entries.as_slice() {
             [entry] => entry,
+            // Same as the unspooled seam: this performs a real H4CR fold, so a
+            // cache-only recording is refused by name rather than by absence.
             [] => {
-                return Err(SourceError::Unsupported(format!(
-                    "recording {game_id:?} has an empty snapshot index but no manifest entry with role {:?}",
-                    snapshot::COMPACT_STREAM_ROLE
-                )))
+                return Err(SourceError::Unsupported(
+                    match declared_raw_stream_packaging(metadata.recorder_manifest.as_ref()) {
+                        Ok(snapshot::RawStreamPackaging::Omitted) => format!(
+                            "recording {game_id:?} {}",
+                            snapshot::raw_stream_unavailable_message(
+                                "be folded through the bounded raw-stream decoder seam"
+                            ),
+                        ),
+                        _ => format!(
+                            "recording {game_id:?} has an empty snapshot index but no manifest entry with role {:?}",
+                            snapshot::COMPACT_STREAM_ROLE
+                        ),
+                    },
+                ))
             }
             _ => {
                 return Err(SourceError::Open(format!(
@@ -2193,6 +2407,93 @@ fn validate_recorder_portable_container_contract(
             return Err(SourceError::Open(format!(
                 "recorder-owned timeline {field} must be {expected:?}"
             )));
+        }
+    }
+    // The recording states its composition in more than one document, so those
+    // statements have to agree. A timeline that claims a composition the
+    // recorder manifest does not is a rewritten recording, not a readable one.
+    let manifest_packaging = declared_raw_stream_packaging(Some(recorder_manifest))?;
+    let timeline_packaging = snapshot::read_raw_stream_packaging_with_legacy_default(timeline)
+        .map_err(|error| {
+            SourceError::Open(format!("recorder-owned timeline composition: {error}"))
+        })?;
+    if manifest_packaging != timeline_packaging {
+        return Err(SourceError::Open(format!(
+            "recorder-owned timeline declares the {:?} composition but the recorder manifest \
+             declares {:?}",
+            timeline_packaging.as_str(),
+            manifest_packaging.as_str(),
+        )));
+    }
+    // index.json is the third document that states the composition. It is
+    // compared HERE rather than only in the cache-backed admission, because
+    // this contract runs for EVERY recorder-owned recording — snapshot-flavor
+    // and raw-stream-decoder routes included — and those routes would otherwise
+    // never look at it.
+    let index_packaging = raw_index
+        .as_object()
+        .ok_or_else(|| {
+            SourceError::Open("recorder-owned replay index is not an object".to_string())
+        })
+        .and_then(|object| {
+            snapshot::read_raw_stream_packaging_with_legacy_default(object).map_err(|error| {
+                SourceError::Open(format!("recorder-owned index descriptor composition: {error}"))
+            })
+        })?;
+    if index_packaging != manifest_packaging {
+        return Err(SourceError::Open(format!(
+            "recorder-owned index descriptor declares the {:?} composition but the recorder \
+             manifest declares {:?}",
+            index_packaging.as_str(),
+            manifest_packaging.as_str(),
+        )));
+    }
+    // A cache-only recording must not NAME a stream path in any of its
+    // documents, and must not CARRY one either — whichever route will go on to
+    // serve it. The cache-backed admission already checks the physical entry
+    // against the declaration; doing it here too covers the snapshot-flavor and
+    // raw-decoder routes, which otherwise compare the three declarations to
+    // each other and never to the container.
+    //
+    // Both directions are reconciled, because the snapshot-flavor route serves
+    // its recording straight from `StoreSource` and would otherwise compare the
+    // three declarations only to each other, never to the container.
+    let stream_entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
+    match (manifest_packaging, stream_entries.len()) {
+        (snapshot::RawStreamPackaging::Packaged, 1) => {
+            // The cache and raw-decoder routes bind the packaged entry to the
+            // timeline path and to the recorder's capture receipt. The
+            // snapshot-flavor route goes straight to `StoreSource` and would
+            // otherwise apply neither, so a packaged snapshot recording could
+            // carry a stream role whose path or identity contradicted its own
+            // documents. Bind it here, where every route passes.
+            let entry = &stream_entries[0];
+            validate_compact_stream_entry_identity(
+                &entry.path,
+                game_id,
+                metadata.timeline.as_ref(),
+            )?;
+            validate_recorder_compact_stream_join(
+                &entry.path,
+                entry.bytes,
+                &entry.sha256,
+                game_id,
+                Some(recorder_manifest),
+            )?;
+        }
+        (snapshot::RawStreamPackaging::Omitted, 0) => {
+            validate_no_stream_path_is_claimed(
+                Some(recorder_manifest),
+                metadata.timeline.as_ref(),
+            )?;
+        }
+        (packaging, count) => {
+            return Err(SourceError::Open(format!(
+                "recorder-owned recording declares the {:?} composition but the container carries \
+                 {count} entries with role {:?}",
+                packaging.as_str(),
+                snapshot::COMPACT_STREAM_ROLE,
+            )))
         }
     }
     Ok(())
@@ -4274,6 +4575,8 @@ mod tests {
             "replay_packaging": {
                 "static_artifacts": [],
             },
+            snapshot::RAW_STREAM_PACKAGING_FIELD:
+                snapshot::RawStreamPackaging::Omitted.as_str(),
             "portable_content_manifest": serde_json::to_value(&content).unwrap(),
             "modset": {
                 "resolved": true,
@@ -4308,6 +4611,11 @@ mod tests {
                     "schema_version": "1",
                     "host_fold_skipped": false,
                     "static_artifacts": absent_static_artifacts,
+                    // This fixture is a per-hour-snapshot recording carrying no
+                    // raw stream entry, so `omitted` is its truthful
+                    // composition; all three documents must say the same.
+                    snapshot::RAW_STREAM_PACKAGING_FIELD:
+                        snapshot::RawStreamPackaging::Omitted.as_str(),
                     "snapshots": [{
                         "hour_index": 1,
                         "file": "000000000001.snapshot.json",
@@ -4325,6 +4633,8 @@ mod tests {
                     "raw_stream_role": COMPACT_STREAM_ROLE,
                     "session_manifest": "recorder/native_session_manifest.json",
                     "session_manifest_role": "recorder_manifest",
+                    snapshot::RAW_STREAM_PACKAGING_FIELD:
+                        snapshot::RawStreamPackaging::Omitted.as_str(),
                 }))
                 .unwrap(),
                 role: "timeline",
@@ -4366,6 +4676,22 @@ mod tests {
     }
 
     fn write_portable_binary_replay_fixture(path: &Path, valid_checkpoint_role: bool) {
+        write_portable_binary_replay_fixture_with_composition(
+            path,
+            valid_checkpoint_role,
+            snapshot::RawStreamPackaging::Packaged,
+        )
+    }
+
+    /// Build the same certified two-hour packaged-cache recording under either
+    /// composition. The cache, the index descriptor and the recorder identity
+    /// are byte-for-byte the same in both; only whether the raw H4CR entry is
+    /// packaged (and what the documents declare) changes.
+    fn write_portable_binary_replay_fixture_with_composition(
+        path: &Path,
+        valid_checkpoint_role: bool,
+        packaging: snapshot::RawStreamPackaging,
+    ) {
         let game = "binary-game";
         let source_bytes = b"H4CRcanonical-world-source";
         let source_sha256 = snapshot::sha256::Sha256::hex(source_bytes);
@@ -4437,6 +4763,7 @@ mod tests {
             "host_fold_skipped": false,
             "production_json_snapshots_omitted": true,
             "canonical_world_source": snapshot::COMPACT_STREAM_ROLE,
+            snapshot::RAW_STREAM_PACKAGING_FIELD: packaging.as_str(),
             "snapshots": [],
             "static_artifacts": absent_static_artifacts,
             "replay_decoder": {
@@ -4466,13 +4793,20 @@ mod tests {
         }))
         .unwrap();
         let content = portable_content_manifest_fixture();
+        let mut replay_entries = json!({
+            "stream_role": snapshot::COMPACT_STREAM_ROLE,
+        });
+        if packaging.requires_stream_entry() {
+            replay_entries.as_object_mut().unwrap().insert(
+                "stream".to_string(),
+                json!("collector_raw/collector_stream.bin"),
+            );
+        }
         let recorder_manifest = serde_json::to_vec(&json!({
             "replay_game_id": game,
             "replay_packaging": {"static_artifacts": []},
-            "replay_entries": {
-                "stream": "collector_raw/collector_stream.bin",
-                "stream_role": snapshot::COMPACT_STREAM_ROLE,
-            },
+            snapshot::RAW_STREAM_PACKAGING_FIELD: packaging.as_str(),
+            "replay_entries": replay_entries,
             "stream_storage": {
                 "decoded_bytes": source_bytes.len(),
                 "decoded_sha256": source_sha256,
@@ -4501,7 +4835,7 @@ mod tests {
             },
         }))
         .unwrap();
-        let entries = vec![
+        let mut entries = vec![
             snapshot::PackEntry {
                 path: format!("payload/{game}/index.json"),
                 bytes: index_bytes,
@@ -4510,15 +4844,23 @@ mod tests {
             },
             snapshot::PackEntry {
                 path: format!("payload/{game}/timeline.json"),
-                bytes: serde_json::to_vec(&json!({
-                    "format": COMPACT_STREAM_TIMELINE_FORMAT,
-                    "stream_format": "compact",
-                    "stream": "collector_raw/collector_stream.bin",
-                    "raw_stream_role": snapshot::COMPACT_STREAM_ROLE,
-                    "session_manifest": "recorder/native_session_manifest.json",
-                    "session_manifest_role": "recorder_manifest",
-                }))
-                .unwrap(),
+                bytes: {
+                    let mut timeline_value = json!({
+                        "format": COMPACT_STREAM_TIMELINE_FORMAT,
+                        "stream_format": "compact",
+                        "raw_stream_role": snapshot::COMPACT_STREAM_ROLE,
+                        "session_manifest": "recorder/native_session_manifest.json",
+                        "session_manifest_role": "recorder_manifest",
+                        snapshot::RAW_STREAM_PACKAGING_FIELD: packaging.as_str(),
+                    });
+                    if packaging.requires_stream_entry() {
+                        timeline_value.as_object_mut().unwrap().insert(
+                            "stream".to_string(),
+                            json!("collector_raw/collector_stream.bin"),
+                        );
+                    }
+                    serde_json::to_vec(&timeline_value).unwrap()
+                },
                 role: "timeline",
                 hour_index: None,
             },
@@ -4526,12 +4868,6 @@ mod tests {
                 path: format!("payload/{game}/recorder/native_session_manifest.json"),
                 bytes: recorder_manifest,
                 role: "recorder_manifest",
-                hour_index: None,
-            },
-            snapshot::PackEntry {
-                path: format!("payload/{game}/collector_raw/collector_stream.bin"),
-                bytes: source_bytes.to_vec(),
-                role: snapshot::COMPACT_STREAM_ROLE,
                 hour_index: None,
             },
             snapshot::PackEntry {
@@ -4551,6 +4887,14 @@ mod tests {
                 hour_index: None,
             },
         ];
+        if packaging.requires_stream_entry() {
+            entries.push(snapshot::PackEntry {
+                path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+                bytes: source_bytes.to_vec(),
+                role: snapshot::COMPACT_STREAM_ROLE,
+                hour_index: None,
+            });
+        }
         let packed = snapshot::pack(
             game,
             &entries,
@@ -4590,6 +4934,240 @@ mod tests {
         assert!(source.frame(12).is_err());
         drop(source);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A cache-only recording replays. The raw stream is not in the container
+    /// at all, and every hour still reconstructs from the delta cache, with the
+    /// H4CR source receipt intact — because the cache is bound to its source by
+    /// LENGTH and SHA-256, and those come from the authenticated recorder
+    /// manifest rather than from the stream's own bytes.
+    ///
+    /// This is the test that says the default composition is usable: if it
+    /// fails, stream-off captures are unreplayable and the flag is not
+    /// shippable.
+    ///
+    /// Production change that would make this fail: restoring the unconditional
+    /// `select(COMPACT_STREAM_ROLE)` in `open_packaged_replay_cache`, or
+    /// sourcing the cache binding from the stream entry again.
+    #[test]
+    fn cache_only_recording_replays_every_hour_without_the_raw_stream() {
+        let root = temp_root("binary_replay_cache_only");
+        let recording = root.join("binary.battleplan");
+        write_portable_binary_replay_fixture_with_composition(
+            &recording,
+            true,
+            snapshot::RawStreamPackaging::Omitted,
+        );
+
+        // The container really does not carry the stream.
+        let container =
+            snapshot::Container::open(&recording, &snapshot::ExpectedIdentity::default()).unwrap();
+        assert!(container
+            .entries_by_role(snapshot::COMPACT_STREAM_ROLE)
+            .is_empty());
+        drop(container);
+
+        let source = open_recording(&recording).unwrap();
+        assert_eq!(source.game_id(), "binary-game");
+        assert_eq!(source.hours(), &[10, 11]);
+        // The source binding survives the stream's absence, byte-for-byte.
+        assert_eq!(
+            source
+                .prefold_receipt()
+                .expect("a cache-only recording still carries its H4CR source receipt")
+                .source_len(),
+            b"H4CRcanonical-world-source".len() as u64
+        );
+        // Hours reconstruct identically to the stream-on fixture.
+        let frame = source.frame(11).unwrap();
+        assert_eq!(frame.hour_index, 11);
+        assert_eq!(frame.date.as_deref(), Some("1936.1.1.11"));
+        assert_eq!(frame.rest["countries"]["FRA"]["stability"], json!(0.55));
+        assert!(source.frame(12).is_err());
+        drop(source);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The composition is authority in both directions. A recording that
+    /// declares the cache-only composition but ships a stream entry anyway is a
+    /// rewritten recording and must fail closed rather than be quietly read.
+    ///
+    /// Production change that would make this fail: matching only on the entry
+    /// count and ignoring the declared composition.
+    #[test]
+    fn declared_cache_only_recording_rejects_a_smuggled_stream_entry() {
+        let root = temp_root("binary_replay_smuggled_stream");
+        let recording = root.join("binary.battleplan");
+        // Build the stream-on container, then rewrite ONLY the declaration.
+        write_portable_binary_replay_fixture_with_composition(
+            &recording,
+            true,
+            snapshot::RawStreamPackaging::Packaged,
+        );
+        // Make the declaration fully coherent — every document says `omitted`
+        // and none of them names a stream path — so the ONLY thing left
+        // contradicting it is the entry that is still physically in the
+        // container. That is the check this test is about.
+        let repacked = repack_recording_with_manifest_mutation(&recording, |document| {
+            document.insert(
+                snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
+                json!(snapshot::RawStreamPackaging::Omitted.as_str()),
+            );
+            document.remove("stream");
+            if let Some(entries) = document
+                .get_mut("replay_entries")
+                .and_then(Value::as_object_mut)
+            {
+                entries.remove("stream");
+            }
+        });
+        fs::write(&recording, repacked).unwrap();
+
+        let error = open_recording(&recording)
+            .err()
+            .expect("a declared cache-only recording carrying a stream must fail closed");
+        let text = error.to_string();
+        assert!(
+            text.contains("omitted") && text.contains(snapshot::COMPACT_STREAM_ROLE),
+            "the refusal must name the contradiction, got {text}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An unassigned composition spelling rejects at the decoder instead of
+    /// falling back to a default.
+    ///
+    /// Production change that would make this fail: giving the composition
+    /// reader a catch-all arm, or treating a bad value like a missing one.
+    #[test]
+    fn unassigned_composition_spelling_rejects_at_replay_admission() {
+        let root = temp_root("binary_replay_bad_composition");
+        let recording = root.join("binary.battleplan");
+        write_portable_binary_replay_fixture_with_composition(
+            &recording,
+            true,
+            snapshot::RawStreamPackaging::Packaged,
+        );
+        let repacked = repack_recording_with_manifest_mutation(&recording, |manifest| {
+            manifest.insert(
+                snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
+                json!("maybe"),
+            );
+        });
+        fs::write(&recording, repacked).unwrap();
+
+        let error = open_recording(&recording)
+            .err()
+            .expect("an unassigned composition spelling must reject");
+        let text = error.to_string();
+        assert!(
+            text.contains("unassigned") && text.contains("maybe"),
+            "the rejection must name the unassigned value, got {text}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `index.json` is the third document that states the composition, and it
+    /// is cross-checked too. Without this, it would be the one copy a rewrite
+    /// could change unnoticed while the manifest and timeline still agree.
+    ///
+    /// Production change that would make this fail: dropping the
+    /// `declared_packaging` comparison from
+    /// `validate_packaged_replay_cache_index_descriptor`.
+    #[test]
+    fn index_descriptor_composition_must_agree_with_the_recorder_authority() {
+        let root = temp_root("binary_replay_index_composition");
+        let recording = root.join("binary.battleplan");
+        write_portable_binary_replay_fixture_with_composition(
+            &recording,
+            true,
+            snapshot::RawStreamPackaging::Packaged,
+        );
+        // Rewrite ONLY index.json. The manifest and timeline still say
+        // `packaged`, and the stream entry is genuinely present.
+        let repacked = repack_recording_mutating_roles(&recording, &["index"], |index| {
+            index.insert(
+                snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
+                json!(snapshot::RawStreamPackaging::Omitted.as_str()),
+            );
+        });
+        fs::write(&recording, repacked).unwrap();
+
+        let error = open_recording(&recording)
+            .err()
+            .expect("an index descriptor that disagrees about the composition must reject");
+        let text = error.to_string();
+        assert!(
+            text.contains("index descriptor") && text.contains("omitted"),
+            "the refusal must name the disagreeing document, got {text}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Re-pack a fixture recording with its recorder manifest mutated, keeping
+    /// every other entry, role and path identical. Used to perturb exactly one
+    /// declaration and prove the reader notices.
+    fn repack_recording_with_manifest_mutation(
+        path: &Path,
+        mutate: impl Fn(&mut serde_json::Map<String, Value>),
+    ) -> Vec<u8> {
+        repack_recording_mutating_roles(path, &["recorder_manifest", "timeline", "index"], mutate)
+    }
+
+    /// Re-pack a fixture recording, mutating only the named roles.
+    fn repack_recording_mutating_roles(
+        path: &Path,
+        roles: &[&str],
+        mutate: impl Fn(&mut serde_json::Map<String, Value>),
+    ) -> Vec<u8> {
+        let container =
+            snapshot::Container::open(path, &snapshot::ExpectedIdentity::default()).unwrap();
+        let game = container.game_id().to_string();
+        let content = portable_content_manifest_fixture();
+        let mut entries = Vec::new();
+        for entry in container.entries() {
+            let mut bytes = container.read_entry_bytes(&entry.path).unwrap();
+            // All three documents state the composition and replay cross-checks
+            // them, so a perturbation has to be applied to every document the
+            // caller intends to keep consistent, or it trips an agreement check
+            // instead of the check under test.
+            if entry
+                .role
+                .as_deref()
+                .is_some_and(|role| roles.contains(&role))
+            {
+                let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+                mutate(value.as_object_mut().unwrap());
+                bytes = serde_json::to_vec(&value).unwrap();
+            }
+            entries.push(snapshot::PackEntry {
+                path: entry.path.clone(),
+                bytes,
+                role: Box::leak(
+                    entry
+                        .role
+                        .clone()
+                        .unwrap_or_default()
+                        .into_boxed_str(),
+                ),
+                // The fixture carries no per-hour snapshot entries, so no entry
+                // in it is hour-indexed.
+                hour_index: None,
+            });
+        }
+        snapshot::pack(
+            &game,
+            &entries,
+            &snapshot::PackIdentity {
+                schema_version: Some("1".into()),
+                build_exe_sha256: Some(content.source_game.executable_sha256.clone()),
+                build_pinned: true,
+                content_manifest: Some(content),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -4707,6 +5285,117 @@ mod tests {
         unavailable["game_unique_seed"] = json!("1");
         root.insert("campaign_identity".to_string(), unavailable);
         assert!(recorder_campaign_identity(&root, "fabricated unavailable").is_err());
+    }
+
+    /// A packaged snapshot-flavor recording is bound to its stream entry just
+    /// like the cache and raw-decoder routes are. That route serves straight
+    /// from `StoreSource`, so without the binding on the common path it would
+    /// accept a stream role whose identity contradicts the recorder's own
+    /// capture receipt.
+    ///
+    /// Production change that would make this fail: letting the
+    /// `(Packaged, 1)` arm of the composition reconciliation succeed without
+    /// calling `validate_recorder_compact_stream_join`.
+    #[test]
+    fn packaged_snapshot_recording_binds_its_stream_entry_to_the_recorder_receipt() {
+        let root = temp_root("snapshot_stream_binding");
+        let recording = root.join("snapshot.battleplan");
+        write_portable_recorder_fixture(&recording, "g", "SNAPSHOT", None);
+
+        // The fixture is truthfully cache-only. Re-pack it as a PACKAGED
+        // recording carrying a stream entry, but leave `stream_storage`
+        // describing different bytes than the entry actually holds — exactly
+        // the disagreement the join exists to catch.
+        let stream_bytes = b"H4CRsnapshot-route-stream".to_vec();
+        let container =
+            snapshot::Container::open(&recording, &snapshot::ExpectedIdentity::default()).unwrap();
+        let content = portable_content_manifest_fixture();
+        let mut entries = Vec::new();
+        for entry in container.entries() {
+            let mut bytes = container.read_entry_bytes(&entry.path).unwrap();
+            match entry.role.as_deref() {
+                Some("recorder_manifest") => {
+                    let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+                    let object = value.as_object_mut().unwrap();
+                    object.insert(
+                        snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
+                        json!(snapshot::RawStreamPackaging::Packaged.as_str()),
+                    );
+                    object.insert(
+                        "replay_entries".to_string(),
+                        json!({
+                            "stream": "collector_raw/collector_stream.bin",
+                            "stream_role": snapshot::COMPACT_STREAM_ROLE,
+                        }),
+                    );
+                    object.insert(
+                        "stream_storage".to_string(),
+                        json!({
+                            // Deliberately not this entry's identity.
+                            "decoded_bytes": stream_bytes.len() as u64 + 1,
+                            "decoded_sha256": "a".repeat(64),
+                        }),
+                    );
+                    bytes = serde_json::to_vec(&value).unwrap();
+                }
+                Some("timeline") | Some("index") => {
+                    let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+                    let object = value.as_object_mut().unwrap();
+                    object.insert(
+                        snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
+                        json!(snapshot::RawStreamPackaging::Packaged.as_str()),
+                    );
+                    if entry.role.as_deref() == Some("timeline") {
+                        object.insert(
+                            "stream".to_string(),
+                            json!("collector_raw/collector_stream.bin"),
+                        );
+                    }
+                    bytes = serde_json::to_vec(&value).unwrap();
+                }
+                _ => {}
+            }
+            entries.push(snapshot::PackEntry {
+                path: entry.path.clone(),
+                bytes,
+                role: Box::leak(entry.role.clone().unwrap_or_default().into_boxed_str()),
+                hour_index: if entry.role.as_deref() == Some("snapshot") {
+                    Some(1)
+                } else {
+                    None
+                },
+            });
+        }
+        entries.push(snapshot::PackEntry {
+            path: "payload/g/collector_raw/collector_stream.bin".to_string(),
+            bytes: stream_bytes,
+            role: snapshot::COMPACT_STREAM_ROLE,
+            hour_index: None,
+        });
+        drop(container);
+        let packed = snapshot::pack(
+            "g",
+            &entries,
+            &snapshot::PackIdentity {
+                schema_version: Some("1".into()),
+                build_exe_sha256: Some(content.source_game.executable_sha256.clone()),
+                build_pinned: true,
+                content_manifest: Some(content),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        fs::write(&recording, packed).unwrap();
+
+        let error = open_recording(&recording)
+            .err()
+            .expect("a packaged snapshot recording must be bound to its stream entry");
+        assert!(
+            error.to_string().contains("stream_storage"),
+            "the refusal must name the disagreeing authority, got {error}"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

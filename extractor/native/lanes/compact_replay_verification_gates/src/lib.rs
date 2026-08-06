@@ -3370,6 +3370,29 @@ fn load_verified_replay_authority(
     external_manifest_bytes: &[u8],
     run_dir: &Path,
 ) -> Result<VerifiedReplayAuthority, String> {
+    // This gate certifies the capture by byte-comparing the run-dir H4CR
+    // against the copy packaged in the container. That proof is over the raw
+    // stream's own bytes, so it is GATED on the composition rather than
+    // weakened: a cache-only recording is refused with the cause named.
+    //
+    // It is not inherently a stream-only gate — the equivalent cache-only
+    // certification is to bind the independently hashed run-dir stream to the
+    // recorder manifest's `stream_storage` and then to the H4IX and H4CP source
+    // identities. That binding is not implemented here, so this refuses rather
+    // than passing a capture it did not actually certify.
+    if let Some(object) = external_manifest.as_object() {
+        if matches!(
+            snapshot::read_raw_stream_packaging_with_legacy_default(object),
+            Ok(snapshot::RawStreamPackaging::Omitted)
+        ) {
+            return Err(format!(
+                "compact replay verification gate {}",
+                snapshot::raw_stream_unavailable_message(
+                    "byte-compare the run-dir H4CR against the packaged container copy"
+                ),
+            ));
+        }
+    }
     let replay_path = required_run_file(run_dir, external_manifest, "replay_file")?;
     let expected = ExpectedIdentity {
         schema_version: Some("native_collector_session_v1".to_string()),
