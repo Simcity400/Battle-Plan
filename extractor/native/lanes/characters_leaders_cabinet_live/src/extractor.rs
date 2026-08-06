@@ -506,6 +506,19 @@ pub enum ExtractError {
         end: u64,
         size: u64,
     },
+    /// The object at this address still passes every structural check, but it
+    /// no longer carries the IDENTITY the prewarm census read there — the
+    /// storage was recycled between the census and this frame's walk. Kept
+    /// apart from `BadTypeId`/`BadVtable` because nothing is malformed: the
+    /// row is refusable only by comparing two observations, and the caller
+    /// counts it as `AdapterBuildStats::identity_mismatch_rows` rather than
+    /// as a dead or torn root.
+    IdentityMismatch {
+        addr: u64,
+        field: &'static str,
+        expected: u32,
+        observed: u32,
+    },
 }
 
 impl fmt::Display for ExtractError {
@@ -543,6 +556,16 @@ impl fmt::Display for ExtractError {
             } => write!(
                 f,
                 "bad vector for {field}: begin=0x{begin:X}, end=0x{end:X}, size={size}"
+            ),
+            Self::IdentityMismatch {
+                addr,
+                field,
+                expected,
+                observed,
+            } => write!(
+                f,
+                "identity mismatch for {field} at 0x{addr:X}: observed {observed}, \
+                 census read {expected}"
             ),
         }
     }

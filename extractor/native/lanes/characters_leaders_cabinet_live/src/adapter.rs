@@ -78,6 +78,35 @@ impl AdapterInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharacterRoot {
     pub character_addr: u64,
+    /// The IDENTITY the prewarm census read at `character_addr`, in the same
+    /// observation that produced `name` and `token`.
+    ///
+    /// Without it the root carried an ADDRESS and two strings and nothing
+    /// that ties them together: the frame walk re-reads `char_id` and
+    /// `country_tag_db_id` live at the same address, and if the engine freed
+    /// that `CCharacter` and the allocator handed the storage to a DIFFERENT
+    /// character between the prewarm and the walk, the walk publishes the new
+    /// identity wearing the old character's name and token. Every check
+    /// downstream passes: the vtable is a `CCharacter` vtable, the type id is
+    /// right, the tag is valid, the strings are well-formed — the row is
+    /// silently wrong, not absent, which is the outcome this project refuses.
+    ///
+    /// Carrying the census identity costs NO extra engine read (the census
+    /// already reads this field to dedup and to attribute unit leaders) and
+    /// lets the walk compare what it read against what the strings belong to.
+    /// See `build_lane_frame_from_adapter_input_ref`.
+    ///
+    /// `char_id` ALONE, deliberately: it is the engine's own identity for the
+    /// character and does not change while the character exists, which is
+    /// exactly what a reuse discriminator has to be. `country_tag_db_id` is
+    /// NOT one — a character legitimately changes country when its country is
+    /// annexed or it is transferred, and treating that as evidence of a
+    /// recycled allocation would throw away the name and token of every
+    /// character caught by an annexation between the prewarm and the walk of
+    /// the same frame. Nothing is lost by leaving it out: the emitted row's
+    /// country has always come from this frame's own live read, never from
+    /// the census. (Codex 019fd6ea, finding 2.)
+    pub char_id: u32,
     pub name: Option<String>,
     pub token: Option<String>,
 }
@@ -99,8 +128,25 @@ pub struct TraitDefinitionRoot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CountryLeaderRoleRoot {
+    /// The `char_id` the prewarm census read through this role's character
+    /// pointer.
+    ///
+    /// The emitted role row is a (country, char_id) PAIR, and its two halves
+    /// used to come from different instants: the country was the census's
+    /// (this struct used to carry a `country_tag_db_id`) and the char id was
+    /// the walk's, combined WITHOUT ever being compared. A `CCountryLeader`
+    /// whose `CCharacter` had been recycled since the census therefore
+    /// emitted a real char id under a country it never belonged to, and a
+    /// character whose country had legitimately changed emitted the STALE
+    /// country.
+    ///
+    /// Both are gone because the row is now built entirely from this frame's
+    /// own read — the country included — and the census contributes only this
+    /// id, used to prove the object is still the character the census saw.
+    /// `domain47_country_leader_identity` already reads the id and used to
+    /// discard it, so this adds no engine read.
+    pub char_id: u32,
     pub country_leader_addr: u64,
-    pub country_tag_db_id: u32,
     pub name: Option<String>,
     pub token: Option<String>,
 }
@@ -165,6 +211,36 @@ pub struct AdapterBuildStats {
     pub portrait_inputs_seen: u32,
     pub portrait_rows: u32,
     pub rejected_roots: u32,
+    /// Rows REFUSED because the object still reads cleanly but no longer
+    /// carries the identity the prewarm census read at that address —
+    /// recycled storage. Today this is the country-leader role path, where
+    /// the emitted row IS the (country, char_id) pair and there is no half of
+    /// it left to publish once the two observations disagree.
+    ///
+    /// In `has_rejections` because a refused row is an OMISSION from a
+    /// full-replacement frame, and a downstream reader cannot tell an
+    /// omission from a deletion — the same reason `dead_roots` is in there.
+    ///
+    /// Kept apart from `rejected_roots` (torn) and `dead_roots` (stably
+    /// failing) because the failure mode and the remedy are different: this
+    /// one converges the moment the prewarm re-censuses, and a persistent
+    /// nonzero means character churn is outrunning the census rather than
+    /// that reads are going bad.
+    pub identity_mismatch_rows: u32,
+    /// Rows DEGRADED for the same reason: the identity at the address moved,
+    /// so the census's ancillary text is unattributable and is dropped, but
+    /// the row itself is this frame's own live, fully validated observation
+    /// and is emitted.
+    ///
+    /// Deliberately NOT in `has_rejections`. That predicate makes the whole
+    /// domain-47 frame rowless-PARTIAL (see `scheduled.rs`), which is the
+    /// right answer for a row that is MISSING and the wrong one for a row
+    /// that is merely thinner: throwing ~13_000 good character rows away
+    /// because one character was recycled is exactly the "missing data
+    /// destroys the whole capture" outcome this project refuses. It sets
+    /// `STATUS_PARTIAL_DATA` on its own instead, so the thinning is declared
+    /// without the frame being discarded.
+    pub identity_degraded_rows: u32,
     pub missing_trait_tokens: u32,
     /// Roots whose frame-walk read failed STABLY (an immediate re-read failed
     /// bit-identically), as opposed to TORN (`rejected_roots`, the re-read
@@ -186,7 +262,10 @@ pub struct AdapterBuildStats {
 
 impl AdapterBuildStats {
     pub fn has_rejections(&self) -> bool {
-        self.rejected_roots != 0 || self.missing_trait_tokens != 0 || self.dead_roots != 0
+        self.rejected_roots != 0
+            || self.missing_trait_tokens != 0
+            || self.dead_roots != 0
+            || self.identity_mismatch_rows != 0
     }
 }
 
@@ -261,6 +340,31 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     for root in input.characters {
         match read_character_raw_fields(mem, roots, root.character_addr) {
             Ok(raw) => {
+                // The root's `name`/`token` were read at this address by the
+                // prewarm census, in the SAME observation that read the
+                // identity now carried on the root. If what lives here now is
+                // a different character, the storage was recycled and pairing
+                // this frame's identity with that text would publish a
+                // well-formed WRONG row — right vtable, right type id, valid
+                // tag, printable strings, and the wrong person.
+                //
+                // DEGRADE, not drop. The identity below was read live this
+                // frame and passed every structural check, so the character
+                // exists; only its ancillary text is unattributable. This
+                // frame is a full-replacement snapshot, so omitting the row
+                // would assert that the character is GONE — the same silent
+                // deletion `dead_roots` documents. Absent text is the
+                // domain's existing answer to "two observations disagree and
+                // there is no arbitrary winner" (see the duplicate merge
+                // below, which nulls exactly these two fields).
+                //
+                // `char_id` only: the country is emitted live and moves for
+                // reasons that have nothing to do with allocation — see
+                // `CharacterRoot::char_id`.
+                let identity_matches = raw.char_id == root.char_id;
+                if !identity_matches {
+                    stats.identity_degraded_rows = stats.identity_degraded_rows.saturating_add(1);
+                }
                 if ambiguous_character_ids.contains(&raw.char_id) {
                     stats.ambiguous_character_rows =
                         stats.ambiguous_character_rows.saturating_add(1);
@@ -269,8 +373,8 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
                 let candidate = CharacterRecord {
                     country_tag_db_id: raw.country_tag_db_id,
                     char_id: raw.char_id,
-                    name: root.name.clone(),
-                    token: root.token.clone(),
+                    name: identity_matches.then(|| root.name.clone()).flatten(),
+                    token: identity_matches.then(|| root.token.clone()).flatten(),
                 };
                 match characters_by_id.entry(raw.char_id) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
@@ -354,6 +458,16 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
                     known_characters.insert((row.country_tag_db_id, row.char_id));
                 }
                 frame.country_leader_roles.push(row);
+            }
+            // A recycled object is not a dead root and not a torn read: it
+            // reads cleanly, it just is not the object the census saw. It
+            // gets its own counter so a persistent nonzero is legible as
+            // churn rather than as memory going bad, and it deliberately does
+            // NOT reach `classify_root_failure` — re-reading a recycled
+            // object returns the same mismatch and would be filed as "stably
+            // dead", which is a different and wrong claim.
+            Err(ExtractError::IdentityMismatch { .. }) => {
+                stats.identity_mismatch_rows = stats.identity_mismatch_rows.saturating_add(1)
             }
             Err(first) => {
                 match classify_root_failure(&first, &read_country_leader_role(mem, roots, root)) {
@@ -467,6 +581,12 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     if input.skipped_input_rows != 0 {
         frame.status_flags |= compact::STATUS_PARTIAL_DATA;
     }
+    // Declared here rather than through `has_rejections`: a degraded row is
+    // thinner, not missing, and must not cost the frame its other ~13_000
+    // rows. See `AdapterBuildStats::identity_degraded_rows`.
+    if stats.identity_degraded_rows != 0 {
+        frame.status_flags |= compact::STATUS_PARTIAL_DATA;
+    }
     if input.countries.is_empty() {
         frame.status_flags |= compact::STATUS_BRIDGE_UNAVAILABLE;
     }
@@ -526,8 +646,26 @@ fn read_country_leader_role<M: LaneMemory>(
         "CCountryLeader.character",
     )?;
     let character = read_character_raw_fields(mem, roots, character_addr)?;
+    // Prove the object is still the character the census saw before anything
+    // the census produced is attached to it. `char_id` is the engine's own
+    // identity and does not change while the character exists; the country
+    // does (annexation, transfer), so it is not a reuse discriminator — see
+    // `CharacterRoot::char_id`.
+    if character.char_id != root.char_id {
+        return Err(ExtractError::IdentityMismatch {
+            addr: character_addr,
+            field: "CCountryLeader.character.char_id",
+            expected: root.char_id,
+            observed: character.char_id,
+        });
+    }
     Ok(CountryLeaderRoleRecord {
-        country_tag_db_id: root.country_tag_db_id,
+        // BOTH halves from this frame's read. The census's country used to
+        // be emitted here, which made the row a pair of two different
+        // instants; taking the live one removes the staleness rather than
+        // detecting it, and on unchanged state it is the same value, so the
+        // payload is byte-identical.
+        country_tag_db_id: character.country_tag_db_id,
         char_id: character.char_id,
         name: root.name.clone(),
         token: root.token.clone(),
@@ -863,6 +1001,7 @@ mod tests {
             elapsed_wall_ms: 77,
             characters: vec![CharacterRoot {
                 character_addr: character,
+                char_id: 100,
                 name: Some("Maxwell Aitken".to_string()),
                 token: Some("ENG_maxwell_aitken".to_string()),
             }],
@@ -879,7 +1018,7 @@ mod tests {
             }],
             country_leader_roles: vec![CountryLeaderRoleRoot {
                 country_leader_addr: country_leader,
-                country_tag_db_id: 2,
+                char_id: 100,
                 name: Some("Maxwell Aitken".to_string()),
                 token: Some("ENG_maxwell_aitken".to_string()),
             }],
@@ -964,11 +1103,13 @@ mod tests {
             characters: vec![
                 CharacterRoot {
                     character_addr: 0x1000,
+                    char_id: 100,
                     name: Some("first spelling".to_string()),
                     token: Some("ENG_character".to_string()),
                 },
                 CharacterRoot {
                     character_addr: 0x1800,
+                    char_id: 100,
                     name: Some("second spelling".to_string()),
                     token: Some("ENG_character".to_string()),
                 },
@@ -1003,11 +1144,13 @@ mod tests {
             characters: vec![
                 CharacterRoot {
                     character_addr: 0x1000,
+                    char_id: 100,
                     name: None,
                     token: None,
                 },
                 CharacterRoot {
                     character_addr: 0x1800,
+                    char_id: 100,
                     name: None,
                     token: None,
                 },
@@ -1062,11 +1205,13 @@ mod tests {
             characters: vec![
                 CharacterRoot {
                     character_addr: character,
+                    char_id: 100,
                     name: None,
                     token: None,
                 },
                 CharacterRoot {
                     character_addr: 0xDEAD_0000,
+                    char_id: 101,
                     name: None,
                     token: None,
                 },
@@ -1103,6 +1248,7 @@ mod tests {
             elapsed_wall_ms: 5,
             characters: vec![CharacterRoot {
                 character_addr: character,
+                char_id: 100,
                 name: None,
                 token: None,
             }],
@@ -1114,6 +1260,245 @@ mod tests {
         assert_eq!(result.stats.rejected_roots, 1);
         assert!(result.stats.has_rejections());
         assert_ne!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+    }
+
+    // ---------------------------------------------------------------
+    // Recycled engine objects (lane DC, 2026-08-06).
+    //
+    // Every test below builds the SAME hazard: the prewarm census read an
+    // identity at an address and captured that character's text; by the time
+    // the frame walk reaches the same address the engine has freed the object
+    // and the allocator has handed the storage to a different character.
+    // Nothing is malformed afterwards — the vtable is a CCharacter vtable,
+    // the type id is right, the tag is valid, the strings are printable — so
+    // no structural check can see it. Only comparing the two observations
+    // can.
+    // ---------------------------------------------------------------
+
+    /// A recycled `CCharacter` must not carry the census's name and token
+    /// onto the identity that lives there NOW.
+    ///
+    /// MUTATION: delete the `identity_matches` test in the character loop (or
+    /// go back to `name: root.name.clone()`) and this fails with
+    /// `Some("Maxwell Aitken")` on char 777 — the exact silently-wrong row.
+    #[test]
+    fn a_recycled_character_keeps_its_live_identity_and_loses_the_census_text() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        // The census saw char 100 of country 2 here. A different character
+        // now occupies the same storage.
+        write_character(&mut mem, character, 777, 9);
+
+        let input = AdapterInput {
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 100,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.identity_degraded_rows, 1);
+        // The character that IS there was read live and validated, so it is
+        // still emitted — omitting it from a full-replacement frame would
+        // assert it does not exist.
+        assert_eq!(result.stats.character_rows, 1);
+        assert_eq!(result.frame.characters[0].char_id, 777);
+        assert_eq!(result.frame.characters[0].country_tag_db_id, 9);
+        assert_eq!(result.frame.characters[0].name, None);
+        assert_eq!(result.frame.characters[0].token, None);
+        // Not filed as dead or torn: nothing failed to read.
+        assert_eq!(result.stats.dead_roots, 0);
+        assert_eq!(result.stats.rejected_roots, 0);
+        assert_eq!(result.stats.identity_mismatch_rows, 0);
+        // And NOT a rejection: `has_rejections` makes the whole domain-47
+        // frame rowless, which would trade ~13_000 good rows for one
+        // recycled character. The thinning is declared on the status word
+        // instead.
+        //
+        // MUTATION: put `identity_degraded_rows` into `has_rejections` and
+        // this fails.
+        assert!(!result.stats.has_rejections());
+        assert_ne!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+    }
+
+    /// A character that CHANGED COUNTRY since the census is not a recycled
+    /// object, and must keep its name and token.
+    ///
+    /// Annexations and transfers move characters between countries while the
+    /// game runs, and the prewarm and the walk are two points inside one
+    /// frame of a running game, so this is an ordinary state and not a corner
+    /// one. Treating it as reuse would silently strip the text off every
+    /// character caught by an annexation, and (before the degrade/refuse
+    /// split) would have made the whole domain-47 frame rowless.
+    ///
+    /// MUTATION: add `&& raw.country_tag_db_id == root.country_tag_db_id`
+    /// back into `identity_matches` — restoring the country to the root — and
+    /// this fails. (Codex 019fd6ea, finding 2.)
+    #[test]
+    fn a_character_that_changed_country_since_the_census_keeps_its_text() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        // The census saw char 100 under country 2; it is country 3's now.
+        write_character(&mut mem, character, 100, 3);
+
+        let input = AdapterInput {
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 100,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.identity_degraded_rows, 0);
+        assert!(!result.stats.has_rejections());
+        // The country is this frame's, and the text is still the character's.
+        assert_eq!(result.frame.characters[0].country_tag_db_id, 3);
+        assert_eq!(
+            result.frame.characters[0].name.as_deref(),
+            Some("Maxwell Aitken")
+        );
+    }
+
+    /// The control: an identity that still agrees keeps its text, so the
+    /// tests above are not passing because the text is always dropped.
+    #[test]
+    fn an_unchanged_character_keeps_the_census_text() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        write_character(&mut mem, character, 100, 2);
+
+        let input = AdapterInput {
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 100,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.identity_degraded_rows, 0);
+        assert!(!result.stats.has_rejections());
+        assert_eq!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert_eq!(
+            result.frame.characters[0].name.as_deref(),
+            Some("Maxwell Aitken")
+        );
+    }
+
+    /// A country-leader role row is a (country, char_id) PAIR whose halves
+    /// come from two different observations: the country from the census, the
+    /// char id from this frame. They must be compared before being combined.
+    ///
+    /// MUTATION: delete the `char_id` comparison in `read_country_leader_role`
+    /// and this fails — a role row is emitted pairing char 777 with country 2,
+    /// a combination that never existed in the engine.
+    #[test]
+    fn a_recycled_country_leader_character_refuses_the_role_row() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        let country_leader = 0x3000;
+        // The census read char 100 through this role. A different character
+        // is behind the pointer now.
+        write_character(&mut mem, character, 777, 2);
+        mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+        mem.write_u64(country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF, character);
+
+        let input = AdapterInput {
+            country_leader_roles: vec![CountryLeaderRoleRoot {
+                country_leader_addr: country_leader,
+                char_id: 100,
+                name: None,
+                token: None,
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.identity_mismatch_rows, 1);
+        assert_eq!(result.stats.country_leader_role_rows, 0);
+        assert!(result.frame.country_leader_roles.is_empty());
+        // A recycled object reads cleanly. Filing it as "stably dead" would
+        // claim the role no longer exists, which is a different and unproven
+        // statement.
+        assert_eq!(result.stats.dead_roots, 0);
+        assert_eq!(result.stats.rejected_roots, 0);
+        assert!(result.stats.has_rejections());
+        assert_ne!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+    }
+
+    /// A role whose character changed country is emitted under the country it
+    /// is in NOW, not the census's and not refused.
+    ///
+    /// The role row used to take its country from the census, so before this
+    /// change the row published a stale country with a current char id and
+    /// nothing compared the two. Taking the country from the same live read
+    /// that produced the char id removes the staleness instead of detecting
+    /// it, and a legitimate transfer costs no row at all.
+    ///
+    /// MUTATION: emit `root.country_tag_db_id` in `read_country_leader_role`
+    /// — restoring the field to the root — and this fails with country 2.
+    #[test]
+    fn a_country_leader_whose_character_changed_country_is_emitted_under_the_live_country() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        let country_leader = 0x3000;
+        // The census read this role under country 2; it is country 3's now.
+        write_character(&mut mem, character, 100, 3);
+        mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+        mem.write_u64(country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF, character);
+
+        let input = AdapterInput {
+            country_leader_roles: vec![CountryLeaderRoleRoot {
+                country_leader_addr: country_leader,
+                char_id: 100,
+                name: None,
+                token: None,
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.identity_mismatch_rows, 0);
+        assert_eq!(result.stats.country_leader_role_rows, 1);
+        assert_eq!(result.frame.country_leader_roles[0].country_tag_db_id, 3);
+        assert_eq!(result.frame.country_leader_roles[0].char_id, 100);
+        assert!(!result.stats.has_rejections());
+    }
+
+    /// The control for the role path.
+    #[test]
+    fn an_unchanged_country_leader_role_is_emitted() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        let country_leader = 0x3000;
+        write_character(&mut mem, character, 100, 2);
+        mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+        mem.write_u64(country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF, character);
+
+        let input = AdapterInput {
+            country_leader_roles: vec![CountryLeaderRoleRoot {
+                country_leader_addr: country_leader,
+                char_id: 100,
+                name: None,
+                token: None,
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.identity_mismatch_rows, 0);
+        assert_eq!(result.stats.country_leader_role_rows, 1);
+        assert_eq!(result.frame.country_leader_roles[0].char_id, 100);
+        assert_eq!(result.frame.country_leader_roles[0].country_tag_db_id, 2);
+        assert!(!result.stats.has_rejections());
     }
 
     #[test]

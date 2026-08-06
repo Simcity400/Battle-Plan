@@ -54,7 +54,14 @@ extern "system" {
         protect: Dword,
     ) -> *mut c_void;
     fn VirtualFree(address: *mut c_void, size: usize, free_type: Dword) -> Bool;
+    fn VirtualProtect(
+        address: *mut c_void,
+        size: usize,
+        new_protect: Dword,
+        old_protect: *mut Dword,
+    ) -> Bool;
 }
+const BENCH_PAGE_READONLY: Dword = 0x02;
 const BENCH_MEM_RESERVE: Dword = 0x2000;
 const BENCH_MEM_COMMIT_FLAG: Dword = 0x1000;
 const BENCH_MEM_RELEASE: Dword = 0x8000;
@@ -337,6 +344,10 @@ fn bench_world() -> BenchWorld {
         if idx < T15_FRAME_CHARACTERS {
             character_roots.push(CharacterRoot {
                 character_addr: addr as u64,
+                // Must match the body written above, or the frame walk
+                // refuses every root as recycled and the benchmarks time the
+                // refusal path instead of the read path.
+                char_id: idx as u32,
                 name: Some(name),
                 token: Some(token),
             });
@@ -366,9 +377,12 @@ fn bench_world() -> BenchWorld {
             addr + CCOUNTRY_LEADER_CHARACTER_PTR_OFF as usize,
             character as u64,
         );
+        let character_idx = idx % T15_FRAME_CHARACTERS;
         country_leader_roots.push(CountryLeaderRoleRoot {
             country_leader_addr: addr as u64,
-            country_tag_db_id: (idx % 200) as u32,
+            // Must be the char id the character body carries, or the walk
+            // refuses the role as recycled.
+            char_id: character_idx as u32,
             name: Some(format!("Country Leader {idx}")),
             token: Some(format!("LEADER_ROLE_{idx}")),
         });
@@ -1617,6 +1631,7 @@ fn d47_cost_frame_walk_string_share() {
         .iter()
         .map(|root| CharacterRoot {
             character_addr: root.character_addr,
+            char_id: root.char_id,
             name: None,
             token: None,
         })
@@ -2942,4 +2957,717 @@ fn d47_cost_prewarm_clock_bracket() {
         warm / 21_784.0 * 100.0,
         cold / 21_784.0 * 100.0
     );
+}
+
+// ---------------------------------------------------------------------------
+// The manager pointer vectors (lane DC, 2026-08-06).
+//
+// `domain47_read_exact_manager_roster` reads the character manager's two
+// `T*[]` vectors THREE times per prewarm — opening, the opening re-read that
+// proves the arrays stable before any CCharacter field is trusted, and the
+// closing pass — and each read used to take every entry through
+// `read_u64_stable`, i.e. TWO guarded 8-byte calls per entry. At t28's census
+// width (`domain47_manager_historical_count` 2_690_856 / `record_count` 266 =
+// 10_116, `domain47_manager_dynamic_count` 872_014 / 266 = 3_278) that is
+// 13_394 entries x 2 reads x 3 passes = 80_364 guarded calls per prewarm, to
+// move 321 KiB of bytes that are ADJACENT by construction.
+//
+// This is the one part of the d47 prewarm the contiguous bench arena models
+// FAITHFULLY rather than optimistically: the live array is one heap
+// allocation, so it is contiguous live too, and its region lookups hit the
+// MRU entry live exactly as they do here. The scattered-object caveat in the
+// module header does not apply to this measurement.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// A SCATTERED census fixture (lane DC, 2026-08-06).
+//
+// The module header states this bench's central limitation: its arena is one
+// contiguous block with a 0x180 stride, so every object is on a page the last
+// one warmed, `range_confirmed_good` always hits its MRU entry, and the
+// hardware prefetcher predicts the whole walk. The live heap is the opposite —
+// each `CCharacter` is an individual allocation in a multi-gigabyte heap, so
+// the census is a gather over ~13_400 unrelated pages. That gap IS the
+// measurement lane DB reported: 3.7 ms for the offline walk against 24.9 ms
+// live, for the same reads over the same object counts.
+//
+// This fixture models part of that gap instead of merely noting it. Same
+// production calls, same object count, but every object gets a 4 KiB page to
+// itself — bodies on one page set, string buffers on a DISJOINT one — and the
+// visit order is a deterministic shuffle.
+//
+// WHAT IT MODELS: page-level scatter. No two objects share a cache line, a
+// page or a TLB entry, and the visit order has no stride, so the hardware
+// prefetcher predicts nothing and each object costs its own TLB walk. That is
+// the structural property of the live heap the contiguous arena erases.
+//
+// WHAT IT DOES NOT MODEL, and this is the honest limit (Codex 019fd6ea,
+// finding 4): COLD DRAM. Only a few lines of each 4 KiB page are ever
+// touched, so the real last-level footprint is a few MiB, not the 110 MiB the
+// pages span — and on a host with a large L3 the timed passes stay largely
+// cache-resident. `time_us` also warms the world once and then repeats it.
+// So the penalty measured here is the TLB/locality term ALONE, with the DRAM
+// term missing. The calibration test below prints it: 3.35x measured
+// 2026-08-06, against lane DB's live-versus-offline 6.7x — about half the
+// live penalty, reproduced. Everything measured on this fixture is therefore
+// a LOWER bound on the live effect of a change that targets memory latency,
+// never an estimate of it.
+//
+// It is not a live measurement and its absolute microseconds are this
+// machine's; the durable reading is the RATIO between two arms timed on it
+// back to back.
+// ---------------------------------------------------------------------------
+
+/// One 4 KiB page per object: enough that no two objects share a cache line,
+/// a page, or a TLB entry, which is the live layout's effect.
+const SCATTER_PAGE: usize = 0x1000;
+
+struct ScatteredCensusWorld {
+    _arena: BenchArena,
+    roots: ResolvedTypeRoots,
+    /// Character body addresses in VISIT order (the roster's order), which is
+    /// unrelated to their address order.
+    census_characters: Vec<usize>,
+    /// Each character's string-buffer page, same order. Kept so the fixture's
+    /// own structural claim — one object per page — is testable rather than
+    /// asserted in a comment.
+    string_buffers: Vec<usize>,
+}
+
+/// SplitMix64, so the shuffle is deterministic run to run and the two arms of
+/// an A/B always walk the identical address sequence.
+fn scatter_rng(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+fn scattered_census_world() -> ScatteredCensusWorld {
+    let count = T28_MANAGER_ENTRIES;
+    // TWO disjoint page sets: `count` pages of bodies followed by `count`
+    // pages of string buffers. Putting a character's strings on ANOTHER
+    // character's body page (the first shape of this fixture) meant every
+    // used page was shared by two objects, which is exactly the spatial
+    // locality the fixture exists to remove.
+    let arena = BenchArena::in_heap_window(2 * count * SCATTER_PAGE + SCATTER_PAGE);
+    let string_base = arena.base + count * SCATTER_PAGE;
+
+    // A real permutation (Fisher-Yates), not a multiplicative sequence: a
+    // constant index stride is a constant ADDRESS stride, which a strided
+    // hardware prefetcher follows just as happily as a sequential one and
+    // would quietly turn this fixture back into the contiguous case.
+    let mut pages: Vec<usize> = (0..count).collect();
+    let mut state = 0x5eed_d47_c0ffee_u64;
+    for idx in (1..count).rev() {
+        let swap = (scatter_rng(&mut state) % (idx as u64 + 1)) as usize;
+        pages.swap(idx, swap);
+    }
+    // A second, independent shuffle for the string pages, so following a
+    // string pointer is not a fixed displacement from the body that named it.
+    let mut string_pages: Vec<usize> = (0..count).collect();
+    let mut string_state = 0x5eed_d47_5721_1465_u64;
+    for idx in (1..count).rev() {
+        let swap = (scatter_rng(&mut string_state) % (idx as u64 + 1)) as usize;
+        string_pages.swap(idx, swap);
+    }
+
+    let roots = ResolvedTypeRoots {
+        ccharacter_vtable: BENCH_CCHARACTER_VTABLE,
+        carmy_leader_vtable: BENCH_CARMY_LEADER_VTABLE,
+        cnavy_leader_vtable: BENCH_CNAVY_LEADER_VTABLE,
+        ccountry_leader_vtable: BENCH_CCOUNTRY_LEADER_VTABLE,
+        cadvisor_vtable: BENCH_CADVISOR_VTABLE,
+        cunit_leader_trait_vtable: BENCH_CUNIT_LEADER_TRAIT_VTABLE,
+    };
+
+    let mut census_characters = Vec::with_capacity(count);
+    let mut string_buffers = Vec::with_capacity(count);
+    for idx in 0..count {
+        let addr = arena.base + pages[idx] * SCATTER_PAGE;
+        // Each character's heap string buffers live on a page of their own in
+        // the disjoint string half, because live they are separate
+        // allocations that share nothing with the object that names them.
+        let strings = string_base + string_pages[idx] * SCATTER_PAGE;
+        arena.put_u64(addr, BENCH_CCHARACTER_VTABLE);
+        arena.put_u32(addr + CCHARACTER_TYPE_OFF as usize, CCHARACTER_TYPE_ID);
+        arena.put_u32(addr + CCHARACTER_ID_OFF as usize, idx as u32);
+        arena.put_u32(addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF, idx as u32);
+        arena.put_u32(
+            addr + CCHARACTER_COUNTRY_TAG_DB_ID_OFF as usize,
+            (idx % 200) as u32,
+        );
+        arena.put_u64(addr + CCHARACTER_UNIT_LEADER_PTR_OFF as usize, 0);
+        // Half SSO, half heap-backed, the live mix.
+        let name = if idx % 2 == 0 {
+            format!("Name {idx}")
+        } else {
+            format!("A Rather Longer Character Name {idx}")
+        };
+        let token = format!("GER_character_token_{idx}");
+        arena.put_msvc_string(addr + CCHARACTER_NAME_OFF as usize, strings, &name);
+        arena.put_msvc_string(addr + CCHARACTER_TOKEN_OFF as usize, strings + 0x40, &token);
+        census_characters.push(addr);
+        string_buffers.push(strings);
+    }
+
+    ScatteredCensusWorld {
+        _arena: arena,
+        roots,
+        census_characters,
+        string_buffers,
+    }
+}
+
+/// The production census body, verbatim, over a scattered world. `prefetch`
+/// selects whether the loop issues the lookahead hint the collector issues.
+fn scattered_census_loop(world: &ScatteredCensusWorld, prefetch: bool) -> usize {
+    scattered_census_loop_at(
+        world,
+        prefetch.then_some(DOMAIN47_PREFETCH_DISTANCE),
+    )
+}
+
+/// The same loop at an arbitrary lookahead, so the constant can be shown to
+/// sit on a plateau rather than being asserted. `None` issues no hint.
+fn scattered_census_loop_at(world: &ScatteredCensusWorld, distance: Option<usize>) -> usize {
+    let mem = Domain47InProcessMemory;
+    let mut sink = 0usize;
+    for (ordinal, addr) in world.census_characters.iter().copied().enumerate() {
+        if let Some(distance) = distance {
+            if let Some(ahead) = world.census_characters.get(ordinal.wrapping_add(distance)) {
+                domain47_prefetch_object(
+                    *ahead,
+                    domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN,
+                );
+            }
+        }
+        let name_token_addr = addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+        let (first, opening) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (second, closing) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (name, token) = domain47_character_root_strings(addr);
+        sink += opening.is_some() as usize
+            + closing.is_some() as usize
+            + first.is_ok() as usize
+            + second.is_ok() as usize
+            + name.map_or(0, |v| v.len())
+            + token.map_or(0, |v| v.len());
+    }
+    sink
+}
+
+/// `time_us_median_ab` at a caller-chosen iteration count. The scattered
+/// fixture is ~55 MiB per pass, so `BENCH_ITERATIONS` (200) would be minutes
+/// per sample for no extra resolution.
+fn time_us_median_ab_n<A: FnMut() -> usize, B: FnMut() -> usize>(
+    runs: usize,
+    iterations: usize,
+    mut a: A,
+    mut b: B,
+) -> (f64, f64) {
+    let mut a_samples = Vec::with_capacity(runs);
+    let mut b_samples = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        a_samples.push(time_us(iterations, &mut a).0);
+        b_samples.push(time_us(iterations, &mut b).0);
+    }
+    a_samples.sort_by(|x, y| x.partial_cmp(y).expect("no NaN timings"));
+    b_samples.sort_by(|x, y| x.partial_cmp(y).expect("no NaN timings"));
+    (a_samples[runs / 2], b_samples[runs / 2])
+}
+
+/// What the contiguous arena hides: the SAME census loop, over the same object
+/// count, once per-object-on-its-own-page-in-shuffled-order and once
+/// contiguous. This is the instrument's own calibration — run it before
+/// quoting anything else measured on the scattered fixture.
+///
+/// AN INSTRUMENT, NOT A GATE. It prints a ratio and asserts only that the
+/// fixture read something, so removing the scatter would not fail it. The
+/// scatter itself is gated by
+/// `d47_scattered_fixture_gives_every_object_its_own_page`, which is an
+/// ordinary test. Wall-time assertions are deliberately absent: this machine
+/// is usually also building something, and a flaky gate is worse than none
+/// (Codex 019fd6ea, finding 6).
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_scatter_penalty() {
+    let contiguous = bench_world();
+    let scattered = scattered_census_world();
+    page_cache_new_frame();
+    assert!(scattered_census_loop(&scattered, false) > 0, "fixture read nothing");
+
+    let (flat, scatter) = time_us_median_ab_n(
+        9,
+        200,
+        || census_loop(&contiguous),
+        || scattered_census_loop(&scattered, false),
+    );
+    println!(
+        "d47_cost census scatter penalty: contiguous {flat:.1} us -> scattered {scatter:.1} us \
+         ({:.2}x) over {} vs {} characters. Lane DB's live/offline ratio for the whole prewarm \
+         was 24873/3700 = 6.7x.",
+        scatter / flat,
+        T15_CENSUS_CHARACTERS,
+        T28_MANAGER_ENTRIES,
+    );
+}
+
+/// A/B of the lookahead hint the collector's census now issues, on the
+/// fixture that can see it.
+///
+/// AN INSTRUMENT, NOT A GATE, for the same reason as its sibling above: it
+/// still passes if the hint becomes a no-op. What IS gated is the property
+/// that matters for correctness — that the hint changes nothing that is read
+/// — by `d47_census_prefetch_does_not_change_what_is_read`.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_prefetch_ab() {
+    let world = scattered_census_world();
+    // Both arms must read the same characters, or one is timing refusals.
+    page_cache_new_frame();
+    let plain = scattered_census_loop(&world, false);
+    page_cache_new_frame();
+    let hinted = scattered_census_loop(&world, true);
+    assert!(plain > 0, "fixture read nothing");
+    assert_eq!(
+        plain, hinted,
+        "the hint changed what was read, which it cannot legally do"
+    );
+
+    let (without, with) = time_us_median_ab_n(
+        9,
+        200,
+        || scattered_census_loop(&world, false),
+        || scattered_census_loop(&world, true),
+    );
+    println!(
+        "d47_cost AB census prefetch (scattered fixture): no hint {without:.1} us -> hinted \
+         {with:.1} us ({:+.1}%) over {} characters at distance {}.",
+        (with - without) / without * 100.0,
+        T28_MANAGER_ENTRIES,
+        DOMAIN47_PREFETCH_DISTANCE,
+    );
+}
+
+/// Is `DOMAIN47_PREFETCH_DISTANCE` on a plateau or on a cliff? A constant
+/// picked by argument is only as good as the shape of the curve around it, so
+/// print the curve rather than asserting the point.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_prefetch_distance_sweep() {
+    let world = scattered_census_world();
+    let mut line = String::new();
+    // 9 runs x 200 iterations. At 5 x 20 the whole curve sat inside the
+    // run-to-run noise of a machine that is usually also building something,
+    // and a curve you cannot separate from noise is not a curve.
+    for distance in [None, Some(1), Some(2), Some(4), Some(8), Some(16), Some(32)] {
+        let (us, sink) = time_us_median_n(9, 200, || scattered_census_loop_at(&world, distance));
+        assert!(sink > 0, "fixture read nothing");
+        line.push_str(&match distance {
+            None => format!("none {us:.1} us | "),
+            Some(distance) => format!("{distance} {us:.1} us | "),
+        });
+    }
+    println!("d47_cost census prefetch distance sweep (scattered fixture): {line}");
+}
+
+fn time_us_median_n<F: FnMut() -> usize>(
+    runs: usize,
+    iterations: usize,
+    mut body: F,
+) -> (f64, usize) {
+    let mut samples = Vec::with_capacity(runs);
+    let mut sink = 0usize;
+    for _ in 0..runs {
+        let (us, s) = time_us(iterations, &mut body);
+        samples.push(us);
+        sink = sink.wrapping_add(s);
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+    (samples[runs / 2], sink)
+}
+
+/// The scattered fixture's structural claim, tested rather than asserted in a
+/// comment: every body and every string buffer is alone on its page, and the
+/// visit order is a real permutation.
+///
+/// The first version of this fixture put each character's strings on ANOTHER
+/// character's body page, so every used page was shared by two objects and
+/// half the "scattered" reads were spatially local (Codex 019fd6ea, finding
+/// 4). That was invisible without this test.
+///
+/// MUTATION: derive the string page from `pages` instead of `string_pages`
+/// (i.e. put strings back on a body page) and the disjointness assertion
+/// fails.
+#[test]
+fn d47_scattered_fixture_gives_every_object_its_own_page() {
+    let world = scattered_census_world();
+    let mut pages = BTreeSet::new();
+    for addr in world
+        .census_characters
+        .iter()
+        .chain(world.string_buffers.iter())
+    {
+        assert!(
+            pages.insert(addr / SCATTER_PAGE),
+            "two objects share a page, so the fixture is not scattered"
+        );
+    }
+    assert_eq!(pages.len(), T28_MANAGER_ENTRIES * 2);
+    // A permutation, not a shuffled prefix: every body address must be
+    // distinct AND the visit order must not be the address order, or the
+    // hardware prefetcher walks it sequentially.
+    let mut ascending = world.census_characters.clone();
+    ascending.sort_unstable();
+    ascending.dedup();
+    assert_eq!(ascending.len(), T28_MANAGER_ENTRIES);
+    assert_ne!(
+        ascending, world.census_characters,
+        "the visit order is the address order, so nothing is being scattered"
+    );
+}
+
+/// The hint must not change ONE value the census reads. Same fixture, same
+/// order, both arms compared field for field rather than by a summed sink.
+///
+/// This is the property that makes the change legal at all: `_mm_prefetch`
+/// has no architectural effect, so a difference here would mean the loop
+/// bodies had diverged.
+#[test]
+fn d47_census_prefetch_does_not_change_what_is_read() {
+    let world = scattered_census_world();
+    let mem = Domain47InProcessMemory;
+    let observe = |prefetch: bool| {
+        page_cache_new_frame();
+        let mut out = Vec::with_capacity(world.census_characters.len());
+        for (ordinal, addr) in world.census_characters.iter().copied().enumerate() {
+            if prefetch {
+                domain47_prefetch_ahead(
+                    &world.census_characters,
+                    ordinal,
+                    domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN,
+                );
+            }
+            let name_token_addr = addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+            let (fields, token_id) = domain47::extractor::read_character_census_fields(
+                &mem,
+                &world.roots,
+                addr as u64,
+                || read_u32_stable(name_token_addr),
+            );
+            let (name, token) = domain47_character_root_strings(addr);
+            out.push((fields.ok(), token_id, name, token));
+        }
+        out
+    };
+    let without = observe(false);
+    let with = observe(true);
+    assert_eq!(without, with);
+    // A fixture that resolved nothing would make the comparison vacuous.
+    assert_eq!(without.len(), T28_MANAGER_ENTRIES);
+    assert!(without[0].0.is_some());
+    assert!(without[1].2.is_some());
+}
+
+/// t28's `domain47_manager_historical_count` / `record_count`.
+const T28_MANAGER_HISTORICAL: usize = 10_116;
+/// t28's `domain47_manager_dynamic_count` / `record_count`.
+const T28_MANAGER_DYNAMIC: usize = 3_278;
+const T28_MANAGER_ENTRIES: usize = T28_MANAGER_HISTORICAL + T28_MANAGER_DYNAMIC;
+
+/// One contiguous pointer array of `T28_MANAGER_ENTRIES` entries, every entry
+/// a distinct address inside the heap window (so `is_map_control_heap_pointer`
+/// admits it and neither arm measures a refusal).
+struct ManagerVectorBenchWorld {
+    _arena: BenchArena,
+    data: usize,
+    size: u32,
+}
+
+/// A synthetic entry VALUE: distinct, 8-aligned and inside `[HEAP_LO,
+/// HEAP_HI)`, so `is_map_control_heap_pointer` admits it.
+///
+/// The pointer VALUES are what the vector reader validates; the ARRAY itself
+/// only has to be readable, and it is never dereferenced through these
+/// entries. Synthesising the values lets these fixtures use an ordinary
+/// `VirtualAlloc` instead of `BenchArena::in_heap_window`, whose fixed retry
+/// slots start at `HEAP_LO + 0x4000_0000` and are all swallowed by the
+/// 128 MiB scattered-census arena when the two run concurrently — which is
+/// how the test runner runs them.
+fn synthetic_entry(ordinal: usize) -> u64 {
+    (HEAP_LO + 0x1000 * (ordinal + 1)) as u64
+}
+
+fn manager_vector_bench_world() -> ManagerVectorBenchWorld {
+    let bytes = T28_MANAGER_ENTRIES * 8;
+    let arena = BenchArena::new(bytes + 0x1000);
+    let data = arena.base;
+    for ordinal in 0..T28_MANAGER_ENTRIES {
+        arena.put_u64(data + ordinal * 8, synthetic_entry(ordinal));
+    }
+    ManagerVectorBenchWorld {
+        _arena: arena,
+        data,
+        size: T28_MANAGER_ENTRIES as u32,
+    }
+}
+
+/// The entry loop as it was before this lane: one `read_u64_stable` — two
+/// guarded calls — per entry.
+fn manager_vector_entries_legacy(
+    data: usize,
+    size: u32,
+) -> Result<Vec<usize>, Domain47ManagerRosterFailureKind> {
+    let mut entries = Vec::with_capacity(size as usize);
+    for ordinal in 0..size {
+        let entry_addr = (ordinal as usize)
+            .checked_mul(8)
+            .and_then(|offset| data.checked_add(offset))
+            .ok_or(Domain47ManagerRosterFailureKind::VectorEntryInvalid)?;
+        let character_addr = read_u64_stable(entry_addr)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|addr| is_map_control_heap_pointer(*addr))
+            .ok_or(Domain47ManagerRosterFailureKind::VectorEntryInvalid)?;
+        entries.push(character_addr);
+    }
+    Ok(entries)
+}
+
+/// In-process, run-by-run interleaved A/B of the manager pointer-vector read,
+/// reported as ONE prewarm's worth (three passes over both vectors).
+///
+/// AN INSTRUMENT, NOT A GATE: it still passes if the bulk reader reverts to
+/// per-entry reads. Its correctness properties are gated separately and
+/// deterministically by `d47_manager_vector_bulk_and_per_entry_reads_agree`,
+/// `..._refuses_a_non_heap_entry_like_the_per_entry_read` and
+/// `..._falls_back_to_per_entry_reads_on_a_refused_chunk` — and the
+/// `retries == 0` assertion here is the one thing that would catch the bulk
+/// path silently never being taken.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_manager_vector_ab() {
+    let world = manager_vector_bench_world();
+    // Both arms must resolve every entry, or one of them is timing a refusal.
+    page_cache_new_frame();
+    let legacy_entries = manager_vector_entries_legacy(world.data, world.size)
+        .expect("legacy arm must read the whole vector");
+    page_cache_new_frame();
+    let mut retries = 0u32;
+    let bulk_entries =
+        domain47_read_manager_vector_entries(world.data, world.size, &mut retries)
+            .expect("bulk arm must read the whole vector");
+    assert_eq!(
+        legacy_entries, bulk_entries,
+        "the two arms did not read the same entries"
+    );
+    assert_eq!(legacy_entries.len(), T28_MANAGER_ENTRIES);
+    // A fixture that fell back to the per-entry loop would be timing the arm
+    // it is supposed to be timing against.
+    assert_eq!(retries, 0, "the bulk arm fell back to per-entry reads");
+
+    let (legacy, bulk) = time_us_median_ab(
+        5,
+        || {
+            manager_vector_entries_legacy(world.data, world.size)
+                .map_or(0, |entries| entries.len())
+        },
+        || {
+            domain47_read_manager_vector_entries(world.data, world.size, &mut 0)
+                .map_or(0, |entries| entries.len())
+        },
+    );
+    // One prewarm reads the vectors three times; this fixture is both vectors'
+    // width in one array, so one pass here is one pass over both.
+    println!(
+        "d47_cost AB manager_vector: per-entry {legacy:.1} us -> bulk {bulk:.1} us ({:+.1}%) \
+         over {T28_MANAGER_ENTRIES} entries; per PREWARM (3 passes) {:.1} us -> {:.1} us, a \
+         saving of {:.1} us against t28's 24873 us p50 prewarm = {:.1}% of it. Guarded calls \
+         per prewarm: {} -> {}.",
+        (bulk - legacy) / legacy * 100.0,
+        legacy * 3.0,
+        bulk * 3.0,
+        (legacy - bulk) * 3.0,
+        (legacy - bulk) * 3.0 / 24_873.0 * 100.0,
+        T28_MANAGER_ENTRIES * 2 * 3,
+        T28_MANAGER_ENTRIES.div_ceil(DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES) * 2 * 3,
+    );
+}
+
+/// The bulk reader and the per-entry reader must agree ENTRY FOR ENTRY, at a
+/// width that crosses several chunks and does not divide evenly by the chunk
+/// size (so the tail chunk is exercised).
+///
+/// MUTATION: decode the entry as big-endian in the bulk arm, or drop its
+/// `is_map_control_heap_pointer` filter, and this fails.
+#[test]
+fn d47_manager_vector_bulk_and_per_entry_reads_agree() {
+    let entries = DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES * 3 + 37;
+    let arena = BenchArena::new(0x10000);
+    assert!(entries * 8 <= 0x10000);
+    for ordinal in 0..entries {
+        arena.put_u64(arena.base + ordinal * 8, synthetic_entry(ordinal));
+    }
+    page_cache_new_frame();
+    let legacy = manager_vector_entries_legacy(arena.base, entries as u32)
+        .expect("per-entry arm must read the whole vector");
+    page_cache_new_frame();
+    let mut retries = 0u32;
+    let bulk = domain47_read_manager_vector_entries(arena.base, entries as u32, &mut retries)
+        .expect("bulk arm must read the whole vector");
+    assert_eq!(legacy, bulk);
+    assert_eq!(bulk.len(), entries);
+    // A contiguous, wholly-committed array must take the bulk path for every
+    // chunk, or this compares two runs of the SAME per-entry reader.
+    assert_eq!(retries, 0);
+}
+
+/// An entry the pointer filter refuses must fail the read through either
+/// path, and must never be silently skipped.
+///
+/// MUTATION: make the bulk arm `continue` instead of returning on a refused
+/// pointer and this fails — the vector would come back short with no error.
+#[test]
+fn d47_manager_vector_bulk_refuses_a_non_heap_entry_like_the_per_entry_read() {
+    let entries = DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES + 5;
+    let arena = BenchArena::new(0x10000);
+    assert!(entries * 8 <= 0x10000);
+    for ordinal in 0..entries {
+        arena.put_u64(arena.base + ordinal * 8, synthetic_entry(ordinal));
+    }
+    // One entry in the SECOND chunk is outside the heap window.
+    let bad_ordinal = DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES + 2;
+    arena.put_u64(arena.base + bad_ordinal * 8, 0x10);
+    page_cache_new_frame();
+    let legacy = manager_vector_entries_legacy(arena.base, entries as u32);
+    page_cache_new_frame();
+    let bulk = domain47_read_manager_vector_entries(arena.base, entries as u32, &mut 0);
+    assert_eq!(
+        legacy.as_ref().err(),
+        Some(&Domain47ManagerRosterFailureKind::VectorEntryInvalid)
+    );
+    assert_eq!(
+        bulk.as_ref().err(),
+        Some(&Domain47ManagerRosterFailureKind::VectorEntryInvalid)
+    );
+}
+
+/// A fallback that happened BEFORE the read went on to fail must still be
+/// counted.
+///
+/// Zero retries already means "no chunk fell back", so a reader who sees zero
+/// on a failed census concludes the bulk path worked — when what actually
+/// happened is that the count was discarded. That is why the accumulator is
+/// the CALLER's and not a return value: `?` and early returns cannot lose it
+/// (Codex 019fd70b, finding 1).
+///
+/// MUTATION: make `domain47_read_manager_vector_entries` return the count
+/// instead of bumping the caller's, and this fails with 0.
+#[test]
+fn d47_manager_vector_counts_a_fallback_that_preceded_a_failure() {
+    let arena = BenchArena::new(0x10000);
+    let entries = DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES * 2;
+    let data = arena.base + 0x400;
+    for ordinal in 0..entries {
+        arena.put_u64(data + ordinal * 8, synthetic_entry(ordinal));
+    }
+    // An entry the pointer filter refuses, inside the chunk that straddles
+    // the boundary — so the chunk falls back FIRST and then the per-entry
+    // read of this ordinal fails.
+    let bad_ordinal = DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES + 10;
+    arena.put_u64(data + bad_ordinal * 8, 0x10);
+    let mut previous: Dword = 0;
+    let protected = unsafe {
+        VirtualProtect(
+            (arena.base + 0x1000) as *mut c_void,
+            0xF000,
+            BENCH_PAGE_READONLY,
+            &mut previous,
+        )
+    };
+    assert!(protected != 0, "VirtualProtect must split the arena");
+
+    page_cache_new_frame();
+    let mut retries = 0u32;
+    let outcome = domain47_read_manager_vector_entries(data, entries as u32, &mut retries);
+    assert_eq!(
+        outcome.err(),
+        Some(Domain47ManagerRosterFailureKind::VectorEntryInvalid)
+    );
+    assert_eq!(
+        retries, 1,
+        "the fallback that happened before the failure must survive it"
+    );
+}
+
+/// A chunk whose bulk copy cannot be taken falls back to the per-entry reads
+/// and still returns every entry.
+///
+/// The refused range is produced the way a live one is: the array crosses a
+/// PROTECTION boundary, so `VirtualQuery` reports two adjacent regions. Both
+/// are committed and readable, so every 8-byte entry reads individually, but
+/// `read_into` refuses the 2 KiB chunk that straddles them — the same
+/// whole-range-inside-ONE-region rule `read_object_window` applies. A
+/// bulk-only reader would fail the entire census here.
+///
+/// MUTATION: delete the `else` arm of the chunk loop (return `Err` when the
+/// bulk copy is refused) and this fails.
+#[test]
+fn d47_manager_vector_falls_back_to_per_entry_reads_on_a_refused_chunk() {
+    let arena = BenchArena::new(0x10000);
+    // Two full chunks starting 0x400 into the arena, so the SECOND chunk
+    // ([0xC00, 0x1400)) straddles the page boundary at 0x1000.
+    let entries = DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES * 2;
+    let data = arena.base + 0x400;
+    for ordinal in 0..entries {
+        arena.put_u64(data + ordinal * 8, synthetic_entry(ordinal));
+    }
+    // Split the arena into two VirtualQuery regions without making either
+    // unreadable.
+    let mut previous: Dword = 0;
+    let protected = unsafe {
+        VirtualProtect(
+            (arena.base + 0x1000) as *mut c_void,
+            0xF000,
+            BENCH_PAGE_READONLY,
+            &mut previous,
+        )
+    };
+    assert!(protected != 0, "VirtualProtect must split the arena");
+
+    page_cache_new_frame();
+    // The straddling chunk must really be refused, or this test passes
+    // without ever reaching the fallback it exists to pin.
+    let straddling = data + DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES * 8;
+    let mut probe = vec![0u8; DOMAIN47_MANAGER_VECTOR_COPY_ENTRIES * 8];
+    assert!(
+        !read_into(straddling, &mut probe),
+        "the chunk crossing the protection boundary must be refused"
+    );
+    // ...and the entries inside it must still be individually readable, or
+    // the fallback would fail too and the comparison below would be vacuous.
+    assert!(read_u64_stable(straddling).is_some());
+    page_cache_new_frame();
+    let legacy = manager_vector_entries_legacy(data, entries as u32)
+        .expect("every entry is individually readable");
+    page_cache_new_frame();
+    let mut retries = 0u32;
+    let bulk = domain47_read_manager_vector_entries(data, entries as u32, &mut retries)
+        .expect("the fallback must read what the per-entry loop reads");
+    assert_eq!(legacy, bulk);
+    assert_eq!(bulk.len(), entries);
+    // Exactly one chunk straddles the boundary, and the retry must be
+    // REPORTED: a fallback that happened silently would be a behaviour change
+    // with no trace in the manifest (Codex 019fd6ea, finding 3).
+    assert_eq!(retries, 1);
 }

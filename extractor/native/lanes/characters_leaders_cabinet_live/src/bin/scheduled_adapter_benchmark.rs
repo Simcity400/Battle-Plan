@@ -242,6 +242,10 @@ fn build_live_scale_fixture(
         write_character(&mut mem, addr, idx + 1, tag_db_id);
         characters.push(CharacterRoot {
             character_addr: addr,
+            // The identity `write_character` just wrote at `addr`; a root
+            // that disagreed would be refused as recycled and the benchmark
+            // would time the refusal path.
+            char_id: idx + 1,
             name: None,
             token: None,
         });
@@ -308,7 +312,7 @@ fn build_live_scale_fixture(
         mem.write_u64(addr + CCOUNTRY_LEADER_CHARACTER_PTR_OFF, character_addr);
         country_leader_roles.push(CountryLeaderRoleRoot {
             country_leader_addr: addr,
-            country_tag_db_id: character_idx % 365 + 1,
+            char_id: character_idx + 1,
             name: None,
             token: None,
         });

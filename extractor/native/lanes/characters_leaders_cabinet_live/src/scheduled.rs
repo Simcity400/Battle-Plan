@@ -316,6 +316,7 @@ mod tests {
             skipped_root_rows: 0,
             characters: vec![CharacterRoot {
                 character_addr: character,
+                char_id: 1458,
                 name: Some("Maxwell Aitken".to_string()),
                 token: Some("ENG_maxwell_aitken".to_string()),
             }],
@@ -332,7 +333,7 @@ mod tests {
             }],
             country_leader_roles: vec![CountryLeaderRoleRoot {
                 country_leader_addr: country_leader,
-                country_tag_db_id: 2,
+                char_id: 1458,
                 name: Some("Maxwell Aitken".to_string()),
                 token: Some("ENG_maxwell_aitken".to_string()),
             }],
@@ -396,6 +397,7 @@ mod tests {
             skipped_root_rows: 1,
             characters: vec![CharacterRoot {
                 character_addr: character,
+                char_id: 1458,
                 name: Some("Maxwell Aitken".to_string()),
                 token: Some("ENG_maxwell_aitken".to_string()),
             }],
@@ -409,6 +411,60 @@ mod tests {
         let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
         assert_ne!(decoded.status_flags & compact::STATUS_PARTIAL_DATA, 0);
         assert!(decoded.rows.is_empty());
+    }
+
+    /// A recycled CHARACTER must cost its own text and nothing else — checked
+    /// at the SCHEDULED layer, which is where the cost is decided.
+    ///
+    /// The adapter-level tests cannot see this: `read_native_scheduled_frame`
+    /// throws away the adapter's whole frame and substitutes a rowless one
+    /// whenever `has_rejections()` holds, so an adapter that "degrades" a row
+    /// and a wrapper that discards every row are indistinguishable one layer
+    /// down. Codex 019fd6ea, finding 1: the first version of this change
+    /// routed the degradation through `has_rejections`, and one recycled
+    /// character out of thousands emptied the entire domain-47 frame.
+    ///
+    /// MUTATION: add `identity_degraded_rows` to `AdapterBuildStats::
+    /// has_rejections` and this fails with `row_count == 0`.
+    #[test]
+    fn a_recycled_character_costs_its_own_text_and_not_the_frame() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        // The census read char 1458 here; a different character occupies the
+        // storage now.
+        write_character(&mut mem, character, 9999, 2);
+
+        let cache = NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            skipped_root_rows: 0,
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 1458,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..NativeRootCache::default()
+        };
+
+        let read = read_native_scheduled_frame(&mem, &cache, NativeFrameInput::default());
+        // The frame survives, and it carries the character that is actually
+        // there.
+        assert_ne!(read.row_count, 0, "the frame was discarded, not degraded");
+        let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
+        assert!(decoded.rows.iter().any(|row| matches!(
+            row,
+            compact::DecodedDomain47Row::Character {
+                char_id: 9999,
+                country_tag_db_id: 2,
+                name: None,
+                token: None,
+            }
+        )));
+        // The census's text reached nothing.
+        assert!(!read.payload.windows(14).any(|w| w == b"Maxwell Aitken"));
+        // Declared, not silent.
+        assert_ne!(read.status_flags & compact::STATUS_PARTIAL_DATA, 0);
     }
 
     /// Fixture with EVERY root family populated, so an equality assertion over
@@ -452,6 +508,7 @@ mod tests {
             skipped_root_rows: 0,
             characters: vec![CharacterRoot {
                 character_addr: character,
+                char_id: 1458,
                 name: Some("Maxwell Aitken".to_string()),
                 token: Some("ENG_maxwell_aitken".to_string()),
             }],
@@ -468,7 +525,7 @@ mod tests {
             }],
             country_leader_roles: vec![CountryLeaderRoleRoot {
                 country_leader_addr: country_leader,
-                country_tag_db_id: 2,
+                char_id: 1458,
                 name: Some("Maxwell Aitken".to_string()),
                 token: Some("ENG_maxwell_aitken".to_string()),
             }],

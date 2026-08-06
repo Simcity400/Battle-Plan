@@ -115,6 +115,7 @@ fn stale_root_world() -> (FakeMemory, NativeRootCache) {
         skipped_root_rows: 0,
         characters: vec![CharacterRoot {
             character_addr: character,
+            char_id: 1458,
             name: Some(STALE_NAME.to_string()),
             token: Some(STALE_TOKEN.to_string()),
         }],
@@ -125,7 +126,7 @@ fn stale_root_world() -> (FakeMemory, NativeRootCache) {
         }],
         country_leader_roles: vec![CountryLeaderRoleRoot {
             country_leader_addr: country_leader,
-            country_tag_db_id: 2,
+            char_id: 1458,
             name: None,
             token: None,
         }],
