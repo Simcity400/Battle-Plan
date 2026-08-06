@@ -26931,3 +26931,202 @@ fn d95_excluding_the_only_surface_a_carrier_had_refuses_the_record() {
         "Found: {problems:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// d86/SHP1 carries the hour its PRODUCER sealed the history in, and the fold
+// has to attribute the claim by that hour rather than by the hour it drained
+// it in.
+//
+// D86 re-serves a RETAINED history from a queue peek that performs no engine
+// read, drained at the tail of the sweep, so a record's own label routinely
+// names a later hour than the one its rows were sealed in. Before this change
+// the fold published the producer's raw hour word alone -- unaged, with no
+// index, no age and no freshness claim beside it -- and folded a history dated
+// AHEAD of its record without complaint.
+// ---------------------------------------------------------------------------
+
+/// The hour every `snapshot_for_domain_records` record is labelled with.
+const SUNK_SHIP_TEST_RECORD_HOUR: i64 = 16_959_360;
+
+/// A one-row d86 history whose producer sealed it at `producer_hour_index`.
+///
+/// The sinking is dated ten hours before the record so that it stays behind
+/// every producer hour these tests use: the carrier refuses a producer hour
+/// that sits behind a sinking it dates, which is a different rule from the one
+/// under test here.
+fn sunk_ship_payload(producer_hour_index: Option<i64>) -> Vec<u8> {
+    sunk86_lane::encode_payload(&sunk86_lane::SunkShipFrame {
+        elapsed_wall_ms: 5,
+        frame_hour: SUNK_SHIP_TEST_RECORD_HOUR as u64,
+        status_flags: 0,
+        authority: sunk86_lane::AuthorityState::StaticExact20Receipt,
+        snapshot: Some(sunk86_lane::SunkShipSnapshot {
+            source_sequence: 2,
+            producer_complete: true,
+            records_with_unavailable_text: 0,
+            producer_hour_raw: producer_hour_index.map(raw_for),
+            producer_loss: None,
+            events: vec![sunk86_lane::SunkShipEvent {
+                event_sequence: 2,
+                combat_join_present: true,
+                combat_id: 44,
+                combat_generation: 3,
+                victim_country_id_raw: 2,
+                attacker_country_id_raw: 700,
+                ui_source_country_id_raw: 8,
+                sink_date_raw: raw_for(SUNK_SHIP_TEST_RECORD_HOUR - 10),
+                victim_member_battle_slot_index: 4,
+                flags: sunk86_lane::EVENT_FLAG_KILLED,
+                victim_ship_reference_raw: [11, 12],
+                damage_source_reference_raw: [13, 14],
+                task_force_id_raw: 15,
+                terminal_context_raw: [16, 17],
+                cause_record_flag: false,
+                ship_name: "HMS Exact".into(),
+                ship_class_name: "Destroyer".into(),
+                attribution_source_name: "KMS Exact".into(),
+                attribution_source_class_name: "Cruiser".into(),
+            }],
+        }),
+    })
+    .expect("d86 fixture encodes")
+}
+
+fn sunk_ship_domain_problems(snapshot: &Value) -> Vec<String> {
+    snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .expect("domain_problems is an array")
+        .iter()
+        .filter(|problem| problem["domain_id"] == json!(86))
+        .map(|problem| problem["problem"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A history sealed one hour AFTER the record carrying it is a later hour's
+/// sealing filed under an earlier hour's label. The fold must refuse it under a
+/// cause that names itself, not relabel it onto the record's own hour.
+///
+/// What production change would make this fail: deleting the
+/// `producer_frame_age_hours` guard from `fold_sunk_ship_history`, or letting
+/// it admit a negative age. Either restores the pre-change behaviour, in which
+/// this payload folded into a history indistinguishable from one sealed in the
+/// labelled hour.
+#[test]
+fn d86_a_producer_hour_ahead_of_its_record_is_refused_by_name() {
+    let snapshot = snapshot_for_domain_records(vec![(
+        sunk86_lane::DOMAIN_ID,
+        sunk_ship_payload(Some(SUNK_SHIP_TEST_RECORD_HOUR + 1)),
+    )]);
+    assert_eq!(
+        snapshot["_r2_sunk_ship_history_live"],
+        Value::Null,
+        "a future-dated history must not reach the snapshot at all"
+    );
+    let problems = sunk_ship_domain_problems(&snapshot);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem == "sunk_ship_history_producer_hour_ahead_of_record"),
+        "the refusal has to name its own cause; a bare `invalid_sunk_ship_history` cannot be \
+         told from a malformed payload. Found: {problems:?}"
+    );
+}
+
+/// The routine case: the producer last sealed this history three hours ago and
+/// the retained slot is being re-served. The record is admitted -- refusing it
+/// would open a coverage hole on every hour the producer did not run -- but it
+/// must state its own age rather than pass an older sealing off as a current
+/// one.
+///
+/// Age and completeness are orthogonal: a re-served history stays complete,
+/// because `producer_complete` claims no SINKING is missing, not that the
+/// history was sealed in this hour.
+///
+/// What production change would make this fail: dropping
+/// `producer_frame_hour_fields` from the d86 history block, or computing the
+/// age against anything other than the record's own label hour.
+#[test]
+fn d86_a_retained_history_states_its_age_instead_of_claiming_the_label_hour() {
+    let snapshot = snapshot_for_domain_records(vec![(
+        sunk86_lane::DOMAIN_ID,
+        sunk_ship_payload(Some(SUNK_SHIP_TEST_RECORD_HOUR - 3)),
+    )]);
+    let history = &snapshot["_r2_sunk_ship_history_live"];
+    assert_eq!(history["schema_version"], json!(4));
+    assert_eq!(
+        history["producer_hour_index"],
+        json!(SUNK_SHIP_TEST_RECORD_HOUR - 3),
+        "the producer's own hour is the attribution key and must survive the fold"
+    );
+    assert_eq!(history["producer_frame_age_hours"], json!(3));
+    assert_eq!(
+        history["producer_frame_fresh"],
+        json!(false),
+        "a three-hour-old history is not a sealing of this hour"
+    );
+    assert_eq!(
+        history["producer_complete"],
+        json!(true),
+        "age is not loss: a re-served history stays complete"
+    );
+    assert_eq!(history["producer_loss"], Value::Null);
+    assert_eq!(history["events"][0]["combat_generation"], json!(3));
+
+    let fresh = snapshot_for_domain_records(vec![(
+        sunk86_lane::DOMAIN_ID,
+        sunk_ship_payload(Some(SUNK_SHIP_TEST_RECORD_HOUR)),
+    )]);
+    let fresh = &fresh["_r2_sunk_ship_history_live"];
+    assert_eq!(fresh["producer_frame_age_hours"], json!(0));
+    assert_eq!(fresh["producer_frame_fresh"], json!(true));
+}
+
+/// A producer whose own clock read failed emits no hour word at all. That is an
+/// UNKNOWN sealing time and must not read as freshness -- before the trailer
+/// existed, "no hour" and "this hour" were the same bytes.
+///
+/// What production change would make this fail: defaulting a missing producer
+/// hour to the record's label hour (age 0), which is exactly the silent relabel
+/// this task exists to remove.
+#[test]
+fn d86_a_producer_that_declared_no_hour_is_unknown_never_fresh() {
+    let snapshot =
+        snapshot_for_domain_records(vec![(sunk86_lane::DOMAIN_ID, sunk_ship_payload(None))]);
+    let history = &snapshot["_r2_sunk_ship_history_live"];
+    // The keys must be PRESENT and null, not merely absent. Indexing a
+    // `serde_json::Value` with a missing key yields `Null`, so asserting only
+    // the values would pass against the pre-change fold, which emitted the lone
+    // `producer_hour_raw` word and none of the derived three.
+    let object = history.as_object().expect("the d86 history is an object");
+    for key in [
+        "producer_hour_raw",
+        "producer_hour_index",
+        "producer_frame_age_hours",
+        "producer_frame_fresh",
+    ] {
+        assert!(
+            object.contains_key(key),
+            "the fold must state {key} even when the hour is unknown; found keys: {:?}",
+            object.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            object[key],
+            Value::Null,
+            "{key} must be null, never a value standing in for an unknown hour"
+        );
+    }
+    assert_ne!(
+        history["producer_frame_fresh"],
+        json!(true),
+        "an unknown sealing time must never be reported as a fresh one"
+    );
+    assert_eq!(
+        history["events"][0]["combat_generation"],
+        json!(3),
+        "an unknown sealing time is not a refusal: the rows still fold"
+    );
+    assert!(
+        sunk_ship_domain_problems(&snapshot).is_empty(),
+        "a producer that never read its clock is not a fold problem"
+    );
+}
