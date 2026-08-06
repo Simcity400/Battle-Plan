@@ -96,6 +96,21 @@ PLUS `delta_base_sequence` (global sequence of the first row in THIS frame's del
 rows whose `event_hour_raw` falls in this frame's window. `schema_version` selects the
 reading (policy from the resource_wire lane): v3 → whole-history path unchanged; v4 → delta.
 
+A v4 frame may also carry `direct_history_reset: true` (absent means false), which says its rows
+begin a NEW history rather than continuing the accumulated one — the consumer end of
+`DELTA_WIRE_DESIGN.md` §7.3.1's D45-local reset badge. The recorder's fold sets it when the producer
+badged a D45 record after its direct history died, and the accumulator drops its rows, its running
+count and its non-decreasing-hour thread before validating the frame. It is required rather than
+cosmetic: after a reset `delta_base_sequence` returns to 1 while the accumulator holds N rows, and
+the contiguity rule below reads an unannounced regression as gap/overlap/reorder.
+
+A reset MUST come with `direct_history_base_sequence`: the raw `row.sequence` its restarted row 1
+holds. `delta_base_sequence`/`cumulative_count` count the emitted VECTOR while `row.sequence` is the
+producer's own counter, which does not restart with the history, so the accumulator keeps a
+`sequence_offset` anchored on the declared value and checks rows at `running + 1 + offset`. The
+anchor cannot be read off the first row: an empty restart batch is legal and carries none, and the
+frame after it opens at the batch's cursor. A reset with no declared anchor is a typed refusal.
+
 Replay: `WorldTimeline` folds v4 deltas from the first frame up to `frame_hour`, validating
 contiguity (delta_base_sequence == running_count+1; rows contiguous; hours non-decreasing
 across frames; cumulative_count == running_count+len; version match) and reconstructs the

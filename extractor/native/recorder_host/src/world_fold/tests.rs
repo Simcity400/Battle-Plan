@@ -27130,3 +27130,753 @@ fn d86_a_producer_that_declared_no_hour_is_unknown_never_fresh() {
         "a producer that never read its clock is not a fold problem"
     );
 }
+
+// --- §7.3.1: the D45-LOCAL direct-history reset badge ---------------------
+
+/// `chunk3_frd_v5_direct_batch_payload` plus bit 7 of `depth_status_flags`.
+///
+/// Built by READING the base payload's status word back and adding one bit, so
+/// the badged and unbadged fixtures cannot drift apart in any other field. The
+/// two arms of the test below differ by this bit and by nothing else, which is
+/// what lets them attribute the difference in outcome to the badge.
+fn chunk3_frd_v5_direct_batch_payload_badged(
+    batch: &direct_frd_transitions_live::DirectEventBatch,
+) -> Vec<u8> {
+    let mut out = chunk3_frd_v5_direct_batch_payload(batch);
+    let flags = read_u32(&out, 8) | FRD_STATUS_DIRECT_HISTORY_RESET;
+    put_u32_at(&mut out, 8, flags);
+    out
+}
+
+/// One row's worth of D45 v5 direct-hook batches for the reset tests: hour 0's
+/// original history, and the post-failure restart.
+fn chunk3_reset_badge_batches() -> (
+    direct_frd_transitions_live::DirectEventBatch,
+    direct_frd_transitions_live::DirectEventBatch,
+    i32,
+    i32,
+    i32,
+) {
+    use direct_frd_transitions_live::{
+        DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventStateSummary,
+        UnsequencedDirectEventRow,
+    };
+    let h0 = 16_959_360i64;
+    let (raw0, raw1, raw2) = (raw_for(h0), raw_for(h0 + 1), raw_for(h0 + 2));
+    let mask = DirectEventKind::FocusCompleted.root_mask_bit();
+    let root_mask = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK;
+
+    let make = |epoch: u64, game_hour_raw: i32| {
+        // A FRESH carrier per batch. After a reset the fold treats the record
+        // as a first stream batch, so the restart legitimately begins at
+        // sequence 1 again -- which is exactly why the replay accumulator
+        // cannot read the restart as a continuation of what it holds.
+        let mut carrier = DirectEventCarrier::new();
+        let owner = carrier.allocate_instance_id().unwrap();
+        let subject = carrier.allocate_instance_id().unwrap();
+        carrier
+            .capture(UnsequencedDirectEventRow {
+                kind: DirectEventKind::FocusCompleted,
+                thread_id: 23,
+                game_hour_raw,
+                root_rva: DirectEventKind::FocusCompleted.expected_root_rva_a729(),
+                owner_instance_id: owner,
+                subject_instance_id: subject,
+                argument_instance_id: direct_frd_transitions_live::OpaqueInstanceId::NONE,
+                owner_key: 1,
+                subject_token_hash: 1,
+                subject_key: 0,
+                input_bits: 0,
+                return_bits: 1,
+                before: DirectEventStateSummary::default(),
+                after: DirectEventStateSummary {
+                    state_bits: 1 << 63,
+                    ..DirectEventStateSummary::default()
+                },
+            })
+            .unwrap();
+        DirectEventBatch {
+            hook_epoch: epoch,
+            drain_sequence: 1,
+            installed_root_mask: root_mask,
+            observed_kind_mask: mask,
+            sequence_cursor: 2,
+            producer_complete: true,
+            evidence_fixture: false,
+            rows: carrier.drain_rows().unwrap(),
+        }
+    };
+    let first = make(1, raw0);
+    // A NEW hook epoch, because the restart follows a hole. Under the old rules
+    // this alone was a second, independent reason to refuse the record.
+    let restart = make(2, raw2);
+    (first, restart, raw0, raw1, raw2)
+}
+
+/// Hour 0 folds a D45 direct batch; hour 1 carries NO D45 record; hour 2 tries
+/// to fold again.
+///
+/// This is `DELTA_WIRE_DESIGN.md` §7.3.1's measured shape, and the fixture is
+/// the smallest thing that has it: `reset_hour_state` kills the direct history
+/// whenever the fold was `frd_direct_baseline_ready` and no D45 record arrived
+/// that hour, and on t26 361 of d45's 362 gaps fall after its first data
+/// record. The failure is ABSORBING, so hour 2 is refused, and so is every hour
+/// after it for the rest of the capture.
+///
+/// BOTH ARMS ARE ASSERTED, and that is the point of the test rather than a
+/// convenience. The unbadged arm pins that fail-closed is PRESERVED -- §7.3.1 is
+/// explicit that the refusal is correct and must not simply be relaxed, because
+/// `frd_direct_transitions` is a gapless ordered event log and joining across a
+/// dropped batch would publish an event history that never happened. The badged
+/// arm pins that the domain folds again. A repair that recovered the badged arm
+/// by weakening the rule would fail the unbadged one.
+///
+/// What production change makes this fail: dropping the badge check from
+/// `fold_focus_research_decisions_depth`, moving it after any of the continuity
+/// checks it is meant to precede (each of those asks a question about the very
+/// extent the badge declares dead), or leaving any `frd_direct_*` field out of
+/// `apply_frd_direct_history_reset` -- a stale `frd_direct_hook_epoch` refuses
+/// the restart on the epoch change, a stale `frd_direct_last_drain_sequence`
+/// refuses it on the drain sequence, and a stale `frd_direct_baseline_ready`
+/// refuses it on both by never treating it as a first stream batch.
+#[test]
+fn d45_reset_badge_unfolds_the_absorbing_direct_history_failure() {
+    let (first, restart, raw0, raw1, raw2) = chunk3_reset_badge_batches();
+
+    let build = |badged: bool| {
+        let mut stream = Vec::new();
+        let mut seq = 0u64;
+        let mut push =
+            |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+                seq += 1;
+                push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+            };
+        push(
+            &mut stream,
+            raw0,
+            45,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &chunk3_frd_v5_direct_batch_payload(&first),
+        );
+        push(
+            &mut stream,
+            raw0,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(),
+        );
+        // HOUR 1 CARRIES NO D45 RECORD. This is the gap that kills the history.
+        push(
+            &mut stream,
+            raw1,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(),
+        );
+        let restart_payload = if badged {
+            chunk3_frd_v5_direct_batch_payload_badged(&restart)
+        } else {
+            chunk3_frd_v5_direct_batch_payload(&restart)
+        };
+        push(
+            &mut stream,
+            raw2,
+            45,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &restart_payload,
+        );
+        push(
+            &mut stream,
+            raw2,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(),
+        );
+        stream
+    };
+
+    // CONTROL: no badge. The gap absorbed the domain and hour 2 is refused.
+    let mut dead = WorldFold::new("d45_reset_control");
+    dead.ingest_stream(&build(false));
+    assert!(
+        dead.frd_direct_history_failed,
+        "the gapped hour must still kill the direct history; fail-closed is correct and the \
+         badge does not relax it"
+    );
+    assert!(
+        dead.frd_direct_transitions.is_empty(),
+        "and the stale prefix must still be discarded rather than left looking complete"
+    );
+    let dead_snaps = dead.finish();
+    assert_eq!(dead_snaps.len(), 3, "three hours -> three snapshots");
+    assert!(
+        parse(&dead_snaps[2].2)["_r2_direct_frd_transitions"].is_null(),
+        "the refused hour publishes no direct history, which is the defect: from here the \
+         domain is dead for the rest of the capture"
+    );
+
+    // THE REPAIR: the same stream, the same restart batch, one bit different.
+    let mut alive = WorldFold::new("d45_reset_badged");
+    alive.ingest_stream(&build(true));
+    assert!(
+        !alive.frd_direct_history_failed,
+        "the badge clears the absorbing failure, so the domain is foldable again"
+    );
+    assert!(
+        alive.frd_direct_baseline_ready,
+        "and the badged record established the NEW baseline it declared"
+    );
+    assert_eq!(
+        alive.frd_direct_transitions.len(),
+        1,
+        "the restart's own row is folded, and only it: the pre-gap row is not resurrected, \
+         because a resync recovers the future and never the hole"
+    );
+    assert_eq!(alive.frd_direct_hook_epoch, Some(2));
+
+    let alive_snaps = alive.finish();
+    assert_eq!(alive_snaps.len(), 3);
+    let alive_hour2 = parse(&alive_snaps[2].2);
+    let frd2 = &alive_hour2["_r2_direct_frd_transitions"];
+    assert!(
+        !frd2.is_null(),
+        "the badged hour publishes direct history again -- the whole point of §7.3.1"
+    );
+    assert_eq!(
+        frd2["direct_history_reset"],
+        json!(true),
+        "and it NAMES the reset. A restart that reached a consumer silently would be \
+         indistinguishable from loss, and the accumulator would refuse it besides"
+    );
+    assert_eq!(
+        frd2["delta_base_sequence"],
+        json!(1),
+        "the restarted history is based at 1, which is exactly why the flag above has to be \
+         on the wire: without it this looks like a reorder to the replay accumulator"
+    );
+    assert_eq!(frd2["cumulative_count"], json!(1));
+    assert_eq!(frd2["hook_epoch"], json!(2));
+    assert_eq!(
+        frd2["direct_history_base_sequence"],
+        json!(1),
+        "the restart DECLARES the raw sequence its row 1 carries. Here the restart came from a \
+         fresh hook epoch so it is 1, but the number is published rather than assumed: a \
+         restart on the same epoch resumes at the carrier's next value, and a restart with no \
+         rows at all has none for a consumer to read it from"
+    );
+}
+
+/// The badge's scope is `frd_direct_*` and NOTHING else -- asserted over EVERY
+/// non-direct D45 accumulator, not just the one §7.3.1 happens to name.
+///
+/// This is the property that made a D45-local badge the remedy instead of the
+/// global `COMPACT_STATUS_BASELINE_CLEAR`. §10.6's rule 5 objection is that the
+/// global bit clears "the state of the domain the record belongs to", while D45
+/// needs only the direct half cleared and the focus/research/decision pins left
+/// standing; honouring the global bit at this narrower scope for D45 alone
+/// would make one bit mean two things.
+///
+/// The restart also NARROWS the observed-kind mask, which is what makes the
+/// `frd_direct_observed_kind_mask` clear observable. A restart with the same
+/// mask passes whether or not the field was cleared, because the fold's
+/// regression check (`batch.observed_kind_mask | self.mask != batch.observed
+/// _kind_mask`) only fires when the RETAINED mask has a bit the incoming one
+/// lacks. Two kinds before, one after.
+///
+/// What production change makes this fail: adding any non-`frd_direct_*` clear
+/// to `apply_frd_direct_history_reset`, or dropping the
+/// `frd_direct_observed_kind_mask` clear from it.
+#[test]
+fn d45_reset_badge_clears_only_the_direct_maps() {
+    use direct_frd_transitions_live::{
+        DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventStateSummary,
+        UnsequencedDirectEventRow,
+    };
+    let h0 = 16_959_360i64;
+    let (raw0, raw2) = (raw_for(h0), raw_for(h0 + 2));
+    let root_mask = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK;
+
+    let make = |epoch: u64, game_hour_raw: i32, kinds: &[DirectEventKind]| {
+        let mut carrier = DirectEventCarrier::new();
+        let owner = carrier.allocate_instance_id().unwrap();
+        let subject = carrier.allocate_instance_id().unwrap();
+        let mut mask = 0u64;
+        for kind in kinds {
+            mask |= kind.root_mask_bit();
+            carrier
+                .capture(UnsequencedDirectEventRow {
+                    kind: *kind,
+                    thread_id: 23,
+                    game_hour_raw,
+                    root_rva: kind.expected_root_rva_a729(),
+                    owner_instance_id: owner,
+                    subject_instance_id: subject,
+                    argument_instance_id: direct_frd_transitions_live::OpaqueInstanceId::NONE,
+                    owner_key: 1,
+                    subject_token_hash: 1,
+                    subject_key: 1,
+                    input_bits: 0,
+                    return_bits: 1,
+                    before: DirectEventStateSummary::default(),
+                    after: DirectEventStateSummary {
+                        state_bits: 1 << 63,
+                        ..DirectEventStateSummary::default()
+                    },
+                })
+                .unwrap();
+        }
+        let rows = carrier.drain_rows().unwrap();
+        DirectEventBatch {
+            hook_epoch: epoch,
+            drain_sequence: 1,
+            installed_root_mask: root_mask,
+            observed_kind_mask: mask,
+            sequence_cursor: rows.len() as u64 + 1,
+            producer_complete: true,
+            evidence_fixture: false,
+            rows,
+        }
+    };
+    // TWO kinds before the reset, ONE after: a mask the fold would call a
+    // regression if it were still holding the old one.
+    let first = make(
+        1,
+        raw0,
+        &[
+            DirectEventKind::FocusCompleted,
+            DirectEventKind::ResearchCompleted,
+        ],
+    );
+    let restart = make(2, raw2, &[DirectEventKind::FocusCompleted]);
+
+    let mut stream = Vec::new();
+    let mut seq = 0u64;
+    let mut push =
+        |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+            seq += 1;
+            push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+        };
+    push(
+        &mut stream,
+        raw0,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&first),
+    );
+    push(
+        &mut stream,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+    push(
+        &mut stream,
+        raw2,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload_badged(&restart),
+    );
+    push(
+        &mut stream,
+        raw2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d45_reset_scope");
+    // EVERY PERSISTENT non-direct D45 accumulator, seeded. None of these is
+    // restated by the badged record, so any of them the reset reached would be
+    // measured state destroyed on the strength of a flag that never claimed to
+    // cover it. The `*_this_hour` D45 maps and `frd_decision_targets_unknown`
+    // are deliberately not here: `reset_hour_state` clears them every hour by
+    // design, so they could not distinguish a badge that over-reached from an
+    // ordinary hour boundary.
+    fold.frd_focus_metrics
+        .entry(4242)
+        .or_default()
+        .completed_count = Some(17);
+    fold.frd_research_live.insert(
+        FrdResearchKey {
+            tag_db_id: 4242,
+            slot_index: 3,
+        },
+        FrdResearchLiveState {
+            tag_db_id: 4242,
+            slot_index: 3,
+            flags: 0,
+            hour_delta: 0,
+            previous_handle: 0,
+            current_handle: 11,
+            previous_def: 0,
+            current_def: 0,
+            previous_progress_raw: 0,
+            current_progress_raw: 0,
+            delta_raw: 0,
+            speed_raw: 0,
+            base_raw: None,
+            eta_hours: None,
+        },
+    );
+    fold.frd_decision_status.insert(
+        4242,
+        FrdDecisionStatusState {
+            tag_db_id: 4242,
+            active_timed_count: 0,
+            targeted_count: 0,
+            targeted_timed_count: 0,
+            decisions_taken_bucket_count: 0,
+            re_enable_count: 5,
+            timed_live_count: 0,
+        },
+    );
+    fold.frd_decision_targets.insert(
+        4242,
+        vec![FrdDecisionTargetState {
+            tag_db_id: 4242,
+            target_id: 9,
+            flags: 0,
+            source_kind: 0,
+            lifecycle_state: None,
+            ignore: None,
+            days: None,
+            decision: "cq_scope_probe".to_string(),
+        }],
+    );
+
+    fold.ingest_stream(&stream);
+
+    assert_eq!(
+        fold.frd_focus_metrics
+            .get(&4242)
+            .and_then(|metrics| metrics.completed_count),
+        Some(17),
+        "focus metrics must survive the reset"
+    );
+    assert!(
+        fold.frd_research_live.contains_key(&FrdResearchKey {
+            tag_db_id: 4242,
+            slot_index: 3,
+        }),
+        "research state must survive the reset"
+    );
+    assert!(
+        fold.frd_decision_status.contains_key(&4242),
+        "decision status must survive the reset"
+    );
+    assert!(
+        fold.frd_decision_targets.contains_key(&4242),
+        "decision targets must survive the reset"
+    );
+
+    // ...and the direct half really did reset, so the assertions above are
+    // about scope rather than about a badge that did nothing.
+    assert!(!fold.frd_direct_history_failed);
+    assert_eq!(fold.frd_direct_hook_epoch, Some(2));
+    assert_eq!(
+        fold.frd_direct_observed_kind_mask,
+        DirectEventKind::FocusCompleted.root_mask_bit(),
+        "the restart's mask REPLACES the pre-reset one. Retaining it would make the narrower \
+         restart look like a witnessed-kind regression and refuse the record outright"
+    );
+    assert_eq!(
+        fold.frd_direct_transitions.len(),
+        1,
+        "the two pre-reset rows are gone and only the restart's row remains"
+    );
+}
+
+/// An hour that closes WITHOUT a snapshot must not discharge a pending reset.
+///
+/// `finish_hour` has two early returns that reach `reset_hour_state` and emit
+/// nothing: an out-of-range hour label, and a duplicate `frame_end`. A reset
+/// discharged on one of those would have reached no consumer at all, and every
+/// later frame's `delta_base_sequence` would then look like a reorder to the
+/// replay accumulator -- the §7.3.1 defect returning through the accounting
+/// rather than through the fold. So the flag is discharged past both of them,
+/// in `finish_hour` itself, and only on an hour that actually reached the
+/// snapshot.
+///
+/// The badged record IS folded here -- the direct history really did restart --
+/// which is what makes the surviving flag a live debt rather than a leftover.
+///
+/// What production change makes this fail: moving the discharge back into
+/// `reset_hour_state`, or into any site the two early returns can reach.
+#[test]
+fn a_snapshotless_hour_does_not_discharge_a_pending_direct_history_reset() {
+    let (first, restart, raw0, _raw1, raw2) = chunk3_reset_badge_batches();
+    let mut stream = Vec::new();
+    let mut seq = 0u64;
+    let mut push =
+        |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+            seq += 1;
+            push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+        };
+    push(
+        &mut stream,
+        raw0,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&first),
+    );
+    push(
+        &mut stream,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+    push(
+        &mut stream,
+        raw2,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload_badged(&restart),
+    );
+    // The hour closes on an UNLABELLABLE raw counter, so `finish_hour` bails
+    // before it builds anything. `0` is below the calendar window
+    // `hour_index_from_raw` fails closed on.
+    push(
+        &mut stream,
+        0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d45_reset_snapshotless_hour");
+    fold.ingest_stream(&stream);
+
+    // The reset really happened...
+    assert!(!fold.frd_direct_history_failed);
+    assert_eq!(fold.frd_direct_hook_epoch, Some(2));
+    assert!(
+        fold.frd_direct_history_reset_pending_emit,
+        "the reset is still OWED to a consumer: no snapshot carried it, so discharging it \
+         would lose the restart and leave replay refusing every later frame"
+    );
+    // ...and exactly one snapshot was emitted, so the badged hour published
+    // nothing and told no consumer anything.
+    assert_eq!(
+        fold.finish().len(),
+        1,
+        "the unlabellable hour must emit no snapshot, or this test is not exercising the \
+         snapshotless path at all"
+    );
+}
+
+/// Rows folded during a SNAPSHOTLESS hour are still delivered, and the reset
+/// that covers them still reaches a consumer.
+///
+/// `finish_hour` has two early returns that emit nothing: an out-of-range hour
+/// label and a duplicate `frame_end`. Closing the FRD delta window on those
+/// marked rows emitted that no snapshot ever carried -- they were dropped from
+/// the delta stream for good, and every later frame declared a
+/// `delta_base_sequence` past them, which the replay accumulator reads as a
+/// gap. With a §7.3.1 restart landing in such an hour the effect is worse than
+/// losing rows: the restart's own first row is the one dropped, so the reset
+/// reaches replay declaring a base past it.
+///
+/// The fixture is therefore three hours with a CONTINUING restart: hour 0 folds
+/// the original history, hour 2 folds the badged restart and then closes on an
+/// unlabellable hour counter, and hour 3 folds a second drain from the SAME
+/// restarted carrier. Hour 3 must ship both restart rows from base 1. A
+/// fixture whose last hour re-badged would reset the accumulator again and
+/// prove nothing, which is what makes the continuation load-bearing here.
+///
+/// What production change makes this fail: moving either the
+/// `frd_direct_emitted_count` advance or the pending-reset discharge back into
+/// `reset_hour_state`, which the early returns reach.
+#[test]
+fn a_snapshotless_hour_delivers_its_rows_and_its_reset_on_the_next_snapshot() {
+    use direct_frd_transitions_live::{
+        DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventStateSummary,
+        UnsequencedDirectEventRow,
+    };
+    let h0 = 16_959_360i64;
+    let (raw0, raw2, raw3) = (raw_for(h0), raw_for(h0 + 2), raw_for(h0 + 3));
+    let mask = DirectEventKind::FocusCompleted.root_mask_bit();
+    let root_mask = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK;
+
+    let mut capture = |carrier: &mut DirectEventCarrier, game_hour_raw: i32| {
+        let owner = carrier.allocate_instance_id().unwrap();
+        let subject = carrier.allocate_instance_id().unwrap();
+        carrier
+            .capture(UnsequencedDirectEventRow {
+                kind: DirectEventKind::FocusCompleted,
+                thread_id: 23,
+                game_hour_raw,
+                root_rva: DirectEventKind::FocusCompleted.expected_root_rva_a729(),
+                owner_instance_id: owner,
+                subject_instance_id: subject,
+                argument_instance_id: direct_frd_transitions_live::OpaqueInstanceId::NONE,
+                owner_key: 1,
+                subject_token_hash: 1,
+                subject_key: 0,
+                input_bits: 0,
+                return_bits: 1,
+                before: DirectEventStateSummary::default(),
+                after: DirectEventStateSummary {
+                    state_bits: 1 << 63,
+                    ..DirectEventStateSummary::default()
+                },
+            })
+            .unwrap();
+        carrier.drain_rows().unwrap()
+    };
+
+    // Hour 0: the original history, on its own carrier and hook epoch.
+    let mut original = DirectEventCarrier::new();
+    let rows0 = capture(&mut original, raw0);
+    let first = DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 1,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: 2,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: rows0,
+    };
+
+    // The RESTART, and its CONTINUATION, from one carrier: drains 1 and 2 of a
+    // new hook epoch, raw sequences 1 and 2.
+    let mut restarted = DirectEventCarrier::new();
+    let rows_a = capture(&mut restarted, raw2);
+    let restart = DirectEventBatch {
+        hook_epoch: 2,
+        drain_sequence: 1,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: 2,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: rows_a,
+    };
+    let rows_b = capture(&mut restarted, raw3);
+    let continuation = DirectEventBatch {
+        hook_epoch: 2,
+        drain_sequence: 2,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: 3,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: rows_b,
+    };
+
+    let mut stream = Vec::new();
+    let mut seq = 0u64;
+    let mut push =
+        |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+            seq += 1;
+            push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+        };
+    push(
+        &mut stream,
+        raw0,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&first),
+    );
+    push(
+        &mut stream,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+    // The badged restart FOLDS its row here...
+    push(
+        &mut stream,
+        raw2,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload_badged(&restart),
+    );
+    // ...and the hour then closes on an unlabellable raw counter, so no
+    // snapshot carries it. `0` is below the calendar window.
+    push(
+        &mut stream,
+        0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+    // Hour 3 CONTINUES the restarted history rather than restarting it again.
+    push(
+        &mut stream,
+        raw3,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&continuation),
+    );
+    push(
+        &mut stream,
+        raw3,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d45_reset_snapshotless_delivery");
+    fold.ingest_stream(&stream);
+    assert!(
+        !fold.frd_direct_history_failed,
+        "the continuation must be ACCEPTED; if it were refused this test would be measuring a \
+         dead domain rather than the delta window"
+    );
+    assert_eq!(fold.frd_direct_transitions.len(), 2);
+
+    let snaps = fold.finish();
+    assert_eq!(
+        snaps.len(),
+        2,
+        "the unlabellable hour emits no snapshot, so only hours 0 and 3 do"
+    );
+
+    let frd = &parse(&snaps[1].2)["_r2_direct_frd_transitions"];
+    assert!(
+        !frd.is_null(),
+        "the hour after the snapshotless one must publish the restarted history"
+    );
+    assert_eq!(
+        frd["direct_history_reset"],
+        json!(true),
+        "the reset was never carried to anyone, so it is still owed and still declared"
+    );
+    assert_eq!(
+        frd["delta_base_sequence"],
+        json!(1),
+        "and the delta OPENS at the restarted history's first row. A window closed on the \
+         snapshotless hour would declare 2 here, past a row no snapshot ever carried"
+    );
+    assert_eq!(frd["cumulative_count"], json!(2));
+    assert_eq!(
+        frd["transitions"].as_array().expect("delta rows").len(),
+        2,
+        "base 1 means this frame ships the WHOLE restarted history, including the row folded \
+         during the hour that emitted nothing"
+    );
+    assert_eq!(frd["direct_history_base_sequence"], json!(1));
+}

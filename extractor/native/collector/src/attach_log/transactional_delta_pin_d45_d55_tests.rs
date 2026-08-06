@@ -476,27 +476,41 @@ fn the_d45_pin_predicate_mirrors_the_folds_activation_state() {
     // source, so it applies an untrailered record and ignores the absence. A
     // custody conflict here produces exactly such a record.
     assert!(
-        !fold_refuses(&tracker, false),
+        !fold_refuses(&tracker, false, false),
         "before the fold has ever accepted a validated source it APPLIES an untrailered \
          record, so the producer must commit"
     );
 
     // REGIME 2 -- activation. A validated record is applied and arms the fold.
-    assert!(!fold_refuses(&tracker, true));
+    assert!(!fold_refuses(&tracker, true, false));
     tracker.direct_baseline_published = true;
 
     // REGIME 3 -- after activation, the same untrailered record is REFUSED
     // (`direct hook source downgraded after activation`).
     assert!(
-        fold_refuses(&tracker, false),
+        fold_refuses(&tracker, false, false),
         "after activation a downgraded record is refused whole, so the pin must not advance"
     );
 
     // And the refusal is ABSORBING on both arms: a validated record afterwards
     // hits `already invalidated`, an untrailered one hits the downgrade again.
     tracker.fold_history_failed = true;
-    assert!(fold_refuses(&tracker, true));
-    assert!(fold_refuses(&tracker, false));
+    assert!(fold_refuses(&tracker, true, false));
+    assert!(fold_refuses(&tracker, false, false));
+
+    // REGIME 4 -- the §7.3.1 reset badge, which is the ONLY thing that ends the
+    // absorbing regime above. The fold discards its `frd_direct_*` extent
+    // before it asks either question, so both grounds are answered at once and
+    // the record is applied whatever it carries.
+    assert!(
+        !fold_refuses(&tracker, true, true),
+        "a badged validated record restarts the history and is applied"
+    );
+    assert!(
+        !fold_refuses(&tracker, false, true),
+        "and so is a badged untrailered one: after the reset there is no baseline left for it \
+         to have downgraded, which is why the badge is not gated on the trailer"
+    );
 }
 
 /// A RECORD THAT NEVER REACHED THE FOLD MUST TEACH THE MIRROR NOTHING.
@@ -523,7 +537,7 @@ fn a_withdrawn_d45_record_does_not_arm_the_fold_mirror() {
     let mut tracker = CompactFrdDepthTracker::default();
     tracker.direct_baseline_published = true;
     assert!(
-        super::d45_fold_refuses_record(&tracker, false),
+        super::d45_fold_refuses_record(&tracker, false, false),
         "an untrailered record after activation is refused, so this frame stages a failure"
     );
     tracker.staged_mirror_fails_history = true;
@@ -534,19 +548,43 @@ fn a_withdrawn_d45_record_does_not_arm_the_fold_mirror() {
     if d45_published_its_record && tracker.staged_mirror_fails_history {
         tracker.fold_history_failed = true;
     }
+    let staged_was_discarded = !tracker.fold_history_failed;
     tracker.staged_mirror_fails_history = false;
 
     assert!(
-        !tracker.fold_history_failed,
+        staged_was_discarded,
         "a record the frame replaced with a gap never reached the fold, so it must not arm \
          the producer's mirror of the fold"
     );
-    // And the consequence: the next record is still one the producer commits,
-    // because the fold has not failed either.
+
+    // BUT THE HOUR STILL KILLED THE HISTORY, for a reason that has nothing to
+    // do with the withdrawn record. `world_fold::reset_hour_state` fails the
+    // direct history whenever the fold was `frd_direct_baseline_ready` and no
+    // D45 record arrived that hour, and a gap IS no record arriving. The seal
+    // arms the mirror from that, separately from the staged half above.
+    //
+    // This used to read "the next validated record commits, exactly as the fold
+    // applies it", which was false about the fold: after a gapped hour the fold
+    // refuses the next record with `already invalidated`. The producer believed
+    // otherwise and kept committing pins against a fold that was applying
+    // nothing -- the AHEAD divergence, arrived at from the gap side.
+    // `DELTA_WIRE_DESIGN.md` §7.3.1 measured 362 such gaps on t26.
+    if !d45_published_its_record && tracker.direct_baseline_published {
+        tracker.fold_history_failed = true;
+    }
     assert!(
-        !super::d45_fold_refuses_record(&tracker, true),
-        "with the mirror correctly untouched, the next validated record commits, exactly as \
-         the fold applies it"
+        tracker.fold_history_failed,
+        "a gapped D45 hour after activation kills the fold's direct history, so the mirror \
+         must say so -- this is the arming the staged half above is deliberately NOT doing"
+    );
+    assert!(
+        super::d45_fold_refuses_record(&tracker, true, false),
+        "and the consequence: even a VALIDATED next record is refused by the fold, so the \
+         producer must not commit a pin against it"
+    );
+    assert!(
+        !super::d45_fold_refuses_record(&tracker, true, true),
+        "which is what the §7.3.1 reset badge is for: the one record that reopens the domain"
     );
 
     // The control: a frame that DID publish arms it, or the assertion above
@@ -794,23 +832,33 @@ fn every_pin_commit_is_guarded_by_the_predicate_its_own_fold_uses() {
     // publication rather than by anything the emission site knew. A record the
     // frame replaced with a gap never reached the fold, so it must teach the
     // mirror nothing -- and the emission site cannot know that yet.
+    // The gate function must resolve the mirrors from D45's OWN publication and
+    // from nothing else. The transitions themselves live in
+    // `CompactFrdDepthTracker::resolve_frame_seal`, which is production and is
+    // exercised directly by `the_d45_frame_seal_is_the_reset_debts_whole_life`;
+    // what is checked HERE is that the gate function still calls it, and still
+    // computes the argument from the rejected set.
     let resolution = source
         .find("let d45_published_its_record =")
         .expect("the frame-end mirror resolution");
-    let resolution_body = &source[resolution..(resolution + 1400).min(source.len())];
+    let resolution_body = {
+        let rest = &source[resolution..];
+        let end = rest
+            .find("\n    append_compact_frame_end_record(")
+            .expect("the mirror resolution precedes the frame-end record");
+        &rest[..end]
+    };
     assert!(
-        resolution_body.contains("if d45_published_its_record {"),
-        "the staged mirror must be committed only when D45 actually published its record"
+        resolution_body
+            .contains("!rejected_domains.contains(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)"),
+        "D45's publication must be read from the rejected set at the seal; the emission site \
+         cannot know it yet"
     );
-    for staged in [
-        "d45_tracker.staged_mirror_publishes_baseline",
-        "d45_tracker.staged_mirror_fails_history",
-    ] {
-        assert!(
-            resolution_body.contains(&format!("{staged} = false;")),
-            "{staged} must be cleared at the frame end, or a staged mirror survives its frame"
-        );
-    }
+    assert!(
+        resolution_body.contains(".resolve_frame_seal(d45_published_its_record);"),
+        "the seal must be resolved through the production transition, and with THIS frame's \
+         publication as its argument"
+    );
 
     // D45's guard must NOT be the status word. This is the P1 regression stated
     // as a property: a status-word guard on D45 rolls back records its fold
@@ -1408,5 +1456,175 @@ fn d45_cannot_carry_the_global_resync_bit() {
         ),
         Ok(true),
         "d31 is admitted, so the refusals above are about D45 and not about the predicate"
+    );
+}
+
+// ---------------------------------------------------------------------
+// 6. The §7.3.1 D45-LOCAL direct-history reset badge
+// ---------------------------------------------------------------------
+
+/// One frame of the D45 producer, driven entirely through PRODUCTION calls:
+/// write the badge if one is owed, resolve the fold-refusal predicate, stage
+/// what the emission site stages, then seal against this frame's publication.
+///
+/// Every step is the function the gate function itself calls. Nothing here
+/// re-spells a rule, which is the whole point: a hand-written seal kept passing
+/// while production's own transitions were free to change underneath it.
+fn d45_producer_frame(
+    tracker: &mut CompactFrdDepthTracker,
+    record_carries_validated_source: bool,
+    published_its_record: bool,
+) -> u32 {
+    let mut read = read_compact_frd_depth_from_country_reads(&[], 0, 0, tracker);
+    let badged = tracker.stage_direct_history_reset_badge(&mut read);
+    if d45_fold_refuses_record(tracker, record_carries_validated_source, badged) {
+        tracker.staged_mirror_fails_history = true;
+        tracker.roll_back_staged_pins();
+    } else {
+        tracker.commit_staged_pins();
+        if record_carries_validated_source {
+            tracker.staged_mirror_publishes_baseline = true;
+        }
+    }
+    tracker.resolve_frame_seal(published_its_record);
+    read.depth_status_flags
+}
+
+/// A gapped D45 hour after activation must not be one D45 emits a record for,
+/// so a frame that publishes nothing is spelled with no record at all.
+fn d45_gapped_frame(tracker: &mut CompactFrdDepthTracker) {
+    tracker.resolve_frame_seal(false);
+}
+
+/// THE WHOLE LIFE OF THE RESET DEBT, through the production seal.
+///
+/// `DELTA_WIRE_DESIGN.md` §7.3.1. The fold's `frd_direct_history_failed` is
+/// ABSORBING: once set, every later D45 record is refused whatever it carries,
+/// and on the t26 capture 361 of d45's 362 gaps fall after its first data
+/// record, so d45's direct history died early and stayed dead. The producer
+/// owes the stream one reset badge per absorption; the next record it actually
+/// PUBLISHES carries bit 7 of `depth_status_flags` and the debt is discharged.
+///
+/// "Exactly once" is a data-loss property, not tidiness: a second badge tells
+/// the fold to discard a history the first badge already restarted, destroying
+/// measured rows on the strength of a wire flag.
+///
+/// What production change makes this fail, per phase:
+///  * dropping the gapped-hour arm of `resolve_frame_seal` -- phase 2 leaves
+///    the mirror healthy and no badge is ever owed, which is the defect;
+///  * discharging the debt at the write instead of at the seal -- phase 3's
+///    rejected badge is lost and phase 4 never re-badges;
+///  * dropping `direct_history_reset_owed = false` from the payment -- phase 5
+///    badges again, which is the second-badge data loss above;
+///  * making `d45_fold_refuses_record` refuse a badged record -- phase 4 rolls
+///    the pin back on the very record that reopens the domain.
+#[test]
+fn the_d45_frame_seal_is_the_reset_debts_whole_life() {
+    const BADGE: u32 = COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET;
+    let mut tracker = CompactFrdDepthTracker::default();
+
+    // PHASE 1 -- activation. A validated record is applied and arms the fold.
+    // Nothing is owed, so nothing is badged; without this control a method that
+    // badged unconditionally would satisfy every later phase.
+    let flags = d45_producer_frame(&mut tracker, true, true);
+    assert_eq!(flags & BADGE, 0, "a healthy stream owes no reset");
+    assert!(tracker.direct_baseline_published);
+    assert!(!tracker.fold_history_failed);
+    assert!(!tracker.direct_history_reset_owed);
+
+    // PHASE 2 -- THE GAPPED HOUR. No D45 record reaches the fold, so
+    // `world_fold::reset_hour_state` kills the direct history. The producer
+    // must learn this from the gap alone: nothing was emitted for it to learn
+    // from, which is exactly why the seal has to ask.
+    d45_gapped_frame(&mut tracker);
+    assert!(
+        tracker.fold_history_failed,
+        "a gapped hour after activation kills the fold's history and the mirror must say so"
+    );
+    assert!(
+        tracker.direct_history_reset_owed,
+        "and a dead history owes a badge"
+    );
+
+    // PHASE 3 -- the badge is written, and the frame is then REJECTED. Its
+    // records are replaced with a gap, so the fold never saw the badge and the
+    // debt must survive.
+    let flags = d45_producer_frame(&mut tracker, true, false);
+    assert_ne!(flags & BADGE, 0, "the owed badge is written onto the record");
+    assert!(
+        tracker.direct_history_reset_owed,
+        "but a record the frame withdrew paid nothing: discharging it here would leave the \
+         domain dead for the rest of the capture, and unlike d31's `resync_owed` nothing \
+         would ever re-arm it"
+    );
+    assert!(tracker.fold_history_failed);
+
+    // PHASE 4 -- the next record IS published, so the badge reaches the fold.
+    let flags = d45_producer_frame(&mut tracker, true, true);
+    assert_ne!(flags & BADGE, 0, "the surviving debt is paid by this record");
+    assert!(
+        !tracker.direct_history_reset_owed,
+        "and discharged by it"
+    );
+    assert!(
+        !tracker.fold_history_failed,
+        "the fold discarded its dead extent, so the absorbing state is over"
+    );
+    assert!(
+        tracker.direct_baseline_published,
+        "this record carried a validated trailer, so it established the NEW baseline"
+    );
+
+    // PHASE 5 -- the very next record must NOT badge again.
+    let flags = d45_producer_frame(&mut tracker, true, true);
+    assert_eq!(
+        flags & BADGE,
+        0,
+        "a second badge would tell the fold to discard the history the first one restarted"
+    );
+    assert!(!tracker.direct_history_reset_owed);
+    assert!(!tracker.fold_history_failed);
+}
+
+/// A reset paid by an UNTRAILERED record leaves no baseline behind.
+///
+/// The badge is deliberately not gated on the trailer: one of the two ways the
+/// history dies is a source DOWNGRADE, and the record able to pay is then an
+/// untrailered one. The fold applies it -- after the reset there is no baseline
+/// left for it to have downgraded -- but it establishes none either, so the
+/// mirror must come back down. `direct_baseline_published` is monotonic in what
+/// a stream has published everywhere except here, and this is the case that
+/// proves the exception is needed.
+///
+/// What production change makes this fail: OR-ing rather than assigning
+/// `direct_baseline_published` on the payment path. The producer would then
+/// believe the fold was activated, and the next untrailered record would be
+/// rolled back as a downgrade the fold never saw.
+#[test]
+fn a_reset_paid_by_an_untrailered_record_clears_the_baseline_mirror() {
+    let mut tracker = CompactFrdDepthTracker::default();
+    d45_producer_frame(&mut tracker, true, true);
+    d45_gapped_frame(&mut tracker);
+    assert!(tracker.direct_history_reset_owed);
+
+    let flags = d45_producer_frame(&mut tracker, false, true);
+    assert_ne!(
+        flags & COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET,
+        0,
+        "an untrailered record still pays the debt; refusing to badge it would leave the \
+         downgrade shape dead until the hooks came back"
+    );
+    assert!(!tracker.fold_history_failed);
+    assert!(!tracker.direct_history_reset_owed);
+    assert!(
+        !tracker.direct_baseline_published,
+        "and it established NO baseline, because it carried no validated source"
+    );
+    // The proof that the mirror is now right: the fold applies an untrailered
+    // record while it holds no baseline, so the producer must commit its pin.
+    assert!(
+        !d45_fold_refuses_record(&tracker, false, false),
+        "with no baseline the fold applies an untrailered record, so a producer that thought \
+         otherwise would roll back a record the fold kept"
     );
 }

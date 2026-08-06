@@ -212,14 +212,40 @@ pub const COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
 pub const COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
 pub const COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
 pub const COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED: u32 = 1 << 6;
+/// D45-LOCAL direct-history reset badge (`DELTA_WIRE_DESIGN.md` §7.3.1).
+///
+/// "This record's `frd_direct_*` extent begins a NEW history; discard the
+/// accumulation you hold for it." Its scope is the `frd_direct_*` maps and
+/// NOTHING else -- focus, research and decision state is untouched, and the
+/// hour it lands in is still typed as whatever it was, because a resync
+/// recovers the FUTURE and never the hole.
+///
+/// It is deliberately NOT the global `COMPACT_STATUS_BASELINE_CLEAR`, and NOT
+/// registered in `compact_contract::lane_local_status_mask`: `depth_status_flags`
+/// is a separate `COMPACT_FRD_STATUS_*` namespace that never reaches a perf
+/// record's `status_flags` (see the collector's
+/// `worker_panic_constructor_published_status` census, which lists
+/// `depth_status_flags` as exactly that). The mask below is the discipline that
+/// actually governs this word, so this is where the bit is registered.
+/// `d45_cannot_carry_the_global_resync_bit` records why the global bit could
+/// not be used and must keep passing.
+pub const COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET: u32 = 1 << 7;
 // This remains the v1-v4 depth-authority mask.  The v5 direct-hook bit is a
 // distinct trailer/source assertion and is admitted only for a v5 header.
+//
+// The reset badge is admitted on EVERY schema version rather than v5 only. The
+// failure it recovers from has two shapes and one of them is a source
+// DOWNGRADE -- the fold refuses an untrailered record once a validated one was
+// accepted -- so the first record able to carry the badge is a v4 one. Gating
+// the badge on v5 would leave that shape dead until the hooks came back, which
+// is the defect rather than the fix.
 pub const COMPACT_FRD_STATUS_KNOWN_MASK: u32 = COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED
     | COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED
     | COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED
     | COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT
     | COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT
-    | COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT;
+    | COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT
+    | COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET;
 pub const COMPACT_FRD_STATUS_V5_KNOWN_MASK: u32 =
     COMPACT_FRD_STATUS_KNOWN_MASK | COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
 pub const COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED: u32 = 1;
@@ -19419,6 +19445,115 @@ mod tests {
             .errors
             .iter()
             .any(|item| item.contains("legacy payload claims validated direct-hook source")));
+    }
+
+    /// Bit 7 of `depth_status_flags` is an ASSIGNED bit, on every schema
+    /// version, and the decoder admits it.
+    ///
+    /// `DELTA_WIRE_DESIGN.md` §7.3.1's D45-LOCAL direct-history reset badge.
+    /// The decoder refuses any bit outside `admitted_depth_status_mask`, so a
+    /// badge that was not registered there would be rejected as an unknown bit
+    /// on exactly the records it exists to rescue -- the repair would announce
+    /// itself as corruption.
+    ///
+    /// Admitted on v4 as well as v5 deliberately. One of the two ways the
+    /// direct history dies is a source DOWNGRADE, and the record able to carry
+    /// the badge then is an untrailered v4 one; gating the badge on v5 would
+    /// leave that shape dead until the hooks came back.
+    ///
+    /// The negative control is bit 8, which is genuinely unassigned: without
+    /// it, a decoder that had simply stopped checking unknown bits would pass
+    /// the positive half.
+    ///
+    /// What production change makes this fail: dropping
+    /// `COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET` from
+    /// `COMPACT_FRD_STATUS_KNOWN_MASK`, or reassigning bit 7 to something else
+    /// without moving the badge.
+    #[test]
+    fn frd_depth_direct_history_reset_badge_is_an_assigned_bit() {
+        assert_eq!(COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET, 1 << 7);
+        assert_ne!(
+            COMPACT_FRD_STATUS_KNOWN_MASK & COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET,
+            0,
+            "the reset badge must be registered in the mask that governs depth_status_flags"
+        );
+        // It is a DISTINCT bit, not an alias of a neighbour that would make the
+        // decoder accept it for the wrong reason.
+        for (name, other) in [
+            ("focus_pause_badged", COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED),
+            (
+                "decision_targets_badged",
+                COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED,
+            ),
+            (
+                "direct_events_derived",
+                COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED,
+            ),
+            ("focus_pause_exact", COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT),
+            (
+                "decision_targets_exact",
+                COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT,
+            ),
+            (
+                "decision_cooldowns_exact",
+                COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT,
+            ),
+            (
+                "direct_hook_source_validated",
+                COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED,
+            ),
+        ] {
+            assert_eq!(
+                COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET & other,
+                0,
+                "the reset badge collides with {name}"
+            );
+        }
+
+        for (label, schema_version, raw_status) in [
+            ("v4", COMPACT_FRD_DEPTH_SCHEMA_VERSION, Some(0u32)),
+            ("v5", COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5, Some(0u32)),
+        ] {
+            let mut badged = valid_frd_depth_payload(schema_version, raw_status);
+            let status = read_u32_le(&badged, 8) | COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET;
+            badged[8..12].copy_from_slice(&status.to_le_bytes());
+            summarize_domain_data_payload(
+                COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+                &badged,
+                DomainDataContext {
+                    record_flags: COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+                    ..DomainDataContext::default()
+                },
+            )
+            .unwrap_or_else(|error| {
+                panic!("{label} payload carrying the reset badge was refused: {error:?}")
+            });
+
+            // NEGATIVE CONTROL: the next bit up is unassigned and must still be
+            // refused, or the check above proves only that the decoder stopped
+            // looking.
+            let mut unassigned = valid_frd_depth_payload(schema_version, raw_status);
+            let status = read_u32_le(&unassigned, 8) | (1 << 8);
+            unassigned[8..12].copy_from_slice(&status.to_le_bytes());
+            let error = summarize_domain_data_payload(
+                COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+                &unassigned,
+                DomainDataContext {
+                    record_flags: COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+                    ..DomainDataContext::default()
+                },
+            )
+            .expect_err("an unassigned depth status bit must still be refused");
+            assert!(
+                error
+                    .errors
+                    .iter()
+                    .any(|item| item.contains("depth status_flags has unknown bits")),
+                "{label}: the unassigned bit must be named as an unknown bit, not refused for \
+                 some unrelated reason: {:?}",
+                error.errors
+            );
+        }
     }
 
     #[test]
