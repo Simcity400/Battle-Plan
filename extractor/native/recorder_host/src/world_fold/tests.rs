@@ -5596,6 +5596,21 @@ fn chunk3_folds_d45_v5_empty_logical_stream_baseline_after_prior_drains() {
         snapshot["_r2_direct_frd_transitions"]["transitions"],
         json!([])
     );
+    // §7.3.1's opening anchor, on the fixture that already had the shape: this
+    // baseline is EMPTY and its cursor is 3, so the history it opens begins at
+    // raw 3 and there is no row for a consumer to read that from. Declared, not
+    // inferred -- see `frd_direct_accumulated_base_sequence`.
+    assert_eq!(
+        snapshot["_r2_direct_frd_transitions"]["direct_history_base_sequence"],
+        json!(3),
+        "a stream that attached after prior drains must SAY where its history opens; a \
+         consumer reading only delta_base_sequence takes it as raw 1 and refuses every row"
+    );
+    assert_eq!(
+        snapshot["_r2_direct_frd_transitions"]["direct_history_reset"],
+        json!(false),
+        "and an opening is not a reset: nothing was discarded"
+    );
     assert!(snapshot["provenance"]["collector"]["domain_problems"]
         .as_array()
         .unwrap()
@@ -27879,4 +27894,380 @@ fn a_snapshotless_hour_delivers_its_rows_and_its_reset_on_the_next_snapshot() {
          during the hour that emitted nothing"
     );
     assert_eq!(frd["direct_history_base_sequence"], json!(1));
+}
+
+// --- Â§7.3.1: the OPENING anchor -------------------------------------------
+
+/// A capture that attaches with direct-transition history already drained folds
+/// its opening batch, and the snapshot it emits DECLARES the raw sequence that
+/// history opens at.
+///
+/// The fold's `first_stream_batch` path already admits this: a hook epoch's
+/// sequence space is process-wide while a `WorldFold` is logical-stream scoped,
+/// so the first admitted batch may legitimately begin after pre-world or
+/// prior-campaign drains. What it did not do was SAY so. `delta_base_sequence`
+/// counts the emitted vector and opens at 1 whatever the raw rows carry, so a
+/// consumer had nothing to read the raw anchor from and assumed 1 -- refusing
+/// every row of the opening and losing the domain for the whole recording.
+///
+/// What production change makes this fail: dropping the opening declaration
+/// from `build_snapshot`, or deriving it from anything other than the
+/// accumulated history's own first raw sequence (a hard-coded 1 is the
+/// pre-change behaviour and is what this asserts against).
+#[test]
+fn d45_an_opening_batch_past_raw_sequence_one_declares_its_anchor() {
+    use direct_frd_transitions_live::{
+        DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventStateSummary,
+        UnsequencedDirectEventRow,
+    };
+    let h0 = 16_959_360i64;
+    let (raw0, raw1) = (raw_for(h0), raw_for(h0 + 1));
+    let mask = DirectEventKind::FocusCompleted.root_mask_bit();
+    let root_mask = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK;
+
+    let mut carrier = DirectEventCarrier::new();
+    let capture = |carrier: &mut DirectEventCarrier, game_hour_raw: i32| {
+        let owner = carrier.allocate_instance_id().unwrap();
+        let subject = carrier.allocate_instance_id().unwrap();
+        carrier
+            .capture(UnsequencedDirectEventRow {
+                kind: DirectEventKind::FocusCompleted,
+                thread_id: 23,
+                game_hour_raw,
+                root_rva: DirectEventKind::FocusCompleted.expected_root_rva_a729(),
+                owner_instance_id: owner,
+                subject_instance_id: subject,
+                argument_instance_id: direct_frd_transitions_live::OpaqueInstanceId::NONE,
+                owner_key: 1,
+                subject_token_hash: 1,
+                subject_key: 0,
+                input_bits: 0,
+                return_bits: 1,
+                before: DirectEventStateSummary::default(),
+                after: DirectEventStateSummary {
+                    state_bits: 1 << 63,
+                    ..DirectEventStateSummary::default()
+                },
+            })
+            .unwrap();
+    };
+    // SEVEN rows this fold never sees: the drains that happened before the
+    // recorder attached to this logical stream. They are discarded here exactly
+    // as they are lost in a real attach.
+    for _ in 0..7 {
+        capture(&mut carrier, raw0);
+    }
+    let _ = carrier.drain_rows().unwrap();
+    // The stream's OPENING batch: raw sequences 8 and 9.
+    capture(&mut carrier, raw0);
+    capture(&mut carrier, raw0);
+    let opening_rows = carrier.drain_rows().unwrap();
+    assert_eq!(
+        opening_rows.first().map(|row| row.sequence),
+        Some(8),
+        "the fixture must actually open past 1, or it is measuring nothing"
+    );
+    let opening = DirectEventBatch {
+        hook_epoch: 1,
+        // The SECOND drain of this epoch; the first stream batch takes whatever
+        // drain sequence it arrives with as its baseline.
+        drain_sequence: 2,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: carrier.next_sequence(),
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: opening_rows,
+    };
+    capture(&mut carrier, raw1);
+    let continuation = DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 3,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: carrier.next_sequence(),
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: carrier.drain_rows().unwrap(),
+    };
+
+    let mut stream = Vec::new();
+    let mut seq = 0u64;
+    let mut push =
+        |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+            seq += 1;
+            push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+        };
+    for (raw, batch) in [(raw0, &opening), (raw1, &continuation)] {
+        push(
+            &mut stream,
+            raw,
+            45,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &chunk3_frd_v5_direct_batch_payload(batch),
+        );
+        push(
+            &mut stream,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(),
+        );
+    }
+
+    let mut fold = WorldFold::new("d45_opening_anchor");
+    fold.ingest_stream(&stream);
+    assert!(
+        !fold.frd_direct_history_failed,
+        "the fold ADMITS an opening past raw 1 -- that half was never the defect"
+    );
+    assert_eq!(fold.frd_direct_transitions.len(), 3);
+
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let opening_frd = &parse(&snaps[0].2)["_r2_direct_frd_transitions"];
+    assert_eq!(
+        opening_frd["delta_base_sequence"],
+        json!(1),
+        "the emitted VECTOR still opens at 1; that is the space this field counts in"
+    );
+    assert_eq!(
+        opening_frd["direct_history_base_sequence"],
+        json!(8),
+        "and the frame declares the RAW anchor its row 1 carries. Without this the consumer \
+         has only the vector base to go on, reads it as raw 1, and refuses every row"
+    );
+    assert_eq!(
+        opening_frd["direct_history_reset"],
+        json!(false),
+        "an opening is not a reset: nothing was discarded, so the hour must not read as one"
+    );
+
+    let next_frd = &parse(&snaps[1].2)["_r2_direct_frd_transitions"];
+    assert_eq!(next_frd["delta_base_sequence"], json!(3));
+    assert_eq!(
+        next_frd["direct_history_base_sequence"],
+        Value::Null,
+        "the anchor is declared ONCE, by the frame that opens the history; a later frame that \
+         repeated it would be a second declaration for the consumer to reconcile"
+    );
+    assert_eq!(next_frd["direct_history_reset"], json!(false));
+}
+
+/// A stream that opens at raw sequence 1 declares no anchor at all.
+///
+/// The declaration is for the case the consumer cannot infer, and the ordinary
+/// case must stay on the wire exactly as it was -- an anchor published on every
+/// opening would be a new field for every existing recording to disagree about.
+///
+/// What production change makes this fail: publishing the anchor
+/// unconditionally on the opening frame.
+#[test]
+fn d45_an_opening_batch_at_raw_sequence_one_declares_nothing() {
+    let mut stream = Vec::new();
+    let mut seq = 0u64;
+    let mut push =
+        |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+            seq += 1;
+            push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+        };
+    let raw0 = raw_for(16_959_360);
+    push(
+        &mut stream,
+        raw0,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_payload(),
+    );
+    push(
+        &mut stream,
+        raw0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d45_opening_at_one");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    let frd = &parse(&snaps[0].2)["_r2_direct_frd_transitions"];
+    assert_eq!(frd["delta_base_sequence"], json!(1));
+    assert_eq!(
+        frd["direct_history_base_sequence"],
+        Value::Null,
+        "a history that opens at raw 1 needs no anchor: the vector base already says it"
+    );
+}
+
+/// An opening past raw 1 whose own hour emits NO snapshot still declares the
+/// anchor on the next frame that does, and declares the OPENING's base rather
+/// than that later frame's.
+///
+/// The anchor is not stored when the batch is admitted, it is re-derived from
+/// the accumulated history at emit time -- so the one state where the two could
+/// disagree is a frame that carries MORE rows than the opening batch had. Hour 0
+/// admits raw 8 and 9 and then closes on an unlabellable raw counter, so no
+/// snapshot carries them; hour 1 admits raw 10 and emits all three. The anchor
+/// must still be 8.
+///
+/// What production change makes this fail: discharging the debt on an hour that
+/// emitted nothing (the declaration is lost and the domain goes down in replay),
+/// advancing the delta window on that hour (rows are marked carried that no
+/// snapshot carried), or deriving the anchor from the CONTINUATION batch's first
+/// row (10) or the batch cursor (11) rather than from the accumulated vector.
+///
+/// WHAT IT DOES NOT DISCRIMINATE, stated rather than implied. Because the window
+/// never closed, the emitted delta here opens at raw 8 as well, so an
+/// implementation reading `delta_rows.first()` would also produce 8 and pass. It
+/// passes on every anchor-carrying frame, in fact: the anchor is discharged in
+/// the same block that closes the window, so a frame that declares one always
+/// ships its history from row 1. The case that kills that reading is the one
+/// with NO rows to read --
+/// `chunk3_folds_d45_v5_empty_logical_stream_baseline_after_prior_drains`, where
+/// an empty opening batch at cursor 3 must still declare 3.
+#[test]
+fn d45_an_opening_anchor_survives_a_snapshotless_opening_hour() {
+    use direct_frd_transitions_live::{
+        DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventStateSummary,
+        UnsequencedDirectEventRow,
+    };
+    let h0 = 16_959_360i64;
+    let (raw0, raw1) = (raw_for(h0), raw_for(h0 + 1));
+    let mask = DirectEventKind::FocusCompleted.root_mask_bit();
+    let root_mask = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK;
+
+    let mut carrier = DirectEventCarrier::new();
+    let capture = |carrier: &mut DirectEventCarrier, game_hour_raw: i32| {
+        let owner = carrier.allocate_instance_id().unwrap();
+        let subject = carrier.allocate_instance_id().unwrap();
+        carrier
+            .capture(UnsequencedDirectEventRow {
+                kind: DirectEventKind::FocusCompleted,
+                thread_id: 23,
+                game_hour_raw,
+                root_rva: DirectEventKind::FocusCompleted.expected_root_rva_a729(),
+                owner_instance_id: owner,
+                subject_instance_id: subject,
+                argument_instance_id: direct_frd_transitions_live::OpaqueInstanceId::NONE,
+                owner_key: 1,
+                subject_token_hash: 1,
+                subject_key: 0,
+                input_bits: 0,
+                return_bits: 1,
+                before: DirectEventStateSummary::default(),
+                after: DirectEventStateSummary {
+                    state_bits: 1 << 63,
+                    ..DirectEventStateSummary::default()
+                },
+            })
+            .unwrap();
+    };
+    for _ in 0..7 {
+        capture(&mut carrier, raw0);
+    }
+    let _ = carrier.drain_rows().unwrap();
+    capture(&mut carrier, raw0);
+    capture(&mut carrier, raw0);
+    let opening = DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 2,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: carrier.next_sequence(),
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: carrier.drain_rows().unwrap(),
+    };
+    capture(&mut carrier, raw1);
+    let continuation = DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 3,
+        installed_root_mask: root_mask,
+        observed_kind_mask: mask,
+        sequence_cursor: carrier.next_sequence(),
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: carrier.drain_rows().unwrap(),
+    };
+
+    let mut stream = Vec::new();
+    let mut seq = 0u64;
+    let mut push =
+        |stream: &mut Vec<u8>, raw: i32, domain: u16, ty: u16, flags: u32, payload: &[u8]| {
+            seq += 1;
+            push_record_with_flags(stream, seq, raw, domain, ty, flags, payload);
+        };
+    push(
+        &mut stream,
+        raw0,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&opening),
+    );
+    // The opening hour closes on an unlabellable raw counter, so it builds no
+    // snapshot: `0` is below the calendar window.
+    push(
+        &mut stream,
+        0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+    push(
+        &mut stream,
+        raw1,
+        45,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        &chunk3_frd_v5_direct_batch_payload(&continuation),
+    );
+    push(
+        &mut stream,
+        raw1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("d45_opening_anchor_snapshotless");
+    fold.ingest_stream(&stream);
+    assert!(!fold.frd_direct_history_failed);
+    let snaps = fold.finish();
+    assert_eq!(
+        snaps.len(),
+        1,
+        "the unlabellable hour emits nothing, so only hour 1 does"
+    );
+    let frd = &parse(&snaps[0].2)["_r2_direct_frd_transitions"];
+    assert_eq!(
+        frd["delta_base_sequence"],
+        json!(1),
+        "the window never closed, so this frame ships the whole history from its first row"
+    );
+    assert_eq!(frd["cumulative_count"], json!(3));
+    assert_eq!(
+        frd["transitions"]
+            .as_array()
+            .expect("delta rows")
+            .iter()
+            .map(|row| row["sequence"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(8), json!(9), json!(10)],
+        "the whole history ships here, opening rows included: the snapshotless hour must not \
+         have closed the window past rows no snapshot carried"
+    );
+    assert_eq!(
+        frd["direct_history_base_sequence"],
+        json!(8),
+        "the anchor is the OPENING's raw base, re-derived from the accumulated vector -- not \
+         the continuation batch's first row (10) and not its cursor (11)"
+    );
+    assert_eq!(frd["direct_history_reset"], json!(false));
 }

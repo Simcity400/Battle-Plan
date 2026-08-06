@@ -1016,6 +1016,12 @@ mod tests {
                 evidence_fixture,
                 delta_base_sequence: None,
                 cumulative_count: None,
+                // A v3 whole-history fixture: neither §7.3.1 field applies, and
+                // both spell "this frame declares nothing about the raw
+                // sequence space", which is what the delta path reads as an
+                // ordinary continuation.
+                direct_history_reset: false,
+                direct_history_base_sequence: None,
                 transitions: vec![row.clone()],
             }),
             transitions: vec![row],

@@ -111,6 +111,17 @@ producer's own counter, which does not restart with the history, so the accumula
 anchor cannot be read off the first row: an empty restart batch is legal and carries none, and the
 frame after it opens at the batch's cursor. A reset with no declared anchor is a typed refusal.
 
+The OPENING frame of a recording may carry the same `direct_history_base_sequence` with
+`direct_history_reset` absent/false, and the accumulator anchors on it identically. A recorder's
+fold takes its first admitted batch as the stream baseline whatever raw sequence that batch begins
+at — a hook epoch's sequence space is process-wide while a fold is logical-stream scoped — so a
+capture that attached with history already drained opens at raw N while `delta_base_sequence` still
+opens at 1. Without the declaration replay read the opening as raw 1 and refused every row, losing
+the domain for the recording. Three refusals bound the admission: an anchor of 0 (the space is
+1-based), a bare declaration on any frame after the opening one (only a reset badge re-anchors a
+history mid-stream), and an UNDECLARED opening whose rows do not begin at raw 1 — that last one is
+the pre-existing strictness and it is unchanged.
+
 Replay: `WorldTimeline` folds v4 deltas from the first frame up to `frame_hour`, validating
 contiguity (delta_base_sequence == running_count+1; rows contiguous; hours non-decreasing
 across frames; cumulative_count == running_count+len; version match) and reconstructs the
