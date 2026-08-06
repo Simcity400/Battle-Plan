@@ -26653,3 +26653,281 @@ fn an_inadmissible_resync_on_d26s_tolerated_partial_path_is_refused() {
          is not folded at all"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #84: d94/d95 carry the hour their PRODUCER observed at, and the fold has to
+// attribute rows by that hour rather than by the hour it drained them in.
+//
+// Both domains re-serve a retained slot (`drain_latest` clones rather than
+// takes), so a record's own label routinely names a later hour than the frame
+// it carries. Before this change the fold decoded the producer hour and threw
+// it away: every one of these snapshots claimed its vector was observed in the
+// labelled hour, and a frame dated AHEAD of its record was folded without
+// complaint.
+// ---------------------------------------------------------------------------
+
+/// The hour every `snapshot_for_domain_records` record is labelled with.
+const POV_TEST_RECORD_HOUR: i64 = 16_959_360;
+
+fn pov_visibility_payload(producer_hour_index: Option<i64>) -> Vec<u8> {
+    fow94::PovVisibilitySnapshot {
+        capture_sequence: 7,
+        pov_country_id: 1,
+        producer_hour_raw: producer_hour_index.map(raw_for),
+        province_levels: vec![0, 3, 9],
+    }
+    .encode()
+    .expect("d94 fixture encodes")
+}
+
+fn pov_spotted_payload(
+    land_hour_index: Option<i64>,
+    taskforce_hour_index: Option<i64>,
+) -> Vec<u8> {
+    spotted95::SpottedUnitsSnapshot {
+        capture_sequence: 7,
+        pov_country_id: 1,
+        land_frame_sequence: Some(11),
+        taskforce_frame_sequence: Some(12),
+        land_frame_hour_raw: land_hour_index.map(raw_for),
+        taskforce_frame_hour_raw: taskforce_hour_index.map(raw_for),
+        land: vec![spotted95::SpottedUnitHandle {
+            type_id: 4,
+            stable_id: 40,
+            raw_intel: 255,
+        }],
+        taskforces: vec![spotted95::SpottedUnitHandle {
+            type_id: 5,
+            stable_id: 50,
+            raw_intel: 200,
+        }],
+    }
+    .encode()
+    .expect("d95 fixture encodes")
+}
+
+/// A d95 payload whose LAND surface is natively incomplete -- a shape the
+/// carrier admits -- carrying only a task-force frame.
+fn pov_spotted_taskforce_only_payload(taskforce_hour_index: Option<i64>) -> Vec<u8> {
+    spotted95::SpottedUnitsSnapshot {
+        capture_sequence: 7,
+        pov_country_id: 1,
+        land_frame_sequence: None,
+        taskforce_frame_sequence: Some(12),
+        land_frame_hour_raw: None,
+        taskforce_frame_hour_raw: taskforce_hour_index.map(raw_for),
+        land: Vec::new(),
+        taskforces: vec![spotted95::SpottedUnitHandle {
+            type_id: 5,
+            stable_id: 50,
+            raw_intel: 200,
+        }],
+    }
+    .encode()
+    .expect("d95 taskforce-only fixture encodes")
+}
+
+fn pov_snapshot(records: Vec<(u16, Vec<u8>)>) -> Value {
+    let mut all = vec![(18u16, country_identity_payload(&[(1, "GER")]))];
+    all.extend(records);
+    snapshot_for_domain_records(all)
+}
+
+fn pov_domain_problems(snapshot: &Value, domain_id: u16) -> Vec<String> {
+    snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .expect("domain_problems is an array")
+        .iter()
+        .filter(|problem| problem["domain_id"] == json!(domain_id))
+        .map(|problem| problem["problem"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A d94 frame the producer observed one hour AFTER the record carrying it is
+/// a later hour's observation being filed under an earlier hour's label. The
+/// fold must refuse it under a cause that names itself, not relabel it.
+///
+/// What production change would make this fail: deleting the
+/// `producer_frame_age_hours` guard from `fold_pov_province_visibility`, or
+/// letting it admit a negative age. Either restores the pre-change behaviour
+/// in which this payload folded into a `visibility` block indistinguishable
+/// from a genuine current-hour observation.
+#[test]
+fn d94_a_producer_hour_ahead_of_its_record_is_refused_by_name() {
+    let snapshot = pov_snapshot(vec![(
+        94,
+        pov_visibility_payload(Some(POV_TEST_RECORD_HOUR + 1)),
+    )]);
+    assert_eq!(
+        snapshot["visibility"]["authority"],
+        Value::Null,
+        "a future-dated frame must not reach the snapshot as an authority block at all"
+    );
+    let problems = pov_domain_problems(&snapshot, 94);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem == "pov_province_visibility_producer_hour_ahead_of_record"),
+        "the refusal has to name its own cause; a bare `invalid_pov_province_visibility` cannot \
+         be told from a malformed payload. Found: {problems:?}"
+    );
+}
+
+/// The routine case: the producer last ran three hours ago and its vector is
+/// being re-served. The record is admitted -- refusing it would open a
+/// coverage hole on every hour the renderer did not run -- but it must state
+/// its own age rather than pass an older observation off as a current one.
+///
+/// What production change would make this fail: dropping
+/// `producer_frame_hour_fields` from the FOW1 authority block, or computing
+/// the age against anything other than the record's own label hour.
+#[test]
+fn d94_a_retained_frame_states_its_age_instead_of_claiming_the_label_hour() {
+    let snapshot = pov_snapshot(vec![(
+        94,
+        pov_visibility_payload(Some(POV_TEST_RECORD_HOUR - 3)),
+    )]);
+    let authority = &snapshot["visibility"]["authority"];
+    assert_eq!(authority["schema"], json!("FOW1"));
+    assert_eq!(
+        authority["producer_hour_index"],
+        json!(POV_TEST_RECORD_HOUR - 3),
+        "the producer's own hour is the attribution key and must survive the fold"
+    );
+    assert_eq!(authority["producer_frame_age_hours"], json!(3));
+    assert_eq!(
+        authority["producer_frame_fresh"],
+        json!(false),
+        "a three-hour-old vector is not an observation of this hour"
+    );
+    // Age and completeness are orthogonal: a retained frame is still the whole
+    // province vector, so the width claim must not be weakened by the age.
+    assert_eq!(authority["complete_vector"], json!(true));
+
+    let fresh = pov_snapshot(vec![(
+        94,
+        pov_visibility_payload(Some(POV_TEST_RECORD_HOUR)),
+    )]);
+    assert_eq!(
+        fresh["visibility"]["authority"]["producer_frame_age_hours"],
+        json!(0)
+    );
+    assert_eq!(
+        fresh["visibility"]["authority"]["producer_frame_fresh"],
+        json!(true)
+    );
+}
+
+/// A producer whose own clock read failed emits no hour word. That is an
+/// UNKNOWN observation time, and it must not read as freshness -- the whole
+/// point of the trailer is that "no hour" and "this hour" were the same bytes
+/// before it existed.
+///
+/// What production change would make this fail: defaulting a missing producer
+/// hour to the record's label hour (age 0), which is exactly the silent
+/// relabel this task exists to remove.
+#[test]
+fn d94_a_producer_that_declared_no_hour_is_unknown_never_fresh() {
+    let snapshot = pov_snapshot(vec![(94, pov_visibility_payload(None))]);
+    let authority = &snapshot["visibility"]["authority"];
+    assert_eq!(authority["producer_hour_raw"], Value::Null);
+    assert_eq!(authority["producer_frame_age_hours"], Value::Null);
+    assert_ne!(
+        authority["producer_frame_fresh"],
+        json!(true),
+        "an unknown observation time must never be reported as a fresh one"
+    );
+}
+
+/// d95's two surfaces are published by two different producers and dated
+/// independently. A future-dated land frame is excluded and accounted, but it
+/// must not take a sound task-force frame down with it -- partial data still
+/// seals.
+///
+/// What production change would make this fail: refusing d95 domain-wide on
+/// the first bad surface (the shape a single `mark_fold_domain_unknown` gives
+/// you), which would drop the task-force rows this asserts are present.
+#[test]
+fn d95_a_future_dated_land_frame_does_not_take_the_taskforce_frame_with_it() {
+    let snapshot = pov_snapshot(vec![
+        (94, pov_visibility_payload(Some(POV_TEST_RECORD_HOUR))),
+        (
+            95,
+            pov_spotted_payload(Some(POV_TEST_RECORD_HOUR + 1), Some(POV_TEST_RECORD_HOUR)),
+        ),
+    ]);
+    let pov = &snapshot["visibility"]["povs"]["GER"]["spotted_units"];
+    assert_eq!(
+        pov["land"],
+        Value::Null,
+        "the land surface could not be attributed, so it is not obtained"
+    );
+    assert_eq!(
+        pov["taskforces"][0]["stable_id"],
+        json!(50),
+        "the task-force surface dated itself correctly and must survive"
+    );
+    let spotted_authority = &snapshot["visibility"]["authority"]["unit_spotting_authority"];
+    assert_eq!(spotted_authority["land_frame_complete"], json!(false));
+    assert_eq!(spotted_authority["taskforce_frame_complete"], json!(true));
+    assert_eq!(
+        spotted_authority["taskforce_frame_producer_frame_age_hours"],
+        json!(0)
+    );
+    assert_eq!(
+        spotted_authority["land_frame_producer_frame_age_hours"],
+        Value::Null
+    );
+    let problems = pov_domain_problems(&snapshot, 95);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem == "pov_spotted_units_land_producer_hour_ahead_of_record"),
+        "the excluded surface names itself. Found: {problems:?}"
+    );
+    assert!(
+        !problems.iter().any(|problem| problem.contains("taskforce")),
+        "the surviving surface must not be accounted as a problem. Found: {problems:?}"
+    );
+}
+
+/// Excluding the ONLY surface a carrier had leaves a snapshot with no producer
+/// frame at all -- the one state `SpottedUnitsSnapshot::validate` refuses to
+/// represent. The carrier admits a natively incomplete land surface, so this
+/// arrives with one exclusion, not two, and a fold that counted exclusions
+/// rather than surviving frames would store it and mark d95 successful.
+///
+/// What production change would make this fail: deciding the refusal from a
+/// count of excluded surfaces instead of from the sequences that remain.
+#[test]
+fn d95_excluding_the_only_surface_a_carrier_had_refuses_the_record() {
+    let snapshot = pov_snapshot(vec![
+        (94, pov_visibility_payload(Some(POV_TEST_RECORD_HOUR))),
+        (
+            95,
+            pov_spotted_taskforce_only_payload(Some(POV_TEST_RECORD_HOUR + 1)),
+        ),
+    ]);
+    assert_eq!(
+        snapshot["visibility"]["authority"]["unit_spotting_available"],
+        json!(false),
+        "no surface survived, so there is no spotting authority to publish"
+    );
+    assert_eq!(
+        snapshot["visibility"]["povs"]["GER"]["spotted_units"],
+        Value::Null
+    );
+    // d94 dated itself correctly and must not be lost with d95.
+    assert_eq!(
+        snapshot["visibility"]["authority"]["producer_frame_age_hours"],
+        json!(0),
+        "a d95 refusal must not take the sound d94 vector down with it"
+    );
+    let problems = pov_domain_problems(&snapshot, 95);
+    assert!(
+        problems.iter().any(
+            |problem| problem == "pov_spotted_units_taskforce_producer_hour_ahead_of_record"
+        ),
+        "Found: {problems:?}"
+    );
+}

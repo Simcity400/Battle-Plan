@@ -412,6 +412,11 @@ mod tests {
             taskforce_units: Leaf::Unobtained,
             land_frame_sequence: Leaf::Measured(9),
             taskforce_frame_sequence: Leaf::Unobtained,
+            // An observation of this very hour. POV admission turns on the
+            // vector and the sequences, not on how old the frame is: a
+            // retained frame is still a real observation and must still admit.
+            land_frame_age_hours: Leaf::Measured(0),
+            taskforce_frame_age_hours: Leaf::Unobtained,
         };
         let visibility = PovVisibilityView {
             status: ViewStatus::Present,
@@ -424,6 +429,8 @@ mod tests {
             raw_province_levels: Leaf::Measured(vec![2]),
             capture_sequence: Leaf::Measured(7),
             pov_country_id: Leaf::Measured(42),
+            producer_hour_index: Leaf::Measured(1_000),
+            producer_frame_age_hours: Leaf::Measured(0),
             spotted_units: spotted.clone(),
         };
 
@@ -451,6 +458,8 @@ mod tests {
             taskforce_units: Leaf::Unobtained,
             land_frame_sequence: Leaf::Measured(1),
             taskforce_frame_sequence: Leaf::Unobtained,
+            land_frame_age_hours: Leaf::Measured(0),
+            taskforce_frame_age_hours: Leaf::Unobtained,
         };
         let visibility = PovVisibilityView {
             status: ViewStatus::Present,
@@ -458,6 +467,10 @@ mod tests {
             raw_province_levels: Leaf::Absent,
             capture_sequence: Leaf::Absent,
             pov_country_id: Leaf::Absent,
+            // The nonexact A3 shape carries no authority block, so it makes no
+            // observation-time claim either.
+            producer_hour_index: Leaf::Absent,
+            producer_frame_age_hours: Leaf::Absent,
             spotted_units: spotted.clone(),
         };
         assert!(admit_recorded_pov("GER", &visibility, &spotted)
