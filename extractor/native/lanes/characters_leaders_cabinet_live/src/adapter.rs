@@ -337,11 +337,10 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     // some earlier loop saw. Every other loop only ever writes to it. When
     // there are no portrait inputs the set is built and then never read, so
     // the ~10k inserts a frame are pure waste; skipping them when the sole
-    // reader has nothing to read is exactly equivalent. (The shared
-    // collector never populates portraits — see
-    // `NativeRootCache::shared_collector_excluded_root_count` — but the
-    // fixture and benchmark entry points do, so this is a guard on the
-    // input, never an assumption that portraits are always empty.)
+    // reader has nothing to read is exactly equivalent. (The prewarm now DOES
+    // populate portraits, so the skip is the exceptional path rather than the
+    // normal one — but it stays, because a campaign whose characters define no
+    // portraits is a campaign this walk must not pay ~10k inserts for.)
     let track_known_characters = !input.portraits.is_empty();
     let mut known_characters = BTreeSet::new();
     // Index INTO `frame.characters`, not a second copy of every character's

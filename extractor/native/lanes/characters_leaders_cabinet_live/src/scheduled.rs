@@ -71,25 +71,6 @@ impl NativeRootCache {
         self.roots_validated && self.roots.is_some() && self.stable_root_count() != 0
     }
 
-    /// Roots still excluded from the shared collector. Advisor and
-    /// unit-leader-trait roots were unblocked by the wave-3 870ebf
-    /// revalidation (`WAVE3_CRACKS_870EBF_D04.md` §1); portrait rows remain
-    /// excluded until a static portrait feed keyed to validated live
-    /// characters exists.
-    pub fn shared_collector_excluded_root_count(&self) -> usize {
-        self.portraits.len()
-    }
-
-    pub fn shared_collector_excluded_roots_are_empty(&self) -> bool {
-        self.shared_collector_excluded_root_count() == 0
-    }
-
-    pub fn debug_assert_shared_collector_excluded_roots_empty(&self) {
-        debug_assert!(
-            self.shared_collector_excluded_roots_are_empty(),
-            "shared domain47 collector must not populate character_portrait roots until a static portrait feed keyed to validated live characters is revalidated"
-        );
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -949,25 +930,20 @@ mod tests {
         }
     }
 
+    /// Portrait roots are roots. Before the portrait feed existed they were
+    /// the one root list the shared collector was forbidden to populate, and a
+    /// cache holding nothing else was still "no stable roots"; now a prewarm
+    /// that read portraits has read something, and `has_stable_roots` has to
+    /// agree or the adoption gate discards the census that produced them.
     #[test]
-    fn shared_collector_excluded_root_guard_flags_blocked_roots() {
-        let mut cache = NativeRootCache::default();
-        assert!(cache.shared_collector_excluded_roots_are_empty());
-        // Advisor + trait roots are unblocked (wave-3 870ebf revalidation)
-        // and must not trip the excluded-root guard.
-        cache.unit_leader_trait_tokens.push(TraitDefinitionRoot {
-            trait_addr: 0x2300,
-            token: "old_guard".to_string(),
-        });
-        cache.advisors.push(AdvisorRoot {
-            advisor_addr: 0x5000,
-            idea_token: "ENG_maxwell_aitken".to_string(),
-            slot: Some("political_advisor".to_string()),
-            ledger: None,
-        });
-        assert_eq!(cache.shared_collector_excluded_root_count(), 0);
-        assert!(cache.shared_collector_excluded_roots_are_empty());
-        // Portrait roots remain excluded until their static feed is validated.
+    fn portrait_roots_count_toward_the_adoptable_root_total() {
+        let mut cache = NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            ..NativeRootCache::default()
+        };
+        assert_eq!(cache.stable_root_count(), 0);
+        assert!(!cache.has_stable_roots());
         cache.portraits.push(CharacterPortraitInput {
             country_tag_db_id: 2,
             char_id: 1458,
@@ -975,8 +951,8 @@ mod tests {
             size: "large".to_string(),
             gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
         });
-        assert_eq!(cache.shared_collector_excluded_root_count(), 1);
-        assert!(!cache.shared_collector_excluded_roots_are_empty());
+        assert_eq!(cache.stable_root_count(), 1);
+        assert!(cache.has_stable_roots());
     }
 
     fn roots() -> ResolvedTypeRoots {
