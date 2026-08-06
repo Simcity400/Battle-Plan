@@ -286,6 +286,7 @@ fn exact_binding() -> Xui20CombatDetailLosses {
         sunk_convoys: Leaf::Measured(Vec::new()),
         convoy_terminal: Leaf::Unobtained,
         sunk_ships: Leaf::Measured(vec![sunk_ship_row()]),
+        sunk_ships_completeness: replay_core::SunkShipHistoryCompleteness::Complete,
         wars: Leaf::Measured(vec![war()]),
         war_relations: Leaf::Measured(Vec::new()),
     }
@@ -778,7 +779,11 @@ fn sunk_ship_gate_verdict_tracks_replay_cores_shared_row_predicate() {
         };
         mutate(&mut rows[0]);
         let row = rows[0].clone();
-        let shared = replay_core::sunk_ship_event_content_is_admissible(&row, 0);
+        let shared = replay_core::sunk_ship_history_rows_are_admissible(
+            std::slice::from_ref(&row),
+            binding.sunk_ships_completeness,
+        )
+        .is_ok();
         let gate_admitted = matches!(
             admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
             Xui20SurfaceState::Admitted { .. }
@@ -887,7 +892,11 @@ fn sunk_ship_gate_verdict_tracks_replay_cores_shared_calendar_predicate() {
         };
         rows[0].sink_date_raw = raw;
         let row = rows[0].clone();
-        let shared = replay_core::sunk_ship_event_content_is_admissible(&row, 0)
+        let shared = replay_core::sunk_ship_history_rows_are_admissible(
+            std::slice::from_ref(&row),
+            binding.sunk_ships_completeness,
+        )
+        .is_ok()
             && replay_core::sunk_ship_event_sink_hour_is_admissible(&row, FIXTURE_FRAME_HOUR);
         let gate_admitted = matches!(
             admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
@@ -938,4 +947,44 @@ fn a_binding_with_no_frame_hour_refuses_the_d86_surface_typed() {
         ),
         "the aggregate family state carries the refusal rather than hiding it"
     );
+}
+
+/// A MEASURED sunk-ship leaf under `NoHistory` is a contradiction, and the gate
+/// refuses it rather than reporting a measured zero.
+///
+/// The row predicate cannot catch this one: it takes a bare slice, which
+/// carries no measured/unobtained state, so an empty slice under `NoHistory`
+/// is indistinguishable there from a delivery that legitimately has no rows.
+/// Only the gate knows the leaf was measured. Admitting the pairing would
+/// publish `Admitted { row_count: 0 }` for a domain that was absent or refused
+/// -- "unavailable" collapsed into "measured zero sinkings", which is the one
+/// distinction this binding exists to keep.
+///
+/// Mutation: delete the `NoHistory` arm from `validate_sunk_ships` and the
+/// empty case admits with `row_count: 0`.
+#[test]
+fn a_measured_sunk_ship_leaf_under_no_history_is_refused() {
+    for (label, rows) in [
+        ("measured empty", Vec::new()),
+        ("measured rows", vec![sunk_ship_row()]),
+    ] {
+        let mut binding = exact_binding();
+        binding.sunk_ships = Leaf::Measured(rows);
+        binding.sunk_ships_completeness = replay_core::SunkShipHistoryCompleteness::NoHistory;
+        let admission = admit_xui20_replay(&binding, &frame_hour());
+        assert!(
+            matches!(admission.naval_terminal, Xui20SurfaceState::Rejected { .. }),
+            "{label}: a measured leaf under NoHistory must be refused, got {:?}",
+            admission.naval_terminal
+        );
+    }
+
+    // The control: the same rows under the completeness the production
+    // constructor would derive are admitted, so the refusals are about the
+    // declaration and not about the rows.
+    let binding = exact_binding();
+    assert!(matches!(
+        admit_xui20_replay(&binding, &frame_hour()).naval_terminal,
+        Xui20SurfaceState::Admitted { .. }
+    ));
 }

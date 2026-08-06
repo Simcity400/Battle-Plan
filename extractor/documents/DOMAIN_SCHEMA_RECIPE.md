@@ -865,7 +865,7 @@ the stream passes.** Rules the review rounds established:
   own test.
 - **Before modelling an expected-partial tolerance branch, check the domain is actually in
   `COMPACT_EXPECTED_PARTIAL_TOLERANCES`** (`compact_contract/src/lib.rs:136` — domains 26,
-  27, 28 and 54 only), **and check the branch's position.** `handle_compact_failure` applies
+  27, 28, 54 and 86 only), **and check the branch's position.** `handle_compact_failure` applies
   the tolerance-adjusted failure mask, so for an UNLISTED domain
   `COMPACT_STATUS_PARTIAL_DATA` stays inside the mask it checks
   (`COMPACT_STATUS_FAILURE_MASK`, `lib.rs:110`–`:118`) and the gate returns on exactly that

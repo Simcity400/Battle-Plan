@@ -10,7 +10,8 @@ use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, CombatParticipantEvent, CombatRow, ConvoyLossRow,
     ConvoyD70MutationKindExact, ConvoyRouteEndpointKindExact, ConvoyRouteProducerKindExact,
     ConvoyTransportAttackExactRow, ConvoyTransportAttackExactView, DiplomacyView, EndedCombatRow,
-    LandCombatSideDetail, Leaf, NavalCombatRow, SunkShipEventExact, SunkShipTextUnavailable,
+    LandCombatSideDetail, Leaf, NavalCombatRow, SunkShipEventExact, SunkShipHistoryCompleteness,
+    SunkShipTextUnavailable,
     ViewStatus, WarObjectRow,
     WarRelationRow, WorldFrame,
 };
@@ -55,6 +56,13 @@ pub struct Xui20CombatDetailLosses {
     /// the monthly d70 aggregate and is never populated from that aggregate.
     pub convoy_terminal: Leaf<Vec<ConvoyTransportAttackExactRow>>,
     pub sunk_ships: Leaf<Vec<SunkShipEventExact>>,
+    /// Whether `sunk_ships` is the WHOLE record of sinkings for this hour, and
+    /// when it is not, exactly what D86's producer lost. A partial history is
+    /// admitted and its rows are carried (owner ruling 2026-08-06), so the
+    /// surface that renders them has to be able to say so; `Leaf::Measured` on
+    /// `sunk_ships` alone cannot, because a partial and a complete delivery are
+    /// both measured.
+    pub sunk_ships_completeness: SunkShipHistoryCompleteness,
     pub wars: Leaf<Vec<WarObjectRow>>,
     pub war_relations: Leaf<Vec<WarRelationRow>>,
 }
@@ -1363,9 +1371,25 @@ fn validate_war_participants(
 /// refused on its sink date could still be admitted by the binding gate.
 fn validate_sunk_ships(
     rows: &Leaf<Vec<SunkShipEventExact>>,
+    completeness: SunkShipHistoryCompleteness,
     frame_hour: &Xui20FrameHour,
 ) -> Result<usize, GateFailure> {
     let rows = required(rows, "sunk_ships")?;
+    // Reaching past `required` means the leaf is MEASURED, and a measured leaf
+    // under `NoHistory` is a contradiction at the leaf level that the row
+    // predicate cannot see: a bare slice carries no measured/unobtained state,
+    // so an empty one is indistinguishable from a delivery that legitimately
+    // has no rows. Admitting this pairing would report `Admitted { row_count:
+    // 0 }` for a domain that was absent or refused -- collapsing "unavailable"
+    // into "measured zero sinkings", which is the one distinction this binding
+    // exists to keep. Production never builds it: `NoHistory` is paired with
+    // `Leaf::Absent` or `Leaf::Unobtained` by the constructor below.
+    if matches!(completeness, SunkShipHistoryCompleteness::NoHistory) {
+        return Err(invalid(
+            "sunk_ships is measured under a declaration that no history reached this view"
+                .to_string(),
+        ));
+    }
     // Refused, never admitted on half the rule: without the frame hour the
     // calendar half cannot be evaluated at all, and admitting the rows anyway
     // is exactly the disagreement this threading exists to close.
@@ -1377,12 +1401,15 @@ fn validate_sunk_ships(
             )))
         }
     };
+    // The hour-independent half, over the whole history at once: the sequence
+    // budget a producer-declared partial licenses is not decidable one row at a
+    // time, and the completeness state is what licenses it. Passing the gate's
+    // own guess here instead of the view's verdict would be the transcription
+    // this call exists to avoid.
+    if let Err(refusal) = replay_core::sunk_ship_history_rows_are_admissible(rows, completeness) {
+        return Err(invalid(format!("sunk_ships {}", refusal.describe())));
+    }
     for (index, row) in rows.iter().enumerate() {
-        if !replay_core::sunk_ship_event_content_is_admissible(row, index) {
-            return Err(invalid(format!(
-                "sunk_ships[{index}] exact writer identity/content is invalid"
-            )));
-        }
         if !replay_core::sunk_ship_event_sink_hour_is_admissible(row, expected_hour) {
             return Err(invalid(format!(
                 "sunk_ships[{index}] sink date is outside the shared calendar window \
@@ -1480,7 +1507,11 @@ pub fn admit_xui20_replay(
     let air_region = validate_air_region(&binding.air_region_combat);
     let convoys = validate_convoys(&binding.sunk_convoys);
     let convoy_terminal = validate_convoy_terminal(&binding.convoy_terminal);
-    let sunk_ships = validate_sunk_ships(&binding.sunk_ships, frame_hour);
+    let sunk_ships = validate_sunk_ships(
+        &binding.sunk_ships,
+        binding.sunk_ships_completeness,
+        frame_hour,
+    );
     let war_pairs = validate_war_pairs(&binding.wars);
     let war_overview = validate_war_overview(&binding.wars);
     let family_rows = binding.land.len()
@@ -1671,6 +1702,10 @@ pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailL
         ViewStatus::DomainAbsent => Leaf::Absent,
         ViewStatus::DomainUnavailable => Leaf::Unobtained,
     };
+    // Carried through from `replay_core`'s admission verdict, never re-derived
+    // here: the rows and the statement about what is missing beside them come
+    // from the same view, so the surface cannot show one without the other.
+    let sunk_ships_completeness = frame.sunk_ship_history_exact().completeness;
     Xui20CombatDetailLosses {
         land: frame.combats().iter().map(land_panel).collect(),
         ended_land: frame.ended_combats().clone(),
@@ -1681,6 +1716,7 @@ pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailL
         sunk_convoys: naval_air.sunk_convoys.clone(),
         convoy_terminal,
         sunk_ships,
+        sunk_ships_completeness,
         wars: diplomacy.wars.clone(),
         war_relations: diplomacy.war_relations.clone(),
     }

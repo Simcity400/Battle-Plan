@@ -12,8 +12,9 @@ use compact_contract::campaign_identity::{
 use compact_contract::{
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_PARTIAL_DATA,
-    COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA,
+    COMPACT_STATUS_NO_CLOCK, COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    COMPACT_STATUS_WORKER_PANIC,
 };
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -2204,6 +2205,94 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
     );
 }
 
+/// Which state a D86 producer-declared partial maps to, decided once and
+/// pinned here.
+///
+/// Owner ruling 2026-08-06: replay ADMITS a d86 history whose producer declared
+/// `producer_complete = false`, carrying the rows it has with the loss named.
+/// The hour that delivery belongs to is then `expected_partial` and nothing
+/// else in the shared vocabulary:
+///
+///  * not `complete` — a sinking IS missing, and the SHP1 loss block says how
+///    many and why;
+///  * not `degraded_unknown` — that state means the rows must NOT be applied
+///    and the accumulator must be retained, which is the wholesale refusal the
+///    ruling removed;
+///  * not `absent` — the domain published a `DOMAIN_DATA` record, not a
+///    `DOMAIN_GAP`;
+///  * not `excluded` — the decoder's payload authority admits the record.
+///
+/// `expected_partial` is the state the vocabulary already defines for exactly
+/// this: a reviewed partial whose rows are a sparse patch and whose omissions
+/// are known and not fabricated as deletions. The written integrity argument
+/// lives in the domain-86 `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry, as that
+/// state requires; no new spelling was invented.
+///
+/// SCOPE. This test pins the CLASSIFICATION only: given the status word a
+/// producer-declared partial carries, `state()` answers `expected_partial`. It
+/// builds `DomainCompleteness` by hand -- the same way the domain-26 fixture
+/// above does, and for the same reason -- so it does NOT cover the carrier
+/// actually emitting that word. That half is pinned in the lane, by
+/// `a_partial_receipt_declares_partial_data_and_a_complete_one_declares_nothing`
+/// and `a_receipt_status_word_that_contradicts_its_loss_block_is_refused`, and
+/// end to end by `a_cd_style_partial_batch_certifies_without_a_degraded_notice`
+/// below, which certifies a real stream built from a real partial payload.
+///
+/// What production change would make this fail: removing the domain-86
+/// tolerance entry, which makes this word `degraded_unknown`; or changing
+/// `DomainCompleteness::state` so a tolerated partial reports `complete`.
+#[test]
+fn a_d86_producer_declared_partial_hour_certifies_as_expected_partial() {
+    // The premise, asked of the contract: domain 86 tolerates PARTIAL_DATA
+    // outright, so neither residual can be what decides the state below.
+    assert_eq!(
+        compact_status_failure_flags_after_expected_partial_tolerance(
+            86,
+            COMPACT_STATUS_PARTIAL_DATA,
+        ),
+        0,
+        "domain 86 must tolerate PARTIAL_DATA outright"
+    );
+    // The shape `CompletenessAudit::observe` builds for d86: the PERF word is
+    // clean (the collector schedules the domain normally), and the partiality
+    // arrives only in the DOMAIN_DATA payload's own SHP1 status word.
+    let partial_hour = DomainCompleteness {
+        data_records: 1,
+        perf_records: 1,
+        data_payload_status_flags_or: COMPACT_STATUS_PARTIAL_DATA,
+        normalized_status_flags_or: COMPACT_STATUS_PARTIAL_DATA,
+        ..DomainCompleteness::default()
+    };
+    assert_eq!(partial_hour.state(86), "expected_partial");
+    assert!(
+        !partial_hour.is_complete(86),
+        "a partial delivery is not a complete one"
+    );
+
+    // The control: the same domain with a clean payload is complete, so the
+    // assertion above is reading the declaration and not the domain id.
+    assert_eq!(
+        DomainCompleteness {
+            data_records: 1,
+            perf_records: 1,
+            ..DomainCompleteness::default()
+        }
+        .state(86),
+        "complete"
+    );
+
+    // And the partial can never be written down as a degradation.
+    assert!(
+        compact_contract::frame_degraded::FrameDegradedDomain::from_status(
+            86,
+            COMPACT_STATUS_PARTIAL_DATA,
+            "mislabelled",
+        )
+        .is_none(),
+        "a tolerated d86 partial must not produce a degraded entry"
+    );
+}
+
 /// The non-weakening proof, and the mutation target for the whole deferral.
 ///
 /// The certifier used to reject a non-tolerated PERF failure the instant it saw
@@ -2267,10 +2356,18 @@ fn sunk_ship_payload_for(
         return d86::encode_unavailable(hour_index as u64, 7, status_flags)
             .expect("an unavailable d86 payload encodes");
     }
+    // A receipt frame's status word is DERIVED from its loss block, exactly as
+    // `collect_and_encode` derives it: a producer-declared partial says so in
+    // the shared status vocabulary too, or the certifier cannot see it.
+    let snapshot_status = if producer_loss.is_some() {
+        COMPACT_STATUS_PARTIAL_DATA
+    } else {
+        0
+    };
     d86::encode_payload(&d86::SunkShipFrame {
         elapsed_wall_ms: 7,
         frame_hour: hour_index as u64,
-        status_flags: 0,
+        status_flags: snapshot_status,
         authority: d86::AuthorityState::StaticExact20Receipt,
         snapshot: Some(d86::SunkShipSnapshot {
             source_sequence: 2,
@@ -2584,11 +2681,15 @@ fn a_d86_declaration_with_the_wrong_bits_refuses() {
 /// the PERF-derived `non_tolerated_status_flags` instead of keeping its own.
 #[test]
 fn a_notice_may_not_be_satisfied_by_the_union_of_two_disagreeing_statuses() {
+    // Both words are non-tolerated for d86. PARTIAL_DATA no longer is -- it is
+    // the domain's expected-partial declaration since the producer-declared
+    // partial became an admitted delivery -- so using it here would make the
+    // PERF residual zero and the test would pass for the wrong reason.
     let stream = d86_hour_stream(
-        &sunk_ship_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, None),
-        COMPACT_STATUS_PARTIAL_DATA,
+        &sunk_ship_payload(COMPACT_STATUS_WORKER_PANIC, None),
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
         Some((
-            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_WORKER_PANIC,
             "domain 86: read_completion=2",
         )),
     );
@@ -2601,7 +2702,7 @@ fn a_notice_may_not_be_satisfied_by_the_union_of_two_disagreeing_statuses() {
     .expect("a notice declaring the union of two disagreeing words must not certify");
     assert!(err.contains("domain 86 PERF status"), "{err}");
     assert!(
-        err.contains("0x00000200") && err.contains("0x00000300"),
+        err.contains("0x00000100") && err.contains("0x00000140"),
         "the verdict must show the PERF residual and what the notice claims: {err}"
     );
 }
@@ -2745,38 +2846,75 @@ fn a_cd_style_partial_batch_certifies_without_a_degraded_notice() {
     );
 }
 
-/// The tolerance table is NOT the mechanism here, and must not become it.
+/// d86's FAILED READS certify through the `H4FD` declaration, and the tolerance
+/// entry must never become an amnesty for them.
 ///
-/// An entry for d86 would assert that a failed read is a reviewed partial with
-/// a written integrity argument. It is not: the fold withholds the domain's
-/// rows entirely. Widening the table would also make the failure INVISIBLE --
-/// a tolerated status is never declared in `H4FD` -- which is the mislabel the
-/// degraded record exists to prevent.
+/// This test was written when d86 had no tolerance entry at all, on the reading
+/// that "an entry would assert that a failed read is a reviewed partial with a
+/// written integrity argument. It is not: the fold withholds the domain's rows
+/// entirely." That premise was true of every d86 status bit at the time,
+/// because a partial history was refused wholesale downstream.
 ///
-/// Production change that makes this fail: adding a d86 entry to
-/// `COMPACT_EXPECTED_PARTIAL_TOLERANCES` to make t26 pass.
+/// Owner ruling 2026-08-06 changed exactly one of those bits and nothing else.
+/// A producer-declared partial is now an ADMITTED delivery: the fold applies its
+/// rows and replay carries them, with the SHP1 loss block naming every omission.
+/// That is the definition of an expected partial, so `PARTIAL_DATA` -- and only
+/// `PARTIAL_DATA` -- is tolerated for this domain.
+///
+/// The protection the test was written for is unchanged and is what the rest of
+/// it asserts: a FAILED read (`source_unavailable`, a worker panic, an
+/// unreadable clock) is still non-tolerated, still withholds the rows, and must
+/// still be declared in `H4FD`. The amnesty the original comment feared would be
+/// a tolerance that swallowed those, and none of them is tolerated.
+///
+/// SCOPE. This pins the TOLERANCE BOUNDARY -- which words the domain-86 entry
+/// does and does not cover, and that each uncovered one is still expressible as
+/// an `H4FD` entry. It does not certify a stream, so it is not what proves the
+/// certifier REQUIRES that entry; `an_undeclared_d86_payload_failure_still
+/// _refuses` and `a_declared_d86_payload_failure_certifies_as_an_accounted
+/// _unknown` are, and they are unchanged by this lane.
+///
+/// Production change that makes this fail: widening the domain-86 tolerance
+/// beyond `PARTIAL_DATA`, or removing it (which would put the wholesale refusal
+/// back one layer down, in the fold's failure gate).
 #[test]
-fn d86_certifies_through_the_declaration_and_never_through_a_tolerance() {
-    assert!(
-        compact_contract::expected_partial_tolerance(86).is_none(),
-        "d86 must have no expected-partial tolerance entry"
+fn d86_failed_reads_certify_through_the_declaration_and_never_through_the_tolerance() {
+    let tolerance = compact_contract::expected_partial_tolerance(86)
+        .expect("d86's producer-declared partial is an expected partial");
+    assert_eq!(
+        tolerance.tolerated_flags, COMPACT_STATUS_PARTIAL_DATA,
+        "exactly one bit is tolerated, and it is the producer's own partial declaration"
     );
+    for (label, failure) in [
+        ("source_unavailable", COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        ("worker_panic", COMPACT_STATUS_WORKER_PANIC),
+        ("no_clock", COMPACT_STATUS_NO_CLOCK),
+    ] {
+        assert_eq!(
+            compact_status_failure_flags_after_expected_partial_tolerance(86, failure),
+            failure,
+            "{label} must stay a non-tolerated failure for d86"
+        );
+        assert!(
+            compact_contract::frame_degraded::FrameDegradedDomain::from_status(
+                86,
+                failure,
+                "domain 86: read_completion=2",
+            )
+            .is_some(),
+            "{label}: the accounting path for a d86 FAILURE is the H4FD declaration"
+        );
+    }
+    // And a failure carried ALONGSIDE the partial declaration is not laundered
+    // by it: the tolerance applies only when the tolerated bit is the whole
+    // failure word.
     assert_eq!(
         compact_status_failure_flags_after_expected_partial_tolerance(
             86,
-            COMPACT_STATUS_SOURCE_UNAVAILABLE
+            COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
         ),
-        COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        "source_unavailable must stay a non-tolerated failure for d86"
-    );
-    assert!(
-        compact_contract::frame_degraded::FrameDegradedDomain::from_status(
-            86,
-            COMPACT_STATUS_SOURCE_UNAVAILABLE,
-            "domain 86: read_completion=2",
-        )
-        .is_some(),
-        "the accounting path for d86 is the H4FD declaration"
+        COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        "a partial declaration does not tolerate the failure sitting beside it"
     );
 }
 

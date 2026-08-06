@@ -27007,6 +27007,31 @@ fn sunk_ship_payload(producer_hour_index: Option<i64>) -> Vec<u8> {
     .expect("d86 fixture encodes")
 }
 
+/// The same fixture, sealed PARTIAL: the producer names what it lost and the
+/// carrier derives the shared status declaration from it, exactly as
+/// `collect_and_encode` does in production.
+fn sunk_ship_partial_payload(producer_hour_index: Option<i64>) -> Vec<u8> {
+    let complete = sunk86_lane::decode_payload(&sunk_ship_payload(producer_hour_index))
+        .expect("the complete fixture decodes");
+    let mut snapshot = complete.snapshot.expect("the fixture carries a snapshot");
+    snapshot.producer_complete = false;
+    snapshot.producer_loss = Some(sunk86_lane::SunkShipProducerLoss {
+        dropped_unbound: 2,
+        dropped_unreadable: 1,
+        sequence_regression: true,
+        ..sunk86_lane::SunkShipProducerLoss::default()
+    });
+    let status_flags = sunk86_lane::receipt_status_word(&snapshot);
+    sunk86_lane::encode_payload(&sunk86_lane::SunkShipFrame {
+        elapsed_wall_ms: complete.elapsed_wall_ms,
+        frame_hour: complete.frame_hour,
+        status_flags,
+        authority: complete.authority,
+        snapshot: Some(snapshot),
+    })
+    .expect("d86 partial fixture encodes")
+}
+
 fn sunk_ship_domain_problems(snapshot: &Value) -> Vec<String> {
     snapshot["provenance"]["collector"]["domain_problems"]
         .as_array()
@@ -27143,6 +27168,70 @@ fn d86_a_producer_that_declared_no_hour_is_unknown_never_fresh() {
     assert!(
         sunk_ship_domain_problems(&snapshot).is_empty(),
         "a producer that never read its clock is not a fold problem"
+    );
+}
+
+/// Owner ruling 2026-08-06 at the fold: a producer-declared partial history is
+/// APPLIED and ACCOUNTED, never discarded. The rows the producer did capture
+/// are exact, so they fold; the hour is recorded as a tolerated partial so a
+/// consumer can tell it from a clean one; and the note names WHICH callbacks
+/// were lost, per cause, because a bit cannot say that.
+///
+/// What production change would make this fail: dropping the domain-86
+/// `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry (the shared failure gate then
+/// DISCARDS the rows and marks the domain-hour unknown, which is the wholesale
+/// refusal moved one layer down), or removing the named-loss note.
+#[test]
+fn d86_a_producer_declared_partial_history_is_applied_and_accounted() {
+    let snapshot = snapshot_for_domain_records(vec![(
+        sunk86_lane::DOMAIN_ID,
+        sunk_ship_partial_payload(Some(SUNK_SHIP_TEST_RECORD_HOUR - 3)),
+    )]);
+    let history = &snapshot["_r2_sunk_ship_history_live"];
+    assert_eq!(
+        history["events"][0]["combat_generation"],
+        json!(3),
+        "the rows a partial producer DID capture still fold"
+    );
+    assert_eq!(history["producer_complete"], json!(false));
+    assert_eq!(history["producer_loss"]["dropped_unbound"], json!(2));
+    assert_eq!(history["producer_loss"]["dropped_unreadable"], json!(1));
+    assert_eq!(history["producer_loss"]["sequence_regression"], json!(true));
+    assert_eq!(
+        history["producer_loss"]["dropped_total"],
+        json!(3),
+        "the total is the one its own named counters produce"
+    );
+
+    let problems = sunk_ship_domain_problems(&snapshot);
+    assert!(
+        problems.iter().any(|problem| problem == "partial_data"),
+        "the hour is accounted as a tolerated partial, in the SHARED spelling. Found: {problems:?}"
+    );
+
+    let notes = snapshot["provenance"]["notes"]
+        .as_array()
+        .expect("notes is an array")
+        .iter()
+        .map(|note| note.as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        notes.iter().any(|note| note.contains(
+            "producer-declared partial history: dropped_unbound=2 dropped_reentrant=0 \
+             dropped_unreadable=1 dropped_lock_busy=0 dropped_overflow=0 \
+             sequence_regression=true dropped_total=3"
+        )),
+        "a degraded outcome names its own cause, per counter. Found: {notes:?}"
+    );
+
+    // And a COMPLETE history is untouched by any of it.
+    let clean = snapshot_for_domain_records(vec![(
+        sunk86_lane::DOMAIN_ID,
+        sunk_ship_payload(Some(SUNK_SHIP_TEST_RECORD_HOUR - 3)),
+    )]);
+    assert!(
+        sunk_ship_domain_problems(&clean).is_empty(),
+        "a complete history is not a partial"
     );
 }
 

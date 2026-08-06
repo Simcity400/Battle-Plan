@@ -547,7 +547,7 @@ fn scan_stream(
             // status marks the domain-hour unknown and RETAINS the accumulator,
             // folding nothing from this record. `compact_contract`'s predicate
             // already applies d34's lane-local mask (none) and expected partial
-            // tolerance (none — the tolerance list is domains 26, 27, 28, 54).
+            // tolerance (none — the tolerance list is domains 26, 27, 28, 54, 86).
             if compact_status_failure_flags_after_expected_partial_tolerance(
                 D34,
                 d34_header.status_flags,
