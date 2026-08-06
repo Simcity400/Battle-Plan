@@ -501,7 +501,9 @@ pub fn pack_mixed_to_writer<W: Write>(
             &mut central,
             &mut written,
             &mut zip64_used,
+            game_id,
             &e.path,
+            e.role,
             e.file_path,
             compression,
             CompressionProfile::default(),
@@ -988,7 +990,9 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
             &mut central,
             &mut written,
             &mut zip64_used,
+            game_id,
             &e.path,
+            e.role,
             e.file_path,
             compression,
             compression_profile,
@@ -1323,12 +1327,53 @@ fn sha256_file(path: &Path) -> Result<(String, u64), PackError> {
     Ok((to_hex(&hasher.finalize()), len))
 }
 
+/// Write ceiling for one file-backed entry, chosen by the entry's ROLE.
+///
+/// The default is the in-RAM reader cap, and it is a promise, not a writer
+/// limitation: the packer refuses to write any entry that
+/// `Container::read_entry_bytes` could not later hand back as a `Vec<u8>`.
+///
+/// The certified replay cache is the single role that promise does not apply
+/// to, because no reader materializes it. Every consumer either seeks records
+/// through [`crate::CertifiedReplayCache`], which reads one bounded record at a
+/// time, or streams the entry through the container spool. It is the only entry
+/// whose size tracks campaign length -- capture t32 emitted 2,209,767,138 bytes
+/// for 656 hours -- so holding it to a cap a reader no longer needs would fail
+/// every seal from here on for a memory bound nobody is spending.
+///
+/// Every other role keeps the materializing cap. A reader that meets an
+/// oversized entry under any other role still refuses it by name.
+///
+/// The exemption is keyed on the role AND the one exact path this container's
+/// certified cache can occupy, not on the role alone and not on a path shape.
+/// This is a public packing API: a caller can put any role string on any file,
+/// and a looser key would let an entry under some other game namespace claim the
+/// ceiling — sealing a container that generic `read_entry_bytes` cannot
+/// materialize and that replay refuses anyway, because it requires the cache at
+/// `payload/{game_id}/…` exactly. Deriving the path from the packer's own
+/// `game_id` keeps the exemption attached to the artifact whose readers were
+/// actually changed.
+fn file_entry_write_limit(game_id: &str, role: &str, name: &str) -> u64 {
+    let canonical = format!(
+        "payload/{game_id}/{}",
+        crate::replay_cache::CHECKPOINT_CACHE_FILE
+    );
+    if role == crate::replay_cache::CHECKPOINT_CACHE_ROLE && name == canonical {
+        STREAMING_MAX_CONTAINER_ENTRY_BYTES
+    } else {
+        MAX_CONTAINER_ENTRY_BYTES
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_zip_file_from_path<W: Write>(
     out: &mut W,
     central: &mut Vec<u8>,
     written: &mut u64,
     zip64_used: &mut bool,
+    game_id: &str,
     name: &str,
+    role: &str,
     path: &Path,
     compression: PackCompression,
     compression_profile: CompressionProfile,
@@ -1353,7 +1398,7 @@ fn write_zip_file_from_path<W: Write>(
         &entry,
         compression,
         compression_profile,
-        MAX_CONTAINER_ENTRY_BYTES,
+        file_entry_write_limit(game_id, role, name),
         expected_sha256,
         expected_len,
     )
@@ -2293,6 +2338,126 @@ mod tests {
             .find(|entry| entry.name == "payload/g/timeline.json")
             .expect("packed container is missing the sub-floor entry");
         assert_eq!(tiny.method, ZIP_METHOD_STORE);
+    }
+
+    /// Exactly one role is admitted past the materializing cap, and it is the
+    /// one no reader materializes.
+    ///
+    /// Capture t32 folded a 2,209,767,138-byte checkpoint cache and the seal
+    /// refused it at 2 GiB, so this policy is what lets a growing campaign seal
+    /// at all. It is also the whole of the relaxation: every other role — the
+    /// hour index next to it included — still may not exceed what
+    /// `Container::read_entry_bytes` can hand back.
+    ///
+    /// Production change that would make this fail: widening the exemption to
+    /// all file-backed entries, moving it to the wrong role, or removing it and
+    /// re-breaking the seal.
+    #[test]
+    fn only_the_certified_cache_role_is_admitted_past_the_materializing_cap() {
+        let canonical = format!("payload/g/{}", crate::replay_cache::CHECKPOINT_CACHE_FILE);
+        assert_eq!(
+            file_entry_write_limit("g", crate::replay_cache::CHECKPOINT_CACHE_ROLE, &canonical),
+            STREAMING_MAX_CONTAINER_ENTRY_BYTES
+        );
+        for role in [
+            crate::replay_cache::HOUR_INDEX_ROLE,
+            "snapshot",
+            "recorder_manifest",
+            "collector_compact_stream",
+            "production_render_blob",
+            "",
+        ] {
+            assert_eq!(
+                file_entry_write_limit("g", role, &canonical),
+                MAX_CONTAINER_ENTRY_BYTES,
+                "role {role:?} must keep the materializing cap"
+            );
+        }
+        // This is a public packing API, so the role is a label a caller chose.
+        // The exemption belongs to one artifact in one namespace, not to the
+        // label and not to a path shape: an entry claiming the role anywhere
+        // else — including under a different game id, which replay would refuse
+        // to read anyway — stays under the cap.
+        for path in [
+            "payload/g/collector_raw/collector_stream.bin",
+            "payload/g/replay_decoder/checkpoints.h4cp.bak",
+            "payload/g/snapshots/checkpoints.h4cp",
+            "replay_decoder/checkpoints.h4cp",
+            "payload/greplay_decoder/checkpoints.h4cp",
+            "payload/other-game/replay_decoder/checkpoints.h4cp",
+            "payload/g/nested/replay_decoder/checkpoints.h4cp",
+        ] {
+            assert_eq!(
+                file_entry_write_limit("g", crate::replay_cache::CHECKPOINT_CACHE_ROLE, path),
+                MAX_CONTAINER_ENTRY_BYTES,
+                "path {path:?} must not inherit the certified cache's ceiling"
+            );
+        }
+    }
+
+    /// The limit boundary itself, with a shrunken cap so the crossing is
+    /// exercised in seconds instead of by writing gigabytes.
+    ///
+    /// Scope, stated so the comment does not claim more than the code does: this
+    /// proves the WRITER honours whatever limit it is given — inclusive at the
+    /// limit, refusing one byte over, and leaving no central-directory record
+    /// behind when it refuses. It does not prove the role-to-limit wiring; the
+    /// mapping is proved by
+    /// `only_the_certified_cache_role_is_admitted_past_the_materializing_cap`
+    /// and the wiring by the t32 evidence test, which seals a 2.2 GB cache
+    /// through the production packer and fails if the wiring is removed.
+    ///
+    /// Production change that would make this fail: making the limit exclusive,
+    /// or finalizing an entry that hit it.
+    #[test]
+    fn the_write_limit_is_inclusive_and_aborts_before_finalizing() {
+        let dir = TmpDir::new("entry_cap_edge");
+        let stream_path = dir.join("edge.bin");
+        let payload = vec![7u8; 64];
+        fs::write(&stream_path, &payload).unwrap();
+        let sha = to_hex(&Sha256::digest(&payload));
+
+        for (limit, admitted) in [(64u64, true), (63u64, false)] {
+            let entry = StreamingFileEntry {
+                path: "payload/g/replay_decoder/checkpoints.h4cp".to_string(),
+                file_path: &stream_path,
+                source_compression: compact_stream::StreamCompression::None,
+                decoded_len: None,
+                role: crate::replay_cache::CHECKPOINT_CACHE_ROLE,
+                hour_index: None,
+                sha256: None,
+            };
+            let mut out = Vec::new();
+            let mut central = Vec::new();
+            let mut written = 0u64;
+            let mut zip64_used = false;
+            let result = write_zip_file_streaming_with_entry_limit(
+                &mut out,
+                &mut central,
+                &mut written,
+                &mut zip64_used,
+                &entry.path.clone(),
+                &entry,
+                PackCompression::Store,
+                CompressionProfile::default(),
+                limit,
+                &sha,
+                payload.len() as u64,
+            );
+            if admitted {
+                result.expect("an entry exactly at its limit is admitted");
+                assert!(!central.is_empty());
+            } else {
+                let message = result
+                    .expect_err("an entry one byte over its limit is refused")
+                    .to_string();
+                assert!(message.contains("per-entry reader cap"), "{message}");
+                assert!(
+                    central.is_empty(),
+                    "a refused entry must leave no central-directory record"
+                );
+            }
+        }
     }
 
     #[test]

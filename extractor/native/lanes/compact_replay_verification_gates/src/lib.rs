@@ -3944,43 +3944,60 @@ fn certify_cache_only_recording(
         snapshot::CHECKPOINT_CACHE_FILE,
         CACHE_ONLY_LINK_CHECKPOINT_CACHE,
     )?;
-    let cache_bytes = container.read_entry_bytes(&cache_entry.path).map_err(|error| {
-        cache_only_link_refusal(
-            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
-            format!("cannot read {} from the container: {error}", cache_entry.path),
+    // This link proves identity, not seekability: it needs the cache's length,
+    // its digest, and its 40-byte header — never its body. Streaming the entry
+    // past a sink that retains only the header keeps that true at any size. The
+    // H4CP is the one container entry whose length tracks campaign length
+    // (t32: 2.21 GB for 656 hours), so materializing it here was a peak-memory
+    // term that grew with the recording it was meant to check.
+    let mut header_probe = LeadingBytesSink::new(
+        usize::try_from(snapshot::CHECKPOINT_CACHE_HEADER_LEN).unwrap_or(usize::MAX),
+    );
+    let cache_receipt = container
+        .copy_entry_to_unpublished_writer_bounded(
+            &cache_entry.path,
+            &mut header_probe,
+            snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
         )
-    })?;
-    if hour_index.cache_len() != cache_bytes.len() as u64 {
+        .map_err(|error| {
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+                format!("cannot read {} from the container: {error}", cache_entry.path),
+            )
+        })?;
+    if hour_index.cache_len() != cache_receipt.uncompressed_len() {
         return Err(cache_only_link_refusal(
             CACHE_ONLY_LINK_CHECKPOINT_CACHE,
             format!(
                 "H4IX states a {}-byte cache but the packaged H4CP is {} bytes",
                 hour_index.cache_len(),
-                cache_bytes.len(),
+                cache_receipt.uncompressed_len(),
             ),
         ));
     }
-    let observed_cache_sha256 = Sha256::hex(&cache_bytes);
-    if hour_index.cache_sha256() != observed_cache_sha256 {
+    if hour_index.cache_sha256() != cache_receipt.sha256() {
         return Err(cache_only_link_refusal(
             CACHE_ONLY_LINK_CHECKPOINT_CACHE,
             format!(
-                "the packaged H4CP hashes to {observed_cache_sha256}, not the {} H4IX is bound to",
+                "the packaged H4CP hashes to {}, not the {} H4IX is bound to",
+                cache_receipt.sha256(),
                 hour_index.cache_sha256(),
             ),
         ));
     }
     // Everything the shared reader checks except the H4CP header identity has
-    // now been proved with its own name, so a failure here IS the header.
-    snapshot::ReplayCacheReader::open(&index_bytes, &cache_bytes, attested_bytes, &attested_sha256)
-        .map_err(|error| {
+    // now been proved with its own name, so a failure here IS the header. The
+    // header check is the shared one, not a second spelling of it.
+    snapshot::validate_checkpoint_cache_header(header_probe.bytes(), &attested_sha256).map_err(
+        |error| {
             cache_only_link_refusal(
                 CACHE_ONLY_LINK_CHECKPOINT_CACHE,
                 format!(
                     "the packaged H4CP header is not bound to source {attested_sha256}: {error}"
                 ),
             )
-        })?;
+        },
+    )?;
 
     let details = json!({
         "stream_certification_chain": [
@@ -4066,6 +4083,45 @@ fn bind_run_stream_to_certification(
                 ));
             }
         }
+    }
+}
+
+/// A sink that retains the leading bytes of what is written to it and discards
+/// the rest.
+///
+/// It exists so a consumer that needs only an artifact's header can still be
+/// handed the whole authenticated entry — the container's spool derives length
+/// and SHA-256 from every byte it writes, so discarding the body here weakens
+/// nothing — without the entry's size becoming this process's memory ceiling.
+struct LeadingBytesSink {
+    kept: Vec<u8>,
+    limit: usize,
+}
+
+impl LeadingBytesSink {
+    fn new(limit: usize) -> Self {
+        Self {
+            kept: Vec::with_capacity(limit),
+            limit,
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.kept
+    }
+}
+
+impl std::io::Write for LeadingBytesSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let room = self.limit.saturating_sub(self.kept.len());
+        if room > 0 {
+            self.kept.extend_from_slice(&buf[..room.min(buf.len())]);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

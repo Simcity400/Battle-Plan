@@ -44,6 +44,23 @@ fn main() {
         eprintln!("usage: ce_cache_anatomy <checkpoints.h4cp> <hour_index.h4ix> <modes>");
         std::process::exit(2);
     }
+    // This instrument prices WHOLE-CACHE re-layouts -- recompressing the entire
+    // artifact, concatenating every record's class streams -- so it genuinely
+    // needs the cache resident, unlike the readers, which now seek one record at
+    // a time. That is a precondition of the measurement, not an oversight, and
+    // it is stated here rather than discovered as an allocation failure: a
+    // campaign-sized cache is tens of gigabytes and this tool cannot price it.
+    let cache_len = std::fs::metadata(&args[0]).expect("stat cache").len();
+    let resident_budget = snapshot::zip::MAX_CONTAINER_ENTRY_BYTES;
+    if cache_len > resident_budget {
+        eprintln!(
+            "ce_cache_anatomy prices whole-cache layouts and holds the artifact in memory; \
+             {} is {cache_len} bytes, past the {resident_budget}-byte instrument budget. \
+             Measure a shorter capture, or price a bounded record window instead.",
+            args[0]
+        );
+        std::process::exit(2);
+    }
     let cache = std::fs::read(&args[0]).expect("read cache");
     let index_bytes = std::fs::read(&args[1]).expect("read hour index");
     let index = ReplayHourIndex::from_bytes(&index_bytes).expect("parse hour index");
@@ -414,11 +431,11 @@ fn path_report(cache: &[u8], index: &ReplayHourIndex, started: std::time::Instan
 /// class streams, but the streams of ALL records are concatenated class by
 /// class instead of record by record.
 ///
-/// This is seekable. The cache is authenticated and held whole
-/// (`CertifiedReplayCache` owns the decompressed bytes), and the per-record
-/// class lengths are carried in a directory at the head, so reaching a record
-/// is four slices instead of one. What it changes is only which bytes sit next
-/// to which.
+/// This is seekable. The per-record class lengths are carried in a directory at
+/// the head, so reaching a record is four bounded reads instead of one — which
+/// is what `CertifiedReplayCache` does today, one record at a time, against
+/// either resident bytes or an open file. What the layout changes is only which
+/// bytes sit next to which.
 fn class_major_report(
     cache: &[u8],
     index: &ReplayHourIndex,

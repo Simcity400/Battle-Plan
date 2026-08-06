@@ -1871,13 +1871,29 @@ impl Container {
 
     /// Full background verification: hash EVERY declared entry. Returns Ok(()) when
     /// all match; the first mismatch is an error. (Optional; never gates open.)
+    ///
+    /// An entry larger than the materializing cap is verified by streaming it
+    /// past a sink instead — same decompression, same CRC, same SHA-256, no
+    /// resident copy. That case exists because the certified checkpoint cache is
+    /// now packed under the streaming ceiling: capture t32's cache is
+    /// 2,209,767,138 bytes, and a `verify_all` that insisted on a `Vec` would
+    /// refuse to check the very container it had just sealed. Every entry that
+    /// still fits the cap goes through the unchanged materializing path, so no
+    /// previously verifiable container changes route.
     pub fn verify_all(&self) -> Result<(), ContainerError> {
         let mut guard = self.by_path.lock().map_err(|_| {
             ContainerError::Reject("container entry-verification lock poisoned".into())
         })?;
         let paths: Vec<String> = guard.keys().cloned().collect();
         for p in paths {
-            verify_and_read(&self.archive, &mut guard, &p)?;
+            let oversized = guard
+                .get(&p)
+                .is_some_and(|rec| rec.bytes > MAX_CONTAINER_ENTRY_BYTES);
+            if oversized {
+                verify_streamed(&self.archive, &mut guard, &p)?;
+            } else {
+                verify_and_read(&self.archive, &mut guard, &p)?;
+            }
         }
         Ok(())
     }
@@ -1891,21 +1907,7 @@ impl Container {
         })?;
         let paths = guard.keys().cloned().collect::<Vec<_>>();
         for path in paths {
-            let rec = guard.get_mut(&path).ok_or_else(|| {
-                ContainerError::Reject(format!("entry {path} not in manifest"))
-            })?;
-            let (actual_sha256, _) = self.archive.copy_entry_to_writer(
-                rec.archive_index,
-                &mut std::io::sink(),
-                STREAMING_MAX_CONTAINER_ENTRY_BYTES,
-            )?;
-            if actual_sha256 != rec.expected_sha256 {
-                return Err(ContainerError::Reject(format!(
-                    "entry {path}: sha256 {actual_sha256} != manifest {}",
-                    rec.expected_sha256
-                )));
-            }
-            rec.sha256_state = EntryVerificationState::Verified;
+            verify_streamed(&self.archive, &mut guard, &path)?;
         }
         Ok(())
     }
@@ -3518,6 +3520,35 @@ fn validate_stitched_v2(
 /// Read an entry's bytes and verify them against the manifest hash. Immutable
 /// in-memory entries become hash-free after the first success; file-backed entries
 /// re-authenticate each exposure. Never returns bytes whose hash did not match.
+/// Verify one entry without materializing it.
+///
+/// The receipt is derived from the same decompression pass, so the SHA-256 this
+/// compares is over exactly the bytes the entry decodes to. Only reachable for a
+/// file-backed archive; a memory-backed one says so rather than pretending the
+/// entry was checked.
+fn verify_streamed(
+    archive: &ContainerArchive,
+    by_path: &mut HashMap<String, EntryRec>,
+    path: &str,
+) -> Result<(), ContainerError> {
+    let rec = by_path
+        .get_mut(path)
+        .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
+    let (actual_sha256, _) = archive.copy_entry_to_writer(
+        rec.archive_index,
+        &mut std::io::sink(),
+        STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+    )?;
+    if actual_sha256 != rec.expected_sha256 {
+        return Err(ContainerError::Reject(format!(
+            "entry {path}: sha256 {actual_sha256} != manifest {}",
+            rec.expected_sha256
+        )));
+    }
+    rec.sha256_state = EntryVerificationState::Verified;
+    Ok(())
+}
+
 fn verify_and_read(
     archive: &ContainerArchive,
     by_path: &mut HashMap<String, EntryRec>,
@@ -3650,6 +3681,61 @@ mod tests {
     /// One file-backed container carrying `payload/g/compact.bin`. Every spool
     /// guarantee below needs a retained-handle container: the transactional
     /// spool refuses an in-memory archive before it reaches any of them.
+    /// `verify_all` now picks a route by entry size, so the streaming route has
+    /// to be the same check — not a cheaper one that happens to be reachable
+    /// only for the entries too big to hold.
+    ///
+    /// The size crossing itself needs a >2 GiB entry and is proved on capture
+    /// t32's real 2,209,767,138-byte checkpoint cache by
+    /// `t32_oversized_checkpoint_cache_seals_and_reconstructs`. What this proves
+    /// is the part that test cannot: that the two routes AGREE — both accept an
+    /// intact container, and both refuse the same corrupted one, naming the same
+    /// entry.
+    ///
+    /// Production change that would make this fail: letting `verify_streamed`
+    /// skip the digest compare, forget to mark the entry verified, or accept an
+    /// entry whose bytes no longer hash to the manifest.
+    #[test]
+    fn the_streaming_verification_route_is_not_weaker_than_the_materializing_one() {
+        let bytes = compact_container_bytes(b"route equivalence payload");
+        let archive = TempContainerFile::write("route_equivalence", &bytes);
+
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().expect("intact container verifies");
+        drop(container);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        container
+            .verify_all_streaming()
+            .expect("intact container verifies streamed");
+        drop(container);
+
+        // Corrupt one STORE'd payload byte in place. Both routes decompress the
+        // same bytes, so both must refuse, and both must name the entry.
+        let mut corrupted = bytes.clone();
+        let offset = corrupted
+            .windows(b"route equivalence payload".len())
+            .position(|window| window == b"route equivalence payload")
+            .expect("the stored payload is present");
+        corrupted[offset] ^= 0x01;
+        let archive = TempContainerFile::write("route_equivalence_bad", &corrupted);
+
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let materializing = container
+            .verify_all()
+            .expect_err("a corrupted entry must not verify");
+        drop(container);
+        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let streamed = container
+            .verify_all_streaming()
+            .expect_err("a corrupted entry must not verify streamed");
+        for message in [materializing.to_string(), streamed.to_string()] {
+            assert!(
+                message.contains("payload/g/compact.bin"),
+                "the refusal must name the entry: {message}"
+            );
+        }
+    }
+
     fn compact_container_bytes(payload: &[u8]) -> Vec<u8> {
         pack(
             "g",

@@ -1538,10 +1538,16 @@ pub fn build_certified_replay_artifacts(
     index_file.sync_all()?;
     drop(index_file);
 
-    let cache_bytes = fs::read(&cache_path)?;
-    let parity_reader = snapshot::ReplayCacheReader::open(
+    // Certify the cache we just wrote WITHOUT reading it back into memory. The
+    // cache is already a file, and its size tracks campaign length: t32 emitted
+    // 2.21 GB for 656 game hours, so a full campaign's cache is tens of GB and
+    // `fs::read` here was a peak-memory term that grows without bound. The proof
+    // is unchanged -- same records, same order, same per-hour parity hashes --
+    // only the bytes' address changed.
+    let cache_file = fs::File::open(&cache_path)?;
+    let parity_reader = snapshot::CertifiedReplayCache::open_file(
         &index_bytes,
-        &cache_bytes,
+        cache_file,
         expected_source_len,
         expected_source_sha256,
     )

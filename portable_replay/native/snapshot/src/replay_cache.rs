@@ -45,9 +45,12 @@ use crate::canon_value::{
     MAX_RECURSION_DEPTH,
 };
 use crate::sha256::{to_hex, Sha256};
+use crate::zip::MAX_CONTAINER_ENTRY_BYTES;
+use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::io::Write;
-use std::sync::Arc;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::{Arc, Mutex};
 
 pub const HOUR_INDEX_ROLE: &str = "replay_decoder_hour_index";
 pub const CHECKPOINT_CACHE_ROLE: &str = "replay_decoder_checkpoint_cache";
@@ -82,6 +85,36 @@ const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
 const MAX_STRING_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOURS: usize = 2_000_000;
+
+/// Fixed prefix of every cache record: kind, three reserved bytes, the hour,
+/// the payload length, and one trailing reserved byte.
+const RECORD_HEADER_LEN: u64 = 1 + 3 + 8 + 8 + 1;
+
+/// Largest single cache RECORD a reader will materialize.
+///
+/// This is the old whole-entry ceiling, re-scoped to the unit a reader now
+/// actually materializes, and it is deliberately the SAME number rather than a
+/// tighter one. Before this existed a record was bounded by the cache and the
+/// cache was bounded by the container's in-RAM cap, so no reader ever admitted
+/// a record above 2 GiB. Keeping the number identical makes the bound provably
+/// incapable of refusing anything a previously sealed container carries, which
+/// a tighter figure could not claim: the H4CP format version is unchanged, its
+/// encoder has never had a per-record ceiling, and a whole-world checkpoint can
+/// be arbitrarily large without violating the 256 MiB per-string bound. A
+/// smaller derived figure (512 MiB — twice [`MAX_STRING_BYTES`], a sixteenth of
+/// the 8 GiB floor) was considered and rejected for exactly that reason.
+///
+/// It is not a formality. The cache entry itself is now packed under the 2 TiB
+/// streaming ceiling, so without this a corrupted or hostile `cache_record_len`
+/// could ask a reader for terabytes. What the reader may hold at once has not
+/// changed; only what counts as "one thing".
+///
+/// For scale: the largest real record is 30,710,425 bytes in t31's 602 and
+/// 28,451,685 in t32's 656 — about 70x under the bound.
+pub const MAX_CACHE_RECORD_BYTES: u64 = MAX_CONTAINER_ENTRY_BYTES;
+
+/// Bytes read per pass when hashing a file-backed cache.
+const CACHE_HASH_CHUNK: usize = 1024 * 1024;
 
 // Binary value tags. Every value has exactly ONE legal encoding, and the
 // decoder rejects any other spelling of the same value, so a cache's bytes are
@@ -699,9 +732,211 @@ pub struct ReplaySeekReceipt {
     pub configured_bound: u32,
 }
 
+/// Where a certified cache's bytes live.
+///
+/// Everything this module does with a cache reduces to three questions: how
+/// long is it, what does it hash to, and what are the bytes of one indexed
+/// record. Nothing needs the whole cache resident, and on a real campaign
+/// nothing could hold it: capture t32 emitted 2,209,767,138 bytes for 656
+/// hours (3.37 MB per hour), so a full campaign's cache is tens of gigabytes.
+/// A slice backing serves the encoder and the small fixtures; a file backing
+/// serves every artifact big enough to matter.
+pub(crate) trait CacheRecords {
+    fn cache_len(&self) -> u64;
+    /// SHA-256 over the WHOLE cache. This is the binding to H4IX and is
+    /// computed exactly once, at open.
+    fn cache_sha256(&self) -> Result<String, ReplayCacheError>;
+    /// The bytes of the record at `offset`, refusing any window that leaves the
+    /// cache or exceeds [`MAX_CACHE_RECORD_BYTES`].
+    fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError>;
+}
+
+fn record_window(cache_len: u64, offset: u64, len: u64) -> Result<(u64, usize), ReplayCacheError> {
+    if len > MAX_CACHE_RECORD_BYTES {
+        return Err(ReplayCacheError::new(format!(
+            "cache record length {len} exceeds the {MAX_CACHE_RECORD_BYTES}-byte per-record reader bound"
+        )));
+    }
+    offset
+        .checked_add(len)
+        .filter(|end| *end <= cache_len)
+        .ok_or_else(|| ReplayCacheError::new("cache record range is out of bounds"))?;
+    let len = usize::try_from(len)
+        .map_err(|_| ReplayCacheError::new("cache record length does not fit usize"))?;
+    Ok((offset, len))
+}
+
+/// A resident cache. Used by the encoder's own certification pass and by every
+/// fixture small enough that holding it is not a decision.
+pub(crate) struct SliceCache<'a>(pub(crate) &'a [u8]);
+
+impl<'a> CacheRecords for SliceCache<'a> {
+    fn cache_len(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    fn cache_sha256(&self) -> Result<String, ReplayCacheError> {
+        Ok(Sha256::hex(self.0))
+    }
+
+    fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError> {
+        let (offset, len) = record_window(self.0.len() as u64, offset, len)?;
+        let start = usize::try_from(offset)
+            .map_err(|_| ReplayCacheError::new("cache record offset does not fit usize"))?;
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| ReplayCacheError::new("cache record range is out of bounds"))?;
+        Ok(Cow::Borrowed(&self.0[start..end]))
+    }
+}
+
+/// A certified cache held as an open file rather than as bytes.
+///
+/// The handle is retained for the life of the cache, and every read is bounded
+/// by the record length the authenticated H4IX declares. The caller owns the
+/// file's pathname and lifetime; this type only reads it.
+pub struct CertifiedCacheFile {
+    file: Mutex<File>,
+    len: u64,
+}
+
+impl CertifiedCacheFile {
+    pub fn new(file: File) -> Result<Self, ReplayCacheError> {
+        let len = file
+            .metadata()
+            .map_err(|error| {
+                ReplayCacheError::new(format!("stat file-backed checkpoint cache: {error}"))
+            })?
+            .len();
+        Ok(Self {
+            file: Mutex::new(file),
+            len,
+        })
+    }
+}
+
+impl CacheRecords for CertifiedCacheFile {
+    fn cache_len(&self) -> u64 {
+        self.len
+    }
+
+    fn cache_sha256(&self) -> Result<String, ReplayCacheError> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| ReplayCacheError::new("file-backed checkpoint cache lock poisoned"))?;
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            ReplayCacheError::new(format!("seek file-backed checkpoint cache: {error}"))
+        })?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; CACHE_HASH_CHUNK];
+        let mut seen = 0u64;
+        loop {
+            let read = file.read(&mut buf).map_err(|error| {
+                ReplayCacheError::new(format!("read file-backed checkpoint cache: {error}"))
+            })?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buf[..read]);
+            seen = seen.saturating_add(read as u64);
+        }
+        if seen != self.len {
+            return Err(ReplayCacheError::new(format!(
+                "file-backed checkpoint cache changed length while hashing (opened {}, read {seen})",
+                self.len
+            )));
+        }
+        Ok(to_hex(&hasher.finalize()))
+    }
+
+    fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError> {
+        let (offset, len) = record_window(self.len, offset, len)?;
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| ReplayCacheError::new("file-backed checkpoint cache lock poisoned"))?;
+        file.seek(SeekFrom::Start(offset)).map_err(|error| {
+            ReplayCacheError::new(format!("seek file-backed checkpoint cache record: {error}"))
+        })?;
+        let mut bytes = vec![0u8; len];
+        file.read_exact(&mut bytes).map_err(|error| {
+            ReplayCacheError::new(format!("read file-backed checkpoint cache record: {error}"))
+        })?;
+        Ok(Cow::Owned(bytes))
+    }
+}
+
+#[derive(Clone)]
+enum CacheBacking {
+    Memory(Arc<[u8]>),
+    File(Arc<CertifiedCacheFile>),
+}
+
+impl CacheBacking {
+    fn with_records<R>(&self, body: impl FnOnce(&dyn CacheRecords) -> R) -> R {
+        match self {
+            CacheBacking::Memory(bytes) => body(&SliceCache(bytes.as_ref())),
+            CacheBacking::File(file) => body(file.as_ref()),
+        }
+    }
+}
+
 pub struct ReplayCacheReader<'a> {
     index: ReplayHourIndex,
     cache: &'a [u8],
+}
+
+/// Bytes of the H4CP file header: magic, format version, flags, source digest.
+/// A consumer that only needs to prove the cache's identity — not to seek in it
+/// — need retain no more of the entry than this.
+pub const CHECKPOINT_CACHE_HEADER_LEN: u64 = CACHE_HEADER_LEN;
+
+/// Prove an H4CP header names this format, this version, and this H4CR source.
+///
+/// Split out so a consumer that streams the cache past itself (the compact
+/// verification gate does exactly that) proves the same header identity a
+/// seeking reader proves, from the same code, instead of a second spelling of
+/// the check that could drift.
+pub fn validate_checkpoint_cache_header(
+    header: &[u8],
+    expected_source_sha256: &str,
+) -> Result<(), ReplayCacheError> {
+    let mut header = ByteReader::new(header);
+    if header.take(4)? != CACHE_MAGIC
+        || header.u16()? != FORMAT_VERSION
+        || header.u16()? != 0
+        || to_hex(header.array32()?) != expected_source_sha256
+    {
+        return Err(ReplayCacheError::new(
+            "checkpoint cache header identity is invalid",
+        ));
+    }
+    Ok(())
+}
+
+/// Bind an index to a cache and prove the cache's own header agrees, without
+/// assuming the cache is resident. This is the single admission gate both
+/// reader shapes go through.
+fn admit_cache(
+    index_bytes: &[u8],
+    cache: &dyn CacheRecords,
+    expected_source_len: u64,
+    expected_source_sha256: &str,
+) -> Result<ReplayHourIndex, ReplayCacheError> {
+    let index = ReplayHourIndex::from_bytes(index_bytes)?;
+    if index.source_len != expected_source_len
+        || index.source_sha256 != expected_source_sha256
+        || index.cache_len != cache.cache_len()
+        || index.cache_sha256 != cache.cache_sha256()?
+    {
+        return Err(ReplayCacheError::new(
+            "replay index/cache is not bound to the selected canonical H4CR source",
+        ));
+    }
+    let header = cache.record(0, CACHE_HEADER_LEN.min(cache.cache_len()))?;
+    validate_checkpoint_cache_header(header.as_ref(), expected_source_sha256)?;
+    Ok(index)
 }
 
 /// Owned, once-authenticated cache suitable for repeated product seeks.
@@ -712,7 +947,7 @@ pub struct ReplayCacheReader<'a> {
 #[derive(Clone)]
 pub struct CertifiedReplayCache {
     index: ReplayHourIndex,
-    cache: Arc<[u8]>,
+    cache: CacheBacking,
 }
 
 impl CertifiedReplayCache {
@@ -722,17 +957,39 @@ impl CertifiedReplayCache {
         expected_source_len: u64,
         expected_source_sha256: &str,
     ) -> Result<Self, ReplayCacheError> {
-        let reader = ReplayCacheReader::open(
+        let cache: Arc<[u8]> = Arc::from(cache);
+        let index = admit_cache(
+            index_bytes,
+            &SliceCache(cache.as_ref()),
+            expected_source_len,
+            expected_source_sha256,
+        )?;
+        Ok(Self {
+            index,
+            cache: CacheBacking::Memory(cache),
+        })
+    }
+
+    /// Same admission, same seeks, but the cache stays on disk. This is the
+    /// only shape that works once a campaign's cache outgrows addressable
+    /// working memory, and it is what the seal path and the container readers
+    /// use for real captures.
+    pub fn open_file(
+        index_bytes: &[u8],
+        cache: File,
+        expected_source_len: u64,
+        expected_source_sha256: &str,
+    ) -> Result<Self, ReplayCacheError> {
+        let cache = CertifiedCacheFile::new(cache)?;
+        let index = admit_cache(
             index_bytes,
             &cache,
             expected_source_len,
             expected_source_sha256,
         )?;
-        let index = reader.index.clone();
-        drop(reader);
         Ok(Self {
             index,
-            cache: Arc::from(cache),
+            cache: CacheBacking::File(Arc::new(cache)),
         })
     }
 
@@ -744,7 +1001,15 @@ impl CertifiedReplayCache {
         &self,
         hour_index: i64,
     ) -> Result<(Vec<u8>, ReplaySeekReceipt), ReplayCacheError> {
-        reconstruct_json_from(&self.index, self.cache.as_ref(), hour_index)
+        self.cache
+            .with_records(|records| reconstruct_json_from(&self.index, records, hour_index))
+    }
+
+    /// See [`ReplayCacheReader::verify_every_hour`]. Identical proof, over
+    /// whichever backing this cache was opened with.
+    pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
+        self.cache
+            .with_records(|records| verify_every_hour_from(&self.index, records))
     }
 }
 
@@ -755,26 +1020,12 @@ impl<'a> ReplayCacheReader<'a> {
         expected_source_len: u64,
         expected_source_sha256: &str,
     ) -> Result<Self, ReplayCacheError> {
-        let index = ReplayHourIndex::from_bytes(index_bytes)?;
-        if index.source_len != expected_source_len
-            || index.source_sha256 != expected_source_sha256
-            || index.cache_len != cache.len() as u64
-            || index.cache_sha256 != Sha256::hex(cache)
-        {
-            return Err(ReplayCacheError::new(
-                "replay index/cache is not bound to the selected canonical H4CR source",
-            ));
-        }
-        let mut header = ByteReader::new(cache);
-        if header.take(4)? != CACHE_MAGIC
-            || header.u16()? != FORMAT_VERSION
-            || header.u16()? != 0
-            || to_hex(header.array32()?) != expected_source_sha256
-        {
-            return Err(ReplayCacheError::new(
-                "checkpoint cache header identity is invalid",
-            ));
-        }
+        let index = admit_cache(
+            index_bytes,
+            &SliceCache(cache),
+            expected_source_len,
+            expected_source_sha256,
+        )?;
         Ok(Self { index, cache })
     }
 
@@ -786,7 +1037,7 @@ impl<'a> ReplayCacheReader<'a> {
         &self,
         hour_index: i64,
     ) -> Result<(Vec<u8>, ReplaySeekReceipt), ReplayCacheError> {
-        reconstruct_json_from(&self.index, self.cache, hour_index)
+        reconstruct_json_from(&self.index, &SliceCache(self.cache), hour_index)
     }
 
     /// Prove every indexed hour reconstructs to its recorded bytes, and return
@@ -803,52 +1054,60 @@ impl<'a> ReplayCacheReader<'a> {
     /// 168, ~30 MB per hour) the rebuilding form did not finish in 46 minutes;
     /// it asks for ~54,000 patch applications where ~640 carry the same proof.
     pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
-        let mut value: Option<CanonValue> = None;
-        let mut max_seek_deltas = 0u32;
-        for (position, entry) in self.index.hours.iter().enumerate() {
-            let (kind, record_hour, payload) = cache_record(self.cache, entry)?;
-            if record_hour != entry.hour_index {
-                return Err(ReplayCacheError::new(format!(
-                    "cache record at position {position} is not the indexed hour {}",
-                    entry.hour_index
-                )));
-            }
-            match (kind, entry.delta_steps) {
-                (RECORD_CHECKPOINT, 0) => value = Some(decode_value_exact(payload)?),
-                (RECORD_DELTA, steps) if steps != 0 => {
-                    let running = value.as_mut().ok_or_else(|| {
-                        ReplayCacheError::new("a delta record precedes its checkpoint")
-                    })?;
-                    apply_patch(running, &decode_patch_exact(payload)?, 0)?;
-                }
-                _ => {
-                    return Err(ReplayCacheError::new(format!(
-                        "cache record kind at position {position} disagrees with its delta distance"
-                    )))
-                }
-            }
-            let running = value.as_ref().expect("a value exists once a checkpoint decoded");
-            validate_world_identity(running, entry.hour_index, &entry.date)?;
-            if Sha256::hex(&running.to_json_bytes()) != entry.world_json_sha256 {
-                return Err(ReplayCacheError::new(format!(
-                    "reconstructed hour {} does not byte-match replay_decoder parity hash",
-                    entry.hour_index
-                )));
-            }
-            max_seek_deltas = max_seek_deltas.max(entry.delta_steps);
-        }
-        if max_seek_deltas >= self.index.checkpoint_interval_hours {
-            return Err(ReplayCacheError::new(
-                "reconstructed seek exceeded its certified checkpoint bound",
-            ));
-        }
-        Ok(max_seek_deltas)
+        verify_every_hour_from(&self.index, &SliceCache(self.cache))
     }
+}
+
+fn verify_every_hour_from(
+    index: &ReplayHourIndex,
+    cache: &dyn CacheRecords,
+) -> Result<u32, ReplayCacheError> {
+    let mut value: Option<CanonValue> = None;
+    let mut max_seek_deltas = 0u32;
+    for (position, entry) in index.hours.iter().enumerate() {
+        let (kind, record_hour, payload) = cache_record(cache, entry)?;
+        if record_hour != entry.hour_index {
+            return Err(ReplayCacheError::new(format!(
+                "cache record at position {position} is not the indexed hour {}",
+                entry.hour_index
+            )));
+        }
+        match (kind, entry.delta_steps) {
+            (RECORD_CHECKPOINT, 0) => value = Some(decode_value_exact(payload.as_ref())?),
+            (RECORD_DELTA, steps) if steps != 0 => {
+                let running = value.as_mut().ok_or_else(|| {
+                    ReplayCacheError::new("a delta record precedes its checkpoint")
+                })?;
+                apply_patch(running, &decode_patch_exact(payload.as_ref())?, 0)?;
+            }
+            _ => {
+                return Err(ReplayCacheError::new(format!(
+                    "cache record kind at position {position} disagrees with its delta distance"
+                )))
+            }
+        }
+        drop(payload);
+        let running = value.as_ref().expect("a value exists once a checkpoint decoded");
+        validate_world_identity(running, entry.hour_index, &entry.date)?;
+        if Sha256::hex(&running.to_json_bytes()) != entry.world_json_sha256 {
+            return Err(ReplayCacheError::new(format!(
+                "reconstructed hour {} does not byte-match replay_decoder parity hash",
+                entry.hour_index
+            )));
+        }
+        max_seek_deltas = max_seek_deltas.max(entry.delta_steps);
+    }
+    if max_seek_deltas >= index.checkpoint_interval_hours {
+        return Err(ReplayCacheError::new(
+            "reconstructed seek exceeded its certified checkpoint bound",
+        ));
+    }
+    Ok(max_seek_deltas)
 }
 
 fn reconstruct_json_from(
     index: &ReplayHourIndex,
-    cache: &[u8],
+    cache: &dyn CacheRecords,
     hour_index: i64,
 ) -> Result<(Vec<u8>, ReplaySeekReceipt), ReplayCacheError> {
     let target_position = index
@@ -864,7 +1123,8 @@ fn reconstruct_json_from(
             "checkpoint index points at a non-checkpoint cache record",
         ));
     }
-    let mut value = decode_value_exact(payload)?;
+    let mut value = decode_value_exact(payload.as_ref())?;
+    drop(payload);
     for entry in &index.hours[checkpoint_position + 1..=target_position] {
         let (kind, record_hour, payload) = cache_record(cache, entry)?;
         if kind != RECORD_DELTA || record_hour != entry.hour_index {
@@ -872,7 +1132,8 @@ fn reconstruct_json_from(
                 "delta index points at an invalid cache record",
             ));
         }
-        let patch = decode_patch_exact(payload)?;
+        let patch = decode_patch_exact(payload.as_ref())?;
+        drop(payload);
         apply_patch(&mut value, &patch, 0)?;
     }
     validate_world_identity(&value, target.hour_index, &target.date)?;
@@ -897,19 +1158,25 @@ fn reconstruct_json_from(
     Ok((json, receipt))
 }
 
+/// Read one indexed record's kind, hour and payload.
+///
+/// The 21-byte record header is read and agreed with the index BEFORE the
+/// payload is requested, so a record whose self-declared payload length
+/// disagrees with the length H4IX published is refused without ever allocating
+/// for it. That agreement used to be proved after the whole record was already
+/// in hand; it is the same invariant, checked one allocation earlier.
 fn cache_record<'a>(
-    cache: &'a [u8],
+    cache: &'a dyn CacheRecords,
     entry: &ReplayHourEntry,
-) -> Result<(u8, i64, &'a [u8]), ReplayCacheError> {
-    let start = usize::try_from(entry.cache_record_offset)
-        .map_err(|_| ReplayCacheError::new("cache record offset does not fit usize"))?;
-    let len = usize::try_from(entry.cache_record_len)
-        .map_err(|_| ReplayCacheError::new("cache record length does not fit usize"))?;
-    let end = start
-        .checked_add(len)
-        .filter(|end| *end <= cache.len())
-        .ok_or_else(|| ReplayCacheError::new("cache record range is out of bounds"))?;
-    let mut reader = ByteReader::new(&cache[start..end]);
+) -> Result<(u8, i64, Cow<'a, [u8]>), ReplayCacheError> {
+    if entry.cache_record_len > MAX_CACHE_RECORD_BYTES {
+        return Err(ReplayCacheError::new(format!(
+            "cache record length {} exceeds the {MAX_CACHE_RECORD_BYTES}-byte per-record reader bound",
+            entry.cache_record_len
+        )));
+    }
+    let header = cache.record(entry.cache_record_offset, RECORD_HEADER_LEN)?;
+    let mut reader = ByteReader::new(header.as_ref());
     let kind = reader.u8()?;
     if reader.take(3)? != [0, 0, 0] {
         return Err(ReplayCacheError::new(
@@ -917,15 +1184,27 @@ fn cache_record<'a>(
         ));
     }
     let hour = reader.i64()?;
-    let payload_len = usize::try_from(reader.u64()?)
-        .map_err(|_| ReplayCacheError::new("cache payload length does not fit usize"))?;
+    let payload_len = reader.u64()?;
     if reader.u8()? != 0 {
         return Err(ReplayCacheError::new(
             "cache record trailing reserved byte is nonzero",
         ));
     }
-    let payload = reader.take(payload_len)?;
     reader.finish()?;
+    if payload_len.checked_add(RECORD_HEADER_LEN) != Some(entry.cache_record_len) {
+        return Err(ReplayCacheError::new(format!(
+            "cache record declares a {payload_len}-byte payload but the index published a {}-byte record",
+            entry.cache_record_len
+        )));
+    }
+    // The header read already proved `offset + 21 <= cache_len`, so this cannot
+    // overflow; it is spelled `checked_add` anyway so the proof does not have to
+    // be re-derived from two functions away.
+    let payload_offset = entry
+        .cache_record_offset
+        .checked_add(RECORD_HEADER_LEN)
+        .ok_or_else(|| ReplayCacheError::new("cache record range is out of bounds"))?;
+    let payload = cache.record(payload_offset, payload_len)?;
     Ok((kind, hour, payload))
 }
 
@@ -1759,6 +2038,242 @@ mod tests {
             .finish("g", "1", CacheIdentityMode::IdentityV1, source_len)
             .unwrap();
         (cache, index, source_sha)
+    }
+
+    /// Scratch file that removes itself, so a file-backed test leaves nothing.
+    struct TempCacheFile(std::path::PathBuf);
+
+    impl TempCacheFile {
+        fn write(tag: &str, bytes: &[u8]) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "h4cp-{tag}-{}-{}.bin",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::write(&path, bytes).expect("write scratch cache");
+            Self(path)
+        }
+
+        fn open(&self) -> File {
+            File::open(&self.0).expect("open scratch cache")
+        }
+    }
+
+    impl Drop for TempCacheFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// The whole point of the file backing: identical answers, no residency.
+    ///
+    /// Production change that would make this fail: any divergence between the
+    /// two backings — a different admission rule, a different record window, a
+    /// different reconstruction — including the easy mistake of having the file
+    /// backing hash something other than the complete cache.
+    #[test]
+    fn a_file_backed_cache_answers_exactly_as_a_resident_one() {
+        let hours: Vec<(i64, &str)> = vec![
+            (0, r#"{"keep":true,"rows":[1,2]}"#),
+            (1, r#"{"keep":true,"rows":[1,3]}"#),
+            (2, r#"{"extra":"x","rows":[1,3]}"#),
+            (3, r#"{"extra":"x","rows":[9]}"#),
+            (4, r#"{"extra":"y","rows":[9]}"#),
+        ];
+        let (cache, index, source_sha) = build(3, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 500;
+
+        let scratch = TempCacheFile::write("parity", &cache);
+        let resident =
+            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
+                .unwrap();
+        let on_disk =
+            CertifiedReplayCache::open_file(&index_bytes, scratch.open(), source_len, &source_sha)
+                .unwrap();
+
+        for (hour, body) in &hours {
+            let (resident_json, resident_receipt) = resident.reconstruct_json(*hour).unwrap();
+            let (disk_json, disk_receipt) = on_disk.reconstruct_json(*hour).unwrap();
+            assert_eq!(resident_json, world_json(*hour, body));
+            assert_eq!(disk_json, resident_json, "hour {hour} differs by backing");
+            assert_eq!(disk_receipt.applied_deltas, resident_receipt.applied_deltas);
+            assert_eq!(disk_receipt.checkpoint_hour, resident_receipt.checkpoint_hour);
+        }
+        assert_eq!(
+            on_disk.verify_every_hour().unwrap(),
+            resident.verify_every_hour().unwrap()
+        );
+    }
+
+    /// A file whose bytes are not the cache the index is bound to is refused,
+    /// and the refusal comes from the same admission gate the resident reader
+    /// uses.
+    ///
+    /// Production change that would make this fail: hashing only a prefix of the
+    /// file, trusting the H4IX-declared length instead of the file's own, or
+    /// skipping the binding when the backing is a handle.
+    #[test]
+    fn a_file_backed_cache_that_is_not_the_indexed_one_is_refused() {
+        let hours: Vec<(i64, &str)> = vec![(0, r#"{"v":1}"#), (1, r#"{"v":2}"#)];
+        let (cache, index, source_sha) = build(2, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+
+        let mut flipped = cache.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0x01;
+        let scratch = TempCacheFile::write("flipped", &flipped);
+        let error = match CertifiedReplayCache::open_file(
+            &index_bytes,
+            scratch.open(),
+            200,
+            &source_sha,
+        ) {
+            Ok(_) => panic!("a cache that hashes differently is not the indexed cache"),
+            Err(error) => error,
+        };
+        assert!(
+            error.message().contains("not bound to the selected canonical H4CR source"),
+            "{error}"
+        );
+
+        let mut truncated = cache.clone();
+        truncated.pop();
+        let scratch = TempCacheFile::write("truncated", &truncated);
+        let error = match CertifiedReplayCache::open_file(
+            &index_bytes,
+            scratch.open(),
+            200,
+            &source_sha,
+        ) {
+            Ok(_) => panic!("a short cache is not the indexed cache"),
+            Err(error) => error,
+        };
+        assert!(
+            error.message().contains("not bound to the selected canonical H4CR source"),
+            "{error}"
+        );
+    }
+
+    /// The per-record bound is what replaced the whole-entry one, so it has to
+    /// refuse BEFORE the length is used to size anything, and it has to refuse
+    /// only what is genuinely over it.
+    ///
+    /// Production change that would make this fail: deleting the bound (both
+    /// halves then report the out-of-range error), or applying it to the wrong
+    /// value so that a legal record at the edge is refused too.
+    #[test]
+    fn a_record_length_past_the_per_record_bound_is_refused_by_name() {
+        let hours: Vec<(i64, &str)> = vec![(0, r#"{"v":1}"#), (1, r#"{"v":2}"#)];
+        let (cache, index, source_sha) = build(2, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+
+        assert!(ReplayCacheReader::open(&index_bytes, &cache, 200, &source_sha).is_ok());
+
+        let mut over = index.hours[1].clone();
+        over.cache_record_len = MAX_CACHE_RECORD_BYTES + 1;
+        let error = cache_record(&SliceCache(&cache), &over)
+            .expect_err("a record past the bound must not be read");
+        assert!(
+            error.message().contains("per-record reader bound"),
+            "{error}"
+        );
+
+        // Exactly at the bound passes the bound. This fixture is still a bad
+        // record for a different reason — the index now claims 2 GiB while the
+        // record's own header declares a 47-byte payload — and the refusal must
+        // name THAT, which it can only do if the bound let it through first.
+        let mut at = index.hours[1].clone();
+        at.cache_record_len = MAX_CACHE_RECORD_BYTES;
+        let error = cache_record(&SliceCache(&cache), &at)
+            .expect_err("this fixture is not a valid record either way");
+        assert!(
+            error.message().contains("but the index published a"),
+            "a record exactly at the bound must reach the header check: {error}"
+        );
+    }
+
+    /// A record whose own header disagrees with the length the index published
+    /// is refused, and refused before the payload is requested.
+    ///
+    /// Production change that would make this fail: dropping the header/index
+    /// agreement, or reading the payload first and only noticing afterwards.
+    #[test]
+    fn a_record_that_disagrees_with_its_indexed_length_is_refused() {
+        let hours: Vec<(i64, &str)> = vec![(0, r#"{"v":1}"#), (1, r#"{"v":2}"#)];
+        let (cache, index, source_sha) = build(2, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+        assert!(ReplayCacheReader::open(&index_bytes, &cache, 200, &source_sha).is_ok());
+
+        let mut shortened = index.hours[1].clone();
+        shortened.cache_record_len -= 1;
+        let error = cache_record(&SliceCache(&cache), &shortened)
+            .expect_err("index and record must agree on the record's length");
+        assert!(
+            error.message().contains("but the index published a"),
+            "{error}"
+        );
+
+        let mut lengthened = index.hours[0].clone();
+        lengthened.cache_record_len += 1;
+        let error = cache_record(&SliceCache(&cache), &lengthened)
+            .expect_err("index and record must agree on the record's length");
+        assert!(
+            error.message().contains("but the index published a"),
+            "{error}"
+        );
+
+        // "Refused before the payload is requested" is an ordering claim, so it
+        // is proved by counting reads rather than by reading the code: exactly
+        // one read — the 21-byte header — reaches the backing before the
+        // disagreement is named. A reader that fetched the whole record first
+        // and checked afterwards would still return the same error and would
+        // still be a defect, because the length it trusted is the forged one.
+        let counting = CountingCache {
+            inner: SliceCache(&cache),
+            reads: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut forged = index.hours[1].clone();
+        forged.cache_record_len -= 1;
+        cache_record(&counting, &forged).expect_err("the forged record is refused");
+        assert_eq!(
+            counting.reads.borrow().as_slice(),
+            &[(index.hours[1].cache_record_offset, RECORD_HEADER_LEN)],
+            "only the record header may be read before the length agrees"
+        );
+
+        // The honest record reads twice: header, then payload.
+        let counting = CountingCache {
+            inner: SliceCache(&cache),
+            reads: std::cell::RefCell::new(Vec::new()),
+        };
+        cache_record(&counting, &index.hours[1]).expect("a well-formed record reads");
+        assert_eq!(counting.reads.borrow().len(), 2);
+    }
+
+    /// Records every `(offset, len)` its wrapped backing is asked for.
+    struct CountingCache<'a> {
+        inner: SliceCache<'a>,
+        reads: std::cell::RefCell<Vec<(u64, u64)>>,
+    }
+
+    impl CacheRecords for CountingCache<'_> {
+        fn cache_len(&self) -> u64 {
+            self.inner.cache_len()
+        }
+
+        fn cache_sha256(&self) -> Result<String, ReplayCacheError> {
+            self.inner.cache_sha256()
+        }
+
+        fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError> {
+            self.reads.borrow_mut().push((offset, len));
+            self.inner
+                .record(offset, len)
+                .map(|bytes| Cow::Owned(bytes.into_owned()))
+        }
     }
 
     #[test]

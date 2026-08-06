@@ -473,6 +473,10 @@ fn open_store_impl(
                 game_id,
                 index.schema_version.clone(),
                 metadata,
+                // A caller that supplied a spool base gets the non-resident
+                // cache reader. The base is the caller's, and this route never
+                // invents one.
+                spool_decoder.map(|(base, _)| base),
             );
         }
         if let Some((spool_base, spool_decoder)) = spool_decoder {
@@ -797,9 +801,11 @@ fn open_packaged_replay_cache(
     game_id: String,
     declared_schema_version: Option<Value>,
     metadata: MetadataRoute,
+    cache_spool_base: Option<&Path>,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
     validate_index_schema_version(declared_schema_version.as_ref())?;
     let identity_mode = prefold_stream_identity_mode(&metadata);
+    let mut cache_spool: Option<PrefoldSpoolOwner> = None;
     let (cache, prefold_receipt, hours) = {
         let container = store.container().ok_or_else(|| {
             SourceError::Unsupported(
@@ -935,20 +941,75 @@ fn open_packaged_replay_cache(
                     "read certified replay_decoder hour index: {error}"
                 ))
             })?;
-        let cache_bytes = container
-            .read_entry_bytes(&cache_entry.path)
-            .map_err(|error| {
-                SourceError::Open(format!(
-                    "read certified replay_decoder checkpoint cache: {error}"
-                ))
-            })?;
-        let cache =
-            snapshot::CertifiedReplayCache::open(&index_bytes, cache_bytes, source_len, &source_sha256)
-        .map_err(|error| {
-            SourceError::Open(format!(
-                "admit packaged replay_decoder binary artifacts: {error}"
-            ))
-        })?;
+        // The checkpoint cache is the one packaged entry whose size tracks
+        // campaign length rather than schema: capture t32 emitted 2,209,767,138
+        // bytes for 656 game hours, so a full campaign's cache is tens of
+        // gigabytes and reading it into a `Vec` is not a thing a supported
+        // machine can do. When the caller owns a scratch base, the entry is
+        // authenticated into a private spool and every seek reads one bounded
+        // record from it. Without a base the old resident read stands, and the
+        // container reader's 2 GiB materialization cap refuses an oversized
+        // cache BY NAME rather than truncating it.
+        let cache = match cache_spool_base {
+            Some(base) => {
+                let owner = PrefoldSpoolOwner::create(base)?;
+                let spooled = owner.root().join("checkpoints.h4cp");
+                let receipt = container
+                    .spool_entry_to_file_transactionally_bounded(
+                        &cache_entry.path,
+                        &spooled,
+                        snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+                    )
+                    .map_err(|error| {
+                        SourceError::Open(format!(
+                            "authenticate certified replay_decoder checkpoint cache into private spool: {error}"
+                        ))
+                    })?;
+                if receipt.path() != cache_entry.path.as_str()
+                    || receipt.uncompressed_len() != cache_entry.bytes
+                    || receipt.sha256() != cache_entry.sha256
+                {
+                    return Err(SourceError::Open(
+                        "checkpoint cache spool receipt does not match its container role entry"
+                            .to_string(),
+                    ));
+                }
+                let file = open_private_prefold_spool_file(&spooled)?;
+                let cache = snapshot::CertifiedReplayCache::open_file(
+                    &index_bytes,
+                    file,
+                    source_len,
+                    &source_sha256,
+                )
+                .map_err(|error| {
+                    SourceError::Open(format!(
+                        "admit packaged replay_decoder binary artifacts: {error}"
+                    ))
+                })?;
+                cache_spool = Some(owner);
+                cache
+            }
+            None => {
+                let cache_bytes = container
+                    .read_entry_bytes(&cache_entry.path)
+                    .map_err(|error| {
+                        SourceError::Open(format!(
+                            "read certified replay_decoder checkpoint cache: {error}"
+                        ))
+                    })?;
+                snapshot::CertifiedReplayCache::open(
+                    &index_bytes,
+                    cache_bytes,
+                    source_len,
+                    &source_sha256,
+                )
+                .map_err(|error| {
+                    SourceError::Open(format!(
+                        "admit packaged replay_decoder binary artifacts: {error}"
+                    ))
+                })?
+            }
+        };
         if cache.index().game_id() != game_id
             || cache.index().schema_version() != "1"
             || cache.index().identity_mode()
@@ -1022,6 +1083,9 @@ fn open_packaged_replay_cache(
         read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
     Ok(Box::new(IndexedReplaySource {
         cache,
+        // Held for exactly as long as the cache that reads from it; dropping the
+        // source removes the private spool directory.
+        cache_spool,
         hours,
         warnings: Vec::new(),
         store,
@@ -3259,6 +3323,25 @@ const PREFOLD_SPOOL_MARKER: &str = ".hoi4-prefold-owner";
 /// attempted only when the exact canonical directory and unique-per-open
 /// marker still match; an identity discrepancy leaves evidence in place rather
 /// than recursively deleting an unknown target.
+/// Open this process's own checkpoint-cache spool for bounded record reads.
+///
+/// The pathname is the one just created inside this process's private
+/// [`PrefoldSpoolOwner`] root and published by the container's transactional
+/// spool. Nothing outside that root is ever named here, and the file is opened
+/// read-only: the cache reader seeks in it, it never writes to it.
+fn open_private_prefold_spool_file(spool_path: &Path) -> Result<fs::File, SourceError> {
+    let spool_file = fs::OpenOptions::new()
+        .read(true)
+        .open(spool_path)
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "open private checkpoint cache spool {}: {error}",
+                spool_path.display()
+            ))
+        })?;
+    Ok(spool_file)
+}
+
 struct PrefoldSpoolOwner {
     root: PathBuf,
     canonical_root: PathBuf,
@@ -3431,10 +3514,17 @@ impl PrefoldSpoolOwner {
             let Some(name) = name.to_str() else {
                 return false;
             };
-            if name != PREFOLD_SPOOL_MARKER && name != "source.h4cr" && name != "snapshots" {
+            // The private root holds the marker, the snapshot directory, and the
+            // two large artifacts this process spools into it: the raw H4CR for
+            // the folding seam and the certified checkpoint cache for the
+            // packaged one. Anything else means someone else has been writing
+            // here, and the owner disowns the directory rather than deleting
+            // whatever it now contains.
+            let spooled_artifact = name == "source.h4cr" || name == "checkpoints.h4cp";
+            if name != PREFOLD_SPOOL_MARKER && !spooled_artifact && name != "snapshots" {
                 return false;
             }
-            if name == "source.h4cr" {
+            if spooled_artifact {
                 let Ok(meta) = fs::symlink_metadata(entry.path()) else {
                     return false;
                 };
@@ -3645,6 +3735,11 @@ struct StoreSource {
 
 struct IndexedReplaySource {
     cache: snapshot::CertifiedReplayCache,
+    /// Private spool the cache reads from, when this recording's cache was too
+    /// large to hold. `None` means the cache is resident. Dropped with the
+    /// source, which removes the directory.
+    #[allow(dead_code)]
+    cache_spool: Option<PrefoldSpoolOwner>,
     hours: Vec<i64>,
     warnings: Vec<String>,
     store: Store,
@@ -4988,6 +5083,86 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A decoder that must never be reached. The packaged-cache route consumes
+    /// the caller's spool BASE but not its decoder, and this proves it.
+    struct UnusedSpoolDecoder;
+
+    impl snapshot::CertifiedPrefoldSpoolDecoder for UnusedSpoolDecoder {
+        fn decoder_id(&self) -> &'static str {
+            "test.packaged-cache.never-decodes"
+        }
+
+        fn decode_certified_spool(
+            &self,
+            _request: snapshot::CertifiedPrefoldSpoolRequest,
+        ) -> Result<snapshot::PrefoldedSpool, snapshot::PrefoldDecodeError> {
+            panic!("a packaged certified cache must never be folded from the raw stream");
+        }
+    }
+
+    /// Opening a packaged cache through a caller-owned spool base reads it from
+    /// disk instead of holding it, gives byte-identical hours either way, and
+    /// leaves nothing behind.
+    ///
+    /// The resident read is what fails on a real recording — capture t32's cache
+    /// is 2,209,767,138 bytes — so this route is the one the product takes. The
+    /// fixture is small on purpose; what is under test is that the two routes
+    /// agree and that the private spool is removed, not that a big file fits.
+    ///
+    /// Production change that would make this fail: making the spooled route
+    /// return anything the resident route does not, dropping the spool owner
+    /// before the cache handle (Windows will not delete an open file), or
+    /// forgetting to admit the spooled cache name in the owner's identity check
+    /// so the directory is disowned and leaks.
+    #[test]
+    fn a_packaged_cache_opened_through_a_spool_base_matches_the_resident_read() {
+        let root = temp_root("binary_replay_cache_spooled");
+        let recording = root.join("binary.battleplan");
+        write_portable_binary_replay_fixture_with_composition(
+            &recording,
+            true,
+            snapshot::RawStreamPackaging::Omitted,
+        );
+        let spool_base = root.join("spool");
+        fs::create_dir(&spool_base).unwrap();
+
+        let resident = open_recording(&recording).unwrap();
+        let spooled =
+            open_recording_with_spooled_decoder(&recording, &spool_base, &UnusedSpoolDecoder)
+                .unwrap();
+        assert_eq!(spooled.game_id(), resident.game_id());
+        assert_eq!(spooled.hours(), resident.hours());
+        for hour in resident.hours().to_vec() {
+            let expected = resident.frame(hour).unwrap();
+            let observed = spooled.frame(hour).unwrap();
+            assert_eq!(observed.hour_index, expected.hour_index);
+            assert_eq!(observed.date, expected.date);
+            assert_eq!(observed.rest, expected.rest, "hour {hour} differs by route");
+        }
+
+        // While the source is alive the cache really is on disk, in a private
+        // directory under the caller's base.
+        let spooled_caches: Vec<PathBuf> = fs::read_dir(&spool_base)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("checkpoints.h4cp"))
+            .filter(|path| path.is_file())
+            .collect();
+        assert_eq!(
+            spooled_caches.len(),
+            1,
+            "the spooled route must materialize exactly one private cache"
+        );
+
+        drop(spooled);
+        assert_eq!(
+            fs::read_dir(&spool_base).unwrap().count(),
+            0,
+            "dropping the source must remove its private spool"
+        );
+        drop(resident);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// The composition is authority in both directions. A recording that
     /// declares the cache-only composition but ships a stream entry anyway is a
     /// rewritten recording and must fail closed rather than be quietly read.
@@ -6299,6 +6474,21 @@ mod tests {
     /// parent, rejects links/replacements/extra entries before every read, and
     /// removes only that authenticated child. Keep this list exact so any new
     /// filesystem operation still fails the F4 gate pending review.
+    /// The certified checkpoint cache reads from a handle its CALLER opened.
+    ///
+    /// `replay_cache.rs` imports `File` and seeks within one, but it builds no
+    /// pathname and opens nothing: `CertifiedCacheFile::new` is handed an
+    /// already-open handle by the product spool site below. These two lines are
+    /// exactly that fact, and the module cannot acquire a descendant-pathname
+    /// read without this list changing.
+    fn classified_certified_cache_handle_site(module: &str, line: &str) -> bool {
+        module == "snapshot/replay_cache.rs"
+            && matches!(
+                line,
+                "use std::fs::File;" | "let cache = CertifiedCacheFile::new(cache)?;"
+            )
+    }
+
     fn classified_private_prefold_spool_site(module: &str, line: &str) -> bool {
         module == "replay_core/source.rs"
             && matches!(
@@ -6306,6 +6496,12 @@ mod tests {
                 "use std::fs;"
                     | "use std::path::{Path, PathBuf};"
                     | "let raw_path = owner.root().join(\"source.h4cr\");"
+                    // The packaged checkpoint cache, spooled into this same
+                    // private root and reopened read-only for bounded seeks.
+                    | "let spooled = owner.root().join(\"checkpoints.h4cp\");"
+                    | "fn open_private_prefold_spool_file(spool_path: &Path) -> Result<fs::File, SourceError> {"
+                    | "let spool_file = fs::OpenOptions::new()"
+                    | ".open(spool_path)"
                     | "let file = fs::OpenOptions::new()"
                     | ".open(&raw_path)"
                     | "let meta = fs::symlink_metadata(base).map_err(|error| {"
@@ -6540,6 +6736,7 @@ mod tests {
                 || classified_rollover_retained_handle_site(module, line)
                 || classified_non_loader_site(module, line)
                 || classified_private_prefold_spool_site(module, line)
+                || classified_certified_cache_handle_site(module, line)
             {
                 classified += 1;
             } else {

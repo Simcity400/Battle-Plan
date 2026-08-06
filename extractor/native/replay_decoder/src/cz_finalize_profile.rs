@@ -355,14 +355,17 @@ pub fn profile_certified_replay_artifacts(
     drop(index_file);
     phases.index_write += started.elapsed();
 
+    // Mirrors production exactly (see `build_certified_replay_artifacts`): the
+    // cache is opened, not read back. The sequential hash that binds it to H4IX
+    // stays inside the parity block, which is where it was timed before too.
     let started = Instant::now();
-    let cache_bytes = std::fs::read(&cache_path).map_err(|e| e.to_string())?;
+    let cache_file = std::fs::File::open(&cache_path).map_err(|e| e.to_string())?;
     phases.cache_read_back += started.elapsed();
 
     let started = Instant::now();
-    let parity_reader = snapshot::ReplayCacheReader::open(
+    let parity_reader = snapshot::CertifiedReplayCache::open_file(
         &index_bytes,
-        &cache_bytes,
+        cache_file,
         expected_source_len,
         expected_source_sha256,
     )
