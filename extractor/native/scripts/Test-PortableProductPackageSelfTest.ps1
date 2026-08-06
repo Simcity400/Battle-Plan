@@ -212,6 +212,619 @@ function Compare-SelfTestTreeManifest {
     return ''
 }
 
+# One private-tree set, shared by every parallel segment in this suite.
+#
+# Measured on this repository the suite's wall time is not one hot loop: 54% of
+# it is forty-odd package-builder child processes run one after another, each
+# paying the same fourteen seconds of cold source-tree derivation, and 36% is
+# the source-rejection roster. Both are the same shape of work -- mutate one
+# file, ask a gate, put the file back -- and both are only safe to run
+# concurrently on trees that have exactly one writer.
+#
+# So the trees are made ONCE and handed to every segment, rather than each
+# segment copying the fixture again. A copy costs about a second of walking and
+# hashing 966 files, which is cheap once and not cheap five times over.
+#
+# Nothing here is a cache: the trees exist only for the lifetime of one run,
+# under one temporary container that is proved empty at teardown, and every
+# gate evaluation below is a real evaluation against a real tree. What is
+# reused is the COPY, never an answer.
+function Get-SelfTestGateWorkerCount {
+    # Gate workers are one CPU-bound process each, so this may go wide. Two
+    # threads are left for the parent and the child it is waiting on.
+    return [Math]::Max(2, [Math]::Min(12, [Environment]::ProcessorCount - 4))
+}
+
+function Get-SelfTestBuilderWorkerCount {
+    # Builder workers are TWO processes each -- the worker and the package
+    # builder it spawns -- so this is deliberately narrower than the gate pool.
+    return [Math]::Max(2, [Math]::Min(8, [int]([Environment]::ProcessorCount / 2)))
+}
+
+function New-SelfTestPrivateTreeSet {
+    # Full copies of the fixture tree, each PROVED faithful by the parent before
+    # any worker is allowed to speak from it.
+    #
+    # The proof has to be the parent's, file by file, over every file in the
+    # tree. A digest a worker computes with code living inside its own copy
+    # cannot establish that the copy is what we think it is, and the source
+    # tree's own digest covers only the five source extensions under the
+    # production roots -- not the gate's PowerShell, its manifests, its
+    # lockfile or its accepted baseline, all of which a copy is equally free to
+    # have rewritten.
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$ContainerRoot,
+        [Parameter(Mandatory = $true)][int]$Count,
+        [Parameter(Mandatory = $true)]
+        [Collections.Generic.Dictionary[string, string]]$SharedManifest
+    )
+
+    if ($Count -lt 1) {
+        throw "self-test private tree set needs at least one tree, asked for $Count"
+    }
+    $sourceFull = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    # Directories are reproduced from the source's own enumeration, not implied
+    # by the files: an empty directory is part of what the fixture is, and a
+    # file-driven copy would silently drop it.
+    $sourceDirectories = @(
+        ([IO.DirectoryInfo]$sourceFull).EnumerateDirectories(
+            '*', [IO.SearchOption]::AllDirectories) |
+            ForEach-Object { $_.FullName.Substring($sourceFull.Length + 1) }
+    )
+    $sourceDirectorySet = [Collections.Generic.HashSet[string]]::new(
+        [string[]]$sourceDirectories,
+        [StringComparer]::Ordinal
+    )
+    $relatives = @($SharedManifest.Keys)
+    $trees = [Collections.Generic.List[string]]::new()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        for ($index = 0; $index -lt $Count; $index++) {
+            # The name is kept SHORT on purpose -- these roots hold a full copy
+            # of a tree that already sits under a long fixture path, and a
+            # longer prefix would push the deepest files past MAX_PATH and
+            # produce a partial copy.
+            $treeRoot = Join-Path $ContainerRoot "t$index"
+            # Refused rather than reused, and the ROOT ITSELF is inspected. A
+            # junction or symlink at t<n> would be followed by every copy and by
+            # every worker below, so two trees that are supposed to be private
+            # could alias one directory and each would then read the other's
+            # planted symbol -- and the descendant walk cannot see that, because
+            # through a junction it only ever sees the target's ordinary
+            # children. CreateDirectory succeeds on a directory that is already
+            # there, so the attribute and emptiness of what it returned are what
+            # actually decides, not the Test-Path before it.
+            if (Test-Path -LiteralPath $treeRoot) {
+                throw "self-test private tree root already exists: $treeRoot"
+            }
+            [IO.Directory]::CreateDirectory($treeRoot) | Out-Null
+            $treeRootInfo = [IO.DirectoryInfo]::new($treeRoot)
+            if (($treeRootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "self-test private tree root is a reparse point: $treeRoot"
+            }
+            if (@($treeRootInfo.EnumerateFileSystemInfos(
+                    '*', [IO.SearchOption]::TopDirectoryOnly)).Count -ne 0) {
+                throw "self-test private tree root was not empty: $treeRoot"
+            }
+            foreach ($relative in $sourceDirectories) {
+                [IO.Directory]::CreateDirectory((Join-Path $treeRoot $relative)) | Out-Null
+            }
+            # Copied and PROVED in one pass. The proof is a digest of the bytes
+            # that landed in the copy, compared against the digest of the bytes
+            # the fixture had -- not an assumption that a copy cmdlet did what
+            # it said. Doing it here rather than in a second full walk is why
+            # this can afford to make a dozen trees.
+            foreach ($relative in $relatives) {
+                $destination = Join-Path $treeRoot $relative
+                [IO.File]::Copy((Join-Path $sourceFull $relative), $destination, $true)
+                $observed = ([BitConverter]::ToString(
+                    $sha.ComputeHash([IO.File]::ReadAllBytes($destination))
+                )).Replace('-', '').ToLowerInvariant()
+                if ($observed -cne [string]$SharedManifest[$relative]) {
+                    throw (
+                        "self-test private tree $index is not a faithful copy of " +
+                        "the fixture tree: content of '$relative' differs"
+                    )
+                }
+            }
+            # The loop above can only see the entries the fixture HAD, so the
+            # copy is walked once as well. This is what the full manifest walk
+            # it replaced provided and hashing alone does not: an EXTRA file or
+            # directory, and any reparse point, in the destination. A file the
+            # copy did not write, or an entry that is really a link to somewhere
+            # else, is as much a difference as a wrong byte -- and a linked tree
+            # is the one difference that would let two workers share a writer.
+            $copiedFiles = 0
+            foreach ($entry in ([IO.DirectoryInfo]$treeRoot).EnumerateFileSystemInfos(
+                '*', [IO.SearchOption]::AllDirectories)) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw (
+                        "self-test private tree $index contains a reparse point: " +
+                        $entry.FullName
+                    )
+                }
+                $copiedRelative = $entry.FullName.Substring($treeRoot.Length + 1)
+                if (($entry.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                    if (-not $sourceDirectorySet.Contains($copiedRelative)) {
+                        throw (
+                            "self-test private tree $index has an unexpected extra " +
+                            "directory: '$copiedRelative'"
+                        )
+                    }
+                    continue
+                }
+                if (-not $SharedManifest.ContainsKey($copiedRelative)) {
+                    throw (
+                        "self-test private tree $index has an unexpected extra " +
+                        "file: '$copiedRelative'"
+                    )
+                }
+                $copiedFiles++
+            }
+            if ($copiedFiles -ne $relatives.Count) {
+                throw (
+                    "self-test private tree $index holds $copiedFiles file(s) where " +
+                    "the fixture holds $($relatives.Count)"
+                )
+            }
+            $trees.Add($treeRoot)
+        }
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return @($trees)
+}
+
+function Assert-SelfTestPrivateTreesUnchanged {
+    # Re-proved between segments, because the builder pool is the one segment
+    # that WRITES to a private tree and puts it back. A revert that silently
+    # lost a byte would leave every later segment measuring a tree nobody
+    # authorised, and the later segments would still report verdicts.
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Trees,
+        [Parameter(Mandatory = $true)]
+        [Collections.Generic.Dictionary[string, string]]$SharedManifest,
+        [Parameter(Mandatory = $true)][string]$Stage
+    )
+
+    for ($index = 0; $index -lt $Trees.Count; $index++) {
+        $difference = Compare-SelfTestTreeManifest `
+            -Expected $SharedManifest `
+            -Actual (Get-SelfTestTreeManifest -Root $Trees[$index])
+        if ($difference) {
+            throw (
+                "self-test private tree $index no longer matches the fixture " +
+                "tree after $Stage`: $difference"
+            )
+        }
+    }
+}
+
+# Body of the builder-case worker, materialised beside the private trees at run
+# time. It lives here rather than as its own file under scripts/ so it cannot
+# be copied into a fixture tree and cannot drift from the pool that dispatches
+# it.
+#
+# One case is: write these files into MY tree, run the package builder, record
+# whether it refused, put the files back. That is exactly what the serial
+# `Invoke-ExpectFailure { Invoke-JsonScript ... }` sites did, including how a
+# refusal is recognised -- a non-zero exit, or output the parent could not
+# parse as the builder's JSON. The builder is still a child process, so the
+# exit-code path stays proved rather than replaced by an in-process call.
+$script:PortablePackageBuilderCaseWorkerScript = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$RequestPath
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
+$root = [string]$request.Root
+$outPath = [string]$request.OutPath
+$builder = Join-Path $root 'extractor\native\scripts\New-PortableProductPackage.ps1'
+$utf8 = [Text.UTF8Encoding]::new($false)
+
+if (-not (Test-Path -LiteralPath $builder -PathType Leaf)) {
+    throw "self-test builder case worker has no package builder: $builder"
+}
+
+function Invoke-FixtureBuilderOnce {
+    # The parent's Invoke-JsonScript, restated for one script: a non-zero exit
+    # is a refusal, and so is output that does not parse as the builder's JSON.
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $stdout = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $builder @Arguments)
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{
+            Succeeded = $false
+            Message = "package builder exited $LASTEXITCODE"
+        }
+    }
+    try {
+        (($stdout -join [Environment]::NewLine).Trim() | ConvertFrom-Json) | Out-Null
+    }
+    catch {
+        return [pscustomobject]@{
+            Succeeded = $false
+            Message = "package builder output did not parse: $($_.Exception.Message)"
+        }
+    }
+    return [pscustomobject]@{ Succeeded = $true; Message = '' }
+}
+
+$results = [Collections.Generic.List[object]]::new()
+$restoreFailures = [Collections.Generic.List[string]]::new()
+
+foreach ($item in @($request.Items)) {
+    $name = [string]$item.Name
+    $originals = [Collections.Generic.List[object]]::new()
+    foreach ($write in @($item.Writes)) {
+        $path = Join-Path $root ([string]$write.RelativePath)
+        $existed = [IO.File]::Exists($path)
+        $originals.Add([pscustomobject]@{
+            Path = $path
+            Existed = $existed
+            Bytes = $(if ($existed) { [IO.File]::ReadAllBytes($path) } else { $null })
+        })
+    }
+    foreach ($write in @($item.Writes)) {
+        $path = Join-Path $root ([string]$write.RelativePath)
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+        if ([string]$write.Encoding -ceq 'base64') {
+            [IO.File]::WriteAllBytes(
+                $path,
+                [Convert]::FromBase64String([string]$write.Content)
+            )
+        }
+        else {
+            [IO.File]::WriteAllText($path, [string]$write.Content, $utf8)
+        }
+    }
+    $arguments = @(
+        @($item.Arguments) | ForEach-Object { ([string]$_).Replace('@ROOT@', $root) }
+    )
+    $outcome = $null
+    try {
+        $outcome = Invoke-FixtureBuilderOnce -Arguments ([string[]]$arguments)
+    }
+    finally {
+        # Restored, then RE-READ. A revert this worker only believes it did
+        # would leave the tree mutated for every later case on it, and those
+        # cases would still return verdicts.
+        foreach ($original in $originals) {
+            if ($original.Existed) {
+                [IO.File]::WriteAllBytes($original.Path, [byte[]]$original.Bytes)
+                $observed = [IO.File]::ReadAllBytes($original.Path)
+                $restored = ($observed.Length -eq ([byte[]]$original.Bytes).Length)
+                if ($restored) {
+                    for ($byteIndex = 0; $byteIndex -lt $observed.Length; $byteIndex++) {
+                        if ($observed[$byteIndex] -ne $original.Bytes[$byteIndex]) {
+                            $restored = $false
+                            break
+                        }
+                    }
+                }
+                if (-not $restored) {
+                    $restoreFailures.Add(
+                        "case '$name' could not restore $($original.Path)"
+                    )
+                }
+            }
+            else {
+                if ([IO.File]::Exists($original.Path)) {
+                    [IO.File]::Delete($original.Path)
+                }
+                if ([IO.File]::Exists($original.Path)) {
+                    $restoreFailures.Add(
+                        "case '$name' could not remove $($original.Path)"
+                    )
+                }
+            }
+        }
+        # Anything the BUILDER published, as opposed to anything this worker
+        # wrote. A published package left in the tree is a real difference from
+        # the fixture, and the parent re-pins the trees against that fixture
+        # once this pool is done.
+        foreach ($remove in @($item.Removes)) {
+            $removePath = Join-Path $root ([string]$remove)
+            if ([IO.File]::Exists($removePath)) {
+                [IO.File]::Delete($removePath)
+            }
+            if ([IO.File]::Exists($removePath)) {
+                $restoreFailures.Add("case '$name' could not remove $removePath")
+            }
+        }
+    }
+    $results.Add([ordered]@{
+        name = $name
+        rejected = [bool](-not $outcome.Succeeded)
+        message = [string]$outcome.Message
+    })
+}
+
+$response = [ordered]@{
+    schema = 'battle-plan.selftest_builder_case_worker.v1'
+    results = @($results)
+    restore_failures = @($restoreFailures)
+}
+[IO.File]::WriteAllText(
+    $outPath,
+    ($response | ConvertTo-Json -Depth 6),
+    $utf8
+)
+'@
+
+function Invoke-SelfTestBuilderCasePool {
+    # Runs a set of package-builder cases across the private trees, one worker
+    # process per tree, and returns name -> "the builder refused this".
+    #
+    # The guards are the ones the serial form got for free and a pool has to
+    # state: worker exit status, response presence, an exact bijection between
+    # dispatched and returned cases on an ORDINAL key, a boolean verdict type,
+    # and every mutation proved reverted. Counting alone would let two cases
+    # swap verdicts, or one case run twice while another never ran, and still
+    # add up.
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Trees,
+        [Parameter(Mandatory = $true)][object[]]$Cases,
+        [Parameter(Mandatory = $true)][string]$ContainerRoot,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [int]$BudgetMs = 3600000
+    )
+
+    if ($Cases.Count -lt 1) {
+        throw "self-test builder case pool '$Label' was given no cases"
+    }
+    if ($Trees.Count -lt 1) {
+        throw "self-test builder case pool '$Label' was given no private trees"
+    }
+    $dispatched = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($case in $Cases) {
+        if (-not $dispatched.Add([string]$case.Name)) {
+            throw (
+                "self-test builder case pool '$Label' has a duplicate case name: " +
+                [string]$case.Name
+            )
+        }
+    }
+    $workerScriptPath = Join-Path $ContainerRoot 'builder-case-worker.ps1'
+    [IO.File]::WriteAllText(
+        $workerScriptPath,
+        $script:PortablePackageBuilderCaseWorkerScript,
+        [Text.UTF8Encoding]::new($false)
+    )
+    $workerCount = [Math]::Min($Trees.Count, $Cases.Count)
+    $workers = [Collections.Generic.List[object]]::new()
+    $cleanupProblems = [Collections.Generic.List[string]]::new()
+    $verdicts = [Collections.Generic.Dictionary[string, bool]]::new(
+        [StringComparer]::Ordinal
+    )
+    try {
+        for ($workerIndex = 0; $workerIndex -lt $workerCount; $workerIndex++) {
+            # Round robin, not contiguous blocks: cases are not all the same
+            # cost, and a contiguous block can leave one worker with every
+            # expensive case while another has already finished.
+            $slice = @(
+                0..($Cases.Count - 1) |
+                    Where-Object { ($_ % $workerCount) -eq $workerIndex } |
+                    ForEach-Object { $Cases[$_] }
+            )
+            if ($slice.Count -eq 0) { continue }
+            $requestPath = Join-Path $ContainerRoot ("$Label-request$workerIndex.json")
+            $responsePath = Join-Path $ContainerRoot ("$Label-response$workerIndex.json")
+            if (Test-Path -LiteralPath $responsePath -PathType Leaf) {
+                # A stale response from an earlier pool would be read as this
+                # pool's answer if this worker died before writing its own.
+                Remove-Item -LiteralPath $responsePath -Force -ErrorAction Stop
+            }
+            [IO.File]::WriteAllText(
+                $requestPath,
+                ([ordered]@{
+                    Root = $Trees[$workerIndex]
+                    OutPath = $responsePath
+                    Items = @($slice)
+                } | ConvertTo-Json -Depth 8),
+                [Text.UTF8Encoding]::new($false)
+            )
+            # Quoted. Start-Process flattens -ArgumentList into one command
+            # line, so an unquoted path splits on the first space in %TEMP%.
+            $process = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
+                -ArgumentList @(
+                    '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', ('"{0}"' -f $workerScriptPath),
+                    '-RequestPath', ('"{0}"' -f $requestPath)
+                )
+            $workers.Add([pscustomobject]@{
+                Index = $workerIndex
+                Process = $process
+                ResponsePath = $responsePath
+                Expected = @($slice)
+            })
+        }
+        # Bounded: a wedged worker fails the suite with a named reason instead
+        # of holding the run open until something outside it intervenes.
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($worker in $workers) {
+            $remaining = $BudgetMs - [int]$clock.Elapsed.TotalMilliseconds
+            if ($remaining -lt 1) { $remaining = 1 }
+            if (-not $worker.Process.WaitForExit($remaining)) {
+                try { $worker.Process.Kill() } catch { }
+                throw (
+                    "self-test builder case worker $($worker.Index) of '$Label' did " +
+                    "not finish within the $BudgetMs ms budget"
+                )
+            }
+            # The bool overload can return before the exit-code cache is filled.
+            $worker.Process.WaitForExit()
+            if ($worker.Process.ExitCode -ne 0) {
+                throw (
+                    "self-test builder case worker $($worker.Index) of '$Label' " +
+                    "exited $($worker.Process.ExitCode)"
+                )
+            }
+        }
+        foreach ($worker in $workers) {
+            if (-not (Test-Path -LiteralPath $worker.ResponsePath -PathType Leaf)) {
+                throw (
+                    "self-test builder case worker $($worker.Index) of '$Label' " +
+                    'produced no response'
+                )
+            }
+            $response = Get-Content -LiteralPath $worker.ResponsePath -Raw |
+                ConvertFrom-Json
+            if (@($response.restore_failures).Count -ne 0) {
+                throw (
+                    "self-test builder case worker $($worker.Index) of '$Label' left " +
+                    'its tree mutated: ' + (@($response.restore_failures) -join '; ')
+                )
+            }
+            $outstanding = [Collections.Generic.HashSet[string]]::new(
+                [StringComparer]::Ordinal
+            )
+            foreach ($case in @($worker.Expected)) {
+                [void]$outstanding.Add([string]$case.Name)
+            }
+            foreach ($row in @($response.results)) {
+                $name = [string]$row.name
+                # Remove returns false for a name that was never dispatched AND
+                # for one already consumed, so this is the duplicate check too.
+                if (-not $outstanding.Remove($name)) {
+                    throw (
+                        "self-test builder case worker $($worker.Index) of '$Label' " +
+                        "returned a verdict for unrequested or duplicated case '$name'"
+                    )
+                }
+                if ($row.rejected -isnot [bool]) {
+                    throw (
+                        "self-test builder case worker $($worker.Index) of '$Label' " +
+                        "returned a non-boolean verdict for '$name'"
+                    )
+                }
+                $verdicts[$name] = [bool]$row.rejected
+            }
+            if ($outstanding.Count -ne 0) {
+                throw (
+                    "self-test builder case worker $($worker.Index) of '$Label' " +
+                    "returned no verdict for $($outstanding.Count) dispatched case(s)"
+                )
+            }
+        }
+        if ($verdicts.Count -ne $Cases.Count) {
+            throw (
+                "self-test builder case pool '$Label' dispatched $($Cases.Count) " +
+                "case(s) and collected $($verdicts.Count) verdict(s)"
+            )
+        }
+    }
+    finally {
+        # Cleanup problems are RECORDED here, not thrown: throwing from a
+        # finally would replace the real failure with a janitorial one. They are
+        # raised after the block instead, where they can only be reached if the
+        # main path succeeded. The private trees are NOT removed here -- they
+        # outlive this pool and are torn down once, with the container.
+        foreach ($worker in $workers) {
+            try {
+                if (-not $worker.Process.HasExited) { $worker.Process.Kill() }
+            }
+            catch {
+                $cleanupProblems.Add(
+                    "worker $($worker.Index) could not be terminated: $($_.Exception.Message)"
+                )
+            }
+        }
+        foreach ($worker in $workers) {
+            try {
+                if (-not $worker.Process.WaitForExit(30000)) {
+                    $cleanupProblems.Add(
+                        "worker $($worker.Index) was still running 30000 ms after being terminated"
+                    )
+                }
+            }
+            catch {
+                $cleanupProblems.Add(
+                    "worker $($worker.Index) could not be waited on: $($_.Exception.Message)"
+                )
+            }
+        }
+        # Warned here as well as thrown below, because those are different
+        # paths: if the block above threw, that exception propagates the moment
+        # this finally returns and the check below is never reached.
+        if ($cleanupProblems.Count -ne 0) {
+            Write-Warning (
+                "self-test builder case pool '$Label' cleanup failed: " +
+                ($cleanupProblems -join '; ')
+            ) -WarningAction Continue
+        }
+    }
+    if ($cleanupProblems.Count -ne 0) {
+        throw (
+            "self-test builder case pool '$Label' cleanup failed: " +
+            ($cleanupProblems -join '; ')
+        )
+    }
+    # Comma on purpose: the dictionary is written as the single element of an
+    # array, which the pipeline unrolls back to the dictionary. Without it the
+    # caller is at the mercy of how PowerShell decides to enumerate the type.
+    return ,$verdicts
+}
+
+function New-SelfTestBuilderCase {
+    # One pooled builder case. Writes are relative to the private tree, and
+    # every argument that names a path is written with the @ROOT@ token so the
+    # worker rebases it onto ITS tree -- an absolute path from the parent's
+    # fixture would send every worker back to the one shared tree and make the
+    # whole pool unsound.
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Writes,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [AllowEmptyCollection()][string[]]$Removes = @()
+    )
+
+    foreach ($argument in $Arguments) {
+        if ([IO.Path]::IsPathRooted([string]$argument)) {
+            throw (
+                "self-test builder case '$Name' carries an absolute path argument " +
+                "instead of an @ROOT@-relative one: $argument"
+            )
+        }
+    }
+    return [pscustomobject]@{
+        Name = $Name
+        Writes = @($Writes)
+        Arguments = @($Arguments)
+        Removes = @($Removes)
+    }
+}
+
+function New-SelfTestBuilderCaseTextWrite {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content
+    )
+    return [pscustomobject]@{
+        RelativePath = $RelativePath
+        Encoding = 'text'
+        Content = $Content
+    }
+}
+
+function New-SelfTestBuilderCaseByteWrite {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+    return [pscustomobject]@{
+        RelativePath = $RelativePath
+        Encoding = 'base64'
+        Content = [Convert]::ToBase64String($Bytes)
+    }
+}
+
 # Body of the source-rejection worker, materialised beside the worker trees at
 # run time. It lives here rather than as its own file under scripts/ so it
 # cannot be copied into a fixture tree and cannot drift from the loop that
@@ -1462,6 +2075,133 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
             'OpenProcess|VirtualAllocEx|VirtualFreeEx|WriteProcessMemory|CreateRemoteThread|LoadLibraryW|FreeLibrary'
     )
 
+    # ----------------------------------------------------------------------
+    # The private trees every parallel segment below runs on.
+    #
+    # Made HERE, at the one point where the fixture is known good: the builder
+    # has just accepted this tree end to end, so a copy of it is a copy of
+    # something that builds. Every segment after this point either mutates one
+    # file and asks the builder, or mutates one file and asks the source-tree
+    # gate, and both are only sound with exactly one writer per tree.
+    #
+    # This is not a fixture store and nothing survives the run: the container is
+    # created here, proved removed below, and the trees inside it are proved
+    # byte-identical to the fixture both when they are made and after the
+    # builder pool has finished writing to them.
+    # ----------------------------------------------------------------------
+    # Short name on purpose: these roots hold a full copy of a tree that already
+    # sits under a long fixture path, and a longer prefix would push the deepest
+    # files past MAX_PATH. Short also means fewer bits of uniqueness, so the
+    # path is required to be NEW rather than merely created -- reusing whatever
+    # is already there would let a leftover junction stand in for a private
+    # tree.
+    # Set only once this run OWNS the container, and it is the only thing any
+    # teardown path is allowed to remove. A run that draws a name another run
+    # already holds must fail without touching it: deleting the winner's trees
+    # out from under its workers would give that run unrelated refusals, which
+    # is a wrong verdict rather than a failed run.
+    $privateTreeContainerOwned = $null
+    $privateTreeContainer = Join-Path ([IO.Path]::GetTempPath()) (
+        'hoi4pt' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    )
+    if (Test-Path -LiteralPath $privateTreeContainer) {
+        throw "self-test private tree container already exists: $privateTreeContainer"
+    }
+    [IO.Directory]::CreateDirectory($privateTreeContainer) | Out-Null
+    $privateTreeContainerInfo = [IO.DirectoryInfo]::new($privateTreeContainer)
+    if (($privateTreeContainerInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "self-test private tree container is a reparse point: $privateTreeContainer"
+    }
+    # ONE filesystem operation that can only succeed for one caller.
+    # CreateDirectory does not fail on a directory that already exists, so
+    # "check then create" is a race: two runs that drew the same short name
+    # would both proceed, their workers would write into each other's trees, and
+    # a refusal caused by another case's mutation could be attributed to this
+    # one. CreateNew on a file is atomic and refuses the second claimant, which
+    # turns that race into a named failure.
+    $privateTreeClaimPath = Join-Path $privateTreeContainer '.selftest-owner'
+    $privateTreeClaim = [IO.File]::Open(
+        $privateTreeClaimPath,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None
+    )
+    # Recorded the instant the claim is won, not once the rest of the checks
+    # pass: from here on this run owns the container whether or not it goes on
+    # to accept it, and anything that fails below has to leave a container the
+    # teardown will remove rather than an orphan nobody claims.
+    $privateTreeContainerOwned = $privateTreeContainer
+    try { $privateTreeClaim.WriteByte(0) } finally { $privateTreeClaim.Dispose() }
+    $privateTreeContainerEntries = @(
+        $privateTreeContainerInfo.EnumerateFileSystemInfos(
+            '*', [IO.SearchOption]::TopDirectoryOnly) |
+            Where-Object { $_.Name -cne '.selftest-owner' }
+    )
+    if ($privateTreeContainerEntries.Count -ne 0) {
+        throw (
+            'self-test private tree container was not empty: ' +
+            $privateTreeContainer
+        )
+    }
+    $privateTreeManifest = Get-SelfTestTreeManifest -Root $root
+    $privateTrees = @(New-SelfTestPrivateTreeSet `
+        -SourceRoot $root `
+        -ContainerRoot $privateTreeContainer `
+        -Count (Get-SelfTestGateWorkerCount) `
+        -SharedManifest $privateTreeManifest)
+    $builderTrees = @(
+        $privateTrees | Select-Object -First (Get-SelfTestBuilderWorkerCount)
+    )
+    if ($builderTrees.Count -lt 1) {
+        throw 'self-test private tree set produced no builder trees'
+    }
+    # The control, once per tree, before any of them is asked to refuse
+    # anything. A tree that cannot build is a tree that refuses every mutation,
+    # and without this every pooled case below would pass for that reason.
+    $privateTreeControlZip = '.cargo-target\release\private-tree-control.zip'
+    $privateTreeControlVerdicts = Invoke-SelfTestBuilderCasePool `
+        -Trees $privateTrees `
+        -Cases @(
+            0..($privateTrees.Count - 1) | ForEach-Object {
+                New-SelfTestBuilderCase `
+                    -Name ("private tree $_ builds") `
+                    -Writes @() `
+                    -Arguments @(
+                        '-RecorderExe', '@ROOT@\.cargo-target\release\collector_record.exe',
+                        '-ReplayExe', '@ROOT@\.cargo-target\release\replay_app.exe',
+                        '-CollectorDll', '@ROOT@\.cargo-target\release\collector.dll',
+                        '-OutputZip', ('@ROOT@\' + $privateTreeControlZip),
+                        '-Version', '0.1.0'
+                    ) `
+                    -Removes @($privateTreeControlZip)
+            }
+        ) `
+        -ContainerRoot $privateTreeContainer `
+        -Label 'control'
+    if ($privateTreeControlVerdicts.Count -ne $privateTrees.Count) {
+        throw (
+            'self-test private tree control returned ' +
+            "$($privateTreeControlVerdicts.Count) verdict(s) for " +
+            "$($privateTrees.Count) tree(s)"
+        )
+    }
+    foreach ($controlName in @($privateTreeControlVerdicts.Keys)) {
+        if ($privateTreeControlVerdicts[$controlName]) {
+            throw (
+                'self-test private tree control failed: the package builder ' +
+                "refused an unmutated private tree ($controlName)"
+            )
+        }
+    }
+    # The control build published a package into every tree and the worker took
+    # it back out again. That the trees are still byte-identical to the fixture
+    # is proved once, after the LAST segment that writes to them -- a full
+    # manifest walk of every tree is not free, and a leftover from here would
+    # be caught by that same check before any pooled verdict is trusted by the
+    # source-rejection roster. The workers additionally re-read every file they
+    # restore, so a failed revert is reported by the worker that made it.
+    Write-SelfTestCaseTiming -Name 'private fixture trees (copy and control build)'
+
     # The fixture's accepted inventory is measured, so on its own it can only
     # agree with itself. This drives the drift gate the other way: one accepted
     # unit is taken out of the pin while the tree still reaches it, which is
@@ -1474,46 +2214,20 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
     if (@($driftedBaseline.units).Count -ne ($fixtureBaselineUnits.Count - 1)) {
         throw 'self-test could not drift the fixture suspending-code-mutation pin'
     }
-    [IO.File]::WriteAllText(
-        $fixtureSuspendingBaselinePath,
-        ($driftedBaseline | ConvertTo-Json -Depth 8),
-        [Text.UTF8Encoding]::new($false)
-    )
-    try {
-        Invoke-ExpectFailure 'accepted suspending-code-mutation drift is rejected' {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot 'drifted-suspending-baseline.zip'),
-                '-Version', '0.1.0'
-            ) | Out-Null
-        }
-    }
-    finally {
-        [IO.File]::WriteAllText(
-            $fixtureSuspendingBaselinePath,
-            $fixtureBaselineOriginal,
-            [Text.UTF8Encoding]::new($false)
-        )
-    }
 
-    $evidenceRecorder = Join-Path $releaseRoot 'collector_record_evidence_marker.exe'
-    $evidenceRecorderBytes = [byte[]][IO.File]::ReadAllBytes($recorder).Clone()
+    # The five cases below are one shape: put something the builder must refuse
+    # into a tree, run the whole builder, and require a refusal. Serially they
+    # cost five cold builder processes back to back, and each of those spends
+    # about fourteen seconds re-deriving a source tree that four of the five do
+    # not touch at all. They are dispatched across the private trees instead.
+    #
+    # What each case proves is unchanged: the real package builder, as a child
+    # process, refusing that exact input. The mutation is the same mutation,
+    # the arguments are the same arguments, and the refusal is recognised the
+    # same way -- a non-zero exit or unparsable output.
     $evidenceMarker = [Text.Encoding]::ASCII.GetBytes('BATTLE_PLAN_CLIENT_DRIVING_EVIDENCE_V1')
+    $evidenceRecorderBytes = [byte[]][IO.File]::ReadAllBytes($recorder).Clone()
     [Array]::Copy($evidenceMarker, 0, $evidenceRecorderBytes, 0x300, $evidenceMarker.Length)
-    Write-Bytes $evidenceRecorder $evidenceRecorderBytes
-    Invoke-ExpectFailure 'evidence recorder marker is rejected' {
-        Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-            '-RecorderExe', $evidenceRecorder,
-            '-ReplayExe', $replay,
-            '-CollectorDll', $collector,
-            '-OutputZip', (Join-Path $releaseRoot 'forbidden-evidence-recorder.zip'),
-            '-Version', '0.1.0'
-        ) | Out-Null
-    }
-
-    $suspendedLaunchRecorder = Join-Path $releaseRoot 'collector_record_suspended_launch_marker.exe'
     $suspendedLaunchBytes = [byte[]][IO.File]::ReadAllBytes($recorder).Clone()
     $suspendedLaunchMarker = [Text.Encoding]::ASCII.GetBytes('CREATE_SUSPENDED')
     [Array]::Copy(
@@ -1523,44 +2237,103 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
         0x340,
         $suspendedLaunchMarker.Length
     )
-    Write-Bytes $suspendedLaunchRecorder $suspendedLaunchBytes
-    Invoke-ExpectFailure 'target suspended-launch marker is rejected' {
-        Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-            '-RecorderExe', $suspendedLaunchRecorder,
-            '-ReplayExe', $replay,
-            '-CollectorDll', $collector,
-            '-OutputZip', (Join-Path $releaseRoot 'forbidden-suspended-launch-recorder.zip'),
-            '-Version', '0.1.0'
-        ) | Out-Null
-    }
-
-    $targetLifecycleRecorder = Join-Path $releaseRoot 'collector_record_target_lifecycle_marker.exe'
     $targetLifecycleBytes = [byte[]][IO.File]::ReadAllBytes($recorder).Clone()
     $targetLifecycleMarker = [Text.Encoding]::ASCII.GetBytes('early_render_capture_receipt')
     [Array]::Copy($targetLifecycleMarker, 0, $targetLifecycleBytes, 0x380, $targetLifecycleMarker.Length)
-    Write-Bytes $targetLifecycleRecorder $targetLifecycleBytes
-    Invoke-ExpectFailure 'target early-render lifecycle marker is rejected' {
-        Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-            '-RecorderExe', $targetLifecycleRecorder,
-            '-ReplayExe', $replay,
-            '-CollectorDll', $collector,
-            '-OutputZip', (Join-Path $releaseRoot 'forbidden-target-lifecycle-recorder.zip'),
-            '-Version', '0.1.0'
-        ) | Out-Null
-    }
-
-    $evidenceCollector = Join-Path $releaseRoot 'collector_evidence_marker.dll'
     $evidenceCollectorBytes = [byte[]][IO.File]::ReadAllBytes($collector).Clone()
     [Array]::Copy($evidenceMarker, 0, $evidenceCollectorBytes, 0x300, $evidenceMarker.Length)
-    Write-Bytes $evidenceCollector $evidenceCollectorBytes
-    Invoke-ExpectFailure 'evidence collector marker is rejected' {
-        Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-            '-RecorderExe', $recorder,
-            '-ReplayExe', $replay,
-            '-CollectorDll', $evidenceCollector,
-            '-OutputZip', (Join-Path $releaseRoot 'forbidden-evidence-collector.zip'),
-            '-Version', '0.1.0'
-        ) | Out-Null
+
+    $releaseRelative = '.cargo-target\release'
+    $recorderRelative = "$releaseRelative\collector_record.exe"
+    $replayRelative = "$releaseRelative\replay_app.exe"
+    $collectorRelative = "$releaseRelative\collector.dll"
+    $markerRejectionVerdicts = Invoke-SelfTestBuilderCasePool `
+        -Trees $builderTrees `
+        -ContainerRoot $privateTreeContainer `
+        -Label 'markers' `
+        -Cases @(
+            (New-SelfTestBuilderCase `
+                -Name 'accepted suspending-code-mutation drift is rejected' `
+                -Writes @(
+                    New-SelfTestBuilderCaseTextWrite `
+                        -RelativePath (Get-FixtureRelativePath `
+                            -RepoRoot $root -Path $fixtureSuspendingBaselinePath) `
+                        -Content ($driftedBaseline | ConvertTo-Json -Depth 8)
+                ) `
+                -Arguments @(
+                    '-RecorderExe', "@ROOT@\$recorderRelative",
+                    '-ReplayExe', "@ROOT@\$replayRelative",
+                    '-CollectorDll', "@ROOT@\$collectorRelative",
+                    '-OutputZip', "@ROOT@\$releaseRelative\drifted-suspending-baseline.zip",
+                    '-Version', '0.1.0'
+                )),
+            (New-SelfTestBuilderCase `
+                -Name 'evidence recorder marker is rejected' `
+                -Writes @(
+                    New-SelfTestBuilderCaseByteWrite `
+                        -RelativePath "$releaseRelative\collector_record_evidence_marker.exe" `
+                        -Bytes $evidenceRecorderBytes
+                ) `
+                -Arguments @(
+                    '-RecorderExe', "@ROOT@\$releaseRelative\collector_record_evidence_marker.exe",
+                    '-ReplayExe', "@ROOT@\$replayRelative",
+                    '-CollectorDll', "@ROOT@\$collectorRelative",
+                    '-OutputZip', "@ROOT@\$releaseRelative\forbidden-evidence-recorder.zip",
+                    '-Version', '0.1.0'
+                )),
+            (New-SelfTestBuilderCase `
+                -Name 'target suspended-launch marker is rejected' `
+                -Writes @(
+                    New-SelfTestBuilderCaseByteWrite `
+                        -RelativePath "$releaseRelative\collector_record_suspended_launch_marker.exe" `
+                        -Bytes $suspendedLaunchBytes
+                ) `
+                -Arguments @(
+                    '-RecorderExe', "@ROOT@\$releaseRelative\collector_record_suspended_launch_marker.exe",
+                    '-ReplayExe', "@ROOT@\$replayRelative",
+                    '-CollectorDll', "@ROOT@\$collectorRelative",
+                    '-OutputZip', "@ROOT@\$releaseRelative\forbidden-suspended-launch-recorder.zip",
+                    '-Version', '0.1.0'
+                )),
+            (New-SelfTestBuilderCase `
+                -Name 'target early-render lifecycle marker is rejected' `
+                -Writes @(
+                    New-SelfTestBuilderCaseByteWrite `
+                        -RelativePath "$releaseRelative\collector_record_target_lifecycle_marker.exe" `
+                        -Bytes $targetLifecycleBytes
+                ) `
+                -Arguments @(
+                    '-RecorderExe', "@ROOT@\$releaseRelative\collector_record_target_lifecycle_marker.exe",
+                    '-ReplayExe', "@ROOT@\$replayRelative",
+                    '-CollectorDll', "@ROOT@\$collectorRelative",
+                    '-OutputZip', "@ROOT@\$releaseRelative\forbidden-target-lifecycle-recorder.zip",
+                    '-Version', '0.1.0'
+                )),
+            (New-SelfTestBuilderCase `
+                -Name 'evidence collector marker is rejected' `
+                -Writes @(
+                    New-SelfTestBuilderCaseByteWrite `
+                        -RelativePath "$releaseRelative\collector_evidence_marker.dll" `
+                        -Bytes $evidenceCollectorBytes
+                ) `
+                -Arguments @(
+                    '-RecorderExe', "@ROOT@\$recorderRelative",
+                    '-ReplayExe', "@ROOT@\$replayRelative",
+                    '-CollectorDll', "@ROOT@\$releaseRelative\collector_evidence_marker.dll",
+                    '-OutputZip', "@ROOT@\$releaseRelative\forbidden-evidence-collector.zip",
+                    '-Version', '0.1.0'
+                ))
+        )
+    foreach ($markerCaseName in @(
+            'accepted suspending-code-mutation drift is rejected',
+            'evidence recorder marker is rejected',
+            'target suspended-launch marker is rejected',
+            'target early-render lifecycle marker is rejected',
+            'evidence collector marker is rejected'
+        )) {
+        # Named individually, in the order the serial form ran them, so the case
+        # names, their order and their count are exactly what they were.
+        Assert-Case $markerCaseName ([bool]$markerRejectionVerdicts[$markerCaseName])
     }
 
     # Repinned deliberately, three times. The roster gained the thread-handle
@@ -1697,14 +2470,13 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
             )
         }
     }
+    # Derived once, up here, because the pool below and the loop after it have
+    # to agree on which symbol is "the first symbol of this role" -- the pool
+    # drives that one through the whole builder and the loop must then not
+    # drive it again.
+    $binaryRoleRosters = [ordered]@{}
     foreach ($role in @('recorder', 'replay', 'collector')) {
-        $allRejected = $true
-        $roleEnforcerArguments = $binaryRoleEnforcerArguments[$role]
-        # The first symbol of every role is driven through the real package
-        # builder, so "the builder rejects a forbidden binary symbol for this
-        # role" is measured end to end and not inferred from the enforcer alone.
-        $roleBuilderPathProved = $false
-        $roleForbiddenMarkerRoster = if ($role -ceq 'recorder') {
+        $binaryRoleRosters[$role] = if ($role -ceq 'recorder') {
             @($forbiddenMarkerRoster | Where-Object {
                 $_ -cnotin @(
                     'SendMessageW',
@@ -1732,35 +2504,74 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
         else {
             @($forbiddenMarkerRoster)
         }
+        if (@($binaryRoleRosters[$role]).Count -lt 2) {
+            throw "self-test binary roster for $role is too small to exercise the gate"
+        }
+    }
+    # The first symbol of every role is driven through the real package builder,
+    # so "the builder rejects a forbidden binary symbol for this role" is
+    # measured end to end and not inferred from the enforcer alone. Three cold
+    # builder processes; nothing about them is sequential, so they are not run
+    # sequentially.
+    $binaryRoleBuilderCases = foreach ($role in @('recorder', 'replay', 'collector')) {
+        $symbol = [string]@($binaryRoleRosters[$role])[0]
+        $baseBytes = switch ($role) {
+            'recorder' { [IO.File]::ReadAllBytes($recorder) }
+            'replay' { [IO.File]::ReadAllBytes($replay) }
+            'collector' { [IO.File]::ReadAllBytes($collector) }
+            default { throw "unexpected binary interaction-closure role: $role" }
+        }
+        $mutatedBytes = [byte[]]$baseBytes.Clone()
+        $marker = [Text.Encoding]::ASCII.GetBytes($symbol)
+        [Array]::Copy($marker, 0, $mutatedBytes, 0x300, $marker.Length)
+        $mutatedRelative = "$releaseRelative\" + ("forbidden-{0}-{1}.bin" -f $role, $symbol)
+        New-SelfTestBuilderCase `
+            -Name $role `
+            -Writes @(
+                New-SelfTestBuilderCaseByteWrite `
+                    -RelativePath $mutatedRelative `
+                    -Bytes $mutatedBytes
+            ) `
+            -Arguments @(
+                '-RecorderExe', $(if ($role -ceq 'recorder') { "@ROOT@\$mutatedRelative" } else { "@ROOT@\$recorderRelative" }),
+                '-ReplayExe', $(if ($role -ceq 'replay') { "@ROOT@\$mutatedRelative" } else { "@ROOT@\$replayRelative" }),
+                '-CollectorDll', $(if ($role -ceq 'collector') { "@ROOT@\$mutatedRelative" } else { "@ROOT@\$collectorRelative" }),
+                '-OutputZip', ("@ROOT@\$releaseRelative\" + ("forbidden-{0}-{1}.zip" -f $role, $symbol)),
+                '-Version', '0.1.0'
+            )
+    }
+    $binaryRoleBuilderVerdicts = Invoke-SelfTestBuilderCasePool `
+        -Trees $builderTrees `
+        -Cases @($binaryRoleBuilderCases) `
+        -ContainerRoot $privateTreeContainer `
+        -Label 'binroster'
+    Write-SelfTestCaseTiming -Name 'binary roster builder path (one symbol per role)'
+
+    foreach ($role in @('recorder', 'replay', 'collector')) {
+        $allRejected = $true
+        $roleEnforcerArguments = $binaryRoleEnforcerArguments[$role]
+        $roleBuilderPathProved = $false
+        $roleForbiddenMarkerRoster = @($binaryRoleRosters[$role])
         foreach ($symbol in $roleForbiddenMarkerRoster) {
-            $baseBytes = switch ($role) {
-                'recorder' { [IO.File]::ReadAllBytes($recorder) }
-                'replay' { [IO.File]::ReadAllBytes($replay) }
-                'collector' { [IO.File]::ReadAllBytes($collector) }
-                default { throw "unexpected binary interaction-closure role: $role" }
-            }
-            $mutatedBytes = [byte[]]$baseBytes.Clone()
-            $marker = [Text.Encoding]::ASCII.GetBytes($symbol)
-            [Array]::Copy($marker, 0, $mutatedBytes, 0x300, $marker.Length)
             $rejected = $false
             if (-not $roleBuilderPathProved) {
-                $mutatedPath = Join-Path $releaseRoot ("forbidden-{0}-{1}.bin" -f $role, $symbol)
-                Write-Bytes $mutatedPath $mutatedBytes
-                try {
-                    Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                        '-RecorderExe', $(if ($role -ceq 'recorder') { $mutatedPath } else { $recorder }),
-                        '-ReplayExe', $(if ($role -ceq 'replay') { $mutatedPath } else { $replay }),
-                        '-CollectorDll', $(if ($role -ceq 'collector') { $mutatedPath } else { $collector }),
-                        '-OutputZip', (Join-Path $releaseRoot ("forbidden-{0}-{1}.zip" -f $role, $symbol)),
-                        '-Version', '0.1.0'
-                    ) | Out-Null
-                }
-                catch {
-                    $rejected = $true
-                }
+                $rejected = [bool]$binaryRoleBuilderVerdicts[$role]
                 $roleBuilderPathProved = $true
             }
             else {
+                # Built here rather than before the branch: the first symbol's
+                # bytes were planted by the pooled builder case, and reading the
+                # clean binary again for every one of the remaining symbols was
+                # pure waste even in the serial form.
+                $baseBytes = switch ($role) {
+                    'recorder' { [IO.File]::ReadAllBytes($recorder) }
+                    'replay' { [IO.File]::ReadAllBytes($replay) }
+                    'collector' { [IO.File]::ReadAllBytes($collector) }
+                    default { throw "unexpected binary interaction-closure role: $role" }
+                }
+                $mutatedBytes = [byte[]]$baseBytes.Clone()
+                $marker = [Text.Encoding]::ASCII.GetBytes($symbol)
+                [Array]::Copy($marker, 0, $mutatedBytes, 0x300, $marker.Length)
                 try {
                     $binaryEnforcerProbe.'Invoke-FixtureInteractionEnforcer'(
                         $mutatedBytes,
@@ -1946,37 +2757,25 @@ path = "../lanes/character_presentation_live"
 '@
             )
     }
-    foreach ($mutation in $cargoMutations.GetEnumerator()) {
-        if ([string]$mutation.Value -ceq $collectorCargoOriginal) {
-            throw "portable package self-test could not apply Cargo mutation: $($mutation.Key)"
-        }
-        [IO.File]::WriteAllText(
-            $fixtureCollectorCargo,
-            [string]$mutation.Value,
-            [Text.UTF8Encoding]::new($false)
-        )
-        try {
-            Invoke-ExpectFailure ([string]$mutation.Key) {
-                Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                    '-RecorderExe', $recorder,
-                    '-ReplayExe', $replay,
-                    '-CollectorDll', $collector,
-                    '-OutputZip', (Join-Path $releaseRoot ("forbidden-cargo-{0}.zip" -f
-                        ([guid]::NewGuid().ToString('N')))),
-                    '-Version', '0.1.0'
-                ) | Out-Null
-            }
-        }
-        finally {
-            [IO.File]::WriteAllText(
-                $fixtureCollectorCargo,
-                $collectorCargoOriginal,
-                [Text.UTF8Encoding]::new($false)
-            )
-        }
-    }
-
-    $fixtureWorkspaceCargo = Join-Path $root 'extractor\native\Cargo.toml'
+    # ----------------------------------------------------------------------
+    # Everything from here to the lane-root scan is the same shape as the five
+    # marker cases above: write one file (or two) into a tree, run the whole
+    # package builder, require a refusal. Serially that is twenty-one cold
+    # builder processes, about 40% of this suite's wall time, for work with no
+    # order dependency in it whatsoever.
+    #
+    # So the mutations are all BUILT first and then dispatched across the
+    # private trees in one pool. The construction below is the construction
+    # that used to sit beside each case, moved up unchanged: what each case
+    # writes, what it runs, and what it requires are identical. Only where the
+    # write lands -- a private tree instead of the shared fixture -- and when it
+    # runs have changed.
+    # ----------------------------------------------------------------------
+    $collectorCargoRelative = 'extractor\native\collector\Cargo.toml'
+    $workspaceCargoRelative = 'extractor\native\Cargo.toml'
+    $characterCargoRelative =
+        'extractor\native\lanes\character_presentation_live\Cargo.toml'
+    $fixtureWorkspaceCargo = Join-Path $root $workspaceCargoRelative
     $workspaceCargoOriginal = [IO.File]::ReadAllText($fixtureWorkspaceCargo)
     $workspaceInheritedCargo = $collectorCargoOriginal.Replace(
         "[target.'cfg(windows)'.dependencies]",
@@ -1998,40 +2797,6 @@ workspace_character_alias = {
     path = "lanes/character_presentation_live",
 }
 '@
-    [IO.File]::WriteAllText(
-        $fixtureCollectorCargo,
-        $workspaceInheritedCargo,
-        [Text.UTF8Encoding]::new($false)
-    )
-    [IO.File]::WriteAllText(
-        $fixtureWorkspaceCargo,
-        $workspaceCargoMutation,
-        [Text.UTF8Encoding]::new($false)
-    )
-    try {
-        Invoke-ExpectFailure 'workspace-inherited protected alias features are rejected' {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot 'forbidden-workspace-inherited-feature.zip'),
-                '-Version', '0.1.0'
-            ) | Out-Null
-        }
-    }
-    finally {
-        [IO.File]::WriteAllText(
-            $fixtureCollectorCargo,
-            $collectorCargoOriginal,
-            [Text.UTF8Encoding]::new($false)
-        )
-        [IO.File]::WriteAllText(
-            $fixtureWorkspaceCargo,
-            $workspaceCargoOriginal,
-            [Text.UTF8Encoding]::new($false)
-        )
-    }
-
     $workspaceAdditiveCollectorCargo = $collectorCargoOriginal.Replace(
         "[target.'cfg(windows)'.dependencies]",
         @'
@@ -2055,42 +2820,7 @@ workspace_additive_alias = {
     ],
 }
 '@
-    [IO.File]::WriteAllText(
-        $fixtureCollectorCargo,
-        $workspaceAdditiveCollectorCargo,
-        [Text.UTF8Encoding]::new($false)
-    )
-    [IO.File]::WriteAllText(
-        $fixtureWorkspaceCargo,
-        $workspaceAdditiveRootCargo,
-        [Text.UTF8Encoding]::new($false)
-    )
-    try {
-        Invoke-ExpectFailure 'workspace and local dependency features are scanned additively' {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot 'forbidden-workspace-additive-feature.zip'),
-                '-Version', '0.1.0'
-            ) | Out-Null
-        }
-    }
-    finally {
-        [IO.File]::WriteAllText(
-            $fixtureCollectorCargo,
-            $collectorCargoOriginal,
-            [Text.UTF8Encoding]::new($false)
-        )
-        [IO.File]::WriteAllText(
-            $fixtureWorkspaceCargo,
-            $workspaceCargoOriginal,
-            [Text.UTF8Encoding]::new($false)
-        )
-    }
-
-    $fixtureCharacterCargo =
-        Join-Path $root 'extractor\native\lanes\character_presentation_live\Cargo.toml'
+    $fixtureCharacterCargo = Join-Path $root $characterCargoRelative
     $characterCargoOriginal = [IO.File]::ReadAllText($fixtureCharacterCargo)
     $characterCargoDefaultMutation = $characterCargoOriginal.Replace(
         'default = []',
@@ -2099,29 +2829,234 @@ workspace_additive_alias = {
     if ($characterCargoDefaultMutation -ceq $characterCargoOriginal) {
         throw 'portable package self-test could not mutate protected lane defaults'
     }
-    [IO.File]::WriteAllText(
-        $fixtureCharacterCargo,
-        $characterCargoDefaultMutation,
-        [Text.UTF8Encoding]::new($false)
-    )
-    try {
-        Invoke-ExpectFailure 'protected lane forbidden hook cannot enter default features' {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot 'forbidden-lane-default-feature.zip'),
-                '-Version', '0.1.0'
-            ) | Out-Null
-        }
+
+    # The evidence-only actuator region is excised from the recorder's own
+    # early_render_launch.rs and from nowhere else. A lane carrying a file with
+    # the same LEAF name - here with a shouted extension, because the exclusion
+    # used to be compared case-insensitively on the path - must not inherit the
+    # exclusion.
+    $fixtureShadowEarlyRenderPath = Join-Path (
+        $fixtureProductionLaneRoots |
+            Where-Object { (Split-Path -Leaf $_) -ceq 'active_command_abilities_live' } |
+            Select-Object -First 1
+    ) 'src\early_render_launch.RS'
+    $fixtureShadowEarlyRenderRelative = Get-FixtureRelativePath `
+        -RepoRoot $root -Path $fixtureShadowEarlyRenderPath
+    $fixtureShadowEarlyRenderContent = @'
+#[cfg(all(windows, feature = "evidence-client-driving"))]
+unsafe extern "system" { fn SuspendThread(); }
+#[cfg(all(windows, not(feature = "evidence-client-driving")))]
+pub fn observer_only() {}
+'@
+
+    # This used to append `use minhook::MinHook; ... MinHook::enable_hook(..)`
+    # to a lane that already declares minhook and require a rejection. It could
+    # never get one, and it had never been run: the authority binds a unit to a
+    # delegated patcher by the MANIFEST EDGE, not by the callsite text - by
+    # design, because a re-export lets a crate use a patcher without ever
+    # writing its name - and that lane's edge was already in the accepted
+    # inventory, so the mutation changed nothing the gate keys on.
+    #
+    # The mutation now has the shape the authority actually enforces: a lane
+    # with no minhook edge takes one on, which is a new delegated patcher and
+    # has to be accepted again. air_loss_stats_live is in the production
+    # closure and declares no minhook today; its owning lock resolves minhook
+    # 0.9.0, so the classification reaches the same registry source as the
+    # lanes that do.
+    #
+    # Limit worth stating: a lane that reaches minhook only through another
+    # in-repo crate's re-export still has no minhook edge of its own, and a
+    # pure re-exporter has no suspend/mutate site of its own to be classified
+    # on. That path is covered neither here nor by the authority.
+    $fixtureProductionLaneRelative =
+        'extractor\native\lanes\air_loss_stats_live\Cargo.toml'
+    $fixtureProductionLane = Join-Path $root $fixtureProductionLaneRelative
+    $fixtureProductionLaneOriginal = [IO.File]::ReadAllText($fixtureProductionLane)
+    if ($fixtureProductionLaneOriginal.Contains('minhook')) {
+        throw 'self-test lane already declares the suspending primitive it plants'
     }
-    finally {
-        [IO.File]::WriteAllText(
-            $fixtureCharacterCargo,
-            $characterCargoOriginal,
-            [Text.UTF8Encoding]::new($false)
+    $fixtureProductionLaneMutation = $fixtureProductionLaneOriginal +
+        "`n[target.'cfg(windows)'.dependencies]`nminhook = `"0.9.0`"`n"
+
+    # The first symbol of every source-rejection role, and the first production
+    # lane root, still go through the whole package builder - so the builder is
+    # still proved to reach the source-tree gate rather than that being inferred
+    # from calling the gate directly. Those five builds are in this pool too.
+    $sourceRejectionSymbols = @(Get-ForbiddenProductionClientCapabilitySymbols)
+    if ($sourceRejectionSymbols.Count -lt 2) {
+        throw 'self-test source-rejection roster is too small to exercise the gate'
+    }
+    $sourceRejectionFirstSymbol = [string]$sourceRejectionSymbols[0]
+    $laneRootBuilderRoot = @($fixtureProductionLaneRoots)[0]
+    $laneRootBuilderLib = Join-Path $laneRootBuilderRoot 'src\lib.rs'
+    $laneRootBuilderRelative = Get-FixtureRelativePath `
+        -RepoRoot $root -Path $laneRootBuilderLib
+
+    $pooledBuilderCases = [Collections.Generic.List[object]]::new()
+    $cargoMutationIndex = 0
+    foreach ($mutation in $cargoMutations.GetEnumerator()) {
+        if ([string]$mutation.Value -ceq $collectorCargoOriginal) {
+            throw "portable package self-test could not apply Cargo mutation: $($mutation.Key)"
+        }
+        $cargoZipRelative =
+            "$releaseRelative\forbidden-cargo-$cargoMutationIndex.zip"
+        $pooledBuilderCases.Add((New-SelfTestBuilderCase `
+            -Name ([string]$mutation.Key) `
+            -Writes @(
+                New-SelfTestBuilderCaseTextWrite `
+                    -RelativePath $collectorCargoRelative `
+                    -Content ([string]$mutation.Value)
+            ) `
+            -Arguments @(
+                '-RecorderExe', "@ROOT@\$recorderRelative",
+                '-ReplayExe', "@ROOT@\$replayRelative",
+                '-CollectorDll', "@ROOT@\$collectorRelative",
+                '-OutputZip', "@ROOT@\$cargoZipRelative",
+                '-Version', '0.1.0'
+            ) `
+            -Removes @($cargoZipRelative)))
+        $cargoMutationIndex++
+    }
+    foreach ($pairedCase in @(
+            [pscustomobject]@{
+                Name = 'workspace-inherited protected alias features are rejected'
+                Collector = $workspaceInheritedCargo
+                Workspace = $workspaceCargoMutation
+                Zip = 'forbidden-workspace-inherited-feature.zip'
+            },
+            [pscustomobject]@{
+                Name = 'workspace and local dependency features are scanned additively'
+                Collector = $workspaceAdditiveCollectorCargo
+                Workspace = $workspaceAdditiveRootCargo
+                Zip = 'forbidden-workspace-additive-feature.zip'
+            }
+        )) {
+        if ([string]$pairedCase.Collector -ceq $collectorCargoOriginal -or
+            [string]$pairedCase.Workspace -ceq $workspaceCargoOriginal) {
+            throw (
+                'portable package self-test could not apply workspace mutation: ' +
+                [string]$pairedCase.Name
+            )
+        }
+        $pairedZipRelative = "$releaseRelative\" + [string]$pairedCase.Zip
+        $pooledBuilderCases.Add((New-SelfTestBuilderCase `
+            -Name ([string]$pairedCase.Name) `
+            -Writes @(
+                (New-SelfTestBuilderCaseTextWrite `
+                    -RelativePath $collectorCargoRelative `
+                    -Content ([string]$pairedCase.Collector)),
+                (New-SelfTestBuilderCaseTextWrite `
+                    -RelativePath $workspaceCargoRelative `
+                    -Content ([string]$pairedCase.Workspace))
+            ) `
+            -Arguments @(
+                '-RecorderExe', "@ROOT@\$recorderRelative",
+                '-ReplayExe', "@ROOT@\$replayRelative",
+                '-CollectorDll', "@ROOT@\$collectorRelative",
+                '-OutputZip', "@ROOT@\$pairedZipRelative",
+                '-Version', '0.1.0'
+            ) `
+            -Removes @($pairedZipRelative)))
+    }
+    foreach ($singleCase in @(
+            [pscustomobject]@{
+                Name = 'protected lane forbidden hook cannot enter default features'
+                RelativePath = $characterCargoRelative
+                Content = $characterCargoDefaultMutation
+                Zip = 'forbidden-lane-default-feature.zip'
+            },
+            [pscustomobject]@{
+                Name = 'evidence interval exclusion is exact recorder path only'
+                RelativePath = $fixtureShadowEarlyRenderRelative
+                Content = $fixtureShadowEarlyRenderContent
+                Zip = 'forbidden-shadow-early-render.zip'
+            },
+            [pscustomobject]@{
+                Name = 'production-linked lane cannot take on the suspending MinHook primitive'
+                RelativePath = $fixtureProductionLaneRelative
+                Content = $fixtureProductionLaneMutation
+                Zip = 'forbidden-lane-minhook.zip'
+            },
+            [pscustomobject]@{
+                Name = 'lane-root builder path'
+                RelativePath = $laneRootBuilderRelative
+                Content = ([IO.File]::ReadAllText($laneRootBuilderLib) +
+                    "`nunsafe extern `"system`" { fn SuspendThread(); }`n")
+                Zip = ('forbidden-lane-root-{0}.zip' -f (Split-Path -Leaf $laneRootBuilderRoot))
+            }
+        )) {
+        $singleZipRelative = "$releaseRelative\" + [string]$singleCase.Zip
+        $pooledBuilderCases.Add((New-SelfTestBuilderCase `
+            -Name ([string]$singleCase.Name) `
+            -Writes @(
+                New-SelfTestBuilderCaseTextWrite `
+                    -RelativePath ([string]$singleCase.RelativePath) `
+                    -Content ([string]$singleCase.Content)
+            ) `
+            -Arguments @(
+                '-RecorderExe', "@ROOT@\$recorderRelative",
+                '-ReplayExe', "@ROOT@\$replayRelative",
+                '-CollectorDll', "@ROOT@\$collectorRelative",
+                '-OutputZip', "@ROOT@\$singleZipRelative",
+                '-Version', '0.1.0'
+            ) `
+            -Removes @($singleZipRelative)))
+    }
+    foreach ($sourceRole in $sourceRejectionRoles) {
+        $sourceRoleRelative = Get-FixtureRelativePath `
+            -RepoRoot $root -Path ([string]$sourceRole.Path)
+        $sourceRoleZipRelative = "$releaseRelative\" + (
+            'forbidden-source-{0}-{1}.zip' -f
+                [string]$sourceRole.Name, $sourceRejectionFirstSymbol
+        )
+        $pooledBuilderCases.Add((New-SelfTestBuilderCase `
+            -Name ('source-rejection builder path: ' + [string]$sourceRole.Name) `
+            -Writes @(
+                New-SelfTestBuilderCaseTextWrite `
+                    -RelativePath $sourceRoleRelative `
+                    -Content ([IO.File]::ReadAllText([string]$sourceRole.Path) +
+                        "`nunsafe extern `"system`" { fn $sourceRejectionFirstSymbol(); }`n")
+            ) `
+            -Arguments @(
+                '-RecorderExe', "@ROOT@\$recorderRelative",
+                '-ReplayExe', "@ROOT@\$replayRelative",
+                '-CollectorDll', "@ROOT@\$collectorRelative",
+                '-OutputZip', "@ROOT@\$sourceRoleZipRelative",
+                '-Version', '0.1.0'
+            ) `
+            -Removes @($sourceRoleZipRelative)))
+    }
+    $pooledBuilderVerdicts = Invoke-SelfTestBuilderCasePool `
+        -Trees $builderTrees `
+        -Cases @($pooledBuilderCases) `
+        -ContainerRoot $privateTreeContainer `
+        -Label 'builders'
+    # The pool is the only segment that writes to a private tree. Everything
+    # after this point - including the source-rejection roster, which runs on
+    # the same trees - depends on those writes having been taken back out, so
+    # that is proved here rather than assumed.
+    Assert-SelfTestPrivateTreesUnchanged `
+        -Trees $privateTrees `
+        -SharedManifest $privateTreeManifest `
+        -Stage 'the pooled builder cases'
+    Write-SelfTestCaseTiming -Name 'pooled package-builder rejection cases'
+
+    # Named individually, in the order the serial form ran them, so the case
+    # names, their order and their count are exactly what they were.
+    foreach ($mutation in $cargoMutations.GetEnumerator()) {
+        Assert-Case ([string]$mutation.Key) (
+            [bool]$pooledBuilderVerdicts[[string]$mutation.Key]
         )
     }
+    Assert-Case 'workspace-inherited protected alias features are rejected' (
+        [bool]$pooledBuilderVerdicts['workspace-inherited protected alias features are rejected']
+    )
+    Assert-Case 'workspace and local dependency features are scanned additively' (
+        [bool]$pooledBuilderVerdicts['workspace and local dependency features are scanned additively']
+    )
+    Assert-Case 'protected lane forbidden hook cannot enter default features' (
+        [bool]$pooledBuilderVerdicts['protected lane forbidden hook cannot enter default features']
+    )
 
     # As with the binary roster above, the first symbol of every role is driven
     # through the whole package builder and the rest are driven through the
@@ -2181,53 +3116,20 @@ workspace_additive_alias = {
     # role failed to reject. Workers evaluate their whole slice. That makes a
     # FAILING run do more work and report every unrejected symbol rather than
     # the first; it cannot change a verdict.
-    $sourceRejectionSymbols = @(Get-ForbiddenProductionClientCapabilitySymbols)
-    if ($sourceRejectionSymbols.Count -lt 2) {
-        throw 'self-test source-rejection roster is too small to exercise the gate'
-    }
-    # The first symbol of every role still goes through the whole package
-    # builder, exactly as before, so the builder is still proved to reach this
-    # gate; the rest go through the source-tree authority the builder calls.
+    # The builder path for the first symbol of every role was dispatched with
+    # the other package-builder cases above; the verdicts are read back here so
+    # the case below still requires the BUILDER to have refused, not just the
+    # gate the builder calls.
     $sourceRoleBuilderVerdicts = [ordered]@{}
     foreach ($sourceRole in $sourceRejectionRoles) {
-        $roleName = [string]$sourceRole.Name
-        $rolePath = [string]$sourceRole.Path
-        $sourceOriginal = [IO.File]::ReadAllText($rolePath)
-        $symbol = [string]$sourceRejectionSymbols[0]
-        [IO.File]::WriteAllText(
-            $rolePath,
-            ($sourceOriginal + "`nunsafe extern `"system`" { fn $symbol(); }`n"),
-            [Text.UTF8Encoding]::new($false)
+        $sourceRoleBuilderVerdicts[[string]$sourceRole.Name] = [bool](
+            $pooledBuilderVerdicts[
+                'source-rejection builder path: ' + [string]$sourceRole.Name
+            ]
         )
-        $rejected = $false
-        try {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot ("forbidden-source-{0}-{1}.zip" -f
-                    $roleName, $symbol)),
-                '-Version', '0.1.0'
-            ) | Out-Null
-        }
-        catch {
-            $rejected = $true
-        }
-        finally {
-            [IO.File]::WriteAllText(
-                $rolePath,
-                $sourceOriginal,
-                [Text.UTF8Encoding]::new($false)
-            )
-        }
-        $sourceRoleBuilderVerdicts[$roleName] = $rejected
     }
-    Write-SelfTestCaseTiming -Name 'source-rejection builder path (one symbol per role)'
 
-    $sourceRejectionWorkerCount = [Math]::Max(
-        2,
-        [Math]::Min(6, [int]([Environment]::ProcessorCount / 4))
-    )
+    $sourceRejectionWorkerCount = $privateTrees.Count
     $sourceRejectionWorkItems = [Collections.Generic.List[object]]::new()
     # Ordinal throughout. Rust symbol matching is case-sensitive, so
     # CreateProcessW and createprocessw are different work items and a
@@ -2253,15 +3155,42 @@ workspace_additive_alias = {
             })
         }
     }
-    # Outside the fixture root, never inside it: a copy of the tree placed under
-    # $root would be walked by the parent's own authority. The name is kept
-    # SHORT on purpose -- these roots hold a full copy of a tree that already
-    # sits under a long fixture path, and a longer prefix would push the deepest
-    # files past MAX_PATH and produce a partial copy. This prefix is shorter than
-    # the fixture root's own, so any tree that could be created can be copied.
-    $sourceRejectionRoot = Join-Path ([IO.Path]::GetTempPath()) (
-        'hoi4sr' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    )
+    # The lane-root scan is the same work item under a different name: plant
+    # SuspendThread in one lane's lib.rs and require the source-tree gate to
+    # refuse the tree. It used to be its own serial loop over forty-odd lanes,
+    # each one a fresh full-tree derivation in the parent process while every
+    # worker core sat idle. Nothing about it differs from the roster items, so
+    # it is dispatched with them.
+    #
+    # The first lane root still goes through the whole package builder - that
+    # case is in the builder pool above - so "the builder reaches this gate for
+    # a lane root" stays proved rather than inferred.
+    $laneRootRoleName = 'lane-root'
+    if (@($sourceRejectionRoles | Where-Object {
+                [string]$_.Name -ceq $laneRootRoleName
+            }).Count -ne 0) {
+        throw "self-test source-rejection roles already use the reserved role '$laneRootRoleName'"
+    }
+    $laneRootScanItemCount = 0
+    foreach ($fixtureLaneRoot in @($fixtureProductionLaneRoots | Select-Object -Skip 1)) {
+        $laneRelative = Get-FixtureRelativePath `
+            -RepoRoot $root `
+            -Path (Join-Path $fixtureLaneRoot 'src\lib.rs')
+        $laneKey = "$laneRootRoleName`0$laneRelative`0SuspendThread"
+        if (-not $sourceRejectionKeys.Add($laneKey)) {
+            throw "self-test source-rejection work item is not unique: '$laneKey'"
+        }
+        $sourceRejectionWorkItems.Add([pscustomobject]@{
+            Role = $laneRootRoleName
+            RelativePath = $laneRelative
+            Symbol = 'SuspendThread'
+            Key = $laneKey
+        })
+        $laneRootScanItemCount++
+    }
+    if ($laneRootScanItemCount -ne (@($fixtureProductionLaneRoots).Count - 1)) {
+        throw 'self-test lane-root scan did not dispatch every lane root after the first'
+    }
     $sourceRejectionWorkers = [Collections.Generic.List[object]]::new()
     $sourceRejectionCleanupProblems = [Collections.Generic.List[string]]::new()
     $sourceRejectionVerdicts = [ordered]@{}
@@ -2269,8 +3198,12 @@ workspace_additive_alias = {
         $sourceRejectionVerdicts[[string]$sourceRole.Name] =
             [Collections.Generic.List[object]]::new()
     }
-    # Everything from the moment the root exists is inside the cleanup guard.
-    [IO.Directory]::CreateDirectory($sourceRejectionRoot) | Out-Null
+    $sourceRejectionVerdicts[$laneRootRoleName] =
+        [Collections.Generic.List[object]]::new()
+    # The owned path, not the candidate: this segment's finally is the success
+    # path's teardown for the whole container, and it must only ever remove a
+    # container this run actually claimed.
+    $sourceRejectionRoot = $privateTreeContainerOwned
     try {
         $workerScriptPath = Join-Path $sourceRejectionRoot 'worker.ps1'
         [IO.File]::WriteAllText(
@@ -2278,7 +3211,6 @@ workspace_additive_alias = {
             $script:PortablePackageSourceRejectionWorkerScript,
             [Text.UTF8Encoding]::new($false)
         )
-        $sharedTreeManifest = Get-SelfTestTreeManifest -Root $root
         for ($workerIndex = 0; $workerIndex -lt $sourceRejectionWorkerCount; $workerIndex++) {
             # Round robin, not contiguous blocks: every worker then carries the
             # same mix of roles, so one role being cheaper cannot leave a worker
@@ -2289,24 +3221,14 @@ workspace_additive_alias = {
                     ForEach-Object { $sourceRejectionWorkItems[$_] }
             )
             if ($slice.Count -eq 0) { continue }
-            $workerRoot = Join-Path $sourceRejectionRoot "t$workerIndex"
-            # Not silenced. A copy error has to surface here rather than as a
-            # confusing rejection later.
-            Copy-Item -LiteralPath $root -Destination $workerRoot -Recurse -Force `
-                -ErrorAction Stop
-            # Proved by the parent, over every file in both trees, before the
-            # worker is allowed to speak: same relative paths, same bytes. This
-            # covers the gate's own code and its manifests, lockfiles and
-            # baselines, none of which the source-tree digest reaches.
-            $workerManifestDifference = Compare-SelfTestTreeManifest `
-                -Expected $sharedTreeManifest `
-                -Actual (Get-SelfTestTreeManifest -Root $workerRoot)
-            if ($workerManifestDifference) {
-                throw (
-                    "self-test source-rejection worker $workerIndex tree is not a " +
-                    "faithful copy of the fixture tree: $workerManifestDifference"
-                )
-            }
+            # The private tree this worker owns. Proved a faithful copy of the
+            # fixture by the parent when it was made, and proved again after the
+            # builder pool wrote to it and put it back -- file by file, over
+            # every file in both trees, which covers the gate's own code and its
+            # manifests, lockfiles and baselines, none of which the source-tree
+            # digest reaches. A digest the worker computes with code living
+            # inside its own copy could not establish any of that.
+            $workerRoot = $privateTrees[$workerIndex]
             $requestPath = Join-Path $sourceRejectionRoot "request$workerIndex.json"
             $responsePath = Join-Path $sourceRejectionRoot "response$workerIndex.json"
             [IO.File]::WriteAllText(
@@ -2452,6 +3374,11 @@ workspace_additive_alias = {
         try {
             Remove-Item -LiteralPath $sourceRejectionRoot -Recurse -Force `
                 -ErrorAction Stop
+            # Ownership ENDS here. The suite runs on for another twenty-odd
+            # cases, and the container name is short; a later run that drew the
+            # same name and claimed it would otherwise be deleted out from under
+            # its own workers by this run's outer finally.
+            $privateTreeContainerOwned = $null
         }
         catch {
             $sourceRejectionCleanupProblems.Add(
@@ -2501,140 +3428,28 @@ workspace_additive_alias = {
             @($rows | Where-Object { -not $_.rejected }).Count -eq 0
         )
     }
-    $allProductionLaneRootsScanned = $true
-    # Same split as the two rosters above: the first lane root goes through the
-    # whole builder, the remaining forty-odd through the source-tree authority
-    # the builder calls. What varies across these cases is which lane root the
-    # authority reaches, not which gate decides.
-    $laneRootBuilderPathProved = $false
-    foreach ($fixtureLaneRoot in $fixtureProductionLaneRoots) {
-        $fixtureLaneLib = Join-Path $fixtureLaneRoot 'src\lib.rs'
-        $fixtureLaneOriginal = [IO.File]::ReadAllText($fixtureLaneLib)
-        [IO.File]::WriteAllText(
-            $fixtureLaneLib,
-            ($fixtureLaneOriginal +
-                "`nunsafe extern `"system`" { fn SuspendThread(); }`n"),
-            [Text.UTF8Encoding]::new($false)
-        )
-        $rejected = $false
-        $useLaneBuilder = (-not $laneRootBuilderPathProved)
-        try {
-            if ($useLaneBuilder) {
-                Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                    '-RecorderExe', $recorder,
-                    '-ReplayExe', $replay,
-                    '-CollectorDll', $collector,
-                    '-OutputZip', (Join-Path $releaseRoot (
-                        "forbidden-lane-root-{0}.zip" -f (Split-Path -Leaf $fixtureLaneRoot)
-                    )),
-                    '-Version', '0.1.0'
-                ) | Out-Null
-            }
-            else {
-                Assert-ProductionInteractionSourceTreeClosure `
-                    -RepoRoot $root `
-                    -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $root)
-            }
-        }
-        catch {
-            $rejected = $true
-        }
-        finally {
-            [IO.File]::WriteAllText(
-                $fixtureLaneLib,
-                $fixtureLaneOriginal,
-                [Text.UTF8Encoding]::new($false)
-            )
-            if ($useLaneBuilder) {
-                $laneRootBuilderPathProved = $true
-            }
-        }
-        if (-not $rejected) {
-            $allProductionLaneRootsScanned = $false
-            break
-        }
-    }
+    # Same split as the two rosters above: the first lane root went through the
+    # whole builder (in the builder pool), the remaining forty-odd through the
+    # source-tree authority the builder calls (in the roster pool). What varies
+    # across these cases is which lane root the authority reaches, not which
+    # gate decides.
+    #
+    # Every lane after the first has to be accounted for. Without the row count
+    # a pool that silently dropped this role's slice would leave "none
+    # unrejected" true over an empty set, which is the shape of a case that
+    # cannot fail.
+    $laneRootRows = @($sourceRejectionVerdicts[$laneRootRoleName])
     Assert-Case 'every direct and transitive production lane root is source-scanned' (
-        $allProductionLaneRootsScanned
+        [bool]$pooledBuilderVerdicts['lane-root builder path'] -and
+        $laneRootRows.Count -eq $laneRootScanItemCount -and
+        @($laneRootRows | Where-Object { -not $_.rejected }).Count -eq 0
     )
-    $fixtureShadowEarlyRender = Join-Path (
-        $fixtureProductionLaneRoots |
-            Where-Object { (Split-Path -Leaf $_) -ceq 'active_command_abilities_live' } |
-            Select-Object -First 1
-    ) 'src\early_render_launch.RS'
-    [IO.File]::WriteAllText(
-        $fixtureShadowEarlyRender,
-        @'
-#[cfg(all(windows, feature = "evidence-client-driving"))]
-unsafe extern "system" { fn SuspendThread(); }
-#[cfg(all(windows, not(feature = "evidence-client-driving")))]
-pub fn observer_only() {}
-'@,
-        [Text.UTF8Encoding]::new($false)
+    Assert-Case 'evidence interval exclusion is exact recorder path only' (
+        [bool]$pooledBuilderVerdicts['evidence interval exclusion is exact recorder path only']
     )
-    try {
-        Invoke-ExpectFailure 'evidence interval exclusion is exact recorder path only' {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot 'forbidden-shadow-early-render.zip'),
-                '-Version', '0.1.0'
-            ) | Out-Null
-        }
-    }
-    finally {
-        Remove-Item -LiteralPath $fixtureShadowEarlyRender -Force
-    }
-    # This used to append `use minhook::MinHook; ... MinHook::enable_hook(..)`
-    # to a lane that already declares minhook and require a rejection. It could
-    # never get one, and it had never been run: the authority binds a unit to a
-    # delegated patcher by the MANIFEST EDGE, not by the callsite text - by
-    # design, because a re-export lets a crate use a patcher without ever
-    # writing its name - and that lane's edge was already in the accepted
-    # inventory, so the mutation changed nothing the gate keys on.
-    #
-    # The mutation now has the shape the authority actually enforces: a lane
-    # with no minhook edge takes one on, which is a new delegated patcher and
-    # has to be accepted again. air_loss_stats_live is in the production
-    # closure and declares no minhook today; its owning lock resolves minhook
-    # 0.9.0, so the classification reaches the same registry source as the
-    # lanes that do.
-    #
-    # Limit worth stating: a lane that reaches minhook only through another
-    # in-repo crate's re-export still has no minhook edge of its own, and a
-    # pure re-exporter has no suspend/mutate site of its own to be classified
-    # on. That path is covered neither here nor by the authority.
-    $fixtureProductionLane =
-        Join-Path $root 'extractor\native\lanes\air_loss_stats_live\Cargo.toml'
-    $fixtureProductionLaneOriginal = [IO.File]::ReadAllText($fixtureProductionLane)
-    if ($fixtureProductionLaneOriginal.Contains('minhook')) {
-        throw 'self-test lane already declares the suspending primitive it plants'
-    }
-    [IO.File]::WriteAllText(
-        $fixtureProductionLane,
-        ($fixtureProductionLaneOriginal +
-            "`n[target.'cfg(windows)'.dependencies]`nminhook = `"0.9.0`"`n"),
-        [Text.UTF8Encoding]::new($false)
+    Assert-Case 'production-linked lane cannot take on the suspending MinHook primitive' (
+        [bool]$pooledBuilderVerdicts['production-linked lane cannot take on the suspending MinHook primitive']
     )
-    try {
-        Invoke-ExpectFailure 'production-linked lane cannot take on the suspending MinHook primitive' {
-            Invoke-JsonScript -Path $fixtureBuilder -Arguments @(
-                '-RecorderExe', $recorder,
-                '-ReplayExe', $replay,
-                '-CollectorDll', $collector,
-                '-OutputZip', (Join-Path $releaseRoot 'forbidden-lane-minhook.zip'),
-                '-Version', '0.1.0'
-            ) | Out-Null
-        }
-    }
-    finally {
-        [IO.File]::WriteAllText(
-            $fixtureProductionLane,
-            $fixtureProductionLaneOriginal,
-            [Text.UTF8Encoding]::new($false)
-        )
-    }
 
     $hexA = 'a' * 64
     $hexB = 'b' * 64
@@ -3706,6 +4521,32 @@ fn synthetic_structural_d71_passive_gate() {
     } | ConvertTo-Json -Depth 3
 }
 finally {
+    # The private-tree container is torn down on the success path by the
+    # source-rejection segment, which THROWS if it cannot: leaving full tree
+    # copies in %TEMP% is a defect in this suite, not something to discover
+    # later as unexplained disk use. This is the failure path only -- a run that
+    # died before that segment -- so it is best effort and must not displace the
+    # exception that is already propagating.
+    # privateTreeContainerOwned, not privateTreeContainer: the second is a
+    # candidate path this run may never have owned, and removing another run's
+    # container while its workers are reading it is exactly the corruption the
+    # atomic claim exists to prevent.
+    $containerVariable = Get-Variable -Name 'privateTreeContainerOwned' `
+        -Scope Script -ErrorAction SilentlyContinue
+    if ($containerVariable -and
+        -not [string]::IsNullOrEmpty([string]$containerVariable.Value) -and
+        (Test-Path -LiteralPath ([string]$containerVariable.Value))) {
+        try {
+            Remove-Item -LiteralPath ([string]$containerVariable.Value) `
+                -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Warning (
+                'self-test private tree container was left behind: ' +
+                [string]$containerVariable.Value + ' (' + $_.Exception.Message + ')'
+            ) -WarningAction Continue
+        }
+    }
     if (Test-Path -LiteralPath $root) {
         Remove-Item -LiteralPath $root -Recurse -Force
     }
