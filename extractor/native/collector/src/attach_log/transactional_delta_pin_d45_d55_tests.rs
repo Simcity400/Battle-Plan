@@ -1291,6 +1291,9 @@ fn no_transactional_domain_is_default_constructed_on_its_own_rejection() {
         ("the air-wing unit", "wings.roll_back_uncommitted_pin();"),
         ("d45", "tracker.restore_pins_to_frame_entry();"),
         ("d55", "tracker.restore_frame_entry_baseline();"),
+        // d41 joined the set with its POST-GAP pin. Its needle is the binding
+        // rather than the call, because the call is spelled exactly as d29's.
+        ("d41", "let rolled_back_projects ="),
     ] {
         assert!(
             reset.contains(needle),
@@ -1306,6 +1309,7 @@ fn no_transactional_domain_is_default_constructed_on_its_own_rejection() {
         "CompactAirWingTracker::default()",
         "CompactAirWingLoadoutTracker::default()",
         "CompactAirStrengthDeltaTracker::default()",
+        "CompactProjectsTracker::default()",
     ] {
         assert!(
             !reset.contains(forbidden),
@@ -1313,4 +1317,96 @@ fn no_transactional_domain_is_default_constructed_on_its_own_rejection() {
              domains may reach `Default` there."
         );
     }
+}
+
+/// FOUND, NOT FIXED (`DELTA_WIRE_DESIGN.md` §7.3.1): D45 cannot absorb its
+/// absorbing direct-history failure through `COMPACT_STATUS_BASELINE_CLEAR`.
+///
+/// §7.3.1 diagnoses the defect correctly -- once `frd_direct_history_failed` is
+/// set the fold refuses every later D45 record whatever it carries, and on t26
+/// one of d45's 361 post-first-data gaps is enough to set it for the rest of the
+/// capture -- and then prescribes the global resync bit as the remedy. The
+/// remedy does not survive contact with the contract. This test states the three
+/// INDEPENDENT grounds on which `compact_baseline_clear_requested` refuses a D45
+/// record, so §7.3.1's correction cannot quietly stop being true.
+///
+/// The transport is NOT the obstacle and this test deliberately does not claim
+/// it is: FRD2 schema v3 onwards carries an authoritative global status word at
+/// D45 payload offset 56, which `parse_frd_depth_header` simply does not read.
+///
+/// What production change makes this fail -- which is the point, because each
+/// would be a real move toward the design:
+///
+/// * stopping `read_compact_frd_depth_from_country_reads` from setting
+///   `DELTA_DATA` unconditionally (ground 1);
+/// * D45 ceasing to raise `PARTIAL_DATA` on the targeted-decision and
+///   decision-cooldown paths (ground 2);
+/// * adding a `CompactBaselineClearAdmission` for domain 45 (ground 3).
+///
+/// Any of those is an owner decision about the wire contract, not a lane's, and
+/// the assertion messages say which one moved.
+#[test]
+fn d45_cannot_carry_the_global_resync_bit() {
+    use compact_contract::{
+        compact_baseline_clear_admissible, compact_baseline_clear_requested,
+        COMPACT_STATUS_BASELINE_CLEAR,
+    };
+
+    // GROUND 1 -- rule 1, whole payloads only. Every D45 read is constructed
+    // with DELTA_DATA and nothing clears it, so this is the status word the
+    // production reader produces, taken from the production reader.
+    let mut tracker = CompactFrdDepthTracker::default();
+    let read = read_compact_frd_depth_from_country_reads(&[], 0, 0, &mut tracker);
+    assert_ne!(
+        read.status_flags & COMPACT_STATUS_DELTA_DATA,
+        0,
+        "D45's reader sets DELTA_DATA unconditionally; if that changed, §7.3.1's first          blocker is gone and this test is the place to record it"
+    );
+    assert!(
+        compact_baseline_clear_requested(D45, read.status_flags | COMPACT_STATUS_BASELINE_CLEAR)
+            .is_err(),
+        "BASELINE_CLEAR on a DELTA_DATA record is a contradiction the contract refuses"
+    );
+
+    // GROUND 2 -- rule 3, never on a failure-class record. D45 raises
+    // PARTIAL_DATA for a targeted-decision structural failure and for a missing
+    // decision-cooldown source, both routine.
+    //
+    // STATED AS WHAT IT IS: a FREQUENCY argument about the contract, not an
+    // invariant about D45. It disqualifies the hours the bit fires on, not every
+    // hour -- the empty production read above is delta-without-partial -- and it
+    // is asserted against the PREDICATE rather than against a production status
+    // word for exactly that reason. Grounds 1 and 3 are unconditional and each
+    // independently sustains the conclusion; this one narrows the remaining gap.
+    assert!(
+        compact_baseline_clear_requested(
+            D45,
+            COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_BASELINE_CLEAR
+        )
+        .is_err(),
+        "a read that did not complete cannot describe the whole extent it asks the consumer          to replace"
+    );
+
+    // GROUND 3 -- rule 4, admissibility. D45's fold ACCUMULATES: focus metrics
+    // are entered per tag with `or_default()` and `frd_direct_transitions` is
+    // EXTENDED with the hour's drain batch, so a clean D45 record is an
+    // increment and never a complete claim about the domain's whole extent.
+    assert!(
+        !compact_baseline_clear_admissible(D45),
+        "D45 is not on COMPACT_BASELINE_CLEAR_ADMISSIONS, and §7.3.1's step 3 concedes why:          a resync there recovers the FUTURE, never the hole, which is not the sentence rule 4          admits a domain for"
+    );
+    assert!(
+        compact_baseline_clear_requested(D45, COMPACT_STATUS_BASELINE_CLEAR).is_err(),
+        "even a status word with neither DELTA_DATA nor a failure bit is refused, so the          admission is the third and last ground rather than a consequence of the first two"
+    );
+
+    // The control: the one domain the primitive IS for accepts the same word.
+    assert_eq!(
+        compact_baseline_clear_requested(
+            COMPACT_DOMAIN_AIR_REGION_ACTIVITY,
+            COMPACT_STATUS_BASELINE_CLEAR
+        ),
+        Ok(true),
+        "d31 is admitted, so the refusals above are about D45 and not about the predicate"
+    );
 }

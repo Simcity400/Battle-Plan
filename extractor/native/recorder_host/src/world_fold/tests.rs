@@ -25512,6 +25512,133 @@ fn a_d41_patch_folds_to_the_world_the_whole_payload_folds_to() {
     );
 }
 
+/// The consumer half of D41's POST-GAP TRANSACTIONAL PIN: a patch that arrives
+/// after the domain's own gap folds to the world the whole payload folds to.
+///
+/// From the fold's side a `DOMAIN_GAP` is simply the absence of a D41
+/// `DOMAIN_DATA` record for that hour -- `world_fold` never decodes a gap
+/// record -- so the gap hour here carries D18 and a frame end and nothing else.
+/// The producer's rolled-back pin therefore diffs hour C against hour A, which
+/// is exactly the state the fold still holds, and this is the test that the
+/// fold agrees.
+///
+/// Without the producer-side pin (`CompactProjectsTracker::uncommitted_pin`)
+/// hour C would be a 1.46 MB keyframe instead; the point of this test is that
+/// the cheap record it becomes is not merely smaller but decodes to the same
+/// world.
+///
+/// SCOPE: this is the CONSUMER half and nothing else. It is driven by a
+/// hand-built patch, so it passes with every producer-side change reverted — it
+/// establishes that the fold accepts and correctly applies the record the pin
+/// makes possible, not that the pin emits it. The producer half is
+/// `collector::attach_log::domain41_post_gap_pin_tests`.
+///
+/// What production change makes this fail: `fold_special_projects` seeding its
+/// facility map from empty on a delta record, or `reject_delta_before_baseline`
+/// losing d41's entry in `delta_baselines_seen` across the gap hour -- which
+/// would make hour C UNKNOWN rather than wrong, and the non-null assertion
+/// below is what catches that case specifically.
+#[test]
+fn a_d41_patch_after_its_own_gap_folds_to_the_world_the_whole_payload_folds_to() {
+    let hour_a = d41_delta_pairing_payload(
+        0,
+        &[(9, 101, false), (10, 102, false), (11, 103, false)],
+        &[(47, 1, 1), (47, 2, 1), (47, 3, 3)],
+        &[(47, 1, 100, 0), (47, 2, 200, 0), (47, 3, 300, 1)],
+        &[(47, 1, 0, 50, false), (47, 1, 1, 60, false), (47, 2, 0, 70, false)],
+    );
+    let hour_c_whole = d41_delta_pairing_payload(
+        0,
+        &[(9, 999, false), (11, 103, false), (12, 104, false)],
+        &[(47, 1, 1), (47, 2, 1), (47, 3, 3)],
+        &[(47, 1, 100, 0), (47, 2, 222, 0)],
+        &[(47, 1, 0, 50, false), (47, 1, 1, 99, false)],
+    );
+    // What the ROLLED-BACK pin emits: the diff against hour A, because hour B
+    // never reached the fold.
+    let hour_c_delta = d41_delta_pairing_payload(
+        COMPACT_STATUS_DELTA_DATA,
+        &[(9, 999, false), (12, 104, false), (10, 0, true)],
+        &[],
+        &[(47, 2, 222, 0), (47, 3, 0, 1 << 31)],
+        &[(47, 1, 1, 99, false), (47, 2, 0, 0, true)],
+    );
+
+    let identity = country_identity_payload(&[(47, "GER")]);
+    let fold_three_hours = |third: Vec<u8>| -> Vec<Value> {
+        let mut stream = Vec::new();
+        let mut sequence = 1u64;
+        for (hour_index, projects) in [
+            (16_959_360i64, Some(hour_a.clone())),
+            // THE OWN GAP: d41 published no record this hour.
+            (16_959_361, None),
+            (16_959_362, Some(third)),
+        ] {
+            let raw = raw_for(hour_index);
+            push_record(
+                &mut stream,
+                sequence,
+                raw,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &identity,
+            );
+            sequence += 1;
+            if let Some(payload) = projects {
+                push_record(
+                    &mut stream,
+                    sequence,
+                    raw,
+                    41,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    &payload,
+                );
+                sequence += 1;
+            }
+            push_record(
+                &mut stream,
+                sequence,
+                raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &frame_end_payload(),
+            );
+            sequence += 1;
+        }
+        let mut fold = WorldFold::new("d41_post_gap_pairing");
+        fold.ingest_stream(&stream);
+        let snaps = fold.finish();
+        assert_eq!(snaps.len(), 3, "all three hours must publish");
+        snaps.iter().map(|snap| parse(&snap.2)).collect()
+    };
+
+    let whole = fold_three_hours(hour_c_whole);
+    let patched = fold_three_hours(hour_c_delta);
+
+    assert!(
+        !patched[2]["special_projects"].is_null(),
+        "the post-gap patch must be APPLIED, not refused as a delta before a baseline"
+    );
+    assert_eq!(
+        whole[2]["special_projects"], patched[2]["special_projects"],
+        "the post-gap D41 patch folded to a different world than the whole payload"
+    );
+    assert_ne!(
+        whole[0]["special_projects"], whole[2]["special_projects"],
+        "hour C must differ from hour A, or this proves nothing"
+    );
+    assert_eq!(
+        patched[2]["special_projects"]["facilities"]["11"]["province"],
+        json!(103),
+        "a key neither the gap hour nor the patch carried survives from hour A"
+    );
+    assert!(
+        patched[2]["special_projects"]["facilities"]["10"].is_null(),
+        "and the patch's tombstone still removes facility 10 across the gap: {:?}",
+        patched[2]["special_projects"]["facilities"]
+    );
+}
+
 /// Append the `PPA1` authority trailer the collector appends after the D41
 /// payload, with every pinned hash and the carrier digest the fold recomputes.
 fn append_d41_authority_trailer(
