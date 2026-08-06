@@ -5929,9 +5929,14 @@ mod tests {
             &frame_payload(0),
         );
         let summary = scan_compact_stream(&raw);
+        // The DATA payload is rejected by canonical validation (the single
+        // decoder funnel) before the scan's own DOMAIN_DATA header check can
+        // fire, so the rejection carries the funnel's unassigned-flag wording
+        // rather than the header scan's "unknown v1 bits".
         assert!(
             summary.parse_errors.iter().any(|error| {
-                error.contains("DOMAIN_DATA domain 10") && error.contains("unknown v1 bits")
+                error.contains("domain 10 DATA payload")
+                    && error.contains("unassigned status flag(s) 0x80000000")
             }),
             "{:?}",
             summary.parse_errors
