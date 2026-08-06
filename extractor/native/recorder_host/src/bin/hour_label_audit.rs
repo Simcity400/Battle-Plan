@@ -51,6 +51,61 @@ struct FrameCensus {
     lw_worker_span_us: Stats,
     lw_prewarm_us: Stats,
     exact_instrument: ExactInstrument,
+    build_start_lateness: BuildStartLateness,
+}
+
+/// HOW LATE EACH BUILD BEGAN INTO ITS OWN HOUR, and what that cost.
+///
+/// The mismatch counters above say how much was lost; this says why. A build
+/// that begins at its hour's start fits inside it and mislabels nothing; one
+/// that begins two thirds of the way in runs almost entirely in the next hour
+/// and every bracket it opens after the boundary is refused.
+///
+/// `frames_carrying_it` is what makes the rest readable, exactly as it is for
+/// `ExactInstrument`: a capture from a recorder that predates the unit reports
+/// an empty table for want of the unit, not for want of lateness.
+///
+/// The lateness is bucketed against the MISMATCH COUNT rather than reported as
+/// a lone distribution, because the pair is the finding and either half alone
+/// is not.
+#[derive(Default, Serialize)]
+struct BuildStartLateness {
+    /// Frames that carried ANY of the three units, whether or not they could
+    /// enter the joint table. This and only this decides whether the recorder
+    /// emitted the instrument at all: keying that on the paired count instead
+    /// let a capture print "the recorder predates this unit" and "N frames
+    /// carried a lateness" in the same section. (Codex review
+    /// 019fd946-7d35-7302-a59f-4adbc749f025, finding 5.)
+    frames_carrying_it: u64,
+    /// Frames in the buckets below: a lateness AND both mismatch counters.
+    frames_in_joint_table: u64,
+    /// Frames whose label the observer holds no stamp for. Never merged into a
+    /// zero bucket: "not measured" and "began at the boundary" are opposite
+    /// readings.
+    frames_missing_it: u64,
+    /// Frames that carried a lateness but not both mismatch counters, so they
+    /// could not enter the joint table. Reported rather than dropped: without
+    /// it, `frames_carrying_it + frames_missing_it` silently fails to account
+    /// for every probe-carrying frame and the buckets look like a complete
+    /// population when they are not.
+    frames_excluded_unpaired: u64,
+    /// Frames built for a label the engine had already moved past, by how many
+    /// hours. A nonzero entry is the loop running a whole hour or more behind.
+    frontier_ahead_distribution: Vec<ValueCount>,
+    lw_hour_age_us: Stats,
+    /// 10 ms buckets of build-start lateness against the mean and worst
+    /// mismatched-domain count of the frames in each.
+    buckets: Vec<LatenessBucket>,
+}
+
+#[derive(Serialize)]
+struct LatenessBucket {
+    lateness_ms_from: u64,
+    lateness_ms_to: u64,
+    frames: u64,
+    mismatched_domains_mean: f64,
+    mismatched_domains_max: u64,
+    bracketed_domains: u64,
 }
 
 /// `lw_hour_label_mismatch_domains` / `lw_bracketed_domains`, summed over the
@@ -94,7 +149,10 @@ struct ValueCount {
     count: u64,
 }
 
-#[derive(Serialize)]
+/// `Default` is the EMPTY sample, not a zero one: `count: 0` with every
+/// quantile absent. It exists so a section that carries no samples serialises
+/// as "nothing measured" rather than as a distribution of zeroes.
+#[derive(Default, Serialize)]
 struct Stats {
     count: u64,
     min: Option<u64>,
@@ -298,6 +356,21 @@ struct LaneWallProbe {
     lw_hour_label_mismatch_domains: Option<u64>,
     lw_bracketed_domains: Option<u64>,
     lw_hour_label_unusable: Option<u64>,
+    /// HOW LATE INTO ITS OWN HOUR THE BUILD BEGAN, measured by the collector
+    /// against the observer's stamp for exactly this frame's label. Absent in
+    /// captures older than the unit, and absent per frame when the observer
+    /// holds no stamp for that label -- `lw_hour_age_missing` separates the two
+    /// cases from "the build began as the hour was observed", which is a real
+    /// zero.
+    ///
+    /// This is the term the mismatch rate is a function of, and before it
+    /// existed the only proxy was `mean_hour_period - lw_next_hour_at_us`,
+    /// which exists on a MINORITY of frames (316 of t32's 583, and 7 of its 274
+    /// clean ones) and needs a capture-wide mean to stand in for a per-hour
+    /// period.
+    lw_hour_age_us: Option<u64>,
+    lw_hour_frontier_ahead: Option<u64>,
+    lw_hour_age_missing: Option<u64>,
 }
 
 #[derive(Default)]
@@ -338,6 +411,18 @@ struct AuditState {
     skew_missing_frames: u64,
     worker_spans: Vec<u64>,
     prewarm_times: Vec<u64>,
+    /// `(build-start lateness us, mismatched domains, bracketed domains)` for
+    /// every frame that carried the lateness unit. Kept as pairs and bucketed
+    /// only at the end: the finding is the JOINT distribution, and two
+    /// independent marginals cannot recover it.
+    lateness_samples: Vec<(u64, u64, u64)>,
+    lateness_frames: u64,
+    lateness_missing_frames: u64,
+    lateness_unpaired_frames: u64,
+    /// Frames carrying ANY of the three lateness units, counted independently
+    /// of every pairing rule.
+    lateness_carrier_frames: u64,
+    frontier_ahead_distribution: BTreeMap<u64, u64>,
     reason_counts: BTreeMap<&'static str, u64>,
     undecoded_gaps: u64,
     witness_delta_counts: BTreeMap<(&'static str, i128, i128), u64>,
@@ -718,6 +803,9 @@ fn lane_wall_probe(units: &[DiagUnit]) -> LaneWallProbe {
         lw_hour_label_mismatch_domains: find("lw_hour_label_mismatch_domains"),
         lw_bracketed_domains: find("lw_bracketed_domains"),
         lw_hour_label_unusable: find("lw_hour_label_unusable"),
+        lw_hour_age_us: find("lw_hour_age_us"),
+        lw_hour_frontier_ahead: find("lw_hour_frontier_ahead"),
+        lw_hour_age_missing: find("lw_hour_age_missing"),
     }
 }
 
@@ -791,6 +879,51 @@ fn finalize_frame(state: &mut AuditState) {
         }
         if let Some(value) = probe.lw_prewarm_us {
             state.prewarm_times.push(value);
+        }
+        // WHETHER THE FRAME CARRIED THE INSTRUMENT AT ALL, asked of all three
+        // units and answered before anything else. This and only this decides
+        // "the recorder predates the unit", so it must not be entangled with
+        // any pairing or completeness rule: deriving it from the paired count
+        // let a capture print "NOT PRESENT" and a warning about frames that
+        // carried a lateness in the same section, and deriving it from the age
+        // alone still missed a frame carrying only the flag or only the
+        // frontier unit. (Codex review 019fd946-7d35-7302-a59f-4adbc749f025,
+        // finding 5.)
+        if probe.lw_hour_age_us.is_some()
+            || probe.lw_hour_frontier_ahead.is_some()
+            || probe.lw_hour_age_missing.is_some()
+        {
+            state.lateness_carrier_frames = state.lateness_carrier_frames.saturating_add(1);
+        }
+        // The lateness enters the BUCKETS only with the mismatch counters it
+        // has to be read against. A frame carrying one and not the other would
+        // otherwise enter one marginal and not the joint table, and the bucket
+        // means would be built from a population the report does not describe.
+        match (
+            probe.lw_hour_age_us,
+            probe.lw_hour_label_mismatch_domains,
+            probe.lw_bracketed_domains,
+        ) {
+            (Some(age_us), Some(mismatched), Some(bracketed)) => {
+                state.lateness_frames = state.lateness_frames.saturating_add(1);
+                state
+                    .lateness_samples
+                    .push((age_us, mismatched, bracketed));
+            }
+            _ if probe.lw_hour_age_missing == Some(1) => {
+                state.lateness_missing_frames = state.lateness_missing_frames.saturating_add(1);
+            }
+            // Carried a lateness but not both counters. Named, not dropped.
+            (Some(_), _, _) => {
+                state.lateness_unpaired_frames = state.lateness_unpaired_frames.saturating_add(1);
+            }
+            // Carried the instrument only as a `_missing == 0` flag or a
+            // frontier unit: counted as a carrier above, and nothing more can
+            // be said about it here.
+            _ => {}
+        }
+        if let Some(ahead) = probe.lw_hour_frontier_ahead {
+            *state.frontier_ahead_distribution.entry(ahead).or_default() += 1;
         }
     }
 
@@ -992,6 +1125,14 @@ fn finish_report(input: &Path, mut state: AuditState) -> AuditReport {
                 wholly_mislabelled_frames: state.exact_wholly_mislabelled_frames,
                 partially_mislabelled_frames: state.exact_partially_mislabelled_frames,
             },
+            build_start_lateness: build_start_lateness(
+                state.lateness_carrier_frames,
+                state.lateness_frames,
+                state.lateness_missing_frames,
+                state.lateness_unpaired_frames,
+                state.frontier_ahead_distribution,
+                state.lateness_samples,
+            ),
         },
         section_b_domain_gaps: GapCensus {
             reason_counts: DomainGapReason::ALL
@@ -1062,6 +1203,53 @@ fn stats(values: &mut [u64]) -> Stats {
         median: Some(median),
         mean: Some(sum / len as f64),
         max: values.last().copied(),
+    }
+}
+
+/// Reduce the per-frame lateness samples to the joint table the finding lives
+/// in. Bucketing happens HERE and not at accumulation time so the bucket width
+/// is one decision in one place.
+fn build_start_lateness(
+    frames_carrying_it: u64,
+    frames_in_joint_table: u64,
+    frames_missing_it: u64,
+    frames_excluded_unpaired: u64,
+    frontier_ahead: BTreeMap<u64, u64>,
+    samples: Vec<(u64, u64, u64)>,
+) -> BuildStartLateness {
+    const BUCKET_US: u64 = 10_000;
+    let mut ages: Vec<u64> = samples.iter().map(|(age, _, _)| *age).collect();
+    let mut buckets: BTreeMap<u64, (u64, u64, u64, u64)> = BTreeMap::new();
+    for (age_us, mismatched, bracketed) in &samples {
+        let entry = buckets.entry(age_us / BUCKET_US).or_default();
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = entry.1.saturating_add(*mismatched);
+        entry.2 = entry.2.max(*mismatched);
+        entry.3 = entry.3.saturating_add(*bracketed);
+    }
+    BuildStartLateness {
+        frames_carrying_it,
+        frames_in_joint_table,
+        frames_missing_it,
+        frames_excluded_unpaired,
+        frontier_ahead_distribution: frontier_ahead
+            .into_iter()
+            .map(|(value, count)| ValueCount { value, count })
+            .collect(),
+        lw_hour_age_us: stats(&mut ages),
+        buckets: buckets
+            .into_iter()
+            .map(
+                |(bucket, (frames, mismatch_sum, mismatch_max, bracketed))| LatenessBucket {
+                    lateness_ms_from: bucket * (BUCKET_US / 1_000),
+                    lateness_ms_to: (bucket + 1) * (BUCKET_US / 1_000),
+                    frames,
+                    mismatched_domains_mean: mismatch_sum as f64 / frames as f64,
+                    mismatched_domains_max: mismatch_max,
+                    bracketed_domains: bracketed,
+                },
+            )
+            .collect(),
     }
 }
 
@@ -1151,6 +1339,58 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
             out,
             "  WARNING: {} frame(s) carried only some of the three units; the              counts above are NOT a rate over a described population",
             e.partial_frames
+        )?;
+    }
+
+    let l = &report.section_a_frame_census.build_start_lateness;
+    writeln!(out, "build-start lateness (lw_hour_age_us):")?;
+    if l.frames_carrying_it == 0 {
+        writeln!(
+            out,
+            "  NOT PRESENT: the recorder that wrote this capture predates \
+             lw_hour_age_us, so the table below is ABSENT, not empty"
+        )?;
+    }
+    writeln!(out, "  frames carrying it: {}", l.frames_carrying_it)?;
+    writeln!(out, "  frames in the buckets: {}", l.frames_in_joint_table)?;
+    writeln!(
+        out,
+        "  frames whose label the observer held no stamp for: {}",
+        l.frames_missing_it
+    )?;
+    if l.frames_excluded_unpaired != 0 {
+        writeln!(
+            out,
+            "  WARNING: {} frame(s) carried a lateness without both mismatch \
+             counters and are NOT in the buckets below",
+            l.frames_excluded_unpaired
+        )?;
+    }
+    print_stats(&mut out, "  lw_hour_age_us", &l.lw_hour_age_us)?;
+    writeln!(out, "  hours the frontier ran ahead of the label -> frames:")?;
+    if l.frontier_ahead_distribution.is_empty() {
+        writeln!(out, "    (none)")?;
+    }
+    for row in &l.frontier_ahead_distribution {
+        writeln!(out, "    {} -> {}", row.value, row.count)?;
+    }
+    writeln!(
+        out,
+        "  lateness bucket -> frames, mean/max mislabelled domains, bracketed:"
+    )?;
+    if l.buckets.is_empty() {
+        writeln!(out, "    (none)")?;
+    }
+    for row in &l.buckets {
+        writeln!(
+            out,
+            "    [{:3},{:3}) ms  frames={:5}  mismatch mean={:6.1} max={:3}  bracketed={}",
+            row.lateness_ms_from,
+            row.lateness_ms_to,
+            row.frames,
+            row.mismatched_domains_mean,
+            row.mismatched_domains_max,
+            row.bracketed_domains
         )?;
     }
 
@@ -1539,6 +1779,53 @@ mod tests {
         units
     }
 
+    /// `lateness` is `Some((age_us, frontier_ahead))` for a frame the observer
+    /// held a stamp for, and `None` for one it did not — which emits the
+    /// `_missing` flag and NO value units, the way the producer does.
+    fn probe_units_with_lateness(
+        exact: Option<(u64, u64)>,
+        skew_abs: u64,
+        lateness: Option<(u64, u64)>,
+    ) -> Vec<DiagUnit> {
+        let mut units = probe_units(exact, skew_abs);
+        match lateness {
+            Some((age_us, ahead)) => {
+                units.push(DiagUnit::counter("lw_hour_age_us", age_us));
+                units.push(DiagUnit::counter("lw_hour_frontier_ahead", ahead));
+                units.push(DiagUnit::counter("lw_hour_age_missing", 0));
+            }
+            None => units.push(DiagUnit::counter("lw_hour_age_missing", 1)),
+        }
+        units
+    }
+
+    fn frame_with_lateness(
+        sequence: &mut u64,
+        hour: i32,
+        exact: Option<(u64, u64)>,
+        lateness: Option<(u64, u64)>,
+    ) -> Vec<u8> {
+        let mut out = record(
+            *sequence,
+            hour,
+            RC_PROBE_DOMAIN_ID,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &lane_wall_payload(&probe_units_with_lateness(exact, 0, lateness)),
+        );
+        *sequence += 1;
+        out.extend_from_slice(&record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        *sequence += 1;
+        out
+    }
+
     /// One frame: its lane-wall probe, then FRAME_END. No gap records, so the
     /// ONLY thing that can make the frame notable is the exact instrument.
     fn frame(sequence: &mut u64, hour: i32, exact: Option<(u64, u64)>, skew_abs: u64) -> Vec<u8> {
@@ -1567,6 +1854,153 @@ mod tests {
         let mut state = AuditState::default();
         scan_stream(&mut &stream[..], &mut state).expect("scan");
         finish_report(Path::new("synthetic"), state)
+    }
+
+    /// The build-start lateness is reduced against the mismatch counts it must
+    /// be read with, and a frame that carries only ONE of the two never enters
+    /// the joint table.
+    ///
+    /// THE DEFECT THIS EXISTS FOR: bucketing the lateness on its own would give
+    /// a table whose frame counts and whose mismatch means came from different
+    /// populations, which reads exactly like a real curve and is not one.
+    ///
+    /// MUTATION RUN: accumulate `lw_hour_age_us` whenever it is present,
+    /// independent of the mismatch counters. Observed failure: `a frame with
+    /// no mismatch counters must not enter the joint table` (left 3, right 2).
+    #[test]
+    fn build_start_lateness_is_bucketed_only_against_the_counts_it_pairs_with() {
+        let mut sequence = 0u64;
+        // 5 ms late and clean; 65 ms late and losing 67 of 68; 62 ms late with
+        // NO mismatch counters at all; and one frame with no lateness unit.
+        let mut stream = frame_with_lateness(&mut sequence, HOUR_A, Some((0, 68)), Some((5_000, 0)));
+        stream.extend_from_slice(&frame_with_lateness(
+            &mut sequence,
+            HOUR_B,
+            Some((67, 68)),
+            Some((65_000, 0)),
+        ));
+        stream.extend_from_slice(&frame_with_lateness(
+            &mut sequence,
+            HOUR_B + 1,
+            None,
+            Some((62_000, 1)),
+        ));
+        // A frame the observer held no stamp for: the `_missing` flag, no value.
+        stream.extend_from_slice(&frame_with_lateness(
+            &mut sequence,
+            HOUR_B + 2,
+            Some((4, 68)),
+            None,
+        ));
+        // A frame from a recorder that predates the unit entirely.
+        stream.extend_from_slice(&frame(&mut sequence, HOUR_B + 3, Some((4, 68)), 0));
+        let report = audit(&stream);
+        assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
+
+        let lateness = &report.section_a_frame_census.build_start_lateness;
+        assert_eq!(
+            lateness.frames_in_joint_table, 2,
+            "a frame with no mismatch counters must not enter the joint table"
+        );
+        assert_eq!(
+            lateness.frames_carrying_it, 4,
+            "every frame that carried ANY of the three units counts as carrying \
+             the instrument; keying that on the paired count made a capture \
+             report the recorder as predating a unit it plainly emitted"
+        );
+
+        // A frame carrying ONLY the `_missing == 0` flag -- no age, no frontier
+        // unit -- still carried the instrument. Deriving the carrier count from
+        // the age, or from the three sub-counters, misses exactly this frame
+        // and reports the whole capture as predating the unit.
+        let mut only_flag = Vec::new();
+        let mut seq = 0u64;
+        only_flag.extend_from_slice(&record(
+            seq,
+            HOUR_A,
+            RC_PROBE_DOMAIN_ID,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &lane_wall_payload(&{
+                let mut units = probe_units(Some((4, 68)), 0);
+                units.push(DiagUnit::counter("lw_hour_age_missing", 0));
+                units
+            }),
+        ));
+        seq += 1;
+        only_flag.extend_from_slice(&record(
+            seq,
+            HOUR_A,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        let flag_only = &audit(&only_flag)
+            .section_a_frame_census
+            .build_start_lateness;
+        assert_eq!(
+            flag_only.frames_carrying_it, 1,
+            "a frame carrying only the presence flag still carried the instrument"
+        );
+        assert_eq!(flag_only.frames_in_joint_table, 0);
+        assert_eq!(flag_only.frames_missing_it, 0);
+        assert_eq!(flag_only.frames_excluded_unpaired, 0);
+        assert_eq!(
+            lateness.frames_missing_it, 1,
+            "the frame whose observer held no stamp is counted apart, not as a zero"
+        );
+        assert_eq!(
+            lateness.frames_excluded_unpaired, 1,
+            "the frame with a lateness but no mismatch counters must be NAMED, \
+             not silently dropped from the population the buckets describe"
+        );
+        assert_eq!(lateness.lw_hour_age_us.count, 2);
+        assert_eq!(lateness.lw_hour_age_us.max, Some(65_000));
+
+        // Two 10 ms buckets, each carrying its own frames' mismatch mean.
+        let buckets: Vec<_> = lateness
+            .buckets
+            .iter()
+            .map(|row| {
+                (
+                    row.lateness_ms_from,
+                    row.frames,
+                    row.mismatched_domains_mean,
+                    row.bracketed_domains,
+                )
+            })
+            .collect();
+        assert_eq!(buckets, vec![(0, 1, 0.0, 68), (60, 1, 67.0, 68)]);
+
+        // The frontier-ahead distribution covers every frame that carried the
+        // unit, including the one excluded from the joint table: a backlog is a
+        // fact about the loop, not about whether the counters paired up.
+        let ahead: Vec<_> = lateness
+            .frontier_ahead_distribution
+            .iter()
+            .map(|row| (row.value, row.count))
+            .collect();
+        assert_eq!(ahead, vec![(0, 2), (1, 1)]);
+    }
+
+    /// A capture written before the unit existed reports ABSENCE, not a
+    /// distribution of zeroes. Without this the tool would answer "no frame was
+    /// ever late" for every capture in the archive.
+    #[test]
+    fn a_capture_predating_the_lateness_unit_reports_it_absent() {
+        let mut sequence = 0u64;
+        let stream = frame(&mut sequence, HOUR_A, Some((67, 68)), 0);
+        let lateness = &audit(&stream)
+            .section_a_frame_census
+            .build_start_lateness;
+        assert_eq!(lateness.frames_carrying_it, 0);
+        assert_eq!(lateness.frames_in_joint_table, 0);
+        assert_eq!(lateness.frames_missing_it, 0);
+        assert_eq!(lateness.lw_hour_age_us.count, 0);
+        assert_eq!(lateness.lw_hour_age_us.median, None);
+        assert!(lateness.buckets.is_empty());
+        assert!(lateness.frontier_ahead_distribution.is_empty());
     }
 
     /// THE REGRESSION. A frame that mislabelled 67 of its 68 domain-hours, tore

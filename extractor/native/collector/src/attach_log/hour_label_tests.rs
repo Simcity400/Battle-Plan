@@ -1056,6 +1056,7 @@ fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
         900,
         125,
         Some(0),
+        FrameHourAge::default(),
         &witnessed,
         &BTreeSet::new(),
         MapTopologyShareCounts::default(),
@@ -1096,6 +1097,7 @@ fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
         900,
         125,
         Some(0),
+        FrameHourAge::default(),
         &clean,
         &BTreeSet::new(),
         MapTopologyShareCounts::default(),
@@ -1121,4 +1123,337 @@ fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
     );
     assert_eq!(value("lw_next_hour_brackets_closed"), None);
     assert_eq!(value("lw_next_hour_missing"), Some(1));
+}
+
+// ---------------------------------------------------------------------------
+// BUILD-START PHASE. The quantity the whole hour-label loss is a function of.
+//
+// t32 (`runs/live_unlock/t32`, 583 probed frames, 13,053 of 39,644 bracketed
+// domain-hours refused `HourLabelMismatch`) has the build wall at p50 87.97 ms
+// against a mean hour period of 90.4 ms, and all 180 of its frames that lost 44
+// or more domains had `lw_o1_us == 0`: the build never waited for its hour,
+// because that hour had already begun before the previous build finished.
+//
+// The quantity those two facts meet in -- how late into its own hour a build
+// began -- had no wire unit. `lw_next_hour_at_us` describes a boundary only
+// when one fell inside a trustworthy bracket, which is 316 of the 583 frames
+// and 7 of the 274 clean ones, and turning it into a lateness needs a
+// capture-wide MEAN hour period. These tests cover the unit that states it per
+// frame and needs neither.
+// ---------------------------------------------------------------------------
+
+/// The observer stamps an hour ONLY when the clock it just read names a
+/// different hour than the one it last stamped.
+///
+/// THE DEFECT THIS EXISTS FOR (Codex review
+/// 019fd946-7d35-7302-a59f-4adbc749f025, finding 1). The first cut gated the
+/// stamp on the observer's `advanced` flag, which compares
+/// `ReadOnlyScheduler::generation` -- and generation is `telemetry.observations`,
+/// which `observe_stable` increments on EVERY readable poll whether or not the
+/// hour moved. So the current hour was re-stamped every ~2 ms, and every frame
+/// would have reported a lateness of about one poll period however late it
+/// really was. The instrument would have shown a perfectly healthy collector
+/// while measuring nothing at all.
+///
+/// The rule therefore takes the last stamped hour, not a flag derived from a
+/// counter that means something else. A production change back to a
+/// generation-style "anything happened" gate fails the second assertion.
+#[test]
+fn only_a_poll_that_saw_a_new_hour_publishes_an_observation() {
+    const HOUR: i32 = 60_832_190;
+    assert_eq!(
+        frontier_observation_to_publish(Some(HOUR - 1), Some((HOUR, 7))),
+        Some(HOUR),
+        "the poll that first sees an hour is the one that knows when it began"
+    );
+    assert_eq!(
+        frontier_observation_to_publish(None, Some((HOUR, 7))),
+        Some(HOUR),
+        "the very first readable poll has nothing to compare against and stamps"
+    );
+    assert_eq!(
+        frontier_observation_to_publish(Some(HOUR), Some((HOUR, 8))),
+        None,
+        "re-reading the hour already stamped observes no boundary; stamping it \
+         would reset the age of an hour that began long ago and report every \
+         build as having started at the boundary"
+    );
+    assert_eq!(
+        frontier_observation_to_publish(Some(HOUR), None),
+        None,
+        "a clock-unreadable poll knows no hour to stamp"
+    );
+    assert_eq!(frontier_observation_to_publish(None, None), None);
+    // A reload or re-baseline that moves the engine BACKWARDS is a new hour
+    // beginning as far as this measurement goes.
+    assert_eq!(
+        frontier_observation_to_publish(Some(HOUR), Some((HOUR - 5, 9))),
+        Some(HOUR - 5),
+        "a backwards clock is a different hour, and a different hour is stamped"
+    );
+}
+
+/// The age is a real interval or it is ABSENT. It is never a zero standing in
+/// for "not measured", and it is never negative.
+#[test]
+fn the_build_start_lateness_is_measured_or_absent_and_never_negative() {
+    let observed_at_us = 1_000_000u64;
+    let seen = Some(observed_at_us);
+
+    // The ordinary frame: the build began 66.5 ms into its own hour, which in
+    // t32 is the class that loses 63-68 of its 68 bracketed domains.
+    let late = FrameHourAge::measure(
+        seen,
+        Some(LABEL_HOUR),
+        observed_at_us + 66_500,
+        LABEL_HOUR,
+        true,
+    );
+    assert_eq!(late.age_us, Some(66_500));
+    assert_eq!(
+        late.frontier_ahead, 0,
+        "the engine had not moved past this frame's label"
+    );
+
+    // A build that began as its hour was observed. ZERO, and the zero is a
+    // measurement.
+    let prompt = FrameHourAge::measure(
+        seen,
+        Some(LABEL_HOUR),
+        observed_at_us,
+        LABEL_HOUR,
+        true,
+    );
+    assert_eq!(prompt.age_us, Some(0));
+
+    // The loop is a whole hour behind. The age is still honestly about THIS
+    // frame's own hour -- that is what keying the stamp by label buys -- and
+    // the backlog is reported separately instead of corrupting it.
+    let behind = FrameHourAge::measure(
+        seen,
+        Some(LABEL_HOUR + 1),
+        observed_at_us + 112_000,
+        LABEL_HOUR,
+        true,
+    );
+    assert_eq!(behind.age_us, Some(112_000));
+    assert_eq!(behind.frontier_ahead, 1);
+
+    // No stamp for this label -- the ring never held it, or an intermediate
+    // hour of a multi-hour jump was never observed. Absent, not zero.
+    assert_eq!(
+        FrameHourAge::measure(
+            None,
+            Some(LABEL_HOUR),
+            observed_at_us + 40_000,
+            LABEL_HOUR,
+            true
+        )
+        .age_us,
+        None
+    );
+
+    // A label the calendar cannot place (the NO_CLOCK sentinel among them) is
+    // not something this rule can describe.
+    assert_eq!(
+        FrameHourAge::measure(seen, Some(LABEL_HOUR), observed_at_us + 40_000, 0, false).age_us,
+        None
+    );
+
+    // A build origin BEFORE the observation is not a negative age; it is an
+    // observation this frame cannot be described by. Saturating it to zero
+    // would publish "began exactly as the hour was seen" for a frame that did
+    // not.
+    assert_eq!(
+        FrameHourAge::measure(
+            seen,
+            Some(LABEL_HOUR),
+            observed_at_us - 3_000,
+            LABEL_HOUR,
+            true
+        )
+        .age_us,
+        None
+    );
+}
+
+/// The three units reach the wire, and absence omits the values rather than
+/// zeroing them -- the same absent-vs-zero rule `lw_next_hour_at_us` follows.
+#[test]
+fn the_build_start_lateness_reaches_the_probe_record_and_absence_omits_it() {
+    let summary = summarize_lane_spans(&[]);
+    let probe = |hour_age: FrameHourAge| {
+        let mut out = Vec::new();
+        append_compact_lane_wall_probe_record(
+            &mut out,
+            7,
+            LABEL_HOUR,
+            5,
+            900,
+            125,
+            Some(0),
+            hour_age,
+            &[],
+            &BTreeSet::new(),
+            MapTopologyShareCounts::default(),
+            130,
+            700,
+            23_641,
+            &OutsideBuildSpans::default(),
+            &summary,
+            FrameCpuSplit::default(),
+        );
+        compact_perf_diagnostic_units(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..])
+    };
+    let value = |units: &[compact_contract::diagnostic_channel::DiagUnit], name: &str| {
+        units
+            .iter()
+            .find(|unit| unit.name == name)
+            .map(|unit| unit.value)
+    };
+
+    let measured = probe(FrameHourAge {
+        age_us: Some(66_500),
+        frontier_ahead: 0,
+    });
+    assert_eq!(value(&measured, "lw_hour_age_us"), Some(66_500));
+    assert_eq!(value(&measured, "lw_hour_frontier_ahead"), Some(0));
+    assert_eq!(value(&measured, "lw_hour_age_missing"), Some(0));
+
+    let behind = probe(FrameHourAge {
+        age_us: Some(12_000),
+        frontier_ahead: 1,
+    });
+    assert_eq!(value(&behind, "lw_hour_frontier_ahead"), Some(1));
+
+    let absent = probe(FrameHourAge::default());
+    assert_eq!(
+        value(&absent, "lw_hour_age_us"),
+        None,
+        "an unmeasured phase must publish NO value; a zero would read as a \
+         build that began exactly at the boundary, which is the CLEANEST \
+         possible frame"
+    );
+    assert_eq!(value(&absent, "lw_hour_frontier_ahead"), None);
+    assert_eq!(value(&absent, "lw_hour_age_missing"), Some(1));
+}
+
+/// The stamp a build gets back is the one for ITS OWN hour.
+///
+/// THE DEFECT THIS EXISTS FOR (Codex review
+/// 019fd92e-d28d-7ae0-9d77-4c6ea8bd3864, finding 6). The first cut of this
+/// instrument kept a single "latest observation" pair. An observer that
+/// advances between `take_current_request` and the build origin then leaves the
+/// build reading H+1's stamp under label H, and the frame reports a lateness a
+/// whole hour period too SMALL -- on a frame that was running late, which is
+/// the population the unit exists to find. The newest-stamp reading is
+/// systematically flattering exactly where it must not be.
+///
+/// A production change back to "newest stamp wins" fails the H-after-H+1
+/// assertion below.
+#[test]
+fn a_build_reads_the_stamp_for_its_own_hour_not_the_newest_one() {
+    hour_frontier_observation::reset_for_test();
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR).0,
+        None,
+        "before the observer has seen a single advance there is nothing to report"
+    );
+    assert_eq!(hour_frontier_observation::observation_for(LABEL_HOUR).1, None);
+
+    let at = Instant::now();
+    hour_frontier_observation::record(LABEL_HOUR, at);
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR).0,
+        Some(hour_frontier_observation::micros_since_origin(at))
+    );
+    assert_eq!(hour_frontier_observation::observation_for(LABEL_HOUR).1, Some(LABEL_HOUR));
+
+    // The engine moves on while the loop is still building the older hour.
+    let later = Instant::now();
+    hour_frontier_observation::record(LABEL_HOUR + 1, later);
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR).1,
+        Some(LABEL_HOUR + 1)
+    );
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR).0,
+        Some(hour_frontier_observation::micros_since_origin(at)),
+        "the older hour's stamp must survive the newer one, or a frame that is \
+         a whole hour behind reports an age about an hour it is not labelled with"
+    );
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR + 1).0,
+        Some(hour_frontier_observation::micros_since_origin(later))
+    );
+
+    // An hour never observed -- an intermediate hour of a multi-hour jump --
+    // borrows nobody else's stamp.
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR + 7).0,
+        None
+    );
+    hour_frontier_observation::reset_for_test();
+
+    // Same global ring, so this runs HERE and not as its own concurrent test.
+    the_frontier_ring_keeps_recent_hours_and_evicts_the_oldest();
+}
+
+/// The ring holds a bounded history and evicts the OLDEST, so a long capture
+/// keeps the recent hours a build can actually be labelled with.
+///
+/// Folded into the test above rather than standing alone: both mutate the same
+/// PROCESS-GLOBAL ring, and `cargo test` runs tests concurrently, so as
+/// separate `#[test]` functions each could erase the other's entries and fail
+/// nondeterministically (Codex review 019fd946-7d35-7302-a59f-4adbc749f025,
+/// finding 6).
+fn the_frontier_ring_keeps_recent_hours_and_evicts_the_oldest() {
+    // Driven off the real `DEPTH`, so raising or lowering it cannot silently
+    // stop this from testing eviction at all.
+    let depth = i32::try_from(hour_frontier_observation::DEPTH).expect("a sane ring depth");
+    hour_frontier_observation::reset_for_test();
+    // One advance more than the ring can hold.
+    let mut stamps = Vec::new();
+    for step in 0..=depth {
+        let at = Instant::now();
+        hour_frontier_observation::record(LABEL_HOUR + step, at);
+        stamps.push(at);
+    }
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR).0,
+        None,
+        "the oldest hour is the one evicted"
+    );
+    for step in 1..=depth {
+        assert_eq!(
+            hour_frontier_observation::observation_for(LABEL_HOUR + step).0,
+            Some(hour_frontier_observation::micros_since_origin(
+                stamps[step as usize]
+            )),
+            "hour +{step} must still be readable"
+        );
+    }
+
+    // A re-observation of an hour already held REPLACES it rather than
+    // consuming a second slot, which is what keeps a reload or clock
+    // re-baseline from describing a fresh frame with a stale stamp.
+    let held = depth / 2;
+    let again = Instant::now();
+    hour_frontier_observation::record(LABEL_HOUR + held, again);
+    assert_eq!(
+        hour_frontier_observation::observation_for(LABEL_HOUR + held).0,
+        Some(hour_frontier_observation::micros_since_origin(again))
+    );
+    for step in 1..=depth {
+        if step == held {
+            continue;
+        }
+        assert!(
+            hour_frontier_observation::observation_for(LABEL_HOUR + step)
+                .0
+                .is_some(),
+            "re-observing hour +{held} must not have evicted hour +{step}"
+        );
+    }
+    hour_frontier_observation::reset_for_test();
 }
