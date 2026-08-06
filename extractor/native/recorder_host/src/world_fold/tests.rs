@@ -156,6 +156,113 @@ fn snapshot_spill_never_truncates_a_preexisting_destination() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The render-blob preservation pass skips its full-document parse when the
+/// `production_render` member cannot be present, and that skip must be decided
+/// by the member's ACTUAL presence -- not by anything cheaper that happens to
+/// correlate with it.
+///
+/// The short-circuit exists because the parse is the expensive part: on capture
+/// t30 it read 4.44 GB of world JSON across 129 hours (47 s, 12.9% of the whole
+/// finalize) and produced zero blobs. A wrong needle, or a short-circuit that
+/// fired while the member WAS present, would silently stop emitting render
+/// artifacts on exactly the captures that have them -- a data loss no digest
+/// check downstream would catch, because the canonical JSON the cache stores is
+/// unchanged either way. This asserts both directions on the same helper.
+#[test]
+fn render_blob_preservation_skips_only_documents_without_the_member() {
+    let root = std::env::temp_dir().join(format!(
+        "world_fold_render_blob_guard_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+
+    // A document with no `production_render` member writes nothing -- and is
+    // the case the short-circuit is for.
+    let without = root.join("without");
+    std::fs::create_dir_all(&without).unwrap();
+    let plain = serde_json::to_vec(&json!({
+        "schema_version": "1",
+        "hour_index": 7,
+        "countries": {"GER": {"fuel": 12}},
+    }))
+    .unwrap();
+    preserve_production_render_blobs_from_json(&without, &plain)
+        .expect("a document without the member is preserved trivially");
+    assert!(
+        !without.join("production_render_blobs").exists(),
+        "no blob directory may be created for a document that carries no render member"
+    );
+
+    // The same helper on a document that DOES carry an inline texture must
+    // still write the content-addressed blob. If the short-circuit ever fires
+    // here, this is the assertion that fails.
+    let with = root.join("with");
+    std::fs::create_dir_all(&with).unwrap();
+    let encoded = "QUJDRA==";
+    let rendered = serde_json::to_vec(&json!({
+        "schema_version": "1",
+        "hour_index": 7,
+        "production_render": {
+            "submits": [{
+                "authenticated_texture_snapshots": [{
+                    "resource": {
+                        "subresources": [{
+                            "source": {"kind": "inline", "bytes": encoded}
+                        }]
+                    }
+                }]
+            }]
+        },
+    }))
+    .unwrap();
+    preserve_production_render_blobs_from_json(&with, &rendered)
+        .expect("an inline texture must be preserved");
+    let digest = snapshot::sha256::Sha256::hex(encoded.as_bytes());
+    let blob = with.join("production_render_blobs").join(format!("{digest}.base64"));
+    assert!(
+        blob.exists(),
+        "the inline texture must still land as a content-addressed blob at {}",
+        blob.display()
+    );
+    assert_eq!(std::fs::read(&blob).unwrap(), encoded.as_bytes());
+
+    // The member spelled with a `\u` escape. This is valid JSON whose key a
+    // parser decodes to `production_render` while the document contains none of
+    // that name's literal bytes, so a scan for the literal alone would skip it
+    // and silently drop the blob. Written as raw bytes because `serde_json`
+    // would normalize the escape away, which is precisely the point: this is
+    // the document an ALTERNATIVE producer can hand this public helper.
+    let escaped_dir = root.join("escaped");
+    std::fs::create_dir_all(&escaped_dir).unwrap();
+    // The leading `p` is spelled `p`. The backslash is pushed by code
+    // point so the fixture's escape cannot be silently absorbed by Rust's own
+    // string escaping -- an earlier draft of this test lost it exactly that way
+    // and asserted nothing.
+    let mut escaped = Vec::new();
+    escaped.extend_from_slice(br#"{"schema_version":"1","hour_index":7,""#);
+    escaped.push(0x5c);
+    escaped.extend_from_slice(br#"u0070roduction_render":{"submits":[{"authenticated_texture_snapshots":[{"resource":{"subresources":[{"source":{"kind":"inline","bytes":"WFlaVw=="}}]}}]}]}}"#);
+    assert!(
+        !String::from_utf8_lossy(&escaped).contains("production_render"),
+        "the fixture must not contain the literal name, or it proves nothing"
+    );
+    preserve_production_render_blobs_from_json(&escaped_dir, &escaped)
+        .expect("an escaped member name is still the member");
+    let escaped_digest = snapshot::sha256::Sha256::hex(b"WFlaVw==");
+    assert!(
+        escaped_dir
+            .join("production_render_blobs")
+            .join(format!("{escaped_digest}.base64"))
+            .exists(),
+        "a member spelled with a \\u escape must still have its texture preserved"
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 // --- synthetic H4CR stream builders --------------------------------------
 
 fn push_record(

@@ -66,6 +66,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 use compact_contract::campaign_identity::{
     ValidatedCid1, COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
@@ -1100,6 +1102,76 @@ pub struct CertifiedReplayArtifacts {
     pub campaign_identity_manifest: Option<serde_json::Value>,
 }
 
+/// Concrete encoder type the finalize pipeline's consumer owns and hands back.
+type ReplayCacheEncoderFile = snapshot::ReplayCacheEncoder<fs::File>;
+
+/// One closed game hour on its way from the fold to the checkpoint cache.
+struct CacheEmitJob {
+    hour_index: i64,
+    date: String,
+    start_offset: u64,
+    end_offset: u64,
+    world_json: Vec<u8>,
+}
+
+/// In-flight hours between the finalize pipeline's producer and consumer.
+///
+/// A world hour is tens of megabytes (34.5 MB mean on capture t30), so this is
+/// a memory bound before it is a throughput knob: depth 2 buys the overlap --
+/// neither side stalls on a hand-off that is already ready -- while capping the
+/// queue's contribution at roughly two hours of JSON regardless of how long the
+/// capture ran. It is deliberately NOT derived from the core count; more
+/// buffered hours would only buy memory, since exactly one thread consumes them.
+const FINALIZE_PIPELINE_DEPTH: usize = 2;
+
+/// Drop the calling thread to the lowest priority its host offers.
+///
+/// The finalize consumer is batch work. On Windows the recorder may still be
+/// sharing the machine with the game and the collector when this runs, and the
+/// weaker-PC law means it may also be the only spare thread on a small host --
+/// in both cases it must lose every scheduling contest it enters. Best-effort:
+/// a host that refuses the request simply runs the thread at normal priority,
+/// which is exactly the behaviour before the pipeline existed.
+fn lower_current_thread_priority() {
+    #[cfg(windows)]
+    {
+        // THREAD_PRIORITY_LOWEST, via the same `windows-sys` surface the rest of
+        // the host already links.
+        const THREAD_PRIORITY_LOWEST: i32 = -2;
+        extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+        }
+        // SAFETY: both calls take no pointers and cannot fail destructively;
+        // the return value is advisory and deliberately ignored.
+        unsafe {
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+        }
+    }
+}
+
+/// Apply the two per-hour operations the sequential finalize applied, in order:
+/// preserve any inline render blobs, then hand the hour to the cache encoder.
+fn emit_cache_hour(
+    output_dir: &Path,
+    cache_encoder: &mut ReplayCacheEncoderFile,
+    job: CacheEmitJob,
+) -> Result<(), OpenError> {
+    recorder_host::world_fold::preserve_production_render_blobs_from_json(
+        output_dir,
+        &job.world_json,
+    )?;
+    cache_encoder
+        .push(snapshot::CacheBuildHour {
+            hour_index: job.hour_index,
+            date: job.date,
+            h4cr_start_offset: job.start_offset,
+            h4cr_end_offset: job.end_offset,
+            world_json: job.world_json,
+        })
+        .map_err(|error| OpenError::Certification(error.to_string()))
+}
+
 /// Fold a complete raw H4CR source once and build the certified production
 /// hour index/checkpoint cache. No per-hour JSON file is written.
 ///
@@ -1176,91 +1248,152 @@ pub fn build_certified_replay_artifacts(
             canonical_path: raw_h4cr_path.to_string_lossy().into_owned(),
         }),
     );
+
+    // Two-stage pipeline over the SAME hour sequence, in the SAME order.
+    //
+    // Producing an hour (frame, fold, `build_snapshot`, serialize) and
+    // consuming it (render-blob preservation, canonical parse, delta encode,
+    // hash, write) are disjoint pieces of work on disjoint state, and measured
+    // on capture t30 they are close to balanced -- 164 s produced against 177 s
+    // consumed, out of a 431 s finalize. Run sequentially, that is 341 s of
+    // strictly alternating single-threaded work; overlapped, it is bounded by
+    // the slower of the two.
+    //
+    // Byte-identity is structural, not incidental: the consumer receives hours
+    // through a channel that preserves send order, applies exactly the two
+    // operations the sequential path applied in exactly the same order, and the
+    // cache encoder -- the only thing that decides output bytes -- is still a
+    // single object driven by a single thread. Nothing is reordered, split or
+    // recomputed; only the thread doing the consuming changed.
+    let (jobs_tx, jobs_rx) = mpsc::sync_channel::<CacheEmitJob>(FINALIZE_PIPELINE_DEPTH);
     let mut pending: Option<(WorldHour, u64)> = None;
     let mut legacy_json_bytes_avoided = 0u64;
-    while let Some(hour) = cursor.next_hour() {
-        let hour = hour.map_err(|error| match error {
-            DecodeError::Io(error) => OpenError::Io(error),
-        })?;
-        let start_offset = cursor
-            .index_hours
-            .last()
-            .filter(|offset| offset.hour_index == hour.hour_index)
-            .map(|offset| offset.start_offset)
-            .ok_or_else(|| {
-                OpenError::Certification(format!(
-                    "decoder emitted hour {} without its offset index row",
-                    hour.hour_index
-                ))
+
+    let pipeline_result = thread::scope(|scope| {
+        let consumer_dir = output_dir.clone();
+        // Lowest schedulable priority. Finalize is batch work that must never
+        // out-prioritize whatever else the machine is doing, and this same
+        // consumer runs on hosts with very few cores, where an eager background
+        // thread is a regression rather than a speed-up.
+        let consumer = scope.spawn(move || -> Result<ReplayCacheEncoderFile, OpenError> {
+            lower_current_thread_priority();
+            for job in jobs_rx {
+                emit_cache_hour(&consumer_dir, &mut cache_encoder, job)?;
+            }
+            Ok(cache_encoder)
+        });
+
+        let producer = (|| -> Result<(), OpenError> {
+            while let Some(hour) = cursor.next_hour() {
+                let hour = hour.map_err(|error| match error {
+                    DecodeError::Io(error) => OpenError::Io(error),
+                })?;
+                let start_offset = cursor
+                    .index_hours
+                    .last()
+                    .filter(|offset| offset.hour_index == hour.hour_index)
+                    .map(|offset| offset.start_offset)
+                    .ok_or_else(|| {
+                        OpenError::Certification(format!(
+                            "decoder emitted hour {} without its offset index row",
+                            hour.hour_index
+                        ))
+                    })?;
+                if let Some((previous, previous_start)) = pending.take() {
+                    legacy_json_bytes_avoided = legacy_json_bytes_avoided
+                        .checked_add(previous.snapshot.len() as u64)
+                        .ok_or_else(|| {
+                            OpenError::Certification(
+                                "legacy JSON byte accounting overflowed u64".to_string(),
+                            )
+                        })?;
+                    // A closed receiver means the consumer already failed. Stop
+                    // producing and let the join below surface ITS error, which
+                    // is the real one, rather than a send failure describing the
+                    // symptom.
+                    if jobs_tx
+                        .send(CacheEmitJob {
+                            hour_index: previous.hour_index,
+                            date: previous.date,
+                            start_offset: previous_start,
+                            end_offset: start_offset,
+                            world_json: previous.snapshot,
+                        })
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                }
+                pending = Some((hour, start_offset));
+            }
+            Ok(())
+        })();
+
+        // The producer's own error still has to wait for the consumer: the
+        // encoder is owned by that thread and the scope cannot end while it
+        // runs. Drop the sender first so the consumer's loop terminates.
+        let producer_result = producer.and_then(|()| {
+            let excluded = cursor.stats().excluded_domain_data_records.clone();
+            // Read before `take_index` consumes the cursor: the seal path needs
+            // the retained CID1 to join against the session manifest exactly as
+            // the legacy per-hour JSON fold does.
+            let identity = cursor.campaign_identity().map(|identity| {
+                recorder_host::campaign_identity::to_manifest_json(
+                    &recorder_host::campaign_identity::resolve_validated_cid1(identity),
+                )
+            });
+            let stream_index = cursor
+                .take_index()
+                .map_err(|error| OpenError::Certification(error.to_string()))?;
+            if stream_index.source.decoded_len != expected_source_len
+                || stream_index.source.decoded_sha256 != expected_source_sha256
+            {
+                return Err(OpenError::Certification(format!(
+                    "certified H4CR identity {}:{} disagrees with expected {}:{}",
+                    stream_index.source.decoded_len,
+                    stream_index.source.decoded_sha256,
+                    expected_source_len,
+                    expected_source_sha256
+                )));
+            }
+            let (last, last_start) = pending.take().ok_or_else(|| {
+                OpenError::Certification("certified H4CR stream emitted no hours".to_string())
             })?;
-        if let Some((previous, previous_start)) = pending.take() {
-            recorder_host::world_fold::preserve_production_render_blobs_from_json(
-                &output_dir,
-                &previous.snapshot,
-            )?;
             legacy_json_bytes_avoided = legacy_json_bytes_avoided
-                .checked_add(previous.snapshot.len() as u64)
+                .checked_add(last.snapshot.len() as u64)
                 .ok_or_else(|| {
                     OpenError::Certification(
                         "legacy JSON byte accounting overflowed u64".to_string(),
                     )
                 })?;
-            cache_encoder
-                .push(snapshot::CacheBuildHour {
-                    hour_index: previous.hour_index,
-                    date: previous.date,
-                    h4cr_start_offset: previous_start,
-                    h4cr_end_offset: start_offset,
-                    world_json: previous.snapshot,
-                })
-                .map_err(|error| OpenError::Certification(error.to_string()))?;
-        }
-        pending = Some((hour, start_offset));
-    }
-    let excluded_domain_data_records = cursor.stats().excluded_domain_data_records.clone();
-    // Read before `take_index` consumes the cursor: the seal path needs the
-    // retained CID1 to join against the session manifest exactly as the legacy
-    // per-hour JSON fold does.
-    let campaign_identity_manifest = cursor.campaign_identity().map(|identity| {
-        recorder_host::campaign_identity::to_manifest_json(
-            &recorder_host::campaign_identity::resolve_validated_cid1(identity),
-        )
+            let _ = jobs_tx.send(CacheEmitJob {
+                hour_index: last.hour_index,
+                date: last.date,
+                start_offset: last_start,
+                end_offset: expected_source_len,
+                world_json: last.snapshot,
+            });
+            Ok((excluded, identity, stream_index))
+        });
+        drop(jobs_tx);
+
+        let consumed = consumer.join().unwrap_or_else(|_| {
+            Err(OpenError::Certification(
+                "finalize cache-encode worker panicked".to_string(),
+            ))
+        });
+        // Consumer errors win: when both fail, the producer's is usually the
+        // "receiver hung up" symptom of the consumer's real failure.
+        let cache_encoder = consumed?;
+        let (excluded, identity, stream_index) = producer_result?;
+        Ok::<_, OpenError>((cache_encoder, excluded, identity, stream_index))
     });
-    let stream_index = cursor
-        .take_index()
-        .map_err(|error| OpenError::Certification(error.to_string()))?;
-    if stream_index.source.decoded_len != expected_source_len
-        || stream_index.source.decoded_sha256 != expected_source_sha256
-    {
-        return Err(OpenError::Certification(format!(
-            "certified H4CR identity {}:{} disagrees with expected {}:{}",
-            stream_index.source.decoded_len,
-            stream_index.source.decoded_sha256,
-            expected_source_len,
-            expected_source_sha256
-        )));
-    }
-    let (last, last_start) = pending.ok_or_else(|| {
-        OpenError::Certification("certified H4CR stream emitted no hours".to_string())
-    })?;
-    recorder_host::world_fold::preserve_production_render_blobs_from_json(
-        &output_dir,
-        &last.snapshot,
-    )?;
-    legacy_json_bytes_avoided = legacy_json_bytes_avoided
-        .checked_add(last.snapshot.len() as u64)
-        .ok_or_else(|| {
-            OpenError::Certification("legacy JSON byte accounting overflowed u64".to_string())
-        })?;
-    cache_encoder
-        .push(snapshot::CacheBuildHour {
-            hour_index: last.hour_index,
-            date: last.date,
-            h4cr_start_offset: last_start,
-            h4cr_end_offset: expected_source_len,
-            world_json: last.snapshot,
-        })
-        .map_err(|error| OpenError::Certification(error.to_string()))?;
+    let (
+        cache_encoder,
+        excluded_domain_data_records,
+        campaign_identity_manifest,
+        stream_index,
+    ) = pipeline_result?;
 
     let cache_identity_mode = match identity_mode {
         StreamIdentityMode::Legacy => snapshot::CacheIdentityMode::Legacy,
@@ -2928,6 +3061,12 @@ pub fn seek_to_hour(
     }
     found.ok_or(SeekError::HourNotFound(target))
 }
+
+/// Lane CZ finalize-cost measurement instrument. Never on by default and never
+/// packaged; it exists so the post-capture finalize's wall time is attributed
+/// to phases from a run rather than argued from a model.
+#[cfg(feature = "cz-finalize-profile")]
+pub mod cz_finalize_profile;
 
 #[cfg(test)]
 mod tests;

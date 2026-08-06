@@ -20,6 +20,11 @@ cc-cache-probe = []
 # checkpoint cache and prices candidate encodings in container bytes. Never on
 # by default and never packaged.
 ce-cache-anatomy = ["snapshot/ce-cache-anatomy"]
+# Lane CZ finalize-cost measurement instrument. Attributes post-capture finalize
+# wall time to the phases of `build_certified_replay_artifacts` on an existing
+# capture, so the blocker is argued from a profile rather than a model. Never on
+# by default and never packaged.
+cz-finalize-profile = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -42,6 +47,11 @@ required-features = ["cc-cache-probe"]
 name = "ce_cache_anatomy"
 path = "src/bin/ce_cache_anatomy.rs"
 required-features = ["ce-cache-anatomy"]
+
+[[bin]]
+name = "cz_finalize_profile"
+path = "src/bin/cz_finalize_profile.rs"
+required-features = ["cz-finalize-profile"]
 
 [[test]]
 name = "prefold_worker_process"
