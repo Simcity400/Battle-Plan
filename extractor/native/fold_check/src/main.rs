@@ -415,8 +415,23 @@ struct ExpectedRoster {
 
 impl ExpectedRoster {
     fn production() -> Self {
+        // Production-profile status and passive-product admissibility are two
+        // different questions (`PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS`): d71,
+        // d82 and d87 hold production status but their producers need owners
+        // the shipped passive product does not install, so the collector
+        // refuses them at attach and `domain_roster` never schedules them.
+        // The contract's own rule is that ANYTHING building a passive-product
+        // roster must filter through `passive_production_admits` — including
+        // this expectation. Without the filter, certification demanded a
+        // 71-domain frame no passive capture can produce and refused every
+        // live capture on the roster count alone (t26 and t27 both).
+        //
+        // If a non-passive product (authenticated early-render owners) ever
+        // ships, its captures need their own expected profile rather than a
+        // widening of this one.
         let domains = compact_contract::production_profile_domains()
             .into_iter()
+            .filter(|descriptor| compact_contract::passive_production_admits(descriptor.id))
             .map(|descriptor| {
                 (
                     descriptor.id,

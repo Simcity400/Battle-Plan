@@ -613,9 +613,15 @@ fn expected_profile_is_mandatory_and_only_production_is_authoritative() {
         parse_expected_profile(&["--expected-profile".to_string(), "production".to_string()])
             .expect("production roster");
     assert_eq!(production.profile, "production");
+    // The expectation is the PASSIVE-ADMISSIBLE production roster: the shipped
+    // passive product's collector refuses `PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS`
+    // at attach, so demanding the unfiltered profile refuses every real capture.
     assert_eq!(
         production.domains.len(),
-        compact_contract::production_profile_domains().len()
+        compact_contract::production_profile_domains()
+            .into_iter()
+            .filter(|d| compact_contract::passive_production_admits(d.id))
+            .count()
     );
     assert!(production.domains.contains_key(&18));
 }
@@ -4128,3 +4134,27 @@ fn the_ledger_walk_skips_a_refused_hours_exclusion_and_still_takes_the_current_o
     assert_eq!(reported["state"], serde_json::json!("excluded"), "{report:#}");
 }
 
+
+/// The passive product's collector refuses `PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS`
+/// at attach, and `domain_roster` never schedules them, so a passive capture
+/// structurally cannot carry them. An expected roster that still demands them
+/// refuses every live capture on the FRAME_END roster count alone — which is
+/// exactly what happened to t26 and t27.
+///
+/// What production change would make this fail: dropping the
+/// `passive_production_admits` filter from `ExpectedRoster::production()`.
+#[test]
+fn the_production_expected_roster_never_demands_a_passive_refused_domain() {
+    let roster = ExpectedRoster::production();
+    for id in compact_contract::PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS {
+        assert!(
+            !roster.domains.contains_key(id),
+            "domain {id} is refused by the shipped passive product at attach; \
+             certification must not demand it of a passive capture"
+        );
+    }
+    assert!(
+        !roster.domains.is_empty(),
+        "the filter must narrow the profile, never empty it"
+    );
+}
