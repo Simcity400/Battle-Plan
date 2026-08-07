@@ -73,13 +73,30 @@ use recorder_host::world_fold::foldprof;
 /// the prototype addresses it by `div_uid` and reproduces the array by writing
 /// the keys back in ascending order. Without that, an insertion in the middle
 /// would move every later element and the whole section would re-emit.
-pub const COVERED_SECTIONS: [(&str, &str); 6] = [
+/// Tranche 1 adds the three members the LANE EE DENSITY CENSUS
+/// (`dq_v3_census`) named, in the order it named them. On t30 the uncovered
+/// remainder moved 14.8k grains and wrote 273 kB an hour; `strategic_air`,
+/// `naval_air` and `order_of_battle` are 87% of both, on 40% of the uncovered
+/// bytes. They are converted first because the extrapolation that stands in for
+/// them is wrong about them specifically: it predicts the uncovered remainder at
+/// the covered set's rate per byte, which under-counts the remainder's mutations
+/// by 1.88x, and essentially all of that error is these three.
+///
+/// `strategic_air` and `naval_air` are 175 kB and 111 kB that move 5.8k and 5.8k
+/// grains an hour -- a mutation density 30x the covered set's per byte, on
+/// 17-byte grains. `order_of_battle` is the largest uncovered member (1.77 MB)
+/// and writes 176 kB an hour, more than the rest of the remainder combined.
+pub const COVERED_SECTIONS: [(&str, &str); 9] = [
     ("special_projects", "object"),
     ("countries", "object"),
     ("map", "object"),
     ("supply", "object"),
     ("divisions", "keyed_array:div_uid"),
     ("states", "object"),
+    // -- tranche 1, density order ------------------------------------------
+    ("strategic_air", "object"),
+    ("naval_air", "object"),
+    ("order_of_battle", "object"),
 ];
 
 fn shape_for(spelling: &str) -> Result<Shape, String> {
@@ -365,6 +382,35 @@ fn section_index(name: &str) -> Option<usize> {
     foldprof::SECTIONS.iter().position(|entry| *entry == name)
 }
 
+/// Which `build_snapshot` span a document member's construction is charged to.
+///
+/// Most members are named after the span that builds them, and for those this is
+/// [`section_index`] unchanged -- the six original sections keep exactly the
+/// build term they were measured with. The fold's span table is coarser than the
+/// document in two places, and the upper bound is only an over-charge if that is
+/// handled deliberately:
+///
+/// * `naval_and_air` brackets `build_naval_combats`, `build_naval_air` AND
+///   `build_strategic_air`, accumulating all three into one slot. It is charged
+///   in full to `naval_air` and not at all to `strategic_air`, because
+///   [`take_section_ns`] swaps the slot to zero and a second reader would get
+///   nothing anyway -- naming the owner makes that a decision instead of an
+///   artefact of iteration order. `naval_air` is therefore over-charged and
+///   `strategic_air` under-charged; only their SUM is a build term, and the
+///   upper bound is a sum.
+/// * `sidecars` brackets eight members at once and cannot be attributed to any
+///   one of them, so members built there carry no build term. The report names
+///   every such member rather than letting a silent zero flatter the bound.
+fn build_span_for(section: &str) -> Option<usize> {
+    if let Some(index) = section_index(section) {
+        return Some(index);
+    }
+    match section {
+        "naval_air" => section_index("naval_and_air"),
+        _ => None,
+    }
+}
+
 fn json_string(body: &str) -> String {
     format!("\"{}\"", body.replace('\\', "/").replace('"', "'"))
 }
@@ -408,6 +454,42 @@ pub fn parse_grain_depths(spec: &str) -> Result<(usize, BTreeMap<String, usize>)
     Ok((default, overrides))
 }
 
+/// Which of [`COVERED_SECTIONS`] this run converts.
+///
+/// A tranche's band can only be read against the band it grew from, and this
+/// machine moves 35-55% between one session and the next -- the A/B that
+/// produced tranche 1's first numbers ran `apply_domain_data`, which neither
+/// lane touches, 37% slower than the session before it. Comparing a tranche's
+/// JSON against a previous session's JSON therefore measures the machine.
+///
+/// The subset is a parameter so both configurations can be run by ONE binary,
+/// alternating, inside one window. It defaults to the whole list, so the
+/// established six-argument invocation is unchanged and means what it always
+/// meant.
+fn select_sections(filter: Option<&str>) -> Result<Vec<(&'static str, &'static str)>, String> {
+    let Some(filter) = filter else {
+        return Ok(COVERED_SECTIONS.to_vec());
+    };
+    let wanted: Vec<&str> = filter.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if wanted.is_empty() {
+        return Err("the section filter selects nothing".to_string());
+    }
+    for name in &wanted {
+        if !COVERED_SECTIONS.iter().any(|(covered, _)| covered == name) {
+            return Err(format!("{name} is not one of the covered sections"));
+        }
+    }
+    // Filtered in the CONST's order, not the filter's. The order decides which
+    // section's `build_snapshot` span is harvested first and which lane runs
+    // first on a given hour, so letting the command line reorder it would make
+    // two spellings of one configuration measure differently.
+    Ok(COVERED_SECTIONS
+        .iter()
+        .filter(|(name, _)| wanted.contains(name))
+        .copied()
+        .collect())
+}
+
 pub fn run(
     raw_h4cr_path: &FsPath,
     game_id: &str,
@@ -415,8 +497,10 @@ pub fn run(
     expected_source_len: u64,
     grain_depth_spec: &str,
     max_hours: u64,
+    section_filter: Option<&str>,
 ) -> Result<String, String> {
     let (grain_depth, depth_overrides) = parse_grain_depths(grain_depth_spec)?;
+    let active_sections = select_sections(section_filter)?;
     if !foldprof::enabled() {
         return Err("set FOLD_PROFILE=1: the adapter-inclusive bound needs the fold's own \
                     per-section build spans, and without them it would silently report the \
@@ -436,8 +520,34 @@ pub fn run(
         }),
     );
 
+    // Two sections mapped to one span would not double-charge -- the second
+    // reader would find the slot already swapped to zero -- so the failure is
+    // silent and shows up only as a build term that quietly moved between
+    // sections when the table was reordered. It is checked instead of trusted.
+    //
+    // Checked over the WHOLE const and not merely the active subset: a
+    // collision the subset happens to avoid is still a collision, and a filter
+    // that hid one would let it reappear on the next tranche's run.
+    let mut spans_seen: BTreeMap<usize, &str> = BTreeMap::new();
+    for (name, _) in COVERED_SECTIONS {
+        if let Some(index) = build_span_for(name) {
+            if let Some(other) = spans_seen.insert(index, name) {
+                return Err(format!(
+                    "sections {other} and {name} both claim build span {}, and the \
+                     second would silently be charged nothing",
+                    foldprof::SECTIONS[index]
+                ));
+            }
+        }
+    }
+    let sections_without_build_span: Vec<&str> = active_sections
+        .iter()
+        .filter(|(name, _)| build_span_for(name).is_none())
+        .map(|(name, _)| *name)
+        .collect();
+
     let mut runs: Vec<SectionRun> = Vec::new();
-    for (name, spelling) in COVERED_SECTIONS {
+    for (name, spelling) in active_sections.iter().copied() {
         let spec = SectionSpec {
             name: name.to_string(),
             shape: shape_for(spelling)?,
@@ -494,9 +604,9 @@ pub fn run(
 
         // Harvest the fold's own section spans for THIS hour before anything
         // else can add to them.
-        let build_ns: Vec<Duration> = COVERED_SECTIONS
+        let build_ns: Vec<Duration> = active_sections
             .iter()
-            .map(|(name, _)| section_index(name).map(take_section_ns).unwrap_or_default())
+            .map(|(name, _)| build_span_for(name).map(take_section_ns).unwrap_or_default())
             .collect();
 
         let started = Instant::now();
@@ -798,6 +908,14 @@ pub fn run(
         .map(|run| format!("[{},{}]", json_string(&run.name), run.spec.grain_depth))
         .collect();
 
+    // A section whose construction the fold does not bracket separately carries
+    // no build term, which makes the upper bound less of an over-charge than it
+    // reads as. Published rather than absorbed.
+    let no_build_rows: Vec<String> = sections_without_build_span
+        .iter()
+        .map(|name| json_string(name))
+        .collect();
+
     // `apply_domain_data` is 54-58% of the projected budget and v3 does not
     // touch it, so a cut to it survives whatever the fold state looks like. One
     // number over ~70 reducers cannot say where to cut; these rows can.
@@ -826,6 +944,8 @@ pub fn run(
          \"document_member_bytes_last\":{document_member_bytes_last},\
          \"coverage_hour\":{coverage_hour},\"hours_measured\":{measured_hours},\
          \"sections_absent_at_coverage_hour\":[{}],\
+         \"sections_without_build_span\":[{}],\
+         \"section_filter\":{},\"sections_converted\":{},\
          \"covered_bytes_last\":{covered_bytes},\"coverage_by_bytes\":{coverage:.4},\
          \"wall_s\":{:.3},\"decode_fold_s\":{:.3},\"document_parse_s\":{:.3},\
          \"instrument_only_s\":{:.3},\
@@ -851,6 +971,9 @@ pub fn run(
         json_string(grain_depth_spec),
         depth_rows.join(","),
         absent_rows.join(","),
+        no_build_rows.join(","),
+        json_string(section_filter.unwrap_or("<all>")),
+        active_sections.len(),
         secs(wall),
         secs(decode),
         secs(doc_parse),
@@ -873,4 +996,111 @@ pub fn run(
         json_string(verdict),
         rows.join(","),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The six sections the prototype's published bands were measured with must
+    /// keep charging the build span they were measured against. `build_span_for`
+    /// was introduced to give the tranche-1 sections a span at all, and the way
+    /// that goes wrong is quietly, by moving somebody else's.
+    #[test]
+    fn the_original_six_still_charge_their_own_build_span() {
+        for name in [
+            "special_projects",
+            "countries",
+            "map",
+            "supply",
+            "divisions",
+            "states",
+        ] {
+            // The concrete index first. `assert_eq!(build_span_for, section_index)`
+            // alone passes when BOTH are `None` -- which is exactly what a
+            // renamed or deleted profiler span produces, and it would drop that
+            // section's build seconds out of the upper bound while the test went
+            // on agreeing.
+            let index = section_index(name)
+                .unwrap_or_else(|| panic!("{name} has no build span in the fold profiler"));
+            assert_eq!(
+                build_span_for(name),
+                Some(index),
+                "{name} no longer charges the build span it was measured with"
+            );
+        }
+    }
+
+    /// Two sections mapped to one span is not a double charge -- it is a SILENT
+    /// zero, because `take_section_ns` swaps the slot and the second reader
+    /// finds nothing. The run-time check in `run` catches it on a capture; this
+    /// catches it on the table, which is where it would be introduced.
+    #[test]
+    fn no_two_sections_claim_one_build_span() {
+        let mut seen: BTreeMap<usize, &str> = BTreeMap::new();
+        for (name, _) in COVERED_SECTIONS {
+            if let Some(index) = build_span_for(name) {
+                let clash = seen.insert(index, name);
+                assert!(
+                    clash.is_none(),
+                    "{name} shares build span {} with {}",
+                    foldprof::SECTIONS[index],
+                    clash.unwrap_or("")
+                );
+            }
+        }
+    }
+
+    /// Every covered section must be spelled with a shape the prototype can
+    /// build, or the run dies on a capture instead of here.
+    #[test]
+    fn every_covered_section_has_a_buildable_shape() {
+        for (name, spelling) in COVERED_SECTIONS {
+            shape_for(spelling).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+    }
+
+    /// A filter selects WHICH sections run, never in what order they run.
+    ///
+    /// The order decides which build span is harvested first and the order the
+    /// sections are priced in, so a filter that reordered the run would make two
+    /// spellings of one configuration measure differently -- and the two
+    /// spellings would be a command line typed twice.
+    #[test]
+    fn a_filter_selects_sections_without_reordering_them() {
+        let forward = select_sections(Some("countries,states")).unwrap();
+        let backward = select_sections(Some("states,countries")).unwrap();
+        assert_eq!(forward, backward);
+        let names: Vec<&str> = forward.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["countries", "states"]);
+    }
+
+    #[test]
+    fn no_filter_converts_everything() {
+        assert_eq!(select_sections(None).unwrap(), COVERED_SECTIONS.to_vec());
+    }
+
+    #[test]
+    fn a_filter_naming_something_uncovered_is_refused() {
+        // A typo that was accepted would silently measure a SMALLER
+        // configuration than the command line asked for, and the band would be
+        // filed against a configuration nobody ran.
+        assert!(select_sections(Some("countries,provinces")).is_err());
+        assert!(select_sections(Some("")).is_err());
+        assert!(select_sections(Some(",")).is_err());
+    }
+
+    /// A grain-depth override for a section that is not covered is a typo, and
+    /// accepting it would run the DEFAULT depth while the command line said
+    /// otherwise -- a band filed against a grain spec that was never used.
+    #[test]
+    fn a_grain_depth_override_for_an_uncovered_section_is_refused() {
+        assert!(parse_grain_depths("3,provinces=2").is_err());
+        assert!(parse_grain_depths("3,order_of_battle=0").is_err());
+        assert!(parse_grain_depths("0").is_err());
+        let (default, overrides) = parse_grain_depths("3,supply=2,order_of_battle=4").unwrap();
+        assert_eq!(default, 3);
+        assert_eq!(overrides.get("supply"), Some(&2));
+        assert_eq!(overrides.get("order_of_battle"), Some(&4));
+    }
 }

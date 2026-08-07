@@ -3,7 +3,14 @@
 //!
 //! Usage:
 //!   dq_v3_prototype <stream.bin> <game-id> <legacy|identity_v1> <source-len>
-//!                   <grain-depth-spec> <max-hours>
+//!                   <grain-depth-spec> <max-hours> [<sections>]
+//!
+//! The optional seventh argument converts only the named subset of the covered
+//! sections. It exists so a tranche's band can be read against the band it grew
+//! from IN ONE MACHINE WINDOW: this machine has moved 35-55% between sessions,
+//! which is several times the difference a tranche makes, so a comparison
+//! against a previous session's JSON measures the machine. Omitting it converts
+//! everything, which is what the six-argument invocation has always meant.
 //!
 //! `<grain-depth-spec>` is a default depth, optionally followed by
 //! `,<section>=<depth>` overrides -- for example `3,divisions=1,map=5`. One
@@ -30,10 +37,10 @@ static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() != 6 {
+    if args.len() != 6 && args.len() != 7 {
         eprintln!(
             "usage: dq_v3_prototype <stream.bin> <game-id> <legacy|identity_v1> \
-             <source-len> <grain-depth> <max-hours>"
+             <source-len> <grain-depth> <max-hours> [<section,section,...>]"
         );
         std::process::exit(2);
     }
@@ -56,6 +63,7 @@ fn main() {
         source_len,
         &args[4],
         max_hours,
+        args.get(6).map(String::as_str),
     ) {
         Ok(report) => println!("{report}"),
         Err(error) => {

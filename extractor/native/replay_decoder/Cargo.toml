@@ -72,6 +72,11 @@ name = "dq_v3_prototype"
 path = "src/bin/dq_v3_prototype.rs"
 required-features = ["dq-v3-prototype"]
 
+[[bin]]
+name = "dq_v3_census"
+path = "src/bin/dq_v3_census.rs"
+required-features = ["dq-v3-prototype"]
+
 [[test]]
 name = "prefold_worker_process"
 path = "tests/prefold_worker_process.rs"

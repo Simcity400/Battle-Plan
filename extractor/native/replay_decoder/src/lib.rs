@@ -3256,5 +3256,12 @@ pub mod cz_finalize_profile;
 #[cfg(feature = "dq-v3-prototype")]
 pub mod dq_v3_prototype;
 
+/// Lane EE stage-1 density census: how many grains each top-level member of the
+/// world document actually moves per hour, at each candidate grain depth. It is
+/// what fixes the order the remaining sections are converted in, and it shares
+/// no code with the prototype's timed regions.
+#[cfg(feature = "dq-v3-prototype")]
+pub mod dq_v3_census;
+
 #[cfg(test)]
 mod tests;
