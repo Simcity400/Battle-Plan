@@ -969,3 +969,288 @@ fn a_no_op_upsert_is_counted_and_journals_nothing() {
     assert!(delta.bytes.is_empty());
     assert_eq!(state.stats().no_ops, 1);
 }
+
+#[test]
+fn a_revision_overflow_empties_the_section_it_poisons() {
+    // The counter can only fail at `u64::MAX`, which is why nothing had ever
+    // exercised it -- and why it was covered for by accident: the primitives
+    // happened to record an hour baseline before the bump, so the dropped
+    // transaction found pending changes and emptied the section. `erase` takes
+    // its baseline AFTER the bump now, and a section that is poisoned but not
+    // emptied keeps serving the grains it is refusing to stand behind, with a
+    // state root that still agrees with a full recomputation.
+    for erase_it in [false, true] {
+        let mut state = object_state("countries", 1);
+        assign(&mut state, r#"{"AAA":{"x":1}}"#);
+        // Reaching `u64::MAX` through the API would take 2^64 mutations. The
+        // tests are inside the crate, so the counter is reachable directly.
+        state.revision = u64::MAX;
+        let value = parse(r#"{"x":2}"#);
+        {
+            let mut hour = state.begin_hour().unwrap();
+            let outcome = if erase_it {
+                hour.remove(&[Seg::Key("AAA".into())]).map(|_| ())
+            } else {
+                hour.upsert(vec![Seg::Key("AAA".into())], &value).map(|_| ())
+            };
+            assert!(outcome.is_err(), "the counter must refuse to wrap");
+            hour.commit();
+        }
+        assert!(state.poisoned().is_some(), "erase_it={erase_it}");
+        assert_eq!(
+            state.grain_count(),
+            0,
+            "a poisoned section serves nothing (erase_it={erase_it})"
+        );
+        assert_eq!(state.state_root(), state.recomputed_state_root());
+        assert!(state.begin_hour().is_err());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ordinal density
+// ---------------------------------------------------------------------------
+
+/// Hand-encode one upsert record. The delta encoder only ever emits shapes the
+/// producer can reach, so a test about shapes it cannot reach has to write the
+/// bytes itself.
+fn upsert_record(path: &[Seg], body: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![OP_UPSERT];
+    encode_path_into(path, &mut bytes);
+    write_varint(&mut bytes, body.len() as u64);
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+fn remove_record(path: &[Seg]) -> Vec<u8> {
+    let mut bytes = vec![OP_REMOVE];
+    encode_path_into(path, &mut bytes);
+    bytes
+}
+
+#[test]
+fn a_delta_that_installs_an_ordinal_with_no_predecessor_is_refused() {
+    // `project` writes an array's elements in ascending-ordinal order and never
+    // writes the ordinals, so a state holding only `[1]` under `a` emits
+    // `{"a":[..]}` with that element at position 0 -- a different document from
+    // the one the state's own paths describe. The producer cannot reach this
+    // shape; a delta from outside can, and it is the decoder's job to stop it.
+    let mut replica = object_state("map", 2);
+    let path = vec![Seg::Key("a".into()), Seg::Index(1)];
+    let error = replica
+        .apply_delta(&upsert_record(&path, b"7"))
+        .expect_err("a sparse ordinal must be refused");
+    assert!(
+        error.message().contains("ordinal 1"),
+        "unexpected message: {}",
+        error.message()
+    );
+    // Refusing part-way through poisons, which is the existing contract.
+    assert!(replica.poisoned().is_some());
+
+    // Ordinal 0 first, then 1, is the same two records in a legal order.
+    let mut replica = object_state("map", 2);
+    let mut delta = upsert_record(&[Seg::Key("a".into()), Seg::Index(0)], b"6");
+    delta.extend_from_slice(&upsert_record(&path, b"7"));
+    replica.apply_delta(&delta).expect("dense ordinals apply");
+    assert_eq!(String::from_utf8(replica.project()).unwrap(), r#"{"a":[6,7]}"#);
+    assert_eq!(replica.ordinal_density_error(), None);
+}
+
+#[test]
+fn a_delta_that_removes_an_ordinal_from_the_middle_is_refused() {
+    let mut producer = object_state("map", 2);
+    let delta = assign(&mut producer, r#"{"a":[1,2,3]}"#);
+    let mut replica = object_state("map", 2);
+    replica.apply_delta(&delta.bytes).expect("replica applies");
+
+    let error = replica
+        .apply_delta(&remove_record(&[Seg::Key("a".into()), Seg::Index(1)]))
+        .expect_err("a hole in the middle of an array must be refused");
+    assert!(
+        error.message().contains("ordinal 1"),
+        "unexpected message: {}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_gap_inside_an_array_of_objects_is_refused_even_though_no_path_ends_in_it() {
+    // The ordinals of an array whose elements are OBJECTS sit in the middle of
+    // its grains' paths -- `[a, 1, x]`, not `[a, 1]`. A check that looked only
+    // at each path's final segment would see a member name there and wave the
+    // gap through, and this is the shape real captures are full of.
+    let mut replica = object_state("map", 3);
+    let path = vec![Seg::Key("a".into()), Seg::Index(1), Seg::Key("x".into())];
+    let error = replica
+        .apply_delta(&upsert_record(&path, b"7"))
+        .expect_err("a sparse ordinal one level up must still be refused");
+    assert!(
+        error.message().contains("ordinal 1"),
+        "unexpected message: {}",
+        error.message()
+    );
+
+    // The same shape with element 0 present is legal and projects as an array.
+    let mut replica = object_state("map", 3);
+    let mut delta = upsert_record(
+        &[Seg::Key("a".into()), Seg::Index(0), Seg::Key("x".into())],
+        b"6",
+    );
+    delta.extend_from_slice(&upsert_record(&path, b"7"));
+    replica.apply_delta(&delta).expect("dense ordinals apply");
+    assert_eq!(
+        String::from_utf8(replica.project()).unwrap(),
+        r#"{"a":[{"x":6},{"x":7}]}"#
+    );
+    assert_eq!(replica.ordinal_density_error(), None);
+
+    // And removing the FIRST element of a two-element array strands the second.
+    let error = replica
+        .apply_delta(&remove_record(&[
+            Seg::Key("a".into()),
+            Seg::Index(0),
+            Seg::Key("x".into()),
+        ]))
+        .expect_err("stranding element 1 must be refused");
+    assert!(
+        error.message().contains("ordinal 0"),
+        "unexpected message: {}",
+        error.message()
+    );
+}
+
+#[test]
+fn the_whole_state_density_scan_agrees_with_the_incremental_check() {
+    // The incremental check in `apply_delta` only looks at what the delta
+    // touched, which is only sound because the state was dense before it. This
+    // is the reference it is measured against: build the sparse state through
+    // the producer API (which does not check density) and require the whole-state
+    // scan to name it.
+    let mut state = object_state("map", 2);
+    let value = parse("7");
+    {
+        let mut hour = state.begin_hour().unwrap();
+        hour.upsert(vec![Seg::Key("a".into()), Seg::Index(1)], &value)
+            .expect("the producer API does not check density");
+        hour.commit();
+    }
+    let complaint = state
+        .ordinal_density_error()
+        .expect("the scan must name the hole");
+    assert!(complaint.contains("to 1"), "unexpected: {complaint}");
+    // And the projection is exactly the silent wrongness the check exists for:
+    // one element addressed at 1 and written at 0.
+    assert_eq!(String::from_utf8(state.project()).unwrap(), r#"{"a":[7]}"#);
+}
+
+#[test]
+fn an_array_that_shrinks_passes_through_a_sparse_intermediate_and_is_still_accepted() {
+    // A delta's removals ascend, so `[1,2,3]` becoming `[9]` removes ordinal 1
+    // and leaves ordinal 2 standing until the next record. Checking density per
+    // RECORD rather than per DELTA would refuse this hour, which the producer
+    // emits on real data every time an array loses its tail.
+    let mut producer = object_state("map", 2);
+    let mut replica = object_state("map", 2);
+    for json in [
+        r#"{"a":[1,2,3]}"#,
+        r#"{"a":[9]}"#,
+        r#"{"a":[9,8,7,6]}"#,
+        r#"{"a":[]}"#,
+        r#"{"a":[5,4]}"#,
+    ] {
+        let delta = assign(&mut producer, json);
+        replica
+            .apply_delta(&delta.bytes)
+            .unwrap_or_else(|error| panic!("replica refused a legal hour at {json}: {error}"));
+        assert_eq!(String::from_utf8(replica.project()).unwrap(), json);
+        assert_eq!(replica.state_root(), delta.state_root);
+        assert_eq!(producer.ordinal_density_error(), None, "at {json}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the hot path is allowed to skip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_cached_contribution_tracks_the_grain_it_is_stored_with() {
+    // The state root retracts a grain using the contribution the grain carries
+    // rather than re-hashing its path and digest. A cache computed from the
+    // wrong path, from a superseded digest, or not replaced when the grain is
+    // replaced, leaves a root that is stable, self-consistent and wrong -- and
+    // the only thing that says so is a full recomputation.
+    let escaped = format!("{ESCAPE}u0061");
+    let value = parse("1");
+    let other = parse("2");
+    let mut state = object_state("countries", 1);
+    let steps: Vec<Box<dyn Fn(&mut HourTxn<'_>)>> = vec![
+        Box::new(move |hour| {
+            hour.upsert(vec![Seg::Key("a".into())], &value).unwrap();
+        }),
+        // Same address, new bytes: the retraction must use the OLD digest.
+        Box::new(move |hour| {
+            hour.upsert(vec![Seg::Key("a".into())], &other).unwrap();
+        }),
+        // Same address, new spelling: the retraction must use the OLD spelling,
+        // which is inside the hash.
+        Box::new({
+            let escaped = escaped.clone();
+            let value = parse("2");
+            move |hour| {
+                hour.upsert(vec![Seg::Key(escaped.clone())], &value).unwrap();
+            }
+        }),
+        // Gone: the retraction has to cancel the contribution exactly.
+        Box::new(|hour| {
+            hour.remove(&[Seg::Key("a".into())]).unwrap();
+        }),
+    ];
+    for (index, step) in steps.iter().enumerate() {
+        let mut hour = state.begin_hour().unwrap();
+        step(&mut hour);
+        hour.commit();
+        assert_eq!(
+            state.state_root(),
+            state.recomputed_state_root(),
+            "the cached contribution disagreed with a fresh one after step {index}"
+        );
+    }
+    assert_eq!(state.grain_count(), 0);
+    assert_eq!(state.state_root(), object_state("countries", 1).state_root());
+}
+
+#[test]
+fn a_path_check_skipped_for_a_standing_address_is_not_skipped_for_a_new_one() {
+    // `install` does not re-run `check_path` for an address that already stands
+    // under the same spelling, because the path SET it validates has not moved.
+    // The skip is per ADDRESS: a second write to `[a,b]` is waved through, and a
+    // first write to `[a]` -- which would put a value where a container stands --
+    // still has to be refused.
+    let mut state = object_state("countries", 3);
+    let value = parse("1");
+    let other = parse("2");
+    let mut hour = state.begin_hour().unwrap();
+    hour.upsert(vec![Seg::Key("a".into()), Seg::Key("b".into())], &value)
+        .unwrap();
+    hour.commit();
+
+    let mut hour = state.begin_hour().unwrap();
+    assert!(hour
+        .upsert(vec![Seg::Key("a".into()), Seg::Key("b".into())], &other)
+        .expect("a standing address takes new bytes"));
+    assert!(
+        hour.upsert(vec![Seg::Key("a".into())], &value).is_err(),
+        "a new address that collides with a standing grain must still be refused"
+    );
+    assert!(
+        hour.upsert(vec![Seg::Key("a".into()), Seg::Index(0)], &value)
+            .is_err(),
+        "a new sibling that disagrees on addressing must still be refused"
+    );
+    hour.commit();
+    assert_eq!(
+        String::from_utf8(state.project()).unwrap(),
+        r#"{"a":{"b":2}}"#
+    );
+}

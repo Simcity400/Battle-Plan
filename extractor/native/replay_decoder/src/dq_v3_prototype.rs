@@ -336,6 +336,17 @@ fn price_v3(
             run.name
         ));
     }
+    // An ordinal-addressed container whose ordinals are not `0..k` projects its
+    // elements at positions they are not addressed by, silently. The replica's
+    // decoder refuses such a delta; this says the PRODUCER never builds one out
+    // of real capture data, which is the claim the decoder's cheap incremental
+    // check rests on.
+    if let Some(complaint) = run.state.ordinal_density_error() {
+        return Err(format!(
+            "section {} holds a sparse ordinal container at hour {hour_index}: {complaint}",
+            run.name
+        ));
+    }
     let instrument = started.elapsed();
 
     Ok(V3Hour {
@@ -456,6 +467,7 @@ pub fn run(
     let mut document_member_bytes_last = 0u64;
     let mut coverage_hour = 0i64;
     let mut apply_ns_first_hour = 0u64;
+    let mut apply_whole_state_ns_first_hour = 0u64;
     let mut oracle_section_hours = 0u64;
     let mut divergences: Vec<String> = Vec::new();
     let mut missing_sections: BTreeMap<String, u64> = BTreeMap::new();
@@ -465,6 +477,8 @@ pub fn run(
         slot.store(0, Ordering::Relaxed);
     }
     foldprof::APPLY_NS.store(0, Ordering::Relaxed);
+    foldprof::APPLY_WHOLE_STATE_NS.store(0, Ordering::Relaxed);
+    foldprof::reset_domains();
     foldprof::BUILD_NS.store(0, Ordering::Relaxed);
     foldprof::SERIALIZE_NS.store(0, Ordering::Relaxed);
 
@@ -494,8 +508,13 @@ pub fn run(
         };
         if hours == 1 {
             // Everything up to here is a section's initialization, which no lane
-            // is charged for; the apply term has to skip it too.
+            // is charged for; the apply term has to skip it too. The per-domain
+            // rows are simply restarted, so they price the same window the
+            // headline apply number does rather than a superset of it.
             apply_ns_first_hour = foldprof::APPLY_NS.load(Ordering::Relaxed);
+            apply_whole_state_ns_first_hour =
+                foldprof::APPLY_WHOLE_STATE_NS.load(Ordering::Relaxed);
+            foldprof::reset_domains();
         }
         let started = Instant::now();
         document_member_bytes_last = members
@@ -650,12 +669,12 @@ pub fn run(
         v2_patch_total += run.report.v2_patch_bytes;
         v3_delta_total += run.report.v3_delta_bytes;
         // Grain payload, plus the addresses, plus what the containers cost per
-        // grain: a `Grain` is a `Vec` header, a 32-byte digest and a revision
-        // (64 B), a `Path` is a `Vec` header (24 B), and a `BTreeMap` entry
-        // carries roughly another 16 B of node share. Counting only the payload
-        // would answer the memory threshold with the flattering half of the
-        // number.
-        const PER_GRAIN_OVERHEAD: u64 = 104;
+        // grain: a `Grain` is a `Vec` header, a 32-byte digest, a revision and
+        // a 32-byte cached state-root contribution (96 B), a `Path` is a `Vec`
+        // header (24 B), and a `BTreeMap` entry carries roughly another 16 B of
+        // node share. Counting only the payload would answer the memory
+        // threshold with the flattering half of the number.
+        const PER_GRAIN_OVERHEAD: u64 = 136;
         resident_one += run.report.retained_bytes_last
             + run.report.retained_path_bytes_last
             + run.report.grains_last * PER_GRAIN_OVERHEAD;
@@ -727,11 +746,26 @@ pub fn run(
         ));
     }
     let apply_per_hour = apply_ns.saturating_sub(apply_ns_first_hour) as f64 / 1e9 / hours_f;
+    // The measured floor on how much of `apply_domain_data` is proportional to
+    // the accumulated state rather than to the record -- whole-accumulator deep
+    // copies and whole-section `serde_json` renders done inside the per-record
+    // path. Reported beside the headline, never subtracted from it: the
+    // threshold is read against `projected_lower`, which charges v3 the whole
+    // apply term. The alternative below says what the same measurement gives if
+    // that named work is credited to v3's design instead, and it is labelled an
+    // alternative because deciding it is the owner's, not the instrument's.
+    let apply_whole_state_per_hour = foldprof::APPLY_WHOLE_STATE_NS
+        .load(Ordering::Relaxed)
+        .saturating_sub(apply_whole_state_ns_first_hour) as f64
+        / 1e9
+        / hours_f;
     // Full conversion, extrapolated by the covered byte share. Both bounds add
     // back `apply_domain_data`, which v3 still owes: reducers must still ingest
     // the wire records whatever the state looks like.
     let projected_lower = v3_lower / coverage + apply_per_hour;
     let projected_upper = v3_upper / coverage + apply_per_hour;
+    let projected_lower_less_whole_state =
+        v3_lower / coverage + (apply_per_hour - apply_whole_state_per_hour).max(0.0);
 
     let verdict = if !divergences.is_empty() {
         "oracle_failed"
@@ -764,6 +798,27 @@ pub fn run(
         .map(|run| format!("[{},{}]", json_string(&run.name), run.spec.grain_depth))
         .collect();
 
+    // `apply_domain_data` is 54-58% of the projected budget and v3 does not
+    // touch it, so a cut to it survives whatever the fold state looks like. One
+    // number over ~70 reducers cannot say where to cut; these rows can.
+    let domain_rows: Vec<String> = foldprof::domain_rows()
+        .into_iter()
+        .map(|(domain, ns, records, payload)| {
+            format!(
+                "{{\"domain\":{domain},\"s_per_hour\":{:.6},\"records_per_hour\":{:.1},\
+                 \"payload_bytes_per_hour\":{:.1},\"ns_per_record\":{:.1}}}",
+                ns as f64 / 1e9 / hours_f,
+                records as f64 / hours_f,
+                payload as f64 / hours_f,
+                if records > 0 {
+                    ns as f64 / records as f64
+                } else {
+                    0.0
+                },
+            )
+        })
+        .collect();
+
     Ok(format!(
         "{{\"schema\":\"dq-v3-prototype-v1\",\"grain_depth\":{grain_depth},\
          \"grain_depth_spec\":{},\"grain_depths\":[{}],\
@@ -775,6 +830,9 @@ pub fn run(
          \"wall_s\":{:.3},\"decode_fold_s\":{:.3},\"document_parse_s\":{:.3},\
          \"instrument_only_s\":{:.3},\
          \"apply_domain_data_s_per_hour\":{apply_per_hour:.6},\
+         \"apply_whole_state_s_per_hour\":{apply_whole_state_per_hour:.6},\
+         \"projected_lower_if_whole_state_apply_work_is_credited_to_v3\":\
+         {projected_lower_less_whole_state:.6},\
          \"covered_s_per_hour\":{{\"v2\":{v2_covered:.6},\
          \"v3_api_lower\":{v3_lower:.6},\"v3_adapter_inclusive_upper\":{v3_upper:.6},\
          \"ratio_lower\":{:.4},\"ratio_upper\":{:.4}}},\
@@ -788,6 +846,7 @@ pub fn run(
          \"divergences\":[{}],\"sections_missing_from_document\":[{}],\
          \"unpriced_v3_obligations\":\"checkpoint framing, H4IX index, whole-cache \
          SHA-256, verify_every_hour, container write\",\
+         \"apply_domain_data_by_domain\":[{}],\
          \"verdict\":{},\"sections\":[{}]}}",
         json_string(grain_depth_spec),
         depth_rows.join(","),
@@ -810,6 +869,7 @@ pub fn run(
         v3_delta_total as f64 / hours_f,
         divergence_rows.join(","),
         missing_rows.join(","),
+        domain_rows.join(","),
         json_string(verdict),
         rows.join(","),
     ))
