@@ -822,6 +822,232 @@ fn d47_cost_census_loop() {
     );
 }
 
+/// Elements staged on a portrait-BEARING character in the A/B below. Two is the
+/// shape a character with a large and a small portrait of one role carries; the
+/// engine's ceiling is twelve.
+const PORTRAIT_BENCH_ELEMENTS: usize = 2;
+
+fn portrait_bench_vocabulary() -> Domain47PortraitVocabulary {
+    Domain47PortraitVocabulary {
+        roles: [
+            "army".to_string(),
+            "civilian".to_string(),
+            "navy".to_string(),
+            "operative".to_string(),
+            "political".to_string(),
+            "council".to_string(),
+        ],
+        sizes: ["large".to_string(), "small".to_string()],
+    }
+}
+
+/// Point the first `bearers` census characters at a staged element array.
+///
+/// The arena must be `in_heap_window`: `domain47_character_portrait_inputs`
+/// gates the vector's data pointer through `is_map_control_heap_pointer`, and a
+/// fixture the allocator placed elsewhere would be REFUSED at the header — the
+/// bench would then be timing the refusal rather than the walk.
+fn stage_portrait_maps(world: &BenchWorld, arena: &BenchArena, bearers: usize) {
+    let entry_len = domain47::extractor::CCHARACTER_PORTRAIT_ENTRY_LEN;
+    let stride = entry_len * PORTRAIT_BENCH_ELEMENTS;
+    for (index, addr) in world.census_characters.iter().take(bearers).enumerate() {
+        let elements = arena.base + index * stride;
+        for ordinal in 0..PORTRAIT_BENCH_ELEMENTS {
+            let entry = elements + ordinal * entry_len;
+            arena.put_u32(
+                entry + domain47::extractor::CCHARACTER_PORTRAIT_ENTRY_TYPE_OFF,
+                0,
+            );
+            arena.put_u32(
+                entry + domain47::extractor::CCHARACTER_PORTRAIT_ENTRY_SIZE_OFF,
+                ordinal as u32,
+            );
+            arena.put_bytes(
+                entry + domain47::extractor::CCHARACTER_PORTRAIT_ENTRY_SET_OFF,
+                &[1u8],
+            );
+            arena.put_u32(
+                entry + domain47::extractor::CCHARACTER_PORTRAIT_ENTRY_KIND_OFF,
+                domain47::extractor::PORTRAIT_ICON_KIND_GFX,
+            );
+            // SSO, like the engine's own short `GFX_` keys, so the walk pays
+            // the element copy and no separate heap fetch.
+            arena.put_msvc_string(
+                entry + domain47::extractor::CCHARACTER_PORTRAIT_ENTRY_GFX_OFF,
+                0,
+                "GFX_p",
+            );
+        }
+        // The vector HEADER lives in the character body, which belongs to the
+        // world's arena; only the element array is in the heap-window one.
+        world._arena.put_u64(
+            *addr + domain47::extractor::CCHARACTER_PORTRAIT_MAP_DATA_OFF as usize,
+            elements as u64,
+        );
+        world._arena.put_u32(
+            *addr + domain47::extractor::CCHARACTER_PORTRAIT_MAP_COUNT_OFF as usize,
+            PORTRAIT_BENCH_ELEMENTS as u32,
+        );
+    }
+}
+
+/// [`census_loop`] with the portrait read where production puts it: inside the
+/// same per-character body, while that character's line is still hot.
+///
+/// Measuring it as a second pass over the roster would charge it every cache
+/// miss the census already paid for, which is the opposite of conservative.
+fn census_loop_with_portraits(
+    world: &BenchWorld,
+    vocabulary: &Domain47PortraitVocabulary,
+) -> usize {
+    let mem = Domain47InProcessMemory;
+    let mut sink = 0usize;
+    for addr in &world.census_characters {
+        let name_token_addr = *addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+        let (first, opening) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            *addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (second, closing) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            *addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (name, token) = domain47_character_root_strings(*addr);
+        sink += opening.is_some() as usize
+            + closing.is_some() as usize
+            + first.is_ok() as usize
+            + second.is_ok() as usize
+            + name.map_or(0, |v| v.len())
+            + token.map_or(0, |v| v.len());
+        sink += match domain47_character_portrait_inputs(*addr, 7, 11, vocabulary) {
+            Ok(rows) => rows.len(),
+            Err(_) => 1,
+        };
+    }
+    sink
+}
+
+/// WHAT THE PORTRAIT FEED ADDS TO THE SERIAL PREWARM — task #147's residual.
+///
+/// t32 (before the feed) measured a 20.9 ms d47 prewarm and t36 (after it)
+/// 31.6 ms, and nothing separated the feed's own cost from everything else that
+/// changed between those captures. This is that separation: the same census
+/// loop with and without the per-character portrait read, alternating run by
+/// run, medians reported.
+///
+/// TWO CONFIGURATIONS, because the live bearer share is NOT on the wire — the
+/// portrait family has been dark on every prewarm since the feed landed, so
+/// `domain47_prewarm_portrait_rows` is `0` in every retained capture and cannot
+/// say how many characters carry a map:
+///
+///  * FLOOR — no character carries a map. Every character still pays the
+///    `read_i32_stable` count bracket (two guarded reads) before the reader
+///    returns the engine's own empty case, so this is the cost that cannot be
+///    avoided by any character having no portrait. It IS a floor: nothing live
+///    can pay less.
+///  * A SCENARIO — every character carries a two-element map with SSO
+///    identities. Deliberately NOT called a ceiling, and no interval is drawn
+///    from it. The engine's structural maximum is TWELVE elements, and a
+///    heap-backed identity costs a fetch this fixture's SSO strings do not, so
+///    a live world can exceed this number in both directions at once. (Codex
+///    019fdc5d, finding 4.)
+///
+/// WHAT TRANSFERS is the per-ELEMENT cost the scenario yields, because the live
+/// total is the bearer share times the elements each bearer carries times that
+/// cost, plus one guarded fetch per non-SSO identity. Two of those three factors
+/// are unmeasurable until a capture publishes a non-zero
+/// `domain47_prewarm_portrait_rows`, which is exactly what this lane's
+/// reclassification is for.
+///
+/// Conservative in the module header's direction on both arms.
+///
+/// # CAN THIS RUN OFF THE SERIAL PREWARM? Three options, none taken (lane ER)
+///
+///  * FOLD IT INTO THE CENSUS WALK — already done. The read sits inside the
+///    census loop's per-character body precisely so the portrait header lands in
+///    the line that body copy already fetched; the comment at the call site says
+///    so. Nothing is left to move.
+///  * SERVE THE COUNT FROM THE CENSUS SNAPSHOT, the way lane AK merged the
+///    name-token bracket. `CCHARACTER_PORTRAIT_MAP_COUNT_OFF + 4` is exactly
+///    `CCHARACTER_RAW_FIELDS_SPAN`, so the census body copy already contains the
+///    count and the reader's `read_i32_stable` re-reads it for nothing. MEASURED
+///    AND REJECTED: that is the whole of the FLOOR arm, which is at or below
+///    this machine's run-to-run noise. Two guarded reads per character buy back
+///    nothing here because they hit the same hot line.
+///  * DEFER THE WALK TO THE WORKER PHASE. This is the only one with real
+///    milliseconds in it, and it is NOT a bounded move. The portraits are part
+///    of the adopted ROOT set the frame walk consumes, and every element
+///    snapshot is deliberately taken, decoded and dropped inside the prewarm
+///    that adopts the root — that is what makes a portrait row provably live in
+///    the hour it is labelled with. A worker-phase read is an engine read off
+///    the collector thread, which is a custody and snapshot-law question rather
+///    than a d47 one, and it would move the read across the hour boundary the
+///    prewarm exists to pin. Design-noted for whoever owns that decision; not
+///    attempted here.
+///
+/// The element double-read is not a candidate either: `read_element` runs twice
+/// the vector header, so a single read cannot tell a stable element from one
+/// that changed under it. Halving the per-element cost by dropping it would buy
+/// the milliseconds back by making the rows untrustworthy.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_portrait_ab() {
+    let world = bench_world();
+    let vocabulary = portrait_bench_vocabulary();
+
+    let (with_floor, without_floor) = time_us_median_ab(
+        9,
+        || census_loop_with_portraits(&world, &vocabulary),
+        || census_loop(&world),
+    );
+    println!(
+        "d47_cost AB portrait FLOOR (no character carries a map): census {without_floor:.1} us \
+         -> census+portraits {with_floor:.1} us ({:+.1} us, {:+.1}%) over {} characters \
+         ({:.1} ns/character)",
+        with_floor - without_floor,
+        (with_floor - without_floor) / without_floor * 100.0,
+        T15_CENSUS_CHARACTERS,
+        (with_floor - without_floor) * 1000.0 / T15_CENSUS_CHARACTERS as f64,
+    );
+
+    let entry_len = domain47::extractor::CCHARACTER_PORTRAIT_ENTRY_LEN;
+    let elements = BenchArena::in_heap_window(
+        T15_CENSUS_CHARACTERS * entry_len * PORTRAIT_BENCH_ELEMENTS + 0x1000,
+    );
+    stage_portrait_maps(&world, &elements, T15_CENSUS_CHARACTERS);
+    let (with_ceiling, without_ceiling) = time_us_median_ab(
+        9,
+        || census_loop_with_portraits(&world, &vocabulary),
+        || census_loop(&world),
+    );
+    let delta = with_ceiling - without_ceiling;
+    println!(
+        "d47_cost AB portrait SCENARIO (every character carries {PORTRAIT_BENCH_ELEMENTS} \
+         SSO elements; NOT a ceiling -- the engine's structural max is {} and a heap-backed \
+         identity costs more): census {without_ceiling:.1} us -> census+portraits \
+         {with_ceiling:.1} us ({:+.1} us, {:+.1}%) over {} characters ({:.1} ns/element)",
+        domain47::extractor::MAX_CHARACTER_PORTRAIT_ENTRIES,
+        delta,
+        delta / without_ceiling * 100.0,
+        T15_CENSUS_CHARACTERS,
+        delta * 1000.0 / (T15_CENSUS_CHARACTERS * PORTRAIT_BENCH_ELEMENTS) as f64,
+    );
+    println!(
+        "d47_cost AB portrait: the t32->t36 prewarm lift to attribute is ~10700 us. The \
+         count bracket on a portrait-LESS character costs {:.1} us across the whole census, \
+         at or below this machine's run-to-run noise, so the feed's serial cost is \
+         essentially (bearers x elements each x {:.1} ns) plus one guarded fetch per \
+         non-SSO identity. Bearers and elements-each are not on the wire while the family \
+         is dark; this bench cannot close the attribution alone.",
+        (with_floor - without_floor).max(0.0),
+        delta * 1000.0 / (T15_CENSUS_CHARACTERS * PORTRAIT_BENCH_ELEMENTS) as f64,
+    );
+}
+
 /// In-process A/B of lane AK's census change: the name-token bracket served
 /// out of the body copies that were already being taken, against the four
 /// separate guarded reads it replaced.
