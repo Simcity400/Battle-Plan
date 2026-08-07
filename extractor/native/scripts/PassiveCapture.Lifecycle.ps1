@@ -512,6 +512,218 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
     }
 }
 
+# The collector's compile-time feature vocabulary, PARSED from the Rust
+# contract rather than restated here.
+#
+# The word at CaptureReadyV2 offset 20 was reserved-must-be-zero until lane EH
+# gave it to `CollectorFeatureBits`. This file did not follow, and every part of
+# it that touches offset 20 was then wrong at once: the encoder mirror below
+# still demanded the literal `&0u32.to_le_bytes();`, the payload rebuild still
+# wrote a zero there, and the receipt's two new properties failed the closed
+# property set. Run t36's READY receipt was therefore refused before a single
+# admission clause ran -- which took its CUSTODY authority with it, so the
+# recorder's teardown receipt (57 of 57 pinned sites restored to baseline) could
+# not be authenticated, the graded window never closed, the settings guard
+# stayed applied and the game was left running.
+#
+# Restating the bit assignments as PowerShell literals would have set the same
+# trap for the next feature bit. They are read out of the contract instead, so a
+# bit added in Rust is known here without an edit, and a bit this file cannot
+# parse is a loud failure rather than a silently narrower mask.
+function Get-PassiveCollectorFeatureAuthorityFromSource {
+    param([Parameter(Mandatory = $true)][string]$PayloadSource)
+
+    $start = $PayloadSource.IndexOf('impl CollectorFeatureBits {')
+    $end = $PayloadSource.IndexOf('pub struct CaptureReadyV2 {', [Math]::Max($start, 0))
+    if ($start -lt 0 -or $end -le $start) {
+        throw 'Collector feature-bit authority boundary is unavailable.'
+    }
+    $implSource = $PayloadSource.Substring($start, $end - $start)
+
+    $bits = [ordered]@{}
+    foreach ($match in [regex]::Matches(
+        $implSource,
+        'pub const ([A-Z0-9_]+): u32 = 1 << (\d+);'
+    )) {
+        $shift = [int]$match.Groups[2].Value
+        if ($shift -lt 0 -or $shift -gt 31) {
+            throw "Collector feature bit '$($match.Groups[1].Value)' is not a u32 bit."
+        }
+        $bits[$match.Groups[1].Value] = [uint32](1 -shl $shift)
+    }
+    if ($bits.Count -eq 0) {
+        throw 'Collector feature-bit authority declares no bits.'
+    }
+    if (-not $bits.Contains('DECLARED') -or [uint32]$bits['DECLARED'] -ne [uint32]1) {
+        throw 'Collector feature-bit authority does not put DECLARED in bit 0.'
+    }
+
+    function Get-PassiveCollectorFeatureMask {
+        param(
+            [Parameter(Mandatory = $true)][string]$ImplSource,
+            [Parameter(Mandatory = $true)][object]$Bits,
+            [Parameter(Mandatory = $true)][string]$MaskName
+        )
+
+        $maskMatch = [regex]::Match(
+            $ImplSource,
+            ('pub const ' + $MaskName + ': u32 = ([^;]+);'),
+            [Text.RegularExpressions.RegexOptions]::Singleline
+        )
+        if (-not $maskMatch.Success) {
+            throw "Collector feature-bit authority does not declare $MaskName."
+        }
+        $mask = [uint32]0
+        $expression = $maskMatch.Groups[1].Value
+        $members = [regex]::Matches($expression, 'Self::([A-Z0-9_]+)')
+        if ($members.Count -eq 0) {
+            throw "Collector feature-bit authority declares an empty $MaskName."
+        }
+        foreach ($member in $members) {
+            $name = $member.Groups[1].Value
+            if (-not $Bits.Contains($name)) {
+                throw "Collector feature mask $MaskName names unknown bit '$name'."
+            }
+            $mask = [uint32]($mask -bor [uint32]$Bits[$name])
+        }
+        # THE WHOLE EXPRESSION, OR NOTHING. Scanning for `Self::NAME` and
+        # ignoring what is left silently narrows the mask the moment a term is
+        # written any other way: spelling one member as the literal `1 << 5`
+        # instead of `Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE` is
+        # identical Rust, and left this file believing KNOWN_MASK was 31 while
+        # the collector used 63 -- so a receipt declaring that feature would
+        # have been refused as unknown. Everything except the members and the
+        # `|` that joins them has to be whitespace.
+        $residue = ([regex]::Replace($expression, 'Self::[A-Z0-9_]+', '') `
+            -replace '\|', '').Trim()
+        if ($residue -ne '') {
+            throw (
+                "Collector feature mask $MaskName has terms this verifier " +
+                "cannot read: '$residue'."
+            )
+        }
+        return $mask
+    }
+
+    $knownMask = Get-PassiveCollectorFeatureMask `
+        -ImplSource $implSource -Bits $bits -MaskName 'KNOWN_MASK'
+    $diagnosticMask = Get-PassiveCollectorFeatureMask `
+        -ImplSource $implSource -Bits $bits -MaskName 'DIAGNOSTIC_MASK'
+
+    $namesStart = $implSource.IndexOf('pub const FEATURE_NAMES:')
+    $namesEnd = $implSource.IndexOf('];', [Math]::Max($namesStart, 0))
+    if ($namesStart -lt 0 -or $namesEnd -le $namesStart) {
+        throw 'Collector feature-bit authority does not declare FEATURE_NAMES.'
+    }
+    $namesSource = $implSource.Substring($namesStart, $namesEnd - $namesStart)
+    $featureNames = [Collections.Generic.List[object]]::new()
+    $namedMask = [uint32]0
+    foreach ($match in [regex]::Matches(
+        $namesSource,
+        'Self::([A-Z0-9_]+)\s*,\s*"([^"]+)"',
+        [Text.RegularExpressions.RegexOptions]::Singleline
+    )) {
+        $name = $match.Groups[1].Value
+        if (-not $bits.Contains($name)) {
+            throw "Collector FEATURE_NAMES names unknown bit '$name'."
+        }
+        $bit = [uint32]$bits[$name]
+        if (($namedMask -band $bit) -ne 0) {
+            throw "Collector FEATURE_NAMES names bit '$name' twice."
+        }
+        $namedMask = [uint32]($namedMask -bor $bit)
+        $featureNames.Add([pscustomobject]@{
+            Bit = $bit
+            CargoName = $match.Groups[2].Value
+        })
+    }
+    if ($featureNames.Count -eq 0) {
+        throw 'Collector FEATURE_NAMES is empty.'
+    }
+    # EVERY ENTRY, OR NONE. The same failure as the mask residue above, one
+    # level down: an entry whose bit is written as a literal rather than
+    # `Self::NAME` matches nothing and is dropped without a word, leaving a
+    # compiled feature with no name to report. The cargo-name string literals
+    # are counted independently of how the bit is spelled, so a dropped entry
+    # shows up as a mismatch.
+    $quotedNames = [regex]::Matches($namesSource, '"[^"]*"').Count
+    if ($quotedNames -ne $featureNames.Count) {
+        throw (
+            "Collector FEATURE_NAMES declares $quotedNames cargo names but " +
+            "$($featureNames.Count) of them are bound to a bit this verifier " +
+            'can read.'
+        )
+    }
+    # Every bit the contract DECLARES has to be inside KNOWN_MASK. Without
+    # this, a bit constant left out of the mask expression is simply invisible
+    # here while the collector can still set it, and this file would refuse the
+    # resulting receipt as carrying an unknown bit.
+    foreach ($entry in $bits.GetEnumerator()) {
+        if (([uint32]$entry.Value -band $knownMask) -eq 0) {
+            throw (
+                "Collector feature bit '$($entry.Key)' is declared but is not " +
+                'in KNOWN_MASK.'
+            )
+        }
+    }
+    # DECLARED is not a cargo feature and must not be spelled as one; every
+    # other known bit must be, or a set bit would have no name to report.
+    if (($namedMask -band [uint32]$bits['DECLARED']) -ne 0) {
+        throw 'Collector FEATURE_NAMES spells DECLARED as a cargo feature.'
+    }
+    if ([uint32]($namedMask -bor [uint32]$bits['DECLARED']) -ne $knownMask) {
+        throw 'Collector FEATURE_NAMES does not cover every known feature bit.'
+    }
+    if (($diagnosticMask -band [uint32]$bits['DECLARED']) -ne 0) {
+        throw 'Collector DIAGNOSTIC_MASK includes DECLARED.'
+    }
+    if (($diagnosticMask -band (-bnot $knownMask)) -ne 0) {
+        throw 'Collector DIAGNOSTIC_MASK is not a subset of KNOWN_MASK.'
+    }
+    $ordered = @(
+        $featureNames | Sort-Object -Property { [uint32]$_.Bit }
+    )
+    return [pscustomobject]@{
+        DeclaredBit = [uint32]$bits['DECLARED']
+        KnownMask = [uint32]$knownMask
+        DiagnosticMask = [uint32]$diagnosticMask
+        FeatureNames = $ordered
+    }
+}
+
+function Get-PassiveControlTransportPayloadSource {
+    $nativeRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    $payloadPath = Join-Path `
+        $nativeRoot 'compact_contract\src\control_transport\payloads.rs'
+    if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
+        throw 'Passive READY canonical Rust producer sources are unavailable.'
+    }
+    return (Get-Content -LiteralPath $payloadPath -Raw)
+}
+
+function Get-PassiveCollectorFeatureAuthority {
+    return (Get-PassiveCollectorFeatureAuthorityFromSource `
+        (Get-PassiveControlTransportPayloadSource))
+}
+
+# The producer's feature word as it rides the wire at CaptureReadyV2 offset 20.
+#
+# ABSENT IS ZERO, AND ZERO IS A REAL VALUE. A receipt written before the build
+# declaration existed carries no `collector_feature_bits` property; the payload
+# it authenticated has a zero there, which is exactly what
+# `CollectorFeatureBits::undeclared()` encodes. Reading the missing property as
+# zero is therefore not a default, it is the observation, and it is what keeps
+# every pre-declaration receipt reproducible byte for byte.
+function Get-PassiveCaptureReadyFeatureBits {
+    param([Parameter(Mandatory = $true)][object]$Ready)
+
+    if ($null -eq $Ready.PSObject.Properties['collector_feature_bits']) {
+        return [uint32]0
+    }
+    return (ConvertTo-PassiveReceiptInteger `
+        $Ready.collector_feature_bits u32 'collector_feature_bits')
+}
+
 function Add-PassiveSha256Bytes {
     param(
         [Parameter(Mandatory = $true)]
@@ -566,7 +778,12 @@ function Get-PassiveCaptureReadyPayloadSha256 {
     Add-PassiveLittleEndianBytes $bytes u32 (
         ConvertTo-PassiveReceiptInteger $Ready.pid u32 'pid'
     )
-    Add-PassiveLittleEndianBytes $bytes u32 ([uint32]0)
+    # Offset 20: the collector's own feature word since lane EH, zero on every
+    # receipt written before it. NOT a reserved zero -- see
+    # Get-PassiveCaptureReadyFeatureBits.
+    Add-PassiveLittleEndianBytes $bytes u32 (
+        Get-PassiveCaptureReadyFeatureBits -Ready $Ready
+    )
     Add-PassiveLittleEndianBytes $bytes u64 (
         ConvertTo-PassiveReceiptInteger `
             $Ready.process_creation_filetime_utc u64 `
@@ -736,12 +953,24 @@ function Assert-PassiveReadySourceContractParity {
         'pub const CAPTURE_READY_ACK_MAGIC: &[u8; 4] = b"H4RA";',
         'pub const CAPTURE_READY_VERSION: u16 = 2;',
         'pub const CAPTURE_READY_LEN: usize = 512;',
-        'pub const CAPTURE_READY_ACK_LEN: usize = 168;'
+        'pub const CAPTURE_READY_ACK_LEN: usize = 168;',
+        # The DECODE side of offset 20, pinned so the feature word cannot move
+        # or quietly go back to reserved-must-be-zero without this file hearing
+        # about it. The ACK's own offset-20 reserved check is pinned beside it:
+        # the two payloads share a prefix layout and only READY gave that word
+        # away.
+        'collector_features: CollectorFeatureBits::from_bits(read_u32(bytes, 20))?,',
+        'if read_u16(bytes, 50) != 0 {',
+        'if read_u32(bytes, 20) != 0 {'
     )) {
         if (-not $payload.Contains($fragment)) {
             throw "Passive READY wire verifier/producer parity failed: missing '$fragment'."
         }
     }
+    # Parsed here so a contract this file cannot read is a source-parity
+    # failure, reported before a capture opens a graded window, rather than a
+    # surprise in the middle of receipt admission.
+    [void](Get-PassiveCollectorFeatureAuthorityFromSource $payload)
     $readyEncoderStart = $payload.IndexOf('impl CaptureReadyV2 {')
     $readyEncoderEnd = $payload.IndexOf(
         'pub struct CaptureReadyAckFlags',
@@ -762,7 +991,12 @@ function Assert-PassiveReadySourceContractParity {
         'out.extend_from_slice(&(CAPTURE_READY_LEN as u32).to_le_bytes());',
         'out.extend_from_slice(&self.flags.bits().to_le_bytes());',
         'out.extend_from_slice(&self.pid.to_le_bytes());',
-        'out.extend_from_slice(&0u32.to_le_bytes());',
+        # Offset 20. Reserved-must-be-zero until lane EH, the collector's
+        # feature word since. The literal that used to stand here was the
+        # `&0u32` spelling, and leaving it in place after the contract moved is
+        # what refused run t36's READY receipt -- and with it the teardown
+        # receipt that receipt's custody authorises.
+        'out.extend_from_slice(&self.collector_features.bits().to_le_bytes());',
         'out.extend_from_slice(&self.process_creation_filetime_utc.to_le_bytes());',
         'out.extend_from_slice(&self.requested_duration_ms.to_le_bytes());',
         'out.extend_from_slice(&self.validated_domain_count.to_le_bytes());',
@@ -816,6 +1050,213 @@ function ConvertFrom-PassiveSha256 {
         )
     }
     return ,$bytes
+}
+
+# Which CaptureReadyV2 receipt dialect this file is looking at.
+#
+# There are exactly two, and the closed property set stays closed in both. A
+# receipt written before lane EH carries neither declaration property; one
+# written after carries both, always -- `collector_build_json` is called with
+# `Some(..)` unconditionally, so an UNDECLARING collector still writes
+# `collector_feature_bits: 0` and a `collector_build` block saying so. Anything
+# in between is a producer this file does not know, and admitting it would mean
+# guessing which half of a build declaration to believe.
+function Get-PassiveCaptureReadyDeclaredProperties {
+    param([Parameter(Mandatory = $true)][object]$Ready)
+
+    $pair = @('collector_feature_bits', 'collector_build')
+    $present = @(
+        $pair | Where-Object { $null -ne $Ready.PSObject.Properties[$_] }
+    )
+    if ($present.Count -eq 0) {
+        return @()
+    }
+    if ($present.Count -ne $pair.Count) {
+        throw (
+            'CaptureReadyV2 receipt carries a partial collector build ' +
+            "declaration ($($present -join ', ')); the properties " +
+            "'$($pair -join "', '")' are written together or not at all."
+        )
+    }
+    return $pair
+}
+
+# What the receipt's `collector_build` block has to say about its own feature
+# word, checked rather than admitted.
+#
+# ADMITTING A PROPERTY IS NOT CHECKING IT -- the same lesson the teardown
+# receipt's import-slot count learned. This block is the AUTHORITY the manifest
+# copies, and the whole point of lane EH was that a diagnostic build cannot pass
+# for a production one. A `diagnostic_build: false` that nothing derives from
+# the bits is exactly the silent claim it was meant to replace.
+#
+# Returns the failing clauses, so the caller decides what a failure means.
+#
+# TOTAL BY CONSTRUCTION -- it reports, it does not throw. The clauses this feeds
+# are the CUSTODY accumulator, and a function that throws instead of
+# accumulating takes custody down with it: that is precisely how t36 lost the
+# teardown receipt it had already earned. A `collector_feature_bits` that is a
+# string, or a `collector_build.feature_bits` that will not convert, is a
+# refusal with a name, not an escape hatch out of the accumulator.
+function Get-PassiveCollectorBuildDeclarationFailures {
+    param(
+        [Parameter(Mandatory = $true)][object]$Ready,
+        [Parameter(Mandatory = $true)][object]$FeatureAuthority
+    )
+
+    $failures = [Collections.Generic.List[string]]::new()
+    try {
+        return (Get-PassiveCollectorBuildDeclarationFailuresCore `
+            -Ready $Ready -FeatureAuthority $FeatureAuthority)
+    } catch {
+        $failures.Add(
+            'collector build declaration could not be read: ' +
+            (([string]$_.Exception.Message) -replace '\s+', ' ').Trim()
+        )
+        return $failures
+    }
+}
+
+function Get-PassiveCollectorBuildDeclarationFailuresCore {
+    param(
+        [Parameter(Mandatory = $true)][object]$Ready,
+        [Parameter(Mandatory = $true)][object]$FeatureAuthority
+    )
+
+    $failures = [Collections.Generic.List[string]]::new()
+    $bits = Get-PassiveCaptureReadyFeatureBits -Ready $Ready
+
+    # Mirrors CollectorFeatureBits::from_bits: zero is the undeclared value, any
+    # other value must set DECLARED and must set nothing outside KNOWN_MASK. A
+    # word this file would refuse is a word the Rust decoder refuses too, so the
+    # receipt could not have been produced by a contract-conforming collector.
+    $declaredBit = [uint32]$FeatureAuthority.DeclaredBit
+    $knownMask = [uint32]$FeatureAuthority.KnownMask
+    $unknown = [uint32]($bits -band (-bnot $knownMask))
+    if ($bits -ne 0 -and $unknown -ne 0) {
+        $failures.Add(
+            "collector_feature_bits sets bits outside the known mask (unknown=$unknown known=$knownMask)"
+        )
+    }
+    if ($bits -ne 0 -and ($bits -band $declaredBit) -eq 0) {
+        $failures.Add(
+            "collector_feature_bits is nonzero without the DECLARED bit (bits=$bits)"
+        )
+    }
+    if ($null -eq $Ready.PSObject.Properties['collector_build']) {
+        return $failures
+    }
+
+    $build = $Ready.collector_build
+    if ($null -eq $build -or $build -isnot [psobject]) {
+        $failures.Add('collector_build is not an object')
+        return $failures
+    }
+    try {
+        Assert-PassiveExactPropertySet `
+            -Value $build `
+            -Expected @(
+                'declared', 'feature_bits', 'features',
+                'diagnostic_build', 'source'
+            ) `
+            -Label 'CaptureReadyV2 collector_build'
+    } catch {
+        $failures.Add([string]$_.Exception.Message)
+        return $failures
+    }
+
+    if ($build.source -isnot [string] -or
+        [string]$build.source -cne 'capture_ready_v2.collector_features') {
+        $failures.Add(
+            "collector_build.source is not the authenticated payload (actual='$($build.source)')"
+        )
+    }
+    $buildBits = ConvertTo-PassiveReceiptInteger `
+        $build.feature_bits u32 'collector_build.feature_bits'
+    if ($buildBits -ne $bits) {
+        $failures.Add(
+            "collector_build.feature_bits disagrees with collector_feature_bits (expected='$bits' actual='$buildBits')"
+        )
+    }
+    $expectedDeclared = (($bits -band $declaredBit) -ne 0)
+    if ($build.declared -isnot [bool] -or
+        [bool]$build.declared -ne $expectedDeclared) {
+        $failures.Add(
+            "collector_build.declared is not derived from the DECLARED bit (expected='$expectedDeclared' actual='$($build.declared)')"
+        )
+    }
+    # `null` is ABSENT and is not `false`; flattening the two is the t35 defect
+    # lane EH was fixing, so it is checked in both directions.
+    if (-not $expectedDeclared) {
+        if ($null -ne $build.diagnostic_build) {
+            $failures.Add(
+                "collector_build.diagnostic_build is not null on an undeclared build (actual='$($build.diagnostic_build)')"
+            )
+        }
+        if ($null -ne $build.features) {
+            $failures.Add(
+                "collector_build.features is not null on an undeclared build (actual='$($build.features)')"
+            )
+        }
+        return $failures
+    }
+    $expectedDiagnostic = (
+        ($bits -band [uint32]$FeatureAuthority.DiagnosticMask) -ne 0
+    )
+    if ($build.diagnostic_build -isnot [bool] -or
+        [bool]$build.diagnostic_build -ne $expectedDiagnostic) {
+        $failures.Add(
+            "collector_build.diagnostic_build is not derived from DIAGNOSTIC_MASK (expected='$expectedDiagnostic' actual='$($build.diagnostic_build)')"
+        )
+    }
+    $expectedFeatures = @(
+        $FeatureAuthority.FeatureNames |
+            Where-Object { ($bits -band [uint32]$_.Bit) -ne 0 } |
+            ForEach-Object { [string]$_.CargoName }
+    )
+    $observedFeatures = @($build.features)
+    if ($null -eq $build.features) {
+        $failures.Add(
+            'collector_build.features is null on a declared build'
+        )
+    # A JSON ARRAY, NOT SOMETHING ARRAY-SHAPED. `collector_build_json` maps the
+    # names through `Value::from(Vec<Value>)` and so always emits an array, but
+    # `@($build.features)` wraps a bare string into a one-element array just as
+    # happily -- so a receipt saying `"features": "test-support"` compared equal
+    # to the real `["test-support"]` and reported nothing. ConvertFrom-Json
+    # leaves a JSON array as Object[], which is what is required here.
+    } elseif ($build.features -isnot [array]) {
+        $failures.Add(
+            "collector_build.features is not a JSON array (type='$($build.features.GetType().FullName)' actual='$($build.features)')"
+        )
+    } elseif ($observedFeatures.Count -ne $expectedFeatures.Count) {
+        $failures.Add(
+            "collector_build.features has $($observedFeatures.Count) entries (expected='$($expectedFeatures -join ',')' actual='$($observedFeatures -join ',')')"
+        )
+    } else {
+        for ($index = 0; $index -lt $expectedFeatures.Count; $index++) {
+            $observed = $observedFeatures[$index]
+            # A FLAT ARRAY OF STRINGS. Requiring the outer value to be an array
+            # is not enough: `[string]` on a one-element `Object[]` yields the
+            # contained string, so `[["test-support"],["range-tracer"]]` -- an
+            # array of arrays, which `Value::from(Vec<Value>)` over cargo names
+            # can never produce -- compared equal element for element and
+            # reported nothing.
+            if ($observed -isnot [string]) {
+                $failures.Add(
+                    "collector_build.features[$index] is not a string (type='$(if ($null -eq $observed) { 'null' } else { $observed.GetType().FullName })')"
+                )
+                break
+            }
+            if ([string]$observed -cne [string]$expectedFeatures[$index]) {
+                $failures.Add(
+                    "collector_build.features differs at index $index (expected='$($expectedFeatures -join ',')' actual='$($observedFeatures -join ',')')"
+                )
+                break
+            }
+        }
+    }
+    return $failures
 }
 
 function Assert-PassiveExactPropertySet {
@@ -940,10 +1381,14 @@ function Test-PassiveCaptureReadyReceipt {
         'ready_payload_sha256', 'host_binding_sha256', 'host_validated',
         'public_receipt_core_sha256', 'ready_ack_sha256'
     )
+    # Two dialects, one closed set each. See
+    # Get-PassiveCaptureReadyDeclaredProperties.
+    $readyProperties += (Get-PassiveCaptureReadyDeclaredProperties -Ready $ready)
     Assert-PassiveExactPropertySet `
         -Value $ready `
         -Expected $readyProperties `
         -Label 'CaptureReadyV2 receipt'
+    $featureAuthority = Get-PassiveCollectorFeatureAuthority
 
     $digestFields = @(
         'target_executable_sha256', 'collector_dll_sha256',
@@ -1186,6 +1631,16 @@ function Test-PassiveCaptureReadyReceipt {
         ($ready.host_validated -isnot [bool] -or
             -not [bool]$ready.host_validated) `
         $true $ready.host_validated
+    # CUSTODY, not grading. This word is inside the authenticated payload and
+    # therefore inside `ready_payload_sha256`, `host_binding_sha256` and the
+    # ACK -- the whole chain that says this receipt belongs to this collector in
+    # this process. A build declaration this file cannot reconcile means the
+    # bytes it rebuilt are not the bytes the collector signed, and every digest
+    # clause below would be answering about a different payload.
+    foreach ($clause in (Get-PassiveCollectorBuildDeclarationFailures `
+            -Ready $ready -FeatureAuthority $featureAuthority)) {
+        Add-PassiveAdmissionFailure $custodyFailures $clause $true
+    }
     Add-PassiveAdmissionFailure $custodyFailures 'target_executable_sha256 is the pinned a729 build' `
         ($TargetExecutableSha256 -cne
             '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') `

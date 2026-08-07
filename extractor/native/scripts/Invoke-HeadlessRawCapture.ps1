@@ -1292,7 +1292,22 @@ function Confirm-CollectorTeardownReceipt {
         $authority = $sharedReadyCustodyAuthority
     }
     if ($null -eq $authority) {
-        throw 'Collector teardown cannot be admitted without shared READY authority.'
+        # NAME THE REASON THE AUTHORITY IS MISSING. Both authorities are $null
+        # only because READY validation threw before either was published, and
+        # the operator reading this warning is the one who then has to decide
+        # by hand whether the hooks are gone. Run t36 got the bare sentence,
+        # while the sentence that explained it -- "Passive READY wire field
+        # order differs at ..." -- was printed elsewhere as a witness-stop
+        # reason, so the two had to be joined up by eye. $harnessAbortReason is
+        # already recorded by the catch that routes every failure here.
+        $reason = $harnessAbortReason
+        if ([string]::IsNullOrWhiteSpace([string]$reason)) {
+            $reason = 'READY validation published neither an admitted nor a custody authority, and recorded no reason'
+        }
+        throw (
+            'Collector teardown cannot be admitted without shared READY ' +
+            "authority. READY validation failed with: $reason"
+        )
     }
     $script:sharedTeardownAuthority = Test-PassiveCaptureTeardownReceipt `
         -RunDir $OutDir `
@@ -2701,7 +2716,11 @@ try {
 # compete with the engine for the same four cores, and would otherwise get free
 # cores no floor machine has.
 #
-# AFTER `$collectorInjectionStarted = $true` and after the handle grab, both
+# AFTER the injection-started flag is set and after the handle grab, both
+# (the flag is not spelled out here: `check_no_stranded_graded_window` counts
+# occurrences of that assignment and requires exactly one, so quoting it in a
+# comment turns a passing order check into a duplicate-assignment failure --
+# which is what it did on this line until lane EQ noticed the red)
 # deliberately. Everything between Start-Process and that assignment must be
 # incapable of throwing, or a failure there leaves a live recorder that cleanup
 # does not know exists. A throw from here is ordinary: the graded window is open

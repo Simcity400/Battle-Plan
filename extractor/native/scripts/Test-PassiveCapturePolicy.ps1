@@ -314,6 +314,173 @@ foreach ($retired in @(
         -Message "Shared passive lifecycle verifier still contains retired READY dialect '$retired'."
 }
 
+# EVERYTHING ABOVE THIS LINE IS A TEXT CENSUS, AND A TEXT CENSUS IS WHY RUN t36
+# LOST ITS TEARDOWN RECEIPT.
+#
+# The lifecycle verifier keeps a mirror of the Rust CaptureReadyV2 encoder --
+# the field order it appends in, and a rebuild of the authenticated payload --
+# so a receipt is admitted by something that did not merely read the recorder's
+# own claim back to itself. Lane EH gave the reserved u32 at offset 20 to
+# `CollectorFeatureBits` and the mirror stayed behind. Nothing here noticed:
+# every string this file counts was still present. t36 found out instead, after
+# a 60s window and a 718-hour fold, when the mirror refused the READY receipt,
+# took its custody authority down with it, and left the recorder's teardown
+# receipt -- 57 of 57 pinned sites restored to baseline -- unauthenticated, the
+# graded window open, the settings guard applied and the game running.
+#
+# So the mirror is now RUN here, against the real contract sources and against
+# real receipts, in the gate that costs seconds rather than in the one that
+# costs a capture.
+. $lifecyclePath
+
+# 1. The mirror against the contract it mirrors. This is the exact assertion
+#    t36 failed, and it needs no receipt and no game.
+$policyHookAuthority = Assert-PassiveReadySourceContractParity `
+    'vanilla_latest_2026_06_30'
+Assert-Policy `
+    -Condition ([uint16]$policyHookAuthority.Count -gt 0 -and
+        [uint16]$policyHookAuthority.ImportSlotCount -gt 0 -and
+        [string]$policyHookAuthority.Sha256 -cmatch '^[0-9a-f]{64}$') `
+    -Message 'Passive READY source-contract parity returned no hook authority.'
+$policyFeatureAuthority = Get-PassiveCollectorFeatureAuthority
+Assert-Policy `
+    -Condition ([uint32]$policyFeatureAuthority.DeclaredBit -eq 1 -and
+        [uint32]$policyFeatureAuthority.KnownMask -ge 1 -and
+        @($policyFeatureAuthority.FeatureNames).Count -gt 0) `
+    -Message 'Collector feature-bit authority could not be read from the contract.'
+
+# 2. The payload rebuild against receipts it did not produce. The expected
+#    digests are the receipts' OWN recorded values, so the only way to satisfy
+#    this is to lay the bytes out the way the collector laid them out.
+$dialectFixturePath = Join-Path `
+    $scriptDir 'PassiveCaptureReady.ReceiptDialects.fixture.v1.json'
+Assert-Policy `
+    -Condition (Test-Path -LiteralPath $dialectFixturePath -PathType Leaf) `
+    -Message "Passive READY receipt-dialect fixture is missing: $dialectFixturePath"
+$dialectFixture = Get-Content -LiteralPath $dialectFixturePath -Raw |
+    ConvertFrom-Json
+Assert-Policy `
+    -Condition ([string]$dialectFixture.schema -ceq
+        'hoi4-passive-capture-ready-receipt-dialects-fixture-v1') `
+    -Message 'Passive READY receipt-dialect fixture carries no schema.'
+$dialectCases = @($dialectFixture.cases)
+Assert-Policy `
+    -Condition ($dialectCases.Count -ge 3) `
+    -Message 'Passive READY receipt-dialect fixture covers fewer than three dialects.'
+$dialectDeclaredSeen = $false
+$dialectUndeclaredSeen = $false
+$dialectWords = [Collections.Generic.List[uint32]]::new()
+$dialectPinnedDigests = [Collections.Generic.List[string]]::new()
+foreach ($case in $dialectCases) {
+    $caseName = [string]$case.name
+    $receipt = $case.receipt
+
+    $declaredProperties = @(
+        Get-PassiveCaptureReadyDeclaredProperties -Ready $receipt
+    )
+    if ([bool]$case.expects_declaration) {
+        $dialectDeclaredSeen = $true
+        Assert-Policy `
+            -Condition ($declaredProperties.Count -eq 2) `
+            -Message "Passive READY dialect '$caseName' was not recognised as a declaring receipt."
+    } else {
+        $dialectUndeclaredSeen = $true
+        Assert-Policy `
+            -Condition ($declaredProperties.Count -eq 0) `
+            -Message "Passive READY dialect '$caseName' was not recognised as a pre-declaration receipt."
+    }
+
+    # The closed property set still has to be closed, in whichever dialect.
+    $expectedProperties = @(
+        'schema', 'status', 'capture_policy', 'pid',
+        'process_creation_filetime_utc', 'session_id', 'capture_id',
+        'requested_duration_ms', 'readiness_flags', 'validated_domain_count',
+        'scheduler_queue_capacity', 'scheduler_worker_count',
+        'allowed_hook_count', 'active_hook_count', 'clock_hour_raw',
+        'clock_observation_ordinal', 'target_executable_sha256',
+        'collector_dll_sha256',
+        'hook_allowlist_sha256', 'hook_outcomes_sha256',
+        'validated_domain_roster_sha256', 'clock_witness_sha256',
+        'scheduler_config_sha256', 'output_pipe_identity_sha256',
+        'zero_mutation_policy_sha256', 'session_id_sha256',
+        'capture_id_sha256', 'control_sha256', 'pipe_token_sha256',
+        'ready_payload_sha256', 'host_binding_sha256', 'host_validated',
+        'public_receipt_core_sha256', 'ready_ack_sha256'
+    ) + $declaredProperties
+    Assert-PassiveExactPropertySet `
+        -Value $receipt `
+        -Expected $expectedProperties `
+        -Label "Passive READY dialect '$caseName'"
+
+    $declarationFailures = @(
+        Get-PassiveCollectorBuildDeclarationFailures `
+            -Ready $receipt -FeatureAuthority $policyFeatureAuthority
+    )
+    Assert-Policy `
+        -Condition ($declarationFailures.Count -eq 0) `
+        -Message "Passive READY dialect '$caseName' build declaration is not self-consistent: $($declarationFailures -join '; ')"
+
+    if ($null -ne $case.expected_ready_payload_sha256) {
+        $observedPayloadSha = Get-PassiveCaptureReadyPayloadSha256 `
+            -Ready $receipt `
+            -PipeToken ([string]$dialectFixture.pipe_token)
+        Assert-Policy `
+            -Condition ($observedPayloadSha -ceq
+                [string]$case.expected_ready_payload_sha256) `
+            -Message "Passive READY dialect '$caseName' payload rebuild is $observedPayloadSha, not $($case.expected_ready_payload_sha256)."
+        $dialectWords.Add((Get-PassiveCaptureReadyFeatureBits -Ready $receipt))
+        $dialectPinnedDigests.Add([string]$case.expected_ready_payload_sha256)
+    }
+    if ($null -ne $case.expected_ready_ack_sha256) {
+        $observedAckSha = Get-PassiveCaptureReadyAckSha256 `
+            -Ready $receipt `
+            -PipeToken ([string]$dialectFixture.pipe_token)
+        Assert-Policy `
+            -Condition ($observedAckSha -ceq
+                [string]$case.expected_ready_ack_sha256) `
+            -Message "Passive READY dialect '$caseName' ACK rebuild is $observedAckSha, not $($case.expected_ready_ack_sha256)."
+    }
+}
+Assert-Policy `
+    -Condition ($dialectDeclaredSeen -and $dialectUndeclaredSeen) `
+    -Message 'Passive READY receipt-dialect fixture does not exercise both dialects.'
+
+# 3. THE PINNED CASES MUST BE ABLE TO DISAGREE.
+#
+#    Two dialects and two digests are not enough on their own. While the only
+#    nonzero word in the fixture was 1, an encoder that wrote a constant 1
+#    whenever the declaration property was present -- and a zero otherwise --
+#    reproduced every pinned digest while being wrong for every other feature
+#    word. So the fixture has to pin at least three DISTINCT words, and the
+#    digests they produce have to be as distinct as the words are. Both sides
+#    are derived from what the loop actually rebuilt rather than restated, so a
+#    fixture that quietly loses a case fails here instead of going quiet.
+$distinctWords = @($dialectWords | Sort-Object -Unique)
+$distinctDigests = @($dialectPinnedDigests | Sort-Object -Unique)
+Assert-Policy `
+    -Condition ($distinctWords.Count -ge 3) `
+    -Message "Passive READY payload rebuild is pinned at only $($distinctWords.Count) distinct feature word(s); an encoder ignoring the word's value would still pass."
+Assert-Policy `
+    -Condition ($distinctWords -contains 0) `
+    -Message 'Passive READY payload rebuild is not pinned at the undeclared (zero) feature word.'
+Assert-Policy `
+    -Condition ($distinctDigests.Count -eq $distinctWords.Count) `
+    -Message "Passive READY payload rebuild produced $($distinctDigests.Count) distinct digests for $($distinctWords.Count) distinct feature words; the word is not reaching the payload."
+
+#    And the two dialects must not be told apart by the digest: a receipt
+#    carrying the declaration pair with a ZERO word has to encode exactly what
+#    a pre-declaration receipt encodes, because that is what an undeclaring
+#    collector signs today.
+$zeroDigests = @(
+    for ($index = 0; $index -lt $dialectWords.Count; $index++) {
+        if ([uint32]$dialectWords[$index] -eq 0) { $dialectPinnedDigests[$index] }
+    }
+)
+Assert-Policy `
+    -Condition ($zeroDigests.Count -ge 2 -and
+        @($zeroDigests | Sort-Object -Unique).Count -eq 1) `
+    -Message 'A declared-but-zero feature word does not encode identically to a pre-declaration receipt.'
+
 # EMITTED AS JSON, NOT AS AN OBJECT, AND THAT IS LOAD-BEARING. Every consumer
 # runs this file in a CHILD `powershell.exe -File` and pipes the child's stdout
 # through `ConvertFrom-Json` (Invoke-CentralRustValidation.ps1, both the
