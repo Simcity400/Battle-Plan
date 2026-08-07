@@ -381,6 +381,15 @@ function Get-ProductionRustInputDigest {
         (Join-Path $repo "extractor\game_defs\verify_product_modset_capture_ready.py"),
         (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_live.py"),
         (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\stage_so_census.json"),
+        # The repository-level RE facade is owned by neither tree and sits
+        # outside every Rust input root, but the XN15L verifier above runs
+        # THROUGH it: the facade chooses which sink grader is applied and
+        # derives the wire and early-render constants the verifier grades
+        # against. Attesting the verifier while leaving the facade unattested
+        # would attest a file whose behaviour is decided elsewhere.
+        (Join-Path $repo "tools\hoi4_re\__init__.py"),
+        (Join-Path $repo "tools\hoi4_re\acquisition.py"),
+        (Join-Path $repo "tools\hoi4_re\wire_authority.py"),
         (Join-Path $repo "replay_interface\re_evidence\rendering_laws\M02\production_interleave_closure\contract.json")
     )) {
         if (-not (Test-Path -LiteralPath $extra -PathType Leaf)) { continue }
