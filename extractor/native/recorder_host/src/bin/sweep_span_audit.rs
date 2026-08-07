@@ -759,6 +759,11 @@ struct OutsideSegment {
 #[derive(Serialize)]
 struct Report {
     input_path: String,
+    /// WHAT BUILD PRODUCED THIS STREAM, read from the session manifest beside
+    /// it. Every column below is a span in microseconds; a diagnostic collector
+    /// changes what those spans cost. `diagnostic_build` is null whenever the
+    /// answer is unknown — absence is never a clean build.
+    collector_build: serde_json::Value,
     bytes_consumed: u64,
     records_seen: u64,
     parse_errors: Vec<String>,
@@ -904,6 +909,9 @@ impl ScanState {
             })
             .collect();
         Report {
+            collector_build: recorder_host::build_declaration::summary_json(
+                &recorder_host::build_declaration::for_stream(std::path::Path::new(&input_path)),
+            ),
             input_path,
             bytes_consumed: self.bytes_consumed,
             records_seen: self.records_seen,
@@ -961,6 +969,14 @@ fn line(label: &str, stats: &Stats) {
 }
 
 fn print_report(report: &Report) {
+    // BEFORE the spans it qualifies. See `hour_label_audit` for why the banner
+    // leads rather than trails.
+    print!(
+        "{}",
+        recorder_host::build_declaration::banner(&recorder_host::build_declaration::for_stream(
+            std::path::Path::new(&report.input_path)
+        ))
+    );
     println!("input                    {}", report.input_path);
     println!(
         "records                  {} ({} bytes)",

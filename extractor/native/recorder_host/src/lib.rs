@@ -1,4 +1,7 @@
 pub mod auto_attach;
+/// What build produced a capture, on the manifest and readable by the audit
+/// tools. See the module header for the t34/t35 defect it closes.
+pub mod build_declaration;
 pub mod campaign_identity;
 pub mod compact_domain_registry;
 pub mod control_transport;

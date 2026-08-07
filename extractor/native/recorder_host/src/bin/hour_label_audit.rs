@@ -24,6 +24,12 @@ const NOTABLE_FRAME_LIMIT: usize = 200;
 #[derive(Serialize)]
 struct AuditReport {
     input_path: String,
+    /// WHAT BUILD PRODUCED THIS STREAM, read from the session manifest beside
+    /// it. Every number in this report is a timing, and a diagnostic collector
+    /// changes what a capture costs — so this belongs at the top of the report,
+    /// not in a footnote. `state` is `manifest_absent`/`undeclared` when the
+    /// answer is unknown, and `diagnostic_build` stays null there.
+    collector_build: serde_json::Value,
     bytes_consumed: u64,
     records_seen: u64,
     parse_error_count: usize,
@@ -1171,6 +1177,9 @@ fn finish_report(input: &Path, mut state: AuditState) -> AuditReport {
     let prewarm_stats = stats(&mut state.prewarm_times);
     AuditReport {
         input_path: input.display().to_string(),
+        collector_build: recorder_host::build_declaration::summary_json(
+            &recorder_host::build_declaration::for_stream(input),
+        ),
         bytes_consumed: state.bytes_consumed,
         records_seen: state.records_seen,
         parse_error_count: state.errors.len(),
@@ -1341,6 +1350,15 @@ fn build_start_lateness(
 
 fn print_report(report: &AuditReport) -> io::Result<()> {
     let mut out = BufWriter::new(io::stdout().lock());
+    // BEFORE anything else. The banner qualifies every timing below it, and a
+    // reader who scrolls past a footnote is exactly how t34/t35 were compared
+    // against production for a day.
+    let declaration = recorder_host::build_declaration::for_stream(Path::new(&report.input_path));
+    write!(
+        out,
+        "{}",
+        recorder_host::build_declaration::banner(&declaration)
+    )?;
     writeln!(out, "hour_label_audit")?;
     writeln!(out, "input: {}", report.input_path)?;
     writeln!(out, "bytes consumed: {}", report.bytes_consumed)?;

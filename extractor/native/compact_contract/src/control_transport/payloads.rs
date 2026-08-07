@@ -55,6 +55,15 @@ pub enum PayloadError {
     InvalidDeclaredLength,
     /// A READY/ACK status word carried an unknown bit.
     UnknownStatusFlags(u32),
+    /// READY declared a collector feature bit this build has no name for. A
+    /// consumer cannot tell whether an unnamed feature is diagnostic, so the
+    /// payload is refused rather than decoded with the bit dropped.
+    UnknownCollectorFeatureBits(u32),
+    /// READY declared collector features WITHOUT
+    /// [`CollectorFeatureBits::DECLARED`]. A producer that knows the word sets
+    /// that bit; a value that names features without it cannot be told apart
+    /// from a corrupted reserved field.
+    UndeclaredCollectorFeatureBits(u32),
     /// A READY/ACK status word omitted a required readiness fact.
     MissingRequiredStatusFlags { required: u32, observed: u32 },
     /// A field that must identify real production state was zero.
@@ -111,6 +120,14 @@ impl core::fmt::Display for PayloadError {
                     "capture-ready payload has unknown status flags {flags:#x}"
                 )
             }
+            Self::UnknownCollectorFeatureBits(bits) => write!(
+                f,
+                "capture-ready payload declares unknown collector feature bits {bits:#x}"
+            ),
+            Self::UndeclaredCollectorFeatureBits(bits) => write!(
+                f,
+                "capture-ready payload collector feature bits {bits:#x} omit the declaration bit"
+            ),
             Self::MissingRequiredStatusFlags { required, observed } => write!(
                 f,
                 "capture-ready payload flags {observed:#x} omit required set {required:#x}"
@@ -435,6 +452,158 @@ impl CaptureReadyFlags {
     }
 }
 
+/// WHICH COMPILE-TIME CARGO FEATURES the collector that produced a capture was
+/// built with.
+///
+/// # Why a capture has to declare its own build
+///
+/// The collector DLL's sha256 has always been on this payload, and a sha names
+/// a build exactly — but only to somebody who already has the build. It answers
+/// "was this the same binary as that one"; it cannot answer "was this binary
+/// compiled with the read tracer", which is the question that decides whether a
+/// capture's TIMINGS are evidence at all.
+///
+/// Runs `t34` and `t35` (2026-08-07) both carried the `range-tracer` feature
+/// DLL. Nothing in either manifest said so. Their frame timings were compared
+/// against an untraced run's and a 12.7 ms shift was investigated as a
+/// production regression for most of a day before the feature build was
+/// noticed, from a sha alone. This word is what makes that a read rather than a
+/// deduction.
+///
+/// # Bit 0 is the declaration itself
+///
+/// This word occupies what was a must-be-zero reserved `u32`, so an all-zero
+/// value is exactly what every collector built before this contract sends. That
+/// is why [`Self::DECLARED`] exists and why every declaring build sets it: `0`
+/// means "this producer predates the declaration" — ABSENT — and it must never
+/// be read as "this producer declared no features". Those are different facts
+/// and only one of them licenses a timing comparison.
+///
+/// # Stability
+///
+/// Assigned bits are append-only and are a stable ABI. An unassigned bit is
+/// refused ([`PayloadError::UnknownCollectorFeatureBits`]) rather than ignored:
+/// a consumer that does not know a feature cannot know whether it is
+/// diagnostic, and silently dropping it is how a diagnostic build passes for a
+/// production one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CollectorFeatureBits(u32);
+
+impl CollectorFeatureBits {
+    /// This producer knows about this word. Set by every declaring build,
+    /// INCLUDING one compiled with no optional feature at all.
+    pub const DECLARED: u32 = 1 << 0;
+    /// `collector/Cargo.toml` `test-support`.
+    pub const TEST_SUPPORT: u32 = 1 << 1;
+    /// `collector/Cargo.toml` `range-tracer` — the capture-floor read tracer.
+    pub const RANGE_TRACER: u32 = 1 << 2;
+    /// `collector/Cargo.toml` `unshipped-a25-runtime-text-evidence`.
+    pub const UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE: u32 = 1 << 3;
+    /// `collector/Cargo.toml` `unshipped-a39-character-presentation-evidence`.
+    pub const UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE: u32 = 1 << 4;
+    /// `collector/Cargo.toml` `unshipped-a31-focus-presentation-evidence`.
+    pub const UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE: u32 = 1 << 5;
+
+    pub const KNOWN_MASK: u32 = Self::DECLARED
+        | Self::TEST_SUPPORT
+        | Self::RANGE_TRACER
+        | Self::UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE
+        | Self::UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE
+        | Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE;
+
+    /// The features whose presence makes a capture inadmissible as TIMING
+    /// evidence, or makes it interact with the engine in a way ordinary
+    /// production does not.
+    ///
+    /// `range-tracer` records every guarded read and is the reason this word
+    /// exists. The three `unshipped-*` features install detours or fixtures
+    /// that no shipped capture carries. `test-support` compiles test-only
+    /// lifecycle helpers into the lane crates. None of them belong in a capture
+    /// whose numbers are compared against production.
+    pub const DIAGNOSTIC_MASK: u32 = Self::TEST_SUPPORT
+        | Self::RANGE_TRACER
+        | Self::UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE
+        | Self::UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE
+        | Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE;
+
+    /// Each assigned bit spelled as the CARGO FEATURE NAME it stands for, so a
+    /// manifest and an operator's `--features` line use the same words.
+    /// Ascending by bit; `DECLARED` is not a feature and is not listed.
+    pub const FEATURE_NAMES: &'static [(u32, &'static str)] = &[
+        (Self::TEST_SUPPORT, "test-support"),
+        (Self::RANGE_TRACER, "range-tracer"),
+        (
+            Self::UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE,
+            "unshipped-a25-runtime-text-evidence",
+        ),
+        (
+            Self::UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE,
+            "unshipped-a39-character-presentation-evidence",
+        ),
+        (
+            Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE,
+            "unshipped-a31-focus-presentation-evidence",
+        ),
+    ];
+
+    /// The undeclared value: what a producer that predates this contract sends.
+    pub const fn undeclared() -> Self {
+        Self(0)
+    }
+
+    pub fn from_bits(bits: u32) -> Result<Self, PayloadError> {
+        if bits == 0 {
+            return Ok(Self(0));
+        }
+        let unknown = bits & !Self::KNOWN_MASK;
+        if unknown != 0 {
+            return Err(PayloadError::UnknownCollectorFeatureBits(unknown));
+        }
+        if bits & Self::DECLARED == 0 {
+            return Err(PayloadError::UndeclaredCollectorFeatureBits(bits));
+        }
+        Ok(Self(bits))
+    }
+
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Whether this producer declared its build at all. `false` is ABSENT, not
+    /// "no features".
+    pub const fn declared(self) -> bool {
+        self.0 & Self::DECLARED != 0
+    }
+
+    /// `Some(true)` when a timing-affecting feature is compiled in,
+    /// `Some(false)` when the producer declared a clean build, `None` when it
+    /// declared nothing. The three are different and a caller that flattens
+    /// `None` into `false` reintroduces the t35 defect.
+    pub const fn diagnostic_build(self) -> Option<bool> {
+        if self.declared() {
+            Some(self.0 & Self::DIAGNOSTIC_MASK != 0)
+        } else {
+            None
+        }
+    }
+
+    /// The compiled features by cargo name, ascending, or `None` when this
+    /// producer declared nothing. An empty vector is a real observation: a
+    /// declaring build with no optional feature.
+    pub fn feature_names(self) -> Option<Vec<&'static str>> {
+        if !self.declared() {
+            return None;
+        }
+        Some(
+            Self::FEATURE_NAMES
+                .iter()
+                .filter(|(bit, _)| self.0 & bit != 0)
+                .map(|(_, name)| *name)
+                .collect(),
+        )
+    }
+}
+
 /// Collector-authored fixed passive-acquisition startup receipt.
 ///
 /// The HMAC binds the exact body to the per-attach token. It is not a
@@ -446,6 +615,11 @@ impl CaptureReadyFlags {
 pub struct CaptureReadyV2 {
     pub flags: CaptureReadyFlags,
     pub pid: u32,
+    /// The producer's own compile-time feature set. Occupies the `u32` at
+    /// offset 20 that was previously reserved-must-be-zero, so the payload
+    /// LENGTH and every offset after it are unchanged and an undeclaring
+    /// collector still encodes byte-identically. See [`CollectorFeatureBits`].
+    pub collector_features: CollectorFeatureBits,
     pub process_creation_filetime_utc: u64,
     pub requested_duration_ms: u32,
     pub validated_domain_count: u32,
@@ -486,7 +660,7 @@ impl CaptureReadyV2 {
         out.extend_from_slice(&(CAPTURE_READY_LEN as u32).to_le_bytes());
         out.extend_from_slice(&self.flags.bits().to_le_bytes());
         out.extend_from_slice(&self.pid.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&self.collector_features.bits().to_le_bytes());
         out.extend_from_slice(&self.process_creation_filetime_utc.to_le_bytes());
         out.extend_from_slice(&self.requested_duration_ms.to_le_bytes());
         out.extend_from_slice(&self.validated_domain_count.to_le_bytes());
@@ -528,12 +702,13 @@ impl CaptureReadyV2 {
             &bytes[CAPTURE_READY_AUTH_OFFSET..],
         )?;
         check_capture_prefix(bytes, CAPTURE_READY_MAGIC, CAPTURE_READY_LEN)?;
-        if read_u32(bytes, 20) != 0 || read_u16(bytes, 50) != 0 {
+        if read_u16(bytes, 50) != 0 {
             return Err(PayloadError::NonZeroReserved);
         }
         let value = Self {
             flags: CaptureReadyFlags::from_bits(read_u32(bytes, 12))?,
             pid: read_u32(bytes, 16),
+            collector_features: CollectorFeatureBits::from_bits(read_u32(bytes, 20))?,
             process_creation_filetime_utc: read_u64(bytes, 24),
             requested_duration_ms: read_u32(bytes, 32),
             validated_domain_count: read_u32(bytes, 36),
@@ -671,6 +846,11 @@ pub fn capture_ready_payload_sha256(bytes: &[u8]) -> [u8; 32] {
 
 fn validate_ready(value: &CaptureReadyV2) -> Result<(), PayloadError> {
     CaptureReadyFlags::from_bits(value.flags.bits())?;
+    // Re-run on the way OUT as well as in. `CollectorFeatureBits` can only be
+    // built through `from_bits` outside this module, but the encoder is the
+    // last place an in-process construction can be caught before an unnameable
+    // build claim is signed and shipped.
+    CollectorFeatureBits::from_bits(value.collector_features.bits())?;
     if value.flags.bits() != CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE {
         return Err(PayloadError::MissingRequiredStatusFlags {
             required: CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE,
@@ -1121,6 +1301,10 @@ mod tests {
             flags: CaptureReadyFlags::from_bits(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE)
                 .unwrap(),
             pid: 42,
+            collector_features: CollectorFeatureBits::from_bits(
+                CollectorFeatureBits::DECLARED | CollectorFeatureBits::RANGE_TRACER,
+            )
+            .unwrap(),
             process_creation_filetime_utc: 0x0102_0304_0506_0708,
             requested_duration_ms: 60_000,
             validated_domain_count: 76,
@@ -1159,6 +1343,9 @@ mod tests {
         assert_eq!(read_u32(&wire, 8) as usize, CAPTURE_READY_LEN);
         assert_eq!(read_u32(&wire, 12), CaptureReadyFlags::KNOWN_MASK);
         assert_eq!(read_u32(&wire, 16), fields.pid);
+        // The build declaration sits in what used to be reserved-must-be-zero,
+        // at the same offset and the same width, so nothing after it moved.
+        assert_eq!(read_u32(&wire, 20), fields.collector_features.bits());
         assert_eq!(read_u64(&wire, 24), fields.process_creation_filetime_utc);
         assert_eq!(read_u32(&wire, 36), fields.validated_domain_count);
         assert_eq!(read_u32(&wire, 40), fields.scheduler_queue_capacity);
@@ -1187,6 +1374,71 @@ mod tests {
     }
 
     #[test]
+    fn collector_feature_bits_separate_undeclared_from_clean_from_diagnostic() {
+        let undeclared = CollectorFeatureBits::from_bits(0).unwrap();
+        assert!(!undeclared.declared());
+        // ABSENT, never `false`. A consumer that reads this as "clean build"
+        // is the t35 defect.
+        assert_eq!(undeclared.diagnostic_build(), None);
+        assert_eq!(undeclared.feature_names(), None);
+
+        let clean = CollectorFeatureBits::from_bits(CollectorFeatureBits::DECLARED).unwrap();
+        assert!(clean.declared());
+        assert_eq!(clean.diagnostic_build(), Some(false));
+        assert_eq!(clean.feature_names(), Some(Vec::new()));
+
+        let traced = CollectorFeatureBits::from_bits(
+            CollectorFeatureBits::DECLARED | CollectorFeatureBits::RANGE_TRACER,
+        )
+        .unwrap();
+        assert_eq!(traced.diagnostic_build(), Some(true));
+        assert_eq!(traced.feature_names(), Some(vec!["range-tracer"]));
+
+        // Every assigned bit has a name, and no name is duplicated: the
+        // manifest and an operator's `--features` line use the same words.
+        let named = CollectorFeatureBits::FEATURE_NAMES
+            .iter()
+            .fold(0u32, |acc, (bit, _)| acc | bit);
+        assert_eq!(named, CollectorFeatureBits::KNOWN_MASK & !CollectorFeatureBits::DECLARED);
+        let mut names: Vec<&str> = CollectorFeatureBits::FEATURE_NAMES
+            .iter()
+            .map(|(_, name)| *name)
+            .collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count);
+        // Every named feature is diagnostic; the declaration bit is not.
+        assert_eq!(CollectorFeatureBits::DIAGNOSTIC_MASK, named);
+
+        assert_eq!(
+            CollectorFeatureBits::from_bits(1 << 31),
+            Err(PayloadError::UnknownCollectorFeatureBits(1 << 31))
+        );
+        assert_eq!(
+            CollectorFeatureBits::from_bits(CollectorFeatureBits::TEST_SUPPORT),
+            Err(PayloadError::UndeclaredCollectorFeatureBits(
+                CollectorFeatureBits::TEST_SUPPORT
+            ))
+        );
+    }
+
+    #[test]
+    fn passive_capture_ready_from_an_undeclaring_collector_still_decodes() {
+        // A collector built before the declaration existed sends the old
+        // all-zero reserved word. That capture is still admissible; what it is
+        // not is a capture whose build is KNOWN.
+        let token = b"per-attach CSPRNG token";
+        let mut fields = ready_fields();
+        fields.collector_features = CollectorFeatureBits::undeclared();
+        let wire = fields.encode_authenticated(token).unwrap();
+        assert_eq!(read_u32(&wire, 20), 0);
+        let decoded = CaptureReadyV2::decode_authenticated(&wire, token).unwrap();
+        assert_eq!(decoded, fields);
+        assert_eq!(decoded.collector_features.diagnostic_build(), None);
+    }
+
+    #[test]
     fn passive_capture_ready_rejects_noncanonical_header_reserved_flags_and_tag() {
         let token = b"per-attach CSPRNG token";
         let wire = ready_fields().encode_authenticated(token).unwrap();
@@ -1200,7 +1452,21 @@ mod tests {
             (4, 1, PayloadError::UnsupportedVersion(1)),
             (6, 1, PayloadError::InvalidDeclaredLength),
             (8, 1, PayloadError::InvalidDeclaredLength),
-            (20, 1, PayloadError::NonZeroReserved),
+            // Offset 20 is no longer reserved: it is the collector's build
+            // declaration. An unassigned bit and a feature set that omits the
+            // declaration bit are its two refusals.
+            (
+                23,
+                0x80,
+                PayloadError::UnknownCollectorFeatureBits(0x8000_0000),
+            ),
+            (
+                20,
+                CollectorFeatureBits::RANGE_TRACER as u8,
+                PayloadError::UndeclaredCollectorFeatureBits(
+                    CollectorFeatureBits::RANGE_TRACER,
+                ),
+            ),
             (50, 1, PayloadError::NonZeroReserved),
         ];
         for &(offset, replacement, expected) in mutations {
