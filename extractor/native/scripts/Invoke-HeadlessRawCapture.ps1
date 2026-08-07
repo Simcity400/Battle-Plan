@@ -161,6 +161,39 @@ param(
     # diagnostics), so a trimmed measurement run cannot be audited afterward.
     [switch]$KeepSpoolAfterSeal,
 
+    # Restrict BOTH hoi4.exe and collector_record to this many PHYSICAL cores,
+    # so a capture on this machine approximates the core count of the 4c/8 GB
+    # ship machine the capture floor targets. 0 -- the default -- applies no
+    # mask and leaves every process where the scheduler puts it.
+    #
+    # PHYSICAL cores, not logical processors, and that distinction is the whole
+    # point. Masking to logical processors 0..3 on an SMT machine selects TWO
+    # physical cores and their siblings -- a 2-core machine wearing a 4-core
+    # label -- and would overstate the floor's cost by roughly a factor of two
+    # while looking perfectly correct in Task Manager. The mask is therefore
+    # built from GetLogicalProcessorInformationEx's per-core affinity masks and
+    # never from an index range.
+    #
+    # 1 is refused below rather than range-excluded, because 0 has to stay
+    # available as the off switch. A single core is not a floor anyone ships to
+    # and it removes the only thing this switch exists to measure: how the
+    # engine and the sweep compete for cores.
+    #
+    # What this does NOT emulate: per-core speed, cache size, and memory
+    # bandwidth. A masked 9800X3D keeps its whole 96 MB L3 and its full DRAM
+    # bandwidth, so a masked run is a LOWER BOUND on a real 4c/8 GB machine.
+    # The 8 GB half is not emulated at all -- HARNESS_CPU_AFFINITY_V1.json
+    # records why in the run directory that used it.
+    [ValidateRange(0, 1024)]
+    [int]$CpuAffinityCores = 0,
+
+    # Select one logical processor per chosen core (a 4c/4t machine) instead of
+    # every sibling of those cores (a 4c/8t machine). Both are real shipping
+    # configurations and they do not cost the same: the sweep's 12 reader lanes
+    # gain from SMT, the engine's critical path much less. Default is every
+    # sibling, which is the more common cheap 4-core part.
+    [switch]$CpuAffinityOneThreadPerCore,
+
     # Override the derived production roster with an explicit domain list.
     # Used to measure how the injection-crash rate scales with the number of
     # installed hooks; not a production configuration.
@@ -957,6 +990,12 @@ if ($EvidenceOnlyDriveGame) {
 if ($Speed -ne 5) {
     throw 'Every graded capture window is speed-5-only; lower speeds are diagnostic and cannot use this promotion harness.'
 }
+if ($CpuAffinityCores -eq 1) {
+    throw '-CpuAffinityCores 1 is refused. Use 0 to leave the scheduler alone, or 2 or more to emulate a floor machine; a one-core mask measures nothing this switch exists to measure.'
+}
+if ($CpuAffinityOneThreadPerCore -and $CpuAffinityCores -eq 0) {
+    throw '-CpuAffinityOneThreadPerCore selects logical processors within the cores -CpuAffinityCores chooses, so it means nothing on its own.'
+}
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir '..\..\..')).Path
 $releaseRoot = Join-Path $repoRoot '.cargo-target\release'
 $nativeRoot = Join-Path $repoRoot 'extractor\native'
@@ -1272,6 +1311,366 @@ function Confirm-CollectorTeardownReceipt {
     return $true
 }
 
+# --- 4c floor emulation: CPU affinity ---------------------------------------
+#
+# Every published 4-core number for this capture is DERIVED from measurements
+# taken on a 16-logical-processor dev machine; none of them has been measured
+# with four cores. These functions make the core-count half of the floor
+# testable here by pinning the engine and the recorder to the same n physical
+# cores, so they compete for those cores exactly as they would on an n-core box.
+#
+# The topology comes from the OS rather than from an assumption about how
+# logical processors are numbered. Sibling numbering is a convention, not a
+# contract, and on a hybrid part the cores are not even interchangeable; a mask
+# built from a guessed layout is wrong in a way that still produces a plausible
+# number, which is the worst failure available here.
+if ($null -eq ('Hoi4MpStats.CpuTopologyNativeMethods' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace Hoi4MpStats {
+    public static class CpuTopologyNativeMethods {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetLogicalProcessorInformationEx(
+            int relationshipType,
+            IntPtr buffer,
+            ref uint returnedLength);
+    }
+}
+'@
+}
+
+# KAFFINITY is pointer-width and PowerShell has no unsigned shift that survives
+# bit 63, so masks are carried as [uint64] and manipulated through their bytes.
+function Get-Hoi4AffinityBitIndexes {
+    param([Parameter(Mandatory = $true)][uint64]$Mask)
+
+    $bits = [System.Collections.BitArray]::new(
+        [System.BitConverter]::GetBytes($Mask)
+    )
+    $indexes = New-Object System.Collections.Generic.List[int]
+    for ($bit = 0; $bit -lt $bits.Length; $bit++) {
+        if ($bits[$bit]) { [void]$indexes.Add($bit) }
+    }
+    return $indexes.ToArray()
+}
+
+function New-Hoi4AffinityMask {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][int[]]$BitIndexes)
+
+    $bytes = New-Object byte[] 8
+    foreach ($bit in $BitIndexes) {
+        if ($bit -lt 0 -or $bit -ge 64) {
+            throw "Logical processor index $bit is outside the 64-bit affinity mask of a single processor group."
+        }
+        $byte = [int][math]::Floor($bit / 8)
+        $bytes[$byte] = [byte]($bytes[$byte] -bor (1 -shl ($bit % 8)))
+    }
+    return [System.BitConverter]::ToUInt64($bytes, 0)
+}
+
+function ConvertTo-Hoi4AffinityUInt64 {
+    param([Parameter(Mandatory = $true)][IntPtr]$Value)
+
+    # A mask with bit 63 set reads back as a NEGATIVE Int64, and a direct
+    # [uint64] cast of that throws. Reinterpret the bytes instead.
+    return [System.BitConverter]::ToUInt64(
+        [System.BitConverter]::GetBytes($Value.ToInt64()),
+        0
+    )
+}
+
+function Format-Hoi4AffinityMask {
+    param([Parameter(Mandatory = $true)][uint64]$Mask)
+
+    return ('0x{0:x16}' -f $Mask)
+}
+
+# One record per PHYSICAL core, carrying the affinity mask of every logical
+# processor on that core plus its efficiency class and processor group.
+function Get-Hoi4PhysicalCoreTopology {
+    $relationProcessorCore = 0
+    [uint32]$length = 0
+    $null = [Hoi4MpStats.CpuTopologyNativeMethods]::GetLogicalProcessorInformationEx(
+        $relationProcessorCore,
+        [IntPtr]::Zero,
+        [ref]$length
+    )
+    $sizeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($length -eq 0) {
+        throw [ComponentModel.Win32Exception]::new(
+            $sizeError,
+            'GetLogicalProcessorInformationEx could not size the processor-core table'
+        )
+    }
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal([int]$length)
+    try {
+        if (-not [Hoi4MpStats.CpuTopologyNativeMethods]::GetLogicalProcessorInformationEx(
+                $relationProcessorCore,
+                $buffer,
+                [ref]$length)) {
+            throw [ComponentModel.Win32Exception]::new(
+                [Runtime.InteropServices.Marshal]::GetLastWin32Error(),
+                'GetLogicalProcessorInformationEx failed for RelationProcessorCore'
+            )
+        }
+        $cores = New-Object System.Collections.Generic.List[object]
+        $offset = 0
+        $coreIndex = 0
+        while ($offset -lt [int]$length) {
+            $record = [IntPtr]::Add($buffer, $offset)
+            $relationship = [Runtime.InteropServices.Marshal]::ReadInt32($record, 0)
+            $size = [Runtime.InteropServices.Marshal]::ReadInt32($record, 4)
+            # A zero or negative size would walk this loop forever or backwards.
+            if ($size -le 0) {
+                throw "GetLogicalProcessorInformationEx returned a $size-byte record; the processor-core table cannot be walked."
+            }
+            if ($offset + $size -gt [int]$length) {
+                throw "GetLogicalProcessorInformationEx record at offset $offset claims $size bytes, past the $length-byte table."
+            }
+            if ($relationship -eq $relationProcessorCore) {
+                # PROCESSOR_RELATIONSHIP begins at offset 8: Flags, then
+                # EfficiencyClass, 20 reserved bytes, GroupCount at 30, and the
+                # GROUP_AFFINITY array (16 bytes each on x64) at 32.
+                $efficiencyClass = [int][Runtime.InteropServices.Marshal]::ReadByte($record, 9)
+                $groupCount = [int][Runtime.InteropServices.Marshal]::ReadInt16($record, 30)
+                if ($groupCount -ne 1) {
+                    throw "Physical core $coreIndex spans $groupCount processor groups. A single-mask affinity plan cannot express that; run the floor measurement on a machine with one processor group."
+                }
+                $mask = [System.BitConverter]::ToUInt64(
+                    [System.BitConverter]::GetBytes(
+                        [Runtime.InteropServices.Marshal]::ReadInt64($record, 32)
+                    ),
+                    0
+                )
+                $group = [int][Runtime.InteropServices.Marshal]::ReadInt16($record, 40)
+                $logicalProcessors = @(Get-Hoi4AffinityBitIndexes -Mask $mask)
+                if ($logicalProcessors.Count -eq 0) {
+                    throw "Physical core $coreIndex reported an empty affinity mask."
+                }
+                [void]$cores.Add([pscustomobject]@{
+                    CoreIndex                   = $coreIndex
+                    EfficiencyClass             = $efficiencyClass
+                    Group                       = $group
+                    Mask                        = $mask
+                    LogicalProcessors           = $logicalProcessors
+                    PrimaryLogicalProcessor     = $logicalProcessors[0]
+                })
+                $coreIndex++
+            }
+            $offset += $size
+        }
+        if ($cores.Count -eq 0) {
+            throw 'GetLogicalProcessorInformationEx reported no physical cores.'
+        }
+        return $cores.ToArray()
+    } finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
+    }
+}
+
+# Choose the cores and produce the one mask both processes will share. They
+# SHARE it deliberately: a floor machine has n cores in total, not n for the
+# game and another n for the recorder, and the whole question this switch exists
+# to answer is what happens when the engine and the sweep compete for them.
+function Get-Hoi4CpuAffinityPlan {
+    param(
+        [Parameter(Mandatory = $true)][int]$CoreCount,
+        [Parameter(Mandatory = $true)][bool]$OneThreadPerCore
+    )
+
+    if ($CoreCount -lt 2) {
+        throw "A CPU affinity plan needs at least 2 physical cores; $CoreCount was requested."
+    }
+    $topology = @(Get-Hoi4PhysicalCoreTopology)
+
+    # Keep the selection homogeneous. On a hybrid part, four cores drawn from
+    # both classes is not a 4-core machine anyone ships, and the resulting
+    # number could not be compared with anything. Prefer the class with the most
+    # cores, and on a tie the more performant one (a higher EfficiencyClass is
+    # the faster class).
+    $classes = @(
+        $topology |
+            Group-Object -Property EfficiencyClass |
+            Sort-Object `
+                @{ Expression = { $_.Count }; Descending = $true }, `
+                @{ Expression = { [int]$_.Name }; Descending = $true }
+    )
+    $chosenClass = $classes[0]
+    $available = @($chosenClass.Group | Sort-Object -Property CoreIndex)
+    if ($available.Count -lt $CoreCount) {
+        $inventory = (
+            $classes | ForEach-Object { "class $($_.Name)=$($_.Count)" }
+        ) -join ', '
+        throw "-CpuAffinityCores $CoreCount exceeds the largest homogeneous core group on this machine ($inventory). Pick a count that fits one class."
+    }
+    $selected = @($available[0..($CoreCount - 1)])
+
+    $groups = @($selected | ForEach-Object { $_.Group } | Sort-Object -Unique)
+    if ($groups.Count -ne 1) {
+        throw "The selected cores span processor groups $($groups -join ','). Affinity masks are per-group; this plan cannot be applied."
+    }
+
+    # Refuse anything this script cannot express, rather than applying a mask
+    # that reads back correct and means something else.
+    #
+    # `Process.ProcessorAffinity` is SetProcessAffinityMask, which carries a
+    # bare KAFFINITY and no group. Windows applies it to the process's PRIMARY
+    # group. So on a multi-group machine a plan whose cores live in group 1
+    # would put group 1's bit NUMBERS onto group 0's processors -- different
+    # cores entirely -- and the numeric read-back below would confirm it,
+    # because the number is what it asked for. The measurement would be wrong
+    # and would look right, which is the one failure worth failing closed on.
+    # (Codex review 019fdc22-13b0-7c93-a8fc-f71ae498a852, finding 9.)
+    $machineGroups = @($topology | ForEach-Object { $_.Group } | Sort-Object -Unique)
+    if ($machineGroups.Count -ne 1 -or [int]$machineGroups[0] -ne 0 -or [int]$groups[0] -ne 0) {
+        throw "This machine reports processor group(s) $($machineGroups -join ',') and the plan selected group $($groups[0]). The affinity API this harness uses carries no group and silently targets the process's primary group, so only a single-group (group 0) machine can be masked correctly here. Use a group-aware tool or a single-group machine."
+    }
+
+    $bits = New-Object System.Collections.Generic.List[int]
+    foreach ($core in $selected) {
+        if ($OneThreadPerCore) {
+            [void]$bits.Add($core.PrimaryLogicalProcessor)
+        } else {
+            foreach ($logical in $core.LogicalProcessors) { [void]$bits.Add($logical) }
+        }
+    }
+    $mask = New-Hoi4AffinityMask -BitIndexes $bits.ToArray()
+    if ($mask -eq 0) {
+        throw 'The computed affinity mask selected no logical processor.'
+    }
+
+    return [pscustomobject]@{
+        RequestedCores            = $CoreCount
+        OneThreadPerCore          = $OneThreadPerCore
+        EfficiencyClass           = [int]$chosenClass.Name
+        Group                     = [int]$groups[0]
+        Mask                      = $mask
+        MaskHex                   = (Format-Hoi4AffinityMask -Mask $mask)
+        SelectedCoreIndexes       = @($selected | ForEach-Object { $_.CoreIndex })
+        LogicalProcessors         = @(Get-Hoi4AffinityBitIndexes -Mask $mask)
+        MachinePhysicalCores      = $topology.Count
+        MachineLogicalProcessors  = ($topology | ForEach-Object { $_.LogicalProcessors.Count } | Measure-Object -Sum).Sum
+    }
+}
+
+# Apply the mask to one already-created process and PROVE it took.
+#
+# Post-create is the only option for the game: it is launched through
+# Win32_Process.Create (see the launch path below) precisely so it inherits
+# nothing from this host, and WMI offers no creation-time affinity. The PID is
+# therefore re-bound to its creation epoch here rather than trusted, because
+# between the launch and this call the only thing tying a number to a process is
+# that epoch. Threads inherit the process affinity at creation, so applying this
+# before injection also covers every reader lane the collector starts later.
+function Set-Hoi4ProcessAffinity {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][uint64]$Mask,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][AllowNull()][object]$ExpectedCreationFiletimeUtc,
+        # Receives the mask this process had BEFORE the change, published the
+        # instant it is read and before anything is written. The return value
+        # cannot do that job: this function can mutate a user-owned game and
+        # then throw during verification, and a caller that learns the prior
+        # mask only from a successful return has no way to put it back.
+        # (Codex review 019fdc22-13b0-7c93-a8fc-f71ae498a852, finding 8.)
+        [AllowNull()][ref]$PriorMaskOut
+    )
+
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    if ($null -ne $ExpectedCreationFiletimeUtc) {
+        $observed = [uint64]($process.StartTime.ToUniversalTime().ToFileTimeUtc())
+        if ($observed -ne [uint64]$ExpectedCreationFiletimeUtc) {
+            throw "$Label PID $ProcessId creation epoch changed before its CPU affinity was applied (expected=$ExpectedCreationFiletimeUtc observed=$observed)."
+        }
+    }
+    # A PID whose process has just exited is still resolvable for as long as
+    # something holds a handle on it, and `ProcessorAffinity` then reads back as
+    # $null rather than throwing. Without this the run reports "Cannot convert
+    # null to type System.IntPtr" -- a PowerShell type error standing in for the
+    # only fact that matters, which is that the process is gone.
+    if ($process.HasExited) {
+        throw "$Label PID $ProcessId has exited; its CPU affinity cannot be set."
+    }
+    $priorAffinity = $process.ProcessorAffinity
+    if ($null -eq $priorAffinity) {
+        throw "$Label PID $ProcessId exposed no processor affinity mask; the process is exiting or the handle lost its query right."
+    }
+    $prior = ConvertTo-Hoi4AffinityUInt64 -Value $priorAffinity
+    if ($null -ne $PriorMaskOut) {
+        $PriorMaskOut.Value = $prior
+    }
+    $requested = [IntPtr][System.BitConverter]::ToInt64(
+        [System.BitConverter]::GetBytes($Mask),
+        0
+    )
+    $process.ProcessorAffinity = $requested
+    # Read back through a FRESH handle. The setter succeeding is not proof the
+    # mask took: Windows silently intersects a requested mask with the system
+    # affinity mask and with any job-object CPU rate/affinity limit in force, so
+    # a partially-applied mask would otherwise be measured as if it were whole.
+    # Everything from here can fail with the process ALREADY changed, so each
+    # failure puts the old mask back before it reports. Rolling back is
+    # best-effort by nature -- if the write failed the restore may fail too --
+    # so its outcome is named in the message rather than assumed.
+    $verifyFailure = $null
+    $applied = 0
+    try {
+        $verify = Get-Process -Id $ProcessId -ErrorAction Stop
+        $verifyAffinity = $verify.ProcessorAffinity
+        if ($null -eq $verifyAffinity) {
+            throw "could not be re-read, so the mask is unverified"
+        }
+        $applied = ConvertTo-Hoi4AffinityUInt64 -Value $verifyAffinity
+        if ($applied -ne $Mask) {
+            throw "kept affinity $(Format-Hoi4AffinityMask -Mask $applied)"
+        }
+    } catch {
+        $verifyFailure = ($_.Exception.Message -replace '\s+', ' ').Trim()
+    }
+    if ($null -ne $verifyFailure) {
+        $rollback = 'rolled back'
+        try {
+            (Get-Process -Id $ProcessId -ErrorAction Stop).ProcessorAffinity = $priorAffinity
+        } catch {
+            $rollback = "ROLLBACK FAILED, restore $(Format-Hoi4AffinityMask -Mask $prior) by hand: $(($_.Exception.Message -replace '\s+', ' ').Trim())"
+        }
+        throw "$Label PID $ProcessId $verifyFailure after $(Format-Hoi4AffinityMask -Mask $Mask) was requested ($rollback)."
+    }
+    Write-Host "phase=cpu_affinity_applied target=$Label pid=$ProcessId mask=$(Format-Hoi4AffinityMask -Mask $applied) prior=$(Format-Hoi4AffinityMask -Mask $prior)"
+    return [pscustomobject]@{
+        Label       = $Label
+        ProcessId   = $ProcessId
+        PriorMask   = $prior
+        AppliedMask = $applied
+    }
+}
+
+$cpuAffinityPlan = $null
+$cpuAffinityApplied = New-Object System.Collections.Generic.List[object]
+$gameAffinityPrior = $null
+if ($CpuAffinityCores -gt 0) {
+    $cpuAffinityPlan = Get-Hoi4CpuAffinityPlan `
+        -CoreCount $CpuAffinityCores `
+        -OneThreadPerCore ([bool]$CpuAffinityOneThreadPerCore)
+    Write-Host (
+        'phase=cpu_affinity_plan ' +
+        "cores=$($cpuAffinityPlan.RequestedCores) " +
+        "one_thread_per_core=$($cpuAffinityPlan.OneThreadPerCore) " +
+        "mask=$($cpuAffinityPlan.MaskHex) " +
+        "group=$($cpuAffinityPlan.Group) " +
+        "efficiency_class=$($cpuAffinityPlan.EfficiencyClass) " +
+        "cores_selected=$($cpuAffinityPlan.SelectedCoreIndexes -join ',') " +
+        "logical_processors=$($cpuAffinityPlan.LogicalProcessors -join ',') " +
+        "machine_cores=$($cpuAffinityPlan.MachinePhysicalCores) " +
+        "machine_logical=$($cpuAffinityPlan.MachineLogicalProcessors)"
+    )
+    Write-Warning 'CPU affinity emulates the core COUNT of the floor machine and nothing else. Per-core speed, cache size and memory bandwidth are this machine''s, and physical RAM is not restricted at all, so the result is a lower bound on a real 4c/8 GB box.'
+}
+
 $harnessPolicyPath = Join-Path $OutDir 'passive_capture_policy.json'
 $harnessPolicy = [ordered]@{
     schema                              = 'hoi4-passive-capture-policy-v1'
@@ -1290,6 +1689,27 @@ $harnessPolicy = [ordered]@{
     evidence_only_driver_sha256         = $headlessControlSha256
     ready_contract                      = 'hoi4-capture-ready-v2'
     teardown_contract                   = 'hoi4-capture-teardown-v2'
+    # The PLAN, recorded before anything is launched. What was actually applied
+    # to which PID is HARNESS_CPU_AFFINITY_V1.json, written once both processes
+    # exist -- a plan that never reached a process must not read as a mask that
+    # did.
+    cpu_affinity_requested              = if ($null -eq $cpuAffinityPlan) {
+        [ordered]@{ enabled = $false }
+    } else {
+        [ordered]@{
+            enabled                    = $true
+            physical_cores             = $cpuAffinityPlan.RequestedCores
+            one_thread_per_core        = $cpuAffinityPlan.OneThreadPerCore
+            mask                       = $cpuAffinityPlan.MaskHex
+            processor_group            = $cpuAffinityPlan.Group
+            efficiency_class           = $cpuAffinityPlan.EfficiencyClass
+            selected_core_indexes      = $cpuAffinityPlan.SelectedCoreIndexes
+            selected_logical_processors = $cpuAffinityPlan.LogicalProcessors
+            machine_physical_cores     = $cpuAffinityPlan.MachinePhysicalCores
+            machine_logical_processors = $cpuAffinityPlan.MachineLogicalProcessors
+            emulates                   = 'core_count_only'
+        }
+    }
 }
 $harnessPolicy | ConvertTo-Json -Depth 8 |
     Set-Content -LiteralPath $harnessPolicyPath -Encoding UTF8
@@ -1967,6 +2387,29 @@ if ($EvidenceOnlyDriveGame -and
     throw 'WMI-launched game creation epoch changed before world readiness.'
 }
 
+# Pin the game to the floor machine's cores, if one is being emulated.
+#
+# HERE, and not at either launch site, because this is the first point at which
+# BOTH paths -- the reused user-owned game and the WMI-created one -- have a PID
+# bound to a verified creation epoch. It is also before world readiness, so the
+# post-load work a real floor machine would also do at four cores is inside the
+# emulation rather than outside it.
+#
+# For the reused game this is the harness touching a process it does not own, so
+# the prior mask is kept and restored in cleanup. Affinity is a scheduling
+# attribute: it writes no game state, no memory and no input, and it is applied
+# well before the graded window opens.
+if ($null -ne $cpuAffinityPlan) {
+    # `-PriorMaskOut` rather than the return value: a verification failure
+    # throws, and cleanup still has to know what this game's mask was.
+    [void]$cpuAffinityApplied.Add((Set-Hoi4ProcessAffinity `
+        -ProcessId $gamePid `
+        -Mask $cpuAffinityPlan.Mask `
+        -Label 'the game' `
+        -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+        -PriorMaskOut ([ref]$gameAffinityPrior)))
+}
+
 # --- Phase 2: establish and verify pre-attach speed --------------------------
 $readyState = Wait-Hoi4WorldReady `
     -TargetProcessId $gamePid `
@@ -2249,6 +2692,102 @@ try {
 } catch {
     Write-Host "phase=recorder_handle_unavailable reason=$($_.Exception.Message)"
 }
+
+# Put the recorder on the SAME cores as the game.
+#
+# collector_record is the host; the reader lanes live in the injected DLL and
+# are already covered by the game's mask. What is masked here is the spool
+# writer, the compressor and the post-capture fold -- which on a four-core box
+# compete with the engine for the same four cores, and would otherwise get free
+# cores no floor machine has.
+#
+# AFTER `$collectorInjectionStarted = $true` and after the handle grab, both
+# deliberately. Everything between Start-Process and that assignment must be
+# incapable of throwing, or a failure there leaves a live recorder that cleanup
+# does not know exists. A throw from here is ordinary: the graded window is open
+# with injection started, and cleanup already handles exactly that -- it waits
+# for the recorder's own cooperative stop and its teardown receipt rather than
+# terminating it. Failing is the right outcome; a capture whose mask did not
+# take is not a floor measurement, it is an unlabelled ordinary run.
+if ($null -ne $cpuAffinityPlan) {
+    $recorderCreationFiletimeUtc = $null
+    try {
+        $recorderCreationFiletimeUtc = [uint64](
+            $recorderProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+        )
+    } catch {
+        # An unreadable start time is not a reason to skip the mask; it only
+        # means the PID cannot be re-bound to its epoch, and this PID came
+        # straight out of Start-Process moments ago.
+        Write-Host "phase=recorder_creation_epoch_unavailable reason=$(($_.Exception.Message -replace '\s+', ' ').Trim())"
+    }
+    [void]$cpuAffinityApplied.Add((Set-Hoi4ProcessAffinity `
+        -ProcessId $recorderProcess.Id `
+        -Mask $cpuAffinityPlan.Mask `
+        -Label 'collector_record' `
+        -ExpectedCreationFiletimeUtc $recorderCreationFiletimeUtc `
+        -PriorMaskOut $null))
+
+    # Both masks are now on real processes, so the applied record can be
+    # published. Kept separate from passive_capture_policy.json on purpose: that
+    # file is written before anything is launched and carries the PLAN, and a
+    # plan is not evidence that a process ever ran under it.
+    $cpuAffinityReceipt = [ordered]@{
+        schema                      = 'hoi4-harness-cpu-affinity-v1'
+        emulates                    = 'core_count_only'
+        physical_cores              = $cpuAffinityPlan.RequestedCores
+        one_thread_per_core         = $cpuAffinityPlan.OneThreadPerCore
+        mask                        = $cpuAffinityPlan.MaskHex
+        processor_group             = $cpuAffinityPlan.Group
+        efficiency_class            = $cpuAffinityPlan.EfficiencyClass
+        selected_core_indexes       = $cpuAffinityPlan.SelectedCoreIndexes
+        selected_logical_processors = $cpuAffinityPlan.LogicalProcessors
+        machine_physical_cores      = $cpuAffinityPlan.MachinePhysicalCores
+        machine_logical_processors  = $cpuAffinityPlan.MachineLogicalProcessors
+        # Context only. This runs INSIDE the graded window, so a WMI hiccup
+        # here must not be the thing that stops a capture that is already
+        # injected -- an absent RAM figure is a worse receipt, not a worse run.
+        machine_physical_memory_bytes = $(
+            try { (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory }
+            catch { $null }
+        )
+        processes                   = @(
+            $cpuAffinityApplied | ForEach-Object {
+                [ordered]@{
+                    label        = $_.Label
+                    pid          = $_.ProcessId
+                    prior_mask   = (Format-Hoi4AffinityMask -Mask $_.PriorMask)
+                    applied_mask = (Format-Hoi4AffinityMask -Mask $_.AppliedMask)
+                    verified     = $true
+                }
+            }
+        )
+        # NOT masked, and named so nobody has to guess: the harness's own
+        # PowerShell host, its bounded helper processes, the 5 s read-only
+        # witness, and everything the OS does. A real floor machine pays for
+        # those out of the same four cores, so this measurement is optimistic by
+        # whatever they cost.
+        unmasked_participants       = @(
+            'harness powershell host',
+            'bounded control/observer helpers',
+            'passive clock witness',
+            'operating system and drivers'
+        )
+        memory_floor_simulated      = $false
+        memory_floor_note           = @(
+            'The 8 GB half of the floor is deliberately NOT emulated here.',
+            'A job-object memory cap limits COMMITTED memory, so it produces allocation failure where a small machine produces paging: the game would OOM and the recorder''s 300-400 MiB transient raw custody would fail closed as backpressure for a reason no 8 GB machine would produce.',
+            'Assigning the game to a job also requires PROCESS_SET_QUOTA|PROCESS_TERMINATE on the client, contradicting the graded observer access this harness publishes and the target lease''s target_quota_right/target_termination_right = false.',
+            'The game is launched through Win32_Process.Create specifically to keep it out of any job object; putting it back into one by hand re-creates the condition that launch path exists to avoid.',
+            'To restrict physical RAM, restrict it for real: bcdedit /set {current} removememory (or truncatememory) plus a reboot, or run on the actual floor machine.'
+        )
+    }
+    $cpuAffinityReceipt | ConvertTo-Json -Depth 8 |
+        Set-Content `
+            -LiteralPath (Join-Path $OutDir 'HARNESS_CPU_AFFINITY_V1.json') `
+            -Encoding UTF8
+}
+
 $recorderBudgetSeconds = $DurationSeconds + $RecorderOverheadSeconds
 $recorderDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
 [void](Write-PassiveWitnessSample `
@@ -2911,6 +3450,41 @@ $scriptExitCode = [int]$recorderExit
         $collectorInjectionStarted -and
         $gradedWindowStarted) {
         Write-SettingsGuardNonThrowingWarning -Message "Harness-launched the game PID $gamePid remains running because the passive graded window did not close cleanly. Stopping it inside that window is forbidden."
+    }
+
+    # Give the game its CPU affinity back.
+    #
+    # The passive default reuses a game the operator started and will keep
+    # using, and leaving it pinned to four cores forever is a change this
+    # harness made and nobody asked for. Gated on the graded window being closed
+    # for the same reason the settings guard is: touching the client while hook
+    # custody is unresolved is forbidden, and a message an operator can act on
+    # is better than a mask silently left behind.
+    #
+    # Best-effort and non-throwing. A restore diagnostic must never replace the
+    # capture's own verdict, and the run's data is already on disk by here.
+    # A game this harness launched has normally already been stopped by the
+    # block above, and a mask on a process that no longer exists is nothing to
+    # restore. Liveness is checked first so that ordinary case stays silent
+    # instead of reporting a restore failure that means only "it exited".
+    if ($null -ne $gameAffinityPrior -and
+        $gamePid -gt 0 -and
+        $null -ne (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
+        if ($gradedWindowStarted) {
+            Write-SettingsGuardNonThrowingWarning -Message "the game PID $gamePid remains pinned to CPU affinity $(Format-Hoi4AffinityMask -Mask $cpuAffinityPlan.Mask) because the passive graded window did not close. After independently proving the hooks are gone, restore it to $(Format-Hoi4AffinityMask -Mask $gameAffinityPrior) or restart the game."
+        } else {
+            try {
+                [void](Set-Hoi4ProcessAffinity `
+                    -ProcessId $gamePid `
+                    -Mask $gameAffinityPrior `
+                    -Label 'hoi4_affinity_restore' `
+                    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+                    -PriorMaskOut $null)
+                $gameAffinityPrior = $null
+            } catch {
+                Write-SettingsGuardNonThrowingWarning -Message "Could not restore the game PID $gamePid to CPU affinity $(Format-Hoi4AffinityMask -Mask $gameAffinityPrior). Set it by hand or restart the game. Error: $($_.Exception.Message)"
+            }
+        }
     }
 
     $settingsGuardRestoreSucceeded = $false
