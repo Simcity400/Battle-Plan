@@ -86,16 +86,22 @@ use recorder_host::world_fold::foldprof;
 /// grains an hour -- a mutation density 30x the covered set's per byte, on
 /// 17-byte grains. `order_of_battle` is the largest uncovered member (1.77 MB)
 /// and writes 176 kB an hour, more than the rest of the remainder combined.
-pub const COVERED_SECTIONS: [(&str, &str); 9] = [
+pub const COVERED_SECTIONS: [(&str, &str); 7] = [
     ("special_projects", "object"),
     ("countries", "object"),
     ("map", "object"),
     ("supply", "object"),
     ("divisions", "keyed_array:div_uid"),
     ("states", "object"),
-    // -- tranche 1, density order ------------------------------------------
-    ("strategic_air", "object"),
-    ("naval_air", "object"),
+    // -- tranche 1 survivor (owner ruling 2026-08-07) -----------------------
+    // `order_of_battle` measured free on CPU and a size WIN (journal
+    // 0.56-0.60x of v2's patch). `strategic_air` and `naval_air` were
+    // converted, measured, and REMOVED from the default: 33k four-byte
+    // grains/hour put them past the per-mutation constant's worst case
+    // (0.157 s/h on t31 alone, journals 1.34-1.42x LARGER than the v2
+    // patches they replace). They stay v2-covered in the hybrid; both
+    // remain selectable through the section filter for re-measurement if a
+    // coarse-grain design for tiny-value sections is ever funded.
     ("order_of_battle", "object"),
 ];
 
