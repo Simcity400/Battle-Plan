@@ -550,40 +550,6 @@ function Get-Utf8Sha256Hex {
     }
 }
 
-function Get-BytesSha256Hex {
-    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
-
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString(
-            $sha256.ComputeHash($Bytes)
-        )).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $sha256.Dispose()
-    }
-}
-
-function ConvertFrom-Sha256Hex {
-    param(
-        [Parameter(Mandatory = $true)]
-        # `Options = 'None'` is load-bearing. ValidatePattern matches
-        # CASE-INSENSITIVELY by default, so `^[0-9a-f]{64}$` admitted uppercase
-        # hex and the lowercase-canonical claim the pattern makes was not
-        # enforced. Every digest on this wire is pinned lowercase and compared
-        # with `-ceq` elsewhere, so a decoder that quietly normalises case would
-        # be the one place a mixed-case digest could enter and stop matching the
-        # string it is supposed to equal.
-        [ValidatePattern('^[0-9a-f]{64}$', Options = 'None')]
-        [string]$Value
-    )
-
-    $bytes = [byte[]]::new(32)
-    for ($i = 0; $i -lt 32; $i++) {
-        $bytes[$i] = [Convert]::ToByte($Value.Substring($i * 2, 2), 16)
-    }
-    return ,$bytes
-}
-
 function Assert-ExactJsonPropertySet {
     param(
         [Parameter(Mandatory = $true)][object]$Value,

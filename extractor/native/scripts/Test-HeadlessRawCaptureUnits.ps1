@@ -99,8 +99,6 @@ $underTest = @(
     'ConvertTo-ReceiptUInt64',
     'ConvertTo-ReceiptInt32',
     'Get-Utf8Sha256Hex',
-    'Get-BytesSha256Hex',
-    'ConvertFrom-Sha256Hex',
     'Assert-ExactJsonPropertySet',
     'Get-SettingsGuardBaseException',
     'Get-SettingsGuardExceptionKind',
@@ -431,35 +429,20 @@ Assert-Equal `
     -Message 'Get-Utf8Sha256Hex disagrees with the SHA-256 "abc" vector'
 # The encoder must emit no BOM: the roster digest computed here is compared
 # against one the recorder computes over the same bytes, and three leading
-# bytes would make every comparison fail with no clue why.
+# bytes would make every comparison fail with no clue why. The expected
+# values are the published SHA-256 vectors for the raw bytes (61 62 63 and
+# C3 A9), computed independently of PowerShell — the dead in-harness byte
+# hasher that used to compute them was deleted by owner ruling 2026-08-08.
 Assert-Equal `
-    -Expected (Get-BytesSha256Hex -Bytes ([byte[]](0x61, 0x62, 0x63))) `
+    -Expected 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' `
     -Actual (Get-Utf8Sha256Hex -Value 'abc') `
     -Message 'Get-Utf8Sha256Hex is emitting a byte-order mark'
 # U+00E9 is one char, two UTF-8 bytes and two UTF-16 bytes with different
 # values, so this separates UTF-8 from the .NET default encoding.
 Assert-Equal `
-    -Expected (Get-BytesSha256Hex -Bytes ([byte[]](0xC3, 0xA9))) `
+    -Expected '4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c' `
     -Actual (Get-Utf8Sha256Hex -Value ([char]0x00E9)) `
     -Message 'Get-Utf8Sha256Hex is not encoding non-ASCII as UTF-8'
-
-$decoded = ConvertFrom-Sha256Hex -Value ('00ff' + ('a5' * 30))
-Assert-Equal -Expected 32 -Actual $decoded.Length `
-    -Message 'ConvertFrom-Sha256Hex did not produce 32 bytes'
-Assert-Equal -Expected 0 -Actual $decoded[0] -Message 'ConvertFrom-Sha256Hex byte 0'
-Assert-Equal -Expected 255 -Actual $decoded[1] -Message 'ConvertFrom-Sha256Hex byte 1'
-Assert-Equal -Expected 165 -Actual $decoded[31] -Message 'ConvertFrom-Sha256Hex byte 31'
-foreach ($bad in @(
-    ('A' * 64),   # uppercase: receipts are pinned lowercase
-    ('0' * 63),   # short
-    ('0' * 65),   # long
-    ('0' * 62 + 'zz')
-)) {
-    Assert-Refused `
-        -Action { ConvertFrom-Sha256Hex -Value $bad }.GetNewClosure() `
-        -MessagePattern 'Value' `
-        -Message "ConvertFrom-Sha256Hex accepted a non-canonical digest '$($bad.Substring(0, 8))...'"
-}
 
 # --- 5. child-command and native-command quoting ------------------------------
 #

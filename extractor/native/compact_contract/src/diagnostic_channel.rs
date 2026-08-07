@@ -2313,35 +2313,43 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
         Accumulation::PerFrame,
     ),
     // --- the seven read back out of the RETAINED cache ---------------------
-    // Declared `PerFrame`, which is what they already published, and flagged
-    // here rather than changed: each is read from `CompactDomain47PrewarmCache`
-    // rather than computed from this frame's work, so a hold frame republishes
-    // the value the last censusing frame left there. t36 published
-    // `stable_root_count` as 4,849,311 — ~22k roots counted again on each of
-    // 219 prewarms — which is the frame-weighted total, not a root population.
-    //
-    // That is the `convoy_transport_attack_resolver_member_bindings` shape,
-    // and that unit is a `Gauge`. The difference from the four above is that a
-    // sum of counts is still arithmetic on a quantity, so no figure here is
-    // uninterpretable the way a sum of codes or masks is, and moving seven
-    // published figures at once is a decision about what the manifest means
-    // rather than a repair of one that means nothing. It is named here so the
-    // next reader inherits the evidence instead of rediscovering it.
+    // `LastValue` by owner ruling (2026-08-08): each is read from
+    // `CompactDomain47PrewarmCache` rather than computed from this frame's
+    // work, so a hold frame republishes the value the last censusing frame
+    // left there, and summing republications produced frame-weighted totals —
+    // t36 published `stable_root_count` as 4,849,311, ~22k roots counted
+    // again on each of 219 prewarms. The manifest now answers "what was the
+    // roster size", the `convoy_transport_attack_resolver_member_bindings`
+    // Gauge precedent. RETAINED CAPTURES KEEP THEIR RECORDED SUMS — manifests
+    // are folded at finalization and never recomputed — so t36's figures
+    // stand as written; only future manifests carry the gauge reading.
     (
         "domain47_prewarm_negative_cache_frames_remaining",
-        Accumulation::PerFrame,
+        Accumulation::LastValue,
     ),
-    ("domain47_prewarm_stable_root_count", Accumulation::PerFrame),
-    ("domain47_prewarm_skipped_root_rows", Accumulation::PerFrame),
-    ("domain47_prewarm_excluded_scan_hits", Accumulation::PerFrame),
+    (
+        "domain47_prewarm_stable_root_count",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_skipped_root_rows",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_excluded_scan_hits",
+        Accumulation::LastValue,
+    ),
     (
         "domain47_prewarm_advisor_root_count",
-        Accumulation::PerFrame,
+        Accumulation::LastValue,
     ),
-    ("domain47_prewarm_trait_token_count", Accumulation::PerFrame),
+    (
+        "domain47_prewarm_trait_token_count",
+        Accumulation::LastValue,
+    ),
     (
         "domain47_prewarm_ambiguous_root_rows",
-        Accumulation::PerFrame,
+        Accumulation::LastValue,
     ),
 ];
 
