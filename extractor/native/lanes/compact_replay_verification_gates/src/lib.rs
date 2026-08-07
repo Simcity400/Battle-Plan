@@ -3464,6 +3464,319 @@ fn validate_required_static_artifacts(
     }))
 }
 
+/// Fields the RUN-DIR copy may carry and the sealed copy must NOT.
+///
+/// Every one is measured after the container was written, so the sealed copy —
+/// built before the container exists — provably cannot know it. `verify` is the
+/// report of verifying the finished container; embedding it would change the
+/// container it describes.
+///
+/// This is a standing wire contract, not an implementation detail of one
+/// verifier. Adding a name removes that field from what a container can attest.
+const RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS: &[&str] = &[
+    "finalize_seconds",
+    "peak_private_bytes",
+    "peak_working_set_bytes",
+    "verify",
+];
+
+/// Fields the SEALED copy may carry and the run-dir copy must NOT.
+///
+/// The first three are the sealed copy's own self-description as the pre-pack
+/// copy. `excluded_domain_data` is the fold's exclusion ledger, attached at pack
+/// time. (It is also carried under `host_finalize.fold.excluded_domain_data` in
+/// BOTH copies, where it stays fully bound; only the top-level duplicate is
+/// unbound here.)
+const SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS: &[&str] = &[
+    "embedded_copy_phase",
+    "standalone_manifest_is_authoritative",
+    "post_pack_fields_in_standalone_manifest_only",
+    "excluded_domain_data",
+];
+
+/// The divergence is DIRECTIONAL, and so is the allowlist. A field is removed
+/// only from the side that is allowed to have it, and refused outright on the
+/// other side — otherwise the mutable run-dir file could invent
+/// `standalone_manifest_is_authoritative` (or any other sealed-only marker) and
+/// the binding would shrug. The census over all 19 sealed containers measured
+/// each of these eight fields on exactly one side, never both.
+///
+/// Everything else in the manifest — every domain roster, every identity, every
+/// hash, `host_finalize.fold.*`, `host_finalize.stream_sha256` — stays bound to
+/// the container.
+fn post_seal_mutable_host_finalize_fields() -> Vec<&'static str> {
+    RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS
+        .iter()
+        .chain(SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS)
+        .copied()
+        .collect()
+}
+
+/// What the binding actually proved, reported so no reader has to infer it.
+struct SealedManifestBinding {
+    /// At least one value bound through the sanctioned absolute-path redaction
+    /// rather than by equality. Purely descriptive: the absolute prefix was
+    /// never inside the container, so it was never bound and this verifier does
+    /// not claim it was.
+    path_redaction_applied: bool,
+}
+
+/// Bind the run directory's mutable `native_session_manifest.json` to the
+/// container's sealed `recorder_manifest`.
+///
+/// A raw byte comparison of the two files is STRUCTURALLY UNSATISFIABLE for a
+/// live capture, and no amount of care in the recorder can make it satisfiable.
+/// The recorder builds two deliberately different copies:
+///
+///  1. The sealed copy goes through the portable projection — every absolute
+///     path is reduced to its basename, because a shareable container must not
+///     carry personal paths (container spec §0). The run-dir copy keeps the
+///     absolute paths on purpose, for recovery and audit on the recording
+///     machine.
+///  2. The sealed copy is built BEFORE the container is packed, so it cannot
+///     carry finalize timing, peak memory, or the container's own verification
+///     report. Those are written back into the run-dir copy afterwards.
+///
+/// Measured on capture t31 (`extractor/native/runs/live_unlock/t31/`): the
+/// run-dir copy is 17,957,105 bytes, the sealed copy 17,957,028 — 77 bytes
+/// apart, in 11 places, every one of them an instance of (1) or (2). The same
+/// census over all 19 sealed containers under `extractor/native/runs/` leaves
+/// ZERO residual difference once (1) and (2) are accounted for.
+///
+/// So the binding is: the sealed document, EXACTLY AS SEALED, against the
+/// run-dir document, allowing at each value and each object key only the two
+/// measured divergences — and both of them only in the direction the recorder
+/// actually produces.
+///
+/// The sealed copy is NEVER normalized before the comparison. That matters: if
+/// the sealed side were projected too, a sealed value of `C:\evil\collector.dll`
+/// and a run-dir value of `D:\other\collector.dll` would both reduce to
+/// `collector.dll` and bind — and the UNPROJECTED sealed document is what this
+/// function's caller then hands downstream as authority. `verify_all()` proves
+/// the container is internally consistent, not that the recorder's
+/// `reject_absolute_paths_in_json` seal-time gate ever ran. So redaction is
+/// sanctioned in one direction only: the run-dir value may be an absolute path
+/// whose FINAL COMPONENT is exactly what the sealed copy carries. A sealed
+/// absolute path binds only to the identical absolute path.
+///
+/// TAMPER-EVIDENCE. The asymmetry that matters is that the sealed copy is
+/// hash-bound by the container (`verify_all` ran above) while the run-dir copy
+/// is a file anyone can rewrite. So the sealed copy decides:
+///
+///  * A field the sealed copy carries and the run-dir copy contradicts is
+///    refused, naming the field. That is what stops a rewrite talking past the
+///    container — it is why the composition routing read at the top of
+///    `load_verified_replay_authority` is safe to take from the run-dir file.
+///  * `host_finalize` must be an object in BOTH. The one recorder pack path
+///    that seals a manifest without it (`write_native_replay_container`) is
+///    reached only from `StreamFormat::Json`, which production refuses and which
+///    this gate refuses again via `stream_format == "compact"`. A compact
+///    container that reached here without a sealed `host_finalize` is malformed,
+///    and admitting it would unbind `stream_sha256` and all of `fold.*`.
+fn bind_run_dir_manifest_to_sealed_authority(
+    external_manifest: &Value,
+    embedded_manifest: &Value,
+) -> Result<SealedManifestBinding, String> {
+    let mut sealed = embedded_manifest.clone();
+    let mut run_dir = external_manifest.clone();
+
+    let sealed_host_finalize_is_object = sealed
+        .get("host_finalize")
+        .is_some_and(Value::is_object);
+    if !sealed_host_finalize_is_object {
+        return Err(format!(
+            "authoritative sealed recorder_manifest has no object-valued \"host_finalize\" block (found {}); \
+             every compact capture this gate can certify seals one, so its absence would unbind \
+             host_finalize.stream_sha256 and all of host_finalize.fold.*",
+            truncate_for_refusal(sealed.get("host_finalize").unwrap_or(&Value::Null))
+        ));
+    }
+    if !run_dir.get("host_finalize").is_some_and(Value::is_object) {
+        return Err(
+            "run-dir native_session_manifest.json has no object-valued \"host_finalize\" block but \
+             the authoritative sealed recorder_manifest does; a deleted block is not a sanctioned \
+             post-seal divergence"
+                .to_string(),
+        );
+    }
+
+    // Directional allowlist: each field is refused on the side that must not
+    // carry it, and removed only from the side that may.
+    take_directional_host_finalize_fields(
+        &mut run_dir,
+        &mut sealed,
+        RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS,
+        "run-dir",
+        "sealed",
+    )?;
+    take_directional_host_finalize_fields(
+        &mut sealed,
+        &mut run_dir,
+        SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS,
+        "sealed",
+        "run-dir",
+    )?;
+
+    let mut redactions = 0usize;
+    if let Some(violation) = first_binding_violation(&sealed, &run_dir, "$", &mut redactions) {
+        return Err(format!(
+            "run-dir native_session_manifest.json contradicts the authoritative sealed \
+             recorder_manifest at {violation}; the only sanctioned post-seal divergences are \
+             absolute-path redaction of a run-dir value and host_finalize {:?}",
+            post_seal_mutable_host_finalize_fields()
+        ));
+    }
+    Ok(SealedManifestBinding {
+        path_redaction_applied: redactions > 0,
+    })
+}
+
+/// Remove `fields` from `owner`'s `host_finalize`, having first refused any of
+/// them appearing in `forbidden`'s. The unbinding is one-directional: a name
+/// only the sealed copy may carry must not appear in the mutable file, and vice
+/// versa.
+fn take_directional_host_finalize_fields(
+    owner: &mut Value,
+    forbidden: &Value,
+    fields: &[&str],
+    owner_label: &str,
+    forbidden_label: &str,
+) -> Result<(), String> {
+    if let Some(block) = forbidden.get("host_finalize").and_then(Value::as_object) {
+        if let Some(found) = fields.iter().find(|field| block.contains_key(**field)) {
+            return Err(format!(
+                "host_finalize.{found} is a {owner_label}-copy-only post-seal field but the \
+                 {forbidden_label} copy carries it; the sanctioned divergence is directional"
+            ));
+        }
+    }
+    if let Some(block) = owner
+        .get_mut("host_finalize")
+        .and_then(Value::as_object_mut)
+    {
+        for field in fields {
+            block.remove(*field);
+        }
+    }
+    Ok(())
+}
+
+/// The first place the run-dir document fails to bind to the sealed one, as a
+/// readable path plus the two values. A refusal that only said "they differ"
+/// would send an operator into a 17 MB diff by hand.
+///
+/// A value binds if it is EQUAL, or if the run-dir value is an absolute path
+/// string and the sealed value is exactly its final component. Object keys bind
+/// by the same rule, equality first — so an absolute key present verbatim on
+/// both sides binds to itself instead of being reduced, and the rule reads the
+/// same for keys and values. `redactions` counts the sanctioned reductions
+/// actually used, so the report can state whether any happened instead of
+/// guessing.
+fn first_binding_violation(
+    sealed: &Value,
+    run_dir: &Value,
+    path: &str,
+    redactions: &mut usize,
+) -> Option<String> {
+    use recorder_host::portable_manifest::redact_absolute_path_string;
+
+    match (sealed, run_dir) {
+        (Value::Object(left), Value::Object(right)) => {
+            // Keys bind by the SAME rule as values: identical, or the run-dir
+            // key is an absolute path whose final component is the sealed key.
+            // A collision means two run-dir keys claim one sealed key, which the
+            // recorder's own projection refuses to seal; refuse it here too.
+            let mut bound = BTreeMap::<String, (&String, &Value)>::new();
+            for (key, value) in right {
+                let name = redact_absolute_path_string(key);
+                if bound.insert(name.clone(), (key, value)).is_some() {
+                    return Some(format!(
+                        "{path}.{name} (two run-dir keys collide onto one sealed key after \
+                         absolute-path redaction)"
+                    ));
+                }
+            }
+            let mut consumed = BTreeSet::<&str>::new();
+            for (key, sealed_value) in left {
+                let child = format!("{path}.{key}");
+                // Equality first, so an absolute key present verbatim on both
+                // sides binds to itself rather than being reduced.
+                let matched = right
+                    .get_key_value(key)
+                    .or_else(|| bound.get(key).map(|(k, v)| (*k, *v)));
+                match matched {
+                    None => {
+                        return Some(format!(
+                            "{child} (present in the sealed copy, absent from the run-dir copy)"
+                        ))
+                    }
+                    Some((run_dir_key, run_dir_value)) => {
+                        if run_dir_key != key {
+                            *redactions += 1;
+                        }
+                        consumed.insert(run_dir_key.as_str());
+                        if let Some(found) =
+                            first_binding_violation(sealed_value, run_dir_value, &child, redactions)
+                        {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+            right
+                .keys()
+                .find(|key| !consumed.contains(key.as_str()))
+                .map(|key| {
+                    format!(
+                        "{path}.{key} (absent from the sealed copy, present in the run-dir copy)"
+                    )
+                })
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            if left.len() != right.len() {
+                return Some(format!(
+                    "{path} (sealed copy has {} elements, run-dir copy has {})",
+                    left.len(),
+                    right.len()
+                ));
+            }
+            left.iter().zip(right).enumerate().find_map(|(index, (l, r))| {
+                first_binding_violation(l, r, &format!("{path}[{index}]"), redactions)
+            })
+        }
+        (left, right) if left == right => None,
+        (Value::String(sealed_text), Value::String(run_dir_text)) => {
+            // The one sanctioned value divergence, in one direction only: the
+            // run-dir copy kept an absolute path the sealed copy reduced to its
+            // final component.
+            let reduced = redact_absolute_path_string(run_dir_text);
+            if &reduced != run_dir_text && &reduced == sealed_text {
+                *redactions += 1;
+                return None;
+            }
+            Some(format!(
+                "{path} (sealed copy {}, run-dir copy {})",
+                truncate_for_refusal(sealed),
+                truncate_for_refusal(run_dir)
+            ))
+        }
+        (left, right) => Some(format!(
+            "{path} (sealed copy {}, run-dir copy {})",
+            truncate_for_refusal(left),
+            truncate_for_refusal(right)
+        )),
+    }
+}
+
+fn truncate_for_refusal(value: &Value) -> String {
+    let rendered = value.to_string();
+    if rendered.chars().count() <= 120 {
+        return rendered;
+    }
+    let head: String = rendered.chars().take(120).collect();
+    format!("{head}…")
+}
+
 fn load_verified_replay_authority(
     external_manifest: &Value,
     external_manifest_bytes: &[u8],
@@ -3483,18 +3796,37 @@ fn load_verified_replay_authority(
     //    H4IX and H4CP source identities.
     //
     // The declaration is read HERE from the run-dir manifest only to route.
-    // Both routes then require that manifest to be byte-identical to the
-    // container's embedded recorder manifest, and the cache-only route
+    // Both routes then require that manifest to be bound to the container's
+    // embedded recorder manifest (see
+    // `bind_run_dir_manifest_to_sealed_authority`), and the cache-only route
     // additionally re-reads the composition from the container's own recorder
     // manifest and requires the container to carry no stream entry at all. A
     // packaged container therefore cannot be talked onto the weaker
     // manifest-attested route by rewriting the file on disk.
-    let declared_object = external_manifest
+    //
+    // The routing read is taken from the PORTABLE PROJECTION of the run-dir
+    // manifest, which is the exact document the binding below compares against
+    // the sealed copy. Reading the raw document here instead would let the two
+    // reads disagree: `raw_stream_packaging` is the one field with a permissive
+    // absent-value default, so writing it under an absolute-path KEY
+    // (`"/x/raw_stream_packaging"`) would hide it from an unprojected lookup —
+    // taking the default — while the projection renamed it back to its
+    // basename in time to satisfy the binding. Routing and binding must read
+    // one document.
+    let projected_external_manifest =
+        recorder_host::portable_manifest::portable_manifest_projection(external_manifest).map_err(
+            |err| format!("run-dir native_session_manifest.json has no portable projection: {err}"),
+        )?;
+    let declared_object = projected_external_manifest
         .as_object()
         .ok_or_else(|| "external native_session_manifest.json is not a JSON object".to_string())?;
     let declared_packaging =
         snapshot::read_raw_stream_packaging_with_legacy_default(declared_object)
             .map_err(|error| format!("external native_session_manifest.json: {error}"))?;
+    // `replay_file` is deliberately resolved from the RAW document: it names a
+    // file this loader opens, and `required_run_file` refuses an absolute path.
+    // Projecting it first would reduce an absolute path to a basename and admit
+    // it. The projection is for comparison, never for resolving a path.
     let replay_path = required_run_file(run_dir, external_manifest, "replay_file")?;
     // The container is pinned against the CONTAINER's own vocabulary. The
     // recorder manifest's `schema` is a different field on a different
@@ -3556,17 +3888,15 @@ fn load_verified_replay_authority(
             })?;
     let external_sha256 = Sha256::hex(external_manifest_bytes);
     let embedded_sha256 = Sha256::hex(&embedded_manifest_bytes);
-    if embedded_manifest_bytes != external_manifest_bytes {
-        return Err(format!(
-            "external native_session_manifest.json is not byte-identical to the authoritative embedded recorder_manifest (external bytes {}, sha256 {}; embedded bytes {}, sha256 {}); rejecting mutable-manifest rewrite",
-            external_manifest_bytes.len(),
-            external_sha256,
-            embedded_manifest_bytes.len(),
-            embedded_sha256,
-        ));
-    }
     let embedded_manifest = snapshot::parse_json_strict(&embedded_manifest_bytes)
         .map_err(|err| format!("embedded recorder_manifest is not strict JSON: {err}"))?;
+    // The sealed copy is the authority. The run-dir copy is a mutable
+    // convenience view of the same session that the recorder deliberately keeps
+    // diverging from it, so binding the two by raw bytes is unsatisfiable for
+    // every live capture; see `bind_run_dir_manifest_to_sealed_authority` for
+    // exactly which divergence is sanctioned and why.
+    let manifest_binding =
+        bind_run_dir_manifest_to_sealed_authority(external_manifest, &embedded_manifest)?;
     // The recorder manifest states its OWN format in its OWN field, `schema`.
     // Checked here, on the container-authenticated copy, so the authority
     // loader cannot admit a recording of some other session format. This is
@@ -3668,7 +3998,20 @@ fn load_verified_replay_authority(
         "recorder_manifest": manifest_entry.path,
         "recorder_manifest_bytes": embedded_manifest_bytes.len(),
         "recorder_manifest_sha256": embedded_sha256,
-        "external_manifest_exact_match": true,
+        // The run-dir copy's OWN identity, named as such. It is NOT the sealed
+        // copy's identity and a reader must never conflate the two: the two
+        // files are deliberately different, and this is the field that lets a
+        // reader check the copy it can see on disk.
+        "external_manifest_bytes": external_manifest_bytes.len(),
+        "external_manifest_sha256": external_sha256,
+        // Self-describing binding, replacing the old
+        // `external_manifest_exact_match`. That field asserted the two copies
+        // were byte-identical, which no live capture has ever satisfied.
+        "external_manifest_bound_to_sealed_authority": true,
+        "external_manifest_binding": "portable_projection_with_named_post_seal_allowlist",
+        "external_manifest_path_redaction_applied": manifest_binding.path_redaction_applied,
+        "run_dir_only_post_seal_host_finalize_fields": RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS,
+        "sealed_only_pre_pack_host_finalize_fields": SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS,
         "static_artifacts": static_artifacts,
         "signed": container.signed,
         "unsigned": container.unsigned,
@@ -7694,12 +8037,638 @@ mod tests {
             json!(true)
         );
 
+        assert_eq!(
+            authority.details["external_manifest_bound_to_sealed_authority"],
+            json!(true)
+        );
+
         let mut rewritten = manifest.clone();
         rewritten["duration_ms"] = json!(999_999);
         let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
         let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("mutable disk rewrite must fail");
-        assert!(error.contains("not byte-identical"), "{error}");
+        assert!(
+            error.contains("contradicts the authoritative sealed recorder_manifest"),
+            "{error}"
+        );
+        assert!(error.contains("$.duration_ms"), "{error}");
+    }
+
+    /// Build the pair of manifests a LIVE capture actually produces, in the
+    /// exact shape measured on capture t31
+    /// (`extractor/native/runs/live_unlock/t31/`, 17,957,105 run-dir bytes vs
+    /// 17,957,028 sealed): the sealed copy carries the portable projection of
+    /// every absolute path (`dll`, `modset.game.exe_path`,
+    /// `modset.pdx_user_dir`) plus the recorder's pre-pack `host_finalize`; the
+    /// run-dir copy keeps the absolute paths and gets the post-pack telemetry
+    /// written back into it after the container was sealed.
+    fn live_shaped_manifest_pair(dir: &Path, game_id: &str) -> (Value, Value) {
+        let base = replay_test_manifest(game_id, dir);
+        let shared_host_finalize = base["host_finalize"].clone();
+
+        // t31's three redacted fields, sealed form.
+        let mut sealed = base.clone();
+        sealed["dll"] = json!("collector.dll");
+        sealed["modset"] = json!({
+            "game": {"exe_path": "hoi4.exe"},
+            "pdx_user_dir": "the game",
+        });
+        let mut sealed_host_finalize = shared_host_finalize.clone();
+        let object = sealed_host_finalize.as_object_mut().unwrap();
+        object.insert("embedded_copy_phase".into(), json!("pre_pack"));
+        object.insert("standalone_manifest_is_authoritative".into(), json!(true));
+        object.insert(
+            "post_pack_fields_in_standalone_manifest_only".into(),
+            json!([
+                "finalize_seconds",
+                "peak_private_bytes",
+                "peak_working_set_bytes",
+                "verify"
+            ]),
+        );
+        object.insert(
+            "excluded_domain_data".into(),
+            json!({"complete": true, "per_domain": {}, "records": [], "total_records": 0}),
+        );
+        sealed["host_finalize"] = sealed_host_finalize;
+
+        // t31's three redacted fields, run-dir form: the absolute originals.
+        let mut run_dir = base;
+        run_dir["dll"] = json!(r"\\?\.cargo-target\release\collector.dll");
+        run_dir["modset"] = json!({
+            "game": {
+                "exe_path": r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe",
+            },
+            "pdx_user_dir": r"\\?\C:\Users\Example\Documents\Paradox Interactive\Hearts of Iron IV",
+        });
+        let mut run_dir_host_finalize = shared_host_finalize;
+        let object = run_dir_host_finalize.as_object_mut().unwrap();
+        object.insert("finalize_seconds".into(), json!(970.986_574_5));
+        object.insert("peak_private_bytes".into(), json!(2_909_249_536u64));
+        object.insert("peak_working_set_bytes".into(), json!(2_870_587_392u64));
+        object.insert(
+            "verify".into(),
+            json!({
+                "entries_verified": 11,
+                "stream_entry_bytes": 0,
+                "total_uncompressed": 2_196_756_222u64,
+                "stream_sha256_matches_capture": false,
+            }),
+        );
+        run_dir["host_finalize"] = run_dir_host_finalize;
+
+        (run_dir, sealed)
+    }
+
+    /// THE LIVE SHAPE. Every capture in `extractor/native/runs/` seals a
+    /// manifest that is deliberately not the file left in the run directory:
+    /// absolute paths are redacted out of the sealed copy, and the sealed copy
+    /// predates the finalize timing, peak memory and container verify report
+    /// that are written back afterwards. Measured on t31 that is a 77-byte,
+    /// 11-field difference. The authority loader must admit exactly that.
+    ///
+    /// Production change that would make this fail: restoring the raw byte
+    /// comparison between the run-dir manifest and the sealed
+    /// `recorder_manifest`, or dropping the portable projection from either
+    /// side of the binding.
+    #[test]
+    fn a_live_shaped_sealed_and_rewritten_manifest_pair_loads() {
+        let dir = TmpDir::new("live_shaped_manifest");
+        let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        let sealed_bytes = serde_json::to_vec_pretty(&sealed_manifest).unwrap();
+        let run_dir_bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        assert_ne!(
+            sealed_bytes, run_dir_bytes,
+            "the fixture must actually be the divergent live shape"
+        );
+        write_replay_fixture(&dir.0, "g", &sealed_bytes, true);
+
+        let authority = load_verified_replay_authority(
+            &run_dir_manifest,
+            &run_dir_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .expect("a live-shaped recording must be admissible");
+        assert_eq!(authority.manifest, sealed_manifest, "the SEALED copy is authority");
+        assert_eq!(
+            authority.details["external_manifest_bound_to_sealed_authority"],
+            json!(true)
+        );
+        assert_eq!(
+            authority.details["external_manifest_path_redaction_applied"],
+            json!(true)
+        );
+        assert_eq!(
+            authority.details["external_manifest_sha256"],
+            json!(Sha256::hex(&run_dir_bytes))
+        );
+        assert_eq!(
+            authority.details["recorder_manifest_sha256"],
+            json!(Sha256::hex(&sealed_bytes))
+        );
+        assert_ne!(
+            authority.details["external_manifest_sha256"],
+            authority.details["recorder_manifest_sha256"],
+            "the two identities must be reported separately, not conflated"
+        );
+    }
+
+    /// The allowlist is a hole of a stated size. A field NOT on it, rewritten
+    /// in the run directory, must still refuse — and name itself, because the
+    /// manifest is 17 MB and "they differ" is not an actionable refusal.
+    ///
+    /// Production change that would make this fail: widening
+    /// `POST_SEAL_MUTABLE_HOST_FINALIZE_FIELDS` to the whole `host_finalize`
+    /// block, or comparing only the allowlisted fields instead of everything
+    /// but them.
+    #[test]
+    fn a_non_allowlisted_rewrite_inside_host_finalize_still_refuses_by_name() {
+        let dir = TmpDir::new("host_finalize_tamper");
+        let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+
+        // Neighbours of the allowlisted fields, inside the very same block.
+        for (pointer, value, named) in [
+            (
+                "/host_finalize/stream_sha256",
+                json!("b".repeat(64)),
+                "$.host_finalize.stream_sha256",
+            ),
+            (
+                "/host_finalize/fold/hours_emitted",
+                json!(9_999),
+                "$.host_finalize.fold.hours_emitted",
+            ),
+            (
+                "/host_finalize/fold/excluded_domain_data/complete",
+                json!(false),
+                "$.host_finalize.fold.excluded_domain_data.complete",
+            ),
+            ("/replay_game_id", json!("g"), "$.replay_game_id"),
+        ] {
+            let mut tampered = run_dir_manifest.clone();
+            if pointer == "/replay_game_id" {
+                // Same game id, different everything else: prove a field
+                // OUTSIDE host_finalize is bound too.
+                tampered["production_profile"]["enabled"] = json!(false);
+            } else {
+                *tampered.pointer_mut(pointer).expect(pointer) = value;
+            }
+            let expected = if pointer == "/replay_game_id" {
+                "$.production_profile.enabled"
+            } else {
+                named
+            };
+            let bytes = serde_json::to_vec_pretty(&tampered).unwrap();
+            let error =
+                load_verified_replay_authority(&tampered, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                    .expect_err("a non-allowlisted rewrite must refuse");
+            assert!(
+                error.contains("contradicts the authoritative sealed recorder_manifest"),
+                "{error}"
+            );
+            assert!(error.contains(expected), "refusal must name {expected}: {error}");
+        }
+    }
+
+    /// Every run-dir-only field, one at a time, on the side that is allowed to
+    /// carry it — proving the allowlist is real in the permitting direction and
+    /// not just dead weight next to a byte comparison.
+    ///
+    /// Production change that would make this fail: removing any name from
+    /// `RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS`.
+    #[test]
+    fn every_run_dir_only_post_seal_field_may_diverge() {
+        let dir = TmpDir::new("allowlist_permits");
+        let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+
+        for field in RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS {
+            // A value the sealed copy definitely does not have, under this name
+            // in the run-dir copy, is still admitted.
+            let mut rewritten = run_dir_manifest.clone();
+            rewritten["host_finalize"][*field] = json!("post-seal-only");
+            let bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
+            load_verified_replay_authority(&rewritten, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .unwrap_or_else(|error| {
+                    panic!("run-dir-only field {field:?} must be permitted to diverge: {error}")
+                });
+
+            // And absent from the run-dir copy is equally fine.
+            let mut removed = run_dir_manifest.clone();
+            removed["host_finalize"]
+                .as_object_mut()
+                .unwrap()
+                .remove(*field);
+            let bytes = serde_json::to_vec_pretty(&removed).unwrap();
+            load_verified_replay_authority(&removed, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .unwrap_or_else(|error| {
+                    panic!("run-dir-only field {field:?} must be permitted to be absent: {error}")
+                });
+        }
+    }
+
+    /// The allowlist is DIRECTIONAL. The census measured each of the eight
+    /// fields on exactly one side, never both, so the mutable run-dir file must
+    /// not be able to invent a sealed-only marker — `standalone_manifest_is_
+    /// authoritative` above all — and have the binding shrug because the name
+    /// happens to be unbound.
+    ///
+    /// Production change that would make this fail: merging the two sets and
+    /// removing every name from both copies.
+    #[test]
+    fn a_sealed_only_field_appearing_in_the_run_dir_copy_refuses() {
+        let dir = TmpDir::new("allowlist_direction");
+        let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+
+        for field in SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS {
+            let mut forged = run_dir_manifest.clone();
+            forged["host_finalize"][*field] = json!("forged");
+            let bytes = serde_json::to_vec_pretty(&forged).unwrap();
+            let error =
+                load_verified_replay_authority(&forged, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                    .expect_err("a sealed-only field in the run-dir copy must refuse");
+            assert!(
+                error.contains(&format!("host_finalize.{field}")),
+                "refusal must name the field: {error}"
+            );
+            assert!(error.contains("directional"), "{error}");
+        }
+
+        // And the mirror: a run-dir-only field forged into the SEALED copy is
+        // equally refused, so the rule is not one-sided bookkeeping.
+        for field in RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS {
+            let dir = TmpDir::new("allowlist_direction_sealed");
+            let (run_dir_manifest, mut forged_seal) = live_shaped_manifest_pair(&dir.0, "g");
+            forged_seal["host_finalize"][*field] = json!("forged");
+            write_replay_fixture(
+                &dir.0,
+                "g",
+                &serde_json::to_vec_pretty(&forged_seal).unwrap(),
+                true,
+            );
+            let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+            let error = load_verified_replay_authority(
+                &run_dir_manifest,
+                &bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .expect_err("a run-dir-only field in the sealed copy must refuse");
+            assert!(
+                error.contains(&format!("host_finalize.{field}")),
+                "refusal must name the field: {error}"
+            );
+        }
+    }
+
+    /// The sealed document is never normalized before the comparison, so an
+    /// absolute path INSIDE the sealed copy cannot be reduced away. Two paths
+    /// that share a final component but not their prefix must refuse — under a
+    /// project-both-sides binding they would bind, and the caller then hands the
+    /// UNPROJECTED sealed document downstream as authority.
+    ///
+    /// `verify_all()` proves the container is internally consistent, not that
+    /// the recorder's seal-time `reject_absolute_paths_in_json` ever ran, so
+    /// this cannot be assumed away.
+    ///
+    /// Production change that would make this fail: applying
+    /// `portable_manifest_projection` to the sealed side of the binding.
+    #[test]
+    fn a_sealed_absolute_path_is_not_reduced_away() {
+        let dir = TmpDir::new("sealed_absolute_value");
+        let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        // The sealed copy carries an absolute path with the SAME final
+        // component as the run-dir copy's, but a different prefix.
+        sealed_manifest["dll"] = json!(r"\\?\C:\somewhere\else\collector.dll");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("a same-basename different-prefix pair must refuse");
+        assert!(error.contains("$.dll"), "{error}");
+
+        // The same for an object KEY: the sealed copy's key is absolute and
+        // shares only its final component with the run-dir copy's key.
+        let dir = TmpDir::new("sealed_absolute_key");
+        let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        let object = sealed_manifest.as_object_mut().unwrap();
+        let value = object.remove("dll").unwrap();
+        object.insert(r"\\?\C:\somewhere\else\dll".to_string(), value);
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("an absolute sealed key must not bind to its basename");
+        assert!(error.contains("dll"), "{error}");
+    }
+
+    /// Keys and values obey ONE rule, equality first. An absolute object key
+    /// present verbatim on both sides binds to itself; it is not reduced and
+    /// then reported missing. Two run-dir keys claiming one sealed key are
+    /// ambiguous and refuse.
+    ///
+    /// Production change that would make this fail: matching sealed keys only
+    /// against redacted run-dir key names, or dropping the collision refusal.
+    #[test]
+    fn object_keys_bind_by_equality_first_and_collisions_refuse() {
+        let dir = TmpDir::new("absolute_key_identical");
+        let (mut run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        let absolute_key = r"\\?\release\dll".to_string();
+        for manifest in [&mut sealed_manifest, &mut run_dir_manifest] {
+            let object = manifest.as_object_mut().unwrap();
+            let value = object.remove("dll").unwrap();
+            object.insert(absolute_key.clone(), value);
+        }
+        // Both copies now carry the SAME absolute key with the same value.
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect("an identical absolute key must bind to itself");
+
+        // Two run-dir keys claiming the one sealed key is ambiguous.
+        let dir = TmpDir::new("absolute_key_collision");
+        let (mut run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        run_dir_manifest
+            .as_object_mut()
+            .unwrap()
+            .insert(r"\\?\C:\elsewhere\dll".to_string(), json!("collector.dll"));
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("colliding run-dir keys must refuse");
+        // Two refusals cover this, and the earlier one wins: the projection the
+        // composition routing computes refuses a collision before the binding
+        // is reached. Both name it.
+        assert!(error.contains("collision"), "{error}");
+
+        // The binding's own collision refusal, exercised directly, so it is not
+        // dead weight behind the routing projection.
+        let mut redactions = 0;
+        let violation = first_binding_violation(
+            &json!({"dll": "collector.dll"}),
+            &json!({"dll": "collector.dll", r"\\?\C:\elsewhere\dll": "collector.dll"}),
+            "$",
+            &mut redactions,
+        )
+        .expect("colliding run-dir keys must not bind");
+        assert!(violation.contains("collide onto one sealed key"), "{violation}");
+    }
+
+    /// Redaction binds in ONE direction: the run-dir copy may hold the absolute
+    /// path the sealed copy reduced. The reverse — a bare basename on disk
+    /// standing in for an absolute path in the container — is not something the
+    /// recorder produces, and must not bind.
+    ///
+    /// Production change that would make this fail: comparing
+    /// `redact(sealed)` against `redact(run_dir)` instead of `sealed` against
+    /// `run_dir` with a directional rule.
+    #[test]
+    fn redaction_does_not_bind_in_the_reverse_direction() {
+        let dir = TmpDir::new("reverse_redaction");
+        let (mut run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        sealed_manifest["dll"] = json!(r"\\?\release\collector.dll");
+        run_dir_manifest["dll"] = json!("collector.dll");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("reverse-direction redaction must not bind");
+        assert!(error.contains("$.dll"), "{error}");
+    }
+
+    /// Deleting the whole `host_finalize` block from the run-dir copy must not
+    /// be cheaper than matching it. The sealed copy decides: it carries one, so
+    /// the run-dir copy owes one.
+    ///
+    /// Production change that would make this fail: treating a missing run-dir
+    /// `host_finalize` as a sanctioned divergence (which would unbind
+    /// `fold.*` and `stream_sha256` on demand).
+    #[test]
+    fn deleting_the_run_dir_host_finalize_block_refuses() {
+        let dir = TmpDir::new("host_finalize_deleted");
+        let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let mut stripped = run_dir_manifest;
+        stripped.as_object_mut().unwrap().remove("host_finalize");
+        let bytes = serde_json::to_vec_pretty(&stripped).unwrap();
+        let error = load_verified_replay_authority(&stripped, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect_err("a deleted host_finalize block must refuse");
+        assert!(error.contains("host_finalize"), "{error}");
+        assert!(
+            error.contains("not a sanctioned post-seal divergence"),
+            "{error}"
+        );
+    }
+
+    /// A compact container whose sealed copy carries no `host_finalize` is
+    /// malformed, and admitting it would unbind `stream_sha256` and all of
+    /// `fold.*` on demand.
+    ///
+    /// The one recorder pack path that seals without that block,
+    /// `write_native_replay_container`, is reached only from the
+    /// `StreamFormat::Json` arm (main.rs). Production refuses anything but the
+    /// compact stream, and this gate refuses it again through
+    /// `stream_format == "compact"`. So there is no legitimate capture this
+    /// gate can certify whose sealed copy lacks the block — treating its
+    /// absence as a compatibility allowance was reasoning from a code path, not
+    /// from a reachable capture.
+    ///
+    /// Production change that would make this fail: unbinding the block when
+    /// the sealed copy does not carry it.
+    #[test]
+    fn a_sealed_copy_without_host_finalize_refuses() {
+        for sealed_block in [None, Some(json!(null)), Some(json!("pre_pack"))] {
+            let dir = TmpDir::new("sealed_without_host_finalize");
+            let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+            let object = sealed_manifest.as_object_mut().unwrap();
+            match sealed_block.clone() {
+                None => {
+                    object.remove("host_finalize");
+                }
+                Some(value) => {
+                    object.insert("host_finalize".to_string(), value);
+                }
+            }
+            write_replay_fixture(
+                &dir.0,
+                "g",
+                &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+                true,
+            );
+            let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+            let error = load_verified_replay_authority(
+                &run_dir_manifest,
+                &bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .expect_err("a sealed copy without an object host_finalize must refuse");
+            assert!(
+                error.contains("object-valued \"host_finalize\""),
+                "{sealed_block:?}: {error}"
+            );
+        }
+    }
+
+    /// Routing and binding must read ONE document.
+    ///
+    /// `raw_stream_packaging` is the only field of the run-dir manifest whose
+    /// absence has a permissive default rather than a refusal, and the loader
+    /// reads it before the binding runs, to choose which proof to execute. If
+    /// that read took the RAW document while the binding compared the PROJECTED
+    /// one, writing the field under an absolute-path KEY would hide it from the
+    /// routing lookup — falling back to the default — while the projection
+    /// renamed the key back to its basename in time to satisfy the binding.
+    ///
+    /// The composition here is `omitted` and the container is genuinely
+    /// cache-only, so a routing read that missed the field would default to
+    /// `packaged` and refuse for the wrong reason.
+    ///
+    /// Production change that would make this fail: routing the composition off
+    /// `external_manifest` instead of `projected_external_manifest`.
+    #[test]
+    fn an_absolute_path_key_cannot_hide_the_composition_from_routing() {
+        let dir = TmpDir::new("composition_key_rename");
+        let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
+        let mut renamed_key = recording.manifest.clone();
+        let object = renamed_key.as_object_mut().unwrap();
+        let declared = object
+            .remove(snapshot::RAW_STREAM_PACKAGING_FIELD)
+            .expect("the fixture declares its composition");
+        assert_eq!(
+            declared,
+            json!(snapshot::RawStreamPackaging::Omitted.as_str()),
+            "the fixture must be the cache-only composition for this test to discriminate"
+        );
+        object.insert(
+            format!(r"\\?\C:\x\{}", snapshot::RAW_STREAM_PACKAGING_FIELD),
+            declared,
+        );
+        let bytes = serde_json::to_vec_pretty(&renamed_key).unwrap();
+
+        let authority =
+            load_verified_replay_authority(&renamed_key, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect("routing must see the composition the binding will bind");
+        assert_eq!(
+            authority.details[snapshot::RAW_STREAM_PACKAGING_FIELD],
+            json!(snapshot::RawStreamPackaging::Omitted.as_str()),
+            "the cache-only route must have run"
+        );
+        assert_eq!(
+            authority.details["external_manifest_path_redaction_applied"],
+            json!(true)
+        );
+    }
+
+    /// The projection is for COMPARISON, never for resolving a path this loader
+    /// opens. `replay_file` names a file on disk, so it is read from the raw
+    /// document, where `required_run_file` refuses anything absolute. Reading
+    /// it from the projection would reduce an absolute path to a basename and
+    /// quietly admit it.
+    ///
+    /// Production change that would make this fail: resolving `replay_file`
+    /// from `projected_external_manifest`.
+    #[test]
+    fn an_absolute_replay_file_is_refused_not_reduced_to_a_basename() {
+        let dir = TmpDir::new("absolute_replay_file");
+        let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let mut absolute = run_dir_manifest;
+        absolute["replay_file"] = json!(dir
+            .0
+            .join("native_session.battleplan")
+            .display()
+            .to_string());
+        assert!(
+            absolute["replay_file"].as_str().unwrap().len() > "native_session.battleplan".len(),
+            "the fixture must actually be an absolute path"
+        );
+        let bytes = serde_json::to_vec_pretty(&absolute).unwrap();
+        let error =
+            load_verified_replay_authority(&absolute, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("an absolute replay_file must refuse");
+        assert!(
+            error.contains("must be a run-directory-contained relative path"),
+            "{error}"
+        );
+    }
+
+    /// Without the container's copy there is no authority at all, and the
+    /// mutable run-dir file must never stand in for it.
+    ///
+    /// Production change that would make this fail: falling back to the run-dir
+    /// manifest when the container has no `recorder_manifest` entry.
+    #[test]
+    fn an_absent_sealed_recorder_manifest_refuses() {
+        let dir = TmpDir::new("sealed_manifest_absent");
+        let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        // include_manifest_role = false: the entry is packed but carries no
+        // `recorder_manifest` role, so the container names no authority.
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            false,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("a container with no sealed recorder_manifest must refuse");
+        assert!(error.contains("recorder_manifest entries"), "{error}");
     }
 
     /// A container sealed the way the RECORDER seals one — carrying the
@@ -8225,7 +9194,15 @@ mod tests {
         let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
         let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("a packaged container must never take the weaker route");
-        assert!(error.contains("not byte-identical"), "{error}");
+        assert!(
+            error.contains("contradicts the authoritative sealed recorder_manifest"),
+            "{error}"
+        );
+        assert!(
+            error.contains(snapshot::RAW_STREAM_PACKAGING_FIELD)
+                || error.contains("replay_entries"),
+            "the refusal must name the rewritten field: {error}"
+        );
         assert!(
             !error.contains(STREAM_CERTIFICATION_MANIFEST_ATTESTED),
             "the weaker route must not be reported as having run: {error}"
@@ -9494,6 +10471,27 @@ mod tests {
                 "stream_role": "collector_compact_stream",
                 "session_manifest": "recorder/native_session_manifest.json",
                 "session_manifest_role": "recorder_manifest"
+            },
+            // Every compact capture seals a `host_finalize` block, and the
+            // authority loader now requires one, so the base fixture carries
+            // the fields that are identical in both copies. Tests that need the
+            // divergent live shape add the directional fields on top; see
+            // `live_shaped_manifest_pair`.
+            "host_finalize": {
+                "streaming": true,
+                "stream_bytes": 4096,
+                "stream_stored_bytes": 4096,
+                "stream_sha256": "a".repeat(64),
+                "fold": {
+                    "hours_emitted": 7,
+                    "records_total": 70,
+                    "excluded_domain_data": {
+                        "complete": true,
+                        "per_domain": {},
+                        "records": [],
+                        "total_records": 0,
+                    },
+                },
             }
         })
     }

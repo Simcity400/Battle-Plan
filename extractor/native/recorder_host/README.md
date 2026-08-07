@@ -65,11 +65,35 @@ manifest fields, and the quarantine-on-gate-fail naming
 
 ### G5 telemetry (`native_session_manifest.json` → `host_finalize`)
 
-The `.battleplan` embeds the telemetry known before packing: peak memory so far,
-stream byte count/hash, and fold accounting. That embedded copy is marked with
-`host_finalize.standalone_manifest_is_authoritative = true`; post-pack fields
-(`finalize_seconds` and `verify.*`) are written only to the standalone
-`native_session_manifest.json` after pack/verify completes.
+The `.battleplan` embeds the telemetry known before packing: stream byte
+count/hash and fold accounting. Post-pack fields (`finalize_seconds`,
+`peak_private_bytes`, `peak_working_set_bytes`, `verify.*`) are written only to
+the standalone `native_session_manifest.json` after pack/verify completes, and
+the embedded copy is marked `host_finalize.embedded_copy_phase = "pre_pack"`
+with `post_pack_fields_in_standalone_manifest_only` naming them.
+
+That block also carries `host_finalize.standalone_manifest_is_authoritative =
+true`. Read it narrowly: it means the standalone copy is the FULLER telemetry
+record, because it is the only one that can carry the post-pack numbers. It does
+NOT mean the standalone file outranks the container. For verification the sealed
+copy is the authority — it is hash-bound by the container, the standalone file
+is a mutable convenience view, and
+`compact_replay_verification_gates::load_verified_replay_authority` binds the
+latter to the former (see `POST_SEAL_MUTABLE_HOST_FINALIZE_FIELDS`). The field
+name predates that binding and is misleading; it is kept because it is already
+sealed into every existing container.
+
+The two copies are deliberately NOT byte-identical, in exactly two ways:
+
+1. The embedded copy is the portable projection of the standalone one — every
+   absolute path is reduced to its basename (`recorder_host::portable_manifest`),
+   because a shareable container must carry no personal paths.
+2. The embedded copy is built before the container exists, so it lacks the
+   post-pack fields above and carries the pre-pack markers instead, plus a
+   `host_finalize.excluded_domain_data` block the standalone copy does not.
+
+On capture t31 that is a 77-byte, 11-field difference (17,957,105 standalone vs
+17,957,028 embedded). Nothing else may differ.
 
 Telemetry fields:
 

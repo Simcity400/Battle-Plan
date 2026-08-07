@@ -12,6 +12,7 @@ pub mod finalize_progress;
 pub mod mmap;
 pub mod modset;
 pub mod portable_content_manifest;
+pub mod portable_manifest;
 pub mod proc_mem;
 pub mod production_content_vfs;
 pub mod production_map_content_index;

@@ -314,8 +314,17 @@ fn validate_authority_binding(
         return Err("compact gate verification profile is not authoritative".to_string());
     }
     let replay = get_obj(details, "replay_verify")?;
-    if !bool_value(replay, "external_manifest_exact_match")? {
-        return Err("compact gate did not bind the exact external manifest".to_string());
+    // The run-dir manifest is bound to the container's SEALED copy, not equal
+    // to it: the recorder redacts absolute paths out of the sealed copy and
+    // writes finalize telemetry back into the run-dir copy after the container
+    // exists. The gate publishes what it actually proved. The old
+    // `external_manifest_exact_match` claimed byte-identity, which no live
+    // capture has ever satisfied.
+    if !bool_value(replay, "external_manifest_bound_to_sealed_authority")? {
+        return Err(
+            "compact gate did not bind the run-dir manifest to the sealed replay authority"
+                .to_string(),
+        );
     }
     // The gate states WHICH proof certified the recording, and the source
     // identity it publishes is named differently on each route: a cache-only
@@ -445,19 +454,34 @@ fn validate_authority_binding(
         ));
     }
 
+    // The local file this audit read is the RUN-DIR manifest, so it is checked
+    // against the identity the gate published for that file. It is NOT the
+    // sealed `recorder_manifest` identity: the recorder redacts absolute paths
+    // out of the sealed copy and writes finalize telemetry back into the
+    // run-dir copy after the container exists, so the two are deliberately
+    // different (t31: 17,957,105 vs 17,957,028 bytes). Comparing this file
+    // against `recorder_manifest_sha256` only ever held because the gate
+    // demanded byte-identity, which no live capture satisfied.
     let manifest_hash = sha256_hex(manifest_bytes);
-    let gate_manifest_hash = string_value(replay, "recorder_manifest_sha256")?;
+    let gate_manifest_hash = string_value(replay, "external_manifest_sha256")?;
     validate_lower_sha256(gate_manifest_hash)
-        .map_err(|error| format!("gate recorder manifest hash: {error}"))?;
+        .map_err(|error| format!("gate external manifest hash: {error}"))?;
     if manifest_hash != gate_manifest_hash {
         return Err(format!(
-            "native manifest sha256 {manifest_hash} != gate recorder_manifest_sha256 {gate_manifest_hash}"
+            "native manifest sha256 {manifest_hash} != gate external_manifest_sha256 {gate_manifest_hash}"
         ));
     }
-    if manifest_bytes.len() as u64 != number(replay, "recorder_manifest_bytes")? {
+    if manifest_bytes.len() as u64 != number(replay, "external_manifest_bytes")? {
         return Err(
-            "native manifest byte length differs from gate recorder_manifest_bytes".to_string(),
+            "native manifest byte length differs from gate external_manifest_bytes".to_string(),
         );
+    }
+    // The sealed copy's own identity is still required to be well-formed, and
+    // is published under its own name. It is never equal to the local file.
+    validate_lower_sha256(string_value(replay, "recorder_manifest_sha256")?)
+        .map_err(|error| format!("gate sealed recorder manifest hash: {error}"))?;
+    if number(replay, "recorder_manifest_bytes")? == 0 {
+        return Err("gate recorder_manifest_bytes is zero".to_string());
     }
 
     if number(lifecycle, "domain_id")? != 41 {
@@ -508,7 +532,7 @@ fn validate_authority_binding(
         "native_manifest_bytes": manifest_bytes.len(),
         "native_manifest_sha256": manifest_hash,
         "gate_authoritative": true,
-        "external_manifest_exact_match": true,
+        "external_manifest_bound_to_sealed_authority": true,
     }))
 }
 
@@ -691,8 +715,13 @@ mod tests {
     use super::*;
 
     fn authority_fixture() -> (Value, Value, Value, Vec<u8>) {
-        let manifest_bytes = b"exact native manifest bytes".to_vec();
+        let manifest_bytes = b"run-dir native manifest bytes".to_vec();
         let manifest_hash = sha256_hex(&manifest_bytes);
+        // The sealed copy inside the container is a DIFFERENT artifact — the
+        // portable projection of the same session, sealed before the post-pack
+        // telemetry was written back into the run-dir file.
+        let sealed_bytes = b"sealed portable recorder manifest bytes".to_vec();
+        let sealed_hash = sha256_hex(&sealed_bytes);
         let stream_hash = sha256_hex(b"collector stream");
         let lifecycle = json!({
             "domain_id": 41,
@@ -746,9 +775,16 @@ mod tests {
                     "game_id": "session-a",
                     "collector_compact_stream_bytes": 16,
                     "collector_compact_stream_sha256": stream_hash,
-                    "recorder_manifest_bytes": manifest_bytes.len(),
-                    "recorder_manifest_sha256": manifest_hash,
-                    "external_manifest_exact_match": true
+                    // The SEALED copy: a different file from the one this
+                    // audit read off disk, exactly as every live capture
+                    // produces. Deliberately not equal to the run-dir identity
+                    // below, so a reader that conflates the two fails here.
+                    "recorder_manifest_bytes": sealed_bytes.len(),
+                    "recorder_manifest_sha256": sealed_hash,
+                    // The RUN-DIR copy: the file at `manifest_path`.
+                    "external_manifest_bytes": manifest_bytes.len(),
+                    "external_manifest_sha256": manifest_hash,
+                    "external_manifest_bound_to_sealed_authority": true
                 }
             }
         });
@@ -761,6 +797,45 @@ mod tests {
         let binding = validate_authority_binding(&lifecycle, &manifest, &gate, &bytes).unwrap();
         assert_eq!(binding["ok"], json!(true));
         assert_eq!(binding["session_id"], json!("session-a"));
+    }
+
+    /// The run-dir manifest this audit hashed is checked against the gate's
+    /// identity for THAT file, never against the sealed `recorder_manifest`
+    /// identity. The two are deliberately different for every live capture
+    /// (t31: 17,957,105 vs 17,957,028 bytes), so an audit that compares the
+    /// local file to the sealed identity refuses every real recording.
+    ///
+    /// Production change that would make this fail: pointing the local-file
+    /// comparison back at `recorder_manifest_sha256` /
+    /// `recorder_manifest_bytes`.
+    #[test]
+    fn the_local_file_is_bound_to_the_run_dir_identity_not_the_sealed_one() {
+        let (lifecycle, manifest, gate, bytes) = authority_fixture();
+        let replay = &gate["details"]["replay_verify"];
+        assert_ne!(
+            replay["external_manifest_sha256"], replay["recorder_manifest_sha256"],
+            "the fixture must carry the live shape: two different manifest copies"
+        );
+        validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
+            .expect("a live-shaped gate report must bind");
+
+        // A run-dir manifest that is not the file the gate reported still
+        // refuses, naming the run-dir identity.
+        let error = validate_authority_binding(&lifecycle, &manifest, &gate, b"other bytes")
+            .expect_err("a different local file must refuse");
+        assert!(error.contains("external_manifest_sha256"), "{error}");
+
+        // And the sealed identity is still required to be present and
+        // well-formed, so dropping it is not a way to escape the check.
+        let mut without_sealed = gate;
+        without_sealed["details"]["replay_verify"]
+            .as_object_mut()
+            .unwrap()
+            .remove("recorder_manifest_sha256");
+        assert!(
+            validate_authority_binding(&lifecycle, &manifest, &without_sealed, &bytes).is_err(),
+            "a report with no sealed manifest identity must refuse"
+        );
     }
 
     /// A cache-only (default composition) capture publishes its source

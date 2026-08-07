@@ -1621,11 +1621,25 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                     == "recorder_manifest"
                     and replay_verify.get("recorder_manifest")
                     == expected_container_manifest
-                    and replay_verify.get("recorder_manifest_bytes")
+                    # `recorder_manifest_bytes`/`_sha256` are the identity of
+                    # the SEALED copy inside the container. They are NOT the
+                    # identity of the run-dir file: the recorder redacts
+                    # absolute paths out of the sealed copy and writes finalize
+                    # telemetry back into the run-dir copy after the container
+                    # exists, so the two files are deliberately different (t31:
+                    # 77 bytes apart). Comparing the sealed identity against
+                    # the local file was only ever satisfiable because the gate
+                    # demanded byte-identity, which no live capture met. The
+                    # run-dir file is checked against the field that actually
+                    # describes it.
+                    and replay_verify.get("external_manifest_bytes")
                     == manifest_path.stat().st_size
-                    and replay_verify.get("recorder_manifest_sha256")
+                    and replay_verify.get("external_manifest_sha256")
                     == sha256(manifest_path)
-                    and replay_verify.get("external_manifest_exact_match") is True
+                    and replay_verify.get(
+                        "external_manifest_bound_to_sealed_authority"
+                    )
+                    is True
                     and source_binding,
                     "independent_compact_gate_replay_authority_unbound",
                     problems,
