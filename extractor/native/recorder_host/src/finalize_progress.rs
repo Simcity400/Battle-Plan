@@ -280,6 +280,43 @@ impl FinalizeProgressSample {
     }
 }
 
+/// Name of the same-directory temporary that a sample is written to before it
+/// is renamed onto `RECEIPT_FILE_NAME`.
+///
+/// Declared here, beside the code that CREATES it, for the same reason the
+/// spill-directory prefixes are: a consumer that has to recognise a publish in
+/// flight must not carry its own copy of this spelling and drift from it.
+pub fn receipt_temp_name(publisher_pid: u32, ordinal: u64) -> String {
+    format!(".{RECEIPT_FILE_NAME}.{publisher_pid}.{ordinal}.tmp")
+}
+
+/// Pid of the process publishing `name`, if `name` is one of those temporaries.
+///
+/// This exists because replacing a file on Windows is NOT atomic: probing the
+/// exact write/fsync/rename sequence `publish_sample` uses, a concurrent reader
+/// saw `RECEIPT_FILE_NAME` reported ERROR_FILE_NOT_FOUND while a directory
+/// listing taken at the same instant held only this temporary -- the old name
+/// unlinked, the new one not yet in place. Measured windows were microseconds
+/// most of the time and 7-16 ms when a filesystem filter got involved.
+///
+/// So "the receipt is absent" is not the same fact as "no finalizer published
+/// one", and a consumer that must not race a live finalizer needs evidence that
+/// tells the two apart. The temporary is that evidence, and its exact strength
+/// is worth stating: it is normally created and consumed within one publish, so
+/// finding one says a publish is in flight -- but it also survives a finalizer
+/// killed between the write and the rename, and the pid it carries can have
+/// been reissued. It is therefore evidence a publisher EXISTS OR RECENTLY DIED
+/// here, which is why the only sound thing to do with it is refuse.
+pub fn publisher_pid_of_receipt_temp(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix(&format!(".{RECEIPT_FILE_NAME}."))?;
+    let rest = rest.strip_suffix(".tmp")?;
+    let (pid, ordinal) = rest.split_once('.')?;
+    // Both fields must parse, so an unrelated file that merely looks similar is
+    // not read as a publish in flight.
+    ordinal.parse::<u64>().ok()?;
+    pid.parse::<u32>().ok()
+}
+
 /// Read the currently published sample, if any.
 pub fn read_published_sample(out_dir: &Path) -> Result<Option<FinalizeProgressSample>, String> {
     let path = out_dir.join(RECEIPT_FILE_NAME);
@@ -319,10 +356,7 @@ fn publish_sample(
     let mut bytes = serde_json::to_vec_pretty(&value)
         .map_err(|error| format!("serialize {RECEIPT_FILE_NAME} failed: {error}"))?;
     bytes.push(b'\n');
-    let temp = out_dir.join(format!(
-        ".{RECEIPT_FILE_NAME}.{}.{temp_ordinal}.tmp",
-        std::process::id()
-    ));
+    let temp = out_dir.join(receipt_temp_name(std::process::id(), temp_ordinal));
     let mut file = fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -375,6 +409,22 @@ impl ProgressTracker {
         // The first observation has no predecessor, so it is a change by
         // definition -- treating it as "unchanged since start" would publish a
         // staleness that had never been measured.
+        //
+        // A change is stamped at the instant it was OBSERVED, not at the
+        // earliest instant it could have happened. All this ever knows is that
+        // the quantity moved somewhere inside the gap since the previous
+        // observation, and the two ends of that gap are not equally safe. This
+        // field exists because four live trials were killed on a fixed timer
+        // while their folds were still writing bytes, so the failure that
+        // matters is calling a working recorder wedged. Stamping the near end
+        // can only under-report a stall -- more patience, never a false kill --
+        // and by at most one OBSERVATION GAP, which is the sampling interval
+        // plus however long metering and publication took, not the interval
+        // alone. Stamping the far end would report a starved PUBLISHER as
+        // a stalled FINALIZE and spend the supervisor's budget on evidence of
+        // progress, which is the original sin. The residual is real and stated
+        // plainly: work that moved early in a long publisher gap and then
+        // wedged buys one extra no-progress window.
         if self.last_work != Some(work) {
             self.last_work = Some(work);
             self.changed_ordinal = ordinal;
@@ -406,6 +456,9 @@ pub struct FinalizeProgressPublisher {
     /// Handed back by the thread so `finish` can publish the terminal sample
     /// with a continuous ordinal instead of restarting the count.
     ordinal: Arc<std::sync::atomic::AtomicU64>,
+    /// Test-only ordering hook; see `on_before_stop_and_join`.
+    #[cfg(test)]
+    before_stop_and_join: Option<Box<dyn FnMut()>>,
 }
 
 impl FinalizeProgressPublisher {
@@ -503,7 +556,30 @@ impl FinalizeProgressPublisher {
             handle: Some(handle),
             started,
             ordinal,
+            #[cfg(test)]
+            before_stop_and_join: None,
         })
+    }
+
+    /// Install a hook fired ONCE, after the sampling thread has been told to
+    /// stop and before it is joined.
+    ///
+    /// It exists so "the join happens BEFORE the terminal publish" is a fact a
+    /// test can force rather than a race it hopes to lose. A test parks the
+    /// sampling thread inside its own `WorkMeter` and, from here, lets exactly
+    /// one more sample through. Because the stop flag is ALREADY set when the
+    /// hook runs, that sample is the thread's last: it publishes, sees the
+    /// stop, and exits. The test can therefore wait for the thread to die --
+    /// not for a duration -- and know the sample is on disk.
+    ///
+    /// The ordering that buys: at the moment the hook returns, a `finalizing`
+    /// sample newer than anything `finish` has written is on disk. An
+    /// implementation that published `complete` before this point has just had
+    /// its seal overwritten, deterministically; one that publishes after the
+    /// join cannot be overwritten, because the only thread that could is gone.
+    #[cfg(test)]
+    pub(crate) fn on_before_stop_and_join(&mut self, hook: impl FnMut() + 'static) {
+        self.before_stop_and_join = Some(Box::new(hook));
     }
 
     /// Stop, join, and publish the terminal sample.
@@ -536,6 +612,12 @@ impl FinalizeProgressPublisher {
 
     fn stop_and_join(&mut self) -> Result<(), String> {
         self.stop.store(true, Ordering::Release);
+        // Test-only; see `on_before_stop_and_join`. Taken rather than borrowed
+        // so a later `Drop` cannot fire it a second time.
+        #[cfg(test)]
+        if let Some(mut hook) = self.before_stop_and_join.take() {
+            hook();
+        }
         match self.handle.take() {
             Some(handle) => handle
                 .join()
