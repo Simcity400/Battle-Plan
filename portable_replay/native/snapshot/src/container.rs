@@ -4244,8 +4244,57 @@ mod tests {
     /// Unique-temporary allocation is bounded: after 128 occupied candidate
     /// names it refuses instead of spinning, and it never opens, truncates or
     /// adopts a name that already exists.
+    ///
+    /// The property is stated over `SPOOL_TEMP_SEQUENCE`, which is
+    /// process-wide, so it is only decidable in a process where nothing else
+    /// allocates a spool temporary: the occupied names have to be the names
+    /// the allocation will actually try. Under `cargo test` the whole crate
+    /// suite shares one process and sibling spool tests advance that sequence
+    /// between the load and the spool call, which slides the real candidate
+    /// window past the occupied names and lets the allocation succeed.
+    /// Rather than assume a runner that gives every test its own process,
+    /// this test makes one: it re-executes this test binary filtered to this
+    /// test alone, and the child — marked by the environment variable below —
+    /// evaluates the property with the sequence quiescent.
     #[test]
     fn transactional_spool_gives_up_after_the_bounded_unique_name_window() {
+        const WORKER_MARKER: &str = "BATTLE_PLAN_BOUNDED_UNIQUE_NAME_WINDOW_WORKER";
+        const TEST_NAME: &str =
+            "container::tests::transactional_spool_gives_up_after_the_bounded_unique_name_window";
+
+        if std::env::var_os(WORKER_MARKER).is_some() {
+            bounded_unique_name_window_property();
+            return;
+        }
+
+        let binary = std::env::current_exe().expect("locate this test binary to re-execute it");
+        let output = std::process::Command::new(binary)
+            .env(WORKER_MARKER, "1")
+            .args(["--exact", TEST_NAME, "--test-threads=1", "--nocapture"])
+            .output()
+            .expect("run the isolated single-test child");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.success(),
+            "the isolated child run failed (exit {:?})\n--- child stdout ---\n{stdout}\
+             \n--- child stderr ---\n{stderr}",
+            output.status.code()
+        );
+        // A child whose filter matched nothing also exits 0, so the pass count
+        // is what keeps this outer assertion from passing vacuously — it is
+        // also what catches a rename that leaves `TEST_NAME` stale.
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the isolated child must have run exactly this one test\n--- child stdout ---\n\
+             {stdout}\n--- child stderr ---\n{stderr}"
+        );
+    }
+
+    /// The candidate-window property itself. Only ever called in the isolated
+    /// child process spawned by the test above, where `SPOOL_TEMP_SEQUENCE` is
+    /// quiescent and the candidate run is therefore exactly predictable.
+    fn bounded_unique_name_window_property() {
         const PAYLOAD: &[u8] = b"unique name window payload";
         const ATTEMPTS: u64 = 128;
         const OCCUPIED: &[u8] = b"occupied by another writer";
@@ -4257,8 +4306,8 @@ mod tests {
         let destination_name = destination.file_name().unwrap().to_owned();
 
         // The candidate names are `.<destination>.authenticated-spool.<pid>.<n>.part`
-        // over a run of the process-wide sequence. nextest gives every test its
-        // own process, so nothing else advances that sequence between the load
+        // over a run of the process-wide sequence. This process runs this test
+        // and nothing else, so nothing advances that sequence between the load
         // below and the spool call, and the run is exactly predictable.
         let first_sequence = SPOOL_TEMP_SEQUENCE.load(Ordering::Relaxed);
         let mut occupied = Vec::new();
