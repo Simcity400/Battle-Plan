@@ -8716,7 +8716,19 @@ mod tests {
             &mut summary,
         );
         assert_eq!(summary.per_domain_combined_units[&47]["adapter_rows"], 7);
-        let d47 = characters_leaders_cabinet_live_lane::encode_payload(0, 0x1234, 0, &[]);
+        // An arbitrary bit pattern, chosen only to prove the shared authority
+        // hands back THIS domain's own status word untouched rather than one
+        // it synthesized. Bit 9 (`STATUS_PARTIAL_DATA`) is deliberately clear:
+        // since d47 gained per-family partial admission, an UNDECLARED payload
+        // whose only failure-class bit is `PARTIAL_DATA` is refused by the
+        // canonical decoder, because d47's expected-partial tolerance is
+        // written for a DECLARED family gap and must never absorb an
+        // undeclared one. The declared shape is covered below; this call is
+        // the legacy full-snapshot shape, which must still decode.
+        let d47_legacy_status =
+            0x1234u32 & !characters_leaders_cabinet_live_lane::STATUS_PARTIAL_DATA;
+        let d47 =
+            characters_leaders_cabinet_live_lane::encode_payload(0, d47_legacy_status, 0, &[]);
         let d53_status = diplomacy_intel_operatives_live::compact::STATUS_OPERATIONS_DETAIL_RESISTED
             | diplomacy_intel_operatives_live::compact::STATUS_INTEL_MAP_RESISTED;
         let d53 = diplomacy_intel_operatives_live::compact::encode_payload(
@@ -8731,7 +8743,34 @@ mod tests {
             recorder_host::domain_data_authority::DomainDataContext::default(),
         )
         .unwrap();
-        assert_eq!(d47.status_flags, Some(0x1234));
+        assert_eq!(d47.status_flags, Some(d47_legacy_status));
+
+        // The other d47 shape: a payload that declares which row families it
+        // observed. It must decode independently too — the declaration is a
+        // header word this crate's authority path has to carry through, not a
+        // reason for the shared decode to refuse the domain.
+        let d47_declared = characters_leaders_cabinet_live_lane::encode_payload_with_families(
+            0,
+            0,
+            characters_leaders_cabinet_live_lane::SCHEMA_ROOTS_VALIDATED
+                | characters_leaders_cabinet_live_lane::SCHEMA_STATIC_NAME_CLOSURE
+                | characters_leaders_cabinet_live_lane::SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
+            characters_leaders_cabinet_live_lane::FAMILY_CENSUS_ONLY,
+            &[],
+        );
+        let d47_declared = recorder_host::domain_data_authority::summarize_domain_data_payload(
+            47,
+            &d47_declared,
+            recorder_host::domain_data_authority::DomainDataContext::default(),
+        )
+        .unwrap();
+        // The encoder derives the status from the mask, so a declared payload
+        // always spells the partial it is admitting.
+        assert_eq!(
+            d47_declared.status_flags,
+            Some(characters_leaders_cabinet_live_lane::STATUS_PARTIAL_DATA)
+        );
+
         let d53 = recorder_host::domain_data_authority::summarize_domain_data_payload(
             53,
             &d53,
