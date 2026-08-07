@@ -38,8 +38,14 @@ pub struct RolloverPackageSegment {
     pub campaign_id_hex: String,
     pub cid1_payload_sha256_hex: String,
     pub raw_relative_path: PathBuf,
+    /// The member file on disk at `raw_relative_path`.
     pub raw_bytes: u64,
     pub raw_sha256: String,
+    /// The canonical H4CR that file decodes to. Equal to the storage pair only
+    /// when the member is stored raw; the packaged container embeds DECODED
+    /// bytes, so its compact-stream entry is compared against this pair.
+    pub raw_decoded_bytes: u64,
+    pub raw_decoded_sha256: String,
     pub manifest_relative_path: PathBuf,
     pub manifest_sha256: String,
     pub package_relative_path: PathBuf,
@@ -135,6 +141,8 @@ struct WirePackageSegment {
     raw_relative_path: String,
     raw_bytes: u64,
     raw_sha256: String,
+    raw_decoded_bytes: u64,
+    raw_decoded_sha256: String,
     manifest_relative_path: String,
     manifest_sha256: String,
     package_relative_path: String,
@@ -239,6 +247,7 @@ impl RolloverPackageSet {
             for (value, field) in [
                 (&stream.cid1_payload_sha256_hex, "cid1_payload_sha256_hex"),
                 (&stream.raw_sha256, "raw_sha256"),
+                (&stream.raw_decoded_sha256, "raw_decoded_sha256"),
                 (&stream.manifest_sha256, "manifest_sha256"),
                 (&stream.package_sha256, "package_sha256"),
             ] {
@@ -246,7 +255,7 @@ impl RolloverPackageSet {
                     return Err(format!("logical stream {expected_id} has a zero {field}"));
                 }
             }
-            if stream.raw_bytes == 0 {
+            if stream.raw_bytes == 0 || stream.raw_decoded_bytes == 0 {
                 return Err(format!("logical stream {expected_id} has an empty raw member"));
             }
             let raw_relative_path = strict_relative_path(
@@ -276,6 +285,8 @@ impl RolloverPackageSet {
                 raw_relative_path,
                 raw_bytes: stream.raw_bytes,
                 raw_sha256: stream.raw_sha256,
+                raw_decoded_bytes: stream.raw_decoded_bytes,
+                raw_decoded_sha256: stream.raw_decoded_sha256,
                 manifest_relative_path,
                 manifest_sha256: stream.manifest_sha256,
                 package_relative_path,
@@ -588,16 +599,20 @@ fn validate_selected_container(
         ));
     }
     let compact = &compact[0];
-    if compact.bytes != segment.raw_bytes
-        || compact.sha256.as_str() != segment.raw_sha256.as_str()
+    // The container's compact-stream entry is canonical H4CR: the packer
+    // decodes the member on the way in. Comparing it to the STORAGE pair holds
+    // only while the member is stored raw, and silently rejects every
+    // compressed member as a disagreement.
+    if compact.bytes != segment.raw_decoded_bytes
+        || compact.sha256.as_str() != segment.raw_decoded_sha256.as_str()
     {
         return Err("selected replay package compact-stream entry disagrees with the package set".to_string());
     }
     let receipt = container
         .authenticate_entry(&compact.path)
         .map_err(|error| format!("authenticate selected compact-stream entry: {error}"))?;
-    if receipt.uncompressed_len() != segment.raw_bytes
-        || receipt.sha256() != segment.raw_sha256.as_str()
+    if receipt.uncompressed_len() != segment.raw_decoded_bytes
+        || receipt.sha256() != segment.raw_decoded_sha256.as_str()
     {
         return Err("selected compact-stream authentication receipt disagrees with the package set".to_string());
     }
@@ -864,6 +879,13 @@ mod tests {
     }
 
     fn fixture(tag: &str) -> (PathBuf, PathBuf) {
+        fixture_with_storage(tag, None)
+    }
+
+    /// `storage` overrides the member's STORAGE identity (bytes, digest) so it
+    /// differs from the decoded identity, which is what a compressed member
+    /// looks like. `None` keeps them equal, which is what a raw member is.
+    fn fixture_with_storage(tag: &str, storage: Option<(u64, String)>) -> (PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "replay_core_rollover_set_{tag}_{}_{}",
             std::process::id(),
@@ -885,8 +907,10 @@ mod tests {
                 "last_complete_sequence": 1,
                 "campaign_id_hex": "b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f",
                 "cid1_payload_sha256_hex": "22".repeat(32),
-                "file_bytes": raw.len(),
-                "file_sha256_hex": hash(raw)
+                "file_bytes": storage.as_ref().map_or(raw.len() as u64, |(bytes, _)| *bytes),
+                "file_sha256_hex": storage
+                    .as_ref()
+                    .map_or_else(|| hash(raw), |(_, digest)| digest.clone())
             }],
             "transitions": []
         }))
@@ -1016,8 +1040,12 @@ mod tests {
                 "campaign_id_hex": "b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f",
                 "cid1_payload_sha256_hex": "22".repeat(32),
                 "raw_relative_path": "logical-streams/logical-stream-0.sealed.h4cr",
-                "raw_bytes": raw.len(),
-                "raw_sha256": hash(raw),
+                "raw_bytes": storage.as_ref().map_or(raw.len() as u64, |(bytes, _)| *bytes),
+                "raw_sha256": storage
+                    .as_ref()
+                    .map_or_else(|| hash(raw), |(_, digest)| digest.clone()),
+                "raw_decoded_bytes": raw.len(),
+                "raw_decoded_sha256": hash(raw),
                 "manifest_relative_path": "native_session_manifest.json",
                 "manifest_sha256": hash(&manifest),
                 "package_relative_path": "native_session.battleplan",
@@ -1072,6 +1100,48 @@ mod tests {
             Some("RETAINED_OBJECT")
         );
         drop(source);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The packaged container holds DECODED H4CR, so admission joins on the
+    /// decoded pair.
+    ///
+    /// A member whose spool was compressed has a storage length and digest that
+    /// are nothing like its decoded ones. Joining the container's compact-stream
+    /// entry to the storage pair does not corrupt anything — it rejects every
+    /// such member as a disagreement, which reads as a tampered package rather
+    /// than as the wrong field being compared.
+    #[test]
+    fn admission_joins_the_container_entry_to_the_decoded_member_identity() {
+        let (root, descriptor) = fixture_with_storage(
+            "compressed_storage",
+            Some((11, "5c".repeat(32))),
+        );
+        let set = RolloverPackageSet::open(&descriptor).unwrap();
+        let segment = &set.ordered_streams()[0];
+        assert_ne!(
+            segment.raw_sha256, segment.raw_decoded_sha256,
+            "fixture must present a member whose two identities differ"
+        );
+        set.select(0)
+            .expect("a member whose storage identity differs from its decoded identity");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// And the decoded pair is still checked: a package set that misstates it
+    /// is refused rather than accepted because some other field matched.
+    #[test]
+    fn a_misstated_decoded_identity_is_still_refused() {
+        let (root, descriptor) = fixture("decoded_tamper");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+        value["ordered_streams"][0]["raw_decoded_sha256"] = json!("6d".repeat(32));
+        fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
+        let error = RolloverPackageSet::open(&descriptor)
+            .unwrap()
+            .select(0)
+            .unwrap_err();
+        assert!(error.contains("compact-stream entry disagrees"), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1179,6 +1249,8 @@ mod tests {
             raw_relative_path: format!("logical-streams/logical-stream-{id}.sealed.h4cr").into(),
             raw_bytes: 1,
             raw_sha256: "33".repeat(32),
+            raw_decoded_bytes: 1,
+            raw_decoded_sha256: "33".repeat(32),
             manifest_relative_path: format!("manifests/{id}.json").into(),
             manifest_sha256: "44".repeat(32),
             package_relative_path: format!("packages/{id}.battleplan").into(),

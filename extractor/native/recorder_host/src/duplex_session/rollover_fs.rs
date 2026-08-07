@@ -5,6 +5,30 @@
 //! only owner allowed to drain, seal, open, and recover logical streams.  A
 //! CRA1 receipt is therefore impossible until the old file is contiguous and
 //! durable and the next empty file plus transaction ledger are durable.
+//!
+//! # Storage encoding
+//!
+//! A logical stream's file holds the canonical H4CR byte stream either verbatim
+//! or as a concatenation of independently-decodable zstd storage frames
+//! (`compact_stream`). The encoding changes NOTHING above this module: the
+//! decoded byte stream, the record sequence, the CID1 identity and the drain
+//! frontier are identical either way, and every reader here goes through
+//! `compact_stream::open`, which decodes transparently.
+//!
+//! What the encoding does change is where a durable prefix ends. A raw file is
+//! decodable at every byte, so `sync_all` alone makes a prefix readable. A zstd
+//! frame is decodable only once it is CLOSED, so every durability point closes
+//! the current frame before it syncs. That is why the transaction's sync sites
+//! are the only places a frame is rotated: after each of them the file on disk
+//! is a whole number of complete frames, which is exactly the property the
+//! drain/seal/open receipts already promise about the raw layout.
+//!
+//! The durable receipts (`file_sha256_hex`, and `file_bytes` in the published
+//! descriptor) name the STORAGE file, as they always have. For a raw stream the
+//! storage bytes are the decoded bytes, so nothing about those receipts moves;
+//! for a compressed one they pin the compressed file, which determines the
+//! decoded stream exactly. Consumers that need canonical H4CR length and digest
+//! decode the member — the storage identity is not a substitute for it.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -46,6 +70,15 @@ pub enum DurableRolloverPhase {
 #[serde(deny_unknown_fields)]
 pub struct DurableRolloverState {
     pub schema: String,
+    /// How this set's stream files are stored, in `StreamCompression` spelling.
+    ///
+    /// Recorded rather than sniffed. A stream file is empty between
+    /// `durable_seal_and_open` and the new CID1, and an empty file has no
+    /// magic to sniff, so recovery would have to guess exactly where guessing
+    /// wrong appends a zstd frame to a raw file. Defaulted to `none` so a set
+    /// written before this field existed still recovers as what it is.
+    #[serde(default = "raw_storage_name")]
+    pub storage_compression: String,
     pub phase: DurableRolloverPhase,
     pub logical_stream_id: u64,
     pub campaign_id_hex: String,
@@ -102,10 +135,15 @@ pub struct DurableRolloverSetDescriptor {
     pub transitions: Vec<DurableRolloverTransition>,
 }
 
+fn raw_storage_name() -> String {
+    compact_stream::StreamCompression::None.as_str().to_string()
+}
+
 impl DurableRolloverState {
-    fn new(identity: &ValidatedCid1) -> Self {
+    fn new(identity: &ValidatedCid1, storage: compact_stream::StreamCompression) -> Self {
         Self {
             schema: "cid1-rollover-fs-v1".to_string(),
+            storage_compression: storage.as_str().to_string(),
             phase: DurableRolloverPhase::Streaming,
             logical_stream_id: 0,
             campaign_id_hex: hex(&identity.campaign_id()),
@@ -118,10 +156,130 @@ impl DurableRolloverState {
     }
 }
 
+/// Storage sink for one logical stream's H4CR bytes.
+///
+/// `Raw` is the historical layout, untouched: one `File`, one `write_all` per
+/// complete record, `sync_all` at every durability point. `Zstd` stores the same
+/// decoded byte stream as complete storage frames and therefore has a second
+/// obligation — close the frame before syncing — which is why durability is a
+/// method here rather than a bare `sync_all` at each call site.
+enum RolloverSink {
+    Raw(File),
+    Zstd(Box<compact_stream::StreamWriter>),
+}
+
+impl RolloverSink {
+    /// Create the file exclusively and open it for this encoding.
+    ///
+    /// The `create_new` handle is what refuses a pre-existing stream file; the
+    /// encoder is then attached to the name that was just proved absent.
+    fn create(path: &Path, storage: compact_stream::StreamCompression) -> Result<Self, String> {
+        let file = create_new_file(path)?;
+        match storage {
+            compact_stream::StreamCompression::None => Ok(Self::Raw(file)),
+            compact_stream::StreamCompression::Zstd => {
+                drop(file);
+                let writer = compact_stream::StreamWriter::create_with_frames(
+                    path,
+                    storage,
+                    Some(compact_stream::DEFAULT_FRAME_BYTES),
+                )
+                .map_err(|error| {
+                    format!("open compressed rollover stream {}: {error}", path.display())
+                })?;
+                Ok(Self::Zstd(Box::new(writer)))
+            }
+        }
+    }
+
+    /// Reopen an existing stream file for append during recovery.
+    ///
+    /// `resume` is the end of the durable prefix recovery just re-read: for a
+    /// raw file every offset qualifies, and for a compressed one the decode
+    /// reached physical EOF, which the strict reader only allows when the last
+    /// frame is complete. Appending therefore starts a new frame after a closed
+    /// one, never inside an abandoned one.
+    fn append_existing(
+        path: &Path,
+        storage: compact_stream::StreamCompression,
+        resume: compact_stream::FrameBoundary,
+    ) -> Result<Self, String> {
+        match storage {
+            compact_stream::StreamCompression::None => OpenOptions::new()
+                .append(true)
+                .read(true)
+                .open(path)
+                .map(Self::Raw)
+                .map_err(|error| format!("reopen rollover stream {}: {error}", path.display())),
+            compact_stream::StreamCompression::Zstd => {
+                let writer = compact_stream::StreamWriter::append_existing(
+                    path,
+                    storage,
+                    Some(compact_stream::DEFAULT_FRAME_BYTES),
+                    resume,
+                )
+                .map_err(|error| {
+                    format!(
+                        "reopen compressed rollover stream {}: {error}",
+                        path.display()
+                    )
+                })?;
+                Ok(Self::Zstd(Box::new(writer)))
+            }
+        }
+    }
+
+    fn write_record(&mut self, record: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Raw(file) => file
+                .write_all(record)
+                .map_err(|error| format!("write rollover H4CR: {error}")),
+            Self::Zstd(writer) => writer
+                .write_all(record)
+                .map_err(|error| format!("write compressed rollover H4CR: {error}")),
+        }
+    }
+
+    /// Make everything written so far a durable, decodable prefix.
+    ///
+    /// Compressed: close the frame FIRST, then sync. Syncing an open frame
+    /// would put bytes on disk that no reader is allowed to interpret, which is
+    /// the opposite of what every caller of this asks for.
+    fn durable(&mut self, path: &Path) -> Result<(), String> {
+        match self {
+            Self::Raw(file) => durable_file(file, path),
+            Self::Zstd(writer) => {
+                writer
+                    .close_frame()
+                    .map_err(|error| format!("close storage frame {}: {error}", path.display()))?;
+                writer
+                    .sync_storage()
+                    .map_err(|error| format!("sync {}: {error}", path.display()))
+            }
+        }
+    }
+
+    /// Close the stream for good and make the finished file durable.
+    fn finish_durable(self, path: &Path) -> Result<(), String> {
+        match self {
+            Self::Raw(mut file) => {
+                durable_file(&mut file, path)?;
+                drop(file);
+                Ok(())
+            }
+            Self::Zstd(writer) => writer
+                .finish_durable()
+                .map(|_receipt| ())
+                .map_err(|error| format!("finish {}: {error}", path.display())),
+        }
+    }
+}
+
 struct Inner {
     root: PathBuf,
     state: DurableRolloverState,
-    file: Option<File>,
+    storage: compact_stream::StreamCompression,
+    file: Option<RolloverSink>,
     validator: StatefulStreamValidator,
     expected_campaign_id: [u8; 32],
     expected_cid1_payload_sha256: [u8; 32],
@@ -154,6 +312,7 @@ impl FilesystemRolloverStore {
     pub fn create(
         root: impl Into<PathBuf>,
         initial: &AcknowledgedFirstCompactRecord,
+        storage: compact_stream::StreamCompression,
     ) -> Result<(Self, FilesystemRolloverDataWriter), String> {
         let acknowledgement = initial.first_record().acknowledgement();
         if initial.durable_receipt().acknowledgement() != acknowledgement
@@ -163,12 +322,17 @@ impl FilesystemRolloverStore {
         {
             return Err("initial rollover durable receipt is inconsistent".to_string());
         }
-        Self::create_from_record(root.into(), initial.first_record().complete_record())
+        Self::create_from_record(
+            root.into(),
+            initial.first_record().complete_record(),
+            storage,
+        )
     }
 
     fn create_from_record(
         root: PathBuf,
         initial_record: &[u8],
+        storage: compact_stream::StreamCompression,
     ) -> Result<(Self, FilesystemRolloverDataWriter), String> {
         fs::create_dir_all(&root)
             .map_err(|error| format!("create rollover root {}: {error}", root.display()))?;
@@ -182,19 +346,20 @@ impl FilesystemRolloverStore {
             .ok_or("initial rollover record retained no CID1")?
             .clone();
         let path = open_path(&root, 0);
-        let mut file = create_new_file(&path)?;
-        file.write_all(initial_record)
+        let mut file = RolloverSink::create(&path, storage)?;
+        file.write_record(initial_record)
             .map_err(|error| format!("write initial rollover stream: {error}"))?;
-        durable_file(&mut file, &path)?;
+        file.durable(&path)?;
         let mut validator = StatefulStreamValidator::identity_v1();
         admit_complete_record(&mut validator, initial_record)?;
-        let mut state = DurableRolloverState::new(&identity);
+        let mut state = DurableRolloverState::new(&identity, storage);
         state.last_complete_sequence = Some(0);
         persist_state(&root, &state)?;
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 root,
                 state,
+                storage,
                 file: Some(file),
                 validator,
                 expected_campaign_id: identity.campaign_id(),
@@ -217,8 +382,9 @@ impl FilesystemRolloverStore {
     fn create_for_test(
         root: impl Into<PathBuf>,
         initial_record: &[u8],
+        storage: compact_stream::StreamCompression,
     ) -> Result<(Self, FilesystemRolloverDataWriter), String> {
-        Self::create_from_record(root.into(), initial_record)
+        Self::create_from_record(root.into(), initial_record, storage)
     }
 
     /// Reopen a crash-surviving set.  Recovery accepts only a self-consistent
@@ -246,16 +412,15 @@ impl FilesystemRolloverStore {
                 return Err(format!("sealed logical stream {id} has ambiguous file topology"));
             }
             let mut sealed_validator = StatefulStreamValidator::identity_v1();
-            let (last, file_hash, _) =
-                scan_complete_stream_file(&path, &mut sealed_validator)
-                    .map_err(|error| format!("read sealed logical stream {id}: {error}"))?;
+            let scan = scan_complete_stream_file(&path, &mut sealed_validator)
+                .map_err(|error| format!("read sealed logical stream {id}: {error}"))?;
             let identity = sealed_validator
                 .identity()
                 .ok_or_else(|| format!("sealed logical stream {id} has no CID1"))?;
-            if last != Some(receipt.last_complete_sequence)
+            if scan.last_sequence != Some(receipt.last_complete_sequence)
                 || hex(&identity.campaign_id()) != receipt.campaign_id_hex
                 || hex(&identity.payload_sha256()) != receipt.cid1_payload_sha256_hex
-                || hex(&file_hash) != receipt.file_sha256_hex
+                || hex(&hash_file(&path)?) != receipt.file_sha256_hex
             {
                 return Err(format!("sealed logical stream {id} receipt mismatch"));
             }
@@ -264,11 +429,54 @@ impl FilesystemRolloverStore {
         if !current_path.is_file() || sealed_path(&root, state.logical_stream_id).exists() {
             return Err("current logical stream has ambiguous file topology".to_string());
         }
+        let storage = compact_stream::StreamCompression::parse(&state.storage_compression)
+            .ok_or_else(|| {
+                format!(
+                    "rollover state records an unknown storage encoding {:?}",
+                    state.storage_compression
+                )
+            })?;
         let mut validator = StatefulStreamValidator::identity_v1();
         let mut pending_first_record = None;
-        let (observed_last, _, only_record) =
-            scan_complete_stream_file(&current_path, &mut validator)
-                .map_err(|error| format!("read current logical stream: {error}"))?;
+        // The scan decodes the file to physical EOF. On a compressed stream
+        // that succeeds only when the last frame is complete, which is what
+        // makes the resume boundary below a legal place to open a new frame; a
+        // crash inside an open frame fails here with the codec's own message
+        // rather than silently resuming into an undecodable file.
+        let scan = scan_complete_stream_file(&current_path, &mut validator)
+            .map_err(|error| format!("read current logical stream: {error}"))?;
+        // The scan reads through the codec, which DETECTS the encoding from the
+        // magic; the append below uses the encoding the durable state RECORDS.
+        // Those are two different authorities, and where they disagree the
+        // append writes a zstd frame onto a raw file (or raw records into what a
+        // reader will decode). The current stream has no sealed receipt to catch
+        // that afterwards, so they are required to agree here. A stream file is
+        // never empty by the time recovery is allowed to accept it: the
+        // candidate file created during seal/open is made durable — which, when
+        // compressed, closes a frame and therefore writes the magic — before the
+        // state that names it is persisted.
+        let detected = compact_stream::detect(&current_path)
+            .map_err(|error| format!("detect current logical stream storage: {error}"))?;
+        if detected != storage {
+            return Err(format!(
+                "rollover state records {} storage, the current logical stream is stored {}",
+                storage.as_str(),
+                detected.as_str()
+            ));
+        }
+        let observed_last = scan.last_sequence;
+        let only_record = scan.only_record;
+        let resume = compact_stream::FrameBoundary {
+            decoded_offset: scan.decoded_len,
+            stored_offset: fs::symlink_metadata(&current_path)
+                .map_err(|error| {
+                    format!(
+                        "stat current logical stream {}: {error}",
+                        current_path.display()
+                    )
+                })?
+                .len(),
+        };
         match state.phase {
             DurableRolloverPhase::Streaming => {
                 let identity = validator
@@ -307,17 +515,14 @@ impl FilesystemRolloverStore {
             | DurableRolloverPhase::Complete
             | DurableRolloverPhase::Failed => unreachable!(),
         }
-        let file = OpenOptions::new()
-            .append(true)
-            .read(true)
-            .open(&current_path)
-            .map_err(|error| format!("reopen current logical stream: {error}"))?;
+        let file = RolloverSink::append_existing(&current_path, storage, resume)?;
         let expected_campaign_id = decode_hex32(&state.campaign_id_hex)?;
         let expected_cid1_payload_sha256 = decode_hex32(&state.cid1_payload_sha256_hex)?;
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 root,
                 state,
+                storage,
                 file: Some(file),
                 validator,
                 expected_campaign_id,
@@ -449,12 +654,11 @@ impl FilesystemRolloverStore {
         }
         let open = open_path(&inner.root, logical_stream_id);
         let sealed = sealed_path(&inner.root, logical_stream_id);
-        let mut file = inner
+        let file = inner
             .file
             .take()
             .ok_or("publication stream file is absent")?;
-        durable_file(&mut file, &open)?;
-        drop(file);
+        file.finish_durable(&open)?;
         rename_new_durable(&open, &sealed).map_err(|error| {
             format!("seal final logical stream {logical_stream_id}: {error}")
         })?;
@@ -534,9 +738,17 @@ impl FilesystemRolloverStore {
                 ));
             }
         }
+        let storage = compact_stream::StreamCompression::parse(&state.storage_compression)
+            .ok_or_else(|| {
+                format!(
+                    "completed rollover state records an unknown storage encoding {:?}",
+                    state.storage_compression
+                )
+            })?;
         let inner = Inner {
             root: root.to_path_buf(),
             state,
+            storage,
             file: None,
             validator: StatefulStreamValidator::identity_v1(),
             expected_campaign_id: [0; 32],
@@ -653,14 +865,12 @@ impl FilesystemRolloverDataWriter {
         } else if kind != AcceptedRecordKind::Ordinary {
             return terminal(&mut inner, "streaming logical stream received a duplicate CID1");
         }
+        let stream_path = open_path(&inner.root, inner.state.logical_stream_id);
         let write_result = inner
             .file
             .as_mut()
             .ok_or_else(|| "rollover stream file is absent".to_string())
-            .and_then(|file| {
-                file.write_all(record)
-                    .map_err(|error| format!("write rollover H4CR: {error}"))
-            });
+            .and_then(|file| file.write_record(record));
         if let Err(error) = write_result {
             return terminal(&mut inner, &error);
         }
@@ -671,7 +881,7 @@ impl FilesystemRolloverDataWriter {
                 .as_mut()
                 .ok_or_else(|| "rollover stream file is absent".to_string())
                 .and_then(|file| {
-                    file.sync_all()
+                    file.durable(&stream_path)
                         .map_err(|error| format!("sync rollover CID1: {error}"))
                 });
             if let Err(error) = sync_result {
@@ -705,8 +915,13 @@ impl RecorderRolloverStore for FilesystemRolloverStore {
                 return terminal(&mut inner, "data router passed the proposed drain boundary");
             }
             if last == proposal.last_admitted_h4cr_sequence {
-                inner.file.as_mut().ok_or("rollover stream file is absent")?
-                    .sync_all().map_err(|error| format!("sync drained stream: {error}"))?;
+                let drained_path = open_path(&inner.root, inner.state.logical_stream_id);
+                inner
+                    .file
+                    .as_mut()
+                    .ok_or("rollover stream file is absent")?
+                    .durable(&drained_path)
+                    .map_err(|error| format!("sync drained stream: {error}"))?;
                 return Ok(DrainedLogicalStream {
                     logical_stream_id: inner.state.logical_stream_id,
                     last_h4cr_sequence: last,
@@ -753,16 +968,15 @@ impl RecorderRolloverStore for FilesystemRolloverStore {
         let old_id = inner.state.logical_stream_id;
         let old_open = open_path(&inner.root, old_id);
         let old_sealed = sealed_path(&inner.root, old_id);
-        let mut file = inner.file.take().ok_or("rollover stream file is absent")?;
-        durable_file(&mut file, &old_open)?;
-        drop(file);
+        let file = inner.file.take().ok_or("rollover stream file is absent")?;
+        file.finish_durable(&old_open)?;
         rename_new_durable(&old_open, &old_sealed)
             .map_err(|error| format!("seal logical stream {old_id}: {error}"))?;
 
         let new_id = proposal.proposed_logical_stream_id;
         let new_open = open_path(&inner.root, new_id);
-        let mut new_file = create_new_file(&new_open)?;
-        durable_file(&mut new_file, &new_open)?;
+        let mut new_file = RolloverSink::create(&new_open, inner.storage)?;
+        new_file.durable(&new_open)?;
         let sealed_hash = hash_file(&old_sealed)?;
         inner.state.sealed_streams.push(DurableSealedStream {
             logical_stream_id: old_id,
@@ -874,28 +1088,50 @@ fn validate_complete_stream_prefix(
 /// Re-admit a sealed H4CR stream with memory bounded to one record. Recovery
 /// runs on production-sized captures, so it must never materialize the whole
 /// logical stream merely to reproduce the durable receipt.
+///
+/// The digest returned is the STORAGE file's, because that is what the durable
+/// receipts pin. It is deliberately not the decoded digest: for a compressed
+/// member the two differ, and only the storage digest fixes the actual bytes
+/// this recovery just read off the volume.
 fn validate_complete_stream_file(
     path: &Path,
 ) -> Result<(Option<u64>, [u8; 32], [u8; 32], i32, [u8; 32]), String> {
     let mut validator = StatefulStreamValidator::identity_v1();
-    let (last, file_hash, _) = scan_complete_stream_file(path, &mut validator)?;
+    let scan = scan_complete_stream_file(path, &mut validator)?;
     let identity = validator
         .identity()
         .ok_or("completed logical stream has no CID1")?;
     Ok((
-        last,
+        scan.last_sequence,
         identity.campaign_id(),
         identity.payload_sha256(),
         identity.game_hour_raw(),
-        file_hash,
+        hash_file(path)?,
     ))
+}
+
+/// What one pass over a stream file's DECODED H4CR bytes established.
+struct StreamScan {
+    last_sequence: Option<u64>,
+    /// Canonical H4CR bytes the file decodes to. Equal to the file's own length
+    /// only when the storage is raw.
+    decoded_len: u64,
+    /// SHA-256 over those decoded bytes.
+    decoded_sha256: [u8; 32],
+    /// The sole record, when the file holds exactly one.
+    only_record: Option<Vec<u8>>,
 }
 
 fn scan_complete_stream_file(
     path: &Path,
     validator: &mut StatefulStreamValidator,
-) -> Result<(Option<u64>, [u8; 32], Option<Vec<u8>>), String> {
-    let mut file = File::open(path)
+) -> Result<StreamScan, String> {
+    // Decoded, not raw: `compact_stream::open` hands back canonical H4CR bytes
+    // whichever way the file is stored, and on a compressed file it is also the
+    // check that the last storage frame is complete — physical EOF inside an
+    // open frame is a hard error there, never a short read that would look like
+    // a clean end of stream here.
+    let mut file = compact_stream::open(path)
         .map_err(|error| format!("open completed stream {}: {error}", path.display()))?;
     let mut file_hash = Sha256::new();
     let mut last = None;
@@ -942,7 +1178,26 @@ fn scan_complete_stream_file(
             .checked_add(record_len as u64)
             .ok_or("recovered stream offset overflow")?;
     }
-    Ok((last, file_hash.finalize().into(), only_record))
+    Ok(StreamScan {
+        last_sequence: last,
+        decoded_len: offset,
+        decoded_sha256: file_hash.finalize().into(),
+        only_record,
+    })
+}
+
+/// Canonical H4CR length and digest of one stream file.
+///
+/// The durable receipts pin the STORAGE file; everything that folds, certifies
+/// or seals a recording works in decoded H4CR bytes. For a raw member those are
+/// the same bytes, so a caller holding the storage identity already has this
+/// one and need not call here; for a compressed member this pass is where the
+/// decoded identity comes from. Every record is re-validated on the way through,
+/// so the number is never produced from bytes that do not parse as H4CR.
+pub fn decoded_stream_identity(path: &Path) -> Result<(u64, String), String> {
+    let mut validator = StatefulStreamValidator::identity_v1();
+    let scan = scan_complete_stream_file(path, &mut validator)?;
+    Ok((scan.decoded_len, hex(&scan.decoded_sha256)))
 }
 
 fn terminal<T>(inner: &mut Inner, reason: &str) -> Result<T, String> {
@@ -970,6 +1225,7 @@ fn validate_state_shape(state: &DurableRolloverState) -> Result<(), String> {
             Box::new(0..state.logical_stream_id)
         };
     if state.schema != "cid1-rollover-fs-v1"
+        || compact_stream::StreamCompression::parse(&state.storage_compression).is_none()
         || decode_hex32(&state.campaign_id_hex)? == [0; 32]
         || decode_hex32(&state.cid1_payload_sha256_hex)? == [0; 32]
         || state
@@ -1462,12 +1718,26 @@ mod tests {
         }
     }
 
+    /// Every storage encoding the rollover store supports. The transaction is
+    /// the same transaction either way, so each behavioural test runs under
+    /// both rather than pinning the encoding it happened to be written against.
+    const STORAGE_ENCODINGS: [compact_stream::StreamCompression; 2] = [
+        compact_stream::StreamCompression::None,
+        compact_stream::StreamCompression::Zstd,
+    ];
+
     #[test]
     fn durable_store_cuts_files_and_withholds_streaming_until_cid1_commit() {
+        for storage in STORAGE_ENCODINGS {
+            durable_store_cuts_files_for(storage);
+        }
+    }
+
+    fn durable_store_cuts_files_for(storage: compact_stream::StreamCompression) {
         let root = TestRoot::new();
         let (first, current) = cid1(-1234, hour(0));
         let (mut store, writer) =
-            FilesystemRolloverStore::create_for_test(&root.0, &first).unwrap();
+            FilesystemRolloverStore::create_for_test(&root.0, &first, storage).unwrap();
         let ordinary = ordinary_record(1, hour(1));
         writer.append_complete_record(&ordinary).unwrap();
         let (next_first, next) = cid1(-1235, hour(2));
@@ -1527,27 +1797,79 @@ mod tests {
 
     #[test]
     fn recovery_accepts_only_exact_topology_and_bytes() {
+        for storage in STORAGE_ENCODINGS {
+            recovery_accepts_only_exact_topology_for(storage);
+        }
+    }
+
+    fn recovery_accepts_only_exact_topology_for(storage: compact_stream::StreamCompression) {
         let root = TestRoot::new();
         let (first, _) = cid1(-1234, hour(0));
         let (store, original_writer) =
-            FilesystemRolloverStore::create_for_test(&root.0, &first).unwrap();
+            FilesystemRolloverStore::create_for_test(&root.0, &first, storage).unwrap();
         drop(store);
         drop(original_writer);
         let (recovered, writer) = FilesystemRolloverStore::recover(&root.0).unwrap();
         assert_eq!(recovered.durable_state().unwrap().last_complete_sequence, Some(0));
+        // Recovery reopened the file in the encoding the durable state records,
+        // so the append lands as more of the same stream rather than as raw
+        // bytes glued onto a compressed one. Sealing decodes it back.
         writer
             .append_complete_record(&ordinary_record(1, hour(1)))
             .unwrap();
-        fs::write(sealed_path(&root.0, 0), b"ambiguous").unwrap();
-        assert!(FilesystemRolloverStore::recover(&root.0).is_err());
+        let mut recovered = recovered;
+        let set = recovered.seal_for_publication().unwrap();
+        let sealed = root.0.join(&set.ordered_streams[0].relative_path);
+        assert_eq!(
+            decoded_stream_identity(&sealed).unwrap().0,
+            (first.len() + ordinary_record(1, hour(1)).len()) as u64
+        );
+
+        let second = TestRoot::new();
+        let (store, original_writer) =
+            FilesystemRolloverStore::create_for_test(&second.0, &first, storage).unwrap();
+        drop(store);
+        drop(original_writer);
+        fs::write(sealed_path(&second.0, 0), b"ambiguous").unwrap();
+        assert!(FilesystemRolloverStore::recover(&second.0).is_err());
+
+        // A state file that names an encoding the stream file is not stored in
+        // must not be resumed: the append would write one encoding into a file
+        // holding the other, and the current stream carries no sealed receipt
+        // that would catch it later.
+        let third = TestRoot::new();
+        let (store, original_writer) =
+            FilesystemRolloverStore::create_for_test(&third.0, &first, storage).unwrap();
+        drop(store);
+        drop(original_writer);
+        let state_path = third.0.join(STATE_FILE);
+        let mut state: DurableRolloverState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        state.storage_compression = match storage {
+            compact_stream::StreamCompression::None => "zstd",
+            compact_stream::StreamCompression::Zstd => "none",
+        }
+        .to_string();
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let error = match FilesystemRolloverStore::recover(&third.0) {
+            Ok(_) => panic!("recovery resumed a stream in an encoding it is not stored in"),
+            Err(error) => error,
+        };
+        assert!(error.contains("storage"), "{error}");
     }
 
     #[test]
     fn completed_set_is_ordered_and_missing_descriptor_is_recovered_mechanically() {
+        for storage in STORAGE_ENCODINGS {
+            completed_set_is_ordered_for(storage);
+        }
+    }
+
+    fn completed_set_is_ordered_for(storage: compact_stream::StreamCompression) {
         let root = TestRoot::new();
         let (first, _) = cid1(-1234, hour(0));
         let (mut store, writer) =
-            FilesystemRolloverStore::create_for_test(&root.0, &first).unwrap();
+            FilesystemRolloverStore::create_for_test(&root.0, &first, storage).unwrap();
         writer
             .append_complete_record(&ordinary_record(1, hour(1)))
             .unwrap();
@@ -1563,6 +1885,209 @@ mod tests {
             FilesystemRolloverStore::recover_publication_descriptor(&root.0).unwrap();
         assert_eq!(recovered, published);
         assert!(root.0.join(SET_DESCRIPTOR_FILE).is_file());
+    }
+
+    /// Drive one complete two-logical-stream rollover and return, per member,
+    /// the sealed file's storage bytes and the H4CR bytes it decodes to.
+    ///
+    /// The record script is identical for every encoding, so anything that
+    /// differs between the returned decoded streams is the storage layer
+    /// changing the recording — which is the one thing it may never do.
+    fn rolled_over_members(
+        storage: compact_stream::StreamCompression,
+    ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let root = TestRoot::new();
+        let (first, current) = cid1(-1234, hour(0));
+        let (mut store, writer) =
+            FilesystemRolloverStore::create_for_test(&root.0, &first, storage).unwrap();
+        writer
+            .append_complete_record(&ordinary_record(1, hour(1)))
+            .unwrap();
+        let (next_first, next) = cid1(-1235, hour(2));
+        let proposal = proposal(&current, &next);
+        let drained = store
+            .drain_contiguous_through(
+                &proposal,
+                ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                &ControlCancellation::new(),
+            )
+            .unwrap();
+        store.durable_seal_and_open(&proposal, drained).unwrap();
+        writer.append_complete_record(&next_first).unwrap();
+        store
+            .wait_for_new_header(
+                ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                &ControlCancellation::new(),
+            )
+            .unwrap();
+        store.commit_new_header_for_test(1).unwrap();
+        for sequence in 1..=3u64 {
+            writer
+                .append_complete_record(&ordinary_record(sequence, hour(2 + sequence as i32)))
+                .unwrap();
+        }
+        let set = store.seal_for_publication().unwrap();
+        assert_eq!(set.ordered_streams.len(), 2);
+
+        let mut stored = Vec::new();
+        let mut decoded = Vec::new();
+        for member in &set.ordered_streams {
+            let path = root.0.join(&member.relative_path);
+            let bytes = fs::read(&path).unwrap();
+            // The published receipt describes the STORAGE file, whatever the
+            // encoding, and it is re-verified against the file on the volume.
+            assert_eq!(member.file_bytes, bytes.len() as u64);
+            assert_eq!(member.file_sha256_hex, hex(&Sha256::digest(&bytes)));
+            let mut decoded_bytes = Vec::new();
+            std::io::copy(
+                &mut compact_stream::open(&path).unwrap(),
+                &mut decoded_bytes,
+            )
+            .unwrap();
+            // The separately-derived canonical identity has to agree with the
+            // bytes this test just decoded, or one of the two is inventing.
+            assert_eq!(
+                decoded_stream_identity(&path).unwrap(),
+                (decoded_bytes.len() as u64, hex(&Sha256::digest(&decoded_bytes)))
+            );
+            stored.push(bytes);
+            decoded.push(decoded_bytes);
+        }
+        (stored, decoded)
+    }
+
+    /// A rollover cuts the same decoded stream in the same place, compressed or
+    /// not.
+    ///
+    /// This is the property the raw-storage refusal used to buy by refusing:
+    /// that a logical-stream boundary is a legal cut point. It is proved by
+    /// running one record script through both encodings and comparing the
+    /// DECODED bytes member by member — not by trusting that a codec which
+    /// round-trips a file also round-trips a file that gets sealed, renamed and
+    /// re-opened in the middle of a transaction.
+    #[test]
+    fn rollover_decodes_to_the_same_h4cr_bytes_under_every_storage_encoding() {
+        let (raw_stored, raw_decoded) =
+            rolled_over_members(compact_stream::StreamCompression::None);
+        let (zstd_stored, zstd_decoded) =
+            rolled_over_members(compact_stream::StreamCompression::Zstd);
+
+        assert_eq!(raw_stored, raw_decoded, "raw storage IS the decoded stream");
+        assert_eq!(
+            zstd_decoded, raw_decoded,
+            "compressed rollover members must decode to the raw members byte for byte"
+        );
+        // The comparison above is only worth anything if the compressed run
+        // really did compress. Without this, a sink that silently fell back to
+        // raw would pass every assertion in this test.
+        for (index, bytes) in zstd_stored.iter().enumerate() {
+            assert_eq!(
+                &bytes[..4],
+                &compact_stream::ZSTD_FRAME_MAGIC,
+                "member {index} was not stored as zstd"
+            );
+            assert_ne!(
+                bytes, &zstd_decoded[index],
+                "member {index} storage is identical to its decoded bytes"
+            );
+        }
+    }
+
+    /// Every durability point leaves a DECODABLE prefix, not merely a synced one.
+    ///
+    /// Each of these three instants is a promise the transaction makes to a
+    /// reader that arrives after a crash: the initial CID1 is durable before
+    /// `create` returns, the drained stream is durable before the CRA1 that
+    /// authorises the cut, and the candidate CID1 is durable before the second
+    /// CFA1 barrier. Compressed, those bytes are inside a zstd frame that no
+    /// reader may interpret until it is CLOSED, so syncing without closing
+    /// would satisfy every existing assertion while putting an undecodable file
+    /// on disk. The file is opened THROUGH the codec at each instant, with the
+    /// store still holding its writer, so nothing that happens later can supply
+    /// the missing frame end.
+    #[test]
+    fn every_durability_point_leaves_a_decodable_prefix() {
+        for storage in STORAGE_ENCODINGS {
+            let root = TestRoot::new();
+            let (first, current) = cid1(-1234, hour(0));
+            let (mut store, writer) =
+                FilesystemRolloverStore::create_for_test(&root.0, &first, storage).unwrap();
+            let decode = |path: PathBuf| {
+                let mut bytes = Vec::new();
+                std::io::copy(&mut compact_stream::open(&path).unwrap(), &mut bytes).unwrap();
+                bytes
+            };
+            assert_eq!(
+                decode(open_path(&root.0, 0)),
+                first,
+                "initial CID1 is not decodable at the durability point under {storage:?}"
+            );
+
+            let ordinary = ordinary_record(1, hour(1));
+            writer.append_complete_record(&ordinary).unwrap();
+            let (next_first, next) = cid1(-1235, hour(2));
+            let proposal = proposal(&current, &next);
+            let drained = store
+                .drain_contiguous_through(
+                    &proposal,
+                    ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                    &ControlCancellation::new(),
+                )
+                .unwrap();
+            let mut expected = first.clone();
+            expected.extend_from_slice(&ordinary);
+            assert_eq!(
+                decode(open_path(&root.0, 0)),
+                expected,
+                "drained stream is not decodable at the durability point under {storage:?}"
+            );
+
+            store.durable_seal_and_open(&proposal, drained).unwrap();
+            writer.append_complete_record(&next_first).unwrap();
+            assert_eq!(
+                decode(open_path(&root.0, 1)),
+                next_first,
+                "candidate CID1 is not decodable at the durability point under {storage:?}"
+            );
+        }
+    }
+
+    /// The seal is what makes a member readable, not a later flush.
+    ///
+    /// A compressed member's bytes live inside an open zstd frame until the
+    /// frame is closed. If sealing ever synced without closing, the file on
+    /// disk would be a truncated frame: present, sized, receipted — and
+    /// undecodable. Nothing after the transaction closes it, so it is checked
+    /// here at the instant the transaction says the member is durable.
+    #[test]
+    fn a_sealed_member_is_complete_on_disk_the_moment_the_transaction_says_so() {
+        for storage in STORAGE_ENCODINGS {
+            let root = TestRoot::new();
+            let (first, current) = cid1(-1234, hour(0));
+            let (mut store, writer) =
+                FilesystemRolloverStore::create_for_test(&root.0, &first, storage).unwrap();
+            let ordinary = ordinary_record(1, hour(1));
+            writer.append_complete_record(&ordinary).unwrap();
+            let (_, next) = cid1(-1235, hour(2));
+            let proposal = proposal(&current, &next);
+            let drained = store
+                .drain_contiguous_through(
+                    &proposal,
+                    ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                    &ControlCancellation::new(),
+                )
+                .unwrap();
+            store.durable_seal_and_open(&proposal, drained).unwrap();
+
+            // No further writes, no drop of the store: exactly the state a
+            // crash immediately after the CRA1-authorising seal would leave.
+            let sealed = sealed_path(&root.0, 0);
+            let mut decoded = Vec::new();
+            std::io::copy(&mut compact_stream::open(&sealed).unwrap(), &mut decoded).unwrap();
+            let mut expected = first.clone();
+            expected.extend_from_slice(&ordinary);
+            assert_eq!(decoded, expected, "sealed member 0 lost bytes under {storage:?}");
+        }
     }
 
     #[test]

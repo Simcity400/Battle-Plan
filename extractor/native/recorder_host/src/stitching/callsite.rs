@@ -45,7 +45,13 @@ use crate::duplex_session::rollover_fs::{
 };
 
 const TICKET_SCHEMA: &str = "product-stitch-ticket-v1";
-const REGISTRY_SCHEMA: &str = "product-stitch-registry-entry-v1";
+/// v2 adds the member's decoded H4CR identity beside its storage identity.
+///
+/// The version moves rather than defaulting, because a v1 entry carries exactly
+/// one digest and there is no way to tell from it whether that digest was a
+/// storage digest that happens to equal the decoded one (raw) or a claim that
+/// cannot be checked. A v1 entry is refused with its schema named.
+const REGISTRY_SCHEMA: &str = "product-stitch-registry-entry-v2";
 const MACHINE_SCOPE_FILE: &str = "machine-scope-v1";
 const MAX_CONTROL_BYTES: usize = 16 * 1024 * 1024;
 
@@ -87,7 +93,13 @@ struct RegistryEntry {
     package_path: String,
     package_sha256: String,
     raw_path: String,
+    /// Digest of the file at `raw_path` as it sits on the volume.
     raw_sha256: String,
+    /// Canonical H4CR the same file decodes to. Equal to `raw_sha256` only when
+    /// the member is stored raw; the stitcher parses records, computes byte
+    /// offsets and embeds bytes in DECODED space, so it needs its own digest.
+    raw_decoded_sha256: String,
+    raw_decoded_bytes: u64,
     manifest_path: String,
     manifest_sha256: String,
     start_reason: String,
@@ -165,17 +177,7 @@ pub fn publish_registered_rollover_stitches(
     let expected_source_relative = format!("logical-streams/{SET_DESCRIPTOR_FILE}");
     let expected_transitions = serde_json::to_value(&descriptor.transitions)
         .map_err(|error| format!("encode rollover transitions for stitch join failed: {error}"))?;
-    require_exact_object_keys(
-        &package_set,
-        &[
-            "schema",
-            "source_descriptor",
-            "source_descriptor_sha256",
-            "ordered_streams",
-            "transitions",
-        ],
-        "rollover package set",
-    )?;
+    validate_rollover_package_set_shape(&package_set)?;
     if package_set.get("schema").and_then(Value::as_str)
         != Some("cid1-rollover-package-set-v1")
         || package_set.get("source_descriptor").and_then(Value::as_str)
@@ -199,23 +201,6 @@ pub fn publish_registered_rollover_stitches(
 
     let mut touched_campaigns = BTreeSet::new();
     for (index, (raw, member)) in descriptor.ordered_streams.iter().zip(members).enumerate() {
-        require_exact_object_keys(
-            member,
-            &[
-                "logical_stream_id",
-                "campaign_id_hex",
-                "cid1_payload_sha256_hex",
-                "raw_relative_path",
-                "raw_bytes",
-                "raw_sha256",
-                "manifest_relative_path",
-                "manifest_sha256",
-                "package_relative_path",
-                "package_sha256",
-                "recovery",
-            ],
-            "rollover package member",
-        )?;
         let expected_logical_stream_id = u64::try_from(index)
             .map_err(|_| "rollover package set has more than u64::MAX members")?;
         if raw.logical_stream_id != expected_logical_stream_id {
@@ -270,6 +255,11 @@ pub fn publish_registered_rollover_stitches(
             package_sha256: required_sha(member, "package_sha256")?,
             package_path,
             raw_sha256: required_sha(member, "raw_sha256")?,
+            raw_decoded_sha256: required_sha(member, "raw_decoded_sha256")?,
+            raw_decoded_bytes: member
+                .get("raw_decoded_bytes")
+                .and_then(Value::as_u64)
+                .ok_or("rollover package member has no raw_decoded_bytes")?,
             raw_path,
             manifest_sha256: required_sha(member, "manifest_sha256")?,
             manifest_path,
@@ -384,6 +374,7 @@ fn compose_and_publish(
                 built.raw_container_path.clone(),
                 RetainedRawPayload {
                     file: Mutex::new(raw.file),
+                    compression: raw.compression,
                     receipt: raw.receipt,
                 },
             )
@@ -793,7 +784,7 @@ fn build_segment(
         process_start_identity: ticket.process_start_identity.clone(),
         source_path: raw_container_path.clone(),
         stored_digest: entry.raw_sha256.clone(),
-        decoded_digest: entry.raw_sha256.clone(),
+        decoded_digest: entry.raw_decoded_sha256.clone(),
         record_seq_bounds: source_bounds.0,
         byte_bounds: source_bounds.1,
         storage: RawSourceStorage::EmbeddedCampaign {
@@ -853,7 +844,7 @@ fn build_segment(
             static_catalog_digest: Some(catalog),
             source_path: Some(raw_container_path.clone()),
             source_stored_digest: Some(entry.raw_sha256.clone()),
-            source_decoded_digest: Some(entry.raw_sha256.clone()),
+            source_decoded_digest: Some(entry.raw_decoded_sha256.clone()),
             record_seq_bounds: Some(source_bounds.0),
             byte_bounds: Some(source_bounds.1),
             start_reason: Some(start_reason),
@@ -868,7 +859,7 @@ fn build_segment(
     })
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FrameExtent {
     first_sequence: u64,
     last_sequence: u64,
@@ -878,6 +869,11 @@ struct FrameExtent {
 
 struct RawInspection {
     file: File,
+    compression: compact_stream::StreamCompression,
+    /// DECODED bytes and their digest. The stitched container's raw entry holds
+    /// canonical H4CR, so this is what that entry is written and checked
+    /// against; the storage file's own digest is checked against the registry
+    /// inside `inspect_registered_raw` and does not travel further.
     receipt: VerifiedPayloadReceipt,
     first_record: Vec<u8>,
     frames: BTreeMap<i64, FrameExtent>,
@@ -912,20 +908,100 @@ fn open_retained_raw(path: &Path) -> Result<File, String> {
     }
 }
 
+/// Storage encoding of an already-open, already-validated member handle.
+///
+/// Read from the handle rather than from the path: the caller opened this file
+/// under a share mode and checked it for reparse points precisely so that a
+/// second resolution of the name cannot be pointed elsewhere between the check
+/// and the read.
+fn retained_storage_compression(
+    file: &mut File,
+    path: &Path,
+) -> Result<compact_stream::StreamCompression, String> {
+    let mut magic = [0u8; 4];
+    let read = read_up_to(file, &mut magic)
+        .map_err(|error| format!("read registered raw magic failed: {error}"))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("rewind {} after magic read: {error}", path.display()))?;
+    Ok(
+        if read == magic.len() && magic == compact_stream::ZSTD_FRAME_MAGIC {
+            compact_stream::StreamCompression::Zstd
+        } else {
+            compact_stream::StreamCompression::None
+        },
+    )
+}
+
+fn read_up_to(file: &mut File, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..])? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    Ok(filled)
+}
+
+/// Hash the member's storage bytes, then rewind for the decoded scan.
+fn hash_retained_storage(file: &mut File, path: &Path) -> Result<(String, u64), String> {
+    const HASH_CHUNK: usize = 1024 * 1024;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; HASH_CHUNK];
+    let mut bytes = 0u64;
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("hash {} storage failed: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        bytes = bytes
+            .checked_add(read as u64)
+            .ok_or("registered raw storage length overflow")?;
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("rewind {} after hashing: {error}", path.display()))?;
+    Ok((to_hex(&hasher.finalize()), bytes))
+}
+
+/// Re-admit one registered member in CANONICAL H4CR space.
+///
+/// Every number this produces — the record scan, the per-hour frame extents,
+/// the byte bounds, the receipt the stitched container's raw entry is written
+/// against — is in DECODED bytes, because that is what an H4CR consumer means
+/// by an offset. The storage file is verified separately against the registry's
+/// storage digest; conflating the two is only invisible while the member is
+/// stored raw.
 fn inspect_registered_raw(
     path: &Path,
     entry: &RegistryEntry,
 ) -> Result<RawInspection, String> {
     const SCAN_CHUNK: usize = 1024 * 1024;
 
-    let mut file = open_retained_raw(path)?;
-    let file_len = file
-        .metadata()
-        .map_err(|error| format!("stat registered raw source failed: {error}"))?
-        .len();
-    if file_len < COMPACT_RECORD_HEADER_LEN as u64 {
+    let mut handle = open_retained_raw(path)?;
+    let compression = retained_storage_compression(&mut handle, path)?;
+    let (stored_sha256, stored_len) = hash_retained_storage(&mut handle, path)?;
+    if stored_len < COMPACT_RECORD_HEADER_LEN as u64 {
         return Err("registered raw source is empty/truncated".into());
     }
+    if stored_sha256 != entry.raw_sha256 {
+        return Err("opened raw source differs from its registry receipt".into());
+    }
+    let file_len = entry.raw_decoded_bytes;
+    if file_len < COMPACT_RECORD_HEADER_LEN as u64 {
+        return Err("registered raw source decodes to less than one record".into());
+    }
+    // A DUPLICATED handle, not a second open: `try_clone` refers to the same
+    // open file object, so the decoder reads exactly the bytes this function
+    // validated. Reopening by name would put the whole point of
+    // `open_retained_raw` — one resolution of the name, held — back at risk.
+    let scan_handle = handle
+        .try_clone()
+        .map_err(|error| format!("duplicate registered raw handle failed: {error}"))?;
+    let mut file = compact_stream::decode_open_file(scan_handle, compression)
+        .map_err(|error| format!("decode registered raw source failed: {error}"))?;
     let mut hasher = Sha256::new();
     let mut header_bytes = [0u8; COMPACT_RECORD_HEADER_LEN];
     let mut payload_buffer = vec![0u8; SCAN_CHUNK];
@@ -1019,15 +1095,25 @@ fn inspect_registered_raw(
     if open.is_some() || offset != file_len {
         return Err("registered raw stream ends outside a complete frame boundary".into());
     }
+    // Nothing may remain past the last complete record. On a compressed member
+    // the loop above is bounded by the registry's decoded length, so without
+    // this a member that decodes to MORE than it claims would be silently
+    // truncated to the claim instead of refused.
+    if file
+        .read(&mut header_bytes[..1])
+        .map_err(|error| format!("drain registered raw source failed: {error}"))?
+        != 0
+    {
+        return Err("registered raw source decodes past its registered length".into());
+    }
     let sha256 = to_hex(&hasher.finalize());
-    if sha256 != entry.raw_sha256 {
-        return Err("opened raw source differs from its registry receipt".into());
+    if sha256 != entry.raw_decoded_sha256 {
+        return Err("decoded raw source differs from its registry receipt".into());
     }
     validate_raw_identity(&first_record, entry)?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|error| format!("rewind registered raw source failed: {error}"))?;
     Ok(RawInspection {
-        file,
+        file: handle,
+        compression,
         receipt: VerifiedPayloadReceipt {
             bytes: file_len,
             sha256,
@@ -1194,6 +1280,7 @@ struct RetainedSnapshotPayload {
 
 struct RetainedRawPayload {
     file: Mutex<File>,
+    compression: compact_stream::StreamCompression,
     receipt: VerifiedPayloadReceipt,
 }
 
@@ -1259,12 +1346,21 @@ impl RetainedStitchedPayloadSource for RetainedProductPayloads {
             .raw
             .get(source_path)
             .ok_or_else(|| format!("missing registered raw source {source_path}"))?;
-        let mut file = raw
+        let file = raw
             .file
             .lock()
             .map_err(|_| "registered raw source lock poisoned".to_string())?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|error| format!("rewind retained raw source failed: {error}"))?;
+        // The stitched container's raw entry holds canonical H4CR, exactly as a
+        // standalone member's does — the offsets in every segment descriptor
+        // point into decoded bytes, so copying storage bytes would publish an
+        // entry those offsets do not address. Decoded through a DUPLICATE of the
+        // retained handle, so the bytes copied are the bytes that were verified.
+        let mut file = compact_stream::decode_open_file(
+            file.try_clone()
+                .map_err(|error| format!("duplicate retained raw handle failed: {error}"))?,
+            raw.compression,
+        )
+        .map_err(|error| format!("decode retained raw source failed: {error}"))?;
         let mut hasher = Sha256::new();
         let mut bytes = 0u64;
         let mut buffer = vec![0u8; COPY_CHUNK];
@@ -1414,6 +1510,7 @@ fn validate_registry_entry(product_root: &Path, entry: &RegistryEntry) -> Result
     for digest in [
         &entry.package_sha256,
         &entry.raw_sha256,
+        &entry.raw_decoded_sha256,
         &entry.manifest_sha256,
     ] {
         require_sha(digest)?;
@@ -1442,7 +1539,7 @@ fn validate_manifest_identity(manifest: &Value, entry: &RegistryEntry) -> Result
         || required_pointer_sha(manifest, "/campaign_identity/stream_header_sha256")?
             != entry.ticket.identity_evidence_sha256
         || required_pointer_sha(manifest, "/stream_storage/decoded_sha256")?
-            != entry.raw_sha256
+            != entry.raw_decoded_sha256
         || manifest.get("logical_stream_id").and_then(Value::as_u64)
             != Some(entry.ticket.logical_stream_id)
     {
@@ -1540,6 +1637,63 @@ fn required_relative(value: &Value, field: &str) -> Result<String, String> {
         .ok_or_else(|| format!("rollover package member lacks {field}"))?;
     validate_relative(path)?;
     Ok(path.to_string())
+}
+
+/// Exact shape of `logical-stream-package-set.json`, for BOTH ends of it.
+///
+/// The recorder writes this file and the stitcher refuses to read anything it
+/// does not recognise, and until this was one function those were two hand-kept
+/// lists of key names. They had already drifted apart: the writer emits
+/// `first_recording_logical_stream_id` at the top level and
+/// `pre_world_transient` / `recording_admitted` on every member, none of which
+/// the reader's lists named, so the reader refused every package set the
+/// recorder actually produces — and it does so with `?`, in every production
+/// rollover capture, after all the packaging work is done.
+///
+/// The writer now validates against this before publishing. A future field that
+/// only one side knows about fails at the write, naming the file, rather than
+/// silently at the stitch.
+pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), String> {
+    require_exact_object_keys(
+        package_set,
+        &[
+            "schema",
+            "source_descriptor",
+            "source_descriptor_sha256",
+            "first_recording_logical_stream_id",
+            "ordered_streams",
+            "transitions",
+        ],
+        "rollover package set",
+    )?;
+    let members = package_set
+        .get("ordered_streams")
+        .and_then(Value::as_array)
+        .ok_or("rollover package set has no ordered_streams")?;
+    for member in members {
+        require_exact_object_keys(
+            member,
+            &[
+                "logical_stream_id",
+                "campaign_id_hex",
+                "cid1_payload_sha256_hex",
+                "raw_relative_path",
+                "raw_bytes",
+                "raw_sha256",
+                "raw_decoded_bytes",
+                "raw_decoded_sha256",
+                "manifest_relative_path",
+                "manifest_sha256",
+                "package_relative_path",
+                "package_sha256",
+                "recovery",
+                "pre_world_transient",
+                "recording_admitted",
+            ],
+            "rollover package member",
+        )?;
+    }
+    Ok(())
 }
 
 fn require_exact_object_keys(
@@ -1952,6 +2106,282 @@ mod tests {
         assert_eq!(second.start_byte, second_start);
         assert_eq!(second.end_byte, raw.len() as u64);
         assert_eq!(scan_source_bounds(&raw).unwrap(), ((0, 4), (0, raw.len() as u64)));
+    }
+
+    /// One member, two storage encodings, one inspection result.
+    ///
+    /// Everything this function produces is in canonical H4CR space — the
+    /// record scan, the per-hour extents, the byte bounds, the receipt the
+    /// stitched container's raw entry is written against. A member stored as
+    /// zstd starts with the zstd magic, so a physical read parses nothing at
+    /// all; and even a member that somehow parsed would put PHYSICAL offsets
+    /// into descriptors that address decoded bytes. Both are excluded by
+    /// requiring the compressed inspection to equal the raw one exactly, while
+    /// the registry's two digests are asserted to be genuinely different.
+    #[test]
+    fn a_compressed_member_inspects_identically_to_the_raw_member() {
+        use compact_contract::campaign_identity::{
+            encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
+        };
+
+        let raw_hour =
+            compact_contract::calendar::DATE_EPOCH_CONST + ((1936 * 365 + 10) * 24 + 5);
+        let observation = Cid1Observation {
+            game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_string(),
+            game_unique_seed: -4242,
+            game_hour_raw: raw_hour,
+        };
+        let cid1_fields = Cid1Fields::from_stable_observations(
+            observation.clone(),
+            observation,
+            "stitch-storage-test".to_string(),
+            Cid1Witnesses::default(),
+        )
+        .unwrap();
+        let mut decoded = Vec::new();
+        {
+            let payload = encode_cid1(&cid1_fields).unwrap();
+            let mut header = record(0, raw_hour, COMPACT_RECORD_TYPE_STREAM_HEADER, &payload);
+            header[20..22].copy_from_slice(&COMPACT_DOMAIN_STREAM_HEADER.to_le_bytes());
+            decoded.extend(header);
+        }
+        let validated = crate::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(
+            0, &decoded,
+        )
+        .unwrap();
+        let identity = validated.validated_cid1().unwrap().clone();
+        let first_record = decoded.clone();
+        // Highly repetitive so the compressed member is genuinely smaller; a
+        // fixture that did not compress could not tell the digests apart.
+        for hour_offset in 0..2i32 {
+            for sequence in 0..8u64 {
+                decoded.extend(record(
+                    1 + sequence + 8 * hour_offset as u64,
+                    raw_hour + hour_offset,
+                    if sequence == 7 {
+                        COMPACT_RECORD_TYPE_FRAME_END
+                    } else {
+                        1
+                    },
+                    &[0x5au8; 256],
+                ));
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "hoi4-stitch-storage-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let raw_path = dir.join("member-raw.h4cr");
+        let zstd_path = dir.join("member-zstd.h4cr");
+        fs::write(&raw_path, &decoded).unwrap();
+        compact_stream::encode_file(
+            &raw_path,
+            &zstd_path,
+            compact_stream::StreamCompression::Zstd,
+        )
+        .unwrap();
+        let stored_zstd = fs::read(&zstd_path).unwrap();
+        assert!(
+            stored_zstd.len() < decoded.len(),
+            "fixture did not compress; the test cannot distinguish the two identities"
+        );
+
+        let decoded_sha256 = Sha256::hex(&decoded);
+        let entry = |path: &Path| RegistryEntry {
+            schema: REGISTRY_SCHEMA.to_string(),
+            ticket: TicketReceipt {
+                schema: TICKET_SCHEMA.to_string(),
+                logical_stream_id: 0,
+                campaign_key_hex: identity.campaign_id_hex(),
+                identity_evidence_sha256: identity.payload_sha256_hex(),
+                play_order: 0,
+                session_nonce: "nonce".to_string(),
+                process_start_identity: "process".to_string(),
+                machine_scope_sha256: "77".repeat(32),
+            },
+            package_path: "package.battleplan".to_string(),
+            package_sha256: "88".repeat(32),
+            raw_path: path.display().to_string(),
+            raw_sha256: Sha256::hex(&fs::read(path).unwrap()),
+            raw_decoded_sha256: decoded_sha256.clone(),
+            raw_decoded_bytes: decoded.len() as u64,
+            manifest_path: "manifest.json".to_string(),
+            manifest_sha256: "99".repeat(32),
+            start_reason: "session_start".to_string(),
+            stop_reason: "session_stop".to_string(),
+        };
+
+        let raw_entry = entry(&raw_path);
+        let zstd_entry = entry(&zstd_path);
+        assert_eq!(
+            raw_entry.raw_sha256, raw_entry.raw_decoded_sha256,
+            "a raw member's two identities are the same bytes"
+        );
+        assert_ne!(
+            zstd_entry.raw_sha256, zstd_entry.raw_decoded_sha256,
+            "a compressed member's two identities must differ"
+        );
+
+        let from_raw = inspect_registered_raw(&raw_path, &raw_entry).unwrap();
+        let from_zstd = inspect_registered_raw(&zstd_path, &zstd_entry).unwrap();
+        assert_eq!(from_raw.receipt, from_zstd.receipt);
+        assert_eq!(from_raw.receipt.bytes, decoded.len() as u64);
+        assert_eq!(from_raw.receipt.sha256, decoded_sha256);
+        assert_eq!(from_raw.frames, from_zstd.frames);
+        assert_eq!(from_raw.first_record, from_zstd.first_record);
+        assert_eq!(from_raw.first_record, first_record);
+        assert_eq!(from_raw.source_bounds, from_zstd.source_bounds);
+        assert_eq!(from_zstd.source_bounds.1, (0, decoded.len() as u64));
+        assert_eq!(from_zstd.compression, compact_stream::StreamCompression::Zstd);
+
+        // The retained payload is what the stitched container embeds. It must
+        // hand on decoded H4CR, not the storage bytes it was read from.
+        let mut payloads = RetainedProductPayloads::default();
+        payloads.raw.insert(
+            "raw/member.h4cr".to_string(),
+            RetainedRawPayload {
+                file: Mutex::new(from_zstd.file),
+                compression: from_zstd.compression,
+                receipt: from_zstd.receipt.clone(),
+            },
+        );
+        let mut copied = Vec::new();
+        let receipt = payloads
+            .copy_raw_source_to_unpublished("raw/member.h4cr", &mut copied)
+            .unwrap();
+        assert_eq!(copied, decoded, "stitched raw entry is not canonical H4CR");
+        assert_eq!(receipt, from_zstd.receipt);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The member manifest's `decoded_sha256` joins to the DECODED digest.
+    ///
+    /// Both digests are 64 hex characters and both are called "the member's
+    /// sha256" in conversation, so the wrong one type-checks, reads correctly,
+    /// and passes on every raw member. It is only wrong when the member is
+    /// compressed — at which point a correct manifest is rejected as a forgery.
+    #[test]
+    fn a_member_manifest_joins_on_the_decoded_digest_not_the_storage_digest() {
+        let storage_sha256 = "33".repeat(32);
+        let decoded_sha256 = "44".repeat(32);
+        let campaign_id = "11".repeat(32);
+        let evidence = "22".repeat(32);
+        let entry = RegistryEntry {
+            schema: REGISTRY_SCHEMA.to_string(),
+            ticket: TicketReceipt {
+                schema: TICKET_SCHEMA.to_string(),
+                logical_stream_id: 3,
+                campaign_key_hex: campaign_id.clone(),
+                identity_evidence_sha256: evidence.clone(),
+                play_order: 0,
+                session_nonce: "nonce".to_string(),
+                process_start_identity: "process".to_string(),
+                machine_scope_sha256: "77".repeat(32),
+            },
+            package_path: "package.battleplan".to_string(),
+            package_sha256: "88".repeat(32),
+            raw_path: "member.h4cr".to_string(),
+            raw_sha256: storage_sha256.clone(),
+            raw_decoded_sha256: decoded_sha256.clone(),
+            raw_decoded_bytes: 4096,
+            manifest_path: "manifest.json".to_string(),
+            manifest_sha256: "99".repeat(32),
+            start_reason: "session_start".to_string(),
+            stop_reason: "session_stop".to_string(),
+        };
+        let manifest = |declared: &str| {
+            serde_json::json!({
+                "campaign_identity": {
+                    "state": "known",
+                    "campaign_id": campaign_id,
+                    "stream_header_sha256": evidence,
+                },
+                "stream_storage": {"decoded_sha256": declared},
+                "logical_stream_id": 3,
+            })
+        };
+        validate_manifest_identity(&manifest(&decoded_sha256), &entry).unwrap();
+        assert!(
+            validate_manifest_identity(&manifest(&storage_sha256), &entry).is_err(),
+            "a manifest declaring the STORAGE digest as its decoded identity was accepted"
+        );
+    }
+
+    /// The shape the recorder writes is the shape the stitcher accepts.
+    ///
+    /// Both ends used to keep their own list of key names and they had drifted:
+    /// the reader named neither `first_recording_logical_stream_id` nor the two
+    /// per-member admission flags, so it rejected every package set the recorder
+    /// produces — fatally, at the end of a production rollover capture. This
+    /// fixture is the writer's literal output shape; the assertions below are
+    /// what makes a one-sided field a test failure instead of a capture failure.
+    #[test]
+    fn the_package_set_shape_is_one_authority_shared_by_writer_and_reader() {
+        let member = || {
+            serde_json::json!({
+                "logical_stream_id": 0,
+                "campaign_id_hex": "11".repeat(32),
+                "cid1_payload_sha256_hex": "22".repeat(32),
+                "raw_relative_path": "logical-streams/logical-stream-0.sealed.h4cr",
+                "raw_bytes": 128,
+                "raw_sha256": "33".repeat(32),
+                "raw_decoded_bytes": 256,
+                "raw_decoded_sha256": "44".repeat(32),
+                "manifest_relative_path": "logical-streams/packages/0/portable_session_manifest.json",
+                "manifest_sha256": "55".repeat(32),
+                "package_relative_path": "native_session.battleplan",
+                "package_sha256": "66".repeat(32),
+                "recovery": false,
+                "pre_world_transient": false,
+                "recording_admitted": true,
+            })
+        };
+        let package_set = |members: Value| {
+            serde_json::json!({
+                "schema": "cid1-rollover-package-set-v1",
+                "source_descriptor": "logical-streams/logical-stream-set.json",
+                "source_descriptor_sha256": "77".repeat(32),
+                "first_recording_logical_stream_id": 0,
+                "ordered_streams": members,
+                "transitions": [],
+            })
+        };
+        validate_rollover_package_set_shape(&package_set(serde_json::json!([member()])))
+            .expect("the recorder's own package-set shape must be accepted");
+
+        let mut extra_top = package_set(serde_json::json!([member()]));
+        extra_top["unexpected"] = serde_json::json!(true);
+        assert!(validate_rollover_package_set_shape(&extra_top).is_err());
+
+        let mut missing_top = package_set(serde_json::json!([member()]));
+        missing_top
+            .as_object_mut()
+            .unwrap()
+            .remove("first_recording_logical_stream_id");
+        assert!(validate_rollover_package_set_shape(&missing_top).is_err());
+
+        let mut extra_member = member();
+        extra_member["unexpected"] = serde_json::json!(true);
+        assert!(
+            validate_rollover_package_set_shape(&package_set(serde_json::json!([extra_member])))
+                .is_err()
+        );
+
+        let mut missing_member = member();
+        missing_member
+            .as_object_mut()
+            .unwrap()
+            .remove("raw_decoded_sha256");
+        assert!(
+            validate_rollover_package_set_shape(&package_set(serde_json::json!([missing_member])))
+                .is_err()
+        );
     }
 
     #[test]

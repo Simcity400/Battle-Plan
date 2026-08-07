@@ -194,6 +194,37 @@ fn refuse_released_prefix(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Refuse to write to a storage file whose leading bytes were released.
+///
+/// A leftover sidecar from a previous, trimmed spool at this same path would
+/// make the stream unreadable by every guarded entry point. Say so before the
+/// first byte is written rather than at the first read.
+fn refuse_trimmed_write_target(path: &Path) -> io::Result<()> {
+    for sidecar in sidecar_candidates(path) {
+        match fs::symlink_metadata(&sidecar) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("stat {}: {error}", sidecar.display()),
+                ))
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "{} still carries the released-prefix sidecar {} of an earlier \
+                         trimmed spool; retire that run's artifacts before writing here",
+                        path.display(),
+                        sidecar.display()
+                    ),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn detect(path: impl AsRef<Path>) -> io::Result<StreamCompression> {
     let path = path.as_ref();
     refuse_released_prefix(path)?;
@@ -257,6 +288,35 @@ pub fn open_with_compression_at(
     if stored_offset != 0 {
         file.seek(SeekFrom::Start(stored_offset))?;
     }
+    let reader: Box<dyn Read> = match compression {
+        StreamCompression::None => Box::new(BufReader::with_capacity(BUFFER_BYTES, file)),
+        StreamCompression::Zstd => {
+            let buffered = BufReader::with_capacity(BUFFER_BYTES, file);
+            Box::new(StrictZstdReader::new(buffered)?)
+        }
+    };
+    Ok(DecodedFile {
+        reader,
+        compression,
+        encoded_len,
+    })
+}
+
+/// Decode a stream through a handle the caller already opened and validated.
+///
+/// The path-based entry points reopen by name, which is exactly what a consumer
+/// that opened the file under a share mode, checked it for reparse points and
+/// intends to hold it open must NOT do: between its checks and the reopen the
+/// name can be pointed somewhere else. Such a consumer keeps its handle and
+/// decodes through this instead.
+///
+/// The caller owns two things this cannot check: that `file` is positioned at
+/// the start of the stream, and that `compression` is the encoding the handle
+/// actually holds. It also owns the released-prefix question — there is no path
+/// here to look for a sidecar beside.
+pub fn decode_open_file(mut file: File, compression: StreamCompression) -> io::Result<DecodedFile> {
+    let encoded_len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(0))?;
     let reader: Box<dyn Read> = match compression {
         StreamCompression::None => Box::new(BufReader::with_capacity(BUFFER_BYTES, file)),
         StreamCompression::Zstd => {
@@ -581,33 +641,71 @@ impl StreamWriter {
             ));
         }
         let path = path.as_ref();
-        // A leftover sidecar from a previous, trimmed spool at this same path
-        // would make the brand-new stream unreadable by every guarded entry
-        // point. Say so at creation rather than at the first read.
-        for sidecar in sidecar_candidates(path) {
-            match fs::symlink_metadata(&sidecar) {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!("stat {}: {error}", sidecar.display()),
-                    ))
-                }
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!(
-                            "{} still carries the released-prefix sidecar {} of an earlier \
-                             trimmed spool; retire that run's artifacts before writing here",
-                            path.display(),
-                            sidecar.display()
-                        ),
-                    ))
-                }
-            }
-        }
+        refuse_trimmed_write_target(path)?;
         let file = File::create(path)?;
-        let buffered = CountingWriter::new(BufWriter::with_capacity(BUFFER_BYTES, file));
+        Self::over_file(
+            file,
+            compression,
+            frame_bytes,
+            FrameBoundary {
+                decoded_offset: 0,
+                stored_offset: 0,
+            },
+        )
+    }
+
+    /// Continue an existing storage file that already ends on a frame boundary.
+    ///
+    /// `resume` names that boundary in both coordinate spaces: it becomes the
+    /// writer's starting decoded length and stored length, so the receipt this
+    /// writer eventually produces describes the WHOLE file rather than only the
+    /// bytes this handle appended. On a compressed stream the appended bytes
+    /// open a new zstd frame, which is exactly why the caller must have
+    /// established that the existing tail is a complete frame — a reader
+    /// decodes the file as the concatenation of its frames, and a frame that
+    /// was never closed cannot be followed by another.
+    ///
+    /// The retained boundary list starts at `resume` rather than at `{0, 0}`,
+    /// because this handle did not observe where the earlier frames began. It
+    /// is still a list of true frame starts, so it stays usable for trimming;
+    /// it simply cannot offer a release point inside the pre-existing prefix.
+    pub fn append_existing(
+        path: impl AsRef<Path>,
+        compression: StreamCompression,
+        frame_bytes: Option<u64>,
+        resume: FrameBoundary,
+    ) -> io::Result<Self> {
+        if frame_bytes == Some(0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stream frame size must be non-zero",
+            ));
+        }
+        let path = path.as_ref();
+        refuse_trimmed_write_target(path)?;
+        let file = fs::OpenOptions::new().append(true).open(path)?;
+        let stored_len = file.metadata()?.len();
+        if stored_len != resume.stored_offset {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is {stored_len} storage bytes, the resume boundary names {}",
+                    path.display(),
+                    resume.stored_offset
+                ),
+            ));
+        }
+        Self::over_file(file, compression, frame_bytes, resume)
+    }
+
+    fn over_file(
+        file: File,
+        compression: StreamCompression,
+        frame_bytes: Option<u64>,
+        resume: FrameBoundary,
+    ) -> io::Result<Self> {
+        let mut buffered = CountingWriter::new(BufWriter::with_capacity(BUFFER_BYTES, file));
+        buffered.written = resume.stored_offset;
         let inner = match compression {
             StreamCompression::None => WriterInner::Raw(buffered),
             StreamCompression::Zstd => WriterInner::Zstd(PeriodicZstdWriter::new(buffered)?),
@@ -615,13 +713,10 @@ impl StreamWriter {
         Ok(Self {
             inner,
             compression,
-            decoded_len: 0,
+            decoded_len: resume.decoded_offset,
             frame_bytes,
             decoded_since_frame: 0,
-            frame_boundaries: vec![FrameBoundary {
-                decoded_offset: 0,
-                stored_offset: 0,
-            }],
+            frame_boundaries: vec![resume],
             deferred_error: None,
         })
     }
@@ -695,7 +790,60 @@ impl StreamWriter {
         Ok(())
     }
 
-    pub fn finish(mut self) -> io::Result<StreamWriteReceipt> {
+    /// Close the current storage frame at the current decoded position.
+    ///
+    /// The public form of the cadence rotation, for a writer whose frame
+    /// boundaries are chosen by an external durability rule rather than by a
+    /// byte count. After it returns, every byte written so far belongs to a
+    /// COMPLETE frame, so the file is independently decodable end to end and
+    /// the next byte begins a fresh frame.
+    pub fn close_frame(&mut self) -> io::Result<()> {
+        if let Some(error) = self.pending_error() {
+            return Err(error);
+        }
+        self.rotate_frame()
+    }
+
+    /// The storage file underneath the codec, with the buffer already drained.
+    fn storage_file(&mut self) -> io::Result<&mut BufWriter<File>> {
+        Ok(match &mut self.inner {
+            WriterInner::Raw(writer) => &mut writer.inner,
+            WriterInner::Zstd(writer) => &mut writer.encoder_mut()?.get_mut().inner,
+        })
+    }
+
+    /// Push every byte the codec has produced through to the filesystem.
+    ///
+    /// This is NOT a promise about bytes still inside the encoder: on a
+    /// compressed stream only [`close_frame`](Self::close_frame) ends the
+    /// frame, and a frame that is not closed is not decodable. Durability of a
+    /// decodable prefix therefore means `close_frame` THEN `sync_storage`, in
+    /// that order; the reverse leaves the frame open and syncs a tail no reader
+    /// may interpret.
+    pub fn sync_storage(&mut self) -> io::Result<()> {
+        if let Some(error) = self.pending_error() {
+            return Err(error);
+        }
+        let buffered = self.storage_file()?;
+        buffered.flush()?;
+        buffered.get_ref().sync_all()
+    }
+
+    pub fn finish(self) -> io::Result<StreamWriteReceipt> {
+        self.finish_inner(false)
+    }
+
+    /// Finish the stream and make the finished storage file durable.
+    ///
+    /// The fsync happens after the final frame's epilogue has been written and
+    /// the buffer drained, and before the handle is dropped — which is the only
+    /// order in which "this file is complete on disk" is true when the call
+    /// returns.
+    pub fn finish_durable(self) -> io::Result<StreamWriteReceipt> {
+        self.finish_inner(true)
+    }
+
+    fn finish_inner(mut self, sync: bool) -> io::Result<StreamWriteReceipt> {
         if let Some(error) = self.pending_error() {
             return Err(error);
         }
@@ -705,11 +853,17 @@ impl StreamWriter {
         let stored_len = match self.inner {
             WriterInner::Raw(mut writer) => {
                 writer.flush()?;
+                if sync {
+                    writer.inner.get_ref().sync_all()?;
+                }
                 writer.written
             }
             WriterInner::Zstd(encoder) => {
                 let mut writer = encoder.finish()?;
                 writer.flush()?;
+                if sync {
+                    writer.inner.get_ref().sync_all()?;
+                }
                 writer.written
             }
         };
@@ -1082,6 +1236,83 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A writer that closes its frames on demand can be handed on to another
+    /// writer, and the two halves read back as one stream.
+    ///
+    /// This is what a spool owner needs when the durability boundary is a
+    /// transaction rather than a byte count: close the frame, sync it, and — if
+    /// the process comes back — resume at the end of what was closed. The
+    /// resumed handle writes a NEW frame, so the check that matters is that the
+    /// concatenation decodes as one stream and that the resumed writer's
+    /// receipt describes the whole file rather than only its own share.
+    #[test]
+    fn a_closed_frame_can_be_resumed_by_a_second_writer() {
+        let dir = TmpDir::new("resume");
+        let head = framed_fixture(1_024);
+        let tail = framed_fixture(512);
+        for compression in [StreamCompression::None, StreamCompression::Zstd] {
+            let path = dir.0.join(format!("resumed_{}.bin", compression.as_str()));
+            let mut writer = StreamWriter::create_with_frames(&path, compression, None).unwrap();
+            writer.write_all(&head).unwrap();
+            writer.close_frame().unwrap();
+            writer.sync_storage().unwrap();
+            let boundary = *writer.frame_boundaries().last().unwrap();
+            assert_eq!(boundary.decoded_offset, head.len() as u64);
+            assert_eq!(
+                boundary.stored_offset,
+                fs::metadata(&path).unwrap().len(),
+                "{}: a closed and synced frame must be entirely on disk",
+                compression.as_str()
+            );
+            // Decodable with the first writer still alive: the frame is closed,
+            // so nothing is owed to a later flush.
+            let mut so_far = Vec::new();
+            open(&path).unwrap().read_to_end(&mut so_far).unwrap();
+            assert_eq!(so_far, head, "{} lost the closed prefix", compression.as_str());
+            drop(writer);
+
+            let mut resumed =
+                StreamWriter::append_existing(&path, compression, None, boundary).unwrap();
+            resumed.write_all(&tail).unwrap();
+            let receipt = resumed.finish_durable().unwrap();
+            assert_eq!(receipt.decoded_len, (head.len() + tail.len()) as u64);
+            assert_eq!(receipt.stored_len, fs::metadata(&path).unwrap().len());
+
+            let mut whole = Vec::new();
+            open(&path).unwrap().read_to_end(&mut whole).unwrap();
+            let mut expected = head.clone();
+            expected.extend_from_slice(&tail);
+            assert_eq!(
+                whole,
+                expected,
+                "{} resume changed the decoded stream",
+                compression.as_str()
+            );
+        }
+    }
+
+    /// Resuming at anything but the true end of the storage file is refused.
+    #[test]
+    fn a_resume_boundary_that_is_not_the_file_end_is_refused() {
+        let dir = TmpDir::new("resume_bad");
+        let path = dir.0.join("short.bin");
+        let bytes = framed_fixture(64);
+        let receipt = write_framed(&path, &bytes, StreamCompression::Zstd, u64::MAX);
+        let error = match StreamWriter::append_existing(
+            &path,
+            StreamCompression::Zstd,
+            None,
+            FrameBoundary {
+                decoded_offset: receipt.decoded_len,
+                stored_offset: receipt.stored_len - 1,
+            },
+        ) {
+            Ok(_) => panic!("a resume boundary short of the file end was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
