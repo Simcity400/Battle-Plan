@@ -668,11 +668,140 @@ fn d47_cost_read_path_ab() {
     );
 }
 
+/// Guarded reads per timed pass in [`guarded_read_calls`]: one whole
+/// `CCharacter` body window per character, which is the read shape the census
+/// actually issues (`read_object_window` -> `read_into`).
+const GUARDED_READ_CALLS_PER_PASS: usize = T15_CENSUS_CHARACTERS;
+
+/// `GUARDED_READ_CALLS_PER_PASS` successful `read_into` calls and nothing else.
+///
+/// WHAT THIS EXISTS TO PRICE (lane ED, 2026-08-07). `read_scalar`, `read_bytes`
+/// and `read_into` each carry one `#[cfg(feature = "range-tracer")]`
+/// `note_read` call. With the feature OFF nothing is emitted; with it ON the
+/// call is emitted and executed on EVERY successful guarded read, even after
+/// the tracer has recorded its one frame and disarmed — `note_read`'s first
+/// statement is the `CAPTURING` load that then returns. The residual cost of
+/// that always-taken call is what a capture taken on a feature-enabled DLL
+/// pays for its whole length, and it is invisible in the sidecar because the
+/// sidecar only describes the one traced frame.
+///
+/// Priced per CALL, not per byte: the disarmed path returns before it looks at
+/// `len` or at `bytes`, so the overhead is a function of the read COUNT alone.
+/// That is why the arm issues one fixed-width read per iteration and reports
+/// its own call count.
+///
+/// THE LIVE EXTRAPOLATION IS AN ESTIMATE, AND HERE IS WHY (Codex 019fdb7e,
+/// finding 1). Multiplying this figure by a phase's read count assumes two
+/// things this arm does not establish. First, that the per-call residual is the
+/// same at every one of the three call sites: `read_scalar` passes a stack
+/// array, `read_bytes` a freshly allocated `Vec`, `read_into` the caller's
+/// buffer, and each caller's code generation around the call differs. Second,
+/// that the read count used is the phase's. The only live count available is
+/// the range census's UNBRACKETED total, which is every read taken outside a
+/// worker's clock bracket — the prewarm dominates it but does not exhaust it.
+/// So a figure derived this way bounds an order of magnitude; it is not a
+/// measurement of the phase.
+fn guarded_read_calls(world: &BenchWorld) -> usize {
+    let mut sink = 0usize;
+    let mut buf = [0u8; CHARACTER_BODY_WINDOW];
+    for addr in &world.census_characters {
+        if read_into(*addr, &mut buf) {
+            sink += buf[0] as usize + 1;
+        }
+    }
+    sink
+}
+
+/// The `CCharacter` window width the census copies per observation. Any width
+/// in `read_into`'s domain prices the same call overhead; this one keeps the
+/// arm's cache behaviour close to the census's.
+const CHARACTER_BODY_WINDOW: usize = 0xB0;
+
+/// Whether the tracer's residual MULTIPLIES in the regime the live prewarm is
+/// actually in — NOT a second per-call figure.
+///
+/// WHY IT IS NOT A PER-CALL FIGURE, AND WHY THE NAME SAYS SO (Codex
+/// 019fdb7e, finding 4). This arm times the whole production census BODY, and
+/// that body issues several guarded reads per character — two
+/// `read_character_census_fields` observations plus the two string reads, whose
+/// heap-backed half takes a payload read as well. Dividing its microseconds by
+/// the character count therefore yields ns PER CHARACTER, and dividing that by
+/// a read count nobody counted here would be arithmetic on an estimate. Only
+/// [`d47_cost_guarded_read_call`] issues one read per iteration and may be read
+/// per call.
+///
+/// WHAT IT DOES DECIDE. A `note_read` call sits between the guarded copy and
+/// the caller's use of the bytes. On a cache-hot contiguous arena a read costs
+/// a few nanoseconds and there is no outstanding-miss parallelism for an
+/// intervening call to spoil, so that fixture cannot expose a cost that comes
+/// from losing it. The live prewarm is a scattered dependent walk where a read
+/// costs tens of nanoseconds and keeping several misses in flight is most of
+/// the throughput. If the tracer's cost multiplied there, this arm's
+/// cross-build ratio would be much larger than the contiguous arm's; if it does
+/// not, the contiguous per-call figure may be extrapolated. That is the whole
+/// question it answers, and a ratio is enough to answer it.
+///
+/// One number per build; compare BETWEEN builds (`--features range-tracer` and
+/// without), as the sibling explains.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_body_scattered() {
+    let world = scattered_census_world();
+    page_cache_new_frame();
+    assert!(
+        scattered_census_loop(&world, false) > 0,
+        "scattered fixture read nothing"
+    );
+    let mut samples = Vec::with_capacity(9);
+    for _ in 0..9 {
+        samples.push(time_us(20, || scattered_census_loop(&world, false)).0);
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+    let us = samples[samples.len() / 2];
+    println!(
+        "d47_cost census_body_scattered: {us:.1} us/pass over {} characters \
+         ({:.1} ns/character, SEVERAL guarded reads each — compare builds by RATIO, \
+         never divide this by a read count) range_tracer_compiled={}",
+        T28_MANAGER_ENTRIES,
+        us * 1000.0 / T28_MANAGER_ENTRIES as f64,
+        cfg!(feature = "range-tracer"),
+    );
+}
+
+/// Per-call cost of the traced read primitives, to be compared BETWEEN two
+/// builds of this binary (`--features range-tracer` and without).
+///
+/// Not an A/B inside one process: the two arms differ by a compile-time `cfg`,
+/// so the comparison is necessarily across binaries. Run both and divide the
+/// microsecond difference by `calls`.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_guarded_read_call() {
+    let world = bench_world();
+    let sink = guarded_read_calls(&world);
+    assert!(
+        sink >= GUARDED_READ_CALLS_PER_PASS,
+        "read arm did no successful guarded reads: sink={sink}"
+    );
+    let (us, _) = time_us_median(9, || guarded_read_calls(&world));
+    println!(
+        "d47_cost guarded_read_call: {us:.1} us/pass over {} successful read_into calls \
+         ({:.2} ns/call) range_tracer_compiled={}",
+        GUARDED_READ_CALLS_PER_PASS,
+        us * 1000.0 / GUARDED_READ_CALLS_PER_PASS as f64,
+        cfg!(feature = "range-tracer"),
+    );
+}
+
 #[test]
 #[ignore = "measurement instrument; run explicitly with --ignored"]
 fn d47_cost_census_loop() {
     let world = bench_world();
     let (us, sink) = time_us_median(5, || census_loop(&world));
+    println!(
+        "d47_cost census_loop range_tracer_compiled={}",
+        cfg!(feature = "range-tracer")
+    );
     println!(
         "d47_cost census_loop: {:.1} us/frame over {} characters ({:.1} ns/character) sink={}",
         us,
