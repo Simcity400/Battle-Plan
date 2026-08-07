@@ -170,9 +170,32 @@ struct GapCensus {
     clock_witness_examples_suppressed: u64,
 }
 
+/// A reason's three DIFFERENT quantities, reported side by side because
+/// mistaking one for another is how run t32's backpressure accounting was read
+/// as a 544-record hole that did not exist.
+///
+///  * `count` — `H4DG` RECORDS. `Overrun` and `Backpressure` coalesce, so one
+///    record can stand for many hours and this is NOT an hour count.
+///  * `domain_hours` — the sum over records of `range_end - range_start + 1`.
+///    This is the unit the scheduler's `rs_backpressure_domain_hours` /
+///    `rs_overrun_domain_hours` probe counters are in, and the only one that
+///    may be compared with them.
+///  * `distinct_hours` — how many distinct game hours the ranges cover at all,
+///    counted once however many domains named them. `domain_hours /
+///    distinct_hours` is the roster width when every domain names every range,
+///    which the gap-frame builder enforces.
+///
+/// The probe is a rider on a published frame, so hours that resolve after the
+/// last such frame (teardown flush, a final eviction) appear here and not
+/// there. `domain_hours` >= the probe's counter is therefore expected; the
+/// reverse would be an hour on the wire the scheduler never counted.
 #[derive(Serialize)]
 struct ReasonCount {
     reason: &'static str,
+    /// Sum over this reason's records of their covered hour span.
+    domain_hours: u64,
+    /// Distinct game hours any of this reason's ranges cover.
+    distinct_hours: u64,
     count: u64,
 }
 
@@ -398,6 +421,12 @@ impl FrameAccumulator {
     }
 }
 
+/// Widest gap range this audit will enumerate hour by hour. A capture's whole
+/// span is a few thousand hours, so anything past this is a malformed range;
+/// it is reported as a parse error and left out of `distinct_hours` rather than
+/// allowed to allocate an unbounded set.
+const MAX_ENUMERATED_RANGE_HOURS: u64 = 1_000_000;
+
 #[derive(Default)]
 struct AuditState {
     bytes_consumed: u64,
@@ -424,6 +453,14 @@ struct AuditState {
     lateness_carrier_frames: u64,
     frontier_ahead_distribution: BTreeMap<u64, u64>,
     reason_counts: BTreeMap<&'static str, u64>,
+    /// Per reason: the sum of every record's covered hour span. See
+    /// [`ReasonCount`] for why this is kept apart from the record count.
+    reason_domain_hours: BTreeMap<&'static str, u64>,
+    /// Per reason: the distinct game hours its ranges cover. Bounded by the
+    /// capture's hour span, so enumerating each range is safe — except for a
+    /// malformed range, which is capped rather than enumerated (see
+    /// [`MAX_ENUMERATED_RANGE_HOURS`]).
+    reason_hours: BTreeMap<&'static str, BTreeSet<i32>>,
     undecoded_gaps: u64,
     witness_delta_counts: BTreeMap<(&'static str, i128, i128), u64>,
     witness_examples: Vec<WitnessExample>,
@@ -819,6 +856,45 @@ fn account_gap(
 ) {
     let reason = reason_name(gap.reason);
     *state.reason_counts.entry(reason).or_default() += 1;
+    // The hours this ONE record stands for. A `Backpressure`/`Overrun` range is
+    // coalesced, so this is where the record count and the domain-hour count
+    // part company; every other reason carries a single-hour range and the two
+    // agree.
+    let covered = i64::from(gap.range_end_hour_raw)
+        .checked_sub(i64::from(gap.range_start_hour_raw))
+        .and_then(|delta| delta.checked_add(1))
+        .filter(|delta| *delta > 0)
+        .and_then(|delta| u64::try_from(delta).ok())
+        .unwrap_or(0);
+    if covered == 0 {
+        record_error(
+            state,
+            offset,
+            format!(
+                "DOMAIN_GAP range {}..={} covers no hour; it cannot account for the \
+                 loss it names",
+                gap.range_start_hour_raw, gap.range_end_hour_raw
+            ),
+        );
+    }
+    *state.reason_domain_hours.entry(reason).or_default() += covered;
+    if covered <= MAX_ENUMERATED_RANGE_HOURS {
+        let hours = state.reason_hours.entry(reason).or_default();
+        for hour in gap.range_start_hour_raw..=gap.range_end_hour_raw {
+            hours.insert(hour);
+        }
+    } else {
+        record_error(
+            state,
+            offset,
+            format!(
+                "DOMAIN_GAP range {}..={} covers {covered} hours, past the \
+                 {MAX_ENUMERATED_RANGE_HOURS} this audit will enumerate; its \
+                 hours are counted in domain_hours but not in distinct_hours",
+                gap.range_start_hour_raw, gap.range_end_hour_raw
+            ),
+        );
+    }
     // A delta is only meaningful when a clock was actually observed. Zero is
     // the wire's ABSENT-witness value -- `ClockUnreadable` and `ReaderSilent`
     // are required to carry it -- and subtracting the label from it produced a
@@ -1144,6 +1220,16 @@ fn finish_report(input: &Path, mut state: AuditState) -> AuditReport {
                         .get(reason_name(reason))
                         .copied()
                         .unwrap_or(0),
+                    domain_hours: state
+                        .reason_domain_hours
+                        .get(reason_name(reason))
+                        .copied()
+                        .unwrap_or(0),
+                    distinct_hours: state
+                        .reason_hours
+                        .get(reason_name(reason))
+                        .map(|hours| hours.len() as u64)
+                        .unwrap_or(0),
                 })
                 .collect(),
             undecoded_gap_records: state.undecoded_gaps,
@@ -1396,9 +1482,19 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
 
     let b = &report.section_b_domain_gaps;
     writeln!(out, "\nB. DOMAIN_GAP census")?;
-    writeln!(out, "reason -> count:")?;
+    writeln!(
+        out,
+        "reason -> records / domain-hours / distinct hours\n  \
+         (records COALESCE: one record can stand for many hours. Only the \
+         domain-hours\n   column is comparable with the scheduler probe's \
+         rs_*_domain_hours counters.)"
+    )?;
     for row in &b.reason_counts {
-        writeln!(out, "  {} -> {}", row.reason, row.count)?;
+        writeln!(
+            out,
+            "  {} -> {} records / {} domain-hours / {} distinct hours",
+            row.reason, row.count, row.domain_hours, row.distinct_hours
+        )?;
     }
     writeln!(
         out,

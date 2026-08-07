@@ -1274,11 +1274,24 @@ impl ReadOnlyScheduler {
             let domain = self.domains[index];
             if let Some(evicted) = self.domain_requests[index].latest_pending.replace(request) {
                 if index == 0 {
-                    // Counted once per HOUR, not once per domain. This hour is
-                    // never swept. It may still end up inside a FRAME_END: the
-                    // Backpressure range accounting it is closed by
-                    // `FRAME_END(range_end)`, so the last hour of a coalesced
+                    // UNIT: HOURS. Counted once per hour, not once per domain
+                    // (that is what `index == 0` is for), and ONLY here. This
+                    // hour is never swept. It may still end up inside a
+                    // FRAME_END: the Backpressure range accounting it is closed
+                    // by `FRAME_END(range_end)`, so the last hour of a coalesced
                     // run carries a frame with no domain record in it.
+                    //
+                    // SCOPE, and the reconciliation trap it sets. This is the
+                    // eviction site ONLY. Two other sites also raise
+                    // `Backpressure` ranges and count themselves elsewhere:
+                    // `flush_latest_pending` (-> `flushed_pending_hours`) and
+                    // `gap_all_pending` (-> `abandoned_hours`). So
+                    // `evicted_pending_hours` is a STRICT SUBSET of the hours
+                    // the wire's Backpressure ranges cover, and comparing the
+                    // two directly under-reads the wire by the other two sites'
+                    // hours. See
+                    // `backpressure_counters_reconcile_with_the_ranges_the_wire_carries`
+                    // for the identity that relates all of them.
                     self.telemetry.evicted_pending_hours =
                         self.telemetry.evicted_pending_hours.saturating_add(1);
                 }
@@ -1392,6 +1405,21 @@ impl ReadOnlyScheduler {
                     .overrun_domain_hours
                     .saturating_add(represented)
             }
+            // UNIT: DOMAIN-HOURS, i.e. hours x domains, and it is incremented
+            // by `represented` (the range's covered hour count) on EVERY
+            // Backpressure push regardless of which site raised it and
+            // regardless of whether the push extends an existing range or
+            // starts a new one.
+            //
+            // THIS IS NOT A RECORD COUNT, and the difference is not small. The
+            // wire carries ONE `H4DG` record per domain per COALESCED RANGE
+            // (`build_scheduler_gap_frames`), and a range covers
+            // `range_end - range_start + 1` hours. In run t32 that is 73 ranges
+            // x 68 domains = 4_964 records standing for 83 x 68 = 5_644
+            // domain-hours. Comparing this counter with a record count is a
+            // unit error, not a discrepancy; the hour count each record stands
+            // for is on the wire in `range_start_hour_raw`/`range_end_hour_raw`
+            // and is independently witnessed by `queue_dropped`.
             GapKind::Backpressure => {
                 self.telemetry.backpressure_domain_hours = self
                     .telemetry
@@ -1717,6 +1745,172 @@ mod tests {
         assert_eq!(gaps[0].kind, GapKind::Backpressure);
         invoked = s.take_current_request().is_some();
         assert!(invoked);
+    }
+
+    /// THE t32 BACKPRESSURE RECONCILIATION, as an identity rather than a note.
+    ///
+    /// # The question this settles
+    ///
+    /// Run t32's final scheduler probe published `rs_evicted_pending_hours =
+    /// 81` and `rs_backpressure_domain_hours = 5_508`, while its stream carried
+    /// 4_964 `Backpressure` `H4DG` records. Subtracting those gives 544, and
+    /// 544 is not a quantity: the first two are HOURS and DOMAIN-HOURS and the
+    /// third is a RECORD COUNT. Reduced to comparable units, t32 is
+    ///
+    /// ```text
+    ///   4_964 records      = 73 coalesced ranges x 68 domains
+    ///   5_644 domain-hours = 83 distinct hours   x 68 domains   (on the wire)
+    ///   5_508 domain-hours = 81 distinct hours   x 68 domains   (in the probe)
+    ///     136 domain-hours =  2 hours            x 68 domains   (the residual)
+    /// ```
+    ///
+    /// and those 2 hours are IDENTIFIED on the wire: the last probe rode a
+    /// frame at hour 60_832_837, exactly 81 of t32's 83 backpressure hours fall
+    /// at or before it, and the remaining two — 60_832_841 and 60_832_845, 68
+    /// records each — fall after it. The probe is a rider on a published frame,
+    /// so it can only ever report the losses that had happened when it was
+    /// written. No hour reached the stream without a cause; the WIRE is ahead of
+    /// the probe, never behind it, and `game_hours_without_data.unaccounted = 0`
+    /// in the same manifest agrees.
+    ///
+    /// NOT CLAIMED: that those two hours are the two the ledger showed as
+    /// `outstanding` when the probe was taken (`scheduled 660 - accepted 576 -
+    /// refused 1 - evicted 81 = 2`). Both counts are 2 and both are consistent
+    /// with the residual, but nothing on the wire preserves a request's
+    /// identity from the probe to its disposition, so a hole closed by a
+    /// coincidence of arithmetic is not a hole closed (Codex review
+    /// 019fd9b9-6318-7bd2-8882-a1c3927a19c5, finding 8). What IS established is
+    /// the weaker, sufficient statement: the residual is the backpressure hours
+    /// that resolved after the last probe.
+    ///
+    /// # What this test pins
+    ///
+    /// The three-way arithmetic on a scheduler driven through a comparable
+    /// shape: a long coalesced eviction run, a teardown flush that EXTENDS that
+    /// run rather than starting a new range, and a probe taken before that
+    /// resolution. Teardown is ONE way an hour resolves after a probe; it is
+    /// used here because it is the one a unit test can force, not because t32's
+    /// two hours are known to have taken it.
+    ///
+    /// Production changes that fail it: counting `evicted_pending_hours` per
+    /// domain instead of per hour; dropping the `record_gap_range` increment on
+    /// the extend path so a coalesced range stops accruing domain-hours;
+    /// removing `Backpressure` from `can_extend` so ranges stop coalescing and
+    /// records silently become hours; or making `flush_latest_pending` raise
+    /// something other than a `Backpressure` range, which would leave the
+    /// teardown hour un-named on the wire.
+    #[test]
+    fn backpressure_counters_reconcile_with_the_ranges_the_wire_carries() {
+        const DOMAINS: u64 = 3;
+        let mut s = scheduler(&[10, 11, 12], 1, 64);
+
+        // Hour 1 is admitted and taken: a reader now holds it.
+        s.observe_stable(1, 1);
+        let in_flight = s.take_current_request().expect("hour 1 is takeable");
+        // Hours 2..=12 arrive while that reader is busy. Each new frontier
+        // evicts the previous pending one, so hours 2..=11 are evicted (hour 12
+        // survives as the pending request) into ONE coalesced range.
+        for hour in 2..=12 {
+            s.observe_stable(hour, hour as u64);
+        }
+        s.accept_request(in_flight);
+
+        // --- The probe, taken here, with hour 12 still outstanding. ---
+        let probe = s.telemetry();
+        let probe_ledger = s.hour_ledger();
+        assert!(probe_ledger.balanced(), "{probe_ledger:?}");
+        assert_eq!(probe_ledger.scheduled, 12);
+        assert_eq!(probe_ledger.accepted, 1);
+        assert_eq!(
+            probe_ledger.evicted_pending, 10,
+            "hours 2..=11 were each replaced before a reader took them"
+        );
+        assert_eq!(
+            probe_ledger.outstanding, 1,
+            "hour 12 is pending and has no disposition yet"
+        );
+        assert_eq!(
+            probe.evicted_pending_hours * DOMAINS,
+            probe.backpressure_domain_hours,
+            "with only the eviction site active, the domain-hour counter is \
+             exactly the hour counter times the roster"
+        );
+        assert_eq!(probe.backpressure_domain_hours, 30);
+        assert_eq!(probe.flushed_pending_hours, 0);
+        assert_eq!(probe.abandoned_hours, 0);
+
+        // --- Teardown, which is what happens after the last probe. ---
+        s.flush_latest_pending();
+        let after = s.telemetry();
+        let after_ledger = s.hour_ledger();
+        assert!(after_ledger.balanced(), "{after_ledger:?}");
+        assert_eq!(after_ledger.outstanding, 0);
+        assert_eq!(after_ledger.flushed_pending, 1, "hour 12");
+        assert_eq!(
+            after.evicted_pending_hours, probe.evicted_pending_hours,
+            "the teardown flush is NOT an eviction and must not be counted as one"
+        );
+
+        // THE RESIDUAL IDENTITY, which is the whole point: the domain-hours the
+        // wire ends up carrying exceed the last probe's by exactly the hours
+        // that resolved into Backpressure after that probe, times the roster.
+        // In this scenario that set is the one hour left outstanding; in t32 it
+        // was two hours the stream places after the probe's frame. The SHAPE of
+        // the residual is the durable claim, not which requests filled it.
+        let hours_resolved_after_probe = after_ledger.flushed_pending - probe_ledger.flushed_pending;
+        assert_eq!(hours_resolved_after_probe, 1);
+        assert_eq!(
+            after.backpressure_domain_hours,
+            probe.backpressure_domain_hours + hours_resolved_after_probe * DOMAINS,
+            "a probe can only report the losses that had happened when it was \
+             written; the wire keeps accruing after it"
+        );
+
+        // --- What the wire actually carries. ---
+        let gaps: Vec<_> = s.drain_control().collect();
+        assert!(
+            gaps.iter().all(|gap| gap.kind == GapKind::Backpressure),
+            "every range raised here is Backpressure"
+        );
+        assert_eq!(
+            gaps.len() as u64,
+            DOMAINS,
+            "the eviction run and the teardown hour COALESCE into one range per \
+             domain, because hour 12 is adjacent to the 2..=11 run"
+        );
+        for gap in &gaps {
+            assert_eq!((gap.first_hour_raw, gap.last_hour_raw), (2, 12));
+            assert_eq!(
+                gap.queue_dropped, 11,
+                "the wire's own witness of how many hours this range stands for"
+            );
+        }
+
+        // `build_scheduler_gap_frames` emits exactly one record per domain per
+        // range, so this is the record count the stream will hold.
+        let records = gaps.len() as u64;
+        let covered_domain_hours: u64 = gaps
+            .iter()
+            .map(|gap| (gap.last_hour_raw - gap.first_hour_raw + 1) as u64)
+            .sum();
+
+        assert_eq!(records, 3, "3 ranges x 1 record per domain per range");
+        assert_eq!(
+            covered_domain_hours, after.backpressure_domain_hours,
+            "summing each record's OWN hour span reproduces the domain-hour \
+             counter exactly; this is the comparison a reconciliation must make"
+        );
+        assert_ne!(
+            records, covered_domain_hours,
+            "records and domain-hours are different units whenever any range \
+             coalesces, which is precisely why t32's 5_508 - 4_964 = 544 was \
+             not a discrepancy"
+        );
+        assert_eq!(
+            covered_domain_hours - records,
+            33 - 3,
+            "the gap between the two counts is the coalescing, and nothing else"
+        );
     }
 
     #[test]

@@ -4001,3 +4001,161 @@ fn d47_manager_vector_falls_back_to_per_entry_reads_on_a_refused_chunk() {
     // with no trace in the manifest (Codex 019fd6ea, finding 3).
     assert_eq!(retries, 1);
 }
+
+// =====================================================================
+// Capture-floor stage S0: domain 47's range/byte/depth census, MEASURED
+// =====================================================================
+
+/// DOMAIN 47'S FRAME WALK, TRACED AND CENSUSED OFFLINE.
+///
+/// # What this replaces
+///
+/// The capture-floor plan anchors its whole range estimate on two figures for
+/// this domain — "~5 MiB useful, ~75_500 distinct source ranges per frame" —
+/// taken from lane DB's copy-only note above. That note DERIVED them: it
+/// multiplied each structure's furthest-read field offset by an object count
+/// off t28's wire. It never observed a read, so it could not see a field the
+/// walk reads twice, a window the walk does not read to the end of, or a
+/// string buffer the walk skips.
+///
+/// This measures them instead. It runs the SAME `frame_walk` the cost bench
+/// times, through the SAME guarded read primitives, with
+/// `attach_log::range_tracer` recording every `(address, length)` those
+/// primitives actually served, and reduces the result with the production
+/// `range_census`. Nothing here is modelled.
+///
+/// # What it is a census OF, precisely
+///
+///  * The FRAME WALK only. The prewarm census over the manager roster
+///    (`read_character_census_fields` across `world.census_characters`) is a
+///    separate phase with its own object count and is NOT included; it is
+///    strictly additive to every number below.
+///  * At T15's per-frame object counts, which is what `bench_world` builds:
+///    5_227 characters, 3_358 advisors, 534 unit leaders, 733 country-leader
+///    roles, 76 trait tokens. Lane DB's derived figure used t28's counts
+///    (13_394 / 8_615 / 1_361 / 1_879 / 194), roughly 2.5x wider. The two are
+///    therefore NOT directly comparable, and the per-object RATES printed
+///    below are what carries across; the raw totals are this fixture's.
+///  * Over a CONTIGUOUS arena. That does not change a range count or a byte
+///    count — those are properties of what the reader asked for, not of where
+///    the pages live — but it does mean the coalesced-range count here is an
+///    OPTIMISTIC floor: the live heap scatters these objects, so adjacent
+///    fixture objects that merge here would not merge there.
+///
+/// ```text
+/// cargo test -p collector --release --features range-tracer \
+///     d47_range_census_from_a_traced_frame -- --ignored --nocapture
+/// ```
+#[cfg(feature = "range-tracer")]
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_range_census_from_a_traced_frame() {
+    use super::range_tracer::{self, test_support};
+    use crate::range_census::{read_trace, Census, DerivationSpan, DEFAULT_DERIVATION_SPANS};
+
+    let _guard = test_support::lock();
+    let mut path = std::env::temp_dir();
+    path.push(format!("d47_range_census_{}.bin", std::process::id()));
+    let path = path.to_string_lossy().into_owned();
+    test_support::reset(&path, 64 * 1024 * 1024);
+
+    let world = bench_world();
+    // The fixture arena is wherever `VirtualAlloc` put it, which need not be
+    // inside the live game's heap window, so point the pointer scan at the
+    // arena itself. Without this every read would look like a root and the
+    // depth column would be a uniform zero for the wrong reason.
+    let arena_lo = world._arena.base;
+    let arena_hi = arena_lo + world._arena.size;
+    range_tracer::set_heap_window(arena_lo, arena_hi);
+
+    range_tracer::on_frame_boundary();
+    let restore = range_tracer::enter_domain(47);
+    let sink = frame_walk(&world);
+    range_tracer::leave_domain(restore);
+    range_tracer::flush_after_bracket();
+    range_tracer::on_frame_boundary();
+    range_tracer::set_heap_window(0, 0);
+    assert!(sink > 0, "the frame walk must have produced rows to census");
+
+    let mut file = std::fs::File::open(&path).expect("tracer wrote a sidecar");
+    let (header, entries) = read_trace(&mut file, 128 * 1024 * 1024).expect("sidecar parses");
+    assert!(
+        !header.truncated(),
+        "the trace hit its entry cap; raise it rather than publishing a floor \
+         as a census"
+    );
+    let census = Census::build(header, &entries, DerivationSpan(0x1_0000));
+    let row = census
+        .brackets
+        .iter()
+        .find(|row| row.bracket_tag == 47)
+        .expect("every traced read is attributed to domain 47");
+
+    let objects = T15_FRAME_CHARACTERS
+        + T15_FRAME_ADVISORS
+        + T15_FRAME_UNIT_LEADERS
+        + T15_FRAME_COUNTRY_LEADER_ROLES
+        + T15_FRAME_TRAIT_TOKENS;
+    println!("\nDOMAIN 47 FRAME WALK, MEASURED (arena {arena_lo:#x}..{arena_hi:#x})");
+    println!("  objects walked      {objects}");
+    println!("  read events         {}", row.read_count);
+    println!(
+        "  bytes moved         {} ({:.3} MiB)",
+        row.bytes_moved,
+        row.bytes_moved as f64 / (1024.0 * 1024.0)
+    );
+    println!("  DISTINCT ranges     {}", row.distinct_ranges);
+    println!(
+        "  coalesced ranges    {}   (contiguous-arena floor; the live heap \
+         scatters these)",
+        row.coalesced_ranges
+    );
+    println!(
+        "  UNIQUE bytes        {} ({:.3} MiB)",
+        row.unique_bytes,
+        row.unique_bytes as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "  re-read factor      {:.2}x",
+        row.bytes_moved as f64 / row.unique_bytes.max(1) as f64
+    );
+    println!("  root reads          {}", row.root_reads);
+    println!(
+        "  ranges per object   {:.2}",
+        row.distinct_ranges as f64 / objects as f64
+    );
+    println!(
+        "  unique bytes/object {:.1}",
+        row.unique_bytes as f64 / objects as f64
+    );
+    println!("  max depth by derivation span:");
+    for (span, depth) in Census::depth_by_span(header, &entries, &DEFAULT_DERIVATION_SPANS) {
+        println!("    span {:#010x}  depth {depth}", span.0);
+    }
+
+    // NON-VACUOUS FLOOR. The fixture walks `objects` distinct heap objects and
+    // every one of them is read at least once, so a census reporting fewer
+    // distinct ranges than objects has lost reads — which is exactly what a
+    // tracer that recorded only the first read per address, or that dropped
+    // worker-thread buffers, would produce.
+    assert!(
+        row.distinct_ranges >= objects as u64,
+        "censused {} distinct ranges for {objects} walked objects; the tracer \
+         has lost reads",
+        row.distinct_ranges
+    );
+    assert!(
+        row.unique_bytes > 0 && row.unique_bytes <= row.bytes_moved,
+        "unique bytes ({}) must be positive and never exceed bytes moved ({})",
+        row.unique_bytes,
+        row.bytes_moved
+    );
+    assert!(
+        row.max_depth >= 1,
+        "the walk follows character -> unit-leader and leader -> trait-vector \
+         pointers, so a depth of {} means the pointer provenance was not \
+         recorded",
+        row.max_depth
+    );
+    let _ = std::fs::remove_file(&path);
+}

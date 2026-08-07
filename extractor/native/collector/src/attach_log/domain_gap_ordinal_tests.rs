@@ -337,3 +337,105 @@ fn a_frame_that_rejects_nothing_is_returned_unchanged() {
     assert!(rejected.is_empty());
     assert_eq!(records, before, "a clean frame must be returned unchanged");
 }
+
+/// ONE RECORD PER DOMAIN PER COALESCED RANGE, PROVEN THROUGH THE REAL BUILDER.
+///
+/// # Why this exists separately from the scheduler-side test
+///
+/// `read_only_scheduler::tests::backpressure_counters_reconcile_with_the_ranges_the_wire_carries`
+/// establishes that the scheduler's `backpressure_domain_hours` equals the sum
+/// of its ranges' hour spans, and it computes the RECORD count as "one per
+/// range per domain". But it computes that number rather than observing it, so
+/// it would still pass if `build_scheduler_gap_frames` expanded a coalesced
+/// range into one record per hour — which is exactly the thing that would make
+/// run t32's 4_964 records equal to its 5_644 domain-hours and dissolve the
+/// unit distinction the whole reconciliation rests on. This closes that hole by
+/// counting the records the builder actually emits.
+///
+/// Production change that fails this: expanding a coalesced range into per-hour
+/// records, emitting one record for the whole roster instead of one per domain,
+/// or dropping `range_start_hour_raw`/`range_end_hour_raw` from the payload so
+/// a record can no longer say how many hours it stands for.
+#[test]
+fn a_coalesced_backpressure_range_emits_one_record_per_domain_and_names_its_hours() {
+    // t32's shape in miniature: a wide coalesced range over a multi-domain
+    // roster. t32 itself had 68 domains and a range of 11 hours among 73.
+    const ROSTER: [u16; 4] = [10, 11, 12, 13];
+    const SPAN_HOURS: i32 = 11;
+    let mut ordinals: BTreeMap<(u16, u16), u64> = BTreeMap::new();
+
+    let ranges: Vec<DomainGapRange> = ROSTER
+        .iter()
+        .map(|domain_id| DomainGapRange {
+            domain_id: *domain_id,
+            ..backpressure_range(FIRST_HOUR, FIRST_HOUR + SPAN_HOURS - 1)
+        })
+        .collect();
+
+    let frames = build_scheduler_gap_frames(&ranges, &ROSTER, 1, 0, &mut ordinals)
+        .expect("one coalesced range over the full roster");
+    assert_eq!(
+        frames.len(),
+        1,
+        "one coalesced range is ONE frame, however many hours it covers"
+    );
+
+    // Walk every record the frame carries.
+    let bytes = &frames[0].0;
+    let mut offset = 0usize;
+    let mut gap_records = 0u64;
+    let mut covered_domain_hours = 0u64;
+    let mut frame_ends = 0u64;
+    let mut domains_named: BTreeSet<u16> = BTreeSet::new();
+    while offset < bytes.len() {
+        let header =
+            compact_contract::parse_compact_record_header(&bytes[offset..]).expect("record header");
+        let payload_start = offset + compact_contract::COMPACT_RECORD_HEADER_LEN;
+        let payload = &bytes[payload_start..payload_start + header.payload_len];
+        if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP {
+            let gap = DomainGapRecordV1::decode(payload).expect("H4DG payload");
+            gap_records += 1;
+            domains_named.insert(header.domain_id);
+            let hours = i64::from(gap.range_end_hour_raw) - i64::from(gap.range_start_hour_raw) + 1;
+            assert_eq!(
+                hours,
+                i64::from(SPAN_HOURS),
+                "each record must carry the WHOLE range it stands for"
+            );
+            assert_eq!(
+                gap.queue_dropped, SPAN_HOURS as u64,
+                "queue_dropped is the record's independent witness of that hour count"
+            );
+            covered_domain_hours += hours as u64;
+        }
+        if header.record_type == compact_contract::COMPACT_RECORD_TYPE_FRAME_END {
+            frame_ends += 1;
+        }
+        offset = payload_start + header.payload_len;
+    }
+
+    assert_eq!(
+        gap_records,
+        ROSTER.len() as u64,
+        "one H4DG per domain per range -- NOT one per domain-hour"
+    );
+    assert_eq!(
+        domains_named,
+        ROSTER.into_iter().collect::<BTreeSet<_>>(),
+        "the range must exhaust the scheduled roster"
+    );
+    assert_eq!(frame_ends, 1, "the range is closed by one FRAME_END");
+    assert_eq!(
+        covered_domain_hours,
+        ROSTER.len() as u64 * SPAN_HOURS as u64,
+        "summing each record's own span gives the domain-hour count the \
+         scheduler's counter holds"
+    );
+    // THE UNIT GAP, stated as an inequality rather than left implicit: this is
+    // the difference that made t32's 5_508 - 4_964 look like a hole.
+    assert!(
+        covered_domain_hours > gap_records,
+        "a coalesced range makes records ({gap_records}) and domain-hours \
+         ({covered_domain_hours}) different quantities"
+    );
+}

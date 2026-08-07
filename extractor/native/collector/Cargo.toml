@@ -68,6 +68,13 @@ windows-sys = { version = "0.61.2", features = [
 
 [features]
 test-support = []
+# Capture-floor range/byte/depth tracer (stage S0 ground truth). Records every
+# guarded read of exactly ONE extraction frame to a sidecar, then disarms.
+# Diagnostic only: with the feature off, `attach_log`'s three read primitives
+# emit no tracer call, no branch and no atomic load, and the module is not
+# compiled at all. NEVER enable it for a shipped capture -- a traced frame's
+# timings are not comparable with an untraced one's.
+range-tracer = []
 # Diagnostic-only A25 runtime-text hook owner. Ordinary production, including
 # the passive exact-roster registry, cannot enable these UI/materialisation
 # detours.
