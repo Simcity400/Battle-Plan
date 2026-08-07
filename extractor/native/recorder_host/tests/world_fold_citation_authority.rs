@@ -98,10 +98,11 @@ fn world_fold_citations_match_the_shipping_fold() {
          re-cited; a changed digest means the shipping fold changed and every \
          transcription it backs needs review. Never edit a digest to match new \
          content.\n\
-         * A `free-text line number` failure means a comment gained a \
-         `world_fold.rs:<line>` reference outside the one gated range. Nothing \
-         hashes those and they drift on the next insertion. Cite the item \
-         instead: `world_fold.rs::<item_name>`.\n\
+         * A `free-text line number` failure means a comment -- or a document \
+         under `extractor/documents` -- gained a `world_fold.rs:<line>` \
+         reference outside the one gated range. Nothing hashes those and they \
+         drift on the next insertion. Cite the item instead: \
+         `world_fold.rs::<item_name>`.\n\
          --- verifier stdout ---\n{}\n--- verifier stderr ---\n{}",
         Path::new("extractor/native/recorder_host/src/world_fold.rs").display(),
         stdout.trim(),
@@ -115,9 +116,11 @@ fn world_fold_citations_match_the_shipping_fold() {
     // substring search would accept a malformed line that merely contains the
     // right number somewhere, so the whole line is matched, not a fragment.
     //
-    // The trailing clause is the free-text line-number ratchet.  Requiring it
-    // here is what stops that check from being dropped or short-circuited
-    // without this test noticing.
+    // The trailing clauses are the two free-text line-number ratchets -- the
+    // modules' and the design documents'.  Requiring both here is what stops
+    // either from being dropped or short-circuited without this test noticing;
+    // the document one is the newer and the easier to lose, because unlike the
+    // module check nothing else in the tree reads a document.
     let reported = stdout.trim();
     let expected_prefix = format!(
         "world-fold citation authority check: PASS ({modules} dNN modules, "
@@ -126,10 +129,12 @@ fn world_fold_citations_match_the_shipping_fold() {
         !reported.contains('\n')
             && reported.starts_with(&expected_prefix)
             && reported.contains(" lane authorities, ")
-            && reported.ends_with(" grandfathered prose line references)"),
+            && reported.contains(" grandfathered prose line references, ")
+            && reported.ends_with(" grandfathered document line references)"),
         "the verifier exited zero but did not report checking the {modules} dNN \
          modules under {}. Expected a single line `{expected_prefix}<n> lane \
-         authorities, <n> grandfathered prose line references)`, got: {reported:?}",
+         authorities, <n> grandfathered prose line references, <n> grandfathered \
+         document line references)`, got: {reported:?}",
         wire_src.display()
     );
 }

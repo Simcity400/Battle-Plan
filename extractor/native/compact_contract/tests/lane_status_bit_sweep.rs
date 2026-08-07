@@ -26,44 +26,69 @@ use std::path::{Path, PathBuf};
 
 use compact_contract::{assigned_descriptor_by_id, lane_local_status_mask, CompactDomainStatus};
 
-/// Global v1 status-bit names, indexed by bit position
-/// (`status_flags_base.rs`). A lane constant named `STATUS_<name>` declaring
-/// exactly `1 << bit` is a mirror, not a lane-local badge.
-const GLOBAL_V1_BIT_NAMES: [&str; 16] = [
-    "STATE_UNAVAILABLE",
-    "PROFILE_MISMATCH",
-    "NO_CLOCK",
-    "NO_SCALAR_SOURCE",
-    "WAR_BRIDGE_APPLIED",
-    "EXTRACTION_PERF_GATE",
-    "WORKER_PANIC",
-    "BRIDGE_UNAVAILABLE",
-    "SOURCE_UNAVAILABLE",
-    "PARTIAL_DATA",
-    "DELTA_DATA",
-    "TRANSITION_BASELINE_RESET",
-    "CONTROL_INVALID",
-    "WAR_SEGMENT_ABSENT",
-    "SOURCE_EMPTY",
-    "BASELINE_CLEAR",
-];
+/// Global v1 status-bit names, indexed by bit position, DERIVED from
+/// [`compact_contract::COMPACT_STATUS_V1_FLAG_SPECS`] rather than restated.
+///
+/// A lane constant named `STATUS_<name>` declaring exactly `1 << bit` is a
+/// mirror of a global bit, not a lane-local badge, and this table is what
+/// decides which. It used to be sixteen hand-written names, and the file said
+/// so in as many words: "This table IS a local copy of the contract's
+/// vocabulary, which is the drift this file exists to catch elsewhere."
+///
+/// Only its LENGTH was pinned, and length is the one thing a rename or a
+/// swapped pair of bit positions does not change. Either would have left this
+/// sweep reading the wrong name at that position, and both directions of that
+/// mistake are bad: a real lane-local declaration read as a mirror is dropped
+/// silently, and a correct mirror read as a lane-local badge is either reported
+/// as unregistered or, once registered, masked out of the domain's status word
+/// -- erasing a global failure classification for that domain.
+///
+/// The contract carries the bit AND the name in one place, so the table is
+/// built from it. Uppercase because lanes spell the vocabulary
+/// `STATUS_<NAME>`; the contract's wire spelling is lowercase.
+fn global_v1_bit_names() -> Vec<String> {
+    let mut by_bit: Vec<(u32, String)> = compact_contract::COMPACT_STATUS_V1_FLAG_SPECS
+        .iter()
+        .map(|spec| {
+            assert_eq!(
+                spec.bit.count_ones(),
+                1,
+                "contract v1 flag spec {} is not a single bit ({:#x}); it cannot \
+                 have a bit position",
+                spec.name,
+                spec.bit
+            );
+            (spec.bit.trailing_zeros(), spec.name.to_ascii_uppercase())
+        })
+        .collect();
+    by_bit.sort_by_key(|(bit, _)| *bit);
+    for (index, (bit, name)) in by_bit.iter().enumerate() {
+        assert_eq!(
+            *bit as usize, index,
+            "the assigned v1 vocabulary is no longer a contiguous run from bit 0 \
+             ({name} sits at bit {bit}), so indexing this table by bit position \
+             is wrong"
+        );
+    }
+    by_bit.into_iter().map(|(_, name)| name).collect()
+}
 
-/// This table IS a local copy of the contract's vocabulary, which is the drift
-/// this file exists to catch elsewhere. Pin its length against the contract so
-/// the sweep cannot quietly start reading an assigned global bit as a
-/// lane-local badge: a `STATUS_SOURCE_EMPTY = 1 << 14` mirror in a lane would
-/// have been reported as an unregistered lane-local declaration purely because
-/// this array stopped one entry short.
+/// The derived table must still cover exactly the assigned vocabulary, and the
+/// vocabulary must still be a contiguous run from bit 0 -- indexing by bit
+/// position depends on it. A `STATUS_SOURCE_EMPTY = 1 << 14` mirror in a lane
+/// would be reported as an unregistered lane-local declaration purely because
+/// this table stopped one entry short.
 #[test]
 fn the_global_bit_name_table_covers_the_whole_assigned_vocabulary() {
+    let names = global_v1_bit_names();
     assert_eq!(
         compact_contract::COMPACT_STATUS_V1_KNOWN_MASK.count_ones() as usize,
-        GLOBAL_V1_BIT_NAMES.len(),
-        "the contract assigned a status bit this table does not name"
+        names.len(),
+        "the contract assigned a status bit the v1 flag specs do not name"
     );
     assert_eq!(
         compact_contract::COMPACT_STATUS_V1_KNOWN_MASK,
-        (1u32 << GLOBAL_V1_BIT_NAMES.len()) - 1,
+        (1u32 << names.len()) - 1,
         "the assigned vocabulary is no longer a contiguous run from bit 0, so \
          indexing this table by bit position is wrong"
     );
@@ -264,15 +289,15 @@ fn own_domain_id(text: &str) -> Option<u16> {
     None
 }
 
-fn is_global_mirror(name: &str, value: u32) -> bool {
+fn is_global_mirror(global_bit_names: &[String], name: &str, value: u32) -> bool {
     if value.count_ones() != 1 {
         return false;
     }
     let bit = value.trailing_zeros() as usize;
-    if bit >= GLOBAL_V1_BIT_NAMES.len() {
+    if bit >= global_bit_names.len() {
         return false;
     }
-    name == format!("STATUS_{}", GLOBAL_V1_BIT_NAMES[bit])
+    name == format!("STATUS_{}", global_bit_names[bit])
 }
 
 #[test]
@@ -295,6 +320,7 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
     // literal STATUS_* declaration that is not a global mirror.
     let mut lane_local: Vec<(Finding, BTreeSet<u16>, bool)> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
+    let global_bit_names = global_v1_bit_names();
 
     for file in &files {
         let text = fs::read_to_string(file)
@@ -307,7 +333,7 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
             if !name.starts_with("STATUS_") || value == 0 {
                 continue;
             }
-            if is_global_mirror(&name, value) {
+            if is_global_mirror(&global_bit_names, &name, value) {
                 continue;
             }
             findings.push(Finding {
@@ -374,8 +400,26 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
     // into a vacuous pass. d49's overlap badge and d56's retired badges are
     // literal declarations today; d53's and d60's are contract aliases (no
     // literal), pinned by the compiler instead.
+    //
+    // d49's badge comes from the CONTRACT, not from a literal restated here.
+    // It is `DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED` in
+    // compact_contract, and the lane declares the same bit; a `1u32 << 11`
+    // written out here would agree with neither once the contract moved the
+    // badge, and this assertion's own message -- "the declaration moved or the
+    // parser broke" -- would then be a false diagnosis of a parser that was
+    // working perfectly.
+    //
+    // d56's four are NOT derivable and are still literals: they live in
+    // `naval_missions_status_live::domain56_compact`, and compact_contract
+    // cannot depend on a lane crate that depends on it. Their marker
+    // (`RETIRED_SOURCE_STATUS_MASK`) is re-verified by the NEVER_EMITTED
+    // amnesty below, which is the coverage available without inverting the
+    // dependency.
     for (expected_name, expected_value) in [
-        ("STATUS_LOCATION_CANDIDATE_UNVALIDATED", 1u32 << 11),
+        (
+            "STATUS_LOCATION_CANDIDATE_UNVALIDATED",
+            compact_contract::DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED,
+        ),
         ("STATUS_MISSION_FIXTURE_REQUIRED", 1 << 16),
         ("STATUS_HOME_BASE_FIXTURE_REQUIRED", 1 << 17),
         ("STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED", 1 << 18),

@@ -341,7 +341,12 @@ function ConvertTo-NativeArgumentLine {
     param([Parameter(Mandatory = $true)][object[]]$Arguments)
     return (($Arguments | ForEach-Object {
         $value = [string]$_
-        if ($value -match '[\s"]') { '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+        # The empty string needs quoting for a reason the other cases do not:
+        # unquoted it emits NOTHING, so the argument disappears and every later
+        # one shifts a position left. `--capture-id '' --session-id x` would
+        # reach the collector as `--capture-id --session-id x`, binding the
+        # capture id to a flag and the session id to nothing.
+        if ($value.Length -eq 0 -or $value -match '[\s"]') { '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
         else { $value }
     }) -join ' ')
 }
@@ -350,6 +355,89 @@ function ConvertTo-PowerShellLiteral {
     param([Parameter(Mandatory = $true)][string]$Value)
 
     return "'" + $Value.Replace("'", "''") + "'"
+}
+
+# The collector_record command line, built as a VALUE rather than in place.
+#
+# This is the whole capture plan: which process, which spool encoding, which
+# scheduler shape, and which domains are asked for. Every one of those is a
+# decision the run cannot be re-made without, and until this was a function the
+# only thing that ever executed it was a live capture -- a dropped
+# `--min-game-hours`, a domain silently missing from the roster, or a flag
+# spelled for a collector that no longer takes it would all have been found by
+# burning a game hour rather than by a test.
+#
+# It is deliberately TOTAL and side-effect free: no file reads, no process
+# lookups, no host writes. Everything it needs is a parameter, so the plan can
+# be asserted argument-for-argument offline
+# (Test-HeadlessRawCaptureUnits.ps1), and the caller keeps the job of proving
+# those inputs are real.
+function New-RecorderArgumentPlan {
+    param(
+        [Parameter(Mandatory = $true)][int]$GamePid,
+        [Parameter(Mandatory = $true)][string]$CollectorDll,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][string]$DurationArgument,
+        [Parameter(Mandatory = $true)][int]$SampleMilliseconds,
+        [Parameter(Mandatory = $true)][int]$MinGameHours,
+        [Parameter(Mandatory = $true)][ValidateSet('zstd', 'none')]
+        [string]$StreamCompression,
+        [Parameter(Mandatory = $true)][int]$SchedulerPollMilliseconds,
+        [Parameter(Mandatory = $true)][int]$SchedulerQueueCapacity,
+        [Parameter(Mandatory = $true)][int]$ReaderConcurrency,
+        [Parameter(Mandatory = $true)][string]$SessionId,
+        [Parameter(Mandatory = $true)][string]$CaptureId,
+        # An empty roster is refused here rather than passed on. The collector
+        # falls back to its eight-domain compatibility set when it is given no
+        # schedule, so an empty roster does not fail -- it quietly captures a
+        # different, much smaller run that looks like a successful capture.
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]
+        [string[]]$ScheduledDomains,
+        # [ordered] on purpose: this becomes an argument VECTOR, and a plain
+        # hashtable would order the static-catalog flags by hash bucket.
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Specialized.OrderedDictionary]$StaticCatalogs,
+        [bool]$SkipHostFold = $false,
+        [bool]$KeepSpoolAfterSeal = $false
+    )
+
+    if (@($ScheduledDomains).Count -eq 0) {
+        throw 'The recorder argument plan requires a nonempty scheduled-domain roster; an empty roster silently selects the collector''s eight-domain compatibility set.'
+    }
+
+    $plan = @(
+        '--pid', "$GamePid",
+        '--dll', $CollectorDll,
+        '--out-dir', $OutputDirectory,
+        '--duration-s', $DurationArgument,
+        '--sample-ms', "$SampleMilliseconds",
+        '--min-game-hours', "$MinGameHours",
+        '--stream-format', 'compact',
+        '--stream-compression', $StreamCompression,
+        '--compact-country-frame',
+        '--read-only-scheduler',
+        '--read-only-scheduler-poll-ms', "$SchedulerPollMilliseconds",
+        '--read-only-scheduler-queue-cap', "$SchedulerQueueCapacity",
+        '--reader-concurrency', "$ReaderConcurrency",
+        '--session-id', $SessionId,
+        '--capture-id', $CaptureId
+    )
+    foreach ($domain in $ScheduledDomains) {
+        $plan += '--scheduled-domain'
+        $plan += $domain
+    }
+    foreach ($entry in $StaticCatalogs.GetEnumerator()) {
+        $plan += $entry.Key
+        $plan += $entry.Value
+    }
+    if ($SkipHostFold) { $plan += '--skip-host-fold' }
+    if ($KeepSpoolAfterSeal) { $plan += '--keep-spool-after-seal' }
+    # Emitted unrolled, NOT as `,$plan`. Every caller wraps the result in `@()`,
+    # which restores the array; returning a wrapped array instead makes that
+    # `@()` a one-element array whose single element is the plan, and
+    # `$recorderArgs -join "`n"` then writes the string `System.Object[]` into
+    # recorder_args.txt while the collector receives one nonsense argument.
+    return $plan
 }
 
 function ConvertTo-ReceiptUInt32 {
@@ -478,7 +566,14 @@ function Get-BytesSha256Hex {
 function ConvertFrom-Sha256Hex {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidatePattern('^[0-9a-f]{64}$')]
+        # `Options = 'None'` is load-bearing. ValidatePattern matches
+        # CASE-INSENSITIVELY by default, so `^[0-9a-f]{64}$` admitted uppercase
+        # hex and the lowercase-canonical claim the pattern makes was not
+        # enforced. Every digest on this wire is pinned lowercase and compared
+        # with `-ceq` elsewhere, so a decoder that quietly normalises case would
+        # be the one place a mixed-case digest could enter and stop matching the
+        # string it is supposed to equal.
+        [ValidatePattern('^[0-9a-f]{64}$', Options = 'None')]
         [string]$Value
     )
 
@@ -1058,6 +1153,17 @@ if ($ScheduledDomainOverride.Count -gt 0) {
     # minimal arm silently measured nothing. Split here so both invocation
     # styles mean the same thing.
     $scheduledDomains = @($ScheduledDomainOverride | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+    # An override that collapses to nothing -- `-ScheduledDomainOverride ','`,
+    # or a list of empty strings -- is refused HERE, before the settings guard
+    # and the graded window. The derived path already has this check; the
+    # override path did not, and the collector does not supply one either: given
+    # no schedule it falls back to its eight-domain compatibility set, so the
+    # run would capture something entirely different and seal looking
+    # successful. New-RecorderArgumentPlan refuses it again as a backstop, but
+    # that is inside the graded window and this is not.
+    if ($scheduledDomains.Count -eq 0) {
+        throw "-ScheduledDomainOverride was supplied but names no domain (received: $($ScheduledDomainOverride -join '|')). An empty roster does not fail the collector; it silently selects the eight-domain compatibility set."
+    }
     Write-Warning "Using an explicit $($scheduledDomains.Count)-domain roster override; this is a diagnostic configuration, not production coverage."
 } else {
     $rosterResult = Invoke-BoundedNativeCapture `
@@ -2619,33 +2725,23 @@ Write-Host "phase=graded_window_start policy=zero_client_writes speed=$Speed pid
 $sessionId = [guid]::NewGuid().ToString('D').ToLowerInvariant()
 $captureId = "headless-raw-capture-$stamp"
 $durationArg = [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.###}', $DurationSeconds)
-$recorderArgs = @(
-    '--pid', "$gamePid",
-    '--dll', $collectorDll,
-    '--out-dir', $OutDir,
-    '--duration-s', $durationArg,
-    '--sample-ms', "$SampleMilliseconds",
-    '--min-game-hours', "$MinGameHours",
-    '--stream-format', 'compact',
-    '--stream-compression', $StreamCompression,
-    '--compact-country-frame',
-    '--read-only-scheduler',
-    '--read-only-scheduler-poll-ms', "$SchedulerPollMilliseconds",
-    '--read-only-scheduler-queue-cap', "$SchedulerQueueCapacity",
-    '--reader-concurrency', "$ReaderConcurrency",
-    '--session-id', $sessionId,
-    '--capture-id', $captureId
-)
-foreach ($domain in $scheduledDomains) {
-    $recorderArgs += '--scheduled-domain'
-    $recorderArgs += $domain
-}
-foreach ($entry in $staticCatalogs.GetEnumerator()) {
-    $recorderArgs += $entry.Key
-    $recorderArgs += $entry.Value
-}
-if ($SkipHostFold) { $recorderArgs += '--skip-host-fold' }
-if ($KeepSpoolAfterSeal) { $recorderArgs += '--keep-spool-after-seal' }
+$recorderArgs = @(New-RecorderArgumentPlan `
+    -GamePid $gamePid `
+    -CollectorDll $collectorDll `
+    -OutputDirectory $OutDir `
+    -DurationArgument $durationArg `
+    -SampleMilliseconds $SampleMilliseconds `
+    -MinGameHours $MinGameHours `
+    -StreamCompression $StreamCompression `
+    -SchedulerPollMilliseconds $SchedulerPollMilliseconds `
+    -SchedulerQueueCapacity $SchedulerQueueCapacity `
+    -ReaderConcurrency $ReaderConcurrency `
+    -SessionId $sessionId `
+    -CaptureId $captureId `
+    -ScheduledDomains $scheduledDomains `
+    -StaticCatalogs $staticCatalogs `
+    -SkipHostFold ([bool]$SkipHostFold) `
+    -KeepSpoolAfterSeal ([bool]$KeepSpoolAfterSeal))
 
 ($recorderArgs -join "`n") | Set-Content -LiteralPath (Join-Path $OutDir 'recorder_args.txt') -Encoding UTF8
 

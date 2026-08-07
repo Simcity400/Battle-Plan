@@ -13,6 +13,15 @@ modules is free text: it drifts on the next insertion into ``world_fold.rs`` and
 nothing notices.  Those have been rewritten to name the item they point at, and
 the ones that could not be are ratcheted -- see ``verify_prose_references``.
 
+The DESIGN DOCUMENTS cite ``world_fold.rs`` by line number too, and until this
+was added nothing checked them at all -- ``DOMAIN_SCHEMA_RECIPE.md``, the
+document every domain lane reads before writing a schema, carries eighteen bare
+line numbers on its own.  A drifted line number in prose is worse than one in a
+module: nothing compiles it, nobody reviews it against the source, and a lane
+that follows it lands on whatever item moved into that position.  Documents are
+therefore ratcheted exactly like the modules -- see
+``verify_document_references``.
+
 The two ports which also transcribe a capture-lane payload decoder (d51 and d52)
 carry a second marker.  That marker hashes the original decoder, not the
 transcription, so a changed production authority cannot be approved by tests of
@@ -34,9 +43,14 @@ from typing import Iterable
 
 WORLD_FOLD = Path("extractor/native/recorder_host/src/world_fold.rs")
 WIRE_SRC = Path("extractor/native/wire_format/src")
+# Both design-document trees.  `replay_interface/documents` was found citing
+# `world_fold.rs` by line 28 times while only `extractor/documents` was being
+# scanned, which is exactly the hole a one-directory scan leaves.
+DOCUMENT_ROOTS = (Path("extractor/documents"), Path("replay_interface/documents"))
 PROSE_ALLOWANCE = Path(
     "extractor/native/scripts/world_fold_prose_reference_allowance.json"
 )
+PROSE_REFERENCE_RE = re.compile(r"world_fold\.rs:(\d+)")
 
 WORLD_MARKER_RE = re.compile(
     r"^// @world-fold-authority "
@@ -292,9 +306,105 @@ def ungated_prose_references(source: str, marker: re.Match[str]) -> list[int]:
     owned = (found.start(), found.end()) if found else (-1, -1)
     return sorted(
         int(reference.group(1))
-        for reference in re.finditer(r"world_fold\.rs:(\d+)", source)
+        for reference in PROSE_REFERENCE_RE.finditer(source)
         if not owned[0] <= reference.start() < owned[1]
     )
+
+
+def load_prose_allowance(repo_root: Path) -> dict:
+    """The grandfathered free-text line numbers, or nothing.
+
+    A missing file grandfathers NOTHING, which fails closed: a tree that lost
+    the file fails loudly instead of quietly permitting everything.  A corrupt
+    one is an error rather than an empty allowance, for the same reason.
+    """
+    allowance_path = repo_root / PROSE_ALLOWANCE
+    if not allowance_path.is_file():
+        return {}
+    try:
+        return json.loads(allowance_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise VerificationError(
+            f"cannot read the prose-reference allowance {allowance_path}: {error}"
+        ) from error
+
+
+def verify_document_references(repo_root: Path, allowance: dict) -> int:
+    """Fail when a design document gains a ``world_fold.rs`` line number.
+
+    Same ratchet as ``verify_prose_references`` and for a sharper reason.  A
+    module's stale line number sits next to a digest-gated marker that a reader
+    can fall back on; a document's does not.  Nothing compiles prose, no gate
+    read these before this one, and the citation's only reader is a human who
+    opens ``world_fold.rs`` at that line and believes whatever is there --
+    ``DOMAIN_SCHEMA_RECIPE.md`` alone carried eighteen of them.
+
+    The budget is per (document, line number), exactly as for modules, with the
+    same accepted hole: deleting one occurrence and citing the SAME number again
+    elsewhere in the SAME document passes.  Binding to a position would mean
+    recording a line number in a file whose own line numbers move.
+
+    Absence of a document root is not failure -- the module fixtures under test
+    have no document tree at all -- but absence of the ALLOWANCE still
+    grandfathers nothing.
+
+    KNOWN LIMIT: ``*.md`` only, and only under ``DOCUMENT_ROOTS``.  No other file
+    under those trees cites ``world_fold.rs`` by line today (the dossier JSON
+    does not), and the code that does -- ``collector/src/attach_log.rs``,
+    ``recorder_host/src/world_fold/tests.rs``, the ``wire_format`` bench
+    binaries -- sits outside the dNN module set the marker gate scans and is not
+    claimed here.
+    """
+    permitted: dict[str, list[int]] = allowance.get("documents", {})
+    documents: list[Path] = []
+    for root in DOCUMENT_ROOTS:
+        document_root = repo_root / root
+        if document_root.is_dir():
+            documents.extend(document_root.rglob("*.md"))
+    scanned = {document.relative_to(repo_root).as_posix() for document in documents}
+
+    # A DOCUMENT THE ALLOWANCE NAMES, THAT EXISTS, AND THAT THIS SCAN DID NOT
+    # REACH, DISABLES THE CHECK FOR IT SILENTLY.  Renaming a configured root,
+    # moving a document out of one, or changing its extension all leave the
+    # citations on disk and the gate reporting a smaller count -- and a count
+    # nobody compares against anything is not a check.  Absence is still fine:
+    # deleting a document must not force an allowance edit in the same commit.
+    # (Codex review 019fdc8a-6a81-7422-af0f-82edb26a4e31, finding 8.)
+    unreachable = sorted(
+        relative
+        for relative in permitted
+        if relative not in scanned and (repo_root / relative).is_file()
+    )
+    if unreachable:
+        raise VerificationError(
+            "these documents are grandfathered but were not scanned, so their "
+            f"`world_fold.rs:<line>` references are unchecked: {unreachable}. "
+            f"Either bring them under one of {[str(r) for r in DOCUMENT_ROOTS]} "
+            "as `*.md`, or add their location to DOCUMENT_ROOTS."
+        )
+
+    total = 0
+    for document in sorted(documents):
+        relative = document.relative_to(repo_root).as_posix()
+        found = sorted(
+            int(reference.group(1))
+            for reference in PROSE_REFERENCE_RE.finditer(_read_utf8(document))
+        )
+        total += len(found)
+        budget = Counter(permitted.get(relative, []))
+        for line in found:
+            if budget[line] <= 0:
+                raise VerificationError(
+                    f"{relative}: `world_fold.rs:{line}` is a free-text line "
+                    f"number nothing checks. Line numbers drift on the next "
+                    f"insertion into world_fold.rs, and a document's reader has "
+                    f"no digest beside it to notice; cite the item instead, as "
+                    f"`world_fold.rs::<item_name>`. (If this reference genuinely "
+                    f"cannot be named, add it to {PROSE_ALLOWANCE.name} under "
+                    f'"documents" with the reason.)'
+                )
+            budget[line] -= 1
+    return total
 
 
 def verify_prose_references(
@@ -316,19 +426,7 @@ def verify_prose_references(
     check exists to stop -- and the hole admits no line number that module was
     not already allowed to cite.
     """
-    allowance_path = repo_root / PROSE_ALLOWANCE
-    if allowance_path.is_file():
-        try:
-            allowance = json.loads(allowance_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            raise VerificationError(
-                f"cannot read the prose-reference allowance {allowance_path}: {error}"
-            ) from error
-    else:
-        # No allowance file means no reference is grandfathered.  That fails
-        # closed: a tree that lost the file fails loudly instead of quietly
-        # permitting everything.
-        allowance = {}
+    allowance = load_prose_allowance(repo_root)
     permitted: dict[str, list[int]] = allowance.get("modules", {})
 
     total = 0
@@ -357,7 +455,9 @@ def verify_repo(
     required_lane_authorities: Iterable[tuple[int, str, str]] = (
         REQUIRED_LANE_AUTHORITIES
     ),
-) -> tuple[int, int, int]:
+    # (dNN modules, lane authorities, grandfathered module line references,
+    # grandfathered document line references)
+) -> tuple[int, int, int, int]:
     repo_root = repo_root.resolve()
     world_path = repo_root / WORLD_FOLD
     world_source = _read_utf8(world_path)
@@ -511,8 +611,11 @@ def verify_repo(
         )
 
     grandfathered = verify_prose_references(repo_root, modules, world_markers)
+    documented = verify_document_references(
+        repo_root, load_prose_allowance(repo_root)
+    )
 
-    return len(modules), len(lane_markers), grandfathered
+    return len(modules), len(lane_markers), grandfathered, documented
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -524,14 +627,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        module_count, lane_count, grandfathered = verify_repo(args.repo_root)
+        module_count, lane_count, grandfathered, documented = verify_repo(
+            args.repo_root
+        )
     except VerificationError as error:
         print(f"world-fold citation authority check: FAIL: {error}", file=sys.stderr)
         return 1
     print(
         "world-fold citation authority check: PASS "
         f"({module_count} dNN modules, {lane_count} lane authorities, "
-        f"{grandfathered} grandfathered prose line references)"
+        f"{grandfathered} grandfathered prose line references, "
+        f"{documented} grandfathered document line references)"
     )
     return 0
 

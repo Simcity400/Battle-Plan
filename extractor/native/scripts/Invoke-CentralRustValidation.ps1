@@ -66,6 +66,7 @@ $portableStaticCrtTest = Join-Path $PSScriptRoot "Test-PortableProductStaticCrt.
 $portablePackageSelfTest = Join-Path $PSScriptRoot "Test-PortableProductPackageSelfTest.ps1"
 $productionInteractionClosureTest = Join-Path $PSScriptRoot "Test-ProductionInteractionClosure.ps1"
 $passiveCapturePolicyTest = Join-Path $PSScriptRoot "Test-PassiveCapturePolicy.ps1"
+$headlessRawCaptureUnitTest = Join-Path $PSScriptRoot "Test-HeadlessRawCaptureUnits.ps1"
 $promotionGateAbsenceTest = Join-Path $PSScriptRoot "Test-PromotionGateAbsence.ps1"
 $readOnlyGameStateWitness = Join-Path $PSScriptRoot "Read-Hoi4GameState.ps1"
 $passiveCaptureLifecycle = Join-Path $PSScriptRoot "PassiveCapture.Lifecycle.ps1"
@@ -808,6 +809,27 @@ try {
         if ([string]$passivePolicyEveryModeResult.Schema -cne 'hoi4-passive-capture-policy-test-v1' -or
             [string]$passivePolicyEveryModeResult.Status -cne 'pass') {
             throw "passive capture-policy source tests returned no authority"
+        }
+
+        # The policy test above is a source census plus the lifecycle mirror.
+        # This one EXECUTES the harness's own decision logic -- parameter
+        # admission, the CPU-affinity plan, receipt integer admission, the
+        # closed property set, the child-command quoting and the
+        # collector_record argument plan -- against tables and lane EQ's real
+        # receipt fixture, with the harness itself never run. It is here rather
+        # than in a lane's own gate because every one of those was previously
+        # exercised only by a live capture: a dropped collector flag or a mask
+        # built from an index range cost a game hour to find and could not be
+        # found any other way. Runs in about a second.
+        $harnessUnits = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $headlessRawCaptureUnitTest)
+        if ($LASTEXITCODE -ne 0) {
+            throw "headless raw-capture harness unit tests exited with code $LASTEXITCODE"
+        }
+        $harnessUnitsResult = (($harnessUnits -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+        if ([string]$harnessUnitsResult.Schema -cne 'hoi4-headless-raw-capture-unit-test-v1' -or
+            [string]$harnessUnitsResult.Status -cne 'pass' -or
+            [int]$harnessUnitsResult.Cases -lt 200) {
+            throw "headless raw-capture harness unit tests returned no authority"
         }
     }
 

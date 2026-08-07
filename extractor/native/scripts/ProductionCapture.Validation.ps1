@@ -171,7 +171,11 @@ function ConvertTo-NativeArgumentLine {
     param([Parameter(Mandatory = $true)][object[]]$Arguments)
     return (($Arguments | ForEach-Object {
         $value = [string]$_
-        if ($value -match '[\s"]') { '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+        # Kept byte-identical to the harness's copy in
+        # Invoke-HeadlessRawCapture.ps1. An unquoted empty string emits
+        # NOTHING, dropping the argument and shifting every later one a
+        # position left.
+        if ($value.Length -eq 0 -or $value -match '[\s"]') { '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
         else { $value }
     }) -join ' ')
 }

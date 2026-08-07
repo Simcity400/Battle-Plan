@@ -134,7 +134,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=()
                 ),
-                (1, 0, 0),
+                (1, 0, 0, 0),
             )
 
     def test_rejects_line_drift_even_when_function_is_unchanged(self) -> None:
@@ -226,7 +226,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=()
                 ),
-                (2, 0, 0),
+                (2, 0, 0, 0),
             )
 
     def test_multi_function_authority_pins_the_whole_envelope(self) -> None:
@@ -239,7 +239,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=()
                 ),
-                (1, 0, 0),
+                (1, 0, 0, 0),
             )
 
     def test_missing_marker_fails_closed(self) -> None:
@@ -269,7 +269,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(
                     fixture.root, required_lane_authorities=(key,)
                 ),
-                (1, 1, 0),
+                (1, 1, 0, 0),
             )
             authority = fixture.root / key[1]
             authority.write_text(
@@ -293,12 +293,30 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
         with module.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
 
-    def _write_allowance(self, fixture: CitationFixture, modules: dict) -> None:
+    def _write_allowance(
+        self,
+        fixture: CitationFixture,
+        modules: dict,
+        documents: dict | None = None,
+    ) -> None:
         path = fixture.root / VERIFY.PROSE_ALLOWANCE
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"modules": modules}), encoding="utf-8", newline="\n"
-        )
+        payload: dict = {"modules": modules}
+        if documents is not None:
+            payload["documents"] = documents
+        path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+
+    def _write_document(
+        self,
+        fixture: CitationFixture,
+        name: str,
+        text: str,
+        root_index: int = 0,
+    ) -> str:
+        path = fixture.root / VERIFY.DOCUMENT_ROOTS[root_index] / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return path.relative_to(fixture.root).as_posix()
 
     def test_rejects_a_new_free_text_line_number(self) -> None:
         temporary, fixture = self.fixture()
@@ -318,7 +336,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
             self._write_allowance(fixture, {"d1.rs": [123]})
             self.assertEqual(
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
-                (1, 0, 1),
+                (1, 0, 1, 0),
             )
             # A second use of the same number is still a NEW reference.
             self._append_comment(fixture, 1, "// and again `world_fold.rs:123`\n")
@@ -335,7 +353,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
             # Citing neither is fine: the ratchet only ever turns one way.
             self.assertEqual(
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
-                (1, 0, 0),
+                (1, 0, 0, 0),
             )
             # Trading a listed number for an unlisted one is not shrinking.
             self._append_comment(fixture, 1, "// see `world_fold.rs:789`\n")
@@ -352,7 +370,7 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
             # citation, and no allowance file exists at all.
             self.assertEqual(
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
-                (1, 0, 0),
+                (1, 0, 0, 0),
             )
 
     def test_a_missing_allowance_file_grandfathers_nothing(self) -> None:
@@ -395,6 +413,149 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 module.read_text(encoding="utf-8"), marker
             )
             self.assertEqual(len(found), 1, found)
+
+    def test_rejects_a_new_document_line_number(self) -> None:
+        # Documents had NO coverage before this check: every `world_fold.rs:N`
+        # in `extractor/documents` was free text nothing read.
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._write_document(
+                fixture, "DESIGN.md", "the fold refuses it at `world_fold.rs:4242`.\n"
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError,
+                r"DESIGN\.md: `world_fold\.rs:4242` is a free-text",
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_a_grandfathered_document_line_number_is_allowed_exactly_once(
+        self,
+    ) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            relative = self._write_document(
+                fixture, "DESIGN.md", "see `world_fold.rs:4242`.\n"
+            )
+            self._write_allowance(fixture, {}, {relative: [4242]})
+            self.assertEqual(
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
+                (1, 0, 0, 1),
+            )
+            # A second citation of the same number is still a NEW reference.
+            path = fixture.root / relative
+            path.write_text(
+                "see `world_fold.rs:4242` and again `world_fold.rs:4242`.\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"`world_fold\.rs:4242` is a free-text"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_a_document_budget_does_not_carry_across_documents(self) -> None:
+        # The budget is per (document, line), so one document's amnesty must not
+        # license the same number in another. Nested documents are reached too.
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            allowed = self._write_document(
+                fixture, "DESIGN.md", "see `world_fold.rs:4242`.\n"
+            )
+            self._write_allowance(fixture, {}, {allowed: [4242]})
+            self._write_document(
+                fixture, "nested/OTHER.md", "also `world_fold.rs:4242`.\n"
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError,
+                r"nested/OTHER\.md: `world_fold\.rs:4242` is a free-text",
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_a_missing_allowance_grandfathers_no_document_reference(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._write_document(
+                fixture, "DESIGN.md", "see `world_fold.rs:4242`.\n"
+            )
+            self.assertFalse((fixture.root / VERIFY.PROSE_ALLOWANCE).exists())
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"`world_fold\.rs:4242` is a free-text"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_every_document_root_is_scanned(self) -> None:
+        # Scanning one document tree and calling it "the documents" is how this
+        # gap existed in the first place: `replay_interface/documents` was
+        # citing world_fold.rs by line 28 times while only
+        # `extractor/documents` was read. Each configured root must be reached.
+        for index in range(len(VERIFY.DOCUMENT_ROOTS)):
+            temporary, fixture = self.fixture()
+            with temporary:
+                fixture.add_module(1, ("fold_one",))
+                self._write_document(
+                    fixture,
+                    "DESIGN.md",
+                    "see `world_fold.rs:4242`.\n",
+                    root_index=index,
+                )
+                with self.assertRaisesRegex(
+                    VERIFY.VerificationError,
+                    r"`world_fold\.rs:4242` is a free-text",
+                    msg=f"document root {VERIFY.DOCUMENT_ROOTS[index]} is not scanned",
+                ):
+                    VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_a_grandfathered_document_outside_every_root_fails(self) -> None:
+        # Renaming a root, moving a document out of one, or changing its
+        # extension leaves the citations on disk and quietly shrinks the
+        # reported count. Absence is still fine -- deleting a document must not
+        # force an allowance edit in the same commit -- so the failure is
+        # specifically "exists, is grandfathered, was not scanned".
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            stray = fixture.root / "somewhere_else" / "DESIGN.md"
+            stray.parent.mkdir(parents=True, exist_ok=True)
+            stray.write_text(
+                "see `world_fold.rs:4242`.\n", encoding="utf-8", newline="\n"
+            )
+            relative = stray.relative_to(fixture.root).as_posix()
+            self._write_allowance(fixture, {}, {relative: [4242]})
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "grandfathered but were not scanned"
+            ):
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+    def test_a_deleted_grandfathered_document_is_not_an_error(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._write_allowance(
+                fixture, {}, {"extractor/documents/GONE.md": [4242]}
+            )
+            self.assertEqual(
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
+                (1, 0, 0, 0),
+            )
+
+    def test_a_named_item_citation_in_a_document_needs_no_amnesty(self) -> None:
+        # The whole point of the ratchet: the replacement form is free.
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.add_module(1, ("fold_one",))
+            self._write_document(
+                fixture,
+                "DESIGN.md",
+                "the refusal lives in `world_fold.rs::fold_one`.\n",
+            )
+            self.assertEqual(
+                VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
+                (1, 0, 0, 0),
+            )
 
     def test_a_corrupt_allowance_file_fails_rather_than_opens_the_gate(self) -> None:
         temporary, fixture = self.fixture()
