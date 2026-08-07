@@ -486,6 +486,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fold_v3"
+version = "0.1.0"
+dependencies = [
+ "snapshot",
+]
+
+[[package]]
 name = "fow_visibility_live"
 version = "0.1.0"
 dependencies = [
@@ -910,6 +917,7 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "compact_stream",
+ "fold_v3",
  "mimalloc",
  "recorder_host",
  "serde_json",

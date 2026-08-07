@@ -3249,5 +3249,12 @@ pub fn seek_to_hour(
 #[cfg(feature = "cz-finalize-profile")]
 pub mod cz_finalize_profile;
 
+/// Lane DQ H4CP v3 stage-2 prototype. Never on by default and never packaged; it
+/// runs a canonical-binary section state and mutation journal beside the v2 path
+/// on a real capture so the architecture decision is taken from a measurement
+/// rather than from the design study's prediction.
+#[cfg(feature = "dq-v3-prototype")]
+pub mod dq_v3_prototype;
+
 #[cfg(test)]
 mod tests;

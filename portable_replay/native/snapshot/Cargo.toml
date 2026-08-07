@@ -23,6 +23,12 @@ default = []
 # the result with the production container profile. Measurement only: it never
 # writes a cache and no production path enables it.
 ce-cache-anatomy = []
+# Lane DQ H4CP v3 prototype instrument. Exposes ONE function
+# (`replay_cache::measure_section_patch_bytes`) so the prototype can price a
+# section's v2 delta with the production diff and patch encoder instead of a
+# reimplementation of them. Measurement only: it writes nothing and no
+# production path enables it.
+dq-v3-prototype = []
 
 [dependencies]
 compact_stream = { package = "portable_compact_stream", path = "../compact_stream" }

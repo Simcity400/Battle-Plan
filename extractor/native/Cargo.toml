@@ -12,6 +12,9 @@ members = [
     "scientists_live_lane",
     "replay_decoder",
     "fold_check",
+    # H4CP v3 stage-2 PROTOTYPE. Measurement only: nothing in the production
+    # fold, the collector, the wire format or the sealed cache depends on it.
+    "fold_v3",
     # Injected D3D11 map-frame capture DLL + attach helper. It patches live
     # game code through `inline_detour`, so it belongs with the rest of the
     # injected code, not in `replay_interface/native` where it used to sit.

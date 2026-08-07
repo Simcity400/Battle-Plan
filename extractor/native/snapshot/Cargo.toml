@@ -12,6 +12,9 @@ default = []
 # Passthrough for the Lane CE cache-size measurement instrument. Never on by
 # default; no production binary in this package enables it.
 ce-cache-anatomy = ["portable_replay_format/ce-cache-anatomy"]
+# Passthrough for the Lane DQ H4CP v3 prototype instrument. Never on by default;
+# no production binary in this package enables it.
+dq-v3-prototype = ["portable_replay_format/dq-v3-prototype"]
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
