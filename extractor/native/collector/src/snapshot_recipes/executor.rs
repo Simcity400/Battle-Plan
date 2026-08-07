@@ -51,8 +51,110 @@ use super::{
     MEASURED_MAX_DISCOVERY_DEPTH,
 };
 
-/// The discovery visited set: `(recipe, op, address, extent length)`.
-pub(super) type VisitedSet = FxSet<(u32, u16, u64, u64)>;
+/// Recipes an observation may hold, so that [`visit_tag`]'s packing is a
+/// bound rather than a hope.
+///
+/// Nothing can approach it: a slice of 2^48 `Recipe`s is over sixteen
+/// petabytes. It is checked anyway, once per observation, because the key this
+/// replaces cast the recipe index to `u32` — which would have let recipe *n*
+/// and recipe *n + 2^32* share a visited entry and prune each other's copy
+/// tasks. That was a silent aliasing where this is a stop.
+const MAX_RECIPES: usize = 1 << 48;
+
+/// Recipe and op, packed into one word: op in the top sixteen bits, recipe
+/// below. `op` is a `u16` by type; `recipe` is bounded by [`MAX_RECIPES`],
+/// which [`Observation::new`] asserts.
+#[inline]
+pub(super) fn visit_tag(recipe: usize, op: u16) -> u64 {
+    ((op as u64) << 48) | recipe as u64
+}
+
+/// The discovery visited set: which `(recipe, op, address, extent length)`
+/// copy tasks have already been expanded.
+///
+/// # Why it is two tables and not one
+///
+/// The key has to determine the WHOLE request. For a copy op the spans follow
+/// from `(recipe, op, addr)`; for an extent they do not, because two container
+/// headers can invoke one `DecodeExtent` against the same array base and
+/// decode different counts. The single-table version therefore carried a
+/// fourth element on every key — an extent length that was a constant zero on
+/// every copy-op task, which is all but all of them.
+///
+/// That cost 24 bytes per key and four rounds of the hash mixer. Splitting the
+/// table by task kind takes the common key to 16 bytes and two rounds, and it
+/// is exactly behaviour-preserving rather than approximately so: the two key
+/// spaces never overlapped in the single table either. An enqueued extent has
+/// `count >= 1` and `stride >= 1` (validation rejects a zero stride, and a
+/// zero count returns before enqueuing), so its length is never zero, and a
+/// copy op's fourth element always was.
+#[derive(Debug, Default)]
+pub(super) struct VisitedSet {
+    /// `(address, tag)` for copy-op tasks.
+    ops: FxSet<(u64, u64)>,
+    /// `(address, length, tag)` for decoded extents.
+    extents: FxSet<(u64, u64, u64)>,
+}
+
+impl VisitedSet {
+    /// Sized for `roots` copy-op tasks up front. The set is one insert per
+    /// copy task, and a hash table that grows into that from nothing rehashes
+    /// every key about twice over; the root count is the one part of the final
+    /// size that is known before any memory is touched.
+    ///
+    /// # The root count is a recipe's claim, not a bound
+    ///
+    /// It arrives from the recipes and no limit has been applied to it yet:
+    /// `max_copy_tasks` is checked per task during discovery, and a recipe may
+    /// declare millions of roots and a copy-task limit of one. So this
+    /// preallocation is CHARGED to custody and taken through the fallible
+    /// reservation, rather than being an infallible `with_capacity` that can
+    /// take the machine out — or exceed the ceiling — before the observation
+    /// has admitted a single byte.
+    pub(super) fn with_root_capacity(
+        roots: usize,
+        ledger: &super::arena::CustodyLedger,
+    ) -> Result<Self, CustodyRefusal> {
+        let mut ops: FxSet<(u64, u64)> = FxSet::default();
+        if roots > 0 {
+            let wanted = super::arena::hash_table_bytes::<(u64, u64)>(roots);
+            ledger.charge_tables(wanted)?;
+            ops.try_reserve(roots)
+                .map_err(|_| CustodyRefusal::AllocationFailed {
+                    held: ledger.held(),
+                    requested: wanted,
+                })?;
+            // What it really took, against what was charged for it.
+            let took = super::arena::hash_table_bytes::<(u64, u64)>(ops.capacity());
+            ledger.charge_tables_overshoot(took.saturating_sub(wanted))?;
+        }
+        Ok(Self {
+            ops,
+            extents: FxSet::default(),
+        })
+    }
+
+    /// True when this task had not been expanded before.
+    #[inline]
+    pub(super) fn insert_op(&mut self, addr: u64, tag: u64) -> bool {
+        self.ops.insert((addr, tag))
+    }
+
+    #[inline]
+    pub(super) fn insert_extent(&mut self, addr: u64, len: u64, tag: u64) -> bool {
+        self.extents.insert((addr, len, tag))
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.ops.len() + self.extents.len()
+    }
+
+    /// Modelled footprint, for [`Observation::charge_own_tables`].
+    pub(super) fn charged_bytes(&self) -> u64 {
+        super::arena::hash_table_bytes::<(u64, u64)>(self.ops.capacity())
+            + super::arena::hash_table_bytes::<(u64, u64, u64)>(self.extents.capacity())
+    }
+}
 
 /// A window relative to the address a copy op acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,6 +463,20 @@ pub struct SnapshotBuild {
     pub phases_run: u32,
     /// Intervals enrolled in the closing wave.
     pub witnessed_intervals: u32,
+    /// Everything the observation held against its ceiling at the end: copied
+    /// bytes plus the index and link tables that address them. This is the
+    /// number the 512 MiB budget is a budget FOR, and it is on the build
+    /// rather than only inside the arena because a caller that wants to know
+    /// whether an observation is near the ceiling cannot ask the arena — it
+    /// was consumed into the snapshot.
+    pub custody_held: u64,
+    /// The table half of [`Self::custody_held`]. At the substrate's own bench
+    /// shape it is the larger half.
+    pub custody_table_bytes: u64,
+    /// The arena half: its CAPACITY, which is what custody is charged for and
+    /// is at or above [`view::Snapshot::custody_bytes`], the length actually
+    /// copied into.
+    pub custody_arena_bytes: u64,
     /// Intervals whose closing copy could not be taken. Treated as changed by
     /// the comparison: an uncertifiable witness is a failed one.
     pub(super) unreadable_closes: Vec<IntervalId>,
@@ -436,7 +552,7 @@ pub fn observe_in<M: SnapshotMemory>(
             requested: arena.budget(),
         });
     }
-    Observation::new(recipes, memory, config, arena).run()
+    Observation::new(recipes, memory, config, arena)?.run()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -527,12 +643,17 @@ struct Observation<'a, M: SnapshotMemory> {
     // Scratch, owned by the observation and reused across waves. A fresh
     // allocation per task or per copy transaction would be a heap allocation
     // inside the bracket, which is the thing being priced.
-    by_recipe: BTreeMap<usize, Vec<u32>>,
+    /// This wave's task indices, grouped by recipe POSITION. See
+    /// [`Observation::copy_wave`].
+    by_recipe: Vec<Vec<u32>>,
     requests: Vec<CopyRequest>,
     plan: super::policy::CopyPlan,
     acquisition: super::dedup::AcquisitionPlan,
     owned: Vec<IntervalId>,
     sites: Vec<DecodeSite>,
+    /// Bytes of the executor's own tables already charged to the ledger. See
+    /// [`Observation::charge_own_tables`].
+    own_tables_charged: u64,
 }
 
 impl<'a, M: SnapshotMemory> Observation<'a, M> {
@@ -541,33 +662,94 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         memory: &'a M,
         config: ObservationConfig,
         arena: Arena,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, CustodyRefusal> {
+        // One ledger for the observation: the ownership map's tables are
+        // charged against the same 512 MiB the copied bytes are. See
+        // `arena::CustodyLedger`.
+        let owners = OwnershipMap::on_ledger(arena.ledger());
+        assert!(
+            recipes.len() <= MAX_RECIPES,
+            "an observation may hold at most {MAX_RECIPES} recipes: past that the discovery \
+             visited set's key would alias two of them",
+        );
+        // Fallible, and charged before it is taken: the root count is a
+        // recipe's claim and no limit has been applied to it yet. See
+        // `VisitedSet::with_root_capacity`.
+        let visited = VisitedSet::with_root_capacity(
+            recipes.iter().map(|recipe| recipe.roots.len()).sum(),
+            arena.ledger_ref(),
+        )?;
+        // `charge_own_tables` reconciles against a running total, so it has to
+        // START from what the visited set has already been charged for, or
+        // that preallocation is charged a second time.
+        let own_tables_charged = visited.charged_bytes();
+        Ok(Self {
             recipes,
             memory,
             config,
             arena,
-            owners: OwnershipMap::new(),
+            owners,
             states: recipes.iter().map(|_| RecipeState::new()).collect(),
             tables: BTreeMap::new(),
-            // Sized for the roots up front. The set is one insert per copy
-            // task, and a hash table that grows into that from nothing rehashes
-            // every key about twice over; the root count is the one part of the
-            // final size that is known before any memory is touched.
-            visited: VisitedSet::with_capacity_and_hasher(
-                recipes.iter().map(|recipe| recipe.roots.len()).sum(),
-                BuildHasherDefault::default(),
-            ),
+            visited,
             pruned: Vec::new(),
             waves: (0..FORWARD_WAVES + 1).map(|_| Vec::new()).collect(),
             forward_waves_run: 0,
-            by_recipe: BTreeMap::new(),
+            by_recipe: Vec::new(),
             requests: Vec::new(),
             plan: super::policy::CopyPlan::new(),
             acquisition: super::dedup::AcquisitionPlan::default(),
             owned: Vec::new(),
             sites: Vec::new(),
+            own_tables_charged,
+        })
+    }
+
+    /// Charge the tables the EXECUTOR owns to the observation's custody
+    /// ledger.
+    ///
+    /// [`OwnershipMap`] admits its growth before it takes it, because its
+    /// growth points are already fallible. The executor's are not: the wave
+    /// queues, the pruned-task list and the discovery visited set grow inside
+    /// `enqueue`, and the per-wave scratch grows inside the decode dispatch —
+    /// once per discovered task each, on the hottest path the substrate has.
+    /// So these are RECONCILED rather than admitted: once per wave, the ledger
+    /// is brought up to their real capacity, and an observation that has gone
+    /// past the ceiling aborts before the next wave copies a byte.
+    ///
+    /// What that costs, stated rather than hidden: the ledger can lag by one
+    /// wave's growth of these tables. It cannot lag by more, and the growth is
+    /// bounded by that wave's task count, which `max_copy_tasks` already
+    /// bounds per recipe.
+    ///
+    /// Two structures are deliberately not in the sum. `tables` and
+    /// `tables` is a `BTreeMap` whose node allocation is not observable from
+    /// outside, and it is bounded by the registered join tables of the recipes
+    /// in the observation, which does not scale with the work. `by_recipe`
+    /// holds one group per recipe and its groups' capacities are counted
+    /// below.
+    fn charge_own_tables(&mut self) -> Result<(), CustodyRefusal> {
+        let mut bytes = super::arena::vec_bytes(&self.pruned)
+            + super::arena::vec_bytes(&self.waves)
+            + super::arena::vec_bytes(&self.by_recipe)
+            + super::arena::vec_bytes(&self.requests)
+            + super::arena::vec_bytes(&self.owned)
+            + super::arena::vec_bytes(&self.sites)
+            + self.visited.charged_bytes()
+            + self.plan.capacity_bytes()
+            + self.acquisition.capacity_bytes();
+        for wave in &self.waves {
+            bytes += super::arena::vec_bytes(wave);
         }
+        for group in &self.by_recipe {
+            bytes += super::arena::vec_bytes(group);
+        }
+        if bytes <= self.own_tables_charged {
+            return Ok(());
+        }
+        let delta = bytes - self.own_tables_charged;
+        self.own_tables_charged = bytes;
+        self.arena.ledger_ref().charge_tables_overshoot(delta)
     }
 
     fn refuse(&mut self, recipe: usize, refusal: Refusal) {
@@ -616,6 +798,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 self.enqueue(task);
             }
         }
+        self.charge_own_tables()?;
 
         for depth in 0..FORWARD_WAVES {
             let tasks = std::mem::take(&mut self.waves[depth as usize]);
@@ -627,8 +810,12 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             // Fold the wave's new intervals into the index body. Once per
             // wave, not once per transaction: that ratio is the whole point of
             // the sweep.
-            self.owners.end_wave();
+            self.owners.end_wave()?;
             self.decode_wave(&tasks);
+            // The executor's own tables grew by this wave's discoveries.
+            // Reconcile them against the ledger before the next wave copies a
+            // byte. See `charge_own_tables`.
+            self.charge_own_tables()?;
         }
 
         // Anything still queued at depth FORWARD_WAVES was enqueued by the
@@ -637,8 +824,9 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // every accepted program; it is asserted rather than assumed.
         debug_assert!(self.waves[FORWARD_WAVES as usize].is_empty());
 
-        self.link_pruned();
-        self.enrol_witnesses();
+        self.link_pruned()?;
+        self.charge_own_tables()?;
+        self.enrol_witnesses()?;
         let (witnessed, unreadable_closes) = self.closing_wave()?;
 
         let phases_run = self.forward_waves_run + u32::from(witnessed > 0);
@@ -653,8 +841,21 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             })
             .collect::<BTreeMap<ConsumerId, GapReason>>();
 
-        let (records, links) = self.owners.into_frozen();
-        let snapshot = Snapshot::freeze(self.config.hour, self.arena.into_bytes(), records, links, gapped);
+        // The ledger outlives the arena: `into_bytes` consumes the arena, and
+        // the page index the freeze builds still has to be charged.
+        let ledger = self.arena.ledger();
+        let (records, links) = self.owners.into_frozen()?;
+        let snapshot = Snapshot::freeze(
+            self.config.hour,
+            self.arena.into_bytes(),
+            records,
+            links,
+            gapped,
+            &ledger,
+        )?;
+        let custody_held = ledger.held();
+        let custody_table_bytes = ledger.table_bytes();
+        let custody_arena_bytes = ledger.arena_bytes();
 
         Ok(SnapshotBuild {
             snapshot,
@@ -662,6 +863,9 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             forward_waves_run: self.forward_waves_run,
             phases_run,
             witnessed_intervals: witnessed,
+            custody_held,
+            custody_table_bytes,
+            custody_arena_bytes,
             unreadable_closes,
         })
     }
@@ -684,17 +888,22 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             return;
         }
         // The key must determine the WHOLE request, not just where it starts.
-        // For a copy op the spans follow from `(op, addr)`, so the fourth
-        // element is unused. For an extent they do not: two container headers
-        // can invoke one `DecodeExtent` against the same array base and decode
-        // different counts, and keying on the base alone prunes the longer one
-        // as a duplicate of the shorter — copying a prefix and reporting
-        // `Captured`.
-        let key = match &task.body {
-            TaskBody::Op { op, addr, .. } => (recipe as u32, *op, *addr, 0u64),
-            TaskBody::Extent { op, span, .. } => (recipe as u32, *op, span.start, span.len),
+        // For a copy op the spans follow from `(op, addr)`. For an extent they
+        // do not: two container headers can invoke one `DecodeExtent` against
+        // the same array base and decode different counts, and keying on the
+        // base alone prunes the longer one as a duplicate of the shorter —
+        // copying a prefix and reporting `Captured`. See [`VisitedSet`] for
+        // why that difference is two tables rather than a wider key.
+        let fresh = match &task.body {
+            TaskBody::Op { op, addr, .. } => {
+                self.visited.insert_op(*addr, visit_tag(recipe, *op))
+            }
+            TaskBody::Extent { op, span, .. } => {
+                self.visited
+                    .insert_extent(span.start, span.len, visit_tag(recipe, *op))
+            }
         };
-        if !self.visited.insert(key) {
+        if !fresh {
             // Already expanded, at this depth or a shallower one. Expanding it
             // again would copy nothing (deduplication) but would let a pointer
             // cycle run to the depth limit and refuse a recipe that is
@@ -802,11 +1011,24 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// Acquiring the whole batch before attaching anything is not an ordering
     /// choice: the attach pass must see every interval the batch created,
     /// including the ones a later copy in the batch produced.
+    ///
+    /// # The grouping is an index, not a probe
+    ///
+    /// A recipe is a POSITION in the observation's recipe slice, so grouping a
+    /// wave's tasks by recipe is an array index and not a lookup. It used to
+    /// be a `BTreeMap::entry` per task — one ordered-map probe on the hottest
+    /// path the substrate has, for a key that is already a dense small
+    /// integer. Iterating the vector in position order visits the recipes in
+    /// exactly the ascending order the map did, so the batch order, the
+    /// `end_batch` folds and every refusal are unchanged.
     fn copy_wave(&mut self, tasks: &[CopyTask]) -> Result<(), CustodyRefusal> {
         let mut by_recipe = std::mem::take(&mut self.by_recipe);
-        by_recipe.clear();
+        for group in by_recipe.iter_mut() {
+            group.clear();
+        }
+        by_recipe.resize_with(self.recipes.len(), Vec::new);
         for (index, task) in tasks.iter().enumerate() {
-            by_recipe.entry(task.recipe).or_default().push(index as u32);
+            by_recipe[task.recipe].push(index as u32);
         }
         let mut requests = std::mem::take(&mut self.requests);
         let mut planned = std::mem::take(&mut self.plan);
@@ -814,13 +1036,21 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         let mut owned = std::mem::take(&mut self.owned);
 
         let mut result = Ok(());
-        for (recipe, indices) in by_recipe.iter() {
-            let recipe = *recipe;
+        for (recipe, indices) in by_recipe.iter().enumerate() {
+            if indices.is_empty() {
+                // The map this replaced had no entry for a recipe with no
+                // tasks in this wave, so it ran no batch for it either — not
+                // even the `end_batch` below.
+                continue;
+            }
             // Unconditionally, and before anything can `continue`: the batch
             // run must be empty when a batch's sweep starts, or a later
             // batch's lower-addressed hole would be appended behind a higher
             // one and the run would stop being sorted.
-            self.owners.end_batch();
+            if let Err(custody) = self.owners.end_batch() {
+                result = Err(custody);
+                break;
+            }
             if self.refused(recipe) {
                 continue;
             }
@@ -968,20 +1198,33 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             // nothing under either order.
             let consumer = self.recipes[recipe].consumer;
             let mut cursor = self.owners.sweep();
-            for position in 0..planned.order().len() {
+            let mut custody = Ok(());
+            'attach: for position in 0..planned.order().len() {
                 let request = requests[planned.order()[position] as usize];
                 let parent = tasks[request.task as usize].parent;
                 self.owners
                     .sweep_overlapping(&mut cursor, request.span, &mut owned);
                 for id in owned.iter() {
-                    self.owners.add_dependent(*id, consumer, request.span);
+                    custody = self.owners.add_dependent(*id, consumer, request.span);
+                    if custody.is_err() {
+                        break 'attach;
+                    }
                     if let Some(parent) = parent {
-                        self.owners.add_edge(parent, *id, consumer);
+                        custody = self.owners.add_edge(parent, *id, consumer);
+                        if custody.is_err() {
+                            break 'attach;
+                        }
                     }
                 }
             }
+            if let Err(refusal) = custody {
+                result = Err(refusal);
+                break;
+            }
         }
-        self.owners.end_batch();
+        if result.is_ok() {
+            result = self.owners.end_batch();
+        }
 
         self.by_recipe = by_recipe;
         self.requests = requests;
@@ -1024,7 +1267,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 // that refuses on every span run past the budget.
                 return Ok(Err(hole));
             }
-            self.owners.insert(hole, offset);
+            self.owners.insert(hole, offset)?;
         }
         Ok(Ok(()))
     }
@@ -1417,11 +1660,15 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     }
 
     /// Attach the dependency edges of tasks that deduplication pruned.
-    fn link_pruned(&mut self) {
+    fn link_pruned(&mut self) -> Result<(), CustodyRefusal> {
         let pruned = std::mem::take(&mut self.pruned);
         let mut requests = std::mem::take(&mut self.requests);
         let mut owned = std::mem::take(&mut self.owned);
+        let mut custody = Ok(());
         for task in pruned {
+            if custody.is_err() {
+                break;
+            }
             if self.refused(task.recipe) {
                 continue;
             }
@@ -1435,24 +1682,31 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 self.refuse_unrepresentable(task.recipe, base, offset);
                 continue;
             }
-            for index in 0..requests.len() {
+            'attach: for index in 0..requests.len() {
                 let span = requests[index].span;
                 self.owners.overlapping_into(span, &mut owned);
                 for id in owned.iter() {
-                    self.owners.add_dependent(*id, consumer, span);
+                    custody = self.owners.add_dependent(*id, consumer, span);
+                    if custody.is_err() {
+                        break 'attach;
+                    }
                     if let Some(parent) = task.parent {
-                        self.owners.add_edge(parent, *id, consumer);
+                        custody = self.owners.add_edge(parent, *id, consumer);
+                        if custody.is_err() {
+                            break 'attach;
+                        }
                     }
                 }
             }
         }
         self.requests = requests;
         self.owned = owned;
+        custody
     }
 
     /// An interval is witnessed when any consumer depending on it asked for a
     /// witness. Sharing therefore widens the closing wave, never narrows it.
-    fn enrol_witnesses(&mut self) {
+    fn enrol_witnesses(&mut self) -> Result<(), CustodyRefusal> {
         let wanted: BTreeSet<ConsumerId> = self
             .recipes
             .iter()
@@ -1461,19 +1715,26 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             .map(|(recipe, _)| recipe.consumer)
             .collect();
         if wanted.is_empty() {
-            return;
+            return Ok(());
         }
-        let links = self.owners.links();
-        let ids: Vec<IntervalId> = self
-            .owners
-            .records()
-            .iter()
-            .filter(|record| links.consumers(record).any(|c| wanted.contains(&c)))
-            .map(|record| record.id)
-            .collect();
-        for id in ids {
-            self.owners.enrol_witness(id);
+        // BY POSITION, not through a collected id list. The list existed only
+        // to end the borrow of `links` before `enrol_witness` takes `&mut`,
+        // and it was one `Vec<IntervalId>` the size of the whole record table
+        // — work-scaled memory the ledger never saw. Re-borrowing per record
+        // ends the borrow at the same place and allocates nothing. A record is
+        // 32 bytes and `Copy`.
+        for position in 0..self.owners.len() {
+            let record = self.owners.records()[position];
+            let enrol = self
+                .owners
+                .links()
+                .consumers(&record)
+                .any(|consumer| wanted.contains(&consumer));
+            if enrol {
+                self.owners.enrol_witness(record.id())?;
+            }
         }
+        Ok(())
     }
 
     /// The fourteenth phase: re-copy the opening addresses.
@@ -1486,10 +1747,18 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // Enrolment order, which `enrol_witnesses` produces by walking the
         // records in id order: the same order a scan of every record produced,
         // without the scan.
-        let ids: Vec<IntervalId> = self.owners.witnessed_ids().to_vec();
+        //
+        // Walked BY POSITION rather than through a clone of the enrolment
+        // list. The clone was there only to release the borrow before
+        // `record_mut`, and it was a second `Vec<IntervalId>` as long as the
+        // witness list — work-scaled memory the ledger never saw, taken at the
+        // exact moment custody is fullest.
+        let witnessed = self.owners.witnessed_ids().len();
         let mut unreadable = Vec::new();
-        for id in &ids {
-            let span = self.owners.record(*id).span;
+        for position in 0..witnessed {
+            let id = self.owners.witnessed_ids()[position];
+            let id = &id;
+            let span = self.owners.record(*id).span();
             let len = match usize::try_from(span.len) {
                 Ok(len) => len,
                 Err(_) => {
@@ -1505,12 +1774,17 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 .copy_into(span.start, self.arena.slice_mut(offset, len))
                 .is_err()
             {
-                unreadable.push(*id);
+                // Charged: this list is bounded by the witnessed interval
+                // count, it grows at the moment custody is fullest, and it
+                // survives into `SnapshotBuild`. A region that became
+                // unreadable mid-bracket can put every witnessed interval on
+                // it.
+                super::arena::charged_push(&mut unreadable, self.arena.ledger_ref(), *id)?;
                 continue;
             }
-            self.owners.record_mut(*id).closing_offset = Some(offset);
+            self.owners.record_mut(*id).set_closing_offset(offset);
         }
-        Ok((ids.len() as u32, unreadable))
+        Ok((witnessed as u32, unreadable))
     }
 
     fn build_reports(&self) -> Vec<RecipeReport> {

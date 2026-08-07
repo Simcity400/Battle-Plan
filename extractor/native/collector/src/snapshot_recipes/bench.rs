@@ -77,6 +77,44 @@ use super::policy::{plan_copies, CopyRequest, GapPolicy, Provenance};
 use super::synthetic::SyntheticMemory;
 use super::{ConsumerId, HourStamp, RecipeId, Span, SnapshotMemory};
 
+/// [`super::FxHasher`] with its finalising rotate removed, so the finaliser
+/// can be PRICED rather than asserted.
+///
+/// This is the hasher the substrate had before: identical mixer, `finish`
+/// returning the accumulator raw. It exists only in this bench.
+#[derive(Clone, Copy, Debug, Default)]
+struct UnfinalisedHasher {
+    inner: super::FxHasher,
+}
+
+impl std::hash::Hasher for UnfinalisedHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        self.inner.write(bytes)
+    }
+    fn write_u8(&mut self, value: u8) {
+        self.inner.write_u8(value)
+    }
+    fn write_u16(&mut self, value: u16) {
+        self.inner.write_u16(value)
+    }
+    fn write_u32(&mut self, value: u32) {
+        self.inner.write_u32(value)
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.inner.write_u64(value)
+    }
+    fn write_usize(&mut self, value: usize) {
+        self.inner.write_usize(value)
+    }
+    fn finish(&self) -> u64 {
+        // The whole difference: `FxHasher::finish` rotates, this does not.
+        self.inner.finish().rotate_right(20)
+    }
+}
+
+type UnfinalisedSet<T> =
+    std::collections::HashSet<T, std::hash::BuildHasherDefault<UnfinalisedHasher>>;
+
 const BENCH_BASE: u64 = 0x2000_0000;
 /// Distance between objects. Wider than every merge tier, so nothing
 /// coalesces and the transaction count is exactly the object count.
@@ -296,9 +334,9 @@ fn bench_component_attribution() {
     let mut cursor = owners.sweep();
     for (index, span) in spans.iter().enumerate() {
         owners.sweep_plan(&mut cursor, *span, &mut plan);
-        owners.insert(*span, index * 48);
+        owners.insert(*span, index * 48).unwrap();
     }
-    owners.end_wave();
+    owners.end_wave().unwrap();
     let ownership = started.elapsed();
     assert_eq!(owners.len(), objects);
     report(
@@ -315,9 +353,9 @@ fn bench_component_attribution() {
     let started = Instant::now();
     for (index, span) in spans.iter().enumerate() {
         bisecting.plan_into(*span, &mut plan);
-        bisecting.insert(*span, index * 48);
+        bisecting.insert(*span, index * 48).unwrap();
     }
-    bisecting.end_wave();
+    bisecting.end_wave().unwrap();
     let ownership_bisecting = started.elapsed();
     report(
         "  OwnershipMap: plan + insert, bisecting",
@@ -333,7 +371,7 @@ fn bench_component_attribution() {
     for span in &spans {
         owners.sweep_overlapping(&mut cursor, *span, &mut owned);
         for id in owned.iter() {
-            owners.add_dependent(*id, C(1), *span);
+            owners.add_dependent(*id, C(1), *span).unwrap();
         }
     }
     let attach = started.elapsed();
@@ -350,9 +388,9 @@ fn bench_component_attribution() {
     let mut cursor = sweep_only.sweep();
     for (index, span) in spans.iter().enumerate() {
         sweep_only.sweep_plan(&mut cursor, *span, &mut plan);
-        sweep_only.insert(*span, index * 48);
+        sweep_only.insert(*span, index * 48).unwrap();
     }
-    sweep_only.end_wave();
+    sweep_only.end_wave().unwrap();
     let started = Instant::now();
     let mut cursor = sweep_only.sweep();
     let mut hits = 0usize;
@@ -369,7 +407,7 @@ fn bench_component_attribution() {
     for span in &spans {
         bisecting.overlapping_into(*span, &mut owned);
         for id in owned.iter() {
-            bisecting.add_dependent(*id, C(2), *span);
+            bisecting.add_dependent(*id, C(2), *span).unwrap();
         }
     }
     let attach_bisecting = started.elapsed();
@@ -401,15 +439,60 @@ fn bench_component_attribution() {
     let allocation = started.elapsed();
     report("  Arena: alloc_zeroed", objects as u64, 0, allocation);
 
-    // 5. The discovery visited set, hashed and ordered.
-    let mut visited: super::executor::VisitedSet = Default::default();
+    // 5. The discovery visited set.
+    //
+    // FOUR SHAPES, PRICED AGAINST EACH OTHER IN ONE RUN. The set was the
+    // largest single component of the flat observation, and three things could
+    // have been responsible: the container, the key width, or the hash. Each
+    // row below changes exactly one of them against the row above it, and they
+    // run back to back inside one invocation, so a busy box moves all four
+    // together and the DIFFERENCES survive the load that the absolute numbers
+    // do not.
+    //
+    //  * `insert, hashed` — what the executor now uses: two tables split by
+    //    task kind, so a copy-op key is `(address, tag)` and hashes in two
+    //    rounds instead of four.
+    //  * `insert, wide key` — the same container and the same hash on the
+    //    single 24-byte `(recipe, op, address, extent length)` key it
+    //    replaced. The gap between the two rows is what the split bought.
+    //  * `insert, unfinalised hash` — the wide key again, on `FxHash` WITHOUT
+    //    the finalising rotate. `FxHash` propagates entropy upward only and
+    //    `hashbrown` indexes buckets with the low bits, so this row is what a
+    //    key set with constant low bits — every object-aligned engine address
+    //    — costs when nothing folds the high half down.
+    //  * `insert, ordered` — a `BTreeSet`, the structure the substrate started
+    //    with.
+    let mut visited = super::executor::VisitedSet::default();
     let started = Instant::now();
     for span in &spans {
-        visited.insert((0, 0, span.start, 0));
+        visited.insert_op(span.start, 0);
     }
     let visit = started.elapsed();
     assert_eq!(visited.len(), objects);
     report("  visited set: insert, hashed", objects as u64, 0, visit);
+
+    let mut wide: super::FxSet<(u32, u16, u64, u64)> = Default::default();
+    let started = Instant::now();
+    for span in &spans {
+        wide.insert((0, 0, span.start, 0));
+    }
+    let visit_wide = started.elapsed();
+    assert_eq!(wide.len(), objects);
+    report("  visited set: insert, wide key", objects as u64, 0, visit_wide);
+
+    let mut raw: UnfinalisedSet<(u32, u16, u64, u64)> = Default::default();
+    let started = Instant::now();
+    for span in &spans {
+        raw.insert((0, 0, span.start, 0));
+    }
+    let visit_raw = started.elapsed();
+    assert_eq!(raw.len(), objects);
+    report(
+        "  visited set: insert, unfinalised hash",
+        objects as u64,
+        0,
+        visit_raw,
+    );
 
     let mut ordered: BTreeSet<(u32, u16, u64, u64)> = BTreeSet::new();
     let started = Instant::now();
@@ -440,10 +523,10 @@ fn bench_component_attribution() {
             state & 0x0000_7FFF_FFFF_FFC0
         })
         .collect();
-    let mut hashed_scattered: super::executor::VisitedSet = Default::default();
+    let mut hashed_scattered = super::executor::VisitedSet::default();
     let started = Instant::now();
     for addr in &scattered {
-        hashed_scattered.insert((0, 0, *addr, 0));
+        hashed_scattered.insert_op(*addr, 0);
     }
     let visit_hashed_scattered = started.elapsed();
     report(
@@ -451,6 +534,19 @@ fn bench_component_attribution() {
         objects as u64,
         0,
         visit_hashed_scattered,
+    );
+
+    let mut raw_scattered: UnfinalisedSet<(u32, u16, u64, u64)> = Default::default();
+    let started = Instant::now();
+    for addr in &scattered {
+        raw_scattered.insert((0, 0, *addr, 0));
+    }
+    let visit_raw_scattered = started.elapsed();
+    report(
+        "  visited set: scattered, unfinalised hash",
+        objects as u64,
+        0,
+        visit_raw_scattered,
     );
 
     let mut ordered_scattered: BTreeSet<(u32, u16, u64, u64)> = BTreeSet::new();
@@ -467,7 +563,8 @@ fn bench_component_attribution() {
     );
 
     // 6. Freezing.
-    let (records, links) = owners.into_frozen();
+    let ledger = arena.ledger();
+    let (records, links) = owners.into_frozen().unwrap();
     let started = Instant::now();
     let snapshot = Snapshot::freeze(
         HourStamp(1),
@@ -475,7 +572,9 @@ fn bench_component_attribution() {
         records,
         links,
         BTreeMap::new(),
-    );
+        &ledger,
+    )
+    .expect("custody budget");
     let freeze = started.elapsed();
     assert_eq!(snapshot.interval_count(), objects);
     report("  Snapshot::freeze", objects as u64, 0, freeze);
@@ -618,9 +717,9 @@ fn bench_index_fold_cost() {
                 let span = Span::new(addr, 48);
                 owners.sweep_plan(&mut cursor, span, &mut plan);
                 assert_eq!(plan.holes.len(), 1);
-                owners.insert(span, 0);
+                owners.insert(span, 0).unwrap();
             }
-            owners.end_wave();
+            owners.end_wave().unwrap();
         }
         let elapsed = started.elapsed();
         assert_eq!(owners.len(), per_wave * waves);

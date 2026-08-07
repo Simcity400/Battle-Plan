@@ -315,6 +315,15 @@ impl CopyPlan {
         self.copies.len()
     }
 
+    /// Bytes this plan's three buffers hold, for the observation's custody
+    /// accounting. Capacity, not length: they are reused across waves, so
+    /// what they took from the allocator is what stays taken.
+    pub fn capacity_bytes(&self) -> u64 {
+        super::arena::vec_bytes(&self.copies)
+            + super::arena::vec_bytes(&self.sources)
+            + super::arena::vec_bytes(&self.order)
+    }
+
     /// The indices of the requests this plan was built from, in ascending
     /// address order, empty requests excluded.
     ///

@@ -46,6 +46,13 @@ pub struct ClosedSnapshot {
     pub witness: WitnessReport,
     pub forward_waves_run: u32,
     pub phases_run: u32,
+    /// Everything the observation held against its 512 MiB ceiling: copied
+    /// bytes plus the tables that index them. Carried through from
+    /// [`SnapshotBuild`] because the post-bracket reporting path is where a
+    /// near-ceiling observation is worth knowing about.
+    pub custody_held: u64,
+    pub custody_table_bytes: u64,
+    pub custody_arena_bytes: u64,
 }
 
 impl SnapshotBuild {
@@ -57,6 +64,9 @@ impl SnapshotBuild {
             forward_waves_run,
             phases_run,
             witnessed_intervals,
+            custody_held,
+            custody_table_bytes,
+            custody_arena_bytes,
             unreadable_closes,
         } = self;
 
@@ -64,22 +74,22 @@ impl SnapshotBuild {
 
         let mut changed: Vec<IntervalId> = Vec::new();
         for record in snapshot.intervals() {
-            if !record.witnessed {
+            if !record.witnessed() {
                 continue;
             }
-            let differs = match record.closing_offset {
+            let differs = match record.closing_offset() {
                 // A witness that could not be re-copied is a FAILED witness,
                 // never an absent one. Treating it as unchanged would let a
                 // region that became unreadable mid-bracket certify itself.
                 None => true,
                 Some(closing) => {
-                    let len = record.span.len as usize;
-                    let opening = record.opening_offset;
+                    let len = record.len() as usize;
+                    let opening = record.opening_offset();
                     snapshot.raw(opening, len) != snapshot.raw(closing, len)
                 }
             };
-            if differs || uncertifiable.contains(&record.id) {
-                changed.push(record.id);
+            if differs || uncertifiable.contains(&record.id()) {
+                changed.push(record.id());
             }
         }
 
@@ -90,11 +100,11 @@ impl SnapshotBuild {
         let links = snapshot.links();
         for record in snapshot.intervals() {
             if links.has_children(record) {
-                children.insert(record.id, links.children(record).collect());
+                children.insert(record.id(), links.children(record).collect());
             }
             let consumers: Vec<ConsumerId> = links.consumers(record).collect();
             if !consumers.is_empty() {
-                dependents.insert(record.id, consumers);
+                dependents.insert(record.id(), consumers);
             }
         }
 
@@ -160,6 +170,9 @@ impl SnapshotBuild {
             },
             forward_waves_run,
             phases_run,
+            custody_held,
+            custody_table_bytes,
+            custody_arena_bytes,
         }
     }
 }

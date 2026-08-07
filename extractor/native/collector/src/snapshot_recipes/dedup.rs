@@ -66,7 +66,43 @@
 //! address-sorted, and every owned interval is disjoint from every other one
 //! in every run, so "sorted by start" is a total order over their union.
 
-use super::{ConsumerId, FxSet, IntervalId, Span};
+//! # The record model is 32 bytes, and every narrowing has a bound behind it
+//!
+//! An observation's record table is the largest structure the substrate
+//! builds, and the sweep walks its index end to end once per wave, so the
+//! width of these two types is a cache-line question rather than a memory one.
+//! Both were cut, and neither was cut on the grounds that the values "look
+//! small enough":
+//!
+//!  * Every ARENA OFFSET — opening and closing — is bounded by the custody
+//!    ceiling. [`super::arena::Arena::alloc_zeroed`] admits a request only
+//!    when `held + len <= budget`, and no observation can run on a budget
+//!    above [`super::DEFAULT_CUSTODY_BUDGET_BYTES`]
+//!    ([`super::executor::observe_in`] refuses an arena above it and
+//!    [`super::executor::ObservationConfig::with_custody_budget`] refuses to
+//!    be set above it). So an offset is at most 512 MiB and fits a `u32` with
+//!    [`NO_OFFSET`] left over as the "no closing copy" sentinel.
+//!  * Every owned interval's LENGTH is bounded the same way: an interval
+//!    exists because `alloc_zeroed` accepted its bytes.
+//!  * The two are tied to the constant by `const` assertions below, so raising
+//!    the custody ceiling past what these fields hold is a COMPILE error in
+//!    this file rather than a silent truncation at run time.
+//!  * [`OwnershipMap::insert`] asserts both bounds on the way in, which is
+//!    what covers the callers that do not come through an arena at all (the
+//!    module's own tests and bench).
+//!
+//! `IntervalRecord` is 32 bytes (was 56), so two records share a cache line
+//! and the frozen table is 3.2 MiB rather than 5.6 MiB at 100k intervals.
+//! [`Entry`] — the type the sweep's inner loop actually walks — is 16 bytes
+//! (was 24), so a cache line holds four index entries rather than two and a
+//! half.
+
+use std::sync::Arc;
+
+use super::arena::{charged_push, charged_reserve, hash_table_bytes, vec_bytes, CustodyLedger};
+use super::{
+    ConsumerId, CustodyRefusal, FxSet, IntervalId, Span, DEFAULT_CUSTODY_BUDGET_BYTES,
+};
 
 /// One consumer's claim on an interval.
 ///
@@ -86,35 +122,125 @@ pub struct Dependent {
     pub reach: Span,
 }
 
-/// One owned, copied interval.
+/// Bits of [`IntervalRecord::len_and_flags`] that hold the length.
+const LEN_BITS: u32 = 30;
+const LEN_MASK: u32 = (1 << LEN_BITS) - 1;
+/// The closing wave must re-copy this interval.
+const WITNESSED: u32 = 1 << 30;
+/// This interval's edge membership has spilled into
+/// [`OwnershipMap::spilled_edges`]. See [`OwnershipMap::add_edge`].
+const EDGES_SPILLED: u32 = 1 << 31;
+
+/// No closing copy has been taken. Unreachable as a real offset because it is
+/// larger than any budget an observation can run on — asserted below.
+const NO_OFFSET: u32 = u32::MAX;
+
+// The narrowings above are only sound while the custody ceiling fits in them.
+// Raising `DEFAULT_CUSTODY_BUDGET_BYTES` past either bound stops this file
+// compiling, which is the point: a silent truncation would mis-address the
+// arena and hand a reader another interval's bytes.
+const _: () = assert!(
+    DEFAULT_CUSTODY_BUDGET_BYTES <= LEN_MASK as u64,
+    "an owned interval's length must fit IntervalRecord's 30 length bits",
+);
+const _: () = assert!(
+    DEFAULT_CUSTODY_BUDGET_BYTES < NO_OFFSET as u64,
+    "a custody offset must fit a u32 with NO_OFFSET left over as a sentinel",
+);
+
+/// One owned, copied interval. 32 bytes; see the module header for what
+/// bounds each narrowed field.
 ///
 /// The dependency list and the discovery edges are NOT stored here. Both are
 /// one-or-two element lists on almost every interval, and a `Vec` per list is
 /// a heap allocation per copied interval — measured at about fifty nanoseconds
 /// per transaction, more than every ownership lookup in the substrate put
 /// together. They live in [`Links`] instead, as chains through two shared
-/// arenas, which also takes the record itself from 96 bytes to 56.
+/// arenas.
+///
+/// The fields are private because three of them are packed or sentinelled.
+/// The accessors below are the whole interface, and they are what keeps the
+/// packing an implementation detail of this file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntervalRecord {
-    pub id: IntervalId,
-    /// The ORIGINAL address range. Kept for translation and for the closing
-    /// witness, which re-copies these exact addresses.
-    pub span: Span,
+    /// Start of the ORIGINAL address range. Kept for translation and for the
+    /// closing witness, which re-copies these exact addresses.
+    start: u64,
+    /// Length of that range in the low [`LEN_BITS`] bits, [`WITNESSED`] and
+    /// [`EDGES_SPILLED`] above it.
+    len_and_flags: u32,
     /// Offset of the opening copy in the arena.
-    pub opening_offset: usize,
-    /// Offset of the closing copy, once the closing wave has run.
-    pub closing_offset: Option<usize>,
-    /// Whether the closing wave must re-copy this interval.
-    pub witnessed: bool,
+    opening_offset: u32,
+    /// Offset of the closing copy, or [`NO_OFFSET`] before the closing wave
+    /// has run.
+    closing_offset: u32,
     /// Head of this interval's dependency chain in [`Links`], or [`NO_LINK`].
     dependents: u32,
     /// Head of this interval's discovery-edge chain in [`Links`].
     children: u32,
-    /// Whether this interval's edge membership has spilled into
-    /// [`OwnershipMap::spilled_edges`]. See [`OwnershipMap::add_edge`].
+    id: u32,
+}
+
+impl IntervalRecord {
+    pub fn id(&self) -> IntervalId {
+        IntervalId(self.id)
+    }
+
+    /// The ORIGINAL address range.
+    #[inline]
+    pub fn span(&self) -> Span {
+        Span::new(self.start, u64::from(self.len_and_flags & LEN_MASK))
+    }
+
+    #[inline]
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    #[inline]
+    pub fn len(&self) -> u64 {
+        u64::from(self.len_and_flags & LEN_MASK)
+    }
+
+    /// Offset of the opening copy in the arena.
+    #[inline]
+    pub fn opening_offset(&self) -> usize {
+        self.opening_offset as usize
+    }
+
+    /// Offset of the closing copy, once the closing wave has run.
+    #[inline]
+    pub fn closing_offset(&self) -> Option<usize> {
+        if self.closing_offset == NO_OFFSET {
+            None
+        } else {
+            Some(self.closing_offset as usize)
+        }
+    }
+
+    /// Whether the closing wave must re-copy this interval.
+    #[inline]
+    pub fn witnessed(&self) -> bool {
+        self.len_and_flags & WITNESSED != 0
+    }
+
+    fn edges_spilled(&self) -> bool {
+        self.len_and_flags & EDGES_SPILLED != 0
+    }
+
+    /// Record where the closing wave put this interval's second copy.
     ///
-    /// Free: the record has three bytes of padding either way.
-    edges_spilled: bool,
+    /// `pub(super)` and asserted rather than a public field: the sentinel is
+    /// what makes the field a `u32`, so an offset that could collide with it
+    /// must not be storable at all.
+    pub(super) fn set_closing_offset(&mut self, offset: usize) {
+        assert!(
+            offset < NO_OFFSET as usize,
+            "a closing offset at or past {NO_OFFSET} cannot be told from `no closing copy`; \
+             the custody ceiling is what bounds it",
+        );
+        self.closing_offset = offset as u32;
+    }
 }
 
 /// End of a chain in [`Links`].
@@ -124,10 +250,26 @@ const NO_LINK: u32 = u32::MAX;
 /// stops walking it and answers from a set instead.
 const EDGE_DEDUP_SCAN: u32 = 64;
 
+/// One consumer's claim, flattened into the chain arena. 24 bytes, where the
+/// `Dependent`-plus-`next` shape it replaced was 32: `reach.len` is a span the
+/// observation copied, so the same custody bound that narrows
+/// [`IntervalRecord`] narrows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DependentNode {
-    dependent: Dependent,
+    reach_start: u64,
+    reach_len: u32,
     next: u32,
+    consumer: ConsumerId,
+}
+
+impl DependentNode {
+    #[inline]
+    fn dependent(&self) -> Dependent {
+        Dependent {
+            consumer: self.consumer,
+            reach: Span::new(self.reach_start, u64::from(self.reach_len)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,7 +352,7 @@ impl Iterator for DependentChain<'_> {
         }
         let node = self.nodes[self.at as usize];
         self.at = node.next;
-        Some(node.dependent)
+        Some(node.dependent())
     }
 }
 
@@ -244,19 +386,61 @@ pub struct AcquisitionPlan {
     pub holes: Vec<Span>,
 }
 
-/// One owned interval, projected into the address index.
+impl AcquisitionPlan {
+    /// Bytes this plan's two buffers hold, for the observation's custody
+    /// accounting. Capacity, not length: it is reused across waves.
+    pub fn capacity_bytes(&self) -> u64 {
+        super::arena::vec_bytes(&self.existing) + super::arena::vec_bytes(&self.holes)
+    }
+}
+
+/// One owned interval, projected into the address index. 16 bytes: this is the
+/// type the sweep's inner loops walk, so its width is how many entries a cache
+/// line holds.
 ///
-/// `last` is the INCLUSIVE last address rather than an exclusive end. An
-/// interval that runs to the top of the address space has an exclusive end of
-/// `u64::MAX + 1`, which is why [`Span::end_excl`] is computed in `u128`;
-/// carrying the inclusive end keeps every comparison in the sweep a plain
+/// [`Self::last`] is the INCLUSIVE last address rather than an exclusive end.
+/// An interval that runs to the top of the address space has an exclusive end
+/// of `u64::MAX + 1`, which is why [`Span::end_excl`] is computed in `u128`;
+/// working from the inclusive end keeps every comparison in the sweep a plain
 /// `u64` compare without reintroducing that truncation.
+///
+/// It is DERIVED rather than stored. Carrying both ends cost eight bytes to
+/// save one add and one conditional move per comparison, and at a hundred
+/// thousand intervals the index is bigger than L2 either way, so the eight
+/// bytes are the thing that costs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
     start: u64,
-    last: u64,
+    /// Distance from `start` to the inclusive last address, so that
+    /// [`Self::last`] is one add and no branch.
+    ///
+    /// This is `len - 1` on every interval that does not reach the top of the
+    /// address space, and `u64::MAX - start` on the one that does — which is
+    /// the saturation [`last_addr`] performs, moved from every comparison in
+    /// the sweep to the one insert that builds the entry. It fits a `u32`
+    /// under both arms: an interval's length is bounded by the custody
+    /// ceiling, and an interval that saturates must start within that same
+    /// ceiling of `u64::MAX`.
+    last_delta: u32,
     id: u32,
 }
+
+impl Entry {
+    /// The inclusive last address.
+    ///
+    /// `wrapping_add` states the intent rather than guards it: `last_delta` is
+    /// built so that `start + last_delta <= u64::MAX` by construction, under
+    /// both of the arms above. There is nothing here to saturate.
+    #[inline]
+    fn last(&self) -> u64 {
+        self.start.wrapping_add(u64::from(self.last_delta))
+    }
+}
+
+/// Width of the type the sweep's inner loops walk, so the module's tests can
+/// pin it. See `the_record_model_stays_narrow`.
+#[cfg(test)]
+pub(super) const INDEX_ENTRY_BYTES: usize = std::mem::size_of::<Entry>();
 
 /// Address-sorted runs of the index. See the module header.
 const RUN_COUNT: usize = 3;
@@ -290,7 +474,23 @@ fn last_addr(span: Span) -> Option<u64> {
 }
 
 /// The observation-wide interval map.
-#[derive(Debug, Default)]
+///
+/// # Every table here is charged to custody
+///
+/// The record table, the three index runs, the fold's merge buffer, the two
+/// link arenas, the spilled-edge set and the witness enrolment list all scale
+/// with the work, and at the substrate's own bench shape they come to roughly
+/// twice the arena's byte total. They are therefore charged against the same
+/// [`CustodyLedger`] the copied bytes are, before the allocator is asked for
+/// them: an observation whose recipe fans out into a million dependency nodes
+/// hits [`CustodyRefusal::BudgetExhausted`] instead of the machine's own
+/// limits, and it hits it as the same typed refusal a copy would.
+///
+/// That is what makes the growth points fallible. Every method that can extend
+/// a table returns `Result<_, CustodyRefusal>`, and the executor's paths pass
+/// it straight out to the observation-level abort, because — exactly as for
+/// the arena — custody exhaustion is not recoverable by copying less.
+#[derive(Debug)]
 pub struct OwnershipMap {
     records: Vec<IntervalRecord>,
     links: Links,
@@ -302,15 +502,46 @@ pub struct OwnershipMap {
     /// [`EDGE_DEDUP_SCAN`], keyed `(parent, child, consumer)`. See
     /// [`Self::add_edge`].
     spilled_edges: FxSet<(u32, u32, u32)>,
+    /// What `spilled_edges` has been charged to custody for. A hash table does
+    /// not let its allocation be driven the way a `Vec` does, so its footprint
+    /// is modelled from its capacity and re-charged whenever that changes.
+    spilled_edges_charged: u64,
     /// Intervals enrolled in the closing wave, in enrolment order. Kept as a
     /// list so the closing wave does not re-scan every record to find the
     /// witnessed ones.
     witnessed: Vec<IntervalId>,
+    ledger: Arc<CustodyLedger>,
+}
+
+impl Default for OwnershipMap {
+    fn default() -> Self {
+        Self::on_ledger(CustodyLedger::new(DEFAULT_CUSTODY_BUDGET_BYTES))
+    }
 }
 
 impl OwnershipMap {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An ownership map charged to an existing observation's ledger — the
+    /// arena's. One observation is one ceiling.
+    pub fn on_ledger(ledger: Arc<CustodyLedger>) -> Self {
+        Self {
+            records: Vec::new(),
+            links: Links::default(),
+            runs: Default::default(),
+            scratch: Vec::new(),
+            spilled_edges: FxSet::default(),
+            spilled_edges_charged: 0,
+            witnessed: Vec::new(),
+            ledger,
+        }
+    }
+
+    /// Bytes of table capacity this map has charged to custody.
+    pub fn table_bytes(&self) -> u64 {
+        self.ledger.table_bytes()
     }
 
     pub fn len(&self) -> usize {
@@ -350,19 +581,34 @@ impl OwnershipMap {
     /// produces — costs one pass over the index and no record moves at all.
     /// The links come along untouched: a record's chain heads are arena
     /// indices, so reordering the records does not disturb them.
-    pub fn into_frozen(mut self) -> (Vec<IntervalRecord>, Links) {
-        self.end_wave();
+    pub fn into_frozen(mut self) -> Result<(Vec<IntervalRecord>, Links), CustodyRefusal> {
+        self.end_wave()?;
         let index = &self.runs[BODY];
         let already_ordered = index.len() == self.records.len()
             && index
                 .iter()
                 .enumerate()
                 .all(|(position, entry)| entry.id as usize == position);
+        // Only the records and the link arenas survive this call; the address
+        // runs, the merge buffer, the witness enrolment list and the
+        // spilled-edge set are about to be dropped. Their capacity has to stop
+        // counting against the ceiling here, or the frozen snapshot's own page
+        // index is admitted against bytes nothing holds any more — and a
+        // near-budget observation fails at a freeze the freed index would have
+        // paid for twice over.
+        let released = vec_bytes(&self.runs[BODY])
+            + vec_bytes(&self.runs[PENDING])
+            + vec_bytes(&self.runs[FRESH])
+            + vec_bytes(&self.scratch)
+            + vec_bytes(&self.witnessed)
+            + self.spilled_edges_charged;
+        self.ledger.release_tables(released);
+
         let mut records = self.records;
         if !already_ordered {
-            records.sort_unstable_by_key(|record| record.span.start);
+            records.sort_unstable_by_key(|record| record.start);
         }
-        (records, self.links)
+        Ok((records, self.links))
     }
 
     /// A cursor positioned before every owned interval.
@@ -433,7 +679,7 @@ impl OwnershipMap {
         let end = span.end_excl();
         self.sweep_overlapping(cursor, span, &mut plan.existing);
         for position in 0..plan.existing.len() {
-            let owned = self.records[plan.existing[position].0 as usize].span;
+            let owned = self.records[plan.existing[position].0 as usize].span();
             let owned_start = u128::from(owned.start);
             if owned_start > cursor_addr {
                 plan.holes.push(hole(cursor_addr, owned_start.min(end)));
@@ -469,18 +715,49 @@ impl OwnershipMap {
     /// insertion point is therefore never earlier than the cursor, and an
     /// entry that lands exactly on the cursor is one the cursor should be
     /// reporting.
-    pub fn insert(&mut self, span: Span, opening_offset: usize) -> IntervalId {
+    /// The custody bounds [`IntervalRecord`]'s narrowed fields rest on,
+    /// enforced at the one door every record comes through.
+    ///
+    /// The executor cannot violate either: an interval exists because
+    /// [`super::arena::Arena::alloc_zeroed`] admitted its bytes against a
+    /// budget that cannot exceed [`DEFAULT_CUSTODY_BUDGET_BYTES`]. The assert
+    /// is here for the callers that never touch an arena — this module's tests
+    /// and bench construct maps directly — and so that raising the ceiling
+    /// without widening the fields fails loudly rather than aliasing two
+    /// intervals' arena bytes.
+    fn check_custody_bounds(span: Span, opening_offset: usize) {
+        assert!(
+            span.len <= LEN_MASK as u64,
+            "an owned interval of {} B is past the {LEN_MASK} B the record can hold; \
+             it can only exist if custody admitted it",
+            span.len,
+        );
+        assert!(
+            opening_offset < NO_OFFSET as usize,
+            "a custody offset of {opening_offset} is past the {NO_OFFSET} the record can hold",
+        );
+    }
+
+    pub fn insert(
+        &mut self,
+        span: Span,
+        opening_offset: usize,
+    ) -> Result<IntervalId, CustodyRefusal> {
+        Self::check_custody_bounds(span, opening_offset);
         let id = IntervalId(self.records.len() as u32);
-        self.records.push(IntervalRecord {
-            id,
-            span,
-            opening_offset,
-            closing_offset: None,
-            witnessed: false,
-            dependents: NO_LINK,
-            children: NO_LINK,
-            edges_spilled: false,
-        });
+        charged_push(
+            &mut self.records,
+            &self.ledger,
+            IntervalRecord {
+                start: span.start,
+                len_and_flags: span.len as u32,
+                opening_offset: opening_offset as u32,
+                closing_offset: NO_OFFSET,
+                dependents: NO_LINK,
+                children: NO_LINK,
+                id: id.0,
+            },
+        )?;
         // An empty span overlaps nothing (`Span::overlaps` is false for it and
         // `contains_addr` cannot be true), so it is deliberately not indexed:
         // an index entry for it would be reported by a sweep that a direct
@@ -488,9 +765,13 @@ impl OwnershipMap {
         if let Some(last) = last_addr(span) {
             let entry = Entry {
                 start: span.start,
-                last,
+                // `last_addr` already saturated, so this is `len - 1` in the
+                // ordinary case and the clipped distance at the top of the
+                // address space. Both fit a `u32`: see `Entry::last_delta`.
+                last_delta: (last - span.start) as u32,
                 id: id.0,
             };
+            charged_reserve(&mut self.runs[FRESH], &self.ledger, 1)?;
             let fresh = &mut self.runs[FRESH];
             match fresh.last() {
                 Some(tail) if tail.start > entry.start => {
@@ -500,7 +781,7 @@ impl OwnershipMap {
                 _ => fresh.push(entry),
             }
         }
-        id
+        Ok(id)
     }
 
     /// Fold this batch's index entries into the wave's pending run.
@@ -508,14 +789,14 @@ impl OwnershipMap {
     /// Call it between batches. A batch is one recipe's copies in one wave —
     /// the unit whose spans are sorted and disjoint, which is what makes the
     /// batch's inserts an ascending append.
-    pub fn end_batch(&mut self) {
-        self.fold(PENDING, FRESH);
+    pub fn end_batch(&mut self) -> Result<(), CustodyRefusal> {
+        self.fold(PENDING, FRESH)
     }
 
     /// Fold the wave's index entries into the body.
-    pub fn end_wave(&mut self) {
-        self.fold(PENDING, FRESH);
-        self.fold(BODY, PENDING);
+    pub fn end_wave(&mut self) -> Result<(), CustodyRefusal> {
+        self.fold(PENDING, FRESH)?;
+        self.fold(BODY, PENDING)
     }
 
     /// Record that `consumer`'s hour depends on the part of `id` that
@@ -523,30 +804,52 @@ impl OwnershipMap {
     ///
     /// `requested` is CLIPPED to the interval: a request that spans several
     /// intervals grants reach in each one only over its own share.
-    pub fn add_dependent(&mut self, id: IntervalId, consumer: ConsumerId, requested: Span) {
+    pub fn add_dependent(
+        &mut self,
+        id: IntervalId,
+        consumer: ConsumerId,
+        requested: Span,
+    ) -> Result<(), CustodyRefusal> {
         let record = self.records[id.0 as usize];
-        let clipped = clip(requested, record.span);
+        let clipped = clip(requested, record.span());
         if clipped.is_empty() {
-            return;
+            return Ok(());
         }
         let mut at = record.dependents;
         while at != NO_LINK {
             let node = &mut self.links.dependents[at as usize];
-            if node.dependent.consumer == consumer {
-                node.dependent.reach = node.dependent.reach.hull(&clipped);
-                return;
+            if node.consumer == consumer {
+                // The hull of two sub-spans of one interval is a sub-span of
+                // that interval, so the narrowed length cannot overflow.
+                let widened = Span::new(node.reach_start, u64::from(node.reach_len))
+                    .hull(&clipped);
+                debug_assert!(
+                    widened.len <= LEN_MASK as u64,
+                    "a reach is a sub-span of one owned interval, so the hull of two of \
+                     them is bounded by the same custody ceiling the interval is",
+                );
+                node.reach_start = widened.start;
+                node.reach_len = widened.len as u32;
+                return Ok(());
             }
             at = node.next;
         }
         let node = self.links.dependents.len() as u32;
-        self.links.dependents.push(DependentNode {
-            dependent: Dependent {
+        // `clipped` is inside an owned interval, whose length custody already
+        // bounded, so the reach fits the narrowed field.
+        debug_assert!(clipped.len <= LEN_MASK as u64);
+        charged_push(
+            &mut self.links.dependents,
+            &self.ledger,
+            DependentNode {
+                reach_start: clipped.start,
+                reach_len: clipped.len as u32,
+                next: record.dependents,
                 consumer,
-                reach: clipped,
             },
-            next: record.dependents,
-        });
+        )?;
         self.records[id.0 as usize].dependents = node;
+        Ok(())
     }
 
     /// Record that `consumer`'s recipe decoded `child`'s address out of
@@ -573,15 +876,20 @@ impl OwnershipMap {
     ///
     /// A parent that never spills pays nothing for the mechanism: the flag is
     /// on the record, so an unspilled parent never touches the set.
-    pub fn add_edge(&mut self, parent: IntervalId, child: IntervalId, consumer: ConsumerId) {
+    pub fn add_edge(
+        &mut self,
+        parent: IntervalId,
+        child: IntervalId,
+        consumer: ConsumerId,
+    ) -> Result<(), CustodyRefusal> {
         if parent == child {
-            return;
+            return Ok(());
         }
         let record = self.records[parent.0 as usize];
         let head = record.children;
-        if record.edges_spilled {
-            if !self.spilled_edges.insert(edge_key(parent, child, consumer)) {
-                return;
+        if record.edges_spilled() {
+            if !self.insert_spilled_edge(edge_key(parent, child, consumer))? {
+                return Ok(());
             }
         } else {
             let mut at = head;
@@ -590,7 +898,7 @@ impl OwnershipMap {
             while at != NO_LINK {
                 let node = self.links.children[at as usize];
                 if node.child == child && node.consumer == consumer {
-                    return;
+                    return Ok(());
                 }
                 at = node.next;
                 scanned += 1;
@@ -600,38 +908,70 @@ impl OwnershipMap {
                 }
             }
             if spilled {
-                self.spill_edges(parent);
-                if !self.spilled_edges.insert(edge_key(parent, child, consumer)) {
-                    return;
+                self.spill_edges(parent)?;
+                if !self.insert_spilled_edge(edge_key(parent, child, consumer))? {
+                    return Ok(());
                 }
             }
         }
         let node = self.links.children.len() as u32;
-        self.links.children.push(ChildNode {
-            child,
-            consumer,
-            next: head,
-        });
+        charged_push(
+            &mut self.links.children,
+            &self.ledger,
+            ChildNode {
+                child,
+                consumer,
+                next: head,
+            },
+        )?;
         self.records[parent.0 as usize].children = node;
+        Ok(())
+    }
+
+    /// Insert into the spilled-edge set, keeping its custody charge equal to
+    /// its modelled footprint.
+    ///
+    /// A hash table picks its own capacity, so unlike a `Vec` this cannot
+    /// admit the growth before it happens. What it can do is admit the growth
+    /// the table is ABOUT to take — the table reallocates exactly when it is
+    /// full — and then reconcile against what it really took. The observation
+    /// therefore never runs on past the ceiling; at worst it discovers it one
+    /// table growth late, which is the same fail-closed abort.
+    fn insert_spilled_edge(&mut self, key: (u32, u32, u32)) -> Result<bool, CustodyRefusal> {
+        let capacity = self.spilled_edges.capacity();
+        if self.spilled_edges.len() == capacity {
+            let predicted =
+                hash_table_bytes::<(u32, u32, u32)>(capacity.max(1) * 2) - self.spilled_edges_charged;
+            self.ledger.charge_tables(predicted)?;
+            self.spilled_edges_charged += predicted;
+        }
+        let fresh = self.spilled_edges.insert(key);
+        let footprint = hash_table_bytes::<(u32, u32, u32)>(self.spilled_edges.capacity());
+        if footprint > self.spilled_edges_charged {
+            let overshoot = footprint - self.spilled_edges_charged;
+            self.spilled_edges_charged = footprint;
+            self.ledger.charge_tables_overshoot(overshoot)?;
+        }
+        Ok(fresh)
     }
 
     /// Copy `parent`'s whole edge chain into `spilled_edges` and mark it, so
     /// that from here on its membership question is answered by the set alone.
-    fn spill_edges(&mut self, parent: IntervalId) {
+    fn spill_edges(&mut self, parent: IntervalId) -> Result<(), CustodyRefusal> {
         let mut at = self.records[parent.0 as usize].children;
         while at != NO_LINK {
             let node = self.links.children[at as usize];
-            self.spilled_edges
-                .insert(edge_key(parent, node.child, node.consumer));
+            self.insert_spilled_edge(edge_key(parent, node.child, node.consumer))?;
             at = node.next;
         }
-        self.records[parent.0 as usize].edges_spilled = true;
+        self.records[parent.0 as usize].len_and_flags |= EDGES_SPILLED;
+        Ok(())
     }
 
     /// The interval containing `addr`, if any.
     pub fn find(&self, addr: u64) -> Option<IntervalId> {
         for run in &self.runs {
-            let at = run.partition_point(|entry| entry.last < addr);
+            let at = run.partition_point(|entry| entry.last() < addr);
             if let Some(entry) = run.get(at) {
                 // Owned intervals are disjoint, so at most one run can hold
                 // `addr` and the first hit is the only hit.
@@ -654,11 +994,11 @@ impl OwnershipMap {
         let id = self.find(addr)?;
         let record = &self.records[id.0 as usize];
         let want = Span::new(addr, len as u64);
-        if !record.span.contains_span(&want) {
+        if !record.span().contains_span(&want) {
             return None;
         }
-        let skew = (addr - record.span.start) as usize;
-        Some((arena.slice(record.opening_offset + skew, len), id))
+        let skew = (addr - record.start) as usize;
+        Some((arena.slice(record.opening_offset() + skew, len), id))
     }
 
     /// Read `len` bytes at `addr` out of the arena, if one interval holds all
@@ -673,12 +1013,13 @@ impl OwnershipMap {
     }
 
     /// Mark `id` for the closing witness wave.
-    pub fn enrol_witness(&mut self, id: IntervalId) {
+    pub fn enrol_witness(&mut self, id: IntervalId) -> Result<(), CustodyRefusal> {
         let record = &mut self.records[id.0 as usize];
-        if !record.witnessed {
-            record.witnessed = true;
-            self.witnessed.push(id);
+        if record.witnessed() {
+            return Ok(());
         }
+        record.len_and_flags |= WITNESSED;
+        charged_push(&mut self.witnessed, &self.ledger, id)
     }
 
     /// Advance `cursor` past every indexed interval that ends before `addr`.
@@ -690,16 +1031,16 @@ impl OwnershipMap {
         for run_index in 0..RUN_COUNT {
             let run = &self.runs[run_index];
             let mut at = cursor.at[run_index] as usize;
-            if at < run.len() && run[at].last < addr {
+            if at < run.len() && run[at].last() < addr {
                 let mut step = 1usize;
-                while at + step < run.len() && run[at + step].last < addr {
+                while at + step < run.len() && run[at + step].last() < addr {
                     at += step;
                     step *= 2;
                 }
                 // `run[at]` is still short of `addr` and `run[at + step]` is
                 // not (or does not exist), so the answer is in `(at, at+step]`.
                 let hi = at.saturating_add(step).saturating_add(1).min(run.len());
-                at += run[at..hi].partition_point(|entry| entry.last < addr);
+                at += run[at..hi].partition_point(|entry| entry.last() < addr);
             }
             cursor.at[run_index] = at as u32;
         }
@@ -739,17 +1080,27 @@ impl OwnershipMap {
 
     /// Merge run `src` into run `dst` and empty `src`. Both are address-sorted
     /// and their spans are disjoint, so this is a plain two-way merge.
-    fn fold(&mut self, dst: usize, src: usize) {
+    /// Custody note: the two `swap`s below MOVE capacity between accounted
+    /// tables rather than creating any, so the ledger is untouched by them.
+    /// The one place a fold can grow is the merge buffer, and that goes
+    /// through [`charged_reserve`] like every other growth in this file.
+    fn fold(&mut self, dst: usize, src: usize) -> Result<(), CustodyRefusal> {
         if self.runs[src].is_empty() {
-            return;
+            return Ok(());
         }
         if self.runs[dst].is_empty() {
             self.runs.swap(dst, src);
-            return;
+            return Ok(());
         }
         let mut out = std::mem::take(&mut self.scratch);
         out.clear();
-        out.reserve(self.runs[dst].len() + self.runs[src].len());
+        let wanted = self.runs[dst].len() + self.runs[src].len();
+        if let Err(refusal) = charged_reserve(&mut out, &self.ledger, wanted) {
+            // Put the buffer back before leaving, or the next fold allocates
+            // one from nothing and the ledger loses track of this one.
+            self.scratch = out;
+            return Err(refusal);
+        }
         let (left, right) = (&self.runs[dst], &self.runs[src]);
         let (mut i, mut j) = (0usize, 0usize);
         while i < left.len() && j < right.len() {
@@ -767,6 +1118,7 @@ impl OwnershipMap {
         out.clear();
         self.scratch = out;
         self.runs[src].clear();
+        Ok(())
     }
 }
 

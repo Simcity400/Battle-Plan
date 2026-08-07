@@ -927,7 +927,7 @@ fn a_partial_overlap_copies_only_the_hole() {
         .snapshot
         .intervals()
         .iter()
-        .map(|record| record.span)
+        .map(|record| record.span())
         .collect();
     assert_eq!(
         spans,
@@ -945,8 +945,8 @@ fn a_partial_overlap_copies_only_the_hole() {
 #[test]
 fn ownership_planning_splits_around_owned_intervals() {
     let mut owners = OwnershipMap::new();
-    owners.insert(Span::new(0x1000, 0x10), 0);
-    owners.insert(Span::new(0x1030, 0x10), 0x10);
+    owners.insert(Span::new(0x1000, 0x10), 0).unwrap();
+    owners.insert(Span::new(0x1030, 0x10), 0x10).unwrap();
     let plan = owners.plan(Span::new(0x0FF0, 0x60));
     assert_eq!(
         plan.holes,
@@ -970,8 +970,8 @@ fn ownership_planning_splits_around_owned_intervals() {
 #[test]
 fn an_interval_starting_at_the_query_address_is_reported_once() {
     let mut owners = OwnershipMap::new();
-    owners.insert(Span::new(0x1000, 0x10), 0);
-    owners.insert(Span::new(0x1010, 0x10), 0x10);
+    owners.insert(Span::new(0x1000, 0x10), 0).unwrap();
+    owners.insert(Span::new(0x1010, 0x10), 0x10).unwrap();
 
     assert_eq!(owners.overlapping(Span::new(0x1000, 0x10)).len(), 1);
     assert_eq!(owners.overlapping(Span::new(0x1000, 0x20)).len(), 2);
@@ -987,15 +987,142 @@ fn an_interval_starting_at_the_query_address_is_reported_once() {
 #[test]
 fn custody_exhaustion_fails_the_observation_closed() {
     let memory = chain_memory(3, 0);
-    let arena = Arena::with_budget(24);
-    let result = observe_in(&[chain_recipe(1, 1)], &memory, config(), arena);
-    assert_eq!(
-        result.err(),
+    // What this observation costs is MEASURED, not hard-coded, and then taken
+    // away a byte at a time. A literal budget would be a test about whatever
+    // the index and link tables happen to reserve first, which is not the
+    // property: the property is that one byte short of enough is a refusal
+    // naming the ceiling, and that it produces no snapshot.
+    let fits = observe_in(&[chain_recipe(1, 1)], &memory, config(), Arena::new())
+        .expect("the default budget fits a three-node chain");
+    let needed = fits.custody_held;
+    assert!(needed > 0, "an observation that copied bytes held some");
+
+    let short = observe_in(
+        &[chain_recipe(1, 1)],
+        &memory,
+        config(),
+        Arena::with_budget(needed - 1),
+    );
+    match short.err() {
         Some(CustodyRefusal::BudgetExhausted {
-            budget: 24,
-            held: 16,
-            requested: 16,
-        })
+            budget,
+            held,
+            requested,
+        }) => {
+            assert_eq!(budget, needed - 1);
+            assert!(
+                u128::from(held) + u128::from(requested) > u128::from(budget),
+                "a budget refusal must name a request that does not fit: \
+                 held {held} + requested {requested} against {budget}",
+            );
+        }
+        other => panic!("expected a budget refusal, got {other:?}"),
+    }
+}
+
+/// The 512 MiB ceiling is a ceiling on WHAT THE OBSERVATION HOLDS, not on the
+/// subset of it that happens to be copied bytes.
+///
+/// The tables that index the copies — the record table, the three address
+/// runs, the two link arenas — are the same order of magnitude as the copies
+/// and were once outside the accounting entirely. An observation could then
+/// report 0.0% of budget while its dependency chains took the machine out.
+#[test]
+fn custody_counts_the_index_and_link_tables_and_not_only_the_copies() {
+    let memory = chain_memory(3, 0);
+    let build = observe_in(&[chain_recipe(1, 1)], &memory, config(), Arena::new())
+        .expect("the default budget fits it");
+    let copied = build.snapshot.custody_bytes();
+    assert_eq!(copied, 48, "three 16 B nodes");
+    assert!(
+        build.custody_table_bytes > 0,
+        "the index and link tables must be charged; they were not",
+    );
+    assert_eq!(
+        build.custody_held,
+        build.custody_arena_bytes + build.custody_table_bytes,
+        "held is exactly the arena's capacity plus the tables",
+    );
+    assert!(
+        build.custody_arena_bytes >= copied,
+        "the arena is charged for the capacity it took ({}), which is at least the {copied} \
+         bytes copied into it",
+        build.custody_arena_bytes,
+    );
+    assert!(
+        build.custody_table_bytes > copied,
+        "at this shape the tables are the larger half: {} table bytes against {copied} copied",
+        build.custody_table_bytes,
+    );
+}
+
+/// SENTINEL. The arena is charged for its CAPACITY, not for the length of the
+/// copies in it. `Vec`'s amortised growth doubles, so an arena charged by
+/// length can be admitted at the ceiling while holding twice it — which is the
+/// whole ceiling defeated by a factor of two.
+///
+/// A budget one byte under what the arena's capacity needs must therefore be a
+/// refusal, even though the LENGTH would have fitted.
+#[test]
+fn the_arena_is_charged_for_its_capacity_and_not_for_its_length() {
+    // Directly on the arena. An observation puts its tables' own growth
+    // schedule on top of this one, and the property under test is the arena's
+    // alone.
+    let mut arena = Arena::with_budget(1024);
+    for _ in 0..3 {
+        arena.alloc_zeroed(16).expect("well inside the budget");
+    }
+    assert_eq!(arena.copied_bytes(), 48);
+    // THE POINT. Doubling from a capacity of 32 takes 64 to hold 48 bytes of
+    // copies. Charging by length would report 48 and leave 16 bytes of real
+    // memory outside the ceiling — and at 384 MiB that same doubling is
+    // 384 MiB outside it. `>` is what separates the two policies; `>=` would
+    // pass under either.
+    assert!(
+        arena.held() > arena.copied_bytes(),
+        "the arena holds {} bytes of capacity for {} bytes of copies, and custody counts \
+         the capacity",
+        arena.held(),
+        arena.copied_bytes(),
+    );
+
+    // A request that fits inside capacity already charged is not charged
+    // again. Admitting the request length on top of a capacity-based `held`
+    // double-counts it, and refuses an allocation for want of room the arena
+    // is already holding.
+    let before = arena.held();
+    arena
+        .alloc_zeroed(16)
+        .expect("this fits in the capacity already paid for");
+    assert_eq!(arena.copied_bytes(), 64);
+    assert_eq!(
+        arena.held(),
+        before,
+        "no growth happened, so nothing may be charged for one",
+    );
+
+    // And the growth is CLAMPED to the room rather than doubling past it. This
+    // arena can hold 72 bytes; an unclamped doubling from 64 would ask for 128
+    // and take the observation over its own ceiling.
+    let mut tight = Arena::with_budget(72);
+    for _ in 0..4 {
+        tight.alloc_zeroed(16).expect("inside the budget");
+    }
+    tight
+        .alloc_zeroed(8)
+        .expect("the clamp is what leaves room for this");
+    assert_eq!(tight.copied_bytes(), 72);
+    assert_eq!(
+        tight.held(),
+        72,
+        "clamped to the room, never doubled past it",
+    );
+    assert!(
+        matches!(
+            tight.alloc_zeroed(1),
+            Err(CustodyRefusal::BudgetExhausted { .. })
+        ),
+        "and one byte past the ceiling is still a refusal",
     );
 }
 
@@ -1011,14 +1138,29 @@ impl ArenaAllocator for NeverAllocates {
 #[test]
 fn an_allocation_failure_fails_the_observation_closed() {
     let memory = chain_memory(1, 0);
-    let arena = Arena::with_allocator(DEFAULT_CUSTODY_BUDGET_BYTES, Box::new(NeverAllocates));
+    // The ledger is held OUTSIDE the observation, so what the observation
+    // charged is still readable after it refused. That is what lets this
+    // assert the refusal's `held` exactly rather than against a literal.
+    let ledger = super::arena::CustodyLedger::new(DEFAULT_CUSTODY_BUDGET_BYTES);
+    let arena = Arena::on_ledger(std::sync::Arc::clone(&ledger), Box::new(NeverAllocates));
     let result = observe_in(&[chain_recipe(1, 1)], &memory, config(), arena);
     assert_eq!(
         result.err(),
         Some(CustodyRefusal::AllocationFailed {
-            held: 0,
+            held: ledger.held(),
             requested: 16,
         })
+    );
+    // And the ownership map charged the SAME ledger: a map with a ledger of
+    // its own would leave this at zero and give the observation two ceilings.
+    assert!(
+        ledger.table_bytes() > 0,
+        "the ownership map's tables must charge the arena's ledger",
+    );
+    assert_eq!(
+        ledger.arena_bytes(),
+        0,
+        "the allocator refused, so no copied byte is in custody",
     );
 }
 
@@ -1463,17 +1605,17 @@ fn page_index_agrees_with_the_ordered_search() {
     // The shape this test exists for must actually be present.
     let intervals = closed.snapshot.intervals();
     let straddles = intervals.windows(2).any(|pair| {
-        let earlier_end = pair[0].span.end_excl();
-        let later_page = pair[1].span.start >> super::view::PAGE_SHIFT;
-        let earlier_start_page = pair[0].span.start >> super::view::PAGE_SHIFT;
-        earlier_start_page < later_page && earlier_end > u128::from(pair[1].span.start & !0xFFF)
+        let earlier_end = pair[0].span().end_excl();
+        let later_page = pair[1].span().start >> super::view::PAGE_SHIFT;
+        let earlier_start_page = pair[0].span().start >> super::view::PAGE_SHIFT;
+        earlier_start_page < later_page && earlier_end > u128::from(pair[1].span().start & !0xFFF)
     });
     assert!(
         straddles,
         "fixture must contain an interval spanning into a page where a later interval starts"
     );
 
-    let last = intervals.last().unwrap().span;
+    let last = intervals.last().unwrap().span();
     let top = u64::try_from(last.end_excl()).unwrap() + 0x2000;
     let mut addr = BASE - 0x2000;
     while addr < top {
@@ -2019,11 +2161,11 @@ fn the_phase_count_is_fourteen() {
 fn three_run_map(spans: &[Span]) -> OwnershipMap {
     let mut owners = OwnershipMap::new();
     for (index, span) in spans.iter().enumerate() {
-        owners.insert(*span, index * 0x100);
+        owners.insert(*span, index * 0x100).unwrap();
         if index == 1 {
-            owners.end_wave();
+            owners.end_wave().unwrap();
         } else if index == 3 {
-            owners.end_batch();
+            owners.end_batch().unwrap();
         }
     }
     owners
@@ -2082,7 +2224,7 @@ fn a_sweep_over_adjacent_intervals_reports_each_one_once() {
     assert_eq!(all.len(), 5);
     let starts: Vec<u64> = all
         .iter()
-        .map(|id| owners.record(*id).span.start)
+        .map(|id| owners.record(*id).span().start)
         .collect();
     assert_eq!(starts, vec![0x1000, 0x1010, 0x1020, 0x1030, 0x1040]);
 
@@ -2101,7 +2243,7 @@ fn a_sweep_over_adjacent_intervals_reports_each_one_once() {
             1,
             "the interval ending at {last_byte:#x} still contains its own last byte"
         );
-        assert_eq!(owners.record(out[0]).span.start, last_byte - 0xF);
+        assert_eq!(owners.record(out[0]).span().start, last_byte - 0xF);
     }
 }
 
@@ -2125,7 +2267,7 @@ fn a_sweep_reports_an_interval_starting_at_the_query_address_once() {
     for start in [0x1000u64, 0x1010, 0x1020, 0x1030, 0x1040] {
         owners.sweep_overlapping(&mut cursor, Span::new(start, 0x10), &mut out);
         assert_eq!(out.len(), 1, "one owner at {start:#x}, not two");
-        assert_eq!(owners.record(out[0]).span.start, start);
+        assert_eq!(owners.record(out[0]).span().start, start);
     }
 }
 
@@ -2197,9 +2339,9 @@ fn a_sweep_over_empty_and_single_interval_shapes() {
 #[test]
 fn a_sweep_does_not_pass_an_interval_a_later_query_still_needs() {
     let mut owners = OwnershipMap::new();
-    owners.insert(Span::new(0x1000, 0x1000), 0); // one wide interval
-    owners.end_wave();
-    owners.insert(Span::new(0x3000, 0x10), 0x1000);
+    owners.insert(Span::new(0x1000, 0x1000), 0).unwrap(); // one wide interval
+    owners.end_wave().unwrap();
+    owners.insert(Span::new(0x3000, 0x10), 0x1000).unwrap();
 
     let mut cursor = owners.sweep();
     let mut out = Vec::new();
@@ -2284,15 +2426,15 @@ fn folding_the_index_preserves_address_order_and_content() {
     let mut owners = OwnershipMap::new();
     for chunk in [(16usize, 24usize), (8, 16), (0, 8)] {
         for index in chunk.0..chunk.1 {
-            owners.insert(spans[index], index * 0x10);
+            owners.insert(spans[index], index * 0x10).unwrap();
         }
-        owners.end_batch();
+        owners.end_batch().unwrap();
     }
-    owners.end_wave();
+    owners.end_wave().unwrap();
 
     let all = owners.overlapping(Span::new(0x1000, 24 * 0x20));
     assert_eq!(all.len(), 24);
-    let starts: Vec<u64> = all.iter().map(|id| owners.record(*id).span.start).collect();
+    let starts: Vec<u64> = all.iter().map(|id| owners.record(*id).span().start).collect();
     let mut expected: Vec<u64> = spans.iter().map(|span| span.start).collect();
     expected.sort_unstable();
     assert_eq!(starts, expected, "the fold must leave the index in address order");
@@ -2302,9 +2444,9 @@ fn folding_the_index_preserves_address_order_and_content() {
     }
 
     // And the frozen table comes out in address order however it was built.
-    let (records, _links) = owners.into_frozen();
+    let (records, _links) = owners.into_frozen().unwrap();
     assert_eq!(records.len(), 24);
-    assert!(records.windows(2).all(|pair| pair[0].span.start < pair[1].span.start));
+    assert!(records.windows(2).all(|pair| pair[0].span().start < pair[1].span().start));
 }
 
 /// SENTINEL. A discovery edge already on a parent's chain is not stored
@@ -2315,13 +2457,13 @@ fn folding_the_index_preserves_address_order_and_content() {
 #[test]
 fn a_repeated_discovery_edge_is_stored_once_up_to_the_scan_bound() {
     let mut owners = OwnershipMap::new();
-    let parent = owners.insert(Span::new(0x1000, 0x10), 0);
-    let child = owners.insert(Span::new(0x2000, 0x10), 0x10);
-    let other = owners.insert(Span::new(0x3000, 0x10), 0x20);
+    let parent = owners.insert(Span::new(0x1000, 0x10), 0).unwrap();
+    let child = owners.insert(Span::new(0x2000, 0x10), 0x10).unwrap();
+    let other = owners.insert(Span::new(0x3000, 0x10), 0x20).unwrap();
 
-    owners.add_edge(parent, child, ConsumerId(1));
-    owners.add_edge(parent, child, ConsumerId(1));
-    owners.add_edge(parent, child, ConsumerId(1));
+    owners.add_edge(parent, child, ConsumerId(1)).unwrap();
+    owners.add_edge(parent, child, ConsumerId(1)).unwrap();
+    owners.add_edge(parent, child, ConsumerId(1)).unwrap();
     let record = *owners.record(parent);
     assert_eq!(
         owners.links().children(&record).count(),
@@ -2331,8 +2473,8 @@ fn a_repeated_discovery_edge_is_stored_once_up_to_the_scan_bound() {
 
     // A DIFFERENT consumer down the same edge is a different edge: that label
     // is what keeps invalidation per consumer.
-    owners.add_edge(parent, child, ConsumerId(2));
-    owners.add_edge(parent, other, ConsumerId(1));
+    owners.add_edge(parent, child, ConsumerId(2)).unwrap();
+    owners.add_edge(parent, other, ConsumerId(1)).unwrap();
     let record = *owners.record(parent);
     let mut edges: Vec<(IntervalId, ConsumerId)> = owners.links().children(&record).collect();
     edges.sort_unstable();
@@ -2346,7 +2488,7 @@ fn a_repeated_discovery_edge_is_stored_once_up_to_the_scan_bound() {
     );
 
     // A self-edge is not an edge.
-    owners.add_edge(parent, parent, ConsumerId(1));
+    owners.add_edge(parent, parent, ConsumerId(1)).unwrap();
     let record = *owners.record(parent);
     assert_eq!(owners.links().children(&record).count(), 3);
 }
@@ -2365,15 +2507,15 @@ fn a_repeated_discovery_edge_is_stored_once_up_to_the_scan_bound() {
 #[test]
 fn an_edge_deeper_than_the_dedup_scan_is_still_not_recorded_twice() {
     let mut owners = OwnershipMap::new();
-    let parent = owners.insert(Span::new(0x1000, 0x10), 0);
-    let first = owners.insert(Span::new(0x2000, 0x10), 0x10);
-    owners.add_edge(parent, first, ConsumerId(1));
+    let parent = owners.insert(Span::new(0x1000, 0x10), 0).unwrap();
+    let first = owners.insert(Span::new(0x2000, 0x10), 0x10).unwrap();
+    owners.add_edge(parent, first, ConsumerId(1)).unwrap();
 
     // Bury it under far more than the scan bound.
     let mut buried = Vec::new();
     for index in 0..400u64 {
-        let child = owners.insert(Span::new(0x3000 + index * 0x10, 0x10), 0);
-        owners.add_edge(parent, child, ConsumerId(1));
+        let child = owners.insert(Span::new(0x3000 + index * 0x10, 0x10), 0).unwrap();
+        owners.add_edge(parent, child, ConsumerId(1)).unwrap();
         buried.push(child);
     }
     let record = *owners.record(parent);
@@ -2381,7 +2523,7 @@ fn an_edge_deeper_than_the_dedup_scan_is_still_not_recorded_twice() {
     assert_eq!(before, 401);
 
     // The deepest edge, again.
-    owners.add_edge(parent, first, ConsumerId(1));
+    owners.add_edge(parent, first, ConsumerId(1)).unwrap();
     let record = *owners.record(parent);
     assert_eq!(
         owners.links().children(&record).count(),
@@ -2390,15 +2532,15 @@ fn an_edge_deeper_than_the_dedup_scan_is_still_not_recorded_twice() {
     );
 
     // So is one from the middle, and one from the very top.
-    owners.add_edge(parent, buried[7], ConsumerId(1));
-    owners.add_edge(parent, buried[399], ConsumerId(1));
+    owners.add_edge(parent, buried[7], ConsumerId(1)).unwrap();
+    owners.add_edge(parent, buried[399], ConsumerId(1)).unwrap();
     let record = *owners.record(parent);
     assert_eq!(owners.links().children(&record).count(), before);
 
     // A genuinely new edge past the bound is still recorded, once.
-    let fresh = owners.insert(Span::new(0x9000, 0x10), 0);
-    owners.add_edge(parent, fresh, ConsumerId(1));
-    owners.add_edge(parent, fresh, ConsumerId(1));
+    let fresh = owners.insert(Span::new(0x9000, 0x10), 0).unwrap();
+    owners.add_edge(parent, fresh, ConsumerId(1)).unwrap();
+    owners.add_edge(parent, fresh, ConsumerId(1)).unwrap();
     let record = *owners.record(parent);
     assert_eq!(owners.links().children(&record).count(), before + 1);
 
@@ -2414,9 +2556,9 @@ fn an_edge_deeper_than_the_dedup_scan_is_still_not_recorded_twice() {
 
     // Spilling is per parent: a parent that never spilled is untouched by one
     // that did.
-    let other = owners.insert(Span::new(0xA000, 0x10), 0);
-    owners.add_edge(other, first, ConsumerId(1));
-    owners.add_edge(other, first, ConsumerId(1));
+    let other = owners.insert(Span::new(0xA000, 0x10), 0).unwrap();
+    owners.add_edge(other, first, ConsumerId(1)).unwrap();
+    owners.add_edge(other, first, ConsumerId(1)).unwrap();
     let record = *owners.record(other);
     assert_eq!(owners.links().children(&record).count(), 1);
 }
@@ -2427,10 +2569,10 @@ fn an_edge_deeper_than_the_dedup_scan_is_still_not_recorded_twice() {
 fn an_out_of_order_insert_keeps_the_index_sorted() {
     let mut owners = OwnershipMap::new();
     for start in [0x3000u64, 0x1000, 0x2000, 0x0500] {
-        owners.insert(Span::new(start, 0x10), 0);
+        owners.insert(Span::new(start, 0x10), 0).unwrap();
     }
     let all = owners.overlapping(Span::new(0, 0x4000));
-    let starts: Vec<u64> = all.iter().map(|id| owners.record(*id).span.start).collect();
+    let starts: Vec<u64> = all.iter().map(|id| owners.record(*id).span().start).collect();
     assert_eq!(starts, vec![0x0500, 0x1000, 0x2000, 0x3000]);
     for start in [0x3000u64, 0x1000, 0x2000, 0x0500] {
         assert!(owners.find(start).is_some());
@@ -2458,12 +2600,12 @@ fn the_swept_index_agrees_with_the_bisecting_one_over_a_populated_map() {
     for (index, start) in starts.iter().enumerate() {
         // Disjointness is the map's invariant, so the fixture keeps the
         // intervals inside their own 0x10 slot.
-        owners.insert(Span::new(*start, 0x10), index);
+        owners.insert(Span::new(*start, 0x10), index).unwrap();
         if index % 37 == 5 {
-            owners.end_batch();
+            owners.end_batch().unwrap();
         }
         if index % 91 == 11 {
-            owners.end_wave();
+            owners.end_wave().unwrap();
         }
     }
 
@@ -2483,7 +2625,7 @@ fn the_swept_index_agrees_with_the_bisecting_one_over_a_populated_map() {
 
     for start in &starts {
         assert_eq!(
-            owners.find(*start).map(|id| owners.record(id).span.start),
+            owners.find(*start).map(|id| owners.record(id).span().start),
             Some(*start)
         );
         assert!(owners.find(start.wrapping_sub(1)).is_none() || starts.contains(&(start - 0x10)));
@@ -2495,7 +2637,7 @@ fn the_swept_index_agrees_with_the_bisecting_one_over_a_populated_map() {
 #[test]
 fn the_index_holds_an_interval_at_the_top_of_the_address_space() {
     let mut owners = OwnershipMap::new();
-    owners.insert(Span::new(u64::MAX - 7, 8), 0);
+    owners.insert(Span::new(u64::MAX - 7, 8), 0).unwrap();
     assert_eq!(owners.find(u64::MAX).map(|id| id.0), Some(0));
     assert_eq!(owners.find(u64::MAX - 8), None);
     assert_eq!(owners.overlapping(Span::new(u64::MAX - 7, 8)).len(), 1);
@@ -2504,6 +2646,27 @@ fn the_index_holds_an_interval_at_the_top_of_the_address_space() {
     let mut out = Vec::new();
     owners.sweep_overlapping(&mut cursor, Span::new(u64::MAX, 1), &mut out);
     assert_eq!(out.len(), 1);
+}
+
+/// SENTINEL. The index entry stores the DISTANCE to its inclusive last
+/// address, so the saturation that `last_addr` performs happens once at insert
+/// instead of on every comparison in the sweep. A span whose exclusive end is
+/// past `2^64` must still be indexed as ending at `u64::MAX`: storing the
+/// unclipped distance would wrap the comparison and make the interval
+/// invisible to every query above its start.
+#[test]
+fn an_index_entry_clips_a_span_that_runs_off_the_top_of_the_address_space() {
+    let mut owners = OwnershipMap::new();
+    // Exclusive end is `u64::MAX + 5`, so the entry has to clip.
+    owners.insert(Span::new(u64::MAX - 3, 8), 0).unwrap();
+    assert_eq!(owners.find(u64::MAX).map(|id| id.0), Some(0));
+    assert_eq!(owners.find(u64::MAX - 3).map(|id| id.0), Some(0));
+    assert_eq!(owners.find(u64::MAX - 4), None);
+    assert_eq!(owners.overlapping(Span::new(u64::MAX, 1)).len(), 1);
+    let mut cursor = owners.sweep();
+    let mut out = Vec::new();
+    owners.sweep_overlapping(&mut cursor, Span::new(u64::MAX, 1), &mut out);
+    assert_eq!(out.len(), 1, "a clipped entry is still reachable at the top");
 }
 
 /// SENTINEL. The dependency attach walks requests in the coalescer's address
@@ -2547,4 +2710,142 @@ fn every_request_attaches_however_the_coalescer_ordered_them() {
         view.bytes(BASE + 0x300, 8).is_err(),
         "and nothing the recipe did not ask for"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The record model, and the bounds its narrowed fields rest on
+// ---------------------------------------------------------------------------
+
+/// SENTINEL. The record table is the largest structure an observation builds
+/// and the index is what the sweep walks end to end once per wave, so both
+/// widths are a cache-line budget rather than a memory one. Widening either
+/// type back — restoring a `usize` offset, an `Option<usize>`, a `bool` that
+/// does not fit in the length's spare bits, or a stored `last` alongside
+/// `start` — puts the sweep back on half the entries per line.
+#[test]
+fn the_record_model_stays_narrow() {
+    assert_eq!(
+        std::mem::size_of::<dedup::IntervalRecord>(),
+        32,
+        "an interval record must stay at two per cache line",
+    );
+    assert_eq!(
+        dedup::INDEX_ENTRY_BYTES,
+        16,
+        "an index entry must stay at four per cache line",
+    );
+}
+
+/// SENTINEL. The length shares its word with the two flag bits. An interval as
+/// long as custody permits must still report its own length with both flags
+/// set — if the length ever reached the flag bits, a witnessed interval would
+/// read back longer than it is and the view would hand out bytes past it.
+#[test]
+fn a_maximum_length_interval_carries_both_flags_without_disturbing_its_length() {
+    let mut owners = OwnershipMap::new();
+    let widest = DEFAULT_CUSTODY_BUDGET_BYTES;
+    let id = owners.insert(Span::new(0x1000, widest), 0).unwrap();
+    assert_eq!(owners.record(id).span(), Span::new(0x1000, widest));
+    assert!(!owners.record(id).witnessed());
+
+    owners.enrol_witness(id).unwrap();
+    assert!(owners.record(id).witnessed());
+    assert_eq!(
+        owners.record(id).span(),
+        Span::new(0x1000, widest),
+        "the witness flag must not be readable as length",
+    );
+
+    // The spill flag is the other bit, and the edge path is what sets it.
+    let child = owners.insert(Span::new(0x1000 + widest, 0x10), 0).unwrap();
+    owners.add_edge(id, child, ConsumerId(1)).unwrap();
+    assert_eq!(
+        owners.record(id).span(),
+        Span::new(0x1000, widest),
+        "no flag may be readable as length",
+    );
+    owners.record_mut(id).set_closing_offset(0);
+    assert_eq!(owners.record(id).closing_offset(), Some(0));
+    assert_eq!(owners.record(id).span(), Span::new(0x1000, widest));
+}
+
+/// SENTINEL. `closing_offset` is a `u32` with `u32::MAX` standing for "no
+/// closing copy", which is only sound while no real offset can reach it. The
+/// custody ceiling is what bounds it; this is the check that fires if the
+/// ceiling ever stops doing so.
+#[test]
+#[should_panic(expected = "cannot be told from")]
+fn a_closing_offset_at_the_sentinel_is_refused() {
+    let mut owners = OwnershipMap::new();
+    let id = owners.insert(Span::new(0x1000, 0x10), 0).unwrap();
+    owners.record_mut(id).set_closing_offset(u32::MAX as usize);
+}
+
+/// SENTINEL. The same bound on the way in. An offset past what the record can
+/// hold would be truncated into some other interval's arena bytes, which is a
+/// reader silently getting the wrong object rather than a refusal.
+#[test]
+#[should_panic(expected = "is past the")]
+fn an_opening_offset_past_the_custody_ceiling_is_refused() {
+    let mut owners = OwnershipMap::new();
+    owners
+        .insert(Span::new(0x1000, 0x10), u32::MAX as usize)
+        .unwrap();
+}
+
+/// SENTINEL. And on the length. An interval longer than the record's thirty
+/// length bits would read back truncated, so the view would refuse bytes the
+/// observation actually copied.
+#[test]
+#[should_panic(expected = "it can only exist if custody admitted it")]
+fn an_interval_longer_than_the_record_can_hold_is_refused() {
+    let mut owners = OwnershipMap::new();
+    owners
+        .insert(Span::new(0x1000, u64::from(u32::MAX)), 0)
+        .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// The discovery visited set
+// ---------------------------------------------------------------------------
+
+/// SENTINEL. The visited set is two tables split by task kind. The split is
+/// only behaviour-preserving because the two key spaces never overlapped: a
+/// copy-op key carried a constant zero where an extent key carries its length,
+/// and an enqueued extent's length is never zero. If the tables were ever
+/// merged back onto one key, a copy op and an extent reaching the same address
+/// would prune each other and one of them would never be copied.
+#[test]
+fn the_visited_sets_two_task_kinds_do_not_prune_each_other() {
+    let mut visited = executor::VisitedSet::default();
+    let tag = 7u64;
+    assert!(visited.insert_op(0x1000, tag));
+    assert!(!visited.insert_op(0x1000, tag), "a repeat is not fresh");
+    // Same address, same tag, as an extent: a different task, so still fresh.
+    assert!(visited.insert_extent(0x1000, 0x40, tag));
+    assert!(!visited.insert_extent(0x1000, 0x40, tag));
+    // A different decoded count at the same base is a different task. Pruning
+    // it would copy a prefix of the array and report `Captured`.
+    assert!(visited.insert_extent(0x1000, 0x80, tag));
+    assert_eq!(visited.len(), 3);
+}
+
+/// SENTINEL. The key packs the recipe index and the op into one word. The key
+/// this replaced cast the recipe index to `u32`, so two recipes `2^32` apart
+/// shared every visited entry and pruned each other's copy tasks. The packing
+/// must keep them distinct, and `MAX_RECIPES` is what bounds it.
+#[test]
+fn the_visited_key_does_not_alias_two_recipes() {
+    let mut visited = executor::VisitedSet::default();
+    let low = executor::visit_tag(0, 3);
+    let past_a_u32 = executor::visit_tag(1usize << 32, 3);
+    assert_ne!(low, past_a_u32, "the recipe index must survive the packing");
+    assert!(visited.insert_op(0x1000, low));
+    assert!(
+        visited.insert_op(0x1000, past_a_u32),
+        "a second recipe's task at the same address is not a duplicate",
+    );
+    // And the op is distinct from the recipe: op 1 of recipe 0 is not recipe 1
+    // at op 0.
+    assert_ne!(executor::visit_tag(0, 1), executor::visit_tag(1, 0));
 }

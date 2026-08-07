@@ -89,18 +89,28 @@ pub struct PageIndex {
 }
 
 impl PageIndex {
-    /// Build over an ALREADY address-ordered interval table.
-    pub fn build(ordered: &[IntervalRecord]) -> Self {
+    /// Build over an ALREADY address-ordered interval table, charging the
+    /// buckets to the observation's custody ledger.
+    ///
+    /// The bucket list is work-scaled — up to one entry per interval on a
+    /// scattered image — and it is built at the moment custody is fullest,
+    /// with the arena and every ownership table still live. Charging it is
+    /// what keeps "held" the whole footprint rather than the part that was
+    /// convenient to count.
+    pub fn build(
+        ordered: &[IntervalRecord],
+        ledger: &super::arena::CustodyLedger,
+    ) -> Result<Self, super::CustodyRefusal> {
         let mut first: Vec<(u64, u32)> = Vec::new();
         for (position, record) in ordered.iter().enumerate() {
-            let page = record.span.start >> PAGE_SHIFT;
+            let page = record.start() >> PAGE_SHIFT;
             // Ascending input, so a new page is always a new last bucket and
             // a repeated page already has its first position recorded.
             if first.last().map(|&(held, _)| held) != Some(page) {
-                first.push((page, position as u32));
+                super::arena::charged_push(&mut first, ledger, (page, position as u32))?;
             }
         }
-        Self { first }
+        Ok(Self { first })
     }
 
     /// Position in `order` to start scanning from for `addr`.
@@ -153,20 +163,21 @@ impl Snapshot {
         records: Vec<IntervalRecord>,
         links: Links,
         gapped: BTreeMap<ConsumerId, GapReason>,
-    ) -> Self {
+        ledger: &super::arena::CustodyLedger,
+    ) -> Result<Self, super::CustodyRefusal> {
         debug_assert!(
-            records.windows(2).all(|pair| pair[0].span.start <= pair[1].span.start),
+            records.windows(2).all(|pair| pair[0].start() <= pair[1].start()),
             "freeze requires an address-ordered record table",
         );
-        let index = PageIndex::build(&records);
-        Self {
+        let index = PageIndex::build(&records, ledger)?;
+        Ok(Self {
             hour,
             bytes,
             intervals: records,
             links,
             index,
             gapped,
-        }
+        })
     }
 
     pub fn hour(&self) -> HourStamp {
@@ -250,7 +261,7 @@ impl Snapshot {
             .unwrap_or(0);
         let mut position = start;
         while position < self.intervals.len() {
-            let span = self.intervals[position].span;
+            let span = self.intervals[position].span();
             if span.contains_addr(addr) {
                 return Some(position);
             }
@@ -265,12 +276,12 @@ impl Snapshot {
     fn locate_by_search(&self, addr: u64) -> Option<usize> {
         let position = self
             .intervals
-            .partition_point(|record| record.span.start <= addr);
+            .partition_point(|record| record.start() <= addr);
         if position == 0 {
             return None;
         }
         let candidate = position - 1;
-        if self.intervals[candidate].span.contains_addr(addr) {
+        if self.intervals[candidate].span().contains_addr(addr) {
             Some(candidate)
         } else {
             None
@@ -328,7 +339,7 @@ impl<'a> SnapshotView<'a> {
         if !self.snapshot.links.reaches(record, self.consumer, &want) {
             return Err(ViewRefusal::NotOwned { span: want });
         }
-        Ok(record.opening_offset + (addr - record.span.start) as usize)
+        Ok(record.opening_offset() + (addr - record.start()) as usize)
     }
 
     /// Borrow `len` bytes at `addr` without copying.
@@ -342,7 +353,7 @@ impl<'a> SnapshotView<'a> {
         // Contiguity FIRST. A request spanning two transactions is never
         // inside one interval's reach, so checking ownership first would
         // report every stitchable read as `NotOwned` and hide the real reason.
-        if !record.span.contains_span(&want) {
+        if !record.span().contains_span(&want) {
             // Either the tail was never copied, or it was copied by another
             // transaction. Distinguish, because they are different bugs: the
             // first is a recipe that under-asked, the second is a reader that
@@ -356,8 +367,8 @@ impl<'a> SnapshotView<'a> {
         if !self.snapshot.links.reaches(record, self.consumer, &want) {
             return Err(ViewRefusal::NotOwned { span: want });
         }
-        let skew = (addr - record.span.start) as usize;
-        let offset = record.opening_offset + skew;
+        let skew = (addr - record.start()) as usize;
+        let offset = record.opening_offset() + skew;
         Ok(&self.snapshot.bytes[offset..offset + len])
     }
 
@@ -377,8 +388,8 @@ impl<'a> SnapshotView<'a> {
                 .locate(cursor)
                 .ok_or(ViewRefusal::NotCaptured { span: want })?;
             let record = &self.snapshot.intervals[position];
-            let skew = (cursor - record.span.start) as usize;
-            let available = record.span.len as usize - skew;
+            let skew = (cursor - record.start()) as usize;
+            let available = record.len() as usize - skew;
             let take = available.min(out.len() - written);
             if !self
                 .snapshot
@@ -387,7 +398,7 @@ impl<'a> SnapshotView<'a> {
             {
                 return Err(ViewRefusal::NotOwned { span: want });
             }
-            let offset = record.opening_offset + skew;
+            let offset = record.opening_offset() + skew;
             out[written..written + take].copy_from_slice(&self.snapshot.bytes[offset..offset + take]);
             written += take;
             // CHECKED, not wrapping: two owned intervals at the top and the
@@ -433,7 +444,7 @@ impl<'a> SnapshotView<'a> {
                 Err(_) => return false,
             };
             match self.snapshot.locate(addr) {
-                Some(position) => cursor = self.snapshot.intervals[position].span.end_excl(),
+                Some(position) => cursor = self.snapshot.intervals[position].span().end_excl(),
                 None => return false,
             }
         }
