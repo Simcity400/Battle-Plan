@@ -87,11 +87,12 @@ impl SnapshotBuild {
         // whose chain walked it.
         let mut children: BTreeMap<IntervalId, Vec<(IntervalId, ConsumerId)>> = BTreeMap::new();
         let mut dependents: BTreeMap<IntervalId, Vec<ConsumerId>> = BTreeMap::new();
+        let links = snapshot.links();
         for record in snapshot.intervals() {
-            if !record.children.is_empty() {
-                children.insert(record.id, record.children.clone());
+            if links.has_children(record) {
+                children.insert(record.id, links.children(record).collect());
             }
-            let consumers: Vec<ConsumerId> = record.consumers().collect();
+            let consumers: Vec<ConsumerId> = links.consumers(record).collect();
             if !consumers.is_empty() {
                 dependents.insert(record.id, consumers);
             }

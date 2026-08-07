@@ -39,16 +39,20 @@
 //! that already copied into it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::BuildHasherDefault;
 
 use super::arena::Arena;
 use super::dedup::OwnershipMap;
 use super::policy::{AnchorKind, CopyRequest, GapPolicy, Proof, Provenance};
 use super::view::Snapshot;
 use super::{
-    ConsumerId, CustodyRefusal, GapReason, HourStamp, IntervalId, Limits, MalformedReason,
+    ConsumerId, CustodyRefusal, FxSet, GapReason, HourStamp, IntervalId, Limits, MalformedReason,
     RecipeId, Refusal, SnapshotMemory, Span, TableId, DEFAULT_CUSTODY_BUDGET_BYTES, FORWARD_WAVES,
     MEASURED_MAX_DISCOVERY_DEPTH,
 };
+
+/// The discovery visited set: `(recipe, op, address, extent length)`.
+pub(super) type VisitedSet = FxSet<(u32, u16, u64, u64)>;
 
 /// A window relative to the address a copy op acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -468,13 +472,18 @@ struct CopyTask {
 }
 
 /// A decode op about to run against already-copied bytes.
-#[derive(Clone, Debug)]
+///
+/// A site deliberately does NOT carry the interval its base sits in. The
+/// discovery edge a decode op produces is anchored on the interval holding the
+/// FIELD it read — `run_site` looks that up as part of reading the field — and
+/// an interval for the site's base would be a second, unused lookup per site
+/// and, in `DecodeExtent`'s element loop, per element.
+#[derive(Clone, Copy, Debug)]
 struct DecodeSite {
     op: u16,
     base: u64,
     /// The proven region `base` sits in.
     region: Proof,
-    parent: Option<IntervalId>,
 }
 
 #[derive(Clone, Debug)]
@@ -509,7 +518,7 @@ struct Observation<'a, M: SnapshotMemory> {
     states: Vec<RecipeState>,
     tables: BTreeMap<(usize, TableId), TableBinding>,
     /// (recipe, op, address, extent length) already expanded.
-    visited: BTreeSet<(usize, u16, u64, u64)>,
+    visited: VisitedSet,
     /// Tasks pruned as duplicates. Their dependency edges are still real, so
     /// they are replayed for linkage only once every interval exists.
     pruned: Vec<CopyTask>,
@@ -541,7 +550,14 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             owners: OwnershipMap::new(),
             states: recipes.iter().map(|_| RecipeState::new()).collect(),
             tables: BTreeMap::new(),
-            visited: BTreeSet::new(),
+            // Sized for the roots up front. The set is one insert per copy
+            // task, and a hash table that grows into that from nothing rehashes
+            // every key about twice over; the root count is the one part of the
+            // final size that is known before any memory is touched.
+            visited: VisitedSet::with_capacity_and_hasher(
+                recipes.iter().map(|recipe| recipe.roots.len()).sum(),
+                BuildHasherDefault::default(),
+            ),
             pruned: Vec::new(),
             waves: (0..FORWARD_WAVES + 1).map(|_| Vec::new()).collect(),
             forward_waves_run: 0,
@@ -608,6 +624,10 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             }
             self.forward_waves_run += 1;
             self.copy_wave(&tasks)?;
+            // Fold the wave's new intervals into the index body. Once per
+            // wave, not once per transaction: that ratio is the whole point of
+            // the sweep.
+            self.owners.end_wave();
             self.decode_wave(&tasks);
         }
 
@@ -633,12 +653,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             })
             .collect::<BTreeMap<ConsumerId, GapReason>>();
 
-        let snapshot = Snapshot::freeze(
-            self.config.hour,
-            self.arena.into_bytes(),
-            self.owners.into_records(),
-            gapped,
-        );
+        let (records, links) = self.owners.into_frozen();
+        let snapshot = Snapshot::freeze(self.config.hour, self.arena.into_bytes(), records, links, gapped);
 
         Ok(SnapshotBuild {
             snapshot,
@@ -675,8 +691,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // as a duplicate of the shorter — copying a prefix and reporting
         // `Captured`.
         let key = match &task.body {
-            TaskBody::Op { op, addr, .. } => (recipe, *op, *addr, 0u64),
-            TaskBody::Extent { op, span, .. } => (recipe, *op, span.start, span.len),
+            TaskBody::Op { op, addr, .. } => (recipe as u32, *op, *addr, 0u64),
+            TaskBody::Extent { op, span, .. } => (recipe as u32, *op, span.start, span.len),
         };
         if !self.visited.insert(key) {
             // Already expanded, at this depth or a shallower one. Expanding it
@@ -772,6 +788,20 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// waves and recipes. That is not a micro-optimisation: a fresh `Vec` per
     /// task or per copy transaction is a heap allocation inside the bracket,
     /// and the bracket is the thing being priced.
+    ///
+    /// # One batch per recipe, and each batch is a sweep
+    ///
+    /// A recipe's coalesced copies come out of `plan_copies_into` sorted by
+    /// address and pairwise disjoint, and its requests come with a sorted
+    /// index alongside. So neither the acquisition nor the dependency attach
+    /// looks anything up: each takes a [`super::dedup::Cursor`] and walks the
+    /// ownership index once for the whole batch. `end_batch` folds the batch's
+    /// new intervals into the wave's index run afterwards, which is what keeps
+    /// the next recipe's sweep seeing them.
+    ///
+    /// Acquiring the whole batch before attaching anything is not an ordering
+    /// choice: the attach pass must see every interval the batch created,
+    /// including the ones a later copy in the batch produced.
     fn copy_wave(&mut self, tasks: &[CopyTask]) -> Result<(), CustodyRefusal> {
         let mut by_recipe = std::mem::take(&mut self.by_recipe);
         by_recipe.clear();
@@ -786,6 +816,11 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         let mut result = Ok(());
         for (recipe, indices) in by_recipe.iter() {
             let recipe = *recipe;
+            // Unconditionally, and before anything can `continue`: the batch
+            // run must be empty when a batch's sweep starts, or a later
+            // batch's lower-addressed hole would be appended behind a higher
+            // one and the run would stop being sorted.
+            self.owners.end_batch();
             if self.refused(recipe) {
                 continue;
             }
@@ -896,9 +931,12 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             }
 
             let mut unreadable = None;
+            // The planned copies are sorted and disjoint, so one cursor walks
+            // the ownership index for the whole batch.
+            let mut cursor = self.owners.sweep();
             for index in 0..planned.copies.len() {
                 let span = planned.copies[index].span;
-                match self.acquire(span, &mut acquisition) {
+                match self.acquire(&mut cursor, span, &mut acquisition) {
                     Ok(Ok(())) => {}
                     Ok(Err(hole)) => {
                         unreadable = Some(hole);
@@ -921,10 +959,20 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             // Ownership and edges are attached per REQUEST, not per planned
             // copy: a merged transaction may serve several tasks with
             // different parents, and each one's edges belong to its own span.
+            //
+            // The walk is in `planned.order()` — the request indices the
+            // coalescer already sorted by address — rather than in request
+            // order, so this pass is a second sweep rather than a lookup per
+            // request. Every request is still visited exactly once: the order
+            // holds every non-empty request, and an empty one attaches to
+            // nothing under either order.
             let consumer = self.recipes[recipe].consumer;
-            for request in requests.iter() {
+            let mut cursor = self.owners.sweep();
+            for position in 0..planned.order().len() {
+                let request = requests[planned.order()[position] as usize];
                 let parent = tasks[request.task as usize].parent;
-                self.owners.overlapping_into(request.span, &mut owned);
+                self.owners
+                    .sweep_overlapping(&mut cursor, request.span, &mut owned);
                 for id in owned.iter() {
                     self.owners.add_dependent(*id, consumer, request.span);
                     if let Some(parent) = parent {
@@ -933,6 +981,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 }
             }
         }
+        self.owners.end_batch();
 
         self.by_recipe = by_recipe;
         self.requests = requests;
@@ -948,10 +997,11 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// custody refusal, which is not attributable to one recipe.
     fn acquire(
         &mut self,
+        cursor: &mut super::dedup::Cursor,
         span: Span,
         plan: &mut super::dedup::AcquisitionPlan,
     ) -> Result<Result<(), Span>, CustodyRefusal> {
-        self.owners.plan_into(span, plan);
+        self.owners.sweep_plan(cursor, span, plan);
         for hole in plan.holes.iter().copied() {
             let len = match usize::try_from(hole.len) {
                 Ok(len) => len,
@@ -1004,13 +1054,11 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         RecipeOp::CopyRanges { next, .. } => (Proof::None, next.as_slice()),
                         _ => (Proof::None, [].as_slice()),
                     };
-                    let parent = self.owners.find(*addr);
                     for op in next.iter().rev() {
                         stack.push(DecodeSite {
                             op: *op,
                             base: *addr,
                             region,
-                            parent,
                         });
                     }
                 }
@@ -1045,12 +1093,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             }
                         };
                         for op in element.iter().rev() {
-                            stack.push(DecodeSite {
-                                op: *op,
-                                base,
-                                region,
-                                parent: self.owners.find(base),
-                            });
+                            stack.push(DecodeSite { op: *op, base, region });
                         }
                     }
                     if overflowed {
@@ -1105,8 +1148,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     Some(addr) => addr,
                     None => return self.refuse_unrepresentable(recipe, site.base, i64::from(offset)),
                 };
-                let value = match self.read_uint(addr, 8) {
-                    Some(value) => value,
+                let (value, holder) = match self.read_uint(addr, 8) {
+                    Some(read) => read,
                     None => {
                         self.refuse(
                             recipe,
@@ -1124,7 +1167,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 let task = CopyTask {
                     recipe,
                     depth: depth + 1,
-                    parent: self.owners.find(addr),
+                    parent: Some(holder),
                     body: TaskBody::Op {
                         op: next,
                         addr: value,
@@ -1168,7 +1211,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     }
                 };
                 let raw_count = match self.read_uint(count_addr, count_width as usize) {
-                    Some(value) => value,
+                    Some((value, _)) => value,
                     None => {
                         self.refuse(
                             recipe,
@@ -1180,8 +1223,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         return;
                     }
                 };
-                let base = match self.read_uint(ptr_addr, 8) {
-                    Some(value) => value,
+                let (base, base_holder) = match self.read_uint(ptr_addr, 8) {
+                    Some(read) => read,
                     None => {
                         self.refuse(
                             recipe,
@@ -1241,7 +1284,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 let task = CopyTask {
                     recipe,
                     depth: depth + 1,
-                    parent: self.owners.find(ptr_addr),
+                    parent: Some(base_holder),
                     body: TaskBody::Extent {
                         op: site.op,
                         span,
@@ -1265,8 +1308,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             .refuse_unrepresentable(recipe, site.base, i64::from(key_offset))
                     }
                 };
-                let key = match self.read_uint(key_addr, key_width as usize) {
-                    Some(value) => value,
+                let (key, key_holder) = match self.read_uint(key_addr, key_width as usize) {
+                    Some(read) => read,
                     None => {
                         self.refuse(
                             recipe,
@@ -1322,7 +1365,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 let task = CopyTask {
                     recipe,
                     depth: depth + 1,
-                    parent: self.owners.find(key_addr),
+                    parent: Some(key_holder),
                     body: TaskBody::Op {
                         op: next,
                         addr,
@@ -1346,7 +1389,6 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         op: *op,
                         base: site.base,
                         region: site.region,
-                        parent: site.parent,
                     });
                 }
             }
@@ -1361,12 +1403,17 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         }
     }
 
-    /// Read an unsigned little-endian integer out of the arena.
-    fn read_uint(&self, addr: u64, width: usize) -> Option<u64> {
-        let bytes = self.owners.read(&self.arena, addr, width)?;
+    /// Read an unsigned little-endian integer out of the arena, with the
+    /// interval that held it.
+    ///
+    /// The holder comes back with the value because every caller needs both
+    /// and looking it up twice is one ordered lookup per decode site: the
+    /// interval a field was read out of IS the discovery edge's parent.
+    fn read_uint(&self, addr: u64, width: usize) -> Option<(u64, IntervalId)> {
+        let (bytes, holder) = self.owners.read_at(&self.arena, addr, width)?;
         let mut raw = [0u8; 8];
         raw[..width].copy_from_slice(bytes);
-        Some(u64::from_le_bytes(raw))
+        Some((u64::from_le_bytes(raw), holder))
     }
 
     /// Attach the dependency edges of tasks that deduplication pruned.
@@ -1416,11 +1463,12 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         if wanted.is_empty() {
             return;
         }
+        let links = self.owners.links();
         let ids: Vec<IntervalId> = self
             .owners
             .records()
             .iter()
-            .filter(|record| record.consumers().any(|c| wanted.contains(&c)))
+            .filter(|record| links.consumers(record).any(|c| wanted.contains(&c)))
             .map(|record| record.id)
             .collect();
         for id in ids {
@@ -1435,13 +1483,10 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// dependent subtree afterwards, which is cheaper than a reverse chase and
     /// strictly more conservative.
     fn closing_wave(&mut self) -> Result<(u32, Vec<IntervalId>), CustodyRefusal> {
-        let ids: Vec<IntervalId> = self
-            .owners
-            .records()
-            .iter()
-            .filter(|record| record.witnessed)
-            .map(|record| record.id)
-            .collect();
+        // Enrolment order, which `enrol_witnesses` produces by walking the
+        // records in id order: the same order a scan of every record produced,
+        // without the scan.
+        let ids: Vec<IntervalId> = self.owners.witnessed_ids().to_vec();
         let mut unreadable = Vec::new();
         for id in &ids {
             let span = self.owners.record(*id).span;

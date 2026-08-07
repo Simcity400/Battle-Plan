@@ -299,7 +299,10 @@ pub(super) struct CopyPlan {
     pub copies: Vec<PlannedCopy>,
     /// Request indices, grouped by copy and ordered by address.
     pub sources: Vec<u32>,
-    /// Scratch for the address ordering. Held here so it is allocated once.
+    /// The non-empty request indices in address order. Held here so it is
+    /// allocated once, and exposed by [`CopyPlan::order`] because the
+    /// executor's dependency attach needs exactly the same ordering the
+    /// coalescer already paid for.
     order: Vec<u32>,
 }
 
@@ -310,6 +313,16 @@ impl CopyPlan {
 
     pub fn len(&self) -> usize {
         self.copies.len()
+    }
+
+    /// The indices of the requests this plan was built from, in ascending
+    /// address order, empty requests excluded.
+    ///
+    /// A caller that has to visit every request AND wants them in address
+    /// order — the executor's dependency attach is the one that does — reads
+    /// this rather than sorting again.
+    pub fn order(&self) -> &[u32] {
+        &self.order
     }
 
     #[cfg(test)]
@@ -362,11 +375,30 @@ pub(super) fn plan_copies_into(requests: &[CopyRequest], policy: &GapPolicy, pla
     plan.copies.clear();
     plan.sources.clear();
     plan.order.clear();
-    plan.order.extend(
-        (0..requests.len() as u32).filter(|&i| !requests[i as usize].span.is_empty()),
-    );
-    plan.order
-        .sort_unstable_by_key(|&i| (requests[i as usize].span.start, requests[i as usize].span.len));
+    // Requests arrive in task order, and a wave's tasks are frequently already
+    // in address order (roots declared in address order, an extent's elements,
+    // a fixed window list). Establishing that costs one sequential pass over
+    // the requests; sorting when it is already true costs a comparison sort
+    // whose every comparison is two random loads into the request array.
+    let mut ascending = true;
+    let mut previous = (0u64, 0u64);
+    for index in 0..requests.len() as u32 {
+        let span = requests[index as usize].span;
+        if span.is_empty() {
+            continue;
+        }
+        let key = (span.start, span.len);
+        if !plan.order.is_empty() && key < previous {
+            ascending = false;
+        }
+        previous = key;
+        plan.order.push(index);
+    }
+    if !ascending {
+        plan.order.sort_unstable_by_key(|&i| {
+            (requests[i as usize].span.start, requests[i as usize].span.len)
+        });
+    }
 
     let order = std::mem::take(&mut plan.order);
     for &index in &order {

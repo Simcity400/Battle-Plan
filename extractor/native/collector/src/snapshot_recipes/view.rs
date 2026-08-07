@@ -42,7 +42,7 @@
 
 use std::collections::BTreeMap;
 
-use super::dedup::IntervalRecord;
+use super::dedup::{IntervalRecord, Links};
 use super::{ConsumerId, GapReason, HourStamp, Span};
 
 /// Bits of address per index bucket. 4 KiB pages: the same granularity the
@@ -73,28 +73,44 @@ pub const PAGE_SHIFT: u32 = 12;
 /// which is at or before `addr`. No such `Z` exists, so `X` is at `pos - 1` or
 /// at `pos` or later. `page_index_agrees_with_the_ordered_search` pins it
 /// against a plain binary search over page-spanning intervals.
+///
+/// # Why an array rather than a map
+///
+/// The buckets are built once, from an already address-ordered table, and are
+/// then read-only. That makes an ordered map pure overhead: the build inserts
+/// one node per occupied page — up to one per interval on a scattered image —
+/// where an array append is a push, and the lookup's `range(..=page)` is a
+/// tree walk where `partition_point` is a bisection over contiguous memory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageIndex {
-    first: BTreeMap<u64, u32>,
+    /// `(page, first position)`, ascending by page, one entry per page that
+    /// has an interval starting in it.
+    first: Vec<(u64, u32)>,
 }
 
 impl PageIndex {
     /// Build over an ALREADY address-ordered interval table.
     pub fn build(ordered: &[IntervalRecord]) -> Self {
-        let mut first = BTreeMap::new();
+        let mut first: Vec<(u64, u32)> = Vec::new();
         for (position, record) in ordered.iter().enumerate() {
             let page = record.span.start >> PAGE_SHIFT;
-            first.entry(page).or_insert(position as u32);
+            // Ascending input, so a new page is always a new last bucket and
+            // a repeated page already has its first position recorded.
+            if first.last().map(|&(held, _)| held) != Some(page) {
+                first.push((page, position as u32));
+            }
         }
         Self { first }
     }
 
     /// Position in `order` to start scanning from for `addr`.
     fn entry_for(&self, addr: u64) -> Option<u32> {
-        self.first
-            .range(..=(addr >> PAGE_SHIFT))
-            .next_back()
-            .map(|(_, &position)| position)
+        let page = addr >> PAGE_SHIFT;
+        let at = self.first.partition_point(|&(held, _)| held <= page);
+        if at == 0 {
+            return None;
+        }
+        Some(self.first[at - 1].1)
     }
 
     pub fn buckets(&self) -> usize {
@@ -109,14 +125,24 @@ pub struct Snapshot {
     bytes: Vec<u8>,
     /// Address-ordered.
     intervals: Vec<IntervalRecord>,
+    /// The dependency lists and discovery edges every record's chain heads
+    /// index into. Frozen with the records, and the reason a record is 56
+    /// bytes rather than 96 plus two heap allocations.
+    links: Links,
     index: PageIndex,
     gapped: BTreeMap<ConsumerId, GapReason>,
 }
 
 impl Snapshot {
-    /// Freeze. `records` need not be sorted; it is sorted in place rather than
-    /// permuted into a clone, because every record owns two `Vec`s and cloning
-    /// the table is two heap allocations per copied interval.
+    /// Freeze an ALREADY address-ordered record table.
+    ///
+    /// The ordering is the caller's to establish, and
+    /// [`super::dedup::OwnershipMap::into_frozen`] is what establishes it: the
+    /// ownership index already holds the permutation, so asking for it there
+    /// is a pass over 24-byte index entries instead of a comparison sort over
+    /// the record table. Sorting here as well would pay for the same order
+    /// twice, once per observation, on the largest table the substrate
+    /// builds.
     ///
     /// A record's position in the frozen table is therefore NOT its
     /// [`IntervalId`]; the id stays in the record, which is what the witness
@@ -124,15 +150,20 @@ impl Snapshot {
     pub(super) fn freeze(
         hour: HourStamp,
         bytes: Vec<u8>,
-        mut records: Vec<IntervalRecord>,
+        records: Vec<IntervalRecord>,
+        links: Links,
         gapped: BTreeMap<ConsumerId, GapReason>,
     ) -> Self {
-        records.sort_unstable_by_key(|record| record.span.start);
+        debug_assert!(
+            records.windows(2).all(|pair| pair[0].span.start <= pair[1].span.start),
+            "freeze requires an address-ordered record table",
+        );
         let index = PageIndex::build(&records);
         Self {
             hour,
             bytes,
             intervals: records,
+            links,
             index,
             gapped,
         }
@@ -152,6 +183,11 @@ impl Snapshot {
 
     pub fn intervals(&self) -> &[IntervalRecord] {
         &self.intervals
+    }
+
+    /// The dependency lists and discovery edges of the frozen intervals.
+    pub fn links(&self) -> &Links {
+        &self.links
     }
 
     pub fn index(&self) -> &PageIndex {
@@ -289,7 +325,7 @@ impl<'a> SnapshotView<'a> {
             .locate(addr)
             .ok_or(ViewRefusal::NotCaptured { span: want })?;
         let record = &self.snapshot.intervals[position];
-        if !record.reaches(self.consumer, &want) {
+        if !self.snapshot.links.reaches(record, self.consumer, &want) {
             return Err(ViewRefusal::NotOwned { span: want });
         }
         Ok(record.opening_offset + (addr - record.span.start) as usize)
@@ -317,7 +353,7 @@ impl<'a> SnapshotView<'a> {
                 ViewRefusal::NotCaptured { span: want }
             });
         }
-        if !record.reaches(self.consumer, &want) {
+        if !self.snapshot.links.reaches(record, self.consumer, &want) {
             return Err(ViewRefusal::NotOwned { span: want });
         }
         let skew = (addr - record.span.start) as usize;
@@ -344,7 +380,11 @@ impl<'a> SnapshotView<'a> {
             let skew = (cursor - record.span.start) as usize;
             let available = record.span.len as usize - skew;
             let take = available.min(out.len() - written);
-            if !record.reaches(self.consumer, &Span::new(cursor, take as u64)) {
+            if !self
+                .snapshot
+                .links
+                .reaches(record, self.consumer, &Span::new(cursor, take as u64))
+            {
                 return Err(ViewRefusal::NotOwned { span: want });
             }
             let offset = record.opening_offset + skew;

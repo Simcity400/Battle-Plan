@@ -879,9 +879,10 @@ fn a_shared_object_is_copied_once_and_carries_both_dependents() {
     assert_eq!(outcome(&build, 2), RecipeOutcome::Captured);
     assert_eq!(memory.copies(), 3, "three objects, two recipes, three copies");
     assert_eq!(build.snapshot.interval_count(), 3);
+    let links = build.snapshot.links();
     for record in build.snapshot.intervals() {
-        assert!(record.depends(ConsumerId(1)));
-        assert!(record.depends(ConsumerId(2)));
+        assert!(links.depends(record, ConsumerId(1)));
+        assert!(links.depends(record, ConsumerId(2)));
     }
     // Both recipes are still charged for what they asked for: deduplication is
     // a copier saving, not an accounting fiction.
@@ -934,10 +935,11 @@ fn a_partial_overlap_copies_only_the_hole() {
     );
     assert_eq!(memory.bytes_moved(), 0x60, "0x20 bytes are not re-copied");
     // The already-owned half still gains the second consumer.
-    assert!(build.snapshot.intervals()[0].depends(ConsumerId(1)));
-    assert!(build.snapshot.intervals()[0].depends(ConsumerId(2)));
-    assert!(!build.snapshot.intervals()[1].depends(ConsumerId(1)));
-    assert!(build.snapshot.intervals()[1].depends(ConsumerId(2)));
+    let links = build.snapshot.links();
+    assert!(links.depends(&build.snapshot.intervals()[0], ConsumerId(1)));
+    assert!(links.depends(&build.snapshot.intervals()[0], ConsumerId(2)));
+    assert!(!links.depends(&build.snapshot.intervals()[1], ConsumerId(1)));
+    assert!(links.depends(&build.snapshot.intervals()[1], ConsumerId(2)));
 }
 
 #[test]
@@ -1998,4 +2000,551 @@ fn the_phase_count_is_fourteen() {
     assert_eq!(MEASURED_MAX_DISCOVERY_DEPTH, 12);
     assert_eq!(FORWARD_WAVES, 13);
     assert_eq!(TOTAL_PHASES, 14);
+}
+
+// ---------------------------------------------------------------------------
+// The swept ownership index
+// ---------------------------------------------------------------------------
+//
+// The index is three address-sorted runs walked by a shared `Cursor` instead
+// of one ordered map probed per transaction. Everything below is a way that
+// substitution could be wrong while the observation-level tests above still
+// pass: an entry reported twice, an entry the cursor walked past too early, a
+// run boundary that swallows an interval, a fold that loses the ordering the
+// next sweep depends on.
+
+/// Owned intervals in a fixed shape, split deliberately across all three index
+/// runs: `spans[0..2]` in the body, `spans[2..4]` in the wave's pending run,
+/// `spans[4..]` in the current batch's fresh run.
+fn three_run_map(spans: &[Span]) -> OwnershipMap {
+    let mut owners = OwnershipMap::new();
+    for (index, span) in spans.iter().enumerate() {
+        owners.insert(*span, index * 0x100);
+        if index == 1 {
+            owners.end_wave();
+        } else if index == 3 {
+            owners.end_batch();
+        }
+    }
+    owners
+}
+
+/// A batch swept with one cursor must report exactly what the same queries
+/// report one at a time.
+fn sweep_agrees_with_single_queries(owners: &OwnershipMap, queries: &[Span]) {
+    let mut cursor = owners.sweep();
+    let mut swept = Vec::new();
+    for query in queries {
+        owners.sweep_overlapping(&mut cursor, *query, &mut swept);
+        assert_eq!(
+            swept,
+            owners.overlapping(*query),
+            "sweep disagreed with the bisecting query at {query:?}"
+        );
+    }
+}
+
+/// SENTINEL. Adjacent intervals share a boundary address, so a sweep that
+/// advanced its cursor on `end <= start` instead of `end < start`, or that
+/// tested `entry.start < last` instead of `<=`, drops or duplicates exactly
+/// one of them. Both mistakes are invisible on non-touching fixtures.
+#[test]
+fn a_sweep_over_adjacent_intervals_reports_each_one_once() {
+    // Five intervals with no holes at all between them.
+    let spans: Vec<Span> = (0..5)
+        .map(|index| Span::new(0x1000 + index * 0x10, 0x10))
+        .collect();
+    let owners = three_run_map(&spans);
+
+    let queries: Vec<Span> = vec![
+        Span::new(0x1000, 1),    // the first byte of the first interval
+        Span::new(0x100F, 2),    // the seam between the first two
+        Span::new(0x1010, 0x10), // exactly the second
+        Span::new(0x1020, 0x21), // the third, fourth and one byte of the fifth
+        Span::new(0x1040, 0x10), // exactly the last
+    ];
+    sweep_agrees_with_single_queries(&owners, &queries);
+
+    let mut cursor = owners.sweep();
+    let mut out = Vec::new();
+    let counts: Vec<usize> = queries
+        .iter()
+        .map(|query| {
+            owners.sweep_overlapping(&mut cursor, *query, &mut out);
+            out.len()
+        })
+        .collect();
+    assert_eq!(counts, vec![1, 2, 1, 3, 1]);
+
+    // And the whole run in one query is five owners, in address order, once
+    // each.
+    let all = owners.overlapping(Span::new(0x1000, 0x50));
+    assert_eq!(all.len(), 5);
+    let starts: Vec<u64> = all
+        .iter()
+        .map(|id| owners.record(*id).span.start)
+        .collect();
+    assert_eq!(starts, vec![0x1000, 0x1010, 0x1020, 0x1030, 0x1040]);
+
+    // SENTINEL WITHIN THE SENTINEL. A query starting on the LAST byte of an
+    // interval, reached from a cursor sitting further back, is the only shape
+    // that separates the advance's `ends before this query starts` from `ends
+    // at or before it`. The queries above never make the cursor gallop onto
+    // such an entry, so the off-by-one hides from all of them.
+    let mut cursor = owners.sweep();
+    owners.sweep_overlapping(&mut cursor, Span::new(0x1000, 1), &mut out);
+    assert_eq!(out.len(), 1);
+    for last_byte in [0x101Fu64, 0x102F, 0x103F, 0x104F] {
+        owners.sweep_overlapping(&mut cursor, Span::new(last_byte, 1), &mut out);
+        assert_eq!(
+            out.len(),
+            1,
+            "the interval ending at {last_byte:#x} still contains its own last byte"
+        );
+        assert_eq!(owners.record(out[0]).span.start, last_byte - 0xF);
+    }
+}
+
+/// SENTINEL. An interval starting exactly at the query address is the case
+/// that double-counted under the ordered map (see
+/// `an_interval_starting_at_the_query_address_is_reported_once`). The swept
+/// index reaches it by a different route — cursor position versus run merge —
+/// so it is pinned again against the sweep.
+#[test]
+fn a_sweep_reports_an_interval_starting_at_the_query_address_once() {
+    let spans = [
+        Span::new(0x1000, 0x10),
+        Span::new(0x1010, 0x10),
+        Span::new(0x1020, 0x10),
+        Span::new(0x1030, 0x10),
+        Span::new(0x1040, 0x10),
+    ];
+    let owners = three_run_map(&spans);
+    let mut cursor = owners.sweep();
+    let mut out = Vec::new();
+    for start in [0x1000u64, 0x1010, 0x1020, 0x1030, 0x1040] {
+        owners.sweep_overlapping(&mut cursor, Span::new(start, 0x10), &mut out);
+        assert_eq!(out.len(), 1, "one owner at {start:#x}, not two");
+        assert_eq!(owners.record(out[0]).span.start, start);
+    }
+}
+
+/// A batch of queries that overlap EACH OTHER — which is what two recipes'
+/// requests in one wave look like — must not let the cursor skip an interval
+/// an earlier query already consumed.
+#[test]
+fn a_sweep_re_reports_an_interval_two_queries_share() {
+    let spans = [
+        Span::new(0x1000, 0x40),
+        Span::new(0x1040, 0x40),
+        Span::new(0x1080, 0x40),
+        Span::new(0x10C0, 0x40),
+        Span::new(0x1100, 0x40),
+    ];
+    let owners = three_run_map(&spans);
+    let queries = [
+        Span::new(0x1000, 0x50),
+        Span::new(0x1020, 0x50),
+        Span::new(0x1020, 0x100),
+        Span::new(0x1030, 1),
+    ];
+    sweep_agrees_with_single_queries(&owners, &queries);
+
+    let mut cursor = owners.sweep();
+    let mut out = Vec::new();
+    owners.sweep_overlapping(&mut cursor, queries[0], &mut out);
+    assert_eq!(out.len(), 2);
+    owners.sweep_overlapping(&mut cursor, queries[3], &mut out);
+    assert_eq!(out.len(), 1, "the first interval is still reachable");
+}
+
+/// An empty batch and a one-interval batch: the degenerate shapes a wave
+/// actually takes at the deep end of a chain.
+#[test]
+fn a_sweep_over_empty_and_single_interval_shapes() {
+    let empty = OwnershipMap::new();
+    let mut cursor = empty.sweep();
+    let mut out = vec![IntervalId(7)];
+    empty.sweep_overlapping(&mut cursor, Span::new(0x1000, 0x10), &mut out);
+    assert!(out.is_empty(), "no owners, and the buffer is cleared");
+    assert_eq!(empty.plan(Span::new(0x1000, 0x10)).holes, vec![Span::new(0x1000, 0x10)]);
+    assert!(empty.find(0x1000).is_none());
+
+    let mut single = OwnershipMap::new();
+    single.insert(Span::new(0x1000, 0x10), 0);
+    let mut cursor = single.sweep();
+    single.sweep_overlapping(&mut cursor, Span::new(0x0FF0, 0x10), &mut out);
+    assert!(out.is_empty(), "ends exactly where the interval starts");
+    single.sweep_overlapping(&mut cursor, Span::new(0x0FF0, 0x11), &mut out);
+    assert_eq!(out.len(), 1, "one byte of overlap is an overlap");
+    single.sweep_overlapping(&mut cursor, Span::new(0x1010, 0x10), &mut out);
+    assert!(out.is_empty(), "starts exactly where the interval ends");
+
+    // An empty span is not an address range and owns nothing, in either
+    // direction: it is not indexed and it overlaps nothing.
+    let mut with_empty = OwnershipMap::new();
+    with_empty.insert(Span::new(0x1000, 0), 0);
+    with_empty.insert(Span::new(0x1000, 0x10), 0);
+    assert_eq!(with_empty.overlapping(Span::new(0x1000, 0x10)).len(), 1);
+    let mut cursor = with_empty.sweep();
+    with_empty.sweep_overlapping(&mut cursor, Span::new(0x1000, 0), &mut out);
+    assert!(out.is_empty());
+}
+
+/// SENTINEL. The cursor may pass an interval only once no later query can
+/// reach it. An interval that spans the hole between two queries is the case
+/// that catches an advance keyed on the interval's START.
+#[test]
+fn a_sweep_does_not_pass_an_interval_a_later_query_still_needs() {
+    let mut owners = OwnershipMap::new();
+    owners.insert(Span::new(0x1000, 0x1000), 0); // one wide interval
+    owners.end_wave();
+    owners.insert(Span::new(0x3000, 0x10), 0x1000);
+
+    let mut cursor = owners.sweep();
+    let mut out = Vec::new();
+    for start in [0x1000u64, 0x1400, 0x1800, 0x1FFF] {
+        owners.sweep_overlapping(&mut cursor, Span::new(start, 1), &mut out);
+        assert_eq!(out.len(), 1, "the wide interval still covers {start:#x}");
+    }
+    owners.sweep_overlapping(&mut cursor, Span::new(0x2000, 1), &mut out);
+    assert!(out.is_empty(), "one past the wide interval");
+    owners.sweep_overlapping(&mut cursor, Span::new(0x3008, 1), &mut out);
+    assert_eq!(out.len(), 1, "the gallop did not overshoot the far interval");
+}
+
+/// The acquisition plan swept across a batch must split holes exactly as the
+/// single-query plan does, including when the batch's own inserts fill them.
+#[test]
+fn a_swept_acquisition_plan_splits_the_same_holes() {
+    let spans = [
+        Span::new(0x1000, 0x10),
+        Span::new(0x1030, 0x10),
+        Span::new(0x1080, 0x10),
+        Span::new(0x2000, 0x10),
+        Span::new(0x2040, 0x10),
+    ];
+    let owners = three_run_map(&spans);
+    let queries = [
+        Span::new(0x0FF0, 0x60),
+        Span::new(0x1070, 0x30),
+        Span::new(0x1FF0, 0x70),
+    ];
+    let mut cursor = owners.sweep();
+    let mut swept = super::dedup::AcquisitionPlan::default();
+    for query in queries {
+        owners.sweep_plan(&mut cursor, query, &mut swept);
+        assert_eq!(swept, owners.plan(query), "at {query:?}");
+    }
+
+    assert_eq!(
+        owners.plan(Span::new(0x0FF0, 0x60)).holes,
+        vec![
+            Span::new(0x0FF0, 0x10),
+            Span::new(0x1010, 0x20),
+            Span::new(0x1040, 0x10),
+        ]
+    );
+
+    // The batch's own inserts are visible to the rest of the batch: this is
+    // what lets `acquire` fill a hole and have the next planned copy see it.
+    // The batch run starts empty, exactly as the executor arranges, so the
+    // batch's ascending holes append to it.
+    let mut live = three_run_map(&spans);
+    live.end_batch();
+    let mut cursor = live.sweep();
+    let mut plan = super::dedup::AcquisitionPlan::default();
+    live.sweep_plan(&mut cursor, Span::new(0x1010, 0x20), &mut plan);
+    assert_eq!(plan.holes, vec![Span::new(0x1010, 0x20)]);
+    live.insert(Span::new(0x1010, 0x20), 0x500);
+    live.sweep_plan(&mut cursor, Span::new(0x1010, 0x30), &mut plan);
+    assert!(
+        plan.holes.is_empty(),
+        "the hole this batch just filled is owned now"
+    );
+    assert_eq!(
+        plan.existing.len(),
+        2,
+        "the interval this batch created and the one after it"
+    );
+    // And a query reaching past the owned run still finds the rest.
+    live.sweep_plan(&mut cursor, Span::new(0x1010, 0x40), &mut plan);
+    assert_eq!(plan.holes, vec![Span::new(0x1040, 0x10)]);
+}
+
+/// SENTINEL. Folding is what keeps the runs sorted, and a sweep against an
+/// unsorted run reports the wrong owners. Every fold order must land on the
+/// same index.
+#[test]
+fn folding_the_index_preserves_address_order_and_content() {
+    let spans: Vec<Span> = (0..24)
+        .map(|index| Span::new(0x1000 + index * 0x20, 0x10))
+        .collect();
+    // Insert in an order that puts low addresses in late runs.
+    let mut owners = OwnershipMap::new();
+    for chunk in [(16usize, 24usize), (8, 16), (0, 8)] {
+        for index in chunk.0..chunk.1 {
+            owners.insert(spans[index], index * 0x10);
+        }
+        owners.end_batch();
+    }
+    owners.end_wave();
+
+    let all = owners.overlapping(Span::new(0x1000, 24 * 0x20));
+    assert_eq!(all.len(), 24);
+    let starts: Vec<u64> = all.iter().map(|id| owners.record(*id).span.start).collect();
+    let mut expected: Vec<u64> = spans.iter().map(|span| span.start).collect();
+    expected.sort_unstable();
+    assert_eq!(starts, expected, "the fold must leave the index in address order");
+
+    for span in &spans {
+        assert!(owners.find(span.start).is_some(), "{span:?} survived the fold");
+    }
+
+    // And the frozen table comes out in address order however it was built.
+    let (records, _links) = owners.into_frozen();
+    assert_eq!(records.len(), 24);
+    assert!(records.windows(2).all(|pair| pair[0].span.start < pair[1].span.start));
+}
+
+/// SENTINEL. A discovery edge already on a parent's chain is not stored
+/// twice, and the search for it is bounded so one parent's element array
+/// cannot make the attach quadratic. Both halves are pinned: short chains are
+/// exact, and a chain past the bound stays correct for the only thing that
+/// reads it.
+#[test]
+fn a_repeated_discovery_edge_is_stored_once_up_to_the_scan_bound() {
+    let mut owners = OwnershipMap::new();
+    let parent = owners.insert(Span::new(0x1000, 0x10), 0);
+    let child = owners.insert(Span::new(0x2000, 0x10), 0x10);
+    let other = owners.insert(Span::new(0x3000, 0x10), 0x20);
+
+    owners.add_edge(parent, child, ConsumerId(1));
+    owners.add_edge(parent, child, ConsumerId(1));
+    owners.add_edge(parent, child, ConsumerId(1));
+    let record = *owners.record(parent);
+    assert_eq!(
+        owners.links().children(&record).count(),
+        1,
+        "the same edge three times is one edge"
+    );
+
+    // A DIFFERENT consumer down the same edge is a different edge: that label
+    // is what keeps invalidation per consumer.
+    owners.add_edge(parent, child, ConsumerId(2));
+    owners.add_edge(parent, other, ConsumerId(1));
+    let record = *owners.record(parent);
+    let mut edges: Vec<(IntervalId, ConsumerId)> = owners.links().children(&record).collect();
+    edges.sort_unstable();
+    assert_eq!(
+        edges,
+        vec![
+            (child, ConsumerId(1)),
+            (child, ConsumerId(2)),
+            (other, ConsumerId(1)),
+        ]
+    );
+
+    // A self-edge is not an edge.
+    owners.add_edge(parent, parent, ConsumerId(1));
+    let record = *owners.record(parent);
+    assert_eq!(owners.links().children(&record).count(), 3);
+}
+
+/// SENTINEL (Codex review finding A). The edge dedup's chain walk is bounded,
+/// so a parent with a long chain answers from a spilled set instead. The
+/// bound must not become a hole: an edge added FIRST is the DEEPEST one on a
+/// chain that prepends, so it is exactly the edge a bounded walk stops short
+/// of. Recording it a second time after the chain has outgrown the bound must
+/// still be a no-op.
+///
+/// The executor reaches this with one container: every element's
+/// `DecodePointer` reads its field out of the one array interval, so the
+/// array is the parent of every element's edge, and `link_pruned` replays a
+/// pruned duplicate after all of them.
+#[test]
+fn an_edge_deeper_than_the_dedup_scan_is_still_not_recorded_twice() {
+    let mut owners = OwnershipMap::new();
+    let parent = owners.insert(Span::new(0x1000, 0x10), 0);
+    let first = owners.insert(Span::new(0x2000, 0x10), 0x10);
+    owners.add_edge(parent, first, ConsumerId(1));
+
+    // Bury it under far more than the scan bound.
+    let mut buried = Vec::new();
+    for index in 0..400u64 {
+        let child = owners.insert(Span::new(0x3000 + index * 0x10, 0x10), 0);
+        owners.add_edge(parent, child, ConsumerId(1));
+        buried.push(child);
+    }
+    let record = *owners.record(parent);
+    let before = owners.links().children(&record).count();
+    assert_eq!(before, 401);
+
+    // The deepest edge, again.
+    owners.add_edge(parent, first, ConsumerId(1));
+    let record = *owners.record(parent);
+    assert_eq!(
+        owners.links().children(&record).count(),
+        before,
+        "the deepest edge is already recorded, however long the chain got"
+    );
+
+    // So is one from the middle, and one from the very top.
+    owners.add_edge(parent, buried[7], ConsumerId(1));
+    owners.add_edge(parent, buried[399], ConsumerId(1));
+    let record = *owners.record(parent);
+    assert_eq!(owners.links().children(&record).count(), before);
+
+    // A genuinely new edge past the bound is still recorded, once.
+    let fresh = owners.insert(Span::new(0x9000, 0x10), 0);
+    owners.add_edge(parent, fresh, ConsumerId(1));
+    owners.add_edge(parent, fresh, ConsumerId(1));
+    let record = *owners.record(parent);
+    assert_eq!(owners.links().children(&record).count(), before + 1);
+
+    // And the chain still holds exactly the right edges.
+    let mut edges: Vec<IntervalId> = owners
+        .links()
+        .children(&record)
+        .map(|(child, _)| child)
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    assert_eq!(edges.len(), before + 1, "no duplicates survived");
+
+    // Spilling is per parent: a parent that never spilled is untouched by one
+    // that did.
+    let other = owners.insert(Span::new(0xA000, 0x10), 0);
+    owners.add_edge(other, first, ConsumerId(1));
+    owners.add_edge(other, first, ConsumerId(1));
+    let record = *owners.record(other);
+    assert_eq!(owners.links().children(&record).count(), 1);
+}
+
+/// An out-of-order `insert` — which the batch sweep never produces, but which
+/// a direct caller can — must still leave a run a sweep can walk.
+#[test]
+fn an_out_of_order_insert_keeps_the_index_sorted() {
+    let mut owners = OwnershipMap::new();
+    for start in [0x3000u64, 0x1000, 0x2000, 0x0500] {
+        owners.insert(Span::new(start, 0x10), 0);
+    }
+    let all = owners.overlapping(Span::new(0, 0x4000));
+    let starts: Vec<u64> = all.iter().map(|id| owners.record(*id).span.start).collect();
+    assert_eq!(starts, vec![0x0500, 0x1000, 0x2000, 0x3000]);
+    for start in [0x3000u64, 0x1000, 0x2000, 0x0500] {
+        assert!(owners.find(start).is_some());
+    }
+}
+
+/// The whole index at once: a pseudo-random population spread over the three
+/// runs, every query answered by a sweep and by a bisecting lookup, and the
+/// two must never disagree.
+#[test]
+fn the_swept_index_agrees_with_the_bisecting_one_over_a_populated_map() {
+    // Deterministic, dependency-free: a 64-bit xorshift.
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut starts: Vec<u64> = (0..400).map(|_| (next() % 0x4000) * 0x10).collect();
+    starts.sort_unstable();
+    starts.dedup();
+
+    let mut owners = OwnershipMap::new();
+    for (index, start) in starts.iter().enumerate() {
+        // Disjointness is the map's invariant, so the fixture keeps the
+        // intervals inside their own 0x10 slot.
+        owners.insert(Span::new(*start, 0x10), index);
+        if index % 37 == 5 {
+            owners.end_batch();
+        }
+        if index % 91 == 11 {
+            owners.end_wave();
+        }
+    }
+
+    let mut queries: Vec<Span> = (0..600)
+        .map(|_| Span::new((next() % 0x4200) * 0x10, (next() % 0x60) + 1))
+        .collect();
+    queries.sort_unstable_by_key(|span| (span.start, span.len));
+
+    sweep_agrees_with_single_queries(&owners, &queries);
+
+    let mut cursor = owners.sweep();
+    let mut swept = super::dedup::AcquisitionPlan::default();
+    for query in &queries {
+        owners.sweep_plan(&mut cursor, *query, &mut swept);
+        assert_eq!(swept, owners.plan(*query), "plan disagreed at {query:?}");
+    }
+
+    for start in &starts {
+        assert_eq!(
+            owners.find(*start).map(|id| owners.record(id).span.start),
+            Some(*start)
+        );
+        assert!(owners.find(start.wrapping_sub(1)).is_none() || starts.contains(&(start - 0x10)));
+    }
+}
+
+/// The index carries an INCLUSIVE last address so that an interval running to
+/// the top of the address space is representable without the `u128` end.
+#[test]
+fn the_index_holds_an_interval_at_the_top_of_the_address_space() {
+    let mut owners = OwnershipMap::new();
+    owners.insert(Span::new(u64::MAX - 7, 8), 0);
+    assert_eq!(owners.find(u64::MAX).map(|id| id.0), Some(0));
+    assert_eq!(owners.find(u64::MAX - 8), None);
+    assert_eq!(owners.overlapping(Span::new(u64::MAX - 7, 8)).len(), 1);
+    assert!(owners.plan(Span::new(u64::MAX - 7, 8)).holes.is_empty());
+    let mut cursor = owners.sweep();
+    let mut out = Vec::new();
+    owners.sweep_overlapping(&mut cursor, Span::new(u64::MAX, 1), &mut out);
+    assert_eq!(out.len(), 1);
+}
+
+/// SENTINEL. The dependency attach walks requests in the coalescer's address
+/// order rather than in request order. Both orders must reach every request:
+/// dropping the ones the coalescer merged away, or visiting only the planned
+/// copies, silently narrows what a consumer may read.
+#[test]
+fn every_request_attaches_however_the_coalescer_ordered_them() {
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(BASE, 0x400);
+    // Windows declared in DESCENDING address order, so request order and
+    // address order differ, and two of them merge into one transaction.
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyRanges {
+                windows: vec![
+                    RelWindow::new(0x200, 8),
+                    RelWindow::new(0x100, 8),
+                    RelWindow::new(0x104, 8),
+                    RelWindow::new(0x000, 8),
+                ],
+                next: vec![1],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: BASE }],
+    );
+    let closed = observe(&[recipe], &memory, config())
+        .expect("custody")
+        .close_witnesses();
+    let view = closed.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
+    for offset in [0x000u64, 0x100, 0x104, 0x200] {
+        assert!(
+            view.bytes(BASE + offset, 8).is_ok(),
+            "the window at +{offset:#x} must be readable"
+        );
+    }
+    assert!(
+        view.bytes(BASE + 0x300, 8).is_err(),
+        "and nothing the recipe did not ask for"
+    );
 }

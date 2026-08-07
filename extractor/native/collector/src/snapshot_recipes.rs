@@ -109,6 +109,64 @@ pub const DEFAULT_PROVEN_EXTENT_GAP_BYTES: u32 = 128;
 /// extent are proven"; nothing may be configured past the top of that band.
 pub const MAX_PROVEN_WINDOW_GAP_BYTES: u32 = 4096;
 
+/// Hasher for the substrate's two membership sets: the discovery visited set
+/// and the spilled discovery-edge set.
+///
+/// Both are keyed on engine addresses and small indices, never on anything an
+/// outside party chooses, so the collision-attack resistance of the `SipHash`
+/// default buys nothing here and its cost is real — the visited set is one
+/// insert per copy task. This is the `FxHash` mixer, the same one `rustc` uses
+/// for the same reason.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FxHasher {
+    hash: u64,
+}
+
+const FX_MIX: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+impl FxHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.hash = (self.hash.rotate_left(5) ^ word).wrapping_mul(FX_MIX);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.add(u64::from(byte));
+        }
+    }
+    #[inline]
+    fn write_u8(&mut self, value: u8) {
+        self.add(u64::from(value));
+    }
+    #[inline]
+    fn write_u16(&mut self, value: u16) {
+        self.add(u64::from(value));
+    }
+    #[inline]
+    fn write_u32(&mut self, value: u32) {
+        self.add(u64::from(value));
+    }
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+/// A `HashSet` on [`FxHasher`].
+pub type FxSet<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<FxHasher>>;
+
 /// Identity of a post-bracket reader. One consumer is gapped or not gapped
 /// independently of every other: there is no global bracket.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
