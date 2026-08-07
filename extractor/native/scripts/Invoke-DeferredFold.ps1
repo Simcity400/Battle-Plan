@@ -2,8 +2,9 @@
     [Parameter(Mandatory = $true)]
     [string]$RunDir,
 
-    # Zero means recorder_host chooses default_fold_workers(): cores/2,
-    # clamped to 1..8. Any positive value is an explicit override.
+    # Accepted for compatibility and forwarded verbatim. The repack now always
+    # builds the certified H4IX/H4CP artifacts, and that build is a single
+    # streaming pass, so the value does not change the work done.
     [ValidateRange(0, 1024)]
     [int]$Workers = 0,
 
@@ -66,22 +67,81 @@ if (-not ($manifest.PSObject.Properties.Name -contains "stream_format") -or
     [string]$manifest.stream_format -ne "compact") {
     throw "deferred fold requires a compact run manifest: $manifestPath"
 }
-if (-not ($manifest.PSObject.Properties.Name -contains "replay_file") -or
-    [string]::IsNullOrWhiteSpace([string]$manifest.replay_file)) {
-    throw "native session manifest has no replay_file: $manifestPath"
+# Two admissible shapes, mirroring collector_record's own gate:
+#
+#   deferred_fold        host_finalize.fold.skipped=true — the capture finalized
+#                        with --skip-host-fold and published a container whose
+#                        fold this run replaces.
+#   unfinalized_capture  no host_finalize at all — the capture died (or its pack
+#                        failed) before finalize, so there is no container and
+#                        replay_file may be null. THIS is the case recovery
+#                        exists for; refusing it made the "raw survives, refold
+#                        offline" promise false for exactly the runs that need
+#                        it (capture t32, 2026-08-07).
+#
+# The recorder re-checks all of this; these throws only fail fast with a better
+# message. They must never be STRICTER than the recorder, or the wrapper becomes
+# a second, drifting gate in front of the real one.
+# Type checks are exact, not coercing: `-ne $true` would accept the STRING
+# "true", and a nonblank `decoded_sha256` is not the same thing as a SHA-256.
+# The recorder requires a JSON boolean, a numeric byte count and a lowercase
+# 64-hex digest, and a wrapper that admits more than the gate it fronts is how a
+# dry run passes and the real call refuses.
+$hasHostFinalize = $manifest.PSObject.Properties.Name -contains "host_finalize"
+if ($hasHostFinalize) {
+    if (-not ($manifest.host_finalize.PSObject.Properties.Name -contains "fold") -or
+        -not ($manifest.host_finalize.fold.PSObject.Properties.Name -contains "skipped") -or
+        -not ($manifest.host_finalize.fold.skipped -is [bool]) -or
+        -not $manifest.host_finalize.fold.skipped) {
+        throw "run manifest already records a completed host finalize with a real fold; repacking it would re-seal an already-sealed recording: $manifestPath"
+    }
+    $admission = "deferred_fold"
+} else {
+    if (-not ($manifest.PSObject.Properties.Name -contains "stream_storage")) {
+        throw "run manifest has neither host_finalize nor a stream_storage capture receipt; nothing can bind a container to these bytes: $manifestPath"
+    }
+    # Exactly the recorder's rule: an unsigned integer (serde `as_u64`), so a
+    # negative or fractional value is refused here too rather than passing a
+    # loose "is a number" check and being refused by the real gate.
+    $decodedBytes = $manifest.stream_storage.decoded_bytes
+    if ($null -eq $decodedBytes -or
+        -not ($decodedBytes -is [int] -or $decodedBytes -is [long] -or $decodedBytes -is [decimal] -or $decodedBytes -is [double]) -or
+        [double]$decodedBytes -lt 0 -or
+        [double]$decodedBytes -ne [math]::Floor([double]$decodedBytes)) {
+        throw "run manifest stream_storage.decoded_bytes is not a non-negative integer: $manifestPath"
+    }
+    # Case-INSENSITIVE, matching the recorder, which lowercases the digest
+    # before validating it. A case-sensitive check here would refuse a manifest
+    # the recorder accepts.
+    if ([string]$manifest.stream_storage.decoded_sha256 -notmatch '^[0-9a-fA-F]{64}$') {
+        throw "run manifest stream_storage.decoded_sha256 is not a SHA-256: $manifestPath"
+    }
+    # The recorder additionally refuses when a finalizer for this run is still
+    # alive, and when a sealed container for this session already exists. Both
+    # need process/container inspection this wrapper cannot do, so they are
+    # left to the gate rather than approximated here.
+    $admission = "unfinalized_capture"
 }
-$replayFile = [string]$manifest.replay_file
-if ([System.IO.Path]::GetFileName($replayFile) -ne $replayFile) {
-    throw "native session manifest replay_file must be a leaf file name: $replayFile"
+
+$replayFile = if ($manifest.PSObject.Properties.Name -contains "replay_file") { [string]$manifest.replay_file } else { "" }
+if (-not [string]::IsNullOrWhiteSpace($replayFile)) {
+    if ([System.IO.Path]::GetFileName($replayFile) -ne $replayFile) {
+        throw "native session manifest replay_file must be a leaf file name: $replayFile"
+    }
+} elseif ($admission -eq "deferred_fold") {
+    throw "native session manifest has no replay_file: $manifestPath"
+} else {
+    # The packer nulled replay_file. The intended name is recovered the same way
+    # the recorder recovers it: from replay_artifact.recovery.
+    if (-not ($manifest.PSObject.Properties.Name -contains "replay_artifact") -or
+        -not ($manifest.replay_artifact.PSObject.Properties.Name -contains "recovery")) {
+        throw "unfinalized capture manifest has neither replay_file nor replay_artifact.recovery, so the container cannot be named: $manifestPath"
+    }
+    $replayFile = if ($manifest.replay_artifact.recovery -eq $true) { "native_session.failed.battleplan" } else { "native_session.battleplan" }
 }
 $replayPath = Join-Path $RunDir $replayFile
-Assert-File -Path $replayPath -Label "existing replay container"
-
-if (-not ($manifest.PSObject.Properties.Name -contains "host_finalize") -or
-    -not ($manifest.host_finalize.PSObject.Properties.Name -contains "fold") -or
-    -not ($manifest.host_finalize.fold.PSObject.Properties.Name -contains "skipped") -or
-    $manifest.host_finalize.fold.skipped -ne $true) {
-    throw "run manifest does not record a pending --skip-host-fold container: $manifestPath"
+if ($admission -eq "deferred_fold") {
+    Assert-File -Path $replayPath -Label "existing replay container"
 }
 if (-not ($manifest.PSObject.Properties.Name -contains "replay_packaging") -or
     -not ($manifest.replay_packaging.PSObject.Properties.Name -contains "static_artifacts")) {
@@ -191,11 +251,19 @@ try {
 } catch {
     throw "could not parse completed native session manifest $($manifestPath): $($_.Exception.Message)"
 }
+# The repack produces binary hourly persistence (H4IX + H4CP), the same
+# composition an ordinary compact capture seals inline, so the completion
+# receipt is `fold.producer=replay_decoder` with an hour count — never the
+# legacy per-hour JSON `hours_emitted`.
 if (-not ($completedManifest.PSObject.Properties.Name -contains "host_finalize") -or
     -not ($completedManifest.host_finalize.PSObject.Properties.Name -contains "fold") -or
     $completedManifest.host_finalize.fold.skipped -eq $true -or
-    -not ($completedManifest.host_finalize.fold.PSObject.Properties.Name -contains "hours_emitted")) {
-    throw "fold-and-repack completed without final fold telemetry in $manifestPath"
+    [string]$completedManifest.host_finalize.fold.producer -ne "replay_decoder" -or
+    -not ($completedManifest.host_finalize.fold.PSObject.Properties.Name -contains "hour_count")) {
+    throw "fold-and-repack completed without certified replay artifact telemetry in $manifestPath"
+}
+if ([string]::IsNullOrWhiteSpace([string]$completedManifest.replay_file)) {
+    throw "fold-and-repack sealed a container but the manifest still denies it (replay_file is null) in $manifestPath"
 }
 
 Write-Host "deferred_fold_complete=$replayPath"

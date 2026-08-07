@@ -131,6 +131,38 @@ replayable source at all.
 runs whose consumers need the wire records themselves. It is also accepted by
 `--fold-and-repack-existing-run-dir`.
 
+## Offline recovery (`--fold-and-repack-existing-run-dir`)
+
+Recovery re-folds a run directory's raw stream and seals the container the
+capture did not. It admits exactly two shapes, and the manifest says which:
+
+* **deferred fold** — `host_finalize.fold.skipped=true`. The capture finalized
+  with `--skip-host-fold` and published a container whose fold this run replaces.
+* **unfinalized capture** — no `host_finalize` at all. The capture died, or its
+  pack failed, before finalize; `replay_file` is null and
+  `replay_artifact.pack_failed` is true. There is no container yet. This is the
+  case recovery exists for, and the raw stream plus the `stream_storage` receipt
+  written at pipe close are what make it recoverable.
+
+A run that already completed a real finalize is refused — repacking it would
+re-seal an already-sealed recording — as is one that never recorded the identity
+of the bytes it wrote, because nothing could bind a container to them
+afterwards. The stream identity is always READ from the capture's own receipt,
+never recomputed from whatever is on disk now.
+
+The composition recovery produces is chosen by `uses_binary_replay_persistence`,
+the same predicate the live seal path uses, so a repacked recording is the one
+its capture would have sealed in process. There is deliberately no second,
+manifest-derived copy of that decision and no legacy per-hour JSON fallback:
+selecting on `production_profile.enabled` alone is what silently repacked
+ordinary compact captures into a composition they never had. `--workers` is
+still accepted, but the certified-artifact build is a single streaming pass, so
+it does not change the work.
+
+A successful recovery repairs the manifest to name the container it produced and
+keeps the capture-time failure under `replay_artifact.deferred_recovery`; a
+failed one puts the fail-closed "this run produced no container" record back.
+
 Every sealed recording **states** its composition — never implies it by an
 entry's absence. `index.json`, `timeline.json` and the recorder manifest each
 carry `raw_stream_packaging`, spelled `packaged` or `omitted`; the cache-only
