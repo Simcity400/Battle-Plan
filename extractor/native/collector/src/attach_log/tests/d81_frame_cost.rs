@@ -63,7 +63,7 @@ fn d81_topology_outcome(
     state: &CollectorState,
     cache: &CompactFrameMapTopologyCache,
 ) -> (D81FailureStage, u32) {
-    let read = read_compact_rail_replay_state(state, 0, cache);
+    let read = d81_finish_rail_replay_state(read_compact_rail_replay_state(state, 0, cache));
     let failure = read
         .first_failure
         .expect("the fixture stages no rail tree, so d81 always refuses");
@@ -860,8 +860,28 @@ fn the_controller_witnesses_are_the_last_thing_the_hub_closing_gate_re_reads() {
         "and after the fallback gates, so it is the last re-read in the gate"
     );
     assert!(
-        gate.1.contains("return Err(failure(D81FailureReason::ClosureChanged));"),
-        "and a controller that moved must refuse the frame"
+        gate.1.contains("Ok(closure_refused)"),
+        "and a controller that moved must reach the gate's returned VERDICT; a \
+         gate whose result is computed and dropped refuses nothing"
+    );
+    // THE REFUSAL ITSELF MOVED (lane EK, 2026-08-07). The gate is a sequence of
+    // guarded RE-READS and stays inside the bracket; the `ClosureChanged` it
+    // raises is now raised by the post-bracket compute, which ORs this verdict
+    // with the sort's strictness check the way the one `||` chain used to. Both
+    // halves are pinned, because a verdict nothing consumes is the same defect
+    // as a re-read nothing compares.
+    let compute = source
+        .split_once("fn d81_compute_rail_hub_rows(")
+        .expect("the d81 post-bracket hub compute")
+        .1
+        .split_once("\nfn ")
+        .expect("the end of the compute")
+        .0;
+    assert!(
+        compute.contains("|| observation.reread_refused.unwrap_or(false)")
+            && compute.contains("return Err(failure(D81FailureReason::ClosureChanged));"),
+        "and the compute must consume the gate's verdict and refuse the frame \
+         on it"
     );
     assert_eq!(
         hub.matches("&mut controller_witnesses").count(),
@@ -1850,7 +1870,6 @@ fn lazy_source_over<'tables>(
                 rows,
             })
             .collect(),
-        witnesses: Vec::new(),
     }
 }
 
@@ -2298,16 +2317,28 @@ fn the_staged_foreign_read_answers_like_the_unrestricted_index_and_mints_the_sam
 
         let mut table_cache = BTreeMap::new();
         let mut scratch = Vec::new();
-        let source = d81_read_foreign_source(
+        let mut budget = D81SnapshotBudget::new(D81_SNAPSHOT_BUDGET_BYTES);
+        let plan = d81_read_foreign_source(
             fixture.supply_system,
             0,
             8,
             &fixture.authority,
             &mut table_cache,
+            &mut budget,
             &mut scratch,
             &D81PhaseAccum::default(),
         )
         .expect("the staged foreign tree is complete and readable");
+        // THE TWO HALVES, JOINED THE WAY PRODUCTION JOINS THEM (lane EK): the
+        // read hands back a pointer-free plan, and the probe list is rebuilt
+        // against the owned cache on the far side of the bracket close.
+        let source = d81_hub_foreign_source_for(
+            &D81HubPovPlan {
+                foreign_related: plan.related.clone(),
+                ..D81HubPovPlan::default()
+            },
+            &table_cache,
+        );
 
         let oracle = unrestricted_foreign_index(&fixture.staged_rows);
         // EVERY province in the fixture's space, and every controller identity
@@ -2353,7 +2384,7 @@ fn the_staged_foreign_read_answers_like_the_unrestricted_index_and_mints_the_sam
         // of witness 0 silently retires the related-header witness from the
         // closing gate, and passed the earlier form of this assertion.
         let expected_lengths = [16usize, 16, related_count as usize * 4];
-        let observed: Vec<(usize, Vec<u8>)> = source
+        let observed: Vec<(usize, Vec<u8>)> = plan
             .witnesses
             .iter()
             .map(|witness| (witness.address, witness.bytes.clone()))
@@ -2376,7 +2407,7 @@ fn the_staged_foreign_read_answers_like_the_unrestricted_index_and_mints_the_sam
              this order"
         );
         assert!(
-            source.witnesses.iter().all(|witness| witness.unchanged()),
+            plan.witnesses.iter().all(|witness| witness.unchanged()),
             "every witness must still re-read to the bytes it was minted from"
         );
         // The cache is populated for every related companion, whatever the
@@ -2433,16 +2464,24 @@ fn the_foreign_read_offers_one_probe_target_per_authenticated_handle() {
     // The cache is a NAMED local, not a temporary, because the source borrows
     // it -- which is the query-time fold's ownership rule showing up in a test.
     let mut table_cache = BTreeMap::new();
-    let source = d81_read_foreign_source(
+    let plan = d81_read_foreign_source(
         fixture.supply_system,
         0,
         8,
         &fixture.authority,
         &mut table_cache,
+        &mut D81SnapshotBudget::new(D81_SNAPSHOT_BUDGET_BYTES),
         &mut Vec::new(),
         &D81PhaseAccum::default(),
     )
     .expect("the staged foreign tree is complete and readable");
+    let source = d81_hub_foreign_source_for(
+        &D81HubPovPlan {
+            foreign_related: plan.related.clone(),
+            ..D81HubPovPlan::default()
+        },
+        &table_cache,
+    );
 
     assert_eq!(
         source.related.len(),
@@ -2564,16 +2603,24 @@ fn a_pov_with_no_related_countries_prices_no_probes() {
     let fixture = stage_foreign_fixture(0, 48, 96, &mut seed);
 
     let mut table_cache = BTreeMap::new();
-    let source = d81_read_foreign_source(
+    let plan = d81_read_foreign_source(
         fixture.supply_system,
         0,
         8,
         &fixture.authority,
         &mut table_cache,
+        &mut D81SnapshotBudget::new(D81_SNAPSHOT_BUDGET_BYTES),
         &mut Vec::new(),
         &D81PhaseAccum::default(),
     )
     .expect("a POV with an empty related vector is a complete read, not a refusal");
+    let source = d81_hub_foreign_source_for(
+        &D81HubPovPlan {
+            foreign_related: plan.related.clone(),
+            ..D81HubPovPlan::default()
+        },
+        &table_cache,
+    );
 
     assert!(source.related.is_empty());
 
@@ -2656,16 +2703,24 @@ fn the_query_time_probe_produces_a_byte_identical_d81_payload() {
 
     let mut table_cache = BTreeMap::new();
     let mut scratch = Vec::new();
-    let probed = d81_read_foreign_source(
+    let probed_plan = d81_read_foreign_source(
         fixture.supply_system,
         0,
         8,
         &fixture.authority,
         &mut table_cache,
+        &mut D81SnapshotBudget::new(D81_SNAPSHOT_BUDGET_BYTES),
         &mut scratch,
         &D81PhaseAccum::default(),
     )
     .expect("the staged foreign tree is complete and readable");
+    let probed = d81_hub_foreign_source_for(
+        &D81HubPovPlan {
+            foreign_related: probed_plan.related.clone(),
+            ..D81HubPovPlan::default()
+        },
+        &table_cache,
+    );
     let index = unrestricted_foreign_index(&fixture.staged_rows);
 
     // A province carrier, so the payload exercises the whole encoder and not
@@ -2796,21 +2851,21 @@ fn the_query_time_probe_produces_a_byte_identical_d81_payload() {
 /// the t27 model it replaces. That model had 93 POVs and 11,570 rows measured,
 /// the related count ASSUMED at 92, and the queried-set size a PROXY of
 /// unknown error direction. All four are now counters on the wire.
-mod t31 {
-    pub(super) const POV_COUNT: u64 = 439;
-    pub(super) const RELATED_VISITS: u64 = 2_005;
-    pub(super) const QUERY_CALLS: u64 = 11_586;
-    pub(super) const QUERY_PROBES: u64 = 345_704;
-    pub(super) const TABLE_ROWS_VISITED: u64 = 552_492;
+pub(crate) mod t31 {
+    pub(crate) const POV_COUNT: u64 = 439;
+    pub(crate) const RELATED_VISITS: u64 = 2_005;
+    pub(crate) const QUERY_CALLS: u64 = 11_586;
+    pub(crate) const QUERY_PROBES: u64 = 345_704;
+    pub(crate) const TABLE_ROWS_VISITED: u64 = 552_492;
     /// Published as `d81_phase_hub_index_entries` in t31; lane DA renamed the
     /// unit to `d81_phase_hub_probe_hits` (see `D81PhaseTimes`).
-    pub(super) const PROBE_HITS: u64 = 281_693;
-    pub(super) const READ_US: u64 = 48_449;
-    pub(super) const HUB_US: u64 = 32_766;
-    pub(super) const HUB_FOREIGN_US: u64 = 19_740;
-    pub(super) const HUB_NODES_US: u64 = 2_014;
-    pub(super) const HUB_CLOSE_US: u64 = 1_388;
-    pub(super) const PROVINCES_VISITED: u32 = 13_413;
+    pub(crate) const PROBE_HITS: u64 = 281_693;
+    pub(crate) const READ_US: u64 = 48_449;
+    pub(crate) const HUB_US: u64 = 32_766;
+    pub(crate) const HUB_FOREIGN_US: u64 = 19_740;
+    pub(crate) const HUB_NODES_US: u64 = 2_014;
+    pub(crate) const HUB_CLOSE_US: u64 = 1_388;
+    pub(crate) const PROVINCES_VISITED: u32 = 13_413;
 }
 
 /// The three POV tiers that reproduce t31's four hub totals simultaneously.
@@ -2891,16 +2946,16 @@ fn cw_restricted_foreign_fold(
 
 /// A whole frame's hub inputs at t31's shape: one table per country, and per
 /// POV the countries it is related to and the provinces it queries.
-struct T31Frame {
-    tables: Vec<(u32, u32, BTreeMap<u32, i64>)>,
+pub(super) struct T31Frame {
+    pub(super) tables: Vec<(u32, u32, BTreeMap<u32, i64>)>,
     /// Per POV: indices into `tables`.
-    related: Vec<Vec<usize>>,
+    pub(super) related: Vec<Vec<usize>>,
     /// Per POV: the province ids its row-emission loop queries, in order.
-    queries: Vec<Vec<u32>>,
+    pub(super) queries: Vec<Vec<u32>>,
 }
 
 impl T31Frame {
-    fn build(seed: &mut u64) -> Self {
+    pub(super) fn build(seed: &mut u64) -> Self {
         let country_count = T31_GROUP * ((t31::POV_COUNT as usize).div_ceil(T31_GROUP));
         let group_count = country_count / T31_GROUP;
 
@@ -2972,11 +3027,11 @@ impl T31Frame {
 
     /// The controller identity the hub would have resolved for a province.
     /// Deterministic and shared by both arms, so it cannot bias one of them.
-    fn controller(province_id: u32) -> (u32, u32) {
+    pub(super) fn controller(province_id: u32) -> (u32, u32) {
         (province_id % 7, 1_000 + province_id % 11)
     }
 
-    fn related_visits(&self) -> u64 {
+    pub(super) fn related_visits(&self) -> u64 {
         self.related.iter().map(|list| list.len() as u64).sum()
     }
 
@@ -2988,11 +3043,11 @@ impl T31Frame {
             .sum()
     }
 
-    fn query_calls(&self) -> u64 {
+    pub(super) fn query_calls(&self) -> u64 {
         self.queries.iter().map(|list| list.len() as u64).sum()
     }
 
-    fn query_probes(&self) -> u64 {
+    pub(super) fn query_probes(&self) -> u64 {
         self.related
             .iter()
             .zip(&self.queries)
@@ -3002,7 +3057,7 @@ impl T31Frame {
 }
 
 /// Order statistics for a bench arm, in microseconds.
-fn percentiles_us(mut samples: Vec<u64>) -> String {
+pub(super) fn percentiles_us(mut samples: Vec<u64>) -> String {
     samples.sort_unstable();
     let at = |fraction: f64| {
         let index = ((samples.len() - 1) as f64 * fraction).round() as usize;
@@ -3155,7 +3210,6 @@ fn d81_foreign_fold_cost_model() {
                         }
                     })
                     .collect(),
-                witnesses: Vec::new(),
             };
             for &province_id in &frame.queries[pov] {
                 let (raw_handle, equivalence_id) = T31Frame::controller(province_id);
