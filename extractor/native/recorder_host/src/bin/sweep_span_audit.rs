@@ -467,19 +467,41 @@ fn process_record(
     if header.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER {
         return;
     }
-    // A refused frame published no sweep, so its partial accumulation describes
-    // nothing and is dropped rather than folded into the distributions.
-    if header.record_type == COMPACT_RECORD_TYPE_FRAME_REFUSED {
-        state.current = FrameAccumulator::default();
-        return;
-    }
-    let semantics_ok = validate_compact_record_semantics(
+    // Validate BEFORE any type-specific arm returns. FRAME_REFUSED used to be
+    // handled above this call and returned early, so this audit accepted every
+    // type-6 record as a refusal without ever reading its payload: a truncated
+    // one, or one written at an H4FR version this build cannot decode, dropped
+    // the open frame and produced no `parse_error` at all. An audit that
+    // silently discards a frame on a record it never checked is reporting a
+    // conclusion it did not reach.
+    let semantics = validate_compact_record_semantics(
         header.domain_id,
         header.record_type,
         header.record_flags,
         payload,
-    )
-    .is_ok();
+    );
+    let semantics_ok = semantics.is_ok();
+
+    // A refused frame published no sweep, so its partial accumulation describes
+    // nothing and is dropped rather than folded into the distributions. Both
+    // H4FR versions are legal on the wire and the validator above is what says
+    // so; a refusal this build cannot read still DROPS the frame -- the record
+    // type is the frame boundary and that much is legible from the header --
+    // but it no longer does so silently.
+    //
+    // How the other record types treat a semantics failure is deliberately
+    // unchanged: `semantics_ok` gates the PERF arm exactly as before.
+    if header.record_type == COMPACT_RECORD_TYPE_FRAME_REFUSED {
+        if let Err(error) = semantics {
+            state.parse_errors.push(format!(
+                "FRAME_REFUSED at sequence {} dropped the open frame but its payload is \
+                 unreadable: {error}",
+                header.sequence
+            ));
+        }
+        state.current = FrameAccumulator::default();
+        return;
+    }
 
     if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF && semantics_ok {
         if header.domain_id == RC_PROBE_DOMAIN_ID {
@@ -1063,6 +1085,92 @@ fn print_report(report: &Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn refusal_header(payload_len: usize) -> compact_contract::CompactRecordHeader {
+        compact_contract::CompactRecordHeader {
+            sequence: 77,
+            game_hour_raw: 60_832_228,
+            domain_id: compact_contract::COMPACT_DOMAIN_FRAME,
+            record_type: COMPACT_RECORD_TYPE_FRAME_REFUSED,
+            payload_len,
+            record_flags: 0,
+        }
+    }
+
+    fn refusal_payload_v2() -> Vec<u8> {
+        use compact_contract::diagnostic_channel::{Authority, Predicate};
+        compact_contract::frame_refusal::FrameRefusalRecordV2 {
+            refused_hour: 60_832_228,
+            offenders: Vec::new(),
+            frame_findings: vec![compact_contract::frame_refusal::FrameRefusalFinding {
+                predicate: Predicate::new(0x0001_0003, "frame_clock_is_readable").unwrap(),
+                authority: Authority::Host,
+                locator: Vec::new(),
+                reason: "framing: the frame's own clock could not be read".to_string(),
+            }],
+        }
+        .encode()
+        .expect("a frame-level-only refusal is a complete record")
+    }
+
+    /// This audit drops the open frame on a FRAME_REFUSED, and it used to do
+    /// that from the record TYPE alone -- the arm returned before the semantics
+    /// call, so a truncated refusal, or one written at an H4FR version this
+    /// build cannot decode, discarded a frame and produced no `parse_error`.
+    /// An audit that reports a conclusion it never checked is the shape this
+    /// closes.
+    ///
+    /// MUTATION: move the FRAME_REFUSED arm back above
+    /// `validate_compact_record_semantics`, or drop the `parse_errors.push`,
+    /// and the unreadable case below reports nothing.
+    #[test]
+    fn a_refusal_this_build_cannot_read_drops_the_frame_but_says_so() {
+        let good = refusal_payload_v2();
+
+        // The legal version 2 record: frame dropped, nothing to report.
+        let mut state = ScanState::default();
+        state.current.perf.push(PerfRow {
+            domain_id: 10,
+            read_time_us: 1_000,
+            sequence: 1,
+        });
+        process_record(&mut state, &refusal_header(good.len()), &good);
+        assert!(state.current.perf.is_empty(), "a refusal drops the frame");
+        assert!(
+            state.parse_errors.is_empty(),
+            "a legal refusal is not an error: {:?}",
+            state.parse_errors
+        );
+
+        // The same record restamped at a version this build does not decode,
+        // and a truncated one. Both still drop the frame -- the boundary is
+        // legible from the header -- and both are now named.
+        let mut future = good.clone();
+        future[4..6].copy_from_slice(&3u16.to_le_bytes());
+        for (label, payload) in [("future version", future), ("truncated", good[..8].to_vec())] {
+            let mut state = ScanState::default();
+            state.current.perf.push(PerfRow {
+                domain_id: 10,
+                read_time_us: 1_000,
+                sequence: 1,
+            });
+            process_record(&mut state, &refusal_header(payload.len()), &payload);
+            assert!(
+                state.current.perf.is_empty(),
+                "{label}: the frame boundary is still legible from the header"
+            );
+            assert_eq!(
+                state.parse_errors.len(),
+                1,
+                "{label}: an unreadable refusal must be reported, not silently obeyed"
+            );
+            assert!(
+                state.parse_errors[0].contains("FRAME_REFUSED at sequence 77"),
+                "{label}: {:?}",
+                state.parse_errors
+            );
+        }
+    }
 
     /// Bundle members publish the SAME elapsed time on consecutive records, and
     /// collapsing them is what keeps `longest_job` and `job_total` from

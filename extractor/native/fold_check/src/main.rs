@@ -37,7 +37,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
-use compact_contract::frame_refusal::FrameRefusalRecordV1;
+use compact_contract::frame_refusal::decode_frame_refusal_any_version;
 use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance,
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
@@ -354,6 +354,45 @@ struct RefusalOffender {
     status_flags: u32,
     non_tolerated_flags: u32,
     reason: String,
+    /// The offender rendered with everything the record carries: predicate,
+    /// authority, locator path, typed units, truncation accounting, off-frame
+    /// outcome. `None` for a version 1 record.
+    ///
+    /// Version 2 moved the deciding facts OUT of the reason string and into
+    /// typed fields, so a certifier that reports only `reason` for a v2 record
+    /// reports strictly less than the producer said.
+    ///
+    /// It is `None` rather than a rendering for version 1 because the decoder
+    /// lifts v1 into the v2 shape and the lift has to put SOMETHING in the
+    /// fields v1 had no room for -- `Authority::SelfDomain` and
+    /// `TruncationAccount::complete(0)`, which render as `authority=self` and
+    /// `units=0/0 complete`. Those read as assertions the producer made. It
+    /// made neither: v1 could not say who the authority was, and its reason
+    /// string could itself have been silently truncated. Rendering the lift
+    /// would put invented declarations in a certification report, so a version
+    /// 1 offender reports the reason string that WAS its whole diagnosis, and
+    /// `wire_version` beside it says why there is no more.
+    detail: Option<String>,
+}
+
+/// One reason a `FRAME_REFUSED` attributed to the frame rather than to any
+/// domain.
+///
+/// The predicate NAME is kept apart from the rendering because a rendering
+/// carries the finding's free-form reason and its locator ordinals and is
+/// therefore distinct in every hour, while names repeat. The union over a
+/// capture is taken on names for that reason.
+///
+/// Neither is bounded by the WIRE, though: the contract bounds a name at 64
+/// bytes and a record at 256 findings, but nothing constrains a producer to a
+/// fixed vocabulary, so a stream that invents a name per hour would grow the
+/// union linearly with the refused-hour count. The union is therefore reported
+/// the same way the per-hour detail is -- exact count, bounded list, and the
+/// report says where it stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FrameFinding {
+    predicate: String,
+    detail: String,
 }
 
 /// One game-hour that was assembled and REFUSED. A refusal is a TERMINATED
@@ -363,7 +402,21 @@ struct RefusalOffender {
 /// why it did not publish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HourRefusal {
+    /// The `H4FR` version the record was written at, kept because the decoder
+    /// lifts version 1 into the version 2 shape and a report that does not say
+    /// which it read cannot be checked against the bytes.
+    wire_version: u16,
     offenders: Vec<RefusalOffender>,
+    /// Reasons the refusal attributed to the FRAME rather than to any domain --
+    /// its own clock, its identity, a framing fault found while assembling it.
+    ///
+    /// Version 1 could not carry these and its producer therefore published
+    /// nothing at all for such an hour. A version 2 refusal may legally name
+    /// ZERO offenders and substantiate itself entirely from here, so a
+    /// certifier that read only `offenders` would record that hour as refused
+    /// and be unable to say why -- exactly the unaccounted-cause failure this
+    /// record exists to prevent. Always empty for a version 1 record.
+    frame_findings: Vec<FrameFinding>,
     /// Domains that had already produced a terminal outcome in the hour the
     /// refusal terminated. A refusal that discards accumulated outcomes is
     /// still a truthful close, but the report must not pretend the hour was
@@ -937,8 +990,24 @@ impl CompletenessAudit {
                 // the single authority for them and the certification verdict
                 // reports what it found. Restating them is how the last
                 // duplicate of a boundary rule drifted from its original.
-                let record = FrameRefusalRecordV1::decode(payload)
+                // EITHER refusal version. Version 2 is what the current
+                // collector writes and version 1 is what retained streams hold;
+                // decoding only v1 made this certifier abandon every capture
+                // taken since the producer moved, which is how t32 failed at
+                // byte 182,933,589. A version this build does not know still
+                // fails loudly here -- the dispatcher names it rather than
+                // lifting it to a default.
+                let record = decode_frame_refusal_any_version(payload)
                     .map_err(|error| format!("FRAME_REFUSED payload: {error}"))?;
+                // The decode above succeeded, so the payload bore the magic and
+                // declared a version this build knows; the fallback cannot be
+                // reached from here and is the legacy version because that is
+                // the arm a magic-bearing payload takes when it is not v2.
+                let wire_version = compact_contract::frame_refusal::
+                    declared_frame_refusal_version(payload)
+                    .unwrap_or(compact_contract::frame_refusal::FRAME_REFUSAL_VERSION);
+                let carries_typed_diagnosis =
+                    wire_version == compact_contract::frame_refusal::FRAME_REFUSAL_VERSION_V2;
                 let hour_index = compact_contract::calendar::hour_index_from_raw(game_hour_raw)
                     .ok_or_else(|| format!("FRAME_REFUSED game hour {game_hour_raw} is invalid"))?;
                 // The open hour's `H4FD` declaration dies with the hour, and it
@@ -968,6 +1037,7 @@ impl CompletenessAudit {
                 }
                 let discarded = std::mem::take(&mut self.current_domains);
                 let refusal = HourRefusal {
+                    wire_version,
                     offenders: record
                         .offenders
                         .iter()
@@ -976,6 +1046,15 @@ impl CompletenessAudit {
                             status_flags: offender.status_flags,
                             non_tolerated_flags: offender.non_tolerated_flags,
                             reason: offender.reason.clone(),
+                            detail: carries_typed_diagnosis.then(|| offender.render()),
+                        })
+                        .collect(),
+                    frame_findings: record
+                        .frame_findings
+                        .iter()
+                        .map(|finding| FrameFinding {
+                            predicate: finding.predicate.name.clone(),
+                            detail: finding.render(),
                         })
                         .collect(),
                     discarded_terminal_outcome_domains: discarded
@@ -1566,8 +1645,26 @@ fn verify_published_coverage(
             for refusal in refusals.values() {
                 offenders.extend(refusal.offenders.iter().map(|offender| offender.domain_id));
             }
+            // A version 2 refusal may name no domain at all and carry its whole
+            // cause as a frame-level finding. Reporting only the domain union
+            // would then say "naming 0 offending domain(s) {}" for a stream
+            // that in fact stated exactly why it published nothing. Exact
+            // count, bounded names: this is a one-line verdict, and the wire
+            // does not cap how many distinct names a stream can invent.
+            let (predicate_count, predicates) = frame_finding_predicates(refusals);
+            let frame_detail = if predicate_count == 0 {
+                String::new()
+            } else {
+                let elided = predicate_count - predicates.len();
+                let elision = if elided == 0 {
+                    String::new()
+                } else {
+                    format!(" and {elided} more")
+                };
+                format!(" and {predicate_count} frame-level finding predicate(s) {predicates:?}{elision}")
+            };
             format!(
-                "; {refused} hour(s) {first}..{last} were attempted and refused, naming {} offending domain(s) {:?}",
+                "; {refused} hour(s) {first}..{last} were attempted and refused, naming {} offending domain(s) {:?}{frame_detail}",
                 offenders.len(),
                 offenders
             )
@@ -1863,7 +1960,7 @@ fn hash_report(
     json!({
         "tool": "fold_check",
         "mode": "hash",
-        "report_version": 4,
+        "report_version": 5,
         "input": path.display().to_string(),
         "input_kind": kind,
         "identity_mode": stream_identity_mode_name(identity_mode),
@@ -1886,6 +1983,33 @@ fn hash_report(
 /// per-hour detail is bounded, and the report says where it stopped.
 const REFUSAL_DETAIL_LIMIT: usize = 64;
 
+/// How many DISTINCT frame-finding predicate names the report lists.
+///
+/// The count is always exact. The list is bounded because the wire does not
+/// constrain predicate names to a vocabulary — [`FrameFinding`] says why — so a
+/// stream naming a new predicate every refused hour would otherwise put an
+/// unbounded set into a report whose per-hour detail is deliberately bounded.
+const FRAME_FINDING_PREDICATE_LIMIT: usize = 32;
+
+/// The exact count of distinct frame-finding predicates over every refused
+/// hour, and at most [`FRAME_FINDING_PREDICATE_LIMIT`] of the names.
+fn frame_finding_predicates(refusals: &BTreeMap<i64, HourRefusal>) -> (usize, Vec<&str>) {
+    let mut names: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for refusal in refusals.values() {
+        names.extend(
+            refusal
+                .frame_findings
+                .iter()
+                .map(|finding| finding.predicate.as_str()),
+        );
+    }
+    let total = names.len();
+    (
+        total,
+        names.into_iter().take(FRAME_FINDING_PREDICATE_LIMIT).collect(),
+    )
+}
+
 /// Every hour that was attempted and refused, with the offenders the collector
 /// named. This is what makes an attempted-and-refused hour distinguishable from
 /// an hour the stream never reached.
@@ -1895,6 +2019,10 @@ fn refusals_json(refusals: &BTreeMap<i64, HourRefusal>) -> Value {
     for refusal in refusals.values() {
         offending_domains.extend(refusal.offenders.iter().map(|offender| offender.domain_id));
     }
+    // A frame-level finding is the only cause a refusal that names no domain
+    // has, so the COUNT is exact however many hours were refused; the names
+    // are bounded for the reason `FRAME_FINDING_PREDICATE_LIMIT` gives.
+    let (frame_predicate_count, frame_predicates) = frame_finding_predicates(refusals);
     let entries: Vec<Value> = refusals
         .iter()
         .take(REFUSAL_DETAIL_LIMIT)
@@ -1908,12 +2036,25 @@ fn refusals_json(refusals: &BTreeMap<i64, HourRefusal>) -> Value {
                         "status_flags": offender.status_flags,
                         "non_tolerated_flags": offender.non_tolerated_flags,
                         "reason": offender.reason,
+                        "detail": offender.detail,
+                    })
+                })
+                .collect();
+            let frame_findings: Vec<Value> = refusal
+                .frame_findings
+                .iter()
+                .map(|finding| {
+                    json!({
+                        "predicate": finding.predicate,
+                        "detail": finding.detail,
                     })
                 })
                 .collect();
             json!({
                 "hour_index": hour_index,
+                "wire_version": refusal.wire_version,
                 "offenders": offenders,
+                "frame_findings": frame_findings,
                 "discarded_terminal_outcome_domains": refusal.discarded_terminal_outcome_domains,
                 "discarded_data_records": refusal.discarded_data_records,
             })
@@ -1926,6 +2067,9 @@ fn refusals_json(refusals: &BTreeMap<i64, HourRefusal>) -> Value {
             _ => Value::Null,
         },
         "offending_domains": offending_domains,
+        "frame_finding_predicate_count": frame_predicate_count,
+        "frame_finding_predicates": frame_predicates,
+        "frame_finding_predicate_limit": FRAME_FINDING_PREDICATE_LIMIT,
         "hours_detailed": entries.len(),
         "hours_detail_limit": REFUSAL_DETAIL_LIMIT,
         "hours": entries,
@@ -2090,7 +2234,7 @@ fn cmd_compare(args: &[String]) -> Result<u8, String> {
     let report = json!({
         "tool": "fold_check",
         "mode": "compare",
-        "report_version": 4,
+        "report_version": 5,
         "identical": identical,
         "identity_mode": stream_identity_mode_name(identity_mode),
         "expected_roster": expected_roster_json(&expected_roster),

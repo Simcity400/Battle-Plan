@@ -1192,6 +1192,43 @@ pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The version a well-formed-enough payload DECLARES, before any grammar check.
+///
+/// `None` means the bytes are not a refusal record at all -- too short to hold
+/// a version, or not bearing the magic -- and the caller hands them to the v1
+/// validator, whose magic/length errors are the right diagnosis for that.
+///
+/// Public because [`decode_frame_refusal_any_version`] deliberately erases the
+/// distinction -- it lifts v1 into the v2 shape -- and a consumer that REPORTS
+/// what it decoded needs it back. The lift fills `authority` and `truncation`
+/// with `SelfDomain` and `complete(0)`, which render as the positive assertions
+/// `authority=self` and `units=0/0 complete`; a version 1 record asserted
+/// neither, so a report that shows that rendering without saying the record was
+/// version 1 is attributing declarations to a producer that made none.
+pub fn declared_frame_refusal_version(payload: &[u8]) -> Option<u16> {
+    if payload.len() >= 6 && &payload[0..4] == FRAME_REFUSAL_MAGIC {
+        Some(read_u16(payload, 4))
+    } else {
+        None
+    }
+}
+
+/// The refusal a reader owes a version it was never taught.
+///
+/// A future version 3 is NOT a v1 record, so reporting it as "version 3 is not
+/// 1" blames the wrong fact: it reads as corruption when what happened is that
+/// the producer is newer than the reader. Naming every version this build
+/// decodes turns that into an actionable statement, and it stays an `Err` --
+/// an unknown shape is never skipped, never lifted to a default, and never
+/// counted as a decoded refusal.
+fn unknown_frame_refusal_version(version: u16) -> String {
+    format!(
+        "frame refusal version {version} is not a version this build decodes \
+         ({FRAME_REFUSAL_VERSION} or {FRAME_REFUSAL_VERSION_V2}); the record was written by a \
+         newer producer and cannot be read here"
+    )
+}
+
 /// Version-dispatching grammar check.
 ///
 /// A consumer that only ever called the v1 validator would report a v2 record
@@ -1199,13 +1236,15 @@ pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
 /// record as corrupt. Both versions are legal on the wire, and this is the one
 /// entry point that says so.
 pub fn validate_frame_refusal_payload_any_version(payload: &[u8]) -> Result<(), String> {
-    if payload.len() >= 6 && &payload[0..4] == FRAME_REFUSAL_MAGIC {
-        let version = read_u16(payload, 4);
-        if version == FRAME_REFUSAL_VERSION_V2 {
-            return validate_frame_refusal_v2_payload(payload);
+    match declared_frame_refusal_version(payload) {
+        Some(version) if version == FRAME_REFUSAL_VERSION_V2 => {
+            validate_frame_refusal_v2_payload(payload)
         }
+        Some(version) if version != FRAME_REFUSAL_VERSION => {
+            Err(unknown_frame_refusal_version(version))
+        }
+        _ => validate_frame_refusal_payload(payload),
     }
-    validate_frame_refusal_payload(payload)
 }
 
 /// Either version, decoded into the v2 shape.
@@ -1216,11 +1255,14 @@ pub fn validate_frame_refusal_payload_any_version(payload: &[u8]) -> Result<(), 
 /// not carry those facts, and the reader now SEES that rather than being handed
 /// a default that looks like a declaration.
 pub fn decode_frame_refusal_any_version(payload: &[u8]) -> Result<FrameRefusalRecordV2, String> {
-    if payload.len() >= 6 && &payload[0..4] == FRAME_REFUSAL_MAGIC {
-        let version = read_u16(payload, 4);
-        if version == FRAME_REFUSAL_VERSION_V2 {
-            return FrameRefusalRecordV2::decode(payload);
+    match declared_frame_refusal_version(payload) {
+        Some(version) if version == FRAME_REFUSAL_VERSION_V2 => {
+            return FrameRefusalRecordV2::decode(payload)
         }
+        Some(version) if version != FRAME_REFUSAL_VERSION => {
+            return Err(unknown_frame_refusal_version(version))
+        }
+        _ => {}
     }
     let legacy = FrameRefusalRecordV1::decode(payload)?;
     Ok(FrameRefusalRecordV2 {
@@ -2011,6 +2053,114 @@ mod tests {
             assert_eq!(offender.truncation.kind, TruncationKind::None);
             assert_eq!(offender.reason, sample().offenders[index].reason);
         }
+    }
+
+    /// A version this build was never taught is REFUSED, and the refusal says
+    /// which fact it is refusing on.
+    ///
+    /// The dispatcher used to fall through to the v1 validator for anything
+    /// that was not v2, so a version 3 record was reported as `version 3 is
+    /// not 1` -- which blames the record for being corrupt when what actually
+    /// happened is that the producer is newer than the reader, and which does
+    /// not say that version 2 is also decodable here.
+    ///
+    /// PRODUCTION CHANGE THAT MAKES THIS FAIL: adding a silent fall-through
+    /// (accepting an unknown version as v1, or returning `Ok`) to either
+    /// version-dispatching entry point, or dropping the known-version list
+    /// from the message.
+    #[test]
+    fn a_version_neither_entry_point_knows_is_refused_and_names_the_versions_it_does_know() {
+        for known in [sample().encode().unwrap(), sample_v2().encode().unwrap()] {
+            for version in [0u16, 3, 4, u16::MAX] {
+                let mut future = known.clone();
+                future[4..6].copy_from_slice(&version.to_le_bytes());
+
+                let error = validate_frame_refusal_payload_any_version(&future).unwrap_err();
+                assert!(
+                    error.contains(&format!("frame refusal version {version}")),
+                    "the refusal must name the version it could not read: {error}"
+                );
+                assert!(
+                    error.contains("not a version this build decodes"),
+                    "{error}"
+                );
+                assert!(
+                    error.contains(&format!(
+                        "({FRAME_REFUSAL_VERSION} or {FRAME_REFUSAL_VERSION_V2})"
+                    )),
+                    "the refusal must name every version this build does decode: {error}"
+                );
+
+                let decode_error = decode_frame_refusal_any_version(&future).unwrap_err();
+                assert_eq!(
+                    decode_error, error,
+                    "the validator and the decoder must refuse an unknown version identically"
+                );
+            }
+        }
+    }
+
+    /// The versions this build DOES know stay accepted by the same dispatcher
+    /// that refuses the ones it does not. Without this, "refuse everything"
+    /// would pass the test above.
+    #[test]
+    fn both_known_versions_pass_the_dispatcher_that_refuses_unknown_ones() {
+        validate_frame_refusal_payload_any_version(&sample().encode().unwrap()).unwrap();
+        validate_frame_refusal_payload_any_version(&sample_v2().encode().unwrap()).unwrap();
+        assert_eq!(
+            decode_frame_refusal_any_version(&sample_v2().encode().unwrap()).unwrap(),
+            sample_v2()
+        );
+        assert_eq!(
+            decode_frame_refusal_any_version(&sample().encode().unwrap())
+                .unwrap()
+                .refused_hour,
+            sample().refused_hour
+        );
+    }
+
+    /// Bytes that are not a refusal record at all must still be diagnosed as
+    /// that, not as an unknown version: the magic check is what fires, and the
+    /// version word of a non-record is meaningless.
+    ///
+    /// PRODUCTION CHANGE THAT MAKES THIS FAIL: reading the version word before
+    /// checking the magic in `declared_frame_refusal_version`.
+    ///
+    /// The fixture carries an UNKNOWN version under the broken magic, and that
+    /// is load-bearing. With version 2 stamped, a reader that skipped the magic
+    /// check would dispatch to the v2 validator, which checks the magic itself
+    /// and produces the identical "magic is not H4FR" -- the test would pass
+    /// under its own mutation. Version 3 makes the two paths say different
+    /// things: magic-first says the bytes are not a record, version-first says
+    /// the build is too old.
+    #[test]
+    fn bytes_that_are_not_a_refusal_are_diagnosed_by_magic_not_by_version() {
+        let mut not_a_record = sample_v2().encode().unwrap();
+        not_a_record[0] = b'X';
+        not_a_record[4..6].copy_from_slice(&3u16.to_le_bytes());
+        assert_eq!(
+            declared_frame_refusal_version(&not_a_record),
+            None,
+            "a payload without the magic declares no version, whatever is in its version word"
+        );
+        let error = validate_frame_refusal_payload_any_version(&not_a_record).unwrap_err();
+        assert!(error.contains("magic is not H4FR"), "{error}");
+        let error = decode_frame_refusal_any_version(&not_a_record).unwrap_err();
+        assert!(error.contains("magic is not H4FR"), "{error}");
+        // And a payload too short to hold a version reports its length rather
+        // than reading one -- through BOTH entry points, and at every length
+        // below the header, so no index can be taken that is not there.
+        for len in 0..FRAME_REFUSAL_HEADER_LEN {
+            let short = &not_a_record[..len.min(not_a_record.len())];
+            let error = validate_frame_refusal_payload_any_version(short).unwrap_err();
+            assert!(!error.contains("this build decodes"), "{len}: {error}");
+            let error = decode_frame_refusal_any_version(short).unwrap_err();
+            assert!(!error.contains("this build decodes"), "{len}: {error}");
+        }
+        let error = validate_frame_refusal_payload_any_version(&[]).unwrap_err();
+        assert!(error.contains("below the"), "{error}");
+        let error = decode_frame_refusal_any_version(&[]).unwrap_err();
+        assert!(error.contains("below the"), "{error}");
     }
 
     #[test]
