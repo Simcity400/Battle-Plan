@@ -2165,6 +2165,186 @@ pub const LANE_WALL_SESSION_CONSTANTS: &[&str] = &[
     "lw_prefetch_dist_candidates",
 ];
 
+/// EVERY `domain47_prewarm_*` unit, with the class its producer gives it.
+///
+/// # Why this family is declared as a whole, and FIRST
+///
+/// The prewarm family mixes three shapes under one prefix — per-frame counts, a
+/// categorical CODE, and a family-presence BITMASK — and nothing in the naming
+/// separates them. Two units reached `runs/live_unlock/t36` on the `PerFrame`
+/// fall-through and published sums of things that cannot be added:
+///
+/// * `domain47_prewarm_clock_verdict` — the [0..=4] enum code naming which
+///   clock check refused the hour, published as **219**: code 1 (`InFrameHour`)
+///   added up once per prewarm. It reads as a count, and it is not one.
+/// * `domain47_prewarm_known_families` — the eight-bit `domain47::FAMILY_*`
+///   presence mask, published as **20469**. A sum of masks names no family:
+///   the readable whole-capture question is WHICH families were ever observed,
+///   which is the bitwise OR.
+///
+/// A third was misclassified in the other direction:
+/// `domain47_prewarm_families_dark_without_reason` returns a MASK of families
+/// (`FAMILY_ALL & !known_families`, minus the explained ones), and the
+/// `_reason` entry in [`RAW_WORD_SUFFIXES`] captured it as a raw word — so a
+/// frame that violated the invariant anywhere but last would have disappeared
+/// from the manifest entirely.
+///
+/// This table is consulted BEFORE the suffix rules for exactly that reason: a
+/// suffix rule is a naming rule, and this family's names do not encode their
+/// kinds. The whole family in one place, each entry stating what its producer
+/// makes it, is what makes the next unit's class a decision rather than an
+/// accident. Every name the collector emits must appear here — the guard in
+/// `tests/diagnostic_unit_accumulation_sweep.rs` reads the emit sites and fails
+/// the build for one that does not, so a new sibling cannot repeat the miss.
+///
+/// # RETAINED CAPTURES ARE UNCHANGED
+///
+/// The manifest aggregate is computed at capture time and written into the
+/// capture. t36 and every earlier run keep the summed figures they recorded;
+/// nothing rewrites them and this table cannot. It changes what FUTURE captures
+/// publish. A reader comparing across the boundary must know which side a
+/// figure came from.
+///
+/// # What an aggregate of a code or a mask can and cannot answer
+///
+/// `LastValue` on a code answers "what did the last frame say", and `BitwiseOr`
+/// on a mask answers "which bits were EVER set". Neither answers the per-frame
+/// question — which hour was refused for which reason, which hour lost which
+/// family. That answer needs the per-frame record in the stream, and no
+/// whole-capture fold of a single number can substitute for it.
+pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
+    // --- the two miss-class fixes -----------------------------------------
+    // `Domain47PrewarmClockVerdict::code()`: 0 NotScheduled, 1 InFrameHour,
+    // 2 Straddled, 3 WrongHour, 4 Unreadable. A code is a name written as a
+    // number, exactly like the `_stage` and `_reason` words. t36 published
+    // 219 and KEEPS it: this changes what later captures publish, not what
+    // that one recorded.
+    ("domain47_prewarm_clock_verdict", Accumulation::LastValue),
+    // The `domain47::FAMILY_*` presence mask the adopted roots support. Bit n
+    // is row kind n+1; two frames observing family bit 0 must read as mask 1,
+    // never as 2, which would name a family that was never observed. t36
+    // published 20469 and KEEPS it; the OR applies to later captures only.
+    ("domain47_prewarm_known_families", Accumulation::BitwiseOr),
+    // --- the two the same defect class reached from the other side ---------
+    // Also a `domain47::FAMILY_*` mask, not a count: the producer returns
+    // `FAMILY_ALL & !known_families` with the explained families cleared. It
+    // was `LastValue` by the `_reason` suffix, so a violation on any frame but
+    // the last was published as zero — for the one unit whose entire purpose
+    // is to make a silent family gap loud.
+    (
+        "domain47_prewarm_families_dark_without_reason",
+        Accumulation::BitwiseOr,
+    ),
+    // `Domain47ShadowWalkState`: 0 NotRun, 1 WalkedOnly, 2 Compared,
+    // 3 Disabled. The word that says whether the six counters beside it are a
+    // measurement at all; a sum of its codes says nothing about any frame.
+    // Added by lane EJ the same day this table was written, so no retained
+    // capture carries the summed spelling.
+    ("domain47_prewarm_shadow_walk_state", Accumulation::LastValue),
+    // --- raw codes and identifiers, unchanged ------------------------------
+    // These four already resolved to `LastValue` through `RAW_WORD_SUFFIXES`
+    // (`_reason`, `_kind`, `_id`, `_ordinal`) and are restated here because
+    // this table now runs first: an entry omitted would be a member of the
+    // family whose class lives somewhere else, which is the state this table
+    // exists to end. Each is a `Domain47PrewarmHoldReason` /
+    // `Domain47FamilyGapReason` / `Domain47PortraitFailure` code or an engine
+    // identifier.
+    ("domain47_prewarm_hold_reason", Accumulation::LastValue),
+    ("domain47_prewarm_family_gap_reason", Accumulation::LastValue),
+    (
+        "domain47_prewarm_portrait_gap_reason",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_portrait_failure_kind",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_portrait_failure_char_id",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_portrait_failure_ordinal",
+        Accumulation::LastValue,
+    ),
+    // --- per-frame quantities, unchanged -----------------------------------
+    // Booleans raised for THIS frame: whether the prewarm ran, took the
+    // negative-cache branch, was a refresh, and whether that refresh held the
+    // previous good roots. Their sums are frame counts and are read as such.
+    ("domain47_prewarm_ran", Accumulation::PerFrame),
+    ("domain47_prewarm_negative_cache_hit", Accumulation::PerFrame),
+    ("domain47_prewarm_refresh", Accumulation::PerFrame),
+    (
+        "domain47_prewarm_refresh_held_roots",
+        Accumulation::PerFrame,
+    ),
+    // Counts the census produced. `portrait_rows` is a published row count, in
+    // the same convention as every `domain47_adapter_*_rows` unit beside it.
+    (
+        "domain47_prewarm_portrait_failed_characters",
+        Accumulation::PerFrame,
+    ),
+    ("domain47_prewarm_portrait_rows", Accumulation::PerFrame),
+    // The shadow walk's six counters. Per-walk observations, summed the way
+    // the adapter row counters are, and meaningless without
+    // `domain47_prewarm_shadow_walk_state` above.
+    (
+        "domain47_prewarm_shadow_walk_leader_count",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_advisor_count",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_matched_count",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_count",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_only_count",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_refused_count",
+        Accumulation::PerFrame,
+    ),
+    // --- the seven read back out of the RETAINED cache ---------------------
+    // Declared `PerFrame`, which is what they already published, and flagged
+    // here rather than changed: each is read from `CompactDomain47PrewarmCache`
+    // rather than computed from this frame's work, so a hold frame republishes
+    // the value the last censusing frame left there. t36 published
+    // `stable_root_count` as 4,849,311 — ~22k roots counted again on each of
+    // 219 prewarms — which is the frame-weighted total, not a root population.
+    //
+    // That is the `convoy_transport_attack_resolver_member_bindings` shape,
+    // and that unit is a `Gauge`. The difference from the four above is that a
+    // sum of counts is still arithmetic on a quantity, so no figure here is
+    // uninterpretable the way a sum of codes or masks is, and moving seven
+    // published figures at once is a decision about what the manifest means
+    // rather than a repair of one that means nothing. It is named here so the
+    // next reader inherits the evidence instead of rediscovering it.
+    (
+        "domain47_prewarm_negative_cache_frames_remaining",
+        Accumulation::PerFrame,
+    ),
+    ("domain47_prewarm_stable_root_count", Accumulation::PerFrame),
+    ("domain47_prewarm_skipped_root_rows", Accumulation::PerFrame),
+    ("domain47_prewarm_excluded_scan_hits", Accumulation::PerFrame),
+    (
+        "domain47_prewarm_advisor_root_count",
+        Accumulation::PerFrame,
+    ),
+    ("domain47_prewarm_trait_token_count", Accumulation::PerFrame),
+    (
+        "domain47_prewarm_ambiguous_root_rows",
+        Accumulation::PerFrame,
+    ),
+];
+
 /// THE authority: how the whole-capture figure for `name` is computed.
 ///
 /// Every aggregation site calls this. The classification is by name because
@@ -2174,6 +2354,9 @@ pub const LANE_WALL_SESSION_CONSTANTS: &[&str] = &[
 ///
 /// Resolution order, and each step's reason:
 ///
+/// 0. [`DOMAIN47_PREWARM_UNITS`] — the one family declared as a whole, ahead
+///    of the suffix rules, because its names do not encode their kinds and two
+///    of them reached a manifest as sums of codes and masks.
 /// 1. `*_sample` — the established raw-word convention, already relied on by
 ///    `bt_*_raw_sample` and `so_*_sample`.
 /// 2. `d69_failed_slot_mask*` / `d69_stale_slot_mask` — the established
@@ -2184,50 +2367,75 @@ pub const LANE_WALL_SESSION_CONSTANTS: &[&str] = &[
 ///    about producer-retained state.
 /// 5. Everything else is `PerFrame`: a domain data unit's value is computed
 ///    from the payload of the frame it rode in.
+///
+/// Step 5 is a DEFAULT and not a declaration. [`declared_unit_accumulation`]
+/// is the same resolution with that step withheld, so a guard can tell a unit
+/// somebody classified from a unit that merely landed on the summed side.
 pub fn unit_accumulation(name: &str) -> Accumulation {
+    declared_unit_accumulation(name).unwrap_or(Accumulation::PerFrame)
+}
+
+/// The class a RULE gave `name`, or `None` when no rule did and
+/// [`unit_accumulation`] fell through to its `PerFrame` default.
+///
+/// This is the same resolution as `unit_accumulation` — there is still exactly
+/// one authority, and this is its body — with the final default withheld so
+/// that "declared per-frame" and "defaulted to per-frame" can be told apart.
+/// They fold identically and always will; the distinction is for the guards,
+/// which is the only way a family can be required to classify its own units.
+pub fn declared_unit_accumulation(name: &str) -> Option<Accumulation> {
+    // AHEAD of the suffix rules, and the position is the point: this family
+    // carries codes and masks under names that say neither, and one of its
+    // masks was being taken for a raw word by the `_reason` suffix.
+    if let Some((_, class)) = DOMAIN47_PREWARM_UNITS
+        .iter()
+        .find(|(unit, _)| *unit == name)
+    {
+        return Some(*class);
+    }
     if RAW_WORD_SUFFIXES
         .iter()
         .any(|suffix| name.ends_with(suffix))
     {
-        return Accumulation::LastValue;
+        return Some(Accumulation::LastValue);
     }
     if BITMASK_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
-        return Accumulation::BitwiseOr;
+        return Some(Accumulation::BitwiseOr);
     }
     // The recorder's original hard-coded case: the numbered per-slot forms end
     // in a digit, so the `_mask` suffix does not reach them.
     if name.starts_with("d69_failed_slot_mask_") {
-        return Accumulation::BitwiseOr;
+        return Some(Accumulation::BitwiseOr);
     }
     // `<prefix>_sha256_0..3`: one SHA-256 carried as four u64 words, and the
     // digest-group prefix the producer passes to build them. d75's terminal
     // payload and d64's terminal envelope/del2 digests are all this shape.
     // Adding digest words together is the `_hash` defect with more steps.
     if is_digest_word_or_group(name) {
-        return Accumulation::LastValue;
+        return Some(Accumulation::LastValue);
     }
     if CUMULATIVE_UNITS.contains(&name)
         || LANE_WALL_SESSION_CONSTANTS.contains(&name)
         || is_air_loss_channel_total(name)
     {
-        return Accumulation::Cumulative;
+        return Some(Accumulation::Cumulative);
     }
     if GAUGE_UNITS.contains(&name) || ZERO_GAUGE_UNITS.contains(&name) {
-        return Accumulation::Gauge;
+        return Some(Accumulation::Gauge);
     }
     if LAST_VALUE_UNITS.contains(&name) || RAW_FAILURE_CONTEXT_UNITS.contains(&name) {
-        return Accumulation::LastValue;
+        return Some(Accumulation::LastValue);
     }
     if STATEFUL_FAMILY_PER_FRAME_UNITS.contains(&name) {
-        return Accumulation::PerFrame;
+        return Some(Accumulation::PerFrame);
     }
     if STATEFUL_UNIT_PREFIXES
         .iter()
         .any(|prefix| name.starts_with(prefix))
     {
-        return Accumulation::Undeclared;
+        return Some(Accumulation::Undeclared);
     }
-    Accumulation::PerFrame
+    None
 }
 
 /// Is this name inside a family where an unregistered unit is undeclared
@@ -3283,11 +3491,181 @@ mod tests {
         );
     }
 
+    /// The d47 prewarm family's codes and masks, pinned against the figures
+    /// `runs/live_unlock/t36` actually published.
+    ///
+    /// Both were on the `PerFrame` fall-through, so the manifest carried a sum
+    /// of enum codes and a sum of family masks. The arithmetic is reproduced
+    /// here from the capture's own numbers so the test states what was wrong
+    /// rather than only what is now expected.
+    ///
+    /// MUTATION: delete either unit's [`DOMAIN47_PREWARM_UNITS`] entry and it
+    /// falls back to the summed default, which this rejects — and
+    /// `every_d47_prewarm_unit_declares_its_class` names it as undeclared.
+    #[test]
+    fn the_d47_prewarm_code_and_mask_units_are_not_summed() {
+        // The verdict is a code: t36 ran 219 prewarms, every one of them
+        // `InFrameHour` (code 1), and published 219 — a figure that reads as a
+        // count of something and is a repeated code.
+        let verdict = unit_accumulation("domain47_prewarm_clock_verdict");
+        assert_eq!(verdict, Accumulation::LastValue);
+        let mut running: Option<u64> = None;
+        for _ in 0..219 {
+            running = Some(verdict.fold(running, 1));
+        }
+        assert_eq!(
+            running,
+            Some(1),
+            "219 frames agreeing on verdict 1 is verdict 1, not 219"
+        );
+        assert_eq!(
+            Accumulation::PerFrame.fold(Some(218), 1),
+            219,
+            "the summed spelling t36 published, kept here as the thing being replaced"
+        );
+
+        // The presence mask is a mask: OR, never sum. Two frames observing the
+        // same seven families must read as those seven families.
+        let families = unit_accumulation("domain47_prewarm_known_families");
+        assert_eq!(families, Accumulation::BitwiseOr);
+        // A series of the shape t36 carried — many frames observing everything
+        // but the portrait family (`FAMILY_ALL & !FAMILY_CHARACTER_PORTRAIT`,
+        // 0x7F), then one that observed all eight. The exact per-frame
+        // composition of that capture is not reconstructed here; what is
+        // reproduced is the arithmetic, which is what the class decides.
+        let mut running: Option<u64> = None;
+        for _ in 0..161 {
+            running = Some(families.fold(running, 0x7F));
+        }
+        running = Some(families.fold(running, 0xFF));
+        assert_eq!(
+            running,
+            Some(0xFF),
+            "the union of the masks observed, which is the readable question"
+        );
+        // The same series under the class it had: a number naming no family.
+        let mut summed: Option<u64> = None;
+        for _ in 0..161 {
+            summed = Some(Accumulation::PerFrame.fold(summed, 0x7F));
+        }
+        summed = Some(Accumulation::PerFrame.fold(summed, 0xFF));
+        assert_eq!(summed, Some(161 * 0x7F + 0xFF));
+        assert!(
+            summed.unwrap() > 0xFF,
+            "a sum of masks leaves the eight-bit vocabulary entirely, which is how a \
+             capture publishes a five-figure family mask"
+        );
+
+        // The invariant unit is a mask too, and was reached by the `_reason`
+        // suffix. Under `LastValue` a violation on any frame but the last is
+        // published as zero; under the OR it survives.
+        let dark = unit_accumulation("domain47_prewarm_families_dark_without_reason");
+        assert_eq!(dark, Accumulation::BitwiseOr);
+        let mut running: Option<u64> = None;
+        for value in [0u64, 0, 0b1000_0000, 0, 0] {
+            running = Some(dark.fold(running, value));
+        }
+        assert_eq!(
+            running,
+            Some(0b1000_0000),
+            "one frame's unexplained family must not be erased by the frames after it"
+        );
+        assert_eq!(
+            Accumulation::LastValue.fold(Some(0b1000_0000), 0),
+            0,
+            "which is what the `_reason` suffix would have published"
+        );
+
+        // The shadow walk's state word is a code on the same footing as the
+        // clock verdict: its sum says nothing about any frame.
+        let state = unit_accumulation("domain47_prewarm_shadow_walk_state");
+        assert_eq!(state, Accumulation::LastValue);
+        assert_eq!(state.fold(Some(2), 2), 2);
+    }
+
+    /// Every unit in [`DOMAIN47_PREWARM_UNITS`] resolves to the class the table
+    /// gives it, and no member of the family is left to the default.
+    ///
+    /// The producer-side half of this guard — that every name the collector
+    /// EMITS is in the table — lives in
+    /// `tests/diagnostic_unit_accumulation_sweep.rs`, which reads the emit
+    /// sites. This half is the crate-local property: the table is reachable,
+    /// self-consistent, and complete over itself.
+    ///
+    /// MUTATION: delete any entry and the name it named falls through to the
+    /// `PerFrame` default, so `declared_unit_accumulation` returns `None` and
+    /// the sweep guard fails.
+    #[test]
+    fn every_d47_prewarm_unit_declares_its_class() {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for (name, expected) in DOMAIN47_PREWARM_UNITS {
+            assert!(
+                name.starts_with("domain47_prewarm_"),
+                "{name} is not a member of the family this table declares"
+            );
+            assert!(seen.insert(name), "{name} is listed twice");
+            assert_eq!(
+                declared_unit_accumulation(name),
+                Some(*expected),
+                "{name} does not resolve to the class its own table gives it"
+            );
+        }
+        // The table is the family's authority, so a member of it must never be
+        // decided by anything else. Four entries END in a raw-word suffix and
+        // agree with it; the fifth kind — the masks — deliberately do not, and
+        // that disagreement is the defect this table exists to settle.
+        assert_eq!(
+            declared_unit_accumulation("domain47_prewarm_families_dark_without_reason"),
+            Some(Accumulation::BitwiseOr),
+            "the table must win over the `_reason` suffix for this name"
+        );
+    }
+
+    /// `declared_unit_accumulation` must distinguish a classified unit from one
+    /// that merely landed on the summed default — the property every
+    /// explicit-classification guard rests on.
+    ///
+    /// MUTATION: return `Some(Accumulation::PerFrame)` from the final arm of
+    /// `declared_unit_accumulation` and this fails, as does the sweep guard.
+    #[test]
+    fn a_defaulted_unit_is_distinguishable_from_a_declared_one() {
+        assert_eq!(
+            declared_unit_accumulation("weather_rows_total"),
+            None,
+            "nothing classifies this name; it is summed by default"
+        );
+        assert_eq!(unit_accumulation("weather_rows_total"), Accumulation::PerFrame);
+        assert_eq!(
+            declared_unit_accumulation("domain47_prewarm_ran"),
+            Some(Accumulation::PerFrame),
+            "declared per-frame, which is not the same statement as defaulted"
+        );
+        // Every name in the tree resolves identically through both entry
+        // points; the second only says whether a rule was involved.
+        for name in [
+            "weather_rows_total",
+            "domain47_prewarm_ran",
+            "domain47_prewarm_known_families",
+            "rs_observations",
+            "d69_stale_slot_mask",
+            "convoy_transport_attack_something_new",
+        ] {
+            assert_eq!(
+                unit_accumulation(name),
+                declared_unit_accumulation(name).unwrap_or(Accumulation::PerFrame),
+                "{name}"
+            );
+        }
+    }
+
     /// The tables must not disagree with each other; a name in two of them
     /// would make the classification depend on the order of the `if`s.
     #[test]
     fn the_classification_tables_are_disjoint_and_self_consistent() {
         let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for (name, _) in DOMAIN47_PREWARM_UNITS {
+            assert!(seen.insert(name), "{name} is classified by more than one table");
+        }
         for (table, expected) in [
             (CUMULATIVE_UNITS, Accumulation::Cumulative),
             (GAUGE_UNITS, Accumulation::Gauge),

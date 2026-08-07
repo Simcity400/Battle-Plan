@@ -53,7 +53,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use compact_contract::diagnostic_channel::{
-    unit_accumulation, Accumulation, CUMULATIVE_UNITS, STATEFUL_UNIT_PREFIXES,
+    declared_unit_accumulation, unit_accumulation, Accumulation, CUMULATIVE_UNITS,
+    DOMAIN47_PREWARM_UNITS, STATEFUL_UNIT_PREFIXES,
 };
 
 fn native_root() -> PathBuf {
@@ -373,6 +374,139 @@ fn no_producer_unit_name_is_left_undeclared() {
          is refused by the promotion gate.\n{}",
         STATEFUL_UNIT_PREFIXES,
         undeclared.join("\n")
+    );
+}
+
+/// Every `domain47_prewarm_*` unit a producer emits must be CLASSIFIED, not
+/// merely summed by default.
+///
+/// The general rule of this file is "no producer name is `Undeclared`", and
+/// `Undeclared` only exists inside a stateful family. Outside one, an
+/// unclassified name silently defaults to `PerFrame` and is SUMMED — which is
+/// how `domain47_prewarm_clock_verdict` (an enum code) and
+/// `domain47_prewarm_known_families` (a `FAMILY_*` bitmask) reached t36's
+/// manifest as 219 and 20469, two figures that cannot be read as anything.
+///
+/// This family is held to the stricter rule because its names carry three
+/// different value kinds — counts, codes, masks — and none of them says which.
+/// The stricter rule is MEMBERSHIP in `DOMAIN47_PREWARM_UNITS`, not merely
+/// "some rule classifies it". The weaker spelling would have let an entry be
+/// deleted and pass: `domain47_prewarm_hold_reason` still resolves through the
+/// `_reason` suffix, and it is exactly that suffix — which took the
+/// `families_dark_without_reason` MASK for a raw word — that this table is
+/// there to take precedence over. The whole family declared in one place is the
+/// property; "declared somewhere" is not it.
+///
+/// The candidate set is read from the SOURCES rather than from a list kept
+/// here, so a unit added to the collector tomorrow is covered without anybody
+/// remembering to widen this test. It comes from the OVER-COLLECTING half
+/// ([`producer_literals`]) rather than the precise half, because the precise
+/// half only recognises a literal `name: "..."` field and a `name: SOME_CONST`
+/// emit site would walk straight past it. Over-collecting is the safe
+/// direction here for the reason stated at the top of this file: the worst a
+/// non-unit literal in this family's namespace can do is demand a table entry
+/// for a name nothing emits, which is noticed at once. Under-collecting would
+/// let a real unit through, which is the whole failure mode.
+///
+/// Aliveness is still proved by the PRECISE half: an entry in the table must be
+/// constructed by a producer, so a retired or misspelled entry is reported
+/// rather than left as a class nobody can check.
+///
+/// Scope: this family only. The same demand across every family would mean
+/// classifying ~460 domain data units whose per-frame sum is exactly right, and
+/// the default exists for them.
+///
+/// MUTATION: delete ANY `DOMAIN47_PREWARM_UNITS` entry — including one the
+/// suffix rules would still classify — and this names it.
+#[test]
+fn every_domain47_prewarm_unit_is_explicitly_classified() {
+    // The bare prefix is a literal in this crate's own guards, not a unit.
+    const PREFIX: &str = "domain47_prewarm_";
+    let named_in_sources: Vec<String> = producer_literals()
+        .into_iter()
+        .filter(|name| name.starts_with(PREFIX) && name.len() > PREFIX.len())
+        .collect();
+    // The scan must actually reach the sources, or an empty candidate set would
+    // make this pass by finding nothing.
+    assert!(
+        named_in_sources.len() >= 25,
+        "only {} domain47_prewarm_* names found in the producer sources; the scan is \
+         not reading collector/src/attach_log.rs: {named_in_sources:?}",
+        named_in_sources.len()
+    );
+    for pinned in [
+        "domain47_prewarm_clock_verdict",
+        "domain47_prewarm_known_families",
+        "domain47_prewarm_families_dark_without_reason",
+        "domain47_prewarm_shadow_walk_state",
+    ] {
+        assert!(
+            named_in_sources.iter().any(|name| name == pinned),
+            "{pinned} is emitted by the collector but the scan did not see it, so this \
+             guard would not have caught its misclassification"
+        );
+    }
+
+    let untabled: Vec<&String> = named_in_sources
+        .iter()
+        .filter(|name| !DOMAIN47_PREWARM_UNITS.iter().any(|(unit, _)| unit == name))
+        .collect();
+    assert!(
+        untabled.is_empty(),
+        "these d47 prewarm names are not in DOMAIN47_PREWARM_UNITS, so this family's \
+         class is decided somewhere else -- by a suffix that may not know what the \
+         value is, or by the PerFrame default, which SUMS it. A count may well be \
+         right: say so in the table. A code or a mask summed is a figure with no \
+         referent, which is what t36 published for two of them:\n{}",
+        untabled
+            .iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // Membership implies a declaration, but state it: this is the property the
+    // table exists to give, and the two are separate mechanisms.
+    for (name, class) in DOMAIN47_PREWARM_UNITS {
+        assert_eq!(
+            declared_unit_accumulation(name),
+            Some(*class),
+            "{name} is in the table but does not resolve to it"
+        );
+    }
+
+    // The table must not drift into naming units nothing emits: a dead entry is
+    // a class nobody can check, and a MISSPELLED entry is a dead entry whose
+    // real unit is back on the default. Proved against the PRECISE scan, which
+    // is what shows a name is really constructed as a unit.
+    let constructed = constructed_unit_names_everywhere();
+    let dead: Vec<&str> = DOMAIN47_PREWARM_UNITS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !constructed.contains(*name))
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "declared in DOMAIN47_PREWARM_UNITS but no producer constructs them -- retired, \
+         or misspelled: {dead:?}"
+    );
+}
+
+/// A negative control for the guard above: a NEW unit in the family, of the
+/// kind that keeps being added, must be reported rather than summed.
+///
+/// Without this, deleting the guard's body would look the same as a clean run.
+#[test]
+fn a_new_domain47_prewarm_unit_would_be_reported() {
+    assert_eq!(
+        declared_unit_accumulation("domain47_prewarm_a_unit_added_next_quarter"),
+        None,
+        "an unclassified d47 prewarm name must be visible as unclassified"
+    );
+    assert_eq!(
+        unit_accumulation("domain47_prewarm_a_unit_added_next_quarter"),
+        Accumulation::PerFrame,
+        "and it must still FOLD as it always did -- the guard fails the build, it does \
+         not change an unclassified unit's arithmetic"
     );
 }
 
