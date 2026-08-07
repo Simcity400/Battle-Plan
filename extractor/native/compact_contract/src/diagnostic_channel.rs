@@ -2267,6 +2267,51 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
         "domain47_prewarm_portrait_failure_ordinal",
         Accumulation::LastValue,
     ),
+    // --- the identity axis and its evidence probe (lane FA) ----------------
+    // `Domain47PortraitIdentityDetail`: 0 NoIdentityFailure, 1..=9 the residual
+    // paths of the identity `std::string` read. A code, exactly like the
+    // `_kind` word it sits beside — but `_detail` is in NO suffix list, so
+    // without this entry it would land on the `PerFrame` default and be SUMMED,
+    // which is precisely the failure this table was built to end. It is the
+    // first new member of the family since the table was written and it is
+    // therefore also the test of whether the table works.
+    (
+        "domain47_prewarm_portrait_failure_detail",
+        Accumulation::LastValue,
+    ),
+    // Whether `BATTLE_PLAN_D47_PORTRAIT_PROBE` armed the capture. A per-process
+    // constant republished on every frame, so its sum is a frame count wearing
+    // a boolean's name — the `shadow_walk_state` argument exactly.
+    (
+        "domain47_prewarm_portrait_probe_armed",
+        Accumulation::LastValue,
+    ),
+    // The five probe words, emitted only on an armed capture. Every one of them
+    // is a RAW OBSERVATION of one `std::string` header — two header words, two
+    // outcome codes, one byte — and arithmetic over frames on any of them is
+    // meaningless in the way `d43_resource_failure_resource_index` was
+    // meaningless at `u32::MAX * 361`. None of the five ends in a suffix any
+    // rule recognises, so each needs its entry here.
+    (
+        "domain47_prewarm_portrait_probe_size",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_portrait_probe_capacity",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_portrait_probe_pointer",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_portrait_probe_terminator_outcome",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_portrait_probe_terminator_value",
+        Accumulation::LastValue,
+    ),
     // --- per-frame quantities, unchanged -----------------------------------
     // Booleans raised for THIS frame: whether the prewarm ran, took the
     // negative-cache branch, was a refresh, and whether that refresh held the
