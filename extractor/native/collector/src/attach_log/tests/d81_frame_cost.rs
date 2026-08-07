@@ -1858,8 +1858,45 @@ fn cw_splitmix(seed: &mut u64) -> u64 {
 /// gave the read, which is what makes a differential against
 /// [`unrestricted_foreign_index`] an entry-for-entry comparison and not just a
 /// comparison of maxima.
+/// The oracle's tables in the layout PRODUCTION probes.
+///
+/// The differential tests keep their staged tables as `BTreeMap`s — the oracle
+/// arm has to stay written on a container production does not use, or a
+/// `D81RowTable` that dropped or reordered a row would move both arms together
+/// and the assertion could not see it. This converts, so the production arm is
+/// driven through the shipped structure while the oracle is not.
+fn probe_tables_over(
+    tables: &[(u32, u32, BTreeMap<u32, i64>)],
+) -> Vec<(u32, u32, D81RowTable)> {
+    tables
+        .iter()
+        .map(|(raw_handle, equivalence_id, rows)| {
+            (
+                *raw_handle,
+                *equivalence_id,
+                rows.iter().map(|(&key, &value)| (key, value)).collect(),
+            )
+        })
+        .collect()
+}
+
+/// The collecting form of production's `d81_hub_foreign_source_into`.
+///
+/// Production refills a scratch vector it owns for the whole POV loop; a test
+/// that builds one source and holds it wants the vector back, so this is the
+/// same call with a fresh buffer. It is a wrapper and not a transcription: the
+/// order and the table bindings are production's.
+pub(super) fn d81_hub_foreign_source_for<'cache>(
+    plan: &D81HubPovPlan,
+    tables: &'cache BTreeMap<usize, D81HashTableSnapshot>,
+) -> D81ForeignSource<'cache> {
+    let mut related = Vec::new();
+    d81_hub_foreign_source_into(plan, tables, &mut related);
+    D81ForeignSource { related }
+}
+
 fn lazy_source_over<'tables>(
-    tables: &'tables [(u32, u32, BTreeMap<u32, i64>)],
+    tables: &'tables [(u32, u32, D81RowTable)],
 ) -> D81ForeignSource<'tables> {
     D81ForeignSource {
         related: tables
@@ -1952,7 +1989,8 @@ fn the_query_time_probe_counts_exactly_the_tables_it_looked_in() {
             .map(|_| (cw_splitmix(&mut seed) % u64::from(PROVINCE_SPACE)) as u32)
             .collect();
 
-        let source = lazy_source_over(&tables);
+        let probe_tables = probe_tables_over(&tables);
+        let source = lazy_source_over(&probe_tables);
         let unrestricted = unrestricted_foreign_index(&tables);
         let phases = D81PhaseAccum::default();
 
@@ -2086,7 +2124,8 @@ fn the_query_time_probe_reports_the_same_foreign_maximum_for_every_query() {
             .filter(|_province| cw_splitmix(&mut seed) % 3 == 0)
             .collect();
 
-        let source = lazy_source_over(&tables);
+        let probe_tables = probe_tables_over(&tables);
+        let source = lazy_source_over(&probe_tables);
         let unrestricted = unrestricted_foreign_index(&tables);
 
         for &province_id in &queried {
@@ -2550,8 +2589,8 @@ fn the_probe_charges_for_queries_performed_not_for_routes_planned() {
     let phases = D81PhaseAccum::default();
     // Tables holding nothing: this test is about the CHARGE, and an empty table
     // is probed exactly as a full one is.
-    let empty: Vec<(u32, u32, BTreeMap<u32, i64>)> = (0..9u32)
-        .map(|handle| (handle + 1, handle + 1001, BTreeMap::new()))
+    let empty: Vec<(u32, u32, D81RowTable)> = (0..9u32)
+        .map(|handle| (handle + 1, handle + 1001, D81RowTable::default()))
         .collect();
 
     // A POV with many related countries answering few routes, then one with the
@@ -2910,7 +2949,7 @@ const T31_GROUP: usize = 55;
 /// the eager arm can make the `hub_index_entries` charge that fold made.
 fn cw_restricted_foreign_fold(
     values_by_province: &mut BTreeMap<u32, Vec<D81ForeignValue>>,
-    table_rows: &BTreeMap<u32, i64>,
+    table_rows: &D81RowTable,
     queried_provinces: &BTreeSet<u32>,
     raw_handle: u32,
     equivalence_id: u32,
@@ -2928,13 +2967,13 @@ fn cw_restricted_foreign_fold(
     };
     if queried_provinces.len() < table_rows.len() {
         for &province_id in queried_provinces {
-            if let Some(&value) = table_rows.get(&province_id) {
+            if let Some(value) = table_rows.get(province_id) {
                 push(province_id, value);
                 added += 1;
             }
         }
     } else {
-        for (&province_id, &value) in table_rows {
+        for (province_id, value) in table_rows.iter() {
             if queried_provinces.contains(&province_id) {
                 push(province_id, value);
                 added += 1;
@@ -2947,7 +2986,7 @@ fn cw_restricted_foreign_fold(
 /// A whole frame's hub inputs at t31's shape: one table per country, and per
 /// POV the countries it is related to and the provinces it queries.
 pub(super) struct T31Frame {
-    pub(super) tables: Vec<(u32, u32, BTreeMap<u32, i64>)>,
+    pub(super) tables: Vec<(u32, u32, D81RowTable)>,
     /// Per POV: indices into `tables`.
     pub(super) related: Vec<Vec<usize>>,
     /// Per POV: the province ids its row-emission loop queries, in order.
@@ -2972,7 +3011,7 @@ impl T31Frame {
             .collect();
 
         // One supply table per country: 276 of its corridor's 339 provinces.
-        let tables: Vec<(u32, u32, BTreeMap<u32, i64>)> = (0..country_count)
+        let tables: Vec<(u32, u32, D81RowTable)> = (0..country_count)
             .map(|country| {
                 let corridor = &corridors[country / T31_GROUP];
                 let mut rows = BTreeMap::new();
@@ -2980,7 +3019,14 @@ impl T31Frame {
                     let province = corridor[(cw_splitmix(seed) % T31_CORRIDOR as u64) as usize];
                     rows.insert(province, (cw_splitmix(seed) % 4_000) as i64 - 1_000);
                 }
-                (country as u32 + 1, country as u32 / 2 + 1_000, rows)
+                // Built as a map because the loop needs `len()` to converge on
+                // a fixed row count, then handed over in the layout production
+                // probes: the bench must exercise the shipped structure.
+                (
+                    country as u32 + 1,
+                    country as u32 / 2 + 1_000,
+                    rows.into_iter().collect::<D81RowTable>(),
+                )
             })
             .collect();
 
@@ -3610,4 +3656,309 @@ fn d81_copy_only_manifest_census() {
          test's doc). None of them can be planned from a previous hour without \
          risking a freed or relocated object."
     );
+}
+
+// ---------------------------------------------------------------------
+// Lane FG -- the row table that replaced the per-table BTreeMap
+// ---------------------------------------------------------------------
+
+/// `D81RowTable` answers every key exactly as the `BTreeMap` it replaced did.
+///
+/// WHY THE PROBE DIFFERENTIALS ABOVE DO NOT COVER THIS. They drive both arms
+/// off staged tables and compare the MAXIMUM; a table that lost a row whose
+/// value is never the maximum, or that answers a key just outside its range
+/// with a neighbour's value, can survive them. This compares the lookup itself,
+/// key by key, against the container production stopped using.
+///
+/// THE KEY SPACE IS DELIBERATELY WIDER THAN THE TABLE'S, and the input order is
+/// shuffled: `get`'s two bound comparisons are a short-circuit whose only
+/// chance of being wrong is at the ends, and a table that relied on its input
+/// arriving sorted would answer wrongly for everything.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL:
+///  * searching `values` instead of `keys`, or indexing `values` with the
+///    search result of a different array;
+///  * `key <= first` or `key >= last` in the bound check, which drops the two
+///    endpoints;
+///  * a `FromIterator` that does not sort, or that resolves a repeated key to
+///    the FIRST value offered instead of the last.
+///
+/// MUTATION RUN: `get`'s lower bound changed from `key < first` to
+/// `key <= first`. Observed:
+///
+/// ```text
+/// assertion `left == right` failed: trial 0: key 2 must answer as the map did
+///   left: None
+///  right: Some(-2637)
+/// ```
+///
+/// Restored.
+#[test]
+fn the_row_table_answers_every_key_exactly_as_the_map_it_replaced() {
+    const KEY_SPACE: u32 = 400;
+    let mut seed = 0x0D81_F607_u64;
+    let mut nonempty_tables = 0usize;
+    let mut hits = 0usize;
+    let mut misses = 0usize;
+
+    for trial in 0..300u32 {
+        let rows_len = (cw_splitmix(&mut seed) % 60) as usize;
+        let mut map: BTreeMap<u32, i64> = BTreeMap::new();
+        for _ in 0..rows_len {
+            let key = 1 + (cw_splitmix(&mut seed) % u64::from(KEY_SPACE)) as u32;
+            let value = (cw_splitmix(&mut seed) % 10_000) as i64 - 5_000;
+            map.insert(key, value);
+        }
+        let mut shuffled: Vec<(u32, i64)> = map.iter().map(|(&k, &v)| (k, v)).collect();
+        for index in (1..shuffled.len()).rev() {
+            shuffled.swap(index, (cw_splitmix(&mut seed) % (index as u64 + 1)) as usize);
+        }
+        let table: D81RowTable = shuffled.into_iter().collect();
+
+        assert_eq!(
+            table.len(),
+            map.len(),
+            "trial {trial}: the table must hold every row the map held"
+        );
+        assert_eq!(
+            table.iter().collect::<Vec<_>>(),
+            map.iter().map(|(&k, &v)| (k, v)).collect::<Vec<_>>(),
+            "trial {trial}: the table must iterate in ascending key order"
+        );
+        if !map.is_empty() {
+            nonempty_tables += 1;
+        }
+        // 0 and KEY_SPACE + 1 bracket the whole staged range from outside.
+        for key in 0..=KEY_SPACE + 1 {
+            let want = map.get(&key).copied();
+            assert_eq!(
+                table.get(key),
+                want,
+                "trial {trial}: key {key} must answer as the map did"
+            );
+            if want.is_some() {
+                hits += 1;
+            } else {
+                misses += 1;
+            }
+        }
+    }
+
+    assert!(
+        nonempty_tables > 0 && hits > 0 && misses > 0,
+        "the shapes must produce populated tables and both hits and misses, or \
+         the comparison is over nothing"
+    );
+}
+
+/// A table staged with a repeated key refuses at the SAME bucket, naming the
+/// SAME key, that the map's `insert` refused at.
+///
+/// WHY THIS NEEDED A TEST OF ITS OWN. The map form decided the refusal in the
+/// bucket scan — the first bucket whose key had already been seen — and the
+/// sorted form decides it after reordering. Those agree only because the sort
+/// is by `(key, bucket)` and the refusal is taken from each run's SECOND
+/// element, minimised over runs. That is an argument, and `subject`/`index` are
+/// on the wire, so it is checked against a transcription of the scan instead.
+///
+/// The oracle is written on `BTreeMap::insert` — the deleted code — so a
+/// production change and an oracle change cannot be the same edit.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL:
+///  * sorting by `key` alone with an unstable sort, which lets a run report its
+///    higher bucket;
+///  * reporting the run's FIRST bucket, or the first run in key order rather
+///    than the one with the lowest bucket;
+///  * detecting duplicates with `dedup` (which would silently drop the row and
+///    publish a table the engine never held).
+///
+/// MUTATION RUN: the minimising `is_none_or(|(_, seen)| index < seen)` replaced
+/// by `is_none()`, i.e. "the first duplicate run in KEY order". Observed:
+///
+/// ```text
+/// assertion `left == right` failed: case 2: the refusal must name the key and
+/// the bucket the scan stopped at
+///   left: (Duplicate, 5, 3)
+///  right: (Duplicate, 9, 2)
+/// ```
+///
+/// Restored. Note WHICH layout caught it — `[5, 9, 9, 5, 13]`, where the lower
+/// key repeats at the higher bucket.
+#[test]
+fn a_repeated_table_key_refuses_at_the_bucket_the_map_insert_refused_at() {
+    // Bucket layouts chosen so the duplicate runs interleave: in the third the
+    // LOWER key's repeat is at a HIGHER bucket than the higher key's, which is
+    // the case a "first run in key order" rule gets wrong.
+    let layouts: [&[u32]; 6] = [
+        &[7, 9, 11, 13],
+        &[7, 9, 7, 13],
+        &[5, 9, 9, 5, 13],
+        &[21, 4, 21, 4],
+        &[3],
+        // A ZERO KEY BELOW WHICH A DUPLICATE ALREADY SAT (Codex review
+        // 019fde70, finding 1). The zero-key refusal is decided in the scan and
+        // the duplicate is decided after it, so a scan that returned on the
+        // zero key would publish `Duplicate(subject=0, index=2)` where the map
+        // published `Duplicate(subject=7, index=1)`.
+        &[7, 7, 0],
+    ];
+    let mut refusals = 0usize;
+    let mut clean = 0usize;
+
+    for (case, keys) in layouts.iter().enumerate() {
+        // THE ORACLE: the deleted scan, verbatim.
+        let mut seen: BTreeMap<u32, i64> = BTreeMap::new();
+        let mut expected: Option<(u32, usize)> = None;
+        for (index, &key) in keys.iter().enumerate() {
+            if seen.insert(key, index as i64).is_some() {
+                expected = Some((key, index));
+                break;
+            }
+        }
+
+        let fixture = stage_single_table(keys);
+        let outcome = d81_hash_table_rows(fixture.table, &mut Vec::new());
+        match expected {
+            Some((key, index)) => {
+                refusals += 1;
+                let failure = outcome.expect_err("a repeated key must refuse the table");
+                assert_eq!(
+                    (failure.reason, failure.subject_id, failure.index),
+                    (
+                        D81FailureReason::Duplicate,
+                        key,
+                        index.min(u32::MAX as usize) as u32
+                    ),
+                    "case {case}: the refusal must name the key and the bucket \
+                     the scan stopped at"
+                );
+            }
+            None => {
+                clean += 1;
+                let snapshot = outcome.expect("a table with distinct keys is decoded");
+                assert_eq!(
+                    snapshot.rows.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+                    {
+                        let mut sorted = keys.to_vec();
+                        sorted.sort_unstable();
+                        sorted
+                    },
+                    "case {case}: a clean table holds every staged key, ascending"
+                );
+            }
+        }
+    }
+
+    assert!(
+        refusals >= 3 && clean >= 2,
+        "the layouts must cover both outcomes, or one arm is never taken"
+    );
+}
+
+/// A duplicate at a LOW bucket outranks a malformed bucket at a HIGHER one.
+///
+/// THE DEFECT THIS EXISTS FOR (found in self-review of the lane FG change, and
+/// present in its first draft). The old scan `return`ed at its first refusal, so
+/// nothing past that bucket was ever examined. Collecting the whole scan first
+/// and deciding duplicates afterwards inverts that: a malformed marker at bucket
+/// 5 would refuse a table whose bucket 2 already repeated a key, publishing
+/// `HeaderInvalid`/index 5 where the map form published `Duplicate`/index 2 —
+/// a different reason and a different witness on the wire for the same table.
+///
+/// The fix is that the loop still stops at its first refusal and merely records
+/// it, so the duplicate check only ever sees buckets below it. This pins the
+/// ordering in both directions: the duplicate wins when it is lower, and the
+/// malformed bucket wins when there is no duplicate before it.
+///
+/// MUTATION RUN: the `break`s in the scan restored to `return Err(...)`, i.e.
+/// the first draft. Observed:
+///
+/// ```text
+/// assertion `left == right` failed: a duplicate below the malformed bucket
+/// must be the published refusal
+///   left: (HeaderInvalid, 0, 5)
+///  right: (Duplicate, 9, 2)
+/// ```
+///
+/// Restored.
+#[test]
+fn a_low_duplicate_outranks_a_malformed_bucket_above_it() {
+    // Buckets 0..=4 occupied; key 9 repeats at bucket 2; bucket 5 carries a
+    // marker the header cannot license.
+    let mut fixture = stage_single_table(&[7, 9, 9, 13, 21]);
+    fixture.set_marker(5, 0xfe);
+    let failure = d81_hash_table_rows(fixture.table, &mut Vec::new())
+        .expect_err("the staged table is malformed twice over");
+    assert_eq!(
+        (failure.reason, failure.subject_id, failure.index),
+        (D81FailureReason::Duplicate, 9, 2),
+        "a duplicate below the malformed bucket must be the published refusal"
+    );
+
+    // And the control: with the repeat removed, the malformed bucket IS the
+    // refusal, so the assertion above is about ORDER and not about the
+    // malformed bucket being unreachable.
+    let mut clean = stage_single_table(&[7, 9, 11, 13, 21]);
+    clean.set_marker(5, 0xfe);
+    let failure = d81_hash_table_rows(clean.table, &mut Vec::new())
+        .expect_err("a malformed marker refuses on its own");
+    assert_eq!(
+        (failure.reason, failure.index),
+        (D81FailureReason::HeaderInvalid, 5),
+        "with no duplicate before it, the malformed bucket is the refusal"
+    );
+}
+
+/// One staged `CSupplySystem` companion table, for the decode-path tests.
+struct SingleTableFixture {
+    region: FixtureRegion,
+    table: usize,
+    buckets_off: usize,
+}
+
+impl SingleTableFixture {
+    /// Overwrite one bucket's probe marker, so a test can stage a bucket the
+    /// header cannot license without disturbing the keys around it.
+    fn set_marker(&mut self, slot: usize, marker: u8) {
+        let offset = self.buckets_off + slot * 0x18;
+        self.region.write_u8(offset + 4, marker);
+    }
+}
+
+/// Stage `keys` into consecutive buckets of one table, in the given order.
+///
+/// The header is the reader's own: `mask + 1` a power of two comfortably above
+/// the occupancy, `max_probe` 1, and the sentinel in the last slot. `count` is
+/// the number of buckets occupied, which for a duplicate layout is deliberately
+/// the STAGED length and not the distinct-key count — the duplicate refusal has
+/// to fire before the `occupied != count` check, and staging the distinct count
+/// would let that check fire first and hide the ordering.
+fn stage_single_table(keys: &[u32]) -> SingleTableFixture {
+    let mask: u32 = (keys.len() as u32 * 4).next_power_of_two().max(16) - 1;
+    let max_probe: u8 = 1;
+    let slot_count = mask + u32::from(max_probe) + 2;
+    let table_bytes = slot_count as usize * 0x18;
+    let buckets_off = 0x40usize;
+    let mut region = FixtureRegion::new(buckets_off + table_bytes + 0x100);
+    let base = region.addr();
+    assert!(
+        is_map_control_heap_pointer(base),
+        "the staged table must satisfy the reader's heap-pointer gate"
+    );
+    region.write_u64(0x08, (base + buckets_off) as u64);
+    region.write_u32(0x08 + 8, keys.len() as u32);
+    region.write_u32(0x08 + 12, mask);
+    region.write_u8(0x08 + 16, max_probe);
+    for (slot, &key) in keys.iter().enumerate() {
+        let bucket = buckets_off + slot * 0x18;
+        region.write_u8(bucket + 4, 1);
+        region.write_u32(bucket + 8, key);
+        region.write_i64(bucket + 0x10, 100 + slot as i64);
+    }
+    region.write_u8(buckets_off + (slot_count as usize - 1) * 0x18 + 4, 0xff);
+    SingleTableFixture {
+        region,
+        table: base,
+        buckets_off,
+    }
 }

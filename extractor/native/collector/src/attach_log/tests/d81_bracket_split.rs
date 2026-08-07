@@ -32,7 +32,7 @@
 //! the boundary at which "identical observed bytes" can be made exact instead of
 //! approximate: both sides are handed the same observation.
 
-use super::d81_frame_cost::{percentiles_us, t31, T31Frame};
+use super::d81_frame_cost::{d81_hub_foreign_source_for, percentiles_us, t31, T31Frame};
 use super::*;
 
 /// A hub observation at a small, fully hand-specified shape.
@@ -41,6 +41,19 @@ use super::*;
 /// nothing in it is an address anything dereferences — which is the property the
 /// split rests on and the reason this fixture needs no staged memory at all.
 fn ek_observation() -> D81HubObservation {
+    ek_observation_with_overlap(false)
+}
+
+/// The same shape, optionally with a province that carries a route in BOTH
+/// subtype lists.
+///
+/// `overlap` is what makes the cross-subtype query memo reachable (lane FG,
+/// 2026-08-08): with it false no province is queried twice and the memo can
+/// never hit, so a differential run on that fixture alone would say nothing
+/// about the memo at all. Province 11 is the one duplicated, because it is held
+/// by both related tables and so its answer is a real maximum rather than a
+/// zero an incorrect memo could also produce.
+fn ek_observation_with_overlap(overlap: bool) -> D81HubObservation {
     let table = |rows: &[(u32, i64)]| D81HashTableSnapshot {
         rows: rows.iter().copied().collect(),
         witnesses: Vec::new(),
@@ -56,7 +69,11 @@ fn ek_observation() -> D81HubObservation {
     let pov = |pov_country_id: u32| D81HubPovPlan {
         pov_country_id,
         subtype0_routes: vec![(route(11, 0), false), (route(12, 1), true)],
-        subtype1_routes: vec![(route(13, 1), false)],
+        subtype1_routes: if overlap {
+            vec![(route(11, 0), false), (route(13, 1), false)]
+        } else {
+            vec![(route(13, 1), false)]
+        },
         controller_by_province: [(11u32, (5u32, 5u32)), (12, (0, 0)), (13, (9, 9))]
             .into_iter()
             .collect(),
@@ -166,48 +183,109 @@ fn ek_reference_emission(
 /// ```
 ///
 /// Restored.
+///
+/// TWO MORE, ON THE MEMO (lane FG, 2026-08-08):
+///
+///  * the memo's gate `pass == 1` changed to `pass == 9`, i.e. the memo never
+///    consulted — the shape a lane that quietly dropped the dedup would leave:
+///
+/// ```text
+/// a province routed under both subtypes must be answered from the memo, and
+/// that must show up as probes never walked
+/// ```
+///
+///  * the memo made to answer `answered[at].1 + 1` — a memo that hits but
+///    lies, which the counter assertions alone cannot see:
+///
+/// ```text
+/// assertion `left == right` failed: the deferred emission must publish the
+/// pre-split rows exactly (overlap true)
+/// ... foreign_max_raw: 401 ... vs ... foreign_max_raw: 400 ...
+/// ```
+///
+/// Both restored. The first fires only on the `overlap` fixture, which is why
+/// that fixture exists.
 #[test]
 fn the_deferred_hub_emission_is_byte_identical_to_the_in_bracket_one() {
-    let observation = ek_observation();
+    // BOTH SHAPES (lane FG, 2026-08-08): without a province in both subtype
+    // lists, where the cross-subtype memo cannot hit and every counter must
+    // still equal the reference's; and with one, where it hits and the
+    // accounting identity is what has to hold instead.
+    for overlap in [false, true] {
+        let observation = ek_observation_with_overlap(overlap);
 
-    let reference_phases = D81PhaseAccum::default();
-    let reference = ek_reference_emission(&observation, &reference_phases)
-        .expect("the fixture is a complete observation");
+        let reference_phases = D81PhaseAccum::default();
+        let reference = ek_reference_emission(&observation, &reference_phases)
+            .expect("the fixture is a complete observation");
 
-    let split_phases = D81PhaseAccum::default();
-    let split = d81_compute_rail_hub_rows(&observation, &split_phases)
-        .expect("the fixture is a complete observation");
+        let split_phases = D81PhaseAccum::default();
+        let split = d81_compute_rail_hub_rows(&observation, &split_phases)
+            .expect("the fixture is a complete observation");
 
-    assert_eq!(
-        split, reference,
-        "the deferred emission must publish the pre-split rows exactly"
-    );
-    assert!(
-        !split.is_empty(),
-        "a fixture that emits nothing would satisfy the comparison above \
-         without exercising it"
-    );
+        assert_eq!(
+            split, reference,
+            "the deferred emission must publish the pre-split rows exactly \
+             (overlap {overlap})"
+        );
+        assert!(
+            !split.is_empty(),
+            "a fixture that emits nothing would satisfy the comparison above \
+             without exercising it"
+        );
 
-    let reference_snapshot = reference_phases.snapshot();
-    let split_snapshot = split_phases.snapshot();
-    assert_eq!(
-        (
-            split_snapshot.hub_query_calls,
-            split_snapshot.hub_query_probes,
-            split_snapshot.hub_probe_hits,
-        ),
-        (
+        let reference_snapshot = reference_phases.snapshot();
+        let split_snapshot = split_phases.snapshot();
+        // THE ACCOUNTING IDENTITY, which is what survived the memo. The
+        // reference performs one query per emitted row and never memoises, so
+        // its call count IS the row count; production's calls plus its memo
+        // hits must be that same number.
+        assert_eq!(
             reference_snapshot.hub_query_calls,
-            reference_snapshot.hub_query_probes,
-            reference_snapshot.hub_probe_hits,
-        ),
-        "the probe counters are wire units too, and moving the queries across \
-         the bracket close must not change what they count"
-    );
-    assert!(
-        split_snapshot.hub_query_calls > 0 && split_snapshot.hub_probe_hits > 0,
-        "counters that are zero on both sides compare equal and prove nothing"
-    );
+            split.len() as u64,
+            "the reference queries once per row, which is what makes it the \
+             denominator (overlap {overlap})"
+        );
+        assert_eq!(
+            split_snapshot.hub_query_calls + split_snapshot.hub_query_memo_hits,
+            reference_snapshot.hub_query_calls,
+            "every emitted row is either a query performed or a memo hit \
+             (overlap {overlap})"
+        );
+        assert!(
+            split_snapshot.hub_query_probes <= reference_snapshot.hub_query_probes
+                && split_snapshot.hub_probe_hits <= reference_snapshot.hub_probe_hits,
+            "the memo can only remove probe work, never add it (overlap {overlap})"
+        );
+        assert!(
+            split_snapshot.hub_query_calls > 0 && split_snapshot.hub_probe_hits > 0,
+            "counters that are zero on both sides compare equal and prove nothing"
+        );
+        if overlap {
+            assert!(
+                split_snapshot.hub_query_memo_hits > 0
+                    && split_snapshot.hub_query_probes < reference_snapshot.hub_query_probes,
+                "a province routed under both subtypes must be answered from the \
+                 memo, and that must show up as probes never walked"
+            );
+        } else {
+            assert_eq!(
+                (
+                    split_snapshot.hub_query_calls,
+                    split_snapshot.hub_query_probes,
+                    split_snapshot.hub_probe_hits,
+                    split_snapshot.hub_query_memo_hits,
+                ),
+                (
+                    reference_snapshot.hub_query_calls,
+                    reference_snapshot.hub_query_probes,
+                    reference_snapshot.hub_probe_hits,
+                    0,
+                ),
+                "the probe counters are wire units too, and moving the queries \
+                 across the bracket close must not change what they count"
+            );
+        }
+    }
 }
 
 /// A read that refused at POV k publishes that refusal AFTER every POV before k
@@ -371,6 +449,13 @@ fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
 /// ```
 ///
 /// Restored.
+///
+/// LANE FG (2026-08-08) LOOKED AT THE RESIDUAL THIS TEST PINS AND FOUND ITS
+/// STATED CAUSE WRONG, and the residual real anyway. The frame's label IS
+/// available to a worker; what blocks the skip is the gap-precedence rule. The
+/// assertions below keep the correct half of lane EK's claim, and
+/// `a_label_mismatched_bracket_cannot_yet_skip_its_compute` pins the part that
+/// actually blocks it.
 #[test]
 fn a_rejected_bracket_never_reaches_the_compute() {
     // The two locally-decidable rejections a worker can see for itself. A
@@ -434,10 +519,10 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         bracket_hour_verdict(&coherent, hour),
         BracketHourVerdict::InFrameHour
     );
-    // AND THE LABEL MISMATCH IS DELIBERATELY NOT LOCAL. It needs the frame's
-    // hour, which no worker has when its guard closes, so the split cannot skip
-    // it -- which is the stated residual, pinned so it is a decision and not an
-    // oversight.
+    // THE LABEL MISMATCH IS NOT LOCAL, and the split still does not skip it.
+    // Lane EK gave the reason as "no worker has the frame's hour when its guard
+    // closes"; that is false (see `LocalBracketVerdict`), and the real reason is
+    // pinned by `a_label_mismatched_bracket_cannot_yet_skip_its_compute`.
     assert_eq!(
         local_bracket_verdict(&coherent),
         LocalBracketVerdict::CoherentHour,
@@ -468,6 +553,27 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         LocalBracketVerdict::ClockUnreadable,
         "a guard with no readable clock must publish its refusal, or the split \
          has nothing to branch on"
+    );
+    // AND THE REASON STILL REACHES THE WIRE. Skipping the compute must not
+    // skip the RECORD of the bracket: the gap and its reason are minted at
+    // reconciliation from `take_clock_brackets`, so a guard that published a
+    // refusal to the worker and recorded nothing would silently turn a
+    // refused domain-hour into a missing one.
+    let recorded = lanes.take_clock_brackets();
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|bracket| bracket.tag)
+            .collect::<Vec<_>>(),
+        vec![COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE],
+        "the refusing guard must still record its bracket"
+    );
+    assert_eq!(
+        rejected_bracket_domains(&recorded, hour, HOUR_LABEL_MISMATCH_POLICY)
+            .get(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE)
+            .map(|&(reason, _, _)| reason),
+        Some(compact_contract::domain_gap::DomainGapReason::ClockUnreadable),
+        "reconciliation must name the same cause the worker refused for"
     );
 
     // The branch `spawn_gated_split` takes on that verdict, asserted against
@@ -509,6 +615,114 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         Some(D81FailureStage::Worker)
     );
     assert_eq!(refused.phase_times, D81PhaseTimes::default());
+}
+
+/// WHY THE SPLIT STILL COMPUTES ON A LABEL-MISMATCHED BRACKET, and it is not
+/// because the worker cannot tell (lane FG, 2026-08-08).
+///
+/// t37 turned 211 of d81's 621 frames into `HourLabelMismatch` gaps, and every
+/// one of them ran the whole post-bracket compute first — `lw_d81_post_us`
+/// averages 6.4 ms a frame. Skipping it is worth having, and lane EK's stated
+/// reason for not doing so is false: `game_hour_raw` is fixed by the scheduler
+/// request before the fan-out opens and is in scope where the `FrameLaneTracker`
+/// is built, so the guard could publish the full verdict.
+///
+/// THE REAL BLOCKER IS THE GAP PRECEDENCE, and this test is what a naive
+/// attempt runs into. The chain, asserted below:
+///
+///  1. skipping means returning `compact_rail_replay_bracket_refused_read`,
+///     which carries no `hub_simulation`, so the encoder produces no payload and
+///     d81's record is a DOMAIN_GAP;
+///  2. that gap's reason is `SourceUnavailable` — a claim that the engine could
+///     not be read, which on a label-mismatched frame is simply false;
+///  3. `replace_rejected_domain_records_with_gaps` DROPS a `HourLabelMismatch`
+///     rejection when the domain already carries a gap, deliberately, because a
+///     read failure is the more specific fact than an attribution failure.
+///
+/// So the skip would replace `HourLabelMismatch` with a fabricated
+/// `SourceUnavailable` on 34% of d81's frames. Closing it needs d81's
+/// bracket-refused read to be able to name the mismatch and the hour it
+/// observed, so the encoder can mint the same gap reconciliation would have —
+/// new wire vocabulary, and an owner decision.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: extending the rejected arm to cover a
+/// label-mismatched bracket without also giving that read its own reason. The
+/// assertions are the three links; whichever one a future change breaks is the
+/// one it has to have fixed.
+#[test]
+fn a_label_mismatched_bracket_cannot_yet_skip_its_compute() {
+    // LINK 1 -- the placeholder read cannot produce a payload, so its record is
+    // a gap and not data.
+    let mut refused = compact_rail_replay_bracket_refused_read(0);
+    assert!(
+        encode_compact_rail_replay_production(&mut refused, 0).is_none(),
+        "the bracket-refused read has no hub snapshot, so d81's record for that \
+         frame is a DOMAIN_GAP"
+    );
+
+    // LINK 2 -- and the reason that gap carries. `Torn` at stage `Worker` is
+    // what the placeholder names, and the encoder maps it to
+    // `SourceUnavailable`.
+    assert_eq!(
+        refused.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::Torn)
+    );
+    let source = collector_source_lf();
+    assert!(
+        source.contains(
+            "Some(D81FailureReason::Torn | D81FailureReason::ClosureChanged) => {\n\
+             \x20                   DomainGapReason::SourceUnavailable\n\
+             \x20               }"
+        ),
+        "the placeholder's reason must still map to SourceUnavailable, or this \
+         test is describing a chain that no longer exists"
+    );
+
+    // LINK 3 -- and the precedence that then discards the mismatch. A d81
+    // bracket that read the wrong hour IS rejected under `Refuse` ...
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let mismatched = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: Some(ClockObservation {
+            hour: hour + 1,
+            ordinal: 1,
+            at_us: 0,
+        }),
+        closing: Some(ClockObservation {
+            hour: hour + 1,
+            ordinal: 2,
+            at_us: 1,
+        }),
+        worker_panicked: false,
+    };
+    assert_eq!(
+        bracket_hour_verdict(&mismatched, hour),
+        BracketHourVerdict::LabelMismatch
+    );
+    assert_eq!(
+        rejected_bracket_domains(
+            std::slice::from_ref(&mismatched),
+            hour,
+            HourLabelMismatchPolicy::Refuse
+        )
+        .get(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE)
+        .map(|&(reason, _, _)| reason),
+        Some(compact_contract::domain_gap::DomainGapReason::HourLabelMismatch),
+        "reconciliation does name the mismatch"
+    );
+    // ... and that naming is exactly what the yield rule removes when the
+    // domain's own record is already a gap.
+    assert!(
+        source.contains(
+            "*reason == compact_contract::domain_gap::DomainGapReason::HourLabelMismatch"
+        ) && source.contains(
+            "&& header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP\n\
+             \x20       {\n\
+             \x20           rejected.remove(&header.domain_id);"
+        ),
+        "a HourLabelMismatch rejection yields to an existing gap, which is what \
+         makes link 1 fatal"
+    );
 }
 
 /// The owned copy is bounded, and exhausting the bound refuses the domain-hour
@@ -610,7 +824,14 @@ fn the_post_bracket_half_performs_no_guarded_read() {
     for name in [
         "fn d81_compute_rail_hub_rows(",
         "fn d81_finish_rail_replay_state(",
-        "fn d81_hub_foreign_source_for<",
+        "fn d81_hub_foreign_source_into<",
+        // Its only remaining caller in production is the compute, so the probe
+        // that answers from a table is on the post-bracket surface too.
+        "fn maximum_excluding_controller(",
+        // And the table the probe reads: `D81RowTable::get` runs entirely after
+        // the bracket closes, so a guarded read reintroduced there would be
+        // exactly the defect this test exists for.
+        "impl D81RowTable {",
     ] {
         let body = source
             .split_once(name)
@@ -868,6 +1089,67 @@ fn d81_bracket_split_cost_model() {
     );
     println!("  wall that WAS in-bracket and is now post-bracket:");
     println!("  {}", percentiles_us(samples));
+
+    // ARM A2 -- THE CONTAINER, PRICED AGAINST THE ONE IT REPLACED (lane FG,
+    // 2026-08-08).
+    //
+    // The probe loop is unchanged; what changed is the lookup inside it. This
+    // arm walks the SAME per-POV probe sequence the emission above walks, over
+    // the same tables held both ways, and reports each container's wall. It is
+    // a container measurement and not a claim about the frame: what it prices
+    // is `hub_emit_us`, which t37 put at 9.87 ms of d81's 26.05 ms `hub_us`.
+    //
+    // The checksums are printed and compared: two containers that disagree
+    // about an answer are not comparable on speed.
+    let map_tables: Vec<BTreeMap<u32, i64>> = frame
+        .tables
+        .iter()
+        .map(|(_, _, rows)| rows.iter().collect())
+        .collect();
+    let probe_sequence = |lookup: &mut dyn FnMut(usize, u32) -> Option<i64>| -> i64 {
+        let mut checksum = 0i64;
+        for pov in 0..frame.related.len() {
+            for &province_id in &frame.queries[pov] {
+                let mut best = 0i64;
+                for &country in &frame.related[pov] {
+                    if let Some(value) = lookup(country, province_id) {
+                        if value > best {
+                            best = value;
+                        }
+                    }
+                }
+                checksum = checksum.wrapping_add(best);
+            }
+        }
+        checksum
+    };
+    let mut map_samples = Vec::with_capacity(TRIALS);
+    let mut map_checksum = 0i64;
+    for _ in 0..TRIALS {
+        let started = Instant::now();
+        map_checksum = probe_sequence(&mut |country, province_id| {
+            map_tables[country].get(&province_id).copied()
+        });
+        map_samples.push(started.elapsed().as_nanos() as u64);
+    }
+    let mut table_samples = Vec::with_capacity(TRIALS);
+    let mut table_checksum = 0i64;
+    for _ in 0..TRIALS {
+        let started = Instant::now();
+        table_checksum =
+            probe_sequence(&mut |country, province_id| frame.tables[country].2.get(province_id));
+        table_samples.push(started.elapsed().as_nanos() as u64);
+    }
+    assert_eq!(
+        map_checksum, table_checksum,
+        "the two containers must answer identically, or the timings compare \
+         different computations"
+    );
+    println!(
+        "  the same probe sequence, per container (checksum {map_checksum}):"
+    );
+    println!("    BTreeMap (deleted):  {}", percentiles_us(map_samples));
+    println!("    D81RowTable (shipped): {}", percentiles_us(table_samples));
 
     // ARM B -- the second deferred phase. The neighbour-reciprocity fold plus
     // the empty/bounds checks, driven through the REAL post-bracket half with an
