@@ -2348,22 +2348,129 @@ struct RetainedFileEvidence {
     sha256: String,
 }
 
+/// The two copies of a session's `static_bundle`, and the label-addressed
+/// lookup that keeps a check reading the SAME entry in both.
+///
+/// `label` is the JSON path under `static_bundle` — `"manifest"`, `"verifier"`,
+/// `"bindings.executable"` — which is also exactly what a refusal names.
+struct StaticBundleCopies<'a> {
+    /// The container-authenticated copy. Says WHAT the evidence must be
+    /// (`bytes`, `sha256`) and carries a basename where a path appears.
+    sealed: &'a serde_json::Map<String, Value>,
+    /// The run directory's mutable copy. Says WHERE the evidence is — the only
+    /// copy allowed to carry the absolute path.
+    run_dir: &'a serde_json::Map<String, Value>,
+}
+
+impl<'a> StaticBundleCopies<'a> {
+    fn entry(bundle: &'a serde_json::Map<String, Value>, label: &str) -> Option<&'a Value> {
+        let mut segments = label.split('.');
+        let mut current = bundle.get(segments.next()?)?;
+        for segment in segments {
+            current = current.as_object()?.get(segment)?;
+        }
+        Some(current)
+    }
+
+    fn sealed_entry(&self, label: &str) -> Option<&'a Value> {
+        Self::entry(self.sealed, label)
+    }
+
+    fn run_dir_entry(&self, label: &str) -> Option<&'a Value> {
+        Self::entry(self.run_dir, label)
+    }
+}
+
+/// Prove the retained static-bundle evidence a session admitted is still on
+/// disk, unchanged, and is the file the sealed container attests to.
+///
+/// WHERE vs WHAT. Retained evidence names files that live outside the run
+/// directory on the RECORDING machine — the static bundle manifest, the game
+/// executable, the mod/dlc/load-order documents, the source inventory, the
+/// verifier script. Those are absolute paths, and a shareable container must
+/// carry none (container spec §0); the recorder's seal-time
+/// `reject_absolute_paths_in_json` refuses to write one, and
+/// `bind_run_dir_manifest_to_sealed_authority` now asserts the same thing on
+/// the copy read back out. So requiring the SEALED entry to hold an absolute
+/// path — which is what this check used to do — was unsatisfiable by
+/// construction, and the two requirements could never both be met.
+///
+/// The split that resolves it, and preserves the check's meaning:
+///
+///  * WHERE comes from the RUN-DIR copy, which keeps absolute paths on purpose
+///    for recovery and audit on the machine that recorded.
+///  * That path is bound to the sealed entry by the same directional rule the
+///    whole-document binding uses — the run-dir path's final component must be
+///    exactly what the sealed entry carries — computed with the sealer's own
+///    `redact_absolute_path_string`, so one implementation decides it.
+///  * WHAT — `bytes` and `sha256` — still comes from the SEALED copy. That is
+///    what keeps this an attestation and not a self-consistency exercise: the
+///    mutable file on disk may say where to look, but the
+///    container-authenticated copy says what must be found there.
+///
+/// So a rewritten run-dir manifest CAN relocate the evidence — to any path
+/// with the same final component — and cannot change one byte of what must be
+/// found at it. That is not a gap this check could close: the absolute prefix
+/// was deliberately never carried into the container, so no verifier holding
+/// only that container may claim to have bound the directory. The projection
+/// is many-to-one on purpose (see `portable_manifest_projection`), and what a
+/// container can attest about retained evidence is its NAME and its BYTES.
 fn verify_retained_file_evidence(
-    value: Option<&Value>,
+    bundles: &StaticBundleCopies<'_>,
     label: &str,
     require_bytes: bool,
 ) -> Result<RetainedFileEvidence, String> {
-    let evidence = value
+    let evidence = bundles
+        .sealed_entry(label)
         .and_then(Value::as_object)
         .ok_or_else(|| format!("manifest static_bundle {label} is missing or not an object"))?;
-    let raw_path = evidence
+    let sealed_path = evidence
         .get("path")
         .and_then(Value::as_str)
         .filter(|path| !path.is_empty())
         .ok_or_else(|| format!("manifest static_bundle {label}.path is missing or empty"))?;
-    if !Path::new(raw_path).is_absolute() {
+    let located = bundles
+        .run_dir_entry(label)
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            format!(
+                "run-dir native_session_manifest.json static_bundle {label} is missing or not an \
+                 object; the retained evidence file is located by the run-dir copy, which is the \
+                 only copy allowed to carry an absolute path"
+            )
+        })?;
+    let raw_path = located
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            format!("run-dir native_session_manifest.json static_bundle {label}.path is missing or empty")
+        })?;
+    // "Absolute" is decided by the SEALER's detector, not a second opinion:
+    // `redact_absolute_path_string` is the function the recorder's portable
+    // projection runs, so the basename the sealed copy must carry is derived
+    // once, here and there. `Path::is_absolute` is required as well because
+    // `fs::canonicalize` below must resolve without a working directory, which
+    // a Unix-rooted string does not do on Windows.
+    let redacted = recorder_host::portable_manifest::redact_absolute_path_string(raw_path);
+    if redacted == raw_path || !Path::new(raw_path).is_absolute() {
         return Err(format!(
-            "manifest static_bundle {label}.path must be the retained canonical absolute path, got {raw_path:?}"
+            "run-dir native_session_manifest.json static_bundle {label}.path must be the retained \
+             canonical absolute path, got {raw_path:?}"
+        ));
+    }
+    // The directional binding, restated locally on this one entry. The
+    // whole-document binding has already run and covers it, but a check that
+    // resolves a filesystem path must not depend on caller ordering for the
+    // reason it is allowed to trust that path. Equality is not an arm here:
+    // the run-dir side was just required to be absolute and the sealed side is
+    // required to carry no absolute path at all, so the two can only meet at
+    // the basename.
+    if redacted != sealed_path {
+        return Err(format!(
+            "run-dir native_session_manifest.json static_bundle {label}.path {raw_path:?} does not \
+             bind to the sealed static_bundle {label}.path {sealed_path:?}; the sealed copy must \
+             carry exactly the run-dir path's final component"
         ));
     }
     let path = fs::canonicalize(raw_path).map_err(|error| {
@@ -2741,14 +2848,33 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
     Ok(hashes)
 }
 
+/// `manifest` is the SEALED, container-authenticated recorder manifest — the
+/// authority for every hash and roster below. `run_dir_manifest` is the run
+/// directory's copy, already bound to it by
+/// `bind_run_dir_manifest_to_sealed_authority`, and is read for exactly one
+/// thing: the absolute paths of the retained evidence files, which the sealed
+/// copy is forbidden to carry. See `verify_retained_file_evidence`.
 fn verify_static_manifest_authority(
     manifest: &Value,
+    run_dir_manifest: &Value,
 ) -> Result<VerifiedStaticManifestAuthority, String> {
     let artifact_hashes = required_static_manifest_hashes(manifest)?;
     let static_bundle = manifest
         .get("static_bundle")
         .and_then(Value::as_object)
         .expect("static bundle shape checked above");
+    let run_dir_static_bundle = run_dir_manifest
+        .get("static_bundle")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "run-dir native_session_manifest.json static_bundle is missing or not an object; it \
+             is where the retained evidence files are located"
+                .to_string()
+        })?;
+    let bundles = StaticBundleCopies {
+        sealed: static_bundle,
+        run_dir: run_dir_static_bundle,
+    };
     let claimed_bundle_id = canonical_sha256(
         static_bundle.get("bundle_id"),
         "manifest static_bundle.bundle_id",
@@ -2772,7 +2898,7 @@ fn verify_static_manifest_authority(
     }
 
     let retained_manifest =
-        verify_retained_file_evidence(static_bundle.get("manifest"), "manifest", false)?;
+        verify_retained_file_evidence(&bundles, "manifest", false)?;
     if retained_manifest
         .path
         .file_name()
@@ -3093,11 +3219,7 @@ fn verify_static_manifest_authority(
         .expect("session binding roster checked above")
         .as_object()
         .expect("session binding roster checked above");
-    let executable = verify_retained_file_evidence(
-        session_bindings.get("executable"),
-        "bindings.executable",
-        true,
-    )?;
+    let executable = verify_retained_file_evidence(&bundles, "bindings.executable", true)?;
     let retained_executable = retained_bindings
         .get("executable")
         .and_then(Value::as_object)
@@ -3122,11 +3244,8 @@ fn verify_static_manifest_authority(
         return Err("product modset executable identity differs from retained executable".into());
     }
     for name in ["mod_state", "dlc_state", "load_order"] {
-        let retained_file = verify_retained_file_evidence(
-            session_bindings.get(name),
-            &format!("bindings.{name}"),
-            true,
-        )?;
+        let retained_file =
+            verify_retained_file_evidence(&bundles, &format!("bindings.{name}"), true)?;
         let document = snapshot::parse_json_strict(&retained_file.bytes).map_err(|error| {
             format!("retained static bundle binding {name:?} is not strict JSON: {error}")
         })?;
@@ -3162,11 +3281,8 @@ fn verify_static_manifest_authority(
             ));
         }
     }
-    let source_inventory = verify_retained_file_evidence(
-        session_bindings.get("source_inventory"),
-        "bindings.source_inventory",
-        true,
-    )?;
+    let source_inventory =
+        verify_retained_file_evidence(&bundles, "bindings.source_inventory", true)?;
     let live_source = retained_bindings
         .get("live_source_inventory")
         .and_then(Value::as_object)
@@ -3217,12 +3333,8 @@ fn verify_static_manifest_authority(
             ));
         }
     }
-    verify_retained_file_evidence(
-        session_bindings.get("live_resolution_report"),
-        "bindings.live_resolution_report",
-        true,
-    )?;
-    let verifier = verify_retained_file_evidence(static_bundle.get("verifier"), "verifier", false)?;
+    verify_retained_file_evidence(&bundles, "bindings.live_resolution_report", true)?;
+    let verifier = verify_retained_file_evidence(&bundles, "verifier", false)?;
 
     Ok(VerifiedStaticManifestAuthority {
         artifact_hashes,
@@ -3238,9 +3350,10 @@ fn verify_static_manifest_authority(
 fn validate_required_static_artifacts(
     container: &Container,
     manifest: &Value,
+    run_dir_manifest: &Value,
     game_id: &str,
 ) -> Result<Value, String> {
-    let manifest_authority = verify_static_manifest_authority(manifest)?;
+    let manifest_authority = verify_static_manifest_authority(manifest, run_dir_manifest)?;
     let expected_count = compact_contract::REQUIRED_STATIC_ARTIFACTS.len();
     let expected_index_path = format!("payload/{game_id}/index.json");
     let index_entries = container.entries_by_role("index");
@@ -3557,7 +3670,11 @@ struct SealedManifestBinding {
 /// `reject_absolute_paths_in_json` seal-time gate ever ran. So redaction is
 /// sanctioned in one direction only: the run-dir value may be an absolute path
 /// whose FINAL COMPONENT is exactly what the sealed copy carries. A sealed
-/// absolute path binds only to the identical absolute path.
+/// absolute path binds only to the identical absolute path — and since this
+/// function now asserts the sealed copy carries NO absolute path at all
+/// (below), that arm is unreachable through this loader. It is kept because
+/// `first_binding_violation` is the rule, not the gate: the rule must still be
+/// right if the portability assertion is ever moved.
 ///
 /// TAMPER-EVIDENCE. The asymmetry that matters is that the sealed copy is
 /// hash-bound by the container (`verify_all` ran above) while the run-dir copy
@@ -3577,6 +3694,30 @@ fn bind_run_dir_manifest_to_sealed_authority(
     external_manifest: &Value,
     embedded_manifest: &Value,
 ) -> Result<SealedManifestBinding, String> {
+    // PORTABILITY, asserted before anything else is read out of the sealed
+    // copy. A `.battleplan` is meant to be handed to someone else, and the
+    // container spec (§0, "No personal paths") forbids personal filesystem
+    // paths in what it carries. The recorder enforces that at seal time by
+    // running `reject_absolute_paths_in_json` over the projected manifest and
+    // refusing to pack if anything absolute survived — but `verify_all()`
+    // above proves only that the container is internally consistent, never
+    // that the seal-time gate ran. So the gate re-asserts it, with the SAME
+    // function, on the copy it actually read back.
+    //
+    // First, because it is a property of the sealed copy alone: it needs no
+    // run-dir document, and asserting it here makes the "a sealed absolute
+    // path binds only to the identical absolute path" arm of the binding below
+    // unreachable through this loader rather than merely correct.
+    recorder_host::portable_manifest::reject_absolute_paths_in_json(embedded_manifest, "$")
+        .map_err(|error| {
+            format!(
+                "authoritative sealed recorder_manifest is not portable: {error}; a shareable \
+                 container must carry no personal filesystem path, in a value or in an object \
+                 key, and the recorder's seal-time gate refuses to write one — so a container \
+                 that carries one was not sealed by that gate"
+            )
+        })?;
+
     let mut sealed = embedded_manifest.clone();
     let mut run_dir = external_manifest.clone();
 
@@ -3978,8 +4119,15 @@ fn load_verified_replay_authority(
         )?,
     };
 
-    let static_artifacts =
-        validate_required_static_artifacts(&container, &embedded_manifest, container.game_id())?;
+    // The SEALED manifest is the authority. The run-dir copy — already bound to
+    // it above — is passed only so the retained static-bundle evidence can be
+    // located at the absolute paths the sealed copy is forbidden to carry.
+    let static_artifacts = validate_required_static_artifacts(
+        &container,
+        &embedded_manifest,
+        external_manifest,
+        container.game_id(),
+    )?;
     let container_content = container.content_manifest().ok_or_else(|| {
         "production replay container has no top-level portable content manifest".to_string()
     })?;
@@ -8025,9 +8173,19 @@ mod tests {
         let dir = TmpDir::new("manifest_rewrite");
         let manifest = replay_test_manifest("g", &dir.0);
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let sealed_bytes = write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let sealed: Value = serde_json::from_slice(&sealed_bytes).unwrap();
+        // The container carries the PROJECTION of the run-dir document, never
+        // the document itself: the run-dir copy names the retained static
+        // bundle evidence by absolute path and a shareable container must not.
+        assert_ne!(sealed, manifest, "the sealed copy is the portable projection");
+        assert_eq!(
+            sealed["static_bundle"]["manifest"]["path"],
+            json!("static_bundle_manifest.json"),
+            "the sealed evidence entry carries a basename"
+        );
         let authority = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap();
-        assert_eq!(authority.manifest, manifest);
+        assert_eq!(authority.manifest, sealed);
         assert_eq!(
             authority.details["static_artifacts"]["required_count"],
             json!(compact_contract::REQUIRED_STATIC_ARTIFACTS.len())
@@ -8063,16 +8221,25 @@ mod tests {
     /// run-dir copy keeps the absolute paths and gets the post-pack telemetry
     /// written back into it after the container was sealed.
     fn live_shaped_manifest_pair(dir: &Path, game_id: &str) -> (Value, Value) {
-        let base = replay_test_manifest(game_id, dir);
+        let mut base = replay_test_manifest(game_id, dir);
+        // t31's three redacted fields, run-dir form: the absolute originals.
+        // They are set on the BASE so the sealed copy below can be derived from
+        // it by the recorder's own projection rather than hand-listed.
+        base["dll"] = json!(r"\\?\.cargo-target\release\collector.dll");
+        base["modset"] = json!({
+            "game": {
+                "exe_path": r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe",
+            },
+            "pdx_user_dir": r"\\?\C:\Users\Example\Documents\Paradox Interactive\Hearts of Iron IV",
+        });
         let shared_host_finalize = base["host_finalize"].clone();
 
-        // t31's three redacted fields, sealed form.
-        let mut sealed = base.clone();
-        sealed["dll"] = json!("collector.dll");
-        sealed["modset"] = json!({
-            "game": {"exe_path": "hoi4.exe"},
-            "pdx_user_dir": "the game",
-        });
+        // The sealed copy is the PROJECTION of the run-dir copy — every
+        // absolute path reduced to its final component, including the
+        // `static_bundle` evidence paths — because that is what the recorder
+        // seals and what the authority loader now requires.
+        let mut sealed = recorder_host::portable_manifest::portable_manifest_projection(&base)
+            .expect("the fixture run-dir manifest has a portable projection");
         let mut sealed_host_finalize = shared_host_finalize.clone();
         let object = sealed_host_finalize.as_object_mut().unwrap();
         object.insert("embedded_copy_phase".into(), json!("pre_pack"));
@@ -8092,15 +8259,7 @@ mod tests {
         );
         sealed["host_finalize"] = sealed_host_finalize;
 
-        // t31's three redacted fields, run-dir form: the absolute originals.
         let mut run_dir = base;
-        run_dir["dll"] = json!(r"\\?\.cargo-target\release\collector.dll");
-        run_dir["modset"] = json!({
-            "game": {
-                "exe_path": r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\hoi4.exe",
-            },
-            "pdx_user_dir": r"\\?\C:\Users\Example\Documents\Paradox Interactive\Hearts of Iron IV",
-        });
         let mut run_dir_host_finalize = shared_host_finalize;
         let object = run_dir_host_finalize.as_object_mut().unwrap();
         object.insert("finalize_seconds".into(), json!(970.986_574_5));
@@ -8339,55 +8498,101 @@ mod tests {
         }
     }
 
-    /// The sealed document is never normalized before the comparison, so an
-    /// absolute path INSIDE the sealed copy cannot be reduced away. Two paths
-    /// that share a final component but not their prefix must refuse — under a
-    /// project-both-sides binding they would bind, and the caller then hands the
-    /// UNPROJECTED sealed document downstream as authority.
+    /// A `.battleplan` is meant to be handed to someone else, so the sealed
+    /// recorder manifest must carry NO absolute path — in a value or in an
+    /// object key. The recorder enforces that at seal time; `verify_all()`
+    /// proves only that the container is internally consistent, never that the
+    /// seal-time gate ran, so the loader re-asserts it with the SAME function
+    /// on the copy it read back.
     ///
-    /// `verify_all()` proves the container is internally consistent, not that
-    /// the recorder's seal-time `reject_absolute_paths_in_json` ever ran, so
-    /// this cannot be assumed away.
+    /// This is the assertion the directional-binding lane could not add: the
+    /// old retained-file evidence check REQUIRED the sealed copy to hold an
+    /// absolute `static_bundle.<label>.path`, which is precisely what the
+    /// sealer refuses to write. That requirement now lives on the run-dir copy
+    /// (`verify_retained_file_evidence`), so this one is satisfiable.
+    ///
+    /// Production change that would make this fail: dropping the
+    /// `reject_absolute_paths_in_json` call from
+    /// `bind_run_dir_manifest_to_sealed_authority`.
+    #[test]
+    fn a_sealed_manifest_carrying_an_absolute_path_refuses() {
+        // A VALUE. The sealed copy is written verbatim, because the recorder's
+        // own projection would have reduced it — that is the point: a container
+        // that reached a reader carrying this was not sealed by that gate.
+        let dir = TmpDir::new("sealed_absolute_value");
+        let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        sealed_manifest["dll"] = json!(r"\\?\C:\somewhere\else\collector.dll");
+        write_replay_fixture_sealed_verbatim(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("an absolute path in the sealed copy must refuse");
+        assert!(error.contains("is not portable"), "{error}");
+        assert!(
+            error.contains("still contains an absolute path at $.dll"),
+            "the refusal must name the path: {error}"
+        );
+
+        // An object KEY, which the value walk alone would step straight past.
+        let dir = TmpDir::new("sealed_absolute_key");
+        let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        let absolute_key = r"\\?\C:\somewhere\else\dll";
+        let object = sealed_manifest.as_object_mut().unwrap();
+        let value = object.remove("dll").unwrap();
+        object.insert(absolute_key.to_string(), value);
+        write_replay_fixture_sealed_verbatim(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("an absolute key in the sealed copy must refuse");
+        assert!(error.contains("is not portable"), "{error}");
+        assert!(
+            error.contains(&format!("absolute path key {absolute_key:?}")),
+            "the refusal must name the offending key: {error}"
+        );
+    }
+
+    /// The BINDING rule itself — a sealed absolute path is never reduced away —
+    /// exercised where it lives, because the portability assertion above now
+    /// refuses that container before the binding is reached. The rule must stay
+    /// right regardless: `first_binding_violation` is what a caller would reach
+    /// for if the assertion ever moved, and under a project-both-sides binding
+    /// two paths sharing only a final component would silently bind.
     ///
     /// Production change that would make this fail: applying
     /// `portable_manifest_projection` to the sealed side of the binding.
     #[test]
     fn a_sealed_absolute_path_is_not_reduced_away() {
-        let dir = TmpDir::new("sealed_absolute_value");
-        let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
-        // The sealed copy carries an absolute path with the SAME final
-        // component as the run-dir copy's, but a different prefix.
-        sealed_manifest["dll"] = json!(r"\\?\C:\somewhere\else\collector.dll");
-        write_replay_fixture(
-            &dir.0,
-            "g",
-            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
-            true,
-        );
-        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-                .expect_err("a same-basename different-prefix pair must refuse");
-        assert!(error.contains("$.dll"), "{error}");
+        let mut redactions = 0;
+        let violation = first_binding_violation(
+            &json!({"dll": r"\\?\C:\somewhere\else\collector.dll"}),
+            &json!({"dll": r"\\?\release\collector.dll"}),
+            "$",
+            &mut redactions,
+        )
+        .expect("a same-basename different-prefix pair must not bind");
+        assert!(violation.contains("$.dll"), "{violation}");
+        assert_eq!(redactions, 0, "nothing was reduced, so nothing may be counted");
 
-        // The same for an object KEY: the sealed copy's key is absolute and
-        // shares only its final component with the run-dir copy's key.
-        let dir = TmpDir::new("sealed_absolute_key");
-        let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
-        let object = sealed_manifest.as_object_mut().unwrap();
-        let value = object.remove("dll").unwrap();
-        object.insert(r"\\?\C:\somewhere\else\dll".to_string(), value);
-        write_replay_fixture(
-            &dir.0,
-            "g",
-            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
-            true,
-        );
-        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-                .expect_err("an absolute sealed key must not bind to its basename");
-        assert!(error.contains("dll"), "{error}");
+        // The same for an object KEY.
+        let violation = first_binding_violation(
+            &json!({r"\\?\C:\somewhere\else\dll": "collector.dll"}),
+            &json!({r"\\?\release\dll": "collector.dll"}),
+            "$",
+            &mut redactions,
+        )
+        .expect("an absolute sealed key must not bind to its basename");
+        assert!(violation.contains("dll"), "{violation}");
     }
 
     /// Keys and values obey ONE rule, equality first. An absolute object key
@@ -8399,24 +8604,24 @@ mod tests {
     /// against redacted run-dir key names, or dropping the collision refusal.
     #[test]
     fn object_keys_bind_by_equality_first_and_collisions_refuse() {
-        let dir = TmpDir::new("absolute_key_identical");
-        let (mut run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
-        let absolute_key = r"\\?\release\dll".to_string();
-        for manifest in [&mut sealed_manifest, &mut run_dir_manifest] {
-            let object = manifest.as_object_mut().unwrap();
-            let value = object.remove("dll").unwrap();
-            object.insert(absolute_key.clone(), value);
-        }
-        // Both copies now carry the SAME absolute key with the same value.
-        write_replay_fixture(
-            &dir.0,
-            "g",
-            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
-            true,
+        // Equality first, exercised on the rule directly. It cannot be reached
+        // through a container any more — an absolute key on the SEALED side is
+        // refused outright by the portability assertion — but the rule must
+        // still be right, and a key matched only against redacted run-dir names
+        // would report an identical absolute key as missing.
+        let mut redactions = 0;
+        let absolute_key = r"\\?\release\dll";
+        assert!(
+            first_binding_violation(
+                &json!({absolute_key: "collector.dll"}),
+                &json!({absolute_key: "collector.dll"}),
+                "$",
+                &mut redactions,
+            )
+            .is_none(),
+            "an identical absolute key must bind to itself"
         );
-        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-            .expect("an identical absolute key must bind to itself");
+        assert_eq!(redactions, 0, "binding to itself is not a redaction");
 
         // Two run-dir keys claiming the one sealed key is ambiguous.
         let dir = TmpDir::new("absolute_key_collision");
@@ -8463,11 +8668,26 @@ mod tests {
     /// `run_dir` with a directional rule.
     #[test]
     fn redaction_does_not_bind_in_the_reverse_direction() {
+        // At the rule, because a sealed absolute path no longer survives the
+        // portability assertion to reach the binding.
+        let mut redactions = 0;
+        let violation = first_binding_violation(
+            &json!({"dll": r"\\?\release\collector.dll"}),
+            &json!({"dll": "collector.dll"}),
+            "$",
+            &mut redactions,
+        )
+        .expect("reverse-direction redaction must not bind");
+        assert!(violation.contains("$.dll"), "{violation}");
+        assert_eq!(redactions, 0);
+
+        // And end to end, where the same recording is now refused one step
+        // earlier and for the more fundamental reason.
         let dir = TmpDir::new("reverse_redaction");
         let (mut run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
         sealed_manifest["dll"] = json!(r"\\?\release\collector.dll");
         run_dir_manifest["dll"] = json!("collector.dll");
-        write_replay_fixture(
+        write_replay_fixture_sealed_verbatim(
             &dir.0,
             "g",
             &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
@@ -8476,7 +8696,7 @@ mod tests {
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
         let error =
             load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-                .expect_err("reverse-direction redaction must not bind");
+                .expect_err("a sealed absolute path must refuse");
         assert!(error.contains("$.dll"), "{error}");
     }
 
@@ -9615,6 +9835,204 @@ mod tests {
             fs::write(path, b"# forged verifier\n").unwrap();
         });
         assert!(error.contains("verifier.sha256"), "{error}");
+    }
+
+    /// The retained static-bundle evidence is LOCATED by the run-dir copy and
+    /// ATTESTED by the sealed one. A recording where the file is where the
+    /// run-dir manifest says it is, and the sealed entry carries that path's
+    /// final component, must load — and the sealed entry must really be a bare
+    /// basename, not an absolute path that happens to survive.
+    ///
+    /// Production change that would make this fail: reading the evidence path
+    /// back out of the sealed copy (which no longer carries one), or dropping
+    /// the basename binding so the two entries stop being about one file.
+    #[test]
+    fn retained_static_bundle_evidence_is_located_by_the_run_dir_copy() {
+        let dir = TmpDir::new("retained_evidence_located");
+        let run_dir_manifest = replay_test_manifest("g", &dir.0);
+        let sealed_manifest =
+            recorder_host::portable_manifest::portable_manifest_projection(&run_dir_manifest)
+                .expect("the fixture manifest has a portable projection");
+
+        // The fixture really is the split this check now depends on.
+        for label in [
+            "manifest",
+            "verifier",
+            "bindings.executable",
+            "bindings.mod_state",
+            "bindings.dlc_state",
+            "bindings.load_order",
+            "bindings.source_inventory",
+            "bindings.live_resolution_report",
+        ] {
+            let pointer = format!("/static_bundle/{}/path", label.replace('.', "/"));
+            let run_dir_path = run_dir_manifest.pointer(&pointer).unwrap().as_str().unwrap();
+            let sealed_path = sealed_manifest.pointer(&pointer).unwrap().as_str().unwrap();
+            assert!(
+                Path::new(run_dir_path).is_absolute(),
+                "{label}: the run-dir copy locates the evidence: {run_dir_path:?}"
+            );
+            assert!(
+                !Path::new(sealed_path).is_absolute() && !sealed_path.contains('\\'),
+                "{label}: the sealed copy must carry a bare basename, got {sealed_path:?}"
+            );
+            assert_eq!(
+                sealed_path,
+                recorder_host::portable_manifest::redact_absolute_path_string(run_dir_path),
+                "{label}: the sealed basename must bind to the run-dir path"
+            );
+        }
+
+        verify_static_manifest_authority(&sealed_manifest, &run_dir_manifest)
+            .expect("evidence present at the run-dir path, bound to the sealed basename, loads");
+    }
+
+    /// The three ways the relocated check refuses, each reached directly,
+    /// because the whole-document binding would refuse two of them first and a
+    /// check that is only ever shadowed is not a check.
+    ///
+    /// Production change that would make this fail, in order: dropping the
+    /// absolute-path requirement on the run-dir entry (so a relative path would
+    /// resolve against this process's working directory); dropping the basename
+    /// binding (so the run-dir file could be swapped for an unrelated one);
+    /// dropping the filesystem resolution (so evidence could be claimed for a
+    /// file that is not there).
+    #[test]
+    fn the_relocated_retained_evidence_check_refuses_by_name() {
+        let dir = TmpDir::new("retained_evidence_refusals");
+        let base_run_dir = replay_test_manifest("g", &dir.0);
+        let sealed_manifest =
+            recorder_host::portable_manifest::portable_manifest_projection(&base_run_dir)
+                .expect("the fixture manifest has a portable projection");
+
+        // A RELATIVE run-dir path — which is exactly what the sealed copy
+        // carries, so this is also the shape the old check demanded of the
+        // sealed side.
+        let mut relative = base_run_dir.clone();
+        relative["static_bundle"]["verifier"]["path"] = json!("static_bundle.py");
+        let error = verify_static_manifest_authority(&sealed_manifest, &relative)
+            .expect_err("a relative run-dir evidence path must refuse");
+        assert!(
+            error.contains("static_bundle verifier.path must be the retained canonical absolute path"),
+            "{error}"
+        );
+        assert!(error.contains("run-dir native_session_manifest.json"), "{error}");
+
+        // A DIFFERENT file, absolute and real, whose basename does not bind to
+        // the sealed entry.
+        let decoy = dir.0.join("decoy_verifier.py");
+        fs::write(&decoy, b"# fixture static bundle verifier\n").unwrap();
+        let mut unbound = base_run_dir.clone();
+        unbound["static_bundle"]["verifier"]["path"] =
+            json!(fs::canonicalize(&decoy).unwrap().display().to_string());
+        let error = verify_static_manifest_authority(&sealed_manifest, &unbound)
+            .expect_err("a run-dir evidence path that does not bind must refuse");
+        assert!(error.contains("does not bind to the sealed"), "{error}");
+        assert!(error.contains("decoy_verifier.py"), "the refusal names the path: {error}");
+        assert!(error.contains("static_bundle.py"), "and the sealed entry: {error}");
+
+        // The file the run-dir copy names is GONE. Same bytes claimed, nothing
+        // to claim them about.
+        let verifier_path = PathBuf::from(
+            base_run_dir["static_bundle"]["verifier"]["path"]
+                .as_str()
+                .unwrap(),
+        );
+        fs::remove_file(&verifier_path).unwrap();
+        let error = verify_static_manifest_authority(&sealed_manifest, &base_run_dir)
+            .expect_err("missing retained evidence must refuse");
+        assert!(
+            error.contains("cannot resolve retained static_bundle verifier file"),
+            "{error}"
+        );
+        assert!(
+            error.contains("static_bundle.py"),
+            "the refusal names the path it could not resolve: {error}"
+        );
+    }
+
+    /// The run-dir copy says WHERE, the sealed copy says WHAT. Splitting the
+    /// check across the two copies is only safe if the CLAIMS stay with the
+    /// container-authenticated one — otherwise a rewritten run-dir manifest
+    /// could name a file it also gets to describe, and the "evidence" would be
+    /// nothing but the mutable file agreeing with itself.
+    ///
+    /// Both directions, because either alone is satisfiable by reading the
+    /// wrong copy: a lie in the run-dir claim must be ignored, and a lie in the
+    /// sealed claim must refuse.
+    ///
+    /// Production change that would make this fail: reading `sha256` or `bytes`
+    /// from the run-dir entry (`located`) instead of the sealed entry
+    /// (`evidence`) in `verify_retained_file_evidence`.
+    #[test]
+    fn the_retained_evidence_claims_come_from_the_sealed_copy_only() {
+        let dir = TmpDir::new("retained_evidence_claim_authority");
+        let base_run_dir = replay_test_manifest("g", &dir.0);
+        let sealed_manifest =
+            recorder_host::portable_manifest::portable_manifest_projection(&base_run_dir)
+                .expect("the fixture manifest has a portable projection");
+
+        // The run-dir copy lies about both the hash and the length of evidence
+        // it correctly locates. Neither claim is this check's authority, so the
+        // session still loads.
+        let mut lying_run_dir = base_run_dir.clone();
+        lying_run_dir["static_bundle"]["verifier"]["sha256"] = json!("c".repeat(64));
+        lying_run_dir["static_bundle"]["bindings"]["mod_state"]["sha256"] = json!("d".repeat(64));
+        lying_run_dir["static_bundle"]["bindings"]["mod_state"]["bytes"] = json!(1);
+        verify_static_manifest_authority(&sealed_manifest, &lying_run_dir)
+            .expect("the run-dir copy's claims about the evidence are not the authority");
+
+        // The SEALED claim is. A wrong hash there refuses, naming the entry.
+        let mut lying_seal = sealed_manifest.clone();
+        lying_seal["static_bundle"]["verifier"]["sha256"] = json!("c".repeat(64));
+        let error = verify_static_manifest_authority(&lying_seal, &base_run_dir)
+            .expect_err("a wrong sealed hash must refuse");
+        assert!(error.contains("static_bundle verifier.sha256"), "{error}");
+
+        // And a wrong sealed byte count, on an entry that carries one.
+        let mut lying_seal = sealed_manifest;
+        lying_seal["static_bundle"]["bindings"]["mod_state"]["bytes"] = json!(1);
+        let error = verify_static_manifest_authority(&lying_seal, &base_run_dir)
+            .expect_err("a wrong sealed byte count must refuse");
+        assert!(
+            error.contains("static_bundle bindings.mod_state.bytes 1 !="),
+            "{error}"
+        );
+    }
+
+    /// The requirement this lane removed, exercised as a container: a sealed
+    /// recorder manifest holding the ABSOLUTE retained-evidence paths — which
+    /// is what every pre-ruling fixture sealed, and what the old
+    /// `verify_retained_file_evidence` demanded — is now refused, and refused
+    /// for being unshareable rather than admitted as evidence.
+    ///
+    /// The two requirements were mutually unsatisfiable: the sealer's
+    /// `reject_absolute_paths_in_json` has never been able to write this
+    /// container. Nothing may quietly start accepting one.
+    ///
+    /// Production change that would make this fail: restoring the sealed-side
+    /// absolute-path requirement to `verify_retained_file_evidence`, or
+    /// dropping the portability assertion that replaced it.
+    #[test]
+    fn an_old_style_container_sealing_absolute_evidence_paths_refuses_on_portability() {
+        let dir = TmpDir::new("old_style_absolute_evidence");
+        let manifest = replay_test_manifest("g", &dir.0);
+        let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        // The old shape exactly: the run-dir document sealed verbatim, absolute
+        // evidence paths and all.
+        write_replay_fixture_sealed_verbatim(&dir.0, "g", &bytes, true);
+        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect_err("an old-style sealed copy must refuse");
+        assert!(error.contains("is not portable"), "{error}");
+        assert!(
+            error.contains("still contains an absolute path at $.static_bundle."),
+            "the refusal must name the offending path: {error}"
+        );
+        // Not an evidence refusal, and not a silent pass.
+        assert!(
+            !error.contains("must be the retained canonical absolute path"),
+            "the old sealed-side requirement must be gone: {error}"
+        );
     }
 
     #[test]
@@ -10780,17 +11198,60 @@ mod tests {
         (descriptors, entries)
     }
 
+    /// How a fixture derives the SEALED `recorder_manifest` from the run-dir
+    /// document it is handed.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum SealedCopy {
+        /// What the recorder does: seal the portable projection, so the sealed
+        /// copy carries no absolute path. Every honest fixture wants this — the
+        /// authority loader now refuses a sealed manifest that carries one.
+        Portable,
+        /// Seal these exact bytes. Only for tests that deliberately forge the
+        /// sealed copy into a shape the recorder would refuse to write.
+        Verbatim,
+    }
+
+    /// The bytes the recorder would seal for this run-dir manifest, produced by
+    /// the recorder's OWN seal-time function, so a fixture cannot model a
+    /// projection the production sealer does not perform.
+    fn sealed_manifest_bytes(manifest_bytes: &[u8]) -> Vec<u8> {
+        let manifest: Value = serde_json::from_slice(manifest_bytes).unwrap();
+        recorder_host::portable_manifest::portable_session_manifest_bytes(&manifest)
+            .expect("a fixture run-dir manifest must have a portable projection")
+    }
+
+    /// Returns the bytes actually sealed into the container, which for an
+    /// honest fixture are NOT the run-dir bytes handed in.
     fn write_replay_fixture(
         dir: &Path,
         game_id: &str,
         manifest_bytes: &[u8],
         include_manifest_role: bool,
-    ) {
+    ) -> Vec<u8> {
         write_replay_fixture_with_static_mutation(
             dir,
             game_id,
             manifest_bytes,
             include_manifest_role,
+            |_, _| {},
+        )
+    }
+
+    /// Seal the given bytes verbatim, for the tests whose whole point is a
+    /// sealed copy the recorder would have refused to produce.
+    fn write_replay_fixture_sealed_verbatim(
+        dir: &Path,
+        game_id: &str,
+        sealed_bytes: &[u8],
+        include_manifest_role: bool,
+    ) {
+        write_replay_fixture_full(
+            dir,
+            game_id,
+            sealed_bytes,
+            include_manifest_role,
+            REPLAY_CONTAINER_SCHEMA_VERSION,
+            SealedCopy::Verbatim,
             |_, _| {},
         );
     }
@@ -10801,7 +11262,8 @@ mod tests {
         manifest_bytes: &[u8],
         include_manifest_role: bool,
         mutate: F,
-    ) where
+    ) -> Vec<u8>
+    where
         F: FnOnce(&mut Vec<Value>, &mut Vec<snapshot::PackEntry>),
     {
         write_replay_fixture_full(
@@ -10810,8 +11272,9 @@ mod tests {
             manifest_bytes,
             include_manifest_role,
             REPLAY_CONTAINER_SCHEMA_VERSION,
+            SealedCopy::Portable,
             mutate,
-        );
+        )
     }
 
     /// The packaged-composition fixture, with the container's OWN
@@ -10824,10 +11287,20 @@ mod tests {
         manifest_bytes: &[u8],
         include_manifest_role: bool,
         container_schema_version: &str,
+        sealed_copy: SealedCopy,
         mutate: F,
-    ) where
+    ) -> Vec<u8>
+    where
         F: FnOnce(&mut Vec<Value>, &mut Vec<snapshot::PackEntry>),
     {
+        // The run directory keeps the absolute paths; the container gets the
+        // portable projection. Modelling that here rather than sealing the
+        // run-dir bytes is what makes the fixture corpus a recording the
+        // recorder could actually have produced.
+        let sealed_bytes = match sealed_copy {
+            SealedCopy::Portable => sealed_manifest_bytes(manifest_bytes),
+            SealedCopy::Verbatim => manifest_bytes.to_vec(),
+        };
         let (mut static_artifacts, mut static_entries) = replay_test_static_artifacts(game_id);
         mutate(&mut static_artifacts, &mut static_entries);
         let index = serde_json::to_vec(&json!({
@@ -10853,7 +11326,7 @@ mod tests {
         ];
         entries.push(snapshot::PackEntry {
             path: format!("payload/{game_id}/recorder/native_session_manifest.json"),
-            bytes: manifest_bytes.to_vec(),
+            bytes: sealed_bytes.clone(),
             role: if include_manifest_role {
                 "recorder_manifest"
             } else {
@@ -10862,7 +11335,7 @@ mod tests {
             hour_index: None,
         });
         entries.append(&mut static_entries);
-        let session_manifest: Value = serde_json::from_slice(manifest_bytes).unwrap();
+        let session_manifest: Value = serde_json::from_slice(&sealed_bytes).unwrap();
         let product_modset_sha256 = session_manifest
             .pointer("/portable_content_manifest/product_modset_sha256")
             .and_then(Value::as_str)
@@ -10879,6 +11352,7 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("native_session.battleplan"), packed).unwrap();
+        sealed_bytes
     }
 
     /// One default-composition (cache-only) recording, in the two places the
@@ -10998,6 +11472,9 @@ mod tests {
             );
         }
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        // The run directory keeps its absolute paths; the container carries the
+        // portable projection, exactly as the recorder seals it.
+        let sealed_manifest_bytes = sealed_manifest_bytes(&manifest_bytes);
 
         let folded_from = breakage
             .cache_folded_from
@@ -11061,7 +11538,7 @@ mod tests {
             },
             snapshot::PackEntry {
                 path: format!("payload/{game_id}/recorder/native_session_manifest.json"),
-                bytes: manifest_bytes.clone(),
+                bytes: sealed_manifest_bytes.clone(),
                 role: "recorder_manifest",
                 hour_index: None,
             },

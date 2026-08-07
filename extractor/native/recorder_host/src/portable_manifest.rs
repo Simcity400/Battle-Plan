@@ -120,6 +120,19 @@ pub fn portable_session_manifest_bytes(value: &Value) -> Result<Vec<u8>, String>
         .map_err(|error| format!("serialize portable recorder manifest failed: {error}"))
 }
 
+/// The single authority on "this JSON still carries an absolute path", used
+/// from BOTH ends of the container boundary:
+///
+///  * the recorder runs it at seal time, after the projection, and refuses to
+///    write a container whose recorder manifest still holds one;
+///  * `compact_replay_verification_gates` runs it on the SEALED copy it reads
+///    back out of a container, because `verify_all()` proves the container is
+///    internally consistent, not that the recorder's seal-time gate ever ran.
+///
+/// One implementation, deliberately. Two independently written path detectors
+/// would agree until the first time either end learned a new path shape, and
+/// the gate would then admit exactly the containers the sealer refuses to
+/// write (or refuse the ones it does).
 pub fn reject_absolute_paths_in_json(value: &Value, location: &str) -> Result<(), String> {
     match value {
         Value::String(text) => {
@@ -149,8 +162,12 @@ pub fn reject_absolute_paths_in_json(value: &Value, location: &str) -> Result<()
                     || contains_unc_absolute_fragment(key)
                     || contains_unix_absolute_fragment(key)
                 {
+                    // The key is named, not just its parent. A refusal that
+                    // located an offending KEY only by the object containing it
+                    // is unactionable in a 17 MB manifest — and the value arm
+                    // below already names its own full location.
                     return Err(format!(
-                        "portable recorder manifest still contains an absolute path key at {location}"
+                        "portable recorder manifest still contains an absolute path key {key:?} at {location}"
                     ));
                 }
                 reject_absolute_paths_in_json(value, &format!("{location}.{key}"))?;
