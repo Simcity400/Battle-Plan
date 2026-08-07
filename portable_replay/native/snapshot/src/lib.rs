@@ -44,7 +44,7 @@ pub use pack::{
     pack_streaming_to_writer, pack_streaming_zstd_to_writer,
     pack_streaming_zstd_to_writer_with_profile, pack_with, BorrowedPackEntry, CompressionProfile,
     FileBackedPackEntry, OrderedStreamingPackEntry, PackEntry, PackError, PackIdentity,
-    PackOptions, StreamingFileEntry, VerifiedPackEntry,
+    PackOptions, StreamingFileEntry, VerifiedPackEntry, CONTAINER_SCHEMA_VERSION,
 };
 pub use prefolded::{
     PrefoldedHourEntry, PrefoldedHourIndex, PrefoldedReplay, PrefoldedReplayError,

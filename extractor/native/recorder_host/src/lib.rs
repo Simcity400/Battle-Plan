@@ -27,6 +27,17 @@ pub mod transport_status;
 pub mod windows_control_pipe;
 pub mod world_fold;
 
+/// The RECORDER MANIFEST's own schema identifier: the value written into
+/// `native_session_manifest.json.schema`. It names the SESSION format.
+///
+/// It is a different vocabulary from the replay container's
+/// `snapshot::CONTAINER_SCHEMA_VERSION`, which names the snapshot/index
+/// contract. Comparing one against the other refuses every honest recording;
+/// each is checked against the artifact that carries it. Writer (this crate's
+/// manifest builders) and readers (the verification gates) both take the value
+/// from here.
+pub const SESSION_MANIFEST_SCHEMA: &str = "native_collector_session_v1";
+
 /// Upper bound for each authenticated early-launch handshake phase. A cold
 /// continue-save can spend several minutes between first D3D creation and a
 /// coherent world census, so this shares the safe launcher's world-ready

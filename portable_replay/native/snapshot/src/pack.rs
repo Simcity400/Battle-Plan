@@ -101,6 +101,19 @@ pub enum OrderedStreamingPackEntry<'a> {
     Verified(VerifiedPackEntry),
 }
 
+/// The container's OWN schema version: the value a writer puts in
+/// `PackIdentity::schema_version`, which lands in `manifest.json.schema_version`
+/// and in `index.json.schema_version`. It names the replay snapshot/index
+/// contract.
+///
+/// It is NOT a session-format identifier. A recorder manifest states its own
+/// format in its own `schema` field, in its own vocabulary, and the two must
+/// never be compared against each other. Writers and readers both take the
+/// container value from HERE so a change on one side cannot silently strand the
+/// other — which is exactly what happened when the recorder moved off the
+/// session identifier and the verification gate kept expecting it.
+pub const CONTAINER_SCHEMA_VERSION: &str = "1";
+
 /// Identity recorded into the manifest (the values the capture read at session
 /// start — all already redacted of personal paths upstream).
 #[derive(Clone, Default)]

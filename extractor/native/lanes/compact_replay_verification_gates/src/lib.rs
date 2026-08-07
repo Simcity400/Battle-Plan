@@ -15,6 +15,30 @@ use std::io::Read;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
+/// The RECORDER MANIFEST's own schema identifier — the value the recorder
+/// writes into `native_session_manifest.json.schema`. This names the SESSION
+/// format. Taken from the recorder's own crate so writer and reader cannot
+/// drift apart.
+const RECORDER_MANIFEST_SCHEMA: &str = recorder_host::SESSION_MANIFEST_SCHEMA;
+
+/// The REPLAY CONTAINER's own schema version — the value the recorder writes
+/// into `PackIdentity.schema_version`, which lands in the container's
+/// `manifest.json.schema_version`. This names the snapshot/index contract, NOT
+/// the session format.
+///
+/// These are two different vocabularies for two different artifacts, and they
+/// have been since `f32125c1` ("Finish recorder to replay production
+/// bindings") stopped the recorder writing the session identifier into the
+/// container field. This gate kept expecting the session identifier in the
+/// container field for another two weeks, which refused EVERY recorder-sealed
+/// container with `schema_version Some("1") != expected
+/// "native_collector_session_v1"`. Each constant below is checked against the
+/// artifact that actually carries it.
+///
+/// Taken from the container format's own crate, which is also where the
+/// recorder's writer takes it from, so the two cannot drift apart again.
+const REPLAY_CONTAINER_SCHEMA_VERSION: &str = snapshot::CONTAINER_SCHEMA_VERSION;
+
 const RECORD_VERSION: u16 = 1;
 const RECORD_HEADER_LEN: usize = 32;
 const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
@@ -709,12 +733,7 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
         external_manifest
     };
 
-    require_str_eq(
-        &manifest,
-        "schema",
-        "native_collector_session_v1",
-        &mut errors,
-    );
+    require_str_eq(&manifest, "schema", RECORDER_MANIFEST_SCHEMA, &mut errors);
     require_str_eq(&manifest, "stream_format", "compact", &mut errors);
     require_bool_eq(&manifest, "extraction_perf_gate", true, &mut errors);
     require_array_empty(&manifest, "parse_errors", &mut errors);
@@ -3477,13 +3496,16 @@ fn load_verified_replay_authority(
         snapshot::read_raw_stream_packaging_with_legacy_default(declared_object)
             .map_err(|error| format!("external native_session_manifest.json: {error}"))?;
     let replay_path = required_run_file(run_dir, external_manifest, "replay_file")?;
+    // The container is pinned against the CONTAINER's own vocabulary. The
+    // recorder manifest's `schema` is a different field on a different
+    // artifact and is checked below, against the container-authenticated copy.
     let expected = ExpectedIdentity {
-        schema_version: Some("native_collector_session_v1".to_string()),
+        schema_version: Some(REPLAY_CONTAINER_SCHEMA_VERSION.to_string()),
         ..ExpectedIdentity::default()
     };
     let container = Container::open(&replay_path, &expected).map_err(|err| {
         format!(
-            "cannot open replay container {}: {err}",
+            "cannot open replay container {} (container manifest.json schema_version must be {REPLAY_CONTAINER_SCHEMA_VERSION:?}): {err}",
             replay_path.display()
         )
     })?;
@@ -3545,6 +3567,17 @@ fn load_verified_replay_authority(
     }
     let embedded_manifest = snapshot::parse_json_strict(&embedded_manifest_bytes)
         .map_err(|err| format!("embedded recorder_manifest is not strict JSON: {err}"))?;
+    // The recorder manifest states its OWN format in its OWN field, `schema`.
+    // Checked here, on the container-authenticated copy, so the authority
+    // loader cannot admit a recording of some other session format. This is
+    // NOT the container's `schema_version`, which is pinned above.
+    let embedded_schema = embedded_manifest.get("schema").and_then(Value::as_str);
+    if embedded_schema != Some(RECORDER_MANIFEST_SCHEMA) {
+        return Err(format!(
+            "container-authenticated recorder_manifest field \"schema\" is {embedded_schema:?}, expected {RECORDER_MANIFEST_SCHEMA:?}; \
+             this is the recorder manifest's session-format identifier, not the container's schema_version"
+        ));
+    }
     if required_nonempty_str(&embedded_manifest, "replay_game_id")? != container.game_id() {
         return Err(
             "embedded recorder_manifest replay_game_id changed after identity binding".into(),
@@ -7669,6 +7702,119 @@ mod tests {
         assert!(error.contains("not byte-identical"), "{error}");
     }
 
+    /// A container sealed the way the RECORDER seals one — carrying the
+    /// container's own `schema_version` in the container's own vocabulary —
+    /// loads. This is the shape of every live capture in
+    /// `extractor/native/runs/`; the gate previously refused all of them with
+    /// `schema_version Some("1") != expected "native_collector_session_v1"`,
+    /// because it checked the container's field against the recorder
+    /// manifest's vocabulary.
+    ///
+    /// Production change that would make this fail: putting the recorder
+    /// manifest's session identifier (or any other value) back into the
+    /// `ExpectedIdentity` the loader pins the container with.
+    #[test]
+    fn a_recorder_sealed_container_shape_loads() {
+        let dir = TmpDir::new("recorder_sealed_shape");
+        let manifest = replay_test_manifest("g", &dir.0);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+
+        // The fixture really is sealed the production way: the two fields hold
+        // the two different vocabularies, exactly as a live capture does.
+        let sealed = fs::read(dir.0.join("native_session.battleplan")).unwrap();
+        let sealed_manifest: Value = serde_json::from_slice(
+            &Container::from_bytes(sealed, &ExpectedIdentity::default())
+                .unwrap()
+                .read_entry_bytes("payload/g/recorder/native_session_manifest.json")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            sealed_manifest["schema"],
+            json!(RECORDER_MANIFEST_SCHEMA),
+            "the recorder manifest states the SESSION format in its own `schema` field"
+        );
+        assert_ne!(
+            RECORDER_MANIFEST_SCHEMA, REPLAY_CONTAINER_SCHEMA_VERSION,
+            "the two vocabularies are distinct; a test that let them coincide would prove nothing"
+        );
+
+        load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect("a container sealed the way the recorder seals one must load");
+    }
+
+    /// The CONTAINER's own `schema_version` still refuses when it is actually
+    /// wrong — including when it holds the recorder manifest's session
+    /// identifier, which is the value the old cross-vocabulary comparison
+    /// demanded. The refusal names the field and both values.
+    ///
+    /// Production change that would make this fail: dropping the
+    /// `ExpectedIdentity.schema_version` pin (leaving it `None`), which would
+    /// admit a container declaring any snapshot/index contract at all.
+    #[test]
+    fn a_container_schema_version_from_the_wrong_vocabulary_still_refuses() {
+        for wrong in [RECORDER_MANIFEST_SCHEMA, "2", ""] {
+            let error = cache_only_authority_error(
+                "container_schema_wrong",
+                CacheOnlyBreak {
+                    container_schema_version: Some(wrong.to_string()),
+                    ..CacheOnlyBreak::default()
+                },
+            );
+            assert!(
+                error.contains("schema_version")
+                    && error.contains(&format!("{wrong:?}"))
+                    && error.contains(&format!("{REPLAY_CONTAINER_SCHEMA_VERSION:?}")),
+                "the refusal must name the field and BOTH values: {error}"
+            );
+        }
+    }
+
+    /// The RECORDER MANIFEST's own `schema` still refuses when it is actually
+    /// wrong — including when it holds the container's schema version, the
+    /// mirror image of the defect. It is read from the container-authenticated
+    /// copy, so a run-dir rewrite cannot talk past it either. The refusal names
+    /// the field and both values.
+    ///
+    /// Production change that would make this fail: removing the embedded
+    /// `schema` check from the loader, which would let the authority loader
+    /// admit a recording of some other session format.
+    #[test]
+    fn a_recorder_manifest_schema_from_the_wrong_vocabulary_still_refuses() {
+        for wrong in [REPLAY_CONTAINER_SCHEMA_VERSION, "native_collector_session_v2"] {
+            let error = cache_only_authority_error(
+                "manifest_schema_wrong",
+                CacheOnlyBreak {
+                    manifest_schema: Some(wrong.to_string()),
+                    ..CacheOnlyBreak::default()
+                },
+            );
+            assert!(
+                error.contains("recorder_manifest")
+                    && error.contains("schema")
+                    && error.contains(&format!("{wrong:?}"))
+                    && error.contains(&format!("{RECORDER_MANIFEST_SCHEMA:?}")),
+                "the refusal must name the field and BOTH values: {error}"
+            );
+        }
+
+        // Absent is not "unchecked": a manifest with no `schema` at all refuses
+        // by the same named field.
+        let dir = TmpDir::new("manifest_schema_absent");
+        let mut manifest = replay_test_manifest("g", &dir.0);
+        manifest.as_object_mut().unwrap().remove("schema");
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let error =
+            load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("a recorder manifest with no schema must refuse");
+        assert!(
+            error.contains("schema") && error.contains("None"),
+            "{error}"
+        );
+    }
+
     /// The DEFAULT recording composition certifies. The container ships no raw
     /// stream, so the proof is the attestation chain: the run-dir stream is
     /// hashed locally, bound to the container-authenticated
@@ -9660,6 +9806,30 @@ mod tests {
     ) where
         F: FnOnce(&mut Vec<Value>, &mut Vec<snapshot::PackEntry>),
     {
+        write_replay_fixture_full(
+            dir,
+            game_id,
+            manifest_bytes,
+            include_manifest_role,
+            REPLAY_CONTAINER_SCHEMA_VERSION,
+            mutate,
+        );
+    }
+
+    /// The packaged-composition fixture, with the container's OWN
+    /// `schema_version` under test control. Production writes
+    /// `REPLAY_CONTAINER_SCHEMA_VERSION` here; a test that passes anything else
+    /// is building a genuinely mismatched container.
+    fn write_replay_fixture_full<F>(
+        dir: &Path,
+        game_id: &str,
+        manifest_bytes: &[u8],
+        include_manifest_role: bool,
+        container_schema_version: &str,
+        mutate: F,
+    ) where
+        F: FnOnce(&mut Vec<Value>, &mut Vec<snapshot::PackEntry>),
+    {
         let (mut static_artifacts, mut static_entries) = replay_test_static_artifacts(game_id);
         mutate(&mut static_artifacts, &mut static_entries);
         let index = serde_json::to_vec(&json!({
@@ -9703,7 +9873,7 @@ mod tests {
             game_id,
             &entries,
             &snapshot::PackIdentity {
-                schema_version: Some("native_collector_session_v1".to_string()),
+                schema_version: Some(container_schema_version.to_string()),
                 content_manifest: Some(replay_test_content_manifest(product_modset_sha256)),
                 ..snapshot::PackIdentity::default()
             },
@@ -9751,6 +9921,13 @@ mod tests {
         /// Write these bytes into the run directory instead of the stream every
         /// other artifact was built over.
         run_dir_stream_override: Option<Vec<u8>>,
+        /// Seal the container with this `manifest.json.schema_version` instead
+        /// of the one the recorder writes. The CONTAINER's own vocabulary.
+        container_schema_version: Option<String>,
+        /// Write this into the recorder manifest's own `schema` field instead
+        /// of the session-format identifier the recorder writes. The RECORDER
+        /// MANIFEST's vocabulary — a different field on a different artifact.
+        manifest_schema: Option<String>,
     }
 
     /// Replace the single occurrence of one raw 32-byte digest inside an H4IX
@@ -9791,6 +9968,9 @@ mod tests {
         let mut manifest = replay_test_manifest(game_id, dir);
         {
             let object = manifest.as_object_mut().unwrap();
+            if let Some(schema) = &breakage.manifest_schema {
+                object.insert("schema".to_string(), json!(schema));
+            }
             object.insert(
                 snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
                 json!(snapshot::RawStreamPackaging::Omitted.as_str()),
@@ -9917,7 +10097,12 @@ mod tests {
             game_id,
             &entries,
             &snapshot::PackIdentity {
-                schema_version: Some("native_collector_session_v1".to_string()),
+                schema_version: Some(
+                    breakage
+                        .container_schema_version
+                        .clone()
+                        .unwrap_or_else(|| REPLAY_CONTAINER_SCHEMA_VERSION.to_string()),
+                ),
                 content_manifest: Some(replay_test_content_manifest(product_modset_sha256)),
                 ..snapshot::PackIdentity::default()
             },
