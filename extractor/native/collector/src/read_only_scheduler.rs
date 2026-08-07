@@ -15,6 +15,8 @@
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::custody_shadow::{CustodyShadow, CustodyShadowSummary, ShadowClock, ShadowMode};
+
 /// The largest forward clock motion this scheduler believes.
 ///
 /// Aliased from the contract rather than restated: the `H4CJ` record carries
@@ -247,6 +249,11 @@ pub struct SchedulerTelemetry {
     pub request_cap: u32,
     pub control_cap: u32,
     pub terminal: Option<TerminalOutcome>,
+    /// Capture-floor stage S3 SHADOW accounting. Describes what the end-state
+    /// custody pipeline WOULD have done with the same hours; it never describes
+    /// what this capture did, and nothing in this struct above it is derived
+    /// from it. See [`crate::custody_shadow`].
+    pub custody_shadow: CustodyShadowSummary,
 }
 
 /// Closed accounting for every game hour the scheduler has seen.
@@ -372,6 +379,26 @@ pub struct ReadOnlyScheduler {
     /// [`SchedulerTelemetry::untrusted_clock_recoveries_dropped`].
     untrusted_clock_recoveries: VecDeque<UntrustedClockRecovery>,
     telemetry: SchedulerTelemetry,
+    /// THE SHADOW. Read the module comment on [`crate::custody_shadow`] before
+    /// touching this field.
+    ///
+    /// It is written to at the END of the methods below and read by NOTHING in
+    /// this file except [`Self::telemetry`] and the test accessors. Every call
+    /// hands it `Copy` scalars; it is never given `&self`, so it cannot reach
+    /// one field of this scheduler on its own. That, plus the call placement,
+    /// is why a shadow that malfunctioned could not change one dispatch
+    /// DECISION -- which
+    /// `the_shadow_cannot_change_a_dispatch_decision_even_when_it_is_hostile`
+    /// then demonstrates against a shadow built to malfunction.
+    ///
+    /// A decision is not the same as a schedule. The notifications are
+    /// synchronous, so they do occupy the calling thread -- and in production
+    /// the scheduler mutex -- for the 316-588 ns per frame measured in
+    /// `custody_shadow::tests::shadow_cost_per_frame_is_negligible`. That is
+    /// the whole of the physical cost, it is five orders of magnitude under the
+    /// 95 ms hour every scheduler decision turns on, and `BATTLE_PLAN_CUSTODY_SHADOW=0`
+    /// removes it entirely.
+    shadow: CustodyShadow,
 }
 
 /// One untrusted clock recovery, exactly as the wire record spells it.
@@ -423,6 +450,35 @@ impl ReadOnlyScheduler {
         request_cap: usize,
         control_cap: usize,
     ) -> Result<Self, &'static str> {
+        Self::with_custody_shadow(domains, request_cap, control_cap, CustodyShadow::default())
+    }
+
+    /// The production constructor, with the shadow's environment kill switch
+    /// applied once. `BATTLE_PLAN_CUSTODY_SHADOW=0` builds a scheduler whose shadow
+    /// never runs; everything else about the scheduler is identical, which is
+    /// the property `the_shadow_cannot_change_a_dispatch_decision_even_when_it_is_hostile`
+    /// pins.
+    pub fn new_with_environment_shadow(
+        domains: Vec<u16>,
+        request_cap: usize,
+        control_cap: usize,
+    ) -> Result<Self, &'static str> {
+        Self::with_custody_shadow(
+            domains,
+            request_cap,
+            control_cap,
+            CustodyShadow::from_environment(),
+        )
+    }
+
+    /// Build with an explicit shadow. Tests use this to pin a manual clock or
+    /// to turn the shadow off entirely.
+    pub fn with_custody_shadow(
+        mut domains: Vec<u16>,
+        request_cap: usize,
+        control_cap: usize,
+        shadow: CustodyShadow,
+    ) -> Result<Self, &'static str> {
         domains.sort_unstable();
         domains.dedup();
         if domains.is_empty() {
@@ -454,8 +510,10 @@ impl ReadOnlyScheduler {
             telemetry: SchedulerTelemetry {
                 request_cap: 1,
                 control_cap: control_cap as u32,
+                custody_shadow: shadow.summary(),
                 ..SchedulerTelemetry::default()
             },
+            shadow,
         })
     }
 
@@ -468,7 +526,31 @@ impl ReadOnlyScheduler {
     }
 
     pub fn telemetry(&self) -> SchedulerTelemetry {
-        self.telemetry.clone()
+        let mut telemetry = self.telemetry.clone();
+        // Read here rather than mirrored on every notification: the shadow's
+        // summary is a pure function of the shadow, and copying it at each
+        // event would put shadow bookkeeping on the live path for no gain.
+        telemetry.custody_shadow = self.shadow.summary();
+        telemetry
+    }
+
+    /// The shadow's own view, for tests and for a host that wants the detail
+    /// behind the `rs_shadow_*` counters. Read-only; there is no accessor that
+    /// lets a caller step the shadow.
+    pub fn custody_shadow(&self) -> &CustodyShadow {
+        &self.shadow
+    }
+
+    /// Test-only: make the shadow destroy its own state inside every
+    /// notification. The notifications happen inside the same critical section
+    /// (and, in production, under the same mutex) as the live decisions, so a
+    /// scheduler that read shadow state anywhere would produce different
+    /// decisions here -- and
+    /// `the_shadow_cannot_change_a_dispatch_decision_even_when_it_is_hostile` requires
+    /// that it does not.
+    #[cfg(test)]
+    pub fn set_custody_shadow_hostile(&mut self, hostile: bool) {
+        self.shadow.set_hostile(hostile);
     }
 
     pub fn terminal(&self) -> Option<TerminalOutcome> {
@@ -898,6 +980,11 @@ impl ReadOnlyScheduler {
             slot.latest_pending = None;
             slot.in_flight = Some(request);
         }
+        // SHADOW: the live bracket starts here, and the distance from this
+        // instant back to the hour edge is the lateness the whole S3 stage is
+        // about.
+        self.shadow
+            .note_dispatch((request.stamp.epoch, request.stamp.hour_raw));
         Some(request)
     }
 
@@ -945,6 +1032,13 @@ impl ReadOnlyScheduler {
         }
     }
 
+    /// The per-domain lane. DELIBERATELY NOT SHADOWED, along with
+    /// [`Self::reject_domain`]: it has no production caller (the collector
+    /// drives the whole-frame lane only), and the end-state pipeline holds one
+    /// hour per phase for ALL domains at once, so a single moved slot is not a
+    /// state it can represent. A capture that somehow used this lane would show
+    /// the mismatch as `rs_shadow_illegal_transitions`, which is the honest
+    /// answer rather than a fabricated per-domain custody.
     pub fn take_domain_request(&mut self, domain_id: u16) -> Option<CaptureRequest> {
         let index = self.domains.binary_search(&domain_id).ok()?;
         let slot = &mut self.domain_requests[index];
@@ -1012,6 +1106,10 @@ impl ReadOnlyScheduler {
             return 0;
         }
         self.telemetry.max_publishing_depth = self.telemetry.max_publishing_depth.max(1);
+        // SHADOW: the reader is done and the bytes are frozen, which is the end
+        // state's OBSERVING -> PROCESSING handoff.
+        self.shadow
+            .note_read_custody_released((request.stamp.epoch, request.stamp.hour_raw));
         moved
     }
 
@@ -1053,6 +1151,11 @@ impl ReadOnlyScheduler {
         if self.last == Some(request.stamp) {
             self.force_baseline = false;
         }
+        // SHADOW: the sink outcome landed, so the end state's SEALED ->
+        // PUBLISHING -> COMMITTED tail runs here. Placed after `force_baseline`
+        // so no live effect of this acceptance is still pending.
+        self.shadow
+            .note_publication_resolved((request.stamp.epoch, request.stamp.hour_raw), true);
     }
 
     /// Resolve a whole-frame in-flight request whose frame will NOT be published.
@@ -1105,6 +1208,11 @@ impl ReadOnlyScheduler {
         // not what happened.
         self.telemetry.refused_hours = self.telemetry.refused_hours.saturating_add(1);
         self.force_baseline = true;
+        // SHADOW: a refusal still RESOLVES the hour, so custody ends here too.
+        // Modelling it as a drop would double-report an hour the H4FR record
+        // already names.
+        self.shadow
+            .note_publication_resolved((request.stamp.epoch, request.stamp.hour_raw), false);
         rejected.len()
     }
 
@@ -1232,6 +1340,8 @@ impl ReadOnlyScheduler {
                 self.push_gap(domain, request.stamp, GapKind::Backpressure);
             }
         }
+        // SHADOW: teardown. The unissued frontier is dropped on both sides.
+        self.shadow.note_invalidated();
     }
 
     /// Count the hours strictly between `from`'s frontier and `to`, which the
@@ -1270,9 +1380,13 @@ impl ReadOnlyScheduler {
 
     fn enqueue_request(&mut self, request: CaptureRequest) {
         self.telemetry.scheduled_hours = self.telemetry.scheduled_hours.saturating_add(1);
+        // The hour the whole-frame lane evicted, sampled at slot zero for the
+        // same reason `evicted_pending_hours` is: once per HOUR, not once per
+        // domain. Handed to the shadow after the loop, never during it.
+        let mut evicted: Option<(u64, i32)> = None;
         for index in 0..self.domains.len() {
             let domain = self.domains[index];
-            if let Some(evicted) = self.domain_requests[index].latest_pending.replace(request) {
+            if let Some(replaced) = self.domain_requests[index].latest_pending.replace(request) {
                 if index == 0 {
                     // UNIT: HOURS. Counted once per hour, not once per domain
                     // (that is what `index == 0` is for), and ONLY here. This
@@ -1294,13 +1408,21 @@ impl ReadOnlyScheduler {
                     // for the identity that relates all of them.
                     self.telemetry.evicted_pending_hours =
                         self.telemetry.evicted_pending_hours.saturating_add(1);
+                    evicted = Some((replaced.stamp.epoch, replaced.stamp.hour_raw));
                 }
-                self.push_gap(domain, evicted.stamp, GapKind::Backpressure);
+                self.push_gap(domain, replaced.stamp, GapKind::Backpressure);
             }
             self.telemetry.max_request_depth = self.telemetry.max_request_depth.max(u32::from(
                 self.domain_requests[index].latest_pending.is_some(),
             ));
         }
+        // SHADOW, after every live effect of this admission is complete. This
+        // is the hour edge as far as the end state is concerned: the frontier
+        // exists and an edge-aligned dispatch would start the bracket here.
+        self.shadow.note_frontier_admitted(
+            (request.stamp.epoch, request.stamp.hour_raw),
+            evicted,
+        );
     }
 
     /// Close the requests a clock-unknown or reload boundary invalidates.
@@ -1331,6 +1453,11 @@ impl ReadOnlyScheduler {
                 self.push_gap(domain, request.stamp, kind);
             }
         }
+        // SHADOW: a clock-unknown, reload or teardown boundary. The end state
+        // drops the same hours -- everything unsealed -- and spares the ones
+        // whose bytes are already immutable, which is exactly what this
+        // function does with `publishing`.
+        self.shadow.note_invalidated();
     }
 
     fn push_all_domain_gap_range(
@@ -1573,6 +1700,23 @@ mod tests {
 
     fn scheduler(domains: &[u16], request_cap: usize, control_cap: usize) -> ReadOnlyScheduler {
         ReadOnlyScheduler::new(domains.to_vec(), request_cap, control_cap).unwrap()
+    }
+
+    /// One scheduler with an explicit shadow mode and a MANUAL clock, so a
+    /// shadow assertion is an exact number and never a wall-clock race.
+    fn scheduler_with_shadow(
+        domains: &[u16],
+        request_cap: usize,
+        control_cap: usize,
+        mode: ShadowMode,
+    ) -> ReadOnlyScheduler {
+        ReadOnlyScheduler::with_custody_shadow(
+            domains.to_vec(),
+            request_cap,
+            control_cap,
+            CustodyShadow::new(mode, ShadowClock::Manual { now_us: 0 }),
+        )
+        .unwrap()
     }
 
     /// The wedge, and that rejecting clears it.
@@ -2868,5 +3012,461 @@ mod tests {
             "domain 11 still holds the hour, so this arithmetic must not be \
              reported as a balanced ledger: {ledger:?}"
         );
+    }
+
+    // --- capture-floor stage S3: the custody shadow -----------------------
+
+    /// One step of the script the non-interference test replays.
+    ///
+    /// Deliberately INPUT ONLY: no step depends on what an earlier step
+    /// returned, so the three schedulers below are driven identically even if
+    /// one of them were perturbed. If the script branched on outputs, a
+    /// perturbed scheduler would diverge into a different script and the
+    /// comparison would be of two different experiments.
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Observe(i32),
+        Take,
+        Release,
+        Accept,
+        AcceptDegraded,
+        Reject,
+        ClockUnreadable,
+        FlushPending,
+        Decide,
+    }
+
+    /// Everything a step can be observed to produce. This is the comparison
+    /// surface; the shadow's own summary is deliberately NOT in it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum StepOutput {
+        Decision(SchedulerDecision),
+        Request(Option<CaptureRequest>),
+        Count(usize),
+        None,
+    }
+
+    /// A deterministic script of WELL-FORMED frames. The LCG is a generator of
+    /// INPUTS, nothing more.
+    ///
+    /// Well-formed matters. The live protocol is `observe -> take -> [release]
+    /// -> accept|reject`, and violating it is TERMINAL by design: resolving a
+    /// request the scheduler does not hold, or crossing a clock boundary
+    /// between the take and the resolution, sets `CounterAnomaly` and stops the
+    /// scheduler admitting anything ever again. A script that wandered into
+    /// that on step nine would compare three schedulers that had all been dead
+    /// since step nine, and would pass while proving nothing -- which is what
+    /// the vacuity assertions at the end of the test exist to catch.
+    ///
+    /// So the boundary decorations (an extra frontier that will be evicted, a
+    /// clock outage, a teardown flush, an idle decide) are emitted BETWEEN
+    /// frames, and the hour motion -- forward, multi-hour, and backwards into a
+    /// reload -- happens there too. Every loss path the scheduler has is still
+    /// reachable; none of them is reachable in the middle of a frame's custody.
+    fn non_interference_script(frames: usize) -> Vec<Step> {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |state: &mut u64| -> u64 {
+            *state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *state >> 17
+        };
+        let mut hour = 1_000i32;
+        let mut script = Vec::with_capacity(frames * 5);
+        for _ in 0..frames {
+            match next(&mut state) % 8 {
+                0 => script.push(Step::ClockUnreadable),
+                1 => {
+                    // A frontier no reader will ever take: the next observation
+                    // evicts it, which is the backpressure path.
+                    hour += 3;
+                    script.push(Step::Observe(hour));
+                }
+                2 => script.push(Step::FlushPending),
+                3 => script.push(Step::Decide),
+                _ => {}
+            }
+            // Mostly forward, sometimes a multi-hour overrun, sometimes a
+            // reload. Never more than the trust ceiling, which is terminal.
+            hour += match next(&mut state) % 8 {
+                0 => 4,
+                1 => -3,
+                _ => 1,
+            };
+            script.push(Step::Observe(hour));
+            script.push(Step::Take);
+            if next(&mut state) % 2 == 0 {
+                script.push(Step::Release);
+            }
+            script.push(match next(&mut state) % 4 {
+                0 => Step::Reject,
+                1 => Step::AcceptDegraded,
+                _ => Step::Accept,
+            });
+        }
+        script
+    }
+
+    /// Replay a script and return every observable output, in order.
+    ///
+    /// `Accept`/`Reject` need a request to resolve, and the only honest source
+    /// of one is the scheduler itself -- so the replay resolves the request
+    /// that scheduler last handed it, and resolves it once. That IS an output
+    /// dependency, and it is safe for exactly one reason: every take and every
+    /// release is RECORDED, so a scheduler that handed out a different request
+    /// (or none) fails the output comparison directly. The dependency can hide
+    /// nothing that the comparison would otherwise have seen.
+    fn replay(scheduler: &mut ReadOnlyScheduler, script: &[Step]) -> Vec<StepOutput> {
+        let mut outputs = Vec::with_capacity(script.len());
+        let mut last: Option<CaptureRequest> = None;
+        let mut ordinal = 0u64;
+        for step in script {
+            let output = match *step {
+                Step::Observe(hour) => {
+                    ordinal += 1;
+                    scheduler.observe_stable(hour, ordinal);
+                    StepOutput::None
+                }
+                Step::Take => {
+                    let request = scheduler.take_current_request();
+                    if request.is_some() {
+                        last = request;
+                    }
+                    StepOutput::Request(request)
+                }
+                Step::Release => match last {
+                    Some(request) => StepOutput::Count(scheduler.release_read_custody(request)),
+                    None => StepOutput::None,
+                },
+                Step::Accept => match last.take() {
+                    Some(request) => {
+                        scheduler.accept_request(request);
+                        StepOutput::None
+                    }
+                    None => StepOutput::None,
+                },
+                Step::AcceptDegraded => match last.take() {
+                    Some(request) => {
+                        scheduler.accept_degraded_request(request);
+                        StepOutput::None
+                    }
+                    None => StepOutput::None,
+                },
+                Step::Reject => match last.take() {
+                    Some(request) => StepOutput::Count(scheduler.reject_request(request)),
+                    None => StepOutput::None,
+                },
+                Step::ClockUnreadable => {
+                    scheduler.note_clock_unreadable();
+                    StepOutput::None
+                }
+                Step::FlushPending => {
+                    scheduler.flush_latest_pending();
+                    StepOutput::None
+                }
+                Step::Decide => StepOutput::Decision(scheduler.decide()),
+            };
+            outputs.push(output);
+        }
+        outputs
+    }
+
+    /// The shadow's summary is the ONE field of telemetry that is allowed to
+    /// differ between a shadow-on and a shadow-off scheduler. Everything else
+    /// must be identical, so it is compared with that field cleared.
+    fn live_half(mut telemetry: SchedulerTelemetry) -> SchedulerTelemetry {
+        telemetry.custody_shadow = CustodyShadowSummary::default();
+        telemetry
+    }
+
+    /// NON-INTERFERENCE OF DECISIONS, as a forced comparison rather than an
+    /// argument.
+    ///
+    /// SCOPE, stated first because the test name would otherwise overclaim:
+    /// this is a LOGICAL comparison. It proves that the same inputs produce the
+    /// same decisions, telemetry, ledgers and control ranges whatever the
+    /// shadow does. It says nothing about wall-clock -- the notifications are
+    /// synchronous and do occupy the thread, and the measured 316-588 ns per
+    /// frame is the whole of that cost (`custody_shadow`'s
+    /// `shadow_cost_per_frame_is_negligible`). No test here has a concurrency
+    /// or elapsed-time dimension, and none claims one.
+    ///
+    /// The same script is replayed against three schedulers:
+    ///
+    /// * one with the shadow OFF,
+    /// * one with the shadow ON,
+    /// * one with the shadow ON and HOSTILE -- every notification wipes the
+    ///   machine, multiplies its own counters and clears its rings, inside the
+    ///   same critical section the live decisions are taken in.
+    ///
+    /// All three must produce the identical sequence of decisions and requests,
+    /// the identical live telemetry, the identical hour ledger and the identical
+    /// control ranges. The hostile arm is what makes this a proof about the
+    /// SCHEDULER rather than about this particular shadow implementation: any
+    /// live read of shadow state at all would show up as a difference here.
+    ///
+    /// MUTATION: make `take_current_request` return `None` when
+    /// `self.shadow.summary().illegal_transitions > 0`, and the hostile arm
+    /// diverges on the first refusal.
+    #[test]
+    fn the_shadow_cannot_change_a_dispatch_decision_even_when_it_is_hostile() {
+        let script = non_interference_script(1_000);
+        let domains = [10u16, 11, 12];
+
+        let mut off = scheduler_with_shadow(&domains, 1, 65_535, ShadowMode::Disabled);
+        let mut on = scheduler_with_shadow(&domains, 1, 65_535, ShadowMode::Enabled);
+        let mut hostile = scheduler_with_shadow(&domains, 1, 65_535, ShadowMode::Enabled);
+        hostile.set_custody_shadow_hostile(true);
+
+        let off_outputs = replay(&mut off, &script);
+        let on_outputs = replay(&mut on, &script);
+        let hostile_outputs = replay(&mut hostile, &script);
+
+        assert_eq!(
+            off_outputs, on_outputs,
+            "the shadow changed a live decision"
+        );
+        assert_eq!(
+            off_outputs, hostile_outputs,
+            "a malfunctioning shadow changed a live decision"
+        );
+        assert_eq!(live_half(off.telemetry()), live_half(on.telemetry()));
+        assert_eq!(live_half(off.telemetry()), live_half(hostile.telemetry()));
+        assert_eq!(off.hour_ledger(), on.hour_ledger());
+        assert_eq!(off.hour_ledger(), hostile.hour_ledger());
+        assert_eq!(off.terminal(), on.terminal());
+        assert_eq!(off.terminal(), hostile.terminal());
+
+        let off_gaps: Vec<_> = off.drain_control().collect();
+        let on_gaps: Vec<_> = on.drain_control().collect();
+        let hostile_gaps: Vec<_> = hostile.drain_control().collect();
+        assert_eq!(off_gaps, on_gaps);
+        assert_eq!(off_gaps, hostile_gaps);
+
+        // VACUITY GUARDS. Three schedulers that all went terminal on step nine
+        // would agree perfectly and prove nothing, so the run has to be shown
+        // to have done the work: hundreds of dispatches, hours that reached the
+        // sink, hours that were lost, and a scheduler still alive at the end.
+        let dispatches = off_outputs
+            .iter()
+            .filter(|output| matches!(output, StepOutput::Request(Some(_))))
+            .count();
+        assert!(
+            dispatches > 500,
+            "only {dispatches} dispatches; the comparison is vacuous"
+        );
+        assert_eq!(off.terminal(), None, "the scheduler died mid-script");
+        let ledger = off.hour_ledger();
+        assert!(ledger.accepted > 400, "{ledger:?}");
+        assert!(ledger.refused > 100, "{ledger:?}");
+        assert!(ledger.evicted_pending > 50, "{ledger:?}");
+        assert!(off.telemetry().reloads > 50);
+        assert!(off.telemetry().clock_unreadable_events > 50);
+        assert!(!off_gaps.is_empty(), "the script raised no loss at all");
+        assert!(
+            on.telemetry().custody_shadow.events > 100,
+            "the enabled shadow never ran; the comparison is vacuous"
+        );
+        assert_eq!(
+            off.telemetry().custody_shadow,
+            CustodyShadowSummary::default(),
+            "a disabled shadow must publish nothing but its own inactivity"
+        );
+    }
+
+    /// The shadow follows a clean pipelined capture and says the end state
+    /// would have committed every hour.
+    ///
+    /// MUTATION: notify the shadow of the dispatch BEFORE the live slots are
+    /// filled and nothing here changes -- which is why the non-interference
+    /// test above, not this one, is what pins the ordering. What this pins is
+    /// TRUTHFULNESS: the counters describe the hours that actually happened.
+    #[test]
+    fn the_shadow_follows_a_clean_capture_and_commits_every_hour() {
+        let mut s = scheduler_with_shadow(&[10, 11], 1, 64, ShadowMode::Enabled);
+        for hour in 2_000..2_010 {
+            s.observe_stable(hour, hour as u64);
+            let request = s.take_current_request().expect("a clean hour is takeable");
+            s.release_read_custody(request);
+            s.accept_request(request);
+        }
+        let summary = s.telemetry().custody_shadow;
+        assert!(summary.active);
+        assert_eq!(summary.hour_edges, 10);
+        assert_eq!(summary.dispatches, 10);
+        assert_eq!(summary.committed_hours, 10);
+        assert_eq!(summary.processing_backpressure_hours, 0);
+        assert_eq!(summary.observation_deadline_miss_hours, 0);
+        assert_eq!(summary.illegal_transitions, 0, "the live order is modelled");
+        assert_eq!(summary.hour_mismatches, 0);
+        assert_eq!(summary.collapsed_publications, 0);
+        assert_eq!(summary.live_kept_hours_shadow_dropped, 0);
+        assert_eq!(summary.late_dispatch_samples, 10);
+        let ledger = s.custody_shadow().ledger();
+        assert!(ledger.balanced(), "{ledger:?}");
+        assert_eq!(ledger.committed, 10);
+        // The live ledger is untouched by any of it.
+        assert_eq!(s.hour_ledger().accepted, 10);
+        assert!(s.hour_ledger().balanced());
+    }
+
+    /// A live eviction run -- the shape t32 measured -- reads on the shadow as
+    /// the end state dropping the same hours, agreeing with the live eviction
+    /// every time.
+    #[test]
+    fn a_live_eviction_run_reads_as_deadline_misses_the_end_state_agrees_with() {
+        let mut s = scheduler_with_shadow(&[10, 11, 12], 1, 64, ShadowMode::Enabled);
+        s.observe_stable(1, 1);
+        let in_flight = s.take_current_request().expect("hour 1 is takeable");
+        for hour in 2..=12 {
+            s.observe_stable(hour, hour as u64);
+        }
+        s.accept_request(in_flight);
+
+        let summary = s.telemetry().custody_shadow;
+        assert_eq!(summary.hour_edges, 12);
+        assert_eq!(
+            summary.agreed_evictions, 10,
+            "hours 2..=11 were evicted live and missed their deadline in the \
+             shadow: the same ten hours"
+        );
+        assert_eq!(summary.disagreed_evictions, 0);
+        assert_eq!(
+            summary.observation_deadline_miss_hours, 11,
+            "the ten evicted hours, plus hour 1 -- whose observation was still \
+             open when hour 2 began, so its bracket would have spanned the \
+             boundary"
+        );
+        // The live capture published hour 1 anyway. That disagreement is the
+        // measurement, and it is named on both sides.
+        assert_eq!(summary.live_kept_hours_shadow_dropped, 1);
+        assert_eq!(summary.committed_hours, 0);
+        assert_eq!(summary.illegal_transitions, 0);
+        let ledger = s.custody_shadow().ledger();
+        assert!(ledger.balanced(), "{ledger:?}");
+    }
+
+    /// THE ONE LIVE ORDERING THAT REACHES `ProcessingBackpressure`, and the
+    /// reason it is rare.
+    ///
+    /// A snapshot is dropped when a NEW one needs the processing slot, i.e.
+    /// when a second frame's read finishes before the first frame's sink
+    /// outcome lands. The live scheduler makes two unresolved publications
+    /// terminal, so the only way to reach it is the mixed path: hour 500 is
+    /// released into publication custody, hour 501 is taken and published
+    /// SYNCHRONOUSLY (which closes 501's observation while 500 is still
+    /// unsealed), and only then does 500 resolve.
+    ///
+    /// This is also why `rs_shadow_processing_backpressure_hours` is expected
+    /// to be ~0 on ordinary captures: today's sweep serialises read and publish,
+    /// so the compute custody the end state introduces is not the constraint --
+    /// observation lateness is. That expectation is a RESULT of the stage, and
+    /// this test is what makes the counter's zero mean something.
+    #[test]
+    fn the_mixed_live_publication_order_reaches_processing_backpressure() {
+        let mut s = scheduler_with_shadow(&[10], 1, 64, ShadowMode::Enabled);
+        s.observe_stable(500, 1);
+        let first = s.take_current_request().expect("hour 500 is takeable");
+        s.release_read_custody(first);
+        s.observe_stable(501, 2);
+        let second = s.take_current_request().expect("the successor is claimable");
+        // Hour 501 publishes synchronously while 500 is still in publication
+        // custody. The live scheduler allows exactly this.
+        s.accept_request(second);
+        let summary = s.telemetry().custody_shadow;
+        assert_eq!(
+            summary.processing_backpressure_hours, 1,
+            "closing 501 found 500 still unsealed"
+        );
+        assert_eq!(summary.collapsed_publications, 1, "501 never released");
+        assert_eq!(summary.committed_hours, 1, "501");
+        assert_eq!(summary.illegal_transitions, 0);
+
+        // And when 500 finally resolves, the shadow says it would have been
+        // gone -- once, not as a second backpressure.
+        s.accept_request(first);
+        let summary = s.telemetry().custody_shadow;
+        assert_eq!(summary.processing_backpressure_hours, 1);
+        assert_eq!(summary.live_kept_hours_shadow_dropped, 1, "hour 500");
+        assert_eq!(summary.illegal_transitions, 0);
+        let occupancy = s.custody_shadow().machine().occupancy();
+        assert_eq!(
+            occupancy.iter().filter(|slot| slot.is_some()).count(),
+            0,
+            "nothing is left in custody: {occupancy:?}"
+        );
+        let ledger = s.custody_shadow().ledger();
+        assert!(ledger.balanced(), "{ledger:?}");
+    }
+
+    /// The ORDINARY slow-frame shape, for contrast: three hours pass while one
+    /// frame is unresolved. Every unopened hour misses its deadline, and the
+    /// held snapshot is NOT dropped -- nothing needed its slot.
+    #[test]
+    fn a_slow_live_frame_costs_deadline_misses_and_no_backpressure() {
+        let mut s = scheduler_with_shadow(&[10], 1, 64, ShadowMode::Enabled);
+        s.observe_stable(600, 1);
+        let first = s.take_current_request().expect("hour 600 is takeable");
+        s.release_read_custody(first);
+        for hour in 601..=603 {
+            s.observe_stable(hour, hour as u64);
+        }
+        s.accept_request(first);
+
+        let summary = s.telemetry().custody_shadow;
+        assert_eq!(
+            summary.processing_backpressure_hours, 0,
+            "hour 600 held the processing slot for three hours and no snapshot \
+             ever needed it: the end state loses nothing here"
+        );
+        assert_eq!(summary.observation_deadline_miss_hours, 2, "hours 601, 602");
+        assert_eq!(summary.committed_hours, 1, "hour 600 commits in the shadow too");
+        assert_eq!(summary.live_kept_hours_shadow_dropped, 0);
+        assert_eq!(summary.illegal_transitions, 0);
+        let ledger = s.custody_shadow().ledger();
+        assert!(ledger.balanced(), "{ledger:?}");
+    }
+
+    /// A clock outage and a reload both invalidate shadow custody, and the
+    /// shadow accepts the lower hour a reload brings instead of refusing it as
+    /// backwards motion.
+    #[test]
+    fn a_boundary_invalidates_shadow_custody_and_admits_the_new_epoch() {
+        let mut s = scheduler_with_shadow(&[10], 1, 64, ShadowMode::Enabled);
+        s.observe_stable(900, 1);
+        let request = s.take_current_request().unwrap();
+        s.release_read_custody(request);
+        s.accept_request(request);
+        s.observe_stable(901, 2);
+        s.note_clock_unreadable();
+        s.observe_stable(905, 3);
+        // A reload: the hour goes backwards.
+        s.observe_stable(100, 4);
+        let after_reload = s.take_current_request().expect("the new epoch is takeable");
+        assert_eq!(after_reload.stamp.hour_raw, 100);
+
+        let summary = s.telemetry().custody_shadow;
+        assert_eq!(
+            summary.illegal_transitions, 0,
+            "a reload must not read as the shadow's model breaking"
+        );
+        assert!(summary.invalidated_hours >= 1);
+        let ledger = s.custody_shadow().ledger();
+        assert!(ledger.balanced(), "{ledger:?}");
+    }
+
+    /// The synchronous publication path -- accept without releasing read
+    /// custody -- is named as a collapse rather than modelled as a pipeline the
+    /// recorder does not have.
+    #[test]
+    fn a_synchronous_live_publication_is_named_as_a_collapse() {
+        let mut s = scheduler_with_shadow(&[10], 1, 64, ShadowMode::Enabled);
+        s.observe_stable(700, 1);
+        let request = s.take_current_request().unwrap();
+        s.accept_request(request); // no release: the synchronous path
+        let summary = s.telemetry().custody_shadow;
+        assert_eq!(summary.collapsed_publications, 1);
+        assert_eq!(summary.committed_hours, 1);
+        assert_eq!(summary.illegal_transitions, 0);
     }
 }

@@ -1589,6 +1589,34 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "rs_control_cap",
     "rs_zero_mutation_policy",
     "rs_scheduler_active",
+    // --- capture-floor stage S3 custody SHADOW ----------------------------
+    // `collector::custody_shadow::CustodyShadowSummary`, every field of which
+    // is a running total or a running maximum that is never reset within a
+    // capture -- the same contract as `SchedulerTelemetry` above, because it
+    // lives inside it. These describe what the END-STATE pipeline would have
+    // done; none of them describes what the capture published.
+    "rs_shadow_active",
+    "rs_shadow_events",
+    "rs_shadow_hour_edges",
+    "rs_shadow_dispatches",
+    "rs_shadow_committed_hours",
+    "rs_shadow_refused_hours",
+    "rs_shadow_processing_backpressure_hours",
+    "rs_shadow_observation_deadline_miss_hours",
+    "rs_shadow_invalidated_hours",
+    "rs_shadow_live_kept_hours_shadow_dropped",
+    "rs_shadow_collapsed_publications",
+    "rs_shadow_illegal_transitions",
+    "rs_shadow_hour_mismatches",
+    "rs_shadow_agreed_evictions",
+    "rs_shadow_disagreed_evictions",
+    "rs_shadow_drop_memory_overflows",
+    "rs_shadow_late_dispatch_samples",
+    "rs_shadow_late_dispatch_total_us",
+    "rs_shadow_cost_total_ns",
+    // Running maxima, kept with `.max(...)` and never reset.
+    "rs_shadow_max_late_dispatch_us",
+    "rs_shadow_max_cost_ns",
     // Latching booleans: set once, never cleared.
     "rs_terminal",
     "rs_transport_failed",
