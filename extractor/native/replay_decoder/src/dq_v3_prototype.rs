@@ -86,7 +86,25 @@ use recorder_host::world_fold::foldprof;
 /// grains an hour -- a mutation density 30x the covered set's per byte, on
 /// 17-byte grains. `order_of_battle` is the largest uncovered member (1.77 MB)
 /// and writes 176 kB an hour, more than the rest of the remainder combined.
-pub const COVERED_SECTIONS: [(&str, &str); 7] = [
+/// # Tranches 2-5: the cheap tail
+///
+/// Lane EI censused every one of the world document's 41 top-level members at
+/// grain depths 1-6 on both captures before converting anything (evidence in
+/// `runs/dq_v3_lane_ei/`), because the shape that killed `strategic_air` --
+/// thousands of four-byte grains an hour -- is invisible in a section's byte
+/// share and only shows up in its mutation density. The remaining 32 members
+/// were then converted in four tranches, densest first, each priced against the
+/// unchanged seven-section base in the same machine window.
+///
+/// The tail is genuinely cheap: at the depths chosen below every one of the 32
+/// sits BELOW the covered set's 0.57 mutations per kB, which is the opposite of
+/// what tranche 1 found and is why the extrapolation these replace was
+/// pessimistic rather than optimistic about them.
+///
+/// `strategic_air` and `naval_air` are still absent by owner ruling and are the
+/// whole of what remains uncovered: 0.80% of t30's member bytes and 6.00% of
+/// t31's.
+pub const COVERED_SECTIONS: [(&str, &str); 39] = [
     ("special_projects", "object"),
     ("countries", "object"),
     ("map", "object"),
@@ -99,11 +117,106 @@ pub const COVERED_SECTIONS: [(&str, &str); 7] = [
     // converted, measured, and REMOVED from the default: 33k four-byte
     // grains/hour put them past the per-mutation constant's worst case
     // (0.157 s/h on t31 alone, journals 1.34-1.42x LARGER than the v2
-    // patches they replace). They stay v2-covered in the hybrid; both
-    // remain selectable through the section filter for re-measurement if a
-    // coarse-grain design for tiny-value sections is ever funded.
+    // patches they replace). They stay v2-covered in the hybrid. Removing
+    // them from this list is what makes them unconvertible, and it also
+    // makes them unselectable -- the section filter validates against this
+    // const -- so re-measuring them means re-adding them deliberately.
     ("order_of_battle", "object"),
+    // -- tranche 2: the top of the tail by density and by bytes -------------
+    // 2.79 MB of t30's 3.14 MB non-air uncovered remainder (89%), and the
+    // only members of it that move more than 25 grains an hour.
+    ("provinces", "object"),
+    ("designs", "object"),
+    ("world_events", "object"),
+    ("raids", "object"),
+    ("_r2_sunk_ship_history_live", "object"),
+    // -- tranche 3: the 60-95 kB sidecars -----------------------------------
+    ("world", "object"),
+    ("_r2_sunk_convoy_history_live", "object"),
+    ("_r2_sunk_convoy_history_live_candidate", "object"),
+    ("visibility", "object"),
+    ("_r2_nuke_stockpile_live", "object"),
+    // -- tranche 4: the small movers ----------------------------------------
+    // `combats` is the document's other array. It has no member that is a
+    // unique, already-ascending string identity on every hour -- the census
+    // refused every candidate -- so unlike `divisions` it can only be
+    // addressed by ordinal, and an insertion re-emits every element after
+    // it. That is priced, not assumed: it is 8.8 kB.
+    ("combats", "array"),
+    ("provenance", "object"),
+    ("naval_combats", "object"),
+    ("measured_countries", "object"),
+    ("tech_sharing_group", "object"),
+    // -- tranche 5: the residue ---------------------------------------------
+    // Seventeen members totalling 2.1 kB on t30 -- 0.006% of the document.
+    // They are one tranche and not four because each of them moves the
+    // projection by less than the machine's own drift, so four boundaries
+    // here would be four readings of the same noise. They are converted at
+    // all because with them the projection stops being an extrapolation over
+    // anything but the two air sections.
+    //
+    // Nine of them are never containers (`date` is a string, `hour_index` a
+    // number, five are `null` every hour). A section is not its shape --
+    // `assign_section` and the driver both route a non-container value to a
+    // scalar root holding the whole member at the empty path -- so `object`
+    // is the right spelling for "not an array", and the root-kind journal
+    // record is what carries the difference.
+    ("_r2_dynamic_modifier_lifecycle_live", "object"),
+    ("_r2_peace_conference_live", "object"),
+    ("ended_combats", "array"),
+    ("_r2_occupation_garrison_alert_live", "object"),
+    ("date", "object"),
+    ("hour_index", "object"),
+    ("tag_db_id_index", "object"),
+    ("diplomacy_world", "object"),
+    ("session_header", "object"),
+    ("events", "array"),
+    ("game_id", "object"),
+    ("save_version", "object"),
+    ("schema_version", "object"),
+    ("strategic_operatives", "object"),
+    ("_r2_delayed_event_lifecycle_live", "object"),
+    ("_r2_market_trade_activation_live", "object"),
+    ("_r2_selected_designer_identity_live", "object"),
 ];
+
+/// The grain depth each section was MEASURED to be cheapest at, as a spec string
+/// for the driver's fifth argument.
+///
+/// A grain depth is an optimum and not a preference, so every entry here is a
+/// census number: the depth minimizing `written_bytes_per_hour + mutations *
+/// per-record overhead` over depths 1-6 on both captures, ties broken towards
+/// the depth with fewer grains (a grain costs [`PER_GRAIN_OVERHEAD`] bytes of
+/// resident state whether or not it ever moves). Depth 3 is the default and the
+/// sections at it carry no override.
+///
+/// The first three overrides are the six-section base's own, unchanged since the
+/// bands that admitted them were measured. The rest name sections the base run
+/// does not activate, where an override is inert -- which is what lets ONE spec
+/// string drive every tranche's configuration, so that no two tranches can
+/// differ in a depth by accident.
+pub const MEASURED_GRAIN_DEPTHS: &str = "3,supply=2,divisions=2,\
+     provinces=1,designs=2,world_events=2,raids=2,_r2_sunk_ship_history_live=2,\
+     world=2,_r2_sunk_convoy_history_live=2,\
+     _r2_sunk_convoy_history_live_candidate=2,_r2_nuke_stockpile_live=1,\
+     combats=2,provenance=2,measured_countries=1,tech_sharing_group=1,\
+     _r2_dynamic_modifier_lifecycle_live=1,_r2_peace_conference_live=1,\
+     ended_combats=1,_r2_occupation_garrison_alert_live=1,date=1,hour_index=1,\
+     tag_db_id_index=1,diplomacy_world=1,session_header=1,events=1,game_id=1,\
+     save_version=1,schema_version=1,strategic_operatives=1,\
+     _r2_delayed_event_lifecycle_live=1,_r2_market_trade_activation_live=1,\
+     _r2_selected_designer_identity_live=1";
+
+/// What one grain costs in resident state BEYOND its own payload.
+///
+/// A `Grain` is a `Vec` header, a 32-byte digest, a revision and a 32-byte
+/// cached state-root contribution (96 B); a `Path` is a `Vec` header (24 B); and
+/// a `BTreeMap` entry carries roughly another 16 B of node share. Counting only
+/// the payload would answer the memory threshold with the flattering half of the
+/// number -- and it would also make every grain-depth choice look free, when a
+/// section cut three levels deep instead of one pays this constant on ten times
+/// as many grains for the same bytes.
+pub const PER_GRAIN_OVERHEAD: u64 = 136;
 
 fn shape_for(spelling: &str) -> Result<Shape, String> {
     match spelling {
@@ -370,6 +483,39 @@ fn price_v3(
             run.name
         ));
     }
+    // A scalar root must hold EXACTLY the grain at the empty path.
+    //
+    // Every other check above is a comparison of BYTES, and for a member that is
+    // `null` on every hour the bytes cannot see this: `project` renders a scalar
+    // root with no grain as `null`, so a state that lost the grain projects the
+    // same four bytes as a state that holds it, its incremental root agrees with
+    // a full recomputation of the same wrong grain set, and a replica driven by
+    // the same missing upsert agrees with the producer. Nine of the members this
+    // driver now converts are never containers and five of those are `null`
+    // every hour, which is precisely the shape the byte oracle is blind to.
+    //
+    // Checked on the replica as well as the producer: the two agreeing is the
+    // whole of what the replica check proves, and they can agree on a state that
+    // is missing the same grain.
+    for (side, state) in [("producer", &run.state), ("replica", &run.replica)] {
+        let scalar = state.root_kind() == RootKind::Scalar;
+        let at_root = state.grain(&[]).is_some();
+        if scalar && !(at_root && state.grain_count() == 1) {
+            return Err(format!(
+                "section {} {side} has a scalar root holding {} grains at hour {hour_index}, \
+                 which projects as `null` whatever it lost",
+                run.name,
+                state.grain_count()
+            ));
+        }
+        if !scalar && at_root {
+            return Err(format!(
+                "section {} {side} has a container root with a whole-section grain under it \
+                 at hour {hour_index}",
+                run.name
+            ));
+        }
+    }
     let instrument = started.elapsed();
 
     Ok(V3Hour {
@@ -404,9 +550,38 @@ fn section_index(name: &str) -> Option<usize> {
 ///   artefact of iteration order. `naval_air` is therefore over-charged and
 ///   `strategic_air` under-charged; only their SUM is a build term, and the
 ///   upper bound is a sum.
-/// * `sidecars` brackets eight members at once and cannot be attributed to any
+///
+///   Neither is in [`COVERED_SECTIONS`] any more, so on every run this lane
+///   makes the slot is claimed by nobody and `naval_combats` -- which DOES
+///   accumulate into it -- carries no build term. That is left alone rather
+///   than re-pointed at `naval_combats`: the slot also carries the two air
+///   sections' construction, which v3 does not convert, so charging the whole
+///   of it to an 11 kB member would be an over-charge of a different section's
+///   work rather than a measurement of that member's.
+/// * `combats` brackets `build_combats`, which returns `combats` AND
+///   `ended_combats` from one call. The span is charged to `combats`, the
+///   member that is three orders of magnitude the larger of the two, and
+///   `ended_combats` carries none. Same rule as the air pair: over-charge the
+///   named owner, under-charge its partner, and let only their sum be read as a
+///   build term.
+/// * `diplomacy_world` brackets `project_market_trade_lend_lease`, which writes
+///   lend-lease members into `countries` AFTER the countries span has closed.
+///   The span is therefore not purely its own member's construction, and by
+///   name it is charged entirely to a 293-byte member. It is left that way for
+///   the same reason `naval_and_air` is: `countries` is one of the seven
+///   sections whose bands are already published, and re-pointing a span at it
+///   would re-measure the base configuration rather than this tranche. The
+///   whole span is 3 microseconds per game hour against `countries`'s 22.5
+///   milliseconds of build -- 0.013% -- so the mis-attribution is real and
+///   moves no bound. Measured on t30 and t31, in `runs/dq_v3_lane_ei/`.
+/// * `sidecars` brackets nine members at once and cannot be attributed to any
 ///   one of them, so members built there carry no build term. The report names
 ///   every such member rather than letting a silent zero flatter the bound.
+/// * `map_mirrors`, `late_resolution` and `assembly` are spans no document
+///   member is named after, so nothing claims them and their nanoseconds enter
+///   no bound. They are whole-document work v3 would still owe, and they are
+///   named here so their absence from the upper bound is on the record rather
+///   than in it.
 fn build_span_for(section: &str) -> Option<usize> {
     if let Some(index) = section_index(section) {
         return Some(index);
@@ -581,6 +756,10 @@ pub fn run(
     // coverage taken against it understates -- and with a stale section size it
     // could even exceed one.
     let mut document_member_bytes_last = 0u64;
+    // Members of the coverage hour's document that this run did NOT convert,
+    // largest first. See where it is filled for why the ratio alone is not
+    // enough.
+    let mut uncovered_members_last: Vec<(String, u64)> = Vec::new();
     let mut coverage_hour = 0i64;
     let mut apply_ns_first_hour = 0u64;
     let mut apply_whole_state_ns_first_hour = 0u64;
@@ -633,10 +812,35 @@ pub fn run(
             foldprof::reset_domains();
         }
         let started = Instant::now();
-        document_member_bytes_last = members
-            .iter()
-            .map(|(_, member)| member.to_json_bytes().len() as u64)
-            .sum();
+        // ONE serialization pass for both the denominator and the list of what
+        // is being extrapolated over. Two passes would render every member of a
+        // 35 MB document twice an hour to answer two questions about the same
+        // bytes -- and this is the instrument's own wall time, which is reported
+        // and should not be inflated by the instrument.
+        document_member_bytes_last = 0;
+        uncovered_members_last.clear();
+        for (name, member) in members {
+            let bytes = member.to_json_bytes().len() as u64;
+            document_member_bytes_last += bytes;
+            if !active_sections.iter().any(|(active, _)| active == name) {
+                uncovered_members_last.push((name.clone(), bytes));
+            }
+        }
+        // WHICH members the projection is extrapolating over, by name and by
+        // bytes.
+        //
+        // `projected_full_conversion_s_per_hour` divides the measured v3 term by
+        // `coverage_by_bytes`, which charges every unconverted member the
+        // CONVERTED set's cost per byte. That is only conservative while the
+        // remainder is no denser than the covered set, and the remainder is not
+        // a fixed quantity -- it shrinks as tranches land, and what survives is
+        // whatever was left out ON PURPOSE, which is exactly the population most
+        // likely to have been left out for being expensive. A reader given only
+        // a coverage ratio cannot tell a 6% remainder of ordinary members from a
+        // 6% remainder of known outliers, and the two give the same number here.
+        // Naming them is what makes the extrapolation auditable instead of
+        // merely disclosed.
+        uncovered_members_last.sort_by(|left, right| right.1.cmp(&left.1));
         coverage_hour = hour.hour_index;
         instrument += started.elapsed();
 
@@ -784,13 +988,6 @@ pub fn run(
         }
         v2_patch_total += run.report.v2_patch_bytes;
         v3_delta_total += run.report.v3_delta_bytes;
-        // Grain payload, plus the addresses, plus what the containers cost per
-        // grain: a `Grain` is a `Vec` header, a 32-byte digest, a revision and
-        // a 32-byte cached state-root contribution (96 B), a `Path` is a `Vec`
-        // header (24 B), and a `BTreeMap` entry carries roughly another 16 B of
-        // node share. Counting only the payload would answer the memory
-        // threshold with the flattering half of the number.
-        const PER_GRAIN_OVERHEAD: u64 = 136;
         resident_one += run.report.retained_bytes_last
             + run.report.retained_path_bytes_last
             + run.report.grains_last * PER_GRAIN_OVERHEAD;
@@ -909,6 +1106,20 @@ pub fn run(
         .iter()
         .map(|name| json_string(name))
         .collect();
+    let uncovered_rows: Vec<String> = uncovered_members_last
+        .iter()
+        .map(|(name, bytes)| {
+            format!(
+                "{{\"member\":{},\"bytes\":{bytes},\"share\":{:.6}}}",
+                json_string(name),
+                if document_member_bytes_last > 0 {
+                    *bytes as f64 / document_member_bytes_last as f64
+                } else {
+                    0.0
+                }
+            )
+        })
+        .collect();
     let depth_rows: Vec<String> = runs
         .iter()
         .map(|run| format!("[{},{}]", json_string(&run.name), run.spec.grain_depth))
@@ -953,6 +1164,11 @@ pub fn run(
          \"sections_without_build_span\":[{}],\
          \"section_filter\":{},\"sections_converted\":{},\
          \"covered_bytes_last\":{covered_bytes},\"coverage_by_bytes\":{coverage:.4},\
+         \"extrapolated_over\":[{}],\
+         \"extrapolation_note\":\"projected_full_conversion charges every member \
+         in extrapolated_over the CONVERTED set's seconds per byte; that is a \
+         floor for any of them measured to be denser, and the members left out \
+         last are the ones most likely to be\",\
          \"wall_s\":{:.3},\"decode_fold_s\":{:.3},\"document_parse_s\":{:.3},\
          \"instrument_only_s\":{:.3},\
          \"apply_domain_data_s_per_hour\":{apply_per_hour:.6},\
@@ -980,6 +1196,7 @@ pub fn run(
         no_build_rows.join(","),
         json_string(section_filter.unwrap_or("<all>")),
         active_sections.len(),
+        uncovered_rows.join(","),
         secs(wall),
         secs(decode),
         secs(doc_parse),
@@ -1086,12 +1303,120 @@ mod tests {
         assert_eq!(select_sections(None).unwrap(), COVERED_SECTIONS.to_vec());
     }
 
+    /// A name appearing twice would be run twice and, worse, would have its
+    /// bytes added to `covered_bytes` twice -- inflating `coverage_by_bytes`,
+    /// which every projection divides by. The band would come out LOW, which is
+    /// the direction that gets a design admitted.
+    #[test]
+    fn no_section_is_listed_twice() {
+        let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
+        for (name, _) in COVERED_SECTIONS {
+            assert!(
+                seen.insert(name, ()).is_none(),
+                "{name} appears twice in COVERED_SECTIONS"
+            );
+        }
+    }
+
+    /// The seven sections whose bands are already on the record must stay at the
+    /// FRONT of the const, in their order.
+    ///
+    /// The const's order is the run order, and the run order decides which
+    /// section's build span is harvested first and which lane runs first on a
+    /// given hour. A tranche that appended its sections anywhere but the end
+    /// would re-measure the base configuration under a different schedule, and
+    /// every band read against it would be reading that instead.
+    #[test]
+    fn the_base_seven_still_lead_the_const_in_order() {
+        let head: Vec<&str> = COVERED_SECTIONS.iter().take(7).map(|(n, _)| *n).collect();
+        assert_eq!(
+            head,
+            [
+                "special_projects",
+                "countries",
+                "map",
+                "supply",
+                "divisions",
+                "states",
+                "order_of_battle"
+            ]
+        );
+    }
+
+    /// The two sections the owner ruled OUT on 2026-08-07 stay out.
+    ///
+    /// Absence from this const is the whole of the mechanism: it is what stops
+    /// them being converted by default AND what stops the section filter from
+    /// naming them, so a re-add is the only way back and has to be deliberate.
+    #[test]
+    fn the_two_ruled_out_air_sections_are_absent() {
+        for name in ["strategic_air", "naval_air"] {
+            assert!(
+                !COVERED_SECTIONS.iter().any(|(covered, _)| *covered == name),
+                "{name} was ruled out of the default on 2026-08-07 and is back in it"
+            );
+        }
+    }
+
+    /// [`MEASURED_GRAIN_DEPTHS`] must parse, and the base configuration's three
+    /// depths must still be the ones its published bands were measured with.
+    ///
+    /// `parse_grain_depths` refuses an override naming a section that is not
+    /// covered, so this also catches a misspelt member name -- which would
+    /// otherwise be accepted silently by nothing at all and leave that section
+    /// running at the default depth while the spec said otherwise.
+    #[test]
+    fn the_measured_depth_spec_parses_and_preserves_the_base_depths() {
+        let (default, overrides) = parse_grain_depths(MEASURED_GRAIN_DEPTHS)
+            .unwrap_or_else(|e| panic!("MEASURED_GRAIN_DEPTHS does not parse: {e}"));
+        assert_eq!(default, 3, "the default depth the base was measured at moved");
+        assert_eq!(overrides.get("supply"), Some(&2));
+        assert_eq!(overrides.get("divisions"), Some(&2));
+        for name in ["special_projects", "countries", "map", "states", "order_of_battle"] {
+            assert!(
+                !overrides.contains_key(name),
+                "{name} gained a depth override it was not measured with"
+            );
+        }
+        // Spot-checks on the tail, so a truncated or reflowed literal is caught:
+        // the two ends of the tranche list and the one section cut at depth 1
+        // for being 13k grains of 104 bytes.
+        assert_eq!(overrides.get("provinces"), Some(&1));
+        assert_eq!(overrides.get("_r2_selected_designer_identity_live"), Some(&1));
+    }
+
+    /// Every section this lane converts must be reachable by the filter under
+    /// the exact name the document spells it with, because that name is also
+    /// what `run` matches the document member by. A section named here but
+    /// spelled differently in the document is simply never converted, and the
+    /// only symptom is a coverage a few tenths lower than expected.
+    #[test]
+    fn every_covered_section_is_selectable_by_its_own_name() {
+        for (name, _) in COVERED_SECTIONS {
+            let selected = select_sections(Some(name))
+                .unwrap_or_else(|e| panic!("{name} is not selectable: {e}"));
+            assert_eq!(selected.len(), 1, "{name} selected {} sections", selected.len());
+            assert_eq!(selected[0].0, name);
+        }
+    }
+
+    /// The name both of these use as "not covered" is a MISSPELLING of a real
+    /// member -- `province` for `provinces` -- and not an invented word.
+    ///
+    /// The sentinel has to be something a conversion tranche can never turn
+    /// into a real section, or the test decays into a pass the day that section
+    /// is converted, which is exactly what happened to `provinces` here. A
+    /// misspelling stays wrong forever, and it is also the failure the check
+    /// exists for.
+    const NOT_A_SECTION: &str = "province";
+
     #[test]
     fn a_filter_naming_something_uncovered_is_refused() {
         // A typo that was accepted would silently measure a SMALLER
         // configuration than the command line asked for, and the band would be
         // filed against a configuration nobody ran.
-        assert!(select_sections(Some("countries,provinces")).is_err());
+        assert!(!COVERED_SECTIONS.iter().any(|(n, _)| *n == NOT_A_SECTION));
+        assert!(select_sections(Some(&format!("countries,{NOT_A_SECTION}"))).is_err());
         assert!(select_sections(Some("")).is_err());
         assert!(select_sections(Some(",")).is_err());
     }
@@ -1101,7 +1426,8 @@ mod tests {
     /// otherwise -- a band filed against a grain spec that was never used.
     #[test]
     fn a_grain_depth_override_for_an_uncovered_section_is_refused() {
-        assert!(parse_grain_depths("3,provinces=2").is_err());
+        assert!(!COVERED_SECTIONS.iter().any(|(n, _)| *n == NOT_A_SECTION));
+        assert!(parse_grain_depths(&format!("3,{NOT_A_SECTION}=2")).is_err());
         assert!(parse_grain_depths("3,order_of_battle=0").is_err());
         assert!(parse_grain_depths("0").is_err());
         let (default, overrides) = parse_grain_depths("3,supply=2,order_of_battle=4").unwrap();

@@ -18,6 +18,14 @@
 //! same depth lands on a 44-byte child in `divisions` and a 594-byte one in
 //! `map`.
 //!
+//! The spec to pass is `dq_v3_prototype::MEASURED_GRAIN_DEPTHS`, which carries
+//! the depth every section was censused to be cheapest at. It is a constant
+//! rather than a default because a band has to say which depths produced it,
+//! and a depth that the driver supplied silently would not appear in the
+//! command line the band is filed against. It is also inert for any section a
+//! run does not activate, so the same string drives every tranche
+//! configuration and no two of them can differ in a depth by accident.
+//!
 //! `FOLD_PROFILE=1` is required: the adapter-inclusive bound charges v3 the
 //! fold's own per-section `build_snapshot` spans, and without the profiler those
 //! spans are zero, which would silently turn the upper bound into the lower one.

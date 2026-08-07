@@ -165,6 +165,190 @@ fn keyed_array_refuses_an_order_or_an_identity_it_cannot_reproduce() {
     assert!(hour.assign_section(&value).is_err());
 }
 
+// ---------------------------------------------------------------------------
+// The ORDINAL-addressed array root
+// ---------------------------------------------------------------------------
+//
+// `Shape::Array` was written for completeness and, until lane EI's tranche 4,
+// nothing used it: `divisions` is a `KeyedArray` and every other converted
+// section is an `Object`. The census then found three array-spelled members --
+// `combats`, `ended_combats`, `events` -- with no member that is a unique,
+// already-ascending string identity on every hour, so they can only be
+// addressed by ordinal. These tests are what makes that shape's root behaviour
+// -- element prefixes written without a name, ordinals accepted at the root and
+// names refused, density across growth and shrinkage -- something the code says
+// rather than something the comments do.
+
+fn array_state(name: &str, depth: usize) -> SectionState {
+    SectionState::new(SectionSpec {
+        name: name.to_string(),
+        shape: Shape::Array,
+        grain_depth: depth,
+    })
+}
+
+#[test]
+fn an_array_rooted_section_projects_back_at_every_grain_depth() {
+    // Elements of mixed kind, an empty container among them, and a nested
+    // array: the root's children are written WITHOUT a member prefix while
+    // everything inside an object element keeps one, and `container_is_object`
+    // is the only thing that knows the difference at depth 0.
+    let json = r#"[{"hp":[1,2],"id":"a"},{"hp":[],"id":"b"},[],7,null,{"k":{"j":1}}]"#;
+    for depth in 1..=5 {
+        let mut state = array_state("combats", depth);
+        assign(&mut state, json);
+        assert_eq!(
+            String::from_utf8(state.project()).unwrap(),
+            json,
+            "grain depth {depth} did not project an array root back byte-identically"
+        );
+        assert_eq!(state.root_kind(), RootKind::Array);
+        assert_eq!(state.ordinal_density_error(), None, "grain depth {depth}");
+    }
+}
+
+#[test]
+fn an_empty_array_root_holds_no_grain_at_all() {
+    // `events` and `ended_combats` are `[]` on almost every hour. An empty
+    // container that stored a whole-section grain would put a value under a
+    // container root -- the one path set the projection cannot write back.
+    let mut state = array_state("events", 2);
+    assign(&mut state, "[]");
+    assert_eq!(String::from_utf8(state.project()).unwrap(), "[]");
+    assert_eq!(state.grain_count(), 0);
+    assert_eq!(state.root_kind(), RootKind::Array);
+}
+
+#[test]
+fn an_array_root_addressed_by_name_is_refused() {
+    // The root has no address reaching into it, so its addressing mode comes
+    // from the shape alone. Without that arm the state would accept
+    // `["x"]`-as-a-member and project `["x":...]`, which no parser accepts.
+    let mut state = array_state("combats", 1);
+    let mut hour = state.begin_hour().unwrap();
+    assert!(hour
+        .upsert(vec![Seg::Key("0".into())], &parse("1"))
+        .is_err());
+    assert!(hour.upsert(vec![Seg::Index(0)], &parse("1")).is_ok());
+    hour.commit();
+}
+
+#[test]
+fn an_array_root_that_grows_shrinks_and_mutates_in_place_replays() {
+    // The three transitions an ordinal root has to survive, and the one the
+    // census predicts will be expensive: an insertion at position 1 moves every
+    // element after it, so the delta is proportional to the TAIL and not to the
+    // change. That is priced, not avoided -- `combats` is 8.8 kB -- and pricing
+    // it honestly means the shift has to actually happen here.
+    let hours = [
+        r#"[{"i":1},{"i":2},{"i":3}]"#,
+        // Insert in the middle: ordinals 1 and 2 are rewritten and 3 is added.
+        r#"[{"i":1},{"i":9},{"i":2},{"i":3}]"#,
+        // Mutate the last element only: exactly one grain moves.
+        r#"[{"i":1},{"i":9},{"i":2},{"i":4}]"#,
+        // Shrink from the front: everything shifts down and the tail ordinal
+        // is removed. A removal that stranded a later ordinal would leave the
+        // state projecting elements at positions they are not addressed by,
+        // and the replica's density check would refuse the delta.
+        r#"[{"i":9},{"i":2},{"i":4}]"#,
+        r#"[]"#,
+        r#"[{"i":1}]"#,
+    ];
+    let deltas = replay(&hours, || array_state("combats", 1));
+
+    // Hour 2: three records for a one-element insertion. The number is the
+    // point -- it is what a keyed grain would have made one, and it is why the
+    // census's ordinal density is reported as an artefact of the addressing.
+    assert_eq!(deltas[1].mutations, 3);
+    // Hour 3: a change confined to the last element moves one grain and no
+    // other, which is what says the ordinal addressing is not re-emitting the
+    // whole array on every hour either.
+    assert_eq!(deltas[2].mutations, 1);
+    // Hour 5: the array empties. Every ordinal is removed and the root stays an
+    // array, so no root record is emitted.
+    let ops: Vec<u8> = records(&deltas[4].bytes)
+        .iter()
+        .map(|record| record[0])
+        .collect();
+    assert_eq!(ops, vec![OP_REMOVE, OP_REMOVE, OP_REMOVE]);
+}
+
+#[test]
+fn an_array_rooted_section_handed_a_non_array_becomes_a_scalar_root_and_comes_back() {
+    // `combats` and `naval_combats` each flip kind once per capture. A section
+    // is not its shape: the hour it is not an array it holds the whole member
+    // at the empty path, and the root-kind record is what carries the
+    // difference to a replica.
+    let mut producer = array_state("combats", 1);
+    let mut replica = array_state("combats", 1);
+    for json in [r#"[{"i":1},{"i":2}]"#, "null", r#"[{"i":3}]"#, r#"{"a":1}"#, "[]"] {
+        let delta = assign(&mut producer, json);
+        replica.apply_delta(&delta.bytes).expect("replica applies");
+        assert_eq!(
+            String::from_utf8(producer.project()).unwrap(),
+            json,
+            "producer at {json}"
+        );
+        assert_eq!(replica.project(), producer.project(), "replica at {json}");
+        assert_eq!(replica.state_root(), delta.state_root, "root at {json}");
+    }
+}
+
+#[test]
+fn a_scalar_null_root_holds_exactly_one_grain_and_not_nothing() {
+    // `project_into` renders a scalar root with NO grain as `null`, which is the
+    // right answer for a state nothing ever assigned and a trap for everything
+    // downstream of it: a section that is `null` on every hour -- nine of the
+    // document's members are never containers and five are `null` throughout --
+    // projects the same four bytes whether it holds the grain or lost it. Every
+    // byte-comparing check therefore passes over the loss, so the grain SET has
+    // to be asserted directly and here.
+    for shape in [
+        Shape::Object,
+        Shape::Array,
+        Shape::KeyedArray {
+            key_member: "div_uid".to_string(),
+        },
+    ] {
+        let mut state = SectionState::new(SectionSpec {
+            name: "save_version".to_string(),
+            shape: shape.clone(),
+            grain_depth: 1,
+        });
+        assign(&mut state, "null");
+        assert_eq!(state.root_kind(), RootKind::Scalar, "{shape:?}");
+        assert_eq!(
+            state.grain_count(),
+            1,
+            "a scalar-null root that holds nothing projects `null` all the same ({shape:?})"
+        );
+        assert!(state.grain(&[]).is_some(), "{shape:?}");
+        assert_eq!(String::from_utf8(state.project()).unwrap(), "null");
+    }
+}
+
+#[test]
+fn a_state_that_never_assigned_its_scalar_is_not_the_state_that_assigned_null() {
+    // The two states `project` cannot distinguish must at least differ in their
+    // ROOT, or a dropped empty-path upsert is invisible to every check a driver
+    // can make.
+    let mut assigned = object_state("save_version", 1);
+    assign(&mut assigned, "null");
+    let mut never = object_state("save_version", 1);
+    // Same root KIND, no grain: reached by moving the kind and assigning nothing.
+    let mut hour = never.begin_hour().unwrap();
+    hour.set_root_kind(RootKind::Scalar).unwrap();
+    hour.commit();
+
+    assert_eq!(assigned.project(), never.project(), "both project `null`");
+    assert_eq!(assigned.root_kind(), never.root_kind());
+    assert_ne!(
+        assigned.state_root(),
+        never.state_root(),
+        "a lost scalar grain must move the state root even though it cannot move the bytes"
+    );
+}
+
 #[test]
 fn a_section_that_becomes_null_and_comes_back_projects_both_ways() {
     // `divisions` and `special_projects` are spelled `null` on an hour their
