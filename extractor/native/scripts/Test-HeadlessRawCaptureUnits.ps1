@@ -108,6 +108,7 @@ $underTest = @(
     'ConvertTo-Hoi4AffinityUInt64',
     'Format-Hoi4AffinityMask',
     'Get-Hoi4CpuAffinityPlan',
+    'Set-Hoi4ProcessAffinity',
     'New-RecorderArgumentPlan'
 )
 $missing = @($underTest | Where-Object { -not $harnessFunctions.ContainsKey($_) })
@@ -812,6 +813,35 @@ Assert-Refused `
     -Action { Get-Hoi4CpuAffinityPlan -CoreCount 0 -OneThreadPerCore $false } `
     -MessagePattern 'needs at least 2 physical cores' `
     -Message 'a zero-core plan was accepted'
+
+# -PriorMaskOut is declared nullable and the harness calls it with a literal
+# $null in two places (the recorder pin and the game-mask restore). A [ref]
+# type on that parameter makes those calls throw AT BINDING -- t38 lost its
+# graded window to exactly that, mid-capture, with the recorder already
+# launched. The dead PID keeps every case on this side of a real process: the
+# function must get PAST binding and its own [ref] admission, and then fail on
+# the process lookup, never on the parameter.
+$script:deadPid = 0x7ffffffc
+while ($null -ne (Get-Process -Id $script:deadPid -ErrorAction SilentlyContinue)) {
+    $script:deadPid -= 4
+}
+Assert-Refused `
+    -Action { Set-Hoi4ProcessAffinity -ProcessId $script:deadPid -Mask 0xff `
+        -Label 'unit' -ExpectedCreationFiletimeUtc $null -PriorMaskOut $null } `
+    -MessagePattern 'Cannot find a process' `
+    -Message 'a literal $null PriorMaskOut did not survive parameter binding (the t38 graded-window kill)'
+$script:priorCell = $null
+Assert-Refused `
+    -Action { Set-Hoi4ProcessAffinity -ProcessId $script:deadPid -Mask 0xff `
+        -Label 'unit' -ExpectedCreationFiletimeUtc $null `
+        -PriorMaskOut ([ref]$script:priorCell) } `
+    -MessagePattern 'Cannot find a process' `
+    -Message 'a real [ref] cell no longer binds to PriorMaskOut'
+Assert-Refused `
+    -Action { Set-Hoi4ProcessAffinity -ProcessId $script:deadPid -Mask 0xff `
+        -Label 'unit' -ExpectedCreationFiletimeUtc $null -PriorMaskOut 42 } `
+    -MessagePattern 'must be a \[ref\] cell' `
+    -Message 'a non-ref PriorMaskOut was accepted; the prior mask would be written into a copy nobody reads'
 
 # Group-blind API, fail closed. Process.ProcessorAffinity carries no processor
 # group and targets the process's PRIMARY group, so a plan whose cores live in

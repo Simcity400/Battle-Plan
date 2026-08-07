@@ -1664,9 +1664,17 @@ function Set-Hoi4ProcessAffinity {
         # then throw during verification, and a caller that learns the prior
         # mask only from a successful return has no way to put it back.
         # (Codex review 019fdc22-13b0-7c93-a8fc-f71ae498a852, finding 8.)
-        [AllowNull()][ref]$PriorMaskOut
+        #
+        # Typed [object], not [ref]: PowerShell 5.1 refuses to bind a literal
+        # $null to a [ref] parameter no matter what [AllowNull()] says, and the
+        # callers that do not want the prior mask pass exactly that. The [ref]
+        # requirement is enforced below instead, where $null is legal.
+        [AllowNull()][object]$PriorMaskOut
     )
 
+    if ($null -ne $PriorMaskOut -and $PriorMaskOut -isnot [ref]) {
+        throw "PriorMaskOut must be a [ref] cell or `$null; got [$($PriorMaskOut.GetType().FullName)]."
+    }
     $process = Get-Process -Id $ProcessId -ErrorAction Stop
     if ($null -ne $ExpectedCreationFiletimeUtc) {
         $observed = [uint64]($process.StartTime.ToUniversalTime().ToFileTimeUtc())
