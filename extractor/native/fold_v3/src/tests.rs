@@ -444,7 +444,7 @@ fn a_respelling_within_one_hour_carries_the_new_spelling_into_the_delta() {
         let other = parse(r#"{"x":2}"#);
         let mut hour = producer.begin_hour().unwrap();
         hour.upsert(vec![Seg::Key("a".into())], &plain).unwrap();
-        hour.upsert(vec![Seg::Key(escaped_key.clone())], &other)
+        hour.upsert(vec![Seg::Key(escaped_key.as_str().into())], &other)
             .unwrap();
         hour.commit()
     };
@@ -630,7 +630,7 @@ fn an_erase_then_a_respelled_reinstall_carries_the_new_spelling() {
     let delta = {
         let mut hour = producer.begin_hour().unwrap();
         hour.remove(&[Seg::Key("a".into())]).unwrap();
-        hour.upsert(vec![Seg::Key(escaped_key.clone())], &other)
+        hour.upsert(vec![Seg::Key(escaped_key.as_str().into())], &other)
             .unwrap();
         hour.commit()
     };
@@ -734,11 +734,11 @@ fn a_member_name_the_projection_could_not_quote_is_refused() {
     // A bare quote inside a member name body is written between quotes verbatim,
     // so it would emit JSON no parser accepts.
     assert!(hour
-        .upsert(vec![Seg::Key(QUOTE.to_string())], &value)
+        .upsert(vec![Seg::Key(QUOTE.into())], &value)
         .is_err());
     // A lone trailing backslash is not a valid escape either.
     assert!(hour
-        .upsert(vec![Seg::Key(ESCAPE.to_string())], &value)
+        .upsert(vec![Seg::Key(ESCAPE.into())], &value)
         .is_err());
     hour.commit();
 }
@@ -1382,7 +1382,7 @@ fn the_cached_contribution_tracks_the_grain_it_is_stored_with() {
             let escaped = escaped.clone();
             let value = parse("2");
             move |hour| {
-                hour.upsert(vec![Seg::Key(escaped.clone())], &value).unwrap();
+                hour.upsert(vec![Seg::Key(escaped.as_str().into())], &value).unwrap();
             }
         }),
         // Gone: the retraction has to cancel the contribution exactly.
@@ -1436,5 +1436,254 @@ fn a_path_check_skipped_for_a_standing_address_is_not_skipped_for_a_new_one() {
     assert_eq!(
         String::from_utf8(state.project()).unwrap(),
         r#"{"a":{"b":2}}"#
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Interning
+// ---------------------------------------------------------------------------
+
+/// Every member-name body these tests and the corpus can present, chosen so the
+/// comparison head is exercised where it decides and where it must not.
+///
+/// The head is the first EIGHT bytes of the ordering text, so the interesting
+/// pairs are the ones that agree on all eight and differ later, the ones where
+/// one name is a prefix of the other on either side of that boundary, and the
+/// escaped names -- for which the head is not consulted at all, because their
+/// ordering text is not their body.
+fn ordering_fixture() -> Vec<String> {
+    let escape = ESCAPE;
+    vec![
+        String::new(),
+        "a".to_string(),
+        "ab".to_string(),
+        "b".to_string(),
+        // Eight bytes exactly, and its own extensions -- the boundary the head
+        // is cut at.
+        "12345678".to_string(),
+        "123456789".to_string(),
+        "12345678a".to_string(),
+        "1234567".to_string(),
+        // A shared nine-byte prefix: the head cannot decide either of these and
+        // has to fall through to the text.
+        "prefix_aa_1".to_string(),
+        "prefix_aa_2".to_string(),
+        "prefix_aa".to_string(),
+        // The corpus's real shapes: division uids and country tags, whose order
+        // is a STRING order and not a numeric one.
+        "10:1".to_string(),
+        "2:1".to_string(),
+        "100:12".to_string(),
+        "GER".to_string(),
+        "SOV".to_string(),
+        // Escaped, and decoding to something that sorts nowhere near its
+        // spelling: `a` is `a`, whose head would start with a backslash if
+        // the head were taken from the body.
+        format!("{escape}u0061"),
+        format!("{escape}u0062"),
+        format!("{escape}n"),
+        format!("{escape}{escape}"),
+        format!("a{escape}{QUOTE}b"),
+        // Escaped and UNDECODABLE: a lone high surrogate. `key_cmp` falls back
+        // to comparing raw bodies whenever either side is one of these, and so
+        // must the interned comparison.
+        format!("{escape}ud800"),
+        format!("{escape}ud801"),
+        // Non-ASCII, so the head carries UTF-8 continuation bytes.
+        "caf\u{e9}".to_string(),
+        "caf\u{e9}_long_enough_to_pass_the_head".to_string(),
+        "\u{4e2d}\u{6587}".to_string(),
+    ]
+}
+
+/// The interned comparison IS `key_cmp`, on every pair of the fixture.
+///
+/// This is the whole safety argument for the comparison head and for the
+/// pointer-equality fast path. A head computed from the body instead of the
+/// ordering text, a head compared as little-endian, a head trusted between an
+/// escaped name and a plain one, or a fast path that returned `Equal` for two
+/// different entries would all show up here as a pair that orders differently
+/// from the function the projection and the delta encoding are defined against.
+#[test]
+fn the_interned_order_is_key_cmp_on_every_pair() {
+    let names = ordering_fixture();
+    for left in &names {
+        for right in &names {
+            let expected = snapshot::canon_value::key_cmp(left, right);
+            let interned = Seg::key(left).cmp(&Seg::key(right));
+            assert_eq!(
+                interned, expected,
+                "{left:?} vs {right:?}: interned said {interned:?}, key_cmp said {expected:?}"
+            );
+        }
+    }
+}
+
+/// The fixture minus the bodies that do not decode.
+///
+/// `key_cmp` is not TRANSITIVE across an undecodable name, and never was: with
+/// `U` a lone surrogate escape, `D` an escape decoding to `a` and `P` the plain
+/// `a`, it reports `D == P`, `D < U` (both bodies decodable-or-not, compared as
+/// text) and `P > U` (compared as raw bodies, where `a` follows a backslash).
+/// That is a property of the production function this crate is defined against,
+/// it is identical before and after interning -- the pairwise test above holds
+/// on exactly those pairs -- and it is unreachable in a state, because
+/// `check_path` refuses an undecodable member name outright. Sorting is
+/// therefore asserted on the population that can actually reach a path set.
+fn sortable_ordering_fixture() -> Vec<String> {
+    ordering_fixture()
+        .into_iter()
+        .filter(|body| snapshot::canon_value::is_valid_object_key(body))
+        .collect()
+}
+
+/// Sorting a path set through the interned order gives the same sequence
+/// `key_cmp` does -- which is the order `project` writes and the order a delta's
+/// records must ascend in.
+#[test]
+fn sorting_paths_agrees_with_the_uninterned_order() {
+    let names = sortable_ordering_fixture();
+    assert!(names.len() > 20, "the sortable fixture lost its coverage");
+    let mut interned: Vec<Seg> = names.iter().map(|name| Seg::key(name)).collect();
+    interned.sort();
+    let mut expected = names.clone();
+    expected.sort_by(|left, right| snapshot::canon_value::key_cmp(left, right));
+    let interned: Vec<String> = interned
+        .iter()
+        .map(|seg| match seg {
+            Seg::Key(name) => name.body().to_string(),
+            Seg::Index(_) => unreachable!("the fixture holds no ordinals"),
+        })
+        .collect();
+    assert_eq!(interned, expected);
+}
+
+/// One body has exactly one entry, which is what makes pointer equality an
+/// exact answer to "same spelling" rather than an optimistic one.
+#[test]
+fn one_body_interns_to_one_entry() {
+    for name in ordering_fixture() {
+        let first = Seg::key(&name);
+        let second = Seg::key(&name.clone());
+        assert!(
+            same_spelling(&[first], &[second]),
+            "{name:?} interned to two entries"
+        );
+        assert_eq!(first.cmp(&second), std::cmp::Ordering::Equal);
+    }
+    // And two DIFFERENT bodies never share one, however close their heads.
+    assert!(!same_spelling(
+        &[Seg::key("prefix_aa_1")],
+        &[Seg::key("prefix_aa_2")]
+    ));
+}
+
+/// A section that has already taken the one-descent install path must still
+/// rekey when an escaped respelling finally arrives.
+///
+/// `install` routes to a path that gives the incoming address to
+/// `BTreeMap::entry` and therefore cannot replace a stored key, and it is
+/// allowed to do that only while no escaped name has been seen. If that guard
+/// were wrong -- read from the stored side only, or reset between hours -- the
+/// projection would keep writing the OLD spelling while every digest agreed,
+/// which is precisely the failure the guard exists to prevent.
+#[test]
+fn a_section_that_took_the_fast_path_still_rekeys_later() {
+    let escaped_key = format!("{ESCAPE}u0061");
+    let mut producer = object_state("countries", 1);
+    let mut replica = object_state("countries", 1);
+    // Several hours of plain, unrespellable addresses first, so the fast path
+    // is what installed the grain that is about to be respelled.
+    for json in [r#"{"a":1}"#, r#"{"a":2}"#, r#"{"a":3,"b":1}"#] {
+        let delta = assign(&mut producer, json);
+        replica.apply_delta(&delta.bytes).unwrap();
+        assert_eq!(replica.project(), producer.project());
+    }
+    let delta = {
+        let value = parse("4");
+        let mut hour = producer.begin_hour().unwrap();
+        hour.upsert(vec![Seg::Key(escaped_key.as_str().into())], &value)
+            .unwrap();
+        hour.commit()
+    };
+    replica.apply_delta(&delta.bytes).expect("replica applies");
+    assert_eq!(
+        String::from_utf8(producer.project()).unwrap(),
+        format!("{{{QUOTE}{escaped_key}{QUOTE}:4,{QUOTE}b{QUOTE}:1}}"),
+        "the stored spelling was not replaced"
+    );
+    assert_eq!(replica.project(), producer.project());
+    assert_eq!(replica.state_root(), delta.state_root);
+    assert_eq!(producer.state_root(), producer.recomputed_state_root());
+    assert_eq!(producer.grain_count(), 2, "one address, not two");
+}
+
+/// An hour that removes one address and rewrites another emits its removal
+/// before its upsert, and every record of each phase ascends.
+///
+/// The commit walks its baseline ONCE and builds the two phases into two
+/// buffers, where it used to walk it twice. If the buffers were concatenated in
+/// the wrong order, or an upsert leaked into the removal buffer, the strict
+/// decoder would reject the delta -- so this asserts the decoder accepted it AND
+/// that the bytes begin with the removal.
+#[test]
+fn one_hour_emits_removals_before_upserts_in_one_pass() {
+    let mut producer = object_state("countries", 1);
+    let mut replica = object_state("countries", 1);
+    let first = assign(&mut producer, r#"{"a":1,"b":2,"c":3}"#);
+    replica.apply_delta(&first.bytes).unwrap();
+
+    // `b` goes, `a` changes, `d` arrives: all three phases' worth of work in
+    // one hour, presented in an order that is not the emitted one.
+    let delta = {
+        let mut hour = producer.begin_hour().unwrap();
+        hour.upsert(vec![Seg::Key("d".into())], &parse("4")).unwrap();
+        hour.upsert(vec![Seg::Key("a".into())], &parse("9")).unwrap();
+        hour.remove(&[Seg::Key("b".into())]).unwrap();
+        hour.commit()
+    };
+    assert_eq!(delta.bytes.first(), Some(&OP_REMOVE), "removals come first");
+    assert_eq!(delta.mutations, 3);
+    replica.apply_delta(&delta.bytes).expect("replica applies");
+    assert_eq!(replica.state_root(), delta.state_root);
+    assert_eq!(replica.project(), producer.project());
+    assert_eq!(
+        String::from_utf8(producer.project()).unwrap(),
+        r#"{"a":9,"c":3,"d":4}"#
+    );
+}
+
+/// The interner accounts for what it holds, so the memory a path no longer
+/// spends on its own copy of a name is reported where it went.
+#[test]
+fn the_interner_accounts_for_the_names_it_holds() {
+    // A body no other test can have interned.
+    let name = "lane_fb_accounting_probe_0123456789";
+    let before = intern::retained_bytes();
+    let names_before = intern::interned_names();
+    let _ = Seg::key(name);
+    assert_eq!(intern::interned_names(), names_before + 1);
+    let after = intern::retained_bytes();
+    assert!(
+        after >= before + name.len() as u64,
+        "interning {name:?} added {} bytes",
+        after - before
+    );
+    // Interning it again is free: one body, one entry.
+    let _ = Seg::key(name);
+    assert_eq!(intern::interned_names(), names_before + 1);
+    assert_eq!(intern::retained_bytes(), after);
+}
+
+/// A path costs its own segment array and nothing per name, because the names
+/// live in the interner.
+#[test]
+fn a_paths_retained_bytes_are_its_segments() {
+    let mut state = object_state("countries", 1);
+    assign(&mut state, r#"{"a_very_long_member_name_indeed":1,"b":2}"#);
+    assert_eq!(
+        state.retained_path_bytes(),
+        2 * std::mem::size_of::<Seg>() as u64,
+        "a name's bytes must not be charged to every path that mentions it"
     );
 }

@@ -274,6 +274,11 @@ struct SectionReport {
     grains_last: u64,
     retained_bytes_last: u64,
     retained_path_bytes_last: u64,
+    /// The section's cross-hour scratch buffers, at capacity. A state that keeps
+    /// its journal and its commit buffer between hours -- which is deliberate,
+    /// and is what keeps the allocator off the mutation path -- is holding that
+    /// memory whether or not the buffers are empty at the moment they are read.
+    retained_scratch_bytes_last: u64,
     hours_present: u64,
     /// Hours folded into the lane totals: every hour but the section's first.
     hours_measured: u64,
@@ -907,6 +912,8 @@ pub fn run(
                 run.report.grains_last = run.state.grain_count() as u64;
                 run.report.retained_bytes_last = run.state.retained_grain_bytes();
                 run.report.retained_path_bytes_last = run.state.retained_path_bytes();
+                run.report.retained_scratch_bytes_last =
+                    run.state.retained_scratch_bytes() + run.replica.retained_scratch_bytes();
                 run.previous = Some(section.clone());
                 continue;
             }
@@ -932,6 +939,8 @@ pub fn run(
             run.report.grains_last = run.state.grain_count() as u64;
             run.report.retained_bytes_last = run.state.retained_grain_bytes();
             run.report.retained_path_bytes_last = run.state.retained_path_bytes();
+                run.report.retained_scratch_bytes_last =
+                    run.state.retained_scratch_bytes() + run.replica.retained_scratch_bytes();
             run.previous = Some(section.clone());
         }
     }
@@ -962,6 +971,9 @@ pub fn run(
     let mut v2_patch_total = 0u64;
     let mut v3_delta_total = 0u64;
     let mut resident_one = 0u64;
+    // The cross-hour scratch of BOTH states, which is why it is accumulated
+    // apart from resident_one and added once rather than doubled.
+    let mut resident_scratch_both = 0u64;
     let mut absent_at_coverage_hour: Vec<String> = Vec::new();
     for run in &runs {
         let lane = run.report.lane;
@@ -991,6 +1003,7 @@ pub fn run(
         resident_one += run.report.retained_bytes_last
             + run.report.retained_path_bytes_last
             + run.report.grains_last * PER_GRAIN_OVERHEAD;
+        resident_scratch_both += run.report.retained_scratch_bytes_last;
         let v2_total =
             lane.build + lane.v2_serialize + lane.v2_parse + lane.v2_sha + lane.v2_diff_encode;
         rows.push(format!(
@@ -1093,7 +1106,25 @@ pub fn run(
     let (peak_private, peak_ws) = peak
         .map(|p| (p.peak_private_bytes, p.peak_working_set_bytes))
         .unwrap_or((0, 0));
-    let two_states = 2 * resident_one;
+    // Member names moved OUT of the paths and into one shared interner, so
+    // `retained_path_bytes` is now the paths' own segment arrays and nothing
+    // else. The names have to be added back or the memory threshold would be
+    // answered with a number that got smaller because the accounting moved.
+    //
+    // Added ONCE, not doubled: the producer and the replica address their
+    // grains with the same interned names, so a second resident state does not
+    // bring a second vocabulary. It is also published on its own line, because
+    // "two states" scaling it would be the wrong model for it.
+    //
+    // `resident_scratch_both` is added once for the same reason and a different
+    // one: it is already the sum over BOTH states. A section keeps its hour
+    // journal and its commit buffer across hours on purpose -- that is what
+    // keeps the allocator off the mutation path -- so it holds their CAPACITY
+    // whether or not they are empty when the report reads them, and an hour that
+    // wrote a multi-megabyte upsert phase leaves that behind it.
+    let interner_bytes = fold_v3::intern::retained_bytes();
+    let interned_names = fold_v3::intern::interned_names();
+    let two_states = 2 * resident_one + resident_scratch_both + interner_bytes;
     let two_states_full = (two_states as f64 / coverage) as u64;
 
     let divergence_rows: Vec<String> = divergences.iter().map(|row| json_string(row)).collect();
@@ -1181,7 +1212,10 @@ pub fn run(
          \"projected_full_conversion_s_per_hour\":{{\"lower\":{projected_lower:.6},\
          \"upper\":{projected_upper:.6},\"threshold\":0.20}},\
          \"two_resident_states_bytes\":{{\"covered\":{two_states},\
-         \"projected_full\":{two_states_full},\"threshold\":1073741824}},\
+         \"projected_full\":{two_states_full},\"threshold\":1073741824,\
+         \"interned_name_bytes\":{interner_bytes},\
+         \"interned_names\":{interned_names},\
+         \"cross_hour_scratch_bytes_both_states\":{resident_scratch_both}}},\
          \"peak_private_bytes\":{peak_private},\"peak_working_set_bytes\":{peak_ws},\
          \"v2_patch_bytes_per_hour\":{:.1},\"v3_delta_bytes_per_hour\":{:.1},\
          \"oracle_section_hours_equal\":{oracle_section_hours},\

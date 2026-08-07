@@ -62,8 +62,11 @@
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 
-use snapshot::canon_value::{is_valid_object_key, key_cmp, CanonValue};
+use snapshot::canon_value::{key_cmp, CanonValue};
 use snapshot::sha256::Sha256;
+
+pub mod intern;
+pub use intern::KeyRef;
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -77,20 +80,34 @@ use snapshot::sha256::Sha256;
 /// [`Ord`] below says, and it is what a canonical object means by "no duplicate
 /// members" -- so installing `a` where `a` stands must also replace the
 /// stored spelling, which [`SectionState::install`] does explicitly.
-#[derive(Debug, Clone)]
+///
+/// The body is held as an INTERNED [`KeyRef`] rather than a `String`, which is
+/// what makes this type `Copy`. Three consequences, all of them on the mutation
+/// path: cloning an address is one allocation instead of one per segment;
+/// comparing two segments is a pointer test or a `str` compare instead of
+/// `key_cmp`'s backslash scan of both bodies; and `check_path` reads a cached
+/// `is_valid_object_key` instead of rescanning and re-decoding the name. See
+/// [`intern`] for the case-by-case argument that the ORDER is unchanged.
+#[derive(Debug, Clone, Copy)]
 pub enum Seg {
-    Key(String),
+    Key(KeyRef),
     Index(u32),
 }
 
 impl Seg {
+    /// A `Key` segment from a member-name body, interning it.
+    pub fn key(body: &str) -> Self {
+        Seg::Key(KeyRef::intern(body))
+    }
     fn is_key(&self) -> bool {
         matches!(self, Seg::Key(_))
     }
     /// Same address, different source spelling.
     fn respells(&self, other: &Self) -> bool {
         match (self, other) {
-            (Seg::Key(left), Seg::Key(right)) => left != right && key_cmp(left, right).is_eq(),
+            (Seg::Key(left), Seg::Key(right)) => {
+                !left.same_spelling(right) && left.cmp_key(right).is_eq()
+            }
             _ => false,
         }
     }
@@ -117,8 +134,9 @@ impl Ord for Seg {
             // Member names order by their DECODED text -- the order
             // `serde_json` writes a `BTreeMap` in, and the order `CanonValue`
             // requires of a canonical object. Ordering by the escaped spelling
-            // instead would put `a` after `b`.
-            (Seg::Key(left), Seg::Key(right)) => key_cmp(left, right),
+            // instead would put `a` after `b`. `cmp_key` is `key_cmp` with
+            // the decoding already done; the case analysis is in [`intern`].
+            (Seg::Key(left), Seg::Key(right)) => left.cmp_key(right),
             (Seg::Index(left), Seg::Index(right)) => left.cmp(right),
             // Never compared in a well-formed document: two siblings of one
             // container are both names or both ordinals. Still a total order.
@@ -159,7 +177,7 @@ fn same_address_other_spelling(left: &[Seg], right: &[Seg]) -> bool {
 pub fn same_spelling(left: &[Seg], right: &[Seg]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(a, b)| match (a, b) {
-            (Seg::Key(left), Seg::Key(right)) => left == right,
+            (Seg::Key(left), Seg::Key(right)) => left.same_spelling(right),
             (Seg::Index(left), Seg::Index(right)) => left == right,
             _ => false,
         })
@@ -169,11 +187,11 @@ fn encode_path_into(path: &[Seg], out: &mut Vec<u8>) {
     write_varint(out, path.len() as u64);
     for seg in path {
         match seg {
-            Seg::Key(name) => {
-                out.push(SEG_KEY);
-                write_varint(out, name.len() as u64);
-                out.extend_from_slice(name.as_bytes());
-            }
+            // `SEG_KEY || varint(len) || body`, frozen on the interned entry
+            // when the name was first seen. Every mutation encodes its address
+            // for the state-root accumulator, so this is a per-mutation loop
+            // turned into a per-mutation memcpy.
+            Seg::Key(name) => out.extend_from_slice(name.encoded()),
             Seg::Index(index) => {
                 out.push(SEG_INDEX);
                 write_varint(out, u64::from(*index));
@@ -182,7 +200,7 @@ fn encode_path_into(path: &[Seg], out: &mut Vec<u8>) {
     }
 }
 
-const SEG_KEY: u8 = 0;
+pub(crate) const SEG_KEY: u8 = 0;
 const SEG_INDEX: u8 = 1;
 
 // ---------------------------------------------------------------------------
@@ -546,6 +564,27 @@ pub struct SectionState {
     /// Scratch for [`Accumulator::contribution`]. Owned by the section so the
     /// hot path reuses one buffer instead of allocating one per mutation.
     scratch: Vec<u8>,
+    /// Scratch for the upsert half of [`HourTxn::commit`], kept across hours for
+    /// the same reason `hour_touched` is.
+    commit_upserts: Vec<u8>,
+    /// Has this section ever seen an ESCAPED member name, in a stored address or
+    /// in an incoming one?
+    ///
+    /// This is what licenses `install`'s one-descent path. A REKEY -- an address
+    /// arriving under a different escaped spelling of the name it already stands
+    /// under -- needs the incoming spelling in hand to replace the stored key,
+    /// and the one-descent path has given the incoming address away to
+    /// `BTreeMap::entry`. Two bodies can only denote one address while spelling
+    /// it differently if at least one of them carries an escape, so a section in
+    /// which no escaped name has ever appeared -- on EITHER side, because the
+    /// stored side could be the escaped one -- cannot rekey. Once one has, the
+    /// section falls back to the two-descent path permanently and behaves
+    /// exactly as it did before.
+    ///
+    /// It is set from the INCOMING path on every mutation, and a stored escaped
+    /// name can only have got there through such a mutation, so the flag is
+    /// already true whenever either side could be escaped.
+    may_respell: bool,
     stats: MutationStats,
     /// Set when a transaction with pending changes was dropped instead of
     /// committed, or when a revision counter overflowed. A poisoned section
@@ -568,6 +607,8 @@ impl SectionState {
             hour_root_baseline: None,
             revision: 0,
             scratch: Vec::with_capacity(128),
+            commit_upserts: Vec::new(),
+            may_respell: false,
             stats: MutationStats::default(),
             poison: None,
         }
@@ -637,18 +678,37 @@ impl SectionState {
     }
 
     /// Bytes of grain ADDRESSES retained -- the paths' own heap.
+    ///
+    /// A `Seg` is now `Copy` and lives INSIDE the path's own allocation, so a
+    /// path costs its `Vec` of segments and nothing per name. The names
+    /// themselves moved to the interner, which is shared by every path in every
+    /// section and by both states, and is reported once by
+    /// [`intern::retained_bytes`] rather than counted here per section -- adding
+    /// it in would charge one copy of the vocabulary to each of the 39 sections.
     pub fn retained_path_bytes(&self) -> u64 {
         self.grains
             .keys()
-            .map(|path| {
-                path.iter()
-                    .map(|seg| match seg {
-                        Seg::Key(name) => name.len() as u64 + 24,
-                        Seg::Index(_) => 24,
-                    })
-                    .sum::<u64>()
-            })
+            .map(|path| (path.len() * std::mem::size_of::<Seg>()) as u64)
             .sum()
+    }
+
+    /// Bytes the section retains BESIDE its grains and their addresses: the
+    /// three buffers it deliberately keeps across hours so the allocator stays
+    /// off the mutation path.
+    ///
+    /// Capacity, not length. Every one of these is empty between hours and that
+    /// is exactly why it has to be measured as capacity: an hour that wrote a
+    /// ten-megabyte upsert phase leaves a ten-megabyte buffer behind it, and a
+    /// report that read `len()` would call it nothing. `commit_upserts` and
+    /// `scratch` are the ones this crate's one-pass commit and per-mutation
+    /// accumulator introduced; `hour_touched` was retained before either and was
+    /// not being counted either, so it is counted here rather than left out on
+    /// the grounds that it is somebody else's omission.
+    pub fn retained_scratch_bytes(&self) -> u64 {
+        (self.commit_upserts.capacity()
+            + self.scratch.capacity()
+            + self.hour_touched.capacity() * std::mem::size_of::<(Path, Option<Before>)>())
+            as u64
     }
 
     /// A commitment to the section's CONTENT: its root kind and the set of
@@ -790,7 +850,11 @@ impl SectionState {
         }
         for seg in path {
             if let Seg::Key(name) = seg {
-                if !is_valid_object_key(name) {
+                // Frozen on the interned entry, not rescanned and re-decoded
+                // here. Every newly addressed grain used to pay a scan and a
+                // full decode per segment for an answer that depends only on
+                // the name.
+                if !name.valid_member_name() {
                     return Err(FoldV3Error::new(format!(
                         "path segment {name:?} is not a valid JSON member name body"
                     )));
@@ -872,7 +936,149 @@ impl SectionState {
     }
 
     fn install(&mut self, path: Path, bytes: Vec<u8>) -> Result<bool, FoldV3Error> {
+        // A rekey needs the INCOMING spelling after the state has been probed,
+        // and the one-descent path below hands that spelling to
+        // `BTreeMap::entry`. See `may_respell`: only an escaped name can make
+        // two spellings one address, and the flag is sticky, so a section that
+        // has never seen one takes the fast path and one that has never leaves
+        // the original.
+        if !self.may_respell {
+            if path
+                .iter()
+                .any(|seg| matches!(seg, Seg::Key(name) if !name.plain()))
+            {
+                self.may_respell = true;
+            } else {
+                return self.install_unrespellable(path, bytes);
+            }
+        }
+        self.install_general(path, bytes)
+    }
+
+    /// [`Self::install`] where no address in this section can have two
+    /// spellings, which is every address in every capture measured.
+    ///
+    /// The whole point is the ONE map descent. `BTreeMap::entry` hands back the
+    /// stored key and a mutable value together, so an address that already
+    /// stands is read, compared and overwritten in a single traversal, where
+    /// `get_key_value` followed by `insert` walked the tree twice. On the
+    /// corpus's largest section a descent is ~28 key comparisons over a
+    /// 105,000-entry map, and the per-mutation constant is dominated by those,
+    /// so the second traversal was most of a microsecond for a position already
+    /// known.
+    ///
+    /// A NEW address still costs two: `check_path` has to read the map and
+    /// cannot do so while the entry holds it, so the entry is dropped and the
+    /// general path finishes the job -- but it is told the address is absent, so
+    /// it does not re-descend to learn what this descent already found. That is
+    /// the same two the old code paid, so nothing regresses.
+    fn install_unrespellable(&mut self, path: Path, bytes: Vec<u8>) -> Result<bool, FoldV3Error> {
+        use std::collections::btree_map::Entry;
         self.stats.calls += 1;
+        // Split the borrow by hand: the entry keeps `grains` for the whole
+        // block, and everything the update touches is a different field.
+        // `bump`, `remember` and the accumulator are inlined here for that
+        // reason and for no other; their contracts are unchanged and their
+        // ORDER is the same one `install_general` documents.
+        let Self {
+            grains,
+            accumulator,
+            hour_touched,
+            revision,
+            scratch,
+            stats,
+            poison,
+            ..
+        } = self;
+        let mut slot = match grains.entry(path) {
+            Entry::Occupied(slot) => slot,
+            // Not here: fall back to the general path, which validates the new
+            // address before it installs one. The entry is dropped first, so
+            // `check_path` may read the map.
+            Entry::Vacant(slot) => {
+                let path = slot.into_key();
+                // The call is already counted, and the descent that reached this
+                // vacancy is the probe `install_body` would otherwise make, so
+                // neither is repeated.
+                return self.install_body(path, bytes, true);
+            }
+        };
+        {
+            let existing = slot.get();
+            // Bytes, not digests. See `install_general`.
+            if existing.bytes == bytes {
+                stats.no_ops += 1;
+                return Ok(false);
+            }
+        }
+        // The stored key and the incoming one are the same bytes -- no address
+        // in this section has two spellings -- so the encoding, and therefore
+        // the accumulator contribution, may be taken from either.
+        let digest = Sha256::digest(&bytes);
+        let contribution = Accumulator::contribution(slot.key(), &digest, scratch);
+        let next = match revision.checked_add(1) {
+            Some(next) => next,
+            None => {
+                // Poisoning empties the section, and `grains` is borrowed here,
+                // so the flag is set and the emptying is done by the caller-side
+                // helper once the borrow has ended.
+                let reason = "section revision counter overflowed".to_string();
+                *poison = Some(reason.clone());
+                drop(slot);
+                self.empty_for_poison();
+                return Err(FoldV3Error::new(reason));
+            }
+        };
+        *revision = next;
+        hour_touched.push((
+            slot.key().clone(),
+            Some(Before {
+                // Unreachable in this path by construction: a respelling needs
+                // an escaped name and this section has never seen one.
+                spelling: None,
+                digest: slot.get().digest,
+            }),
+        ));
+        accumulator.remove(slot.get().contribution);
+        accumulator.add(contribution);
+        stats.upserts += 1;
+        stats.grain_bytes_written += bytes.len() as u64;
+        *slot.get_mut() = Grain {
+            bytes,
+            digest,
+            rev: next,
+            contribution,
+        };
+        Ok(true)
+    }
+
+    /// Empty a section whose poison flag has already been set.
+    fn empty_for_poison(&mut self) {
+        self.grains.clear();
+        self.accumulator = Accumulator::default();
+        self.hour_touched.clear();
+        self.hour_root_baseline = None;
+    }
+
+    /// [`Self::install_body`], counting the API call. The original two-descent
+    /// path, unchanged, and the one every rekey-capable section uses.
+    fn install_general(&mut self, path: Path, bytes: Vec<u8>) -> Result<bool, FoldV3Error> {
+        self.stats.calls += 1;
+        self.install_body(path, bytes, false)
+    }
+
+    /// `already_probed_absent` says the caller has ALREADY descended to this
+    /// address and found nothing there -- which the one-descent path has, on
+    /// its way to a vacant entry. Passing it is what keeps a new address at two
+    /// descents rather than three; passing it wrongly would skip the retraction
+    /// of a contribution that is still in the accumulator, which
+    /// `recomputed_state_root` checks every hour in the driver and in the tests.
+    fn install_body(
+        &mut self,
+        path: Path,
+        bytes: Vec<u8>,
+        already_probed_absent: bool,
+    ) -> Result<bool, FoldV3Error> {
         // ONE probe of the state, from which everything below is decided: what
         // stands at this address, under which spelling, whether it already holds
         // these bytes, and what has to be retracted from the state root.
@@ -885,7 +1091,16 @@ impl SectionState {
         let mut rekey = false;
         let mut retract: Option<[u64; 4]> = None;
         let mut before: Option<Before> = None;
-        let known_address = if let Some((stored_path, existing)) = self.grains.get_key_value(&path) {
+        let probe = if already_probed_absent {
+            debug_assert!(
+                !self.grains.contains_key(&path),
+                "a caller claimed an address is absent that is not"
+            );
+            None
+        } else {
+            self.grains.get_key_value(&path)
+        };
+        let known_address = if let Some((stored_path, existing)) = probe {
             rekey = same_address_other_spelling(stored_path, &path);
             // Bytes, not digests. A digest comparison would answer this question
             // through a hash of the incoming value; comparing the bytes answers
@@ -1522,6 +1737,24 @@ impl HourTxn<'_> {
         baseline.dedup_by(|later, first| later.0 == first.0);
         let root_baseline = self.state.hour_root_baseline.take();
         let mut bytes = Vec::new();
+        // The upsert phase is built BESIDE the removal phase and appended after
+        // the root record, so the whole baseline is walked ONCE.
+        //
+        // Two passes over it meant two `BTreeMap` descents per touched address,
+        // one to ask whether the grain is still there and one to fetch it, and
+        // on the corpus's largest section a descent is ~28 key comparisons over
+        // a 105,000-entry map -- the term the per-mutation constant is made of.
+        // The bytes are identical because the baseline is sorted: removals come
+        // out ascending in the first buffer and upserts ascending in the second,
+        // which is exactly what two ordered passes produced.
+        //
+        // The price is one memcpy of the upsert phase at the end. That is a
+        // linear copy of bytes already in cache, against a `BTreeMap` descent
+        // per touched address -- ~28 key comparisons over a 105,000-entry map on
+        // the largest section -- and the measured net is what settles it, not
+        // this comment.
+        let mut upserts = std::mem::take(&mut self.state.commit_upserts);
+        upserts.clear();
         let mut mutations = 0u64;
         // REMOVALS, then the root kind, then upserts -- each path phase
         // ascending.
@@ -1536,16 +1769,27 @@ impl HourTxn<'_> {
         // at once, so two ascending phases are a total order that is always
         // applicable.
         for (path, before) in &baseline {
-            if self.state.grains.contains_key(path) {
+            let Some((stored, grain)) = self.state.grains.get_key_value(path) else {
+                // Present at the start and gone now. The removal is addressed by
+                // the spelling the replica holds, which is the one it was stored
+                // under.
+                if let Some(before) = before {
+                    bytes.push(OP_REMOVE);
+                    encode_path_into(before.stored(path), &mut bytes);
+                    mutations += 1;
+                }
                 continue;
-            }
-            // Present at the start and gone now. The removal is addressed by the
-            // spelling the replica holds, which is the one it was stored under.
+            };
             if let Some(before) = before {
-                bytes.push(OP_REMOVE);
-                encode_path_into(before.stored(path), &mut bytes);
-                mutations += 1;
+                if before.digest == grain.digest && same_spelling(before.stored(path), stored) {
+                    continue;
+                }
             }
+            upserts.push(OP_UPSERT);
+            encode_path_into(stored, &mut upserts);
+            write_varint(&mut upserts, grain.bytes.len() as u64);
+            upserts.extend_from_slice(&grain.bytes);
+            mutations += 1;
         }
         // The root kind sits BETWEEN the phases, for the same reason the
         // producer moves it there: it can only change once the grains that
@@ -1556,27 +1800,15 @@ impl HourTxn<'_> {
             bytes.push(self.state.kind.tag());
             mutations += 1;
         }
-        for (path, before) in &baseline {
-            let Some((stored, grain)) = self.state.grains.get_key_value(path) else {
-                continue;
-            };
-            if let Some(before) = before {
-                if before.digest == grain.digest && same_spelling(before.stored(path), stored) {
-                    continue;
-                }
-            }
-            bytes.push(OP_UPSERT);
-            encode_path_into(stored, &mut bytes);
-            write_varint(&mut bytes, grain.bytes.len() as u64);
-            bytes.extend_from_slice(&grain.bytes);
-            mutations += 1;
-        }
+        bytes.extend_from_slice(&upserts);
         // Hand the buffer back rather than dropping it: the next hour touches
         // roughly as many addresses as this one, and a section that reallocated
         // its journal from nothing every hour would put the allocator back on
         // the very path this design exists to keep off it.
         baseline.clear();
         self.state.hour_touched = baseline;
+        upserts.clear();
+        self.state.commit_upserts = upserts;
         SectionDelta {
             section: self.state.spec.name.clone(),
             bytes,
@@ -1606,7 +1838,7 @@ fn write_member_prefix(out: &mut Vec<u8>, seg: &Seg, named: bool) {
     match seg {
         Seg::Key(name) => {
             out.push(b'"');
-            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(name.body().as_bytes());
             out.push(b'"');
             out.push(b':');
         }
@@ -1697,8 +1929,8 @@ pub fn decompose_ref<'a>(
                         )));
                     }
                 }
-                previous = Some(key.clone());
-                path.push(Seg::Key(key));
+                path.push(Seg::key(&key));
+                previous = Some(key);
                 decompose_into(item, grain_depth.saturating_sub(1), &mut path, &mut out);
                 path.pop();
             }
@@ -1748,7 +1980,11 @@ fn decompose_into<'a>(
     match value {
         CanonValue::Object(members) if !members.is_empty() => {
             for (name, member) in members {
-                path.push(Seg::Key(name.clone()));
+                // Interned, not cloned. The corpus re-presents the same member
+                // names every hour, so after the first hour this is a hash
+                // lookup returning a `Copy` handle instead of an allocation and
+                // a copy of the name.
+                path.push(Seg::key(name));
                 decompose_into(member, depth_left - 1, path, out);
                 path.pop();
             }
@@ -1768,7 +2004,7 @@ fn decompose_into<'a>(
 // Varints and reading
 // ---------------------------------------------------------------------------
 
-fn write_varint(out: &mut Vec<u8>, mut value: u64) {
+pub(crate) fn write_varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
@@ -1852,7 +2088,7 @@ impl<'a> ByteReader<'a> {
                     let body = self.take(bytes)?;
                     let name = std::str::from_utf8(body)
                         .map_err(|_| FoldV3Error::new("delta path segment is not UTF-8"))?;
-                    path.push(Seg::Key(name.to_owned()));
+                    path.push(Seg::key(name));
                 }
                 SEG_INDEX => {
                     let index = self.varint()?;
