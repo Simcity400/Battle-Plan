@@ -29006,3 +29006,244 @@ fn d45_an_opening_anchor_survives_a_snapshotless_opening_hour() {
     );
     assert_eq!(frd["direct_history_reset"], json!(false));
 }
+
+// --- Transactional in-place delta apply (lane EA) ---------------------------
+//
+// The reducers that fold a delta onto a retained accumulator used to deep-copy
+// the whole accumulator first; dropping the copy on failure WAS the transaction.
+// The copy is gone and an undo journal holds the same guarantee, so the
+// guarantee needs tests that fail when it does not hold. Each of these folds a
+// clean baseline, then a delta that mutates the accumulator and fails, and
+// asserts the fold still holds exactly the baseline's rows -- which is what a
+// take-and-mutate implementation (rollback deleted, or the accumulator put back
+// half-applied) cannot do.
+
+/// A D44 DELTA that removes province 2068 and then fails on an invalid province
+/// id, so the failure lands AFTER the accumulator has been mutated.
+///
+/// Two province rows, and the header's per-family counters sum to `row_count`:
+/// the sum check fires before any row is read, so getting it wrong would test
+/// nothing.
+fn d44_delta_removing_2068_then_failing() -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes()); // row_count
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes()); // province rows
+    payload.extend_from_slice(&0u32.to_le_bytes()); // division rows
+    payload.extend_from_slice(&0u32.to_le_bytes()); // badge rows
+    payload.extend_from_slice(&1u32.to_le_bytes()); // observed province roots
+    payload.extend_from_slice(&1u32.to_le_bytes()); // observed division roots
+    payload.extend_from_slice(&0u32.to_le_bytes()); // csupply input rows
+    // Row 0: a well-formed tombstone for province 2068 -- applied to the
+    // accumulator, and the row a broken rollback loses.
+    payload.extend_from_slice(&SUPPLY_ROW_KIND_PROVINCE_LOGISTICS.to_le_bytes());
+    payload.extend_from_slice(&(2068u32 | SUPPLY_ROW_ID_DELETED).to_le_bytes());
+    for _ in 0..8 {
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+    // Row 1: province id 0 -- rejected, after row 0 has already landed.
+    payload.extend_from_slice(&SUPPLY_ROW_KIND_PROVINCE_LOGISTICS.to_le_bytes());
+    for _ in 0..9 {
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+    payload
+}
+
+/// Fails if the D44 accumulator is taken and mutated without a rollback: the
+/// tombstone in row 0 would stick, and province 2068 would be gone from every
+/// later hour without any delta ever having asked for it.
+#[test]
+fn d44_failed_delta_leaves_the_supply_accumulator_exactly_as_the_previous_record_left_it() {
+    let d18 = || (18, country_identity_payload(&[(1, "GER")]));
+    let snaps = chunk1_snapshots(vec![
+        vec![d18(), (44, d44_payload(0))],
+        vec![d18(), (44, d44_delta_removing_2068_then_failing())],
+    ]);
+    // The record was refused...
+    assert!(
+        snaps[1]["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("domain 44 fold skipped")),
+        "the delta must be refused, or this test is not testing a failed record: {:?}",
+        snaps[1]["provenance"]["notes"]
+    );
+    // ...and the accumulator it half-applied is exactly what hour 0 left.
+    assert_eq!(
+        snaps[1]["supply"]["by_province"], snaps[0]["supply"]["by_province"],
+        "a failed D44 record must leave the retained accumulator untouched"
+    );
+    assert!(
+        snaps[1]["supply"]["by_province"]["2068"].is_object(),
+        "the tombstone the failed record applied must have been rolled back"
+    );
+    assert_eq!(
+        snaps[1]["supply"]["r2_logistics_attrition"],
+        snaps[0]["supply"]["r2_logistics_attrition"],
+        "the journalled scalars must roll back with the maps"
+    );
+}
+
+/// The retained D48 delta baseline's construction line keys, which is the part
+/// of the accumulator a lost rollback would corrupt.
+fn d48_construction_line_ids(fold: &WorldFold) -> Vec<Domain48ConstructionKey> {
+    fold.domain48_delta_state
+        .as_ref()
+        .map(|state| state.construction.keys().copied().collect())
+        .unwrap_or_default()
+}
+
+/// A D48 delta that adds a second construction line for the same country.
+fn d48_delta_adding_a_second_construction_line() -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_361),
+        status_flags: COMPACT_STATUS_DELTA_DATA,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: vec![domain48::ConstructionQueueRow {
+            tag_db_id: 1,
+            line_id: 78,
+            template_id: Some(20_014),
+            active_factories: 3,
+            cost_raw: 4_000_000,
+            produced_raw: 1_000_000,
+            priority: 1,
+            target_state_id: Some(42),
+            target_location_id: Some(42),
+            target_scope: Some(domain48::SCOPE_STATE),
+            repair_levels_remaining: Some(0),
+            created_date_raw: Some(60_827_043),
+        }],
+        railway_construction_rows: None,
+        building_rows: Vec::new(),
+        resource_rows: Vec::new(),
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+/// The same guarantee for D48. Its own failure surface is entirely inside the
+/// decoder gate, which runs before the accumulator is touched, so the rollback
+/// has no wire-reachable trigger -- the fault is injected instead (test-only,
+/// see `WorldFold::injected_record_fault`).
+///
+/// Fails if the D48 accumulator is taken and mutated without a rollback: the
+/// delta's construction line would stick in the delta baseline and the NEXT
+/// delta would fold onto a baseline the collector never computed against.
+#[test]
+fn d48_failed_delta_leaves_the_construction_accumulator_exactly_as_the_previous_record_left_it() {
+    let baseline = d48_payload(0, Some(42));
+    let delta = d48_delta_adding_a_second_construction_line();
+
+    // Reference: baseline, then the delta applied cleanly.
+    let mut applied = WorldFold::new("d48_txn_reference");
+    applied
+        .fold_construction_buildings_state_damage(&baseline)
+        .unwrap();
+    applied
+        .fold_construction_buildings_state_damage(&delta)
+        .unwrap();
+    let applied_lines = d48_construction_line_ids(&applied);
+
+    // Under test: baseline, then the same delta with a mid-record fault.
+    let mut failed = WorldFold::new("d48_txn_rollback");
+    failed
+        .fold_construction_buildings_state_damage(&baseline)
+        .unwrap();
+    let baseline_lines = d48_construction_line_ids(&failed);
+    failed.injected_record_fault = Some(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
+    let error = failed
+        .fold_construction_buildings_state_damage(&delta)
+        .expect_err("the injected fault must fail the record");
+    assert!(error.contains("injected mid-record fault"), "{error}");
+    failed.injected_record_fault = None;
+
+    assert_ne!(
+        applied_lines, baseline_lines,
+        "the delta must actually change the accumulator, or this test is vacuous"
+    );
+    assert_eq!(
+        d48_construction_line_ids(&failed),
+        baseline_lines,
+        "a failed D48 record must leave the delta baseline untouched"
+    );
+    // The projected state must not have been left diverged from a baseline the
+    // record never committed either.
+    assert!(
+        failed.domain48_projected_divergence.is_none(),
+        "a failed record must not publish a projected divergence"
+    );
+
+    // And the accumulator is still usable: the SAME delta, applied after the
+    // failure, must reach the same state as if the failure had never happened.
+    failed
+        .fold_construction_buildings_state_damage(&delta)
+        .unwrap();
+    assert_eq!(
+        d48_construction_line_ids(&failed),
+        applied_lines,
+        "the rolled-back accumulator must still fold the next delta correctly"
+    );
+}
+
+/// The undo log's two exactness rules, which the reducers above rely on and
+/// which a plausible-looking journal gets wrong:
+///
+/// * replaying in REVERSE, so a key written twice in one record rolls back to
+///   what the PREVIOUS record left rather than to this record's first write;
+/// * recording ABSENCE, so a key this record introduced is removed rather than
+///   left behind.
+///
+/// Fails if `MapJournal::rollback` replays forwards, or if `insert`/`remove`
+/// skip the `None` entry for a key that was not there.
+#[test]
+fn map_journal_rollback_restores_the_exact_previous_state() {
+    let mut map: BTreeMap<u32, i32> = BTreeMap::new();
+    map.insert(1, 10);
+    map.insert(2, 20);
+    let before = map.clone();
+
+    let mut journal = MapJournal::new(true);
+    journal.insert(&mut map, 1, 11); // overwrite, twice
+    journal.insert(&mut map, 1, 12);
+    journal.remove(&mut map, &2); // remove an existing key
+    journal.insert(&mut map, 3, 30); // introduce a new key
+    journal.remove(&mut map, &4); // remove a key that was never there
+    assert_ne!(map, before, "the journal must actually have mutated the map");
+
+    journal.rollback(&mut map);
+    assert_eq!(map, before);
+}
+
+/// A disarmed journal is the clean-frame path: it mutates and keeps no log, so
+/// rolling it back is a no-op. Fails if `armed` is ignored (which would make
+/// every clean frame pay for an undo log it can never use).
+#[test]
+fn a_disarmed_map_journal_records_nothing() {
+    let mut map: BTreeMap<u32, i32> = BTreeMap::new();
+    let mut journal = MapJournal::new(false);
+    journal.insert(&mut map, 1, 10);
+    journal.rollback(&mut map);
+    assert_eq!(map.get(&1), Some(&10));
+}
+
+/// `FieldJournal` saves the FIRST value only, for the same reason the map log
+/// replays in reverse. Fails if it saves the latest write instead.
+#[test]
+fn field_journal_rolls_back_to_the_value_the_record_opened_with() {
+    let mut slot = 7u32;
+    let mut journal = FieldJournal::new(true);
+    journal.set(&mut slot, 8);
+    journal.set(&mut slot, 9);
+    assert_eq!(slot, 9);
+    journal.rollback(&mut slot);
+    assert_eq!(slot, 7);
+}
