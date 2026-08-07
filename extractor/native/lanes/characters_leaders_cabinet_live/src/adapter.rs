@@ -608,8 +608,33 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     // Declared here rather than through `has_rejections`: a degraded row is
     // thinner, not missing, and must not cost the frame its other ~13_000
     // rows. See `AdapterBuildStats::identity_degraded_rows`.
+    //
+    // SOURCE_UNAVAILABLE rides along, and it is not decoration (task #131,
+    // owner-ruled 2026-08-07). A degraded identity is ROW-level loss inside a
+    // family this frame DID observe, so `known_families` still says
+    // `FAMILY_ALL` and nothing in the presence mask describes the hole.
+    // `decode_family_presence_mask` refuses an undeclared payload whose only
+    // failure-class bit is `PARTIAL_DATA` — "nothing names what it failed to
+    // observe" — and that refusal is a PARSE ERROR.
+    //
+    // WHAT THE PAIRING BUYS, precisely. It does NOT save this frame's rows:
+    // d47's `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry says in its own words
+    // that "row-level loss inside an observed family keeps SOURCE_UNAVAILABLE
+    // and stays outside this tolerance", so the scheduled reader still
+    // replaces the frame with a rowless one. What it saves is the PARSE ERROR,
+    // and with it `domain47_should_invalidate_roots_on_frame`, which turns any
+    // parse error into a discarded root cache and a full serial prewarm
+    // rebuild on the next frame — a rebuild that did not happen before
+    // per-family admission existed, and that costs ~21 ms on the one phase of
+    // the frame no worker can overlap. One recycled character was buying a
+    // whole prewarm.
+    //
+    // Pairing the two flags is the spelling `scheduled.rs` already uses for
+    // every other undeclared row loss. The owner accepted SOURCE_UNAVAILABLE
+    // appearing on a row-bearing frame: it says "this frame's sources did not
+    // all yield", not "there is nothing here".
     if stats.identity_degraded_rows != 0 {
-        frame.status_flags |= compact::STATUS_PARTIAL_DATA;
+        frame.status_flags |= compact::STATUS_PARTIAL_DATA | compact::STATUS_SOURCE_UNAVAILABLE;
     }
     if input.countries.is_empty() {
         frame.status_flags |= compact::STATUS_BRIDGE_UNAVAILABLE;
@@ -1346,6 +1371,73 @@ mod tests {
         // this fails.
         assert!(!result.stats.has_rejections());
         assert_ne!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+    }
+
+    /// The frame a recycled character produces must SURVIVE THE DECODER
+    /// (task #131, owner-ruled 2026-08-07).
+    ///
+    /// This is the test the sibling above could not be: that one asserts the
+    /// status word, and the status word alone was accepted by the decoder until
+    /// per-family admission arrived. A degraded identity is row-level loss
+    /// inside families this frame observed IN FULL, so nothing is declared and
+    /// `decode_family_presence_mask` refuses a payload whose only failure-class
+    /// bit is `PARTIAL_DATA` — "nothing names what it failed to observe". That
+    /// refusal is a parse error, and a parse error on a d47 frame invalidates
+    /// the root cache and forces a full serial prewarm rebuild the next frame.
+    /// So a single recycled character used to cost a whole prewarm.
+    ///
+    /// WHAT THIS TEST DOES NOT CLAIM: that the frame keeps its rows. It does
+    /// not — SOURCE_UNAVAILABLE is deliberately outside d47's expected-partial
+    /// tolerance (see the tolerance entry's own wording) and the scheduled
+    /// reader replaces the frame with a rowless one either way. The defect
+    /// being fixed is the parse error and the prewarm rebuild behind it.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: drop
+    /// `| compact::STATUS_SOURCE_UNAVAILABLE` from the `identity_degraded_rows`
+    /// arm of `build_lane_frame_from_adapter_input` and the decode below
+    /// reports `character lane declares partial data with no family-presence
+    /// declaration`. (Verified by mutation, lane DR.)
+    #[test]
+    fn a_recycled_character_frame_decodes_without_a_parse_error() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        write_character(&mut mem, character, 777, 9);
+
+        let input = AdapterInput {
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 100,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..AdapterInput::default()
+        };
+
+        let result = build_lane_frame_from_adapter_input(&mem, &roots(), &input);
+        assert_eq!(result.stats.identity_degraded_rows, 1);
+        // The two flags this frame must carry, and why each one is needed: the
+        // first says the frame is thinner than a clean one, the second says the
+        // thinning is NOT a declared family gap and so may not be absorbed by
+        // d47's expected-partial tolerance.
+        assert_ne!(result.frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert_ne!(
+            result.frame.status_flags & compact::STATUS_SOURCE_UNAVAILABLE,
+            0,
+            "an undeclared row loss must be spelled with SOURCE_UNAVAILABLE, or the decoder \
+             refuses the payload and the refusal rebuilds the prewarm"
+        );
+
+        let decoded =
+            extractor::decode_frame_payload(0, &extractor::encode_frame_payload(&result.frame));
+        assert!(
+            decoded.parse_errors.is_empty(),
+            "one recycled character must not make the payload unparseable: {:?}",
+            decoded.parse_errors
+        );
+        // On a ROW-BEARING payload — a test that decoded an empty frame clean
+        // would prove nothing about the frame this defect actually damaged.
+        assert_eq!(result.stats.character_rows, 1);
+        assert!(!result.frame.characters.is_empty());
     }
 
     /// A character that CHANGED COUNTRY since the census is not a recycled

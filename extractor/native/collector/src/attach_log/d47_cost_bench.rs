@@ -3167,6 +3167,336 @@ fn scattered_census_loop_at(world: &ScatteredCensusWorld, distance: Option<usize
     sink
 }
 
+/// The SPLIT shape the prewarm actually had before lane DR: the census walks
+/// every character body, the whole roster is validated and its two pointer
+/// vectors re-read, and only THEN a second loop walks the same ~13_400 bodies
+/// again to read the two strings that live inside them.
+///
+/// `scattered_census_loop` above — and every other census arm in this module —
+/// models the MERGED loop, so every figure this instrument has ever printed
+/// for "the census" understated production by exactly the difference these two
+/// arms measure. The strings are the same reads in both arms and in the same
+/// order; the only difference is WHEN they happen relative to the body copies
+/// that already paid for their cache lines.
+fn scattered_census_loop_two_pass(world: &ScatteredCensusWorld) -> usize {
+    let mem = Domain47InProcessMemory;
+    let mut sink = 0usize;
+    for (ordinal, addr) in world.census_characters.iter().copied().enumerate() {
+        if let Some(ahead) = world
+            .census_characters
+            .get(ordinal.wrapping_add(DOMAIN47_PREFETCH_DISTANCE))
+        {
+            domain47_prefetch_object(*ahead, domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN);
+        }
+        let name_token_addr = addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+        let (first, opening) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (second, closing) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        sink += opening.is_some() as usize
+            + closing.is_some() as usize
+            + first.is_ok() as usize
+            + second.is_ok() as usize;
+    }
+    // The second walk, with the same lookahead the production root-build loop
+    // issues, over the same addresses in the same order.
+    for (ordinal, addr) in world.census_characters.iter().copied().enumerate() {
+        if let Some(ahead) = world
+            .census_characters
+            .get(ordinal.wrapping_add(DOMAIN47_PREFETCH_DISTANCE))
+        {
+            domain47_prefetch_object(*ahead, domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN);
+        }
+        let (name, token) = domain47_character_root_strings(addr);
+        sink += name.map_or(0, |v| v.len()) + token.map_or(0, |v| v.len());
+    }
+    sink
+}
+
+/// The same split, over the CONTIGUOUS fixture. Both fixtures are needed and
+/// neither alone answers the question:
+///
+///  * the scattered fixture gives every character its own 4 KiB page, so its
+///    ~55 MiB working set guarantees the second walk misses to DRAM — an UPPER
+///    bound on the split's cost;
+///  * the contiguous fixture packs bodies at `CHARACTER_STRIDE`, giving a
+///    ~3.2 MiB working set, which is the same order as the live heap's ~2.3 MiB
+///    of `CCharacter` bodies — so it models the case where the second walk hits
+///    L3 rather than DRAM, and is the LOWER bound.
+///
+/// The live answer is between them, and both are reported.
+fn census_loop_two_pass(world: &BenchWorld) -> usize {
+    let mem = Domain47InProcessMemory;
+    let mut sink = 0usize;
+    for addr in &world.census_characters {
+        let name_token_addr = *addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+        let (first, opening) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            *addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (second, closing) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            *addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        sink += opening.is_some() as usize
+            + closing.is_some() as usize
+            + first.is_ok() as usize
+            + second.is_ok() as usize;
+    }
+    for addr in &world.census_characters {
+        let (name, token) = domain47_character_root_strings(*addr);
+        sink += name.map_or(0, |v| v.len()) + token.map_or(0, |v| v.len());
+    }
+    sink
+}
+
+/// What the prewarm's two-walk shape COSTS, on both fixtures.
+///
+/// AN INSTRUMENT, NOT A GATE: it prints a ratio and asserts only that both
+/// arms read the same bytes, which is the property that makes the comparison
+/// meaningful (a split arm that read less would be timing a different job).
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_single_vs_two_pass_ab() {
+    let contiguous = bench_world();
+    assert_eq!(
+        census_loop(&contiguous),
+        census_loop_two_pass(&contiguous),
+        "the split arm must read exactly what the merged arm reads"
+    );
+    let (merged_flat, split_flat) = time_us_median_ab(
+        9,
+        || census_loop(&contiguous),
+        || census_loop_two_pass(&contiguous),
+    );
+    println!(
+        "d47_cost AB census passes (contiguous, ~{:.1} MiB of bodies): two walks {split_flat:.1} us \
+         -> one walk {merged_flat:.1} us ({:+.1}%) over {} characters",
+        (T15_CENSUS_CHARACTERS * CHARACTER_STRIDE) as f64 / (1024.0 * 1024.0),
+        (merged_flat - split_flat) / split_flat * 100.0,
+        T15_CENSUS_CHARACTERS,
+    );
+
+    let scattered = scattered_census_world();
+    page_cache_new_frame();
+    assert_eq!(
+        scattered_census_loop(&scattered, true),
+        scattered_census_loop_two_pass(&scattered),
+        "the split arm must read exactly what the merged arm reads"
+    );
+    let (merged_scatter, split_scatter) = time_us_median_ab_n(
+        9,
+        200,
+        || scattered_census_loop(&scattered, true),
+        || scattered_census_loop_two_pass(&scattered),
+    );
+    println!(
+        "d47_cost AB census passes (scattered, one page per object): two walks {split_scatter:.1} \
+         us -> one walk {merged_scatter:.1} us ({:+.1}%) over {} characters",
+        (merged_scatter - split_scatter) / split_scatter * 100.0,
+        T28_MANAGER_ENTRIES,
+    );
+}
+
+// --- the half of the census that reads NOTHING (lane DR, 2026-08-07) -------
+//
+// Every arm above times ENGINE READS. None of them times the ordered
+// containers the census drives beside those reads, and that omission is why
+// the offline model and the live prewarm never reconciled: t32's scattered
+// census models 7.1 ms against a 20.89 ms live p50.
+//
+// Per censused character the roster census also performs, with no memory read
+// at all:
+//   * `character_pointers.insert(addr)`         -- BTreeSet<usize>, duplicate-pointer gate
+//   * `name_identities.push((token_id, addr))`  -- Vec
+//   * `characters.push((addr, raw))`            -- Vec
+// then, ONCE over the finished roster:
+//   * `Domain47ManagerNameIndexKeys::from_identities` -- a SECOND BTreeSet<usize>
+//     over the same 13_403 pointers, plus a BTreeSet<u32> of the distinct tokens
+//   * `.check(..)` twice
+// and then, per character again, in the root-build loop:
+//   * `dedup.admit_character(..)`               -- BTreeMap<u32, _> probe + insert
+//   * `next.characters.push(CharacterRoot { .. })`
+//
+// t32 widths, from `runs/live_unlock/t32/native_session_manifest.json` over
+// `domain47_prewarm_ran` = 316: `domain47_manager_historical_count` 3_196_656
+// and `_dynamic_count` 1_038_695 give 13_403 characters;
+// `domain47_manager_distinct_name_token_count` 2_737_511 gives 8_663 distinct
+// tokens.
+//
+// t32 also settles what the index probe costs: `domain47_manager_name_index_count`
+// is 0 in every one of the 316 prewarms, and `domain47_manager_index_lookup`
+// returns `Absent` on `header.count == 0` before issuing a single read. So the
+// `check` passes are pure container work live, which is exactly what this arm
+// times.
+const T32_CENSUS_CHARACTERS: usize = 13_403;
+const T32_DISTINCT_NAME_TOKENS: usize = 8_663;
+
+/// The census's non-reading work, at t32 widths, driven through the
+/// production containers and the production `admit_character`.
+///
+/// Identities are shaped the way the live roster is: `T32_DISTINCT_NAME_TOKENS`
+/// distinct name tokens spread over `T32_CENSUS_CHARACTERS` characters, every
+/// character at a distinct address with a distinct `char_id` (so `admit_character`
+/// takes its `Insert` arm, as it does for essentially every live character —
+/// t32's `domain47_adapter_deduplicated_character_rows` is 0).
+fn census_bookkeeping(strings: bool) -> usize {
+    census_bookkeeping_with(strings, true)
+}
+
+/// `reuse_roster_set` selects lane DR's change: `true` hands the census's own
+/// duplicate-pointer `BTreeSet<usize>` to the name-index keys, `false` rebuilds
+/// a second one from the identities the way `from_identities` does.
+fn census_bookkeeping_with(strings: bool, reuse_roster_set: bool) -> usize {
+    // `with_capacity(total)`, as production sizes them from the two vector
+    // headers — `Vec::new()` here would time reallocations production does not
+    // perform (Codex 019fd99d, finding 2).
+    let mut character_pointers = BTreeSet::new();
+    let mut name_identities: Vec<(u32, usize)> = Vec::with_capacity(T32_CENSUS_CHARACTERS);
+    let mut characters: Vec<(usize, domain47::extractor::CharacterRawFields)> =
+        Vec::with_capacity(T32_CENSUS_CHARACTERS);
+    for index in 0..T32_CENSUS_CHARACTERS {
+        // A plausible live spread of addresses: `CHARACTER_STRIDE` apart, which
+        // is what makes the BTreeSet's comparisons realistic.
+        let addr = 0x1_0000_0000usize + index * CHARACTER_STRIDE;
+        // t32's `domain47_adapter_unit_leader_rows` 432_014 / 316 = 1_367 unit
+        // leaders across 13_403 characters, so roughly one character in ten
+        // carries a leader pointer and reaches `admit_leader`'s BTreeMap. A
+        // fixture that left every pointer zero would exit that helper on its
+        // first branch and time none of it.
+        let unit_leader_ptr = if index % 10 == 0 {
+            0x2_0000_0000u64 + index as u64 * 0x1000
+        } else {
+            0
+        };
+        domain47_admit_censused_character(
+            &mut character_pointers,
+            &mut name_identities,
+            &mut characters,
+            addr,
+            (index % T32_DISTINCT_NAME_TOKENS) as u32,
+            domain47::extractor::CharacterRawFields {
+                character_addr: addr as u64,
+                country_tag_db_id: (index % 200) as u32,
+                char_id: index as u32,
+                unit_leader_ptr,
+            },
+        );
+    }
+    // Taken before the set moves, so the reuse arm MOVES it exactly as
+    // production does rather than cloning it — a clone here would hide most of
+    // what the change saves.
+    let censused_pointer_count = character_pointers.len();
+    let keys = if reuse_roster_set {
+        Domain47ManagerNameIndexKeys::from_roster(character_pointers, &name_identities)
+    } else {
+        Domain47ManagerNameIndexKeys::from_identities(&name_identities)
+    };
+    // `header.count == 0` is what t32 observed, so this is the live closure.
+    let lookup = |_| Domain47ManagerIndexLookup::Absent;
+    let opening = keys.check(lookup);
+    let closing = keys.check(lookup);
+
+    // Sources for the two owned strings, built ONCE and outside the loop.
+    // Production's `name`/`token` come out of `read_msvc_string`, which
+    // allocates a `String` and copies the decoded bytes into it — no formatting
+    // machinery — so the loop below must do the same. `format!` here would have
+    // charged this arm for integer-to-decimal conversion and `fmt` dispatch and
+    // then reported the total as "allocator" (Codex 019fd99d, finding 3).
+    const NAMES: [&str; 4] = [
+        "Ivar Lykke",
+        "A Rather Longer Character Name",
+        "Wilhelm Keitel",
+        "Konstantin Konstantinovich Rokossovsky",
+    ];
+    const TOKENS: [&str; 4] = [
+        "NOR_ivar_lykke",
+        "GER_a_rather_longer_character_token_value",
+        "GER_wilhelm_keitel",
+        "SOV_konstantin_rokossovsky",
+    ];
+
+    let mut dedup = Domain47CharacterDedup::default();
+    // `Vec::new()`, as `NativeRootCache::default()` leaves it: production does
+    // not pre-size the adopted root list either.
+    let mut roots: Vec<CharacterRoot> = Vec::new();
+    for (addr, raw) in &characters {
+        if let Domain47CharacterAdmit::Insert =
+            dedup.admit_character(raw.char_id, raw.country_tag_db_id, raw.unit_leader_ptr, roots.len())
+        {
+            dedup.admit_leader(raw.unit_leader_ptr, raw.country_tag_db_id);
+            // `strings` selects whether the two owned strings are built, so
+            // their allocate-and-copy share is separable from the containers'.
+            let (name, token) = if strings {
+                let slot = raw.char_id as usize % NAMES.len();
+                (
+                    Some(NAMES[slot].to_string()),
+                    Some(TOKENS[slot].to_string()),
+                )
+            } else {
+                (None, None)
+            };
+            roots.push(CharacterRoot {
+                character_addr: *addr as u64,
+                char_id: raw.char_id,
+                name,
+                token,
+            });
+        }
+    }
+    censused_pointer_count
+        + opening.distinct_name_token_count as usize
+        + closing.distinct_name_token_count as usize
+        + roots.len()
+}
+
+/// How much of the prewarm never touches the game at all.
+///
+/// AN INSTRUMENT, NOT A GATE: it prints microseconds and asserts only that the
+/// arms did the work (a bookkeeping arm optimised away to nothing would report
+/// zero and mean nothing).
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_census_bookkeeping() {
+    assert!(census_bookkeeping(true) > 0, "bookkeeping arm did nothing");
+    let (with_strings, _) = time_us_median(5, || census_bookkeeping(true));
+    let (without_strings, _) = time_us_median(5, || census_bookkeeping(false));
+    println!(
+        "d47_cost census bookkeeping (no engine reads at all, t32 widths): {with_strings:.1} us \
+         with the two owned root strings, {without_strings:.1} us without them \
+         ({:.1} us to allocate and copy them) over {} characters / {} distinct name tokens. \
+         t32's live prewarm p50 is 20890 us.",
+        with_strings - without_strings,
+        T32_CENSUS_CHARACTERS,
+        T32_DISTINCT_NAME_TOKENS,
+    );
+
+    let (reused, rebuilt) = time_us_median_ab(
+        9,
+        || census_bookkeeping_with(true, true),
+        || census_bookkeeping_with(true, false),
+    );
+    println!(
+        "d47_cost AB roster pointer set: rebuilt {rebuilt:.1} us -> census set reused \
+         {reused:.1} us ({:+.1}%), one BTreeSet<usize> of {} entries removed from the serial \
+         prewarm",
+        (reused - rebuilt) / rebuilt * 100.0,
+        T32_CENSUS_CHARACTERS,
+    );
+}
+
 /// `time_us_median_ab` at a caller-chosen iteration count. The scattered
 /// fixture is ~55 MiB per pass, so `BENCH_ITERATIONS` (200) would be minutes
 /// per sample for no extra resolution.
