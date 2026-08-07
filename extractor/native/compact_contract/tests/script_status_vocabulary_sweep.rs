@@ -34,7 +34,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use compact_contract::{
-    assigned_descriptor_by_name, lane_local_status_mask, COMPACT_STATUS_FAILURE_MASK,
+    assigned_descriptor_by_name, domain_status_registry_key, lane_local_status_mask,
+    CompactDomainStatus, ASSIGNED_COMPACT_DOMAINS, COMPACT_STATUS_FAILURE_MASK,
     COMPACT_STATUS_V1_KNOWN_MASK,
 };
 
@@ -673,6 +674,253 @@ fn report_raw_capture_global_masks_match_the_contract() {
         "report_raw_capture.py FAILURE_MASK is not compact_contract::COMPACT_STATUS_FAILURE_MASK \
          ({COMPACT_STATUS_FAILURE_MASK:#x})"
     );
+}
+
+/// The report's infrastructure pseudo-domain set.
+///
+/// `domains_seen - expected_domains` is how the report finds a producer nobody
+/// scheduled, and an infrastructure domain (`schedulable: false`) is in that
+/// difference on EVERY capture by construction: `frame` (id 1000) was reported
+/// as "unexpected domains in stream (1)" on every run the report has ever
+/// produced. The fix derives the set at runtime from
+/// `extractor/native/domain_registry.json`, the generated mirror this crate's
+/// own `native_json_registry_is_derived_from_descriptors` keeps equal to
+/// `ASSIGNED_COMPACT_DOMAINS`.
+///
+/// Three things have to hold for that derivation to be sound, and none of them
+/// is visible from inside the script:
+///
+///   1. the mirror's `name` field must BE the wire token for these domains
+///      (13 assigned domains have `canonical_name != wire_name`, and the mirror
+///      only exports the canonical one -- so a future infrastructure domain
+///      with a distinct wire name would be derived under a name that never
+///      appears in `domains_seen`, and the false "unexpected" row would come
+///      straight back);
+///   2. the status key the script filters on must be the contract's own
+///      spelling;
+///   3. the standalone fallback -- reachable only when the mirror cannot be
+///      read at all -- must be the same set.
+#[test]
+fn report_raw_capture_pseudo_domains_match_the_contract() {
+    let text = read_script("report_raw_capture.py");
+
+    let infrastructure: Vec<_> = ASSIGNED_COMPACT_DOMAINS
+        .iter()
+        .filter(|descriptor| descriptor.status == CompactDomainStatus::Infrastructure)
+        .collect();
+    assert!(
+        !infrastructure.is_empty(),
+        "the contract registers no infrastructure domain, so this sweep is \
+         checking nothing"
+    );
+    for descriptor in &infrastructure {
+        assert_eq!(
+            descriptor.canonical_name, descriptor.wire_name,
+            "infrastructure domain {} exports canonical name {:?} in \
+             domain_registry.json but emits wire name {:?}. report_raw_capture.py \
+             derives its pseudo-domain set from the mirror's `name` field and \
+             matches it against `domains_seen`, which carries WIRE names, so this \
+             domain would be reported as an unexpected producer on every capture. \
+             Either keep the two equal or export `wire_name` in the mirror and \
+             teach the script to read it.",
+            descriptor.id, descriptor.canonical_name, descriptor.wire_name
+        );
+        assert!(
+            !descriptor.schedulable,
+            "infrastructure domain {} is schedulable, so it CAN appear in a \
+             scheduled roster and the report must not blanket-exempt it",
+            descriptor.id
+        );
+    }
+
+    // (2) the filter predicate.
+    assert_code_contains_once(
+        &text,
+        Dialect::Python,
+        &format!(
+            "INFRASTRUCTURE_STATUS_KEY = \"{}\"",
+            domain_status_registry_key(CompactDomainStatus::Infrastructure)
+        ),
+        "report_raw_capture.py must filter the registry on the contract's own \
+         status key, or its derivation silently selects nothing and every \
+         capture reports `frame` as unexpected again",
+    );
+    // The mirror it reads must be THIS repo's, resolved from the script's own
+    // location -- not a working-directory-relative path that silently answers
+    // "unreadable, use the fallback" whenever the report is run from elsewhere.
+    // That it genuinely reads the file is proved behaviourally by
+    // `report_raw_capture_really_reads_the_registry_it_is_pointed_at`; a source
+    // check cannot distinguish reading from returning a literal.
+    assert_squeezed_code_contains_once(
+        &text,
+        Dialect::Python,
+        "os.path.dirname(os.path.abspath(__file__)), os.pardir, \"domain_registry.json\"",
+        "report_raw_capture.py must resolve extractor/native/domain_registry.json \
+         from its own location",
+    );
+
+    // (3) the standalone fallback.
+    let declared: BTreeSet<String> = paren_expr_after(
+        &strip_non_code_in(&text, Dialect::Python),
+        "PSEUDO_DOMAIN_NAMES_FALLBACK = ",
+    )
+    .split(',')
+    .map(str::trim)
+    .filter(|term| !term.is_empty())
+    .map(|term| {
+        // Fail closed: a term this sweep cannot read is a term it cannot vouch
+        // for, and skipping it would let an extra name ride along.
+        let name = term
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or_else(|| {
+                panic!("PSEUDO_DOMAIN_NAMES_FALLBACK term {term:?} is not a double-quoted literal")
+            });
+        name.to_string()
+    })
+    .collect();
+    let expected: BTreeSet<String> = infrastructure
+        .iter()
+        .map(|descriptor| descriptor.wire_name.to_string())
+        .collect();
+    assert_eq!(
+        declared, expected,
+        "report_raw_capture.py PSEUDO_DOMAIN_NAMES_FALLBACK is not the contract's \
+         infrastructure wire-name set. A name missing here is not a labelling nit: \
+         when domain_registry.json cannot be read, the report calls that deliberate \
+         producer an unexpected domain on every capture."
+    );
+}
+
+/// The interpreter this repo's gate scripts run under.
+///
+/// Fails closed rather than skipping: those scripts ARE the gates, so a machine
+/// with no python cannot run them, and a sweep that quietly passed there would
+/// be reporting on a check that never happened.
+#[cfg(test)]
+fn python_program() -> String {
+    for candidate in ["python", "python3", "py"] {
+        if std::process::Command::new(candidate)
+            .arg("-c")
+            .arg("pass")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+        {
+            return candidate.to_string();
+        }
+    }
+    panic!(
+        "no python interpreter on PATH (tried python, python3, py). The gate \
+         scripts this sweep guards cannot run here, so this check cannot be \
+         reported as passing."
+    );
+}
+
+/// BEHAVIOURAL probe of the pseudo-domain derivation.
+///
+/// `report_raw_capture_pseudo_domains_match_the_contract` above is a source
+/// check, and a source check cannot tell "the loader reads the mirror" from
+/// "the loader returns its pinned literal and names the mirror's path" -- the
+/// literal and the mirror agree today, so both spellings look identical from
+/// the outside. This runs the real function against a SYNTHETIC registry whose
+/// contents cannot have come from anywhere else.
+#[test]
+fn report_raw_capture_really_reads_the_registry_it_is_pointed_at() {
+    let dir = std::env::temp_dir().join(format!(
+        "hoi4_lane_et_registry_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&dir).expect("create probe dir");
+    let script = scripts_root().join("report_raw_capture.py");
+    let program = python_program();
+
+    // (label, registry json, must contain, must NOT contain)
+    let cases: [(&str, &str, &str, Option<&str>); 3] = [
+        (
+            "a name only the synthetic registry has is derived",
+            r#"{"domains":[{"id":4242,"name":"sentinel_infra_domain","status":"infrastructure","schedulable":false,"requires_data_record":false}]}"#,
+            "sentinel_infra_domain",
+            None,
+        ),
+        (
+            "a registry with no infrastructure entry does not claim registry authority",
+            r#"{"domains":[{"id":10,"name":"fuel_live","status":"existing","schedulable":true,"requires_data_record":true}]}"#,
+            "SOURCE=pinned fallback",
+            Some("sentinel_infra_domain"),
+        ),
+        (
+            "the real mirror derives exactly the contract's infrastructure set",
+            "",
+            "SOURCE_IS_REGISTRY=True",
+            None,
+        ),
+    ];
+
+    for (label, registry_json, wanted, forbidden) in cases {
+        let registry = dir.join(format!("registry_{}.json", label.len()));
+        let target = if registry_json.is_empty() {
+            // The real mirror, reached through the script's own default.
+            "None".to_string()
+        } else {
+            fs::write(&registry, registry_json).expect("write probe registry");
+            format!("r'{}'", registry.display())
+        };
+        let code = format!(
+            "import importlib.util\n\
+             spec = importlib.util.spec_from_file_location('rrc', r'{script}')\n\
+             module = importlib.util.module_from_spec(spec)\n\
+             spec.loader.exec_module(module)\n\
+             target = {target}\n\
+             names, source = module.load_pseudo_domain_names(\n\
+             \x20   *([] if target is None else [target]))\n\
+             print('NAMES=' + ','.join(sorted(names)))\n\
+             print('SOURCE=' + source)\n\
+             print('SOURCE_IS_REGISTRY=' + str(source == module.DOMAIN_REGISTRY_PATH))\n",
+            script = script.display(),
+            target = target,
+        );
+        let output = std::process::Command::new(&program)
+            .arg("-c")
+            .arg(&code)
+            .output()
+            .unwrap_or_else(|error| panic!("run {program}: {error}"));
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        assert!(
+            output.status.success(),
+            "{label}: the probe did not run\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            stdout.contains(wanted),
+            "{label}: expected {wanted:?} in the derivation's answer\n{stdout}"
+        );
+        if let Some(forbidden) = forbidden {
+            assert!(
+                !stdout.contains(forbidden),
+                "{label}: {forbidden:?} leaked into the answer\n{stdout}"
+            );
+        }
+        // The pinned contract names must survive in every case: a derivation
+        // that could lose them would put the false "unexpected: frame" row back.
+        for descriptor in ASSIGNED_COMPACT_DOMAINS
+            .iter()
+            .filter(|d| d.status == CompactDomainStatus::Infrastructure)
+        {
+            assert!(
+                stdout.contains(descriptor.wire_name),
+                "{label}: infrastructure domain {} ({}) is missing from the \
+                 derived set\n{stdout}",
+                descriptor.id,
+                descriptor.wire_name
+            );
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
