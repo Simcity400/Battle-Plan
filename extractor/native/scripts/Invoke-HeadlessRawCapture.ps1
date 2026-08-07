@@ -154,6 +154,13 @@ param(
     # Evidence-only: leave the harness-launched game running after teardown.
     [switch]$KeepGameAfterCapture,
 
+    # Keep every spool byte on disk after the container seals. Measurement
+    # runs need this: the spool trim releases the raw H4CR bytes once every
+    # hour is durably checkpointed, and the d250 lane-wall / lateness probes
+    # live ONLY in those bytes (the sealed container carries no stream
+    # diagnostics), so a trimmed measurement run cannot be audited afterward.
+    [switch]$KeepSpoolAfterSeal,
+
     # Override the derived production roster with an explicit domain list.
     # Used to measure how the injection-crash rate scales with the number of
     # installed hooks; not a production configuration.
@@ -2180,6 +2187,7 @@ foreach ($entry in $staticCatalogs.GetEnumerator()) {
     $recorderArgs += $entry.Value
 }
 if ($SkipHostFold) { $recorderArgs += '--skip-host-fold' }
+if ($KeepSpoolAfterSeal) { $recorderArgs += '--keep-spool-after-seal' }
 
 ($recorderArgs -join "`n") | Set-Content -LiteralPath (Join-Path $OutDir 'recorder_args.txt') -Encoding UTF8
 
