@@ -1,9 +1,9 @@
 //! d23 `map_detail_live` — per-state resources and buildings, per-province
 //! buildings.
 //!
-//! Derived from `world_fold.rs:25273`-`:25478`
+//! Derived from `world_fold.rs:25571`-`:25779`
 //! (`fold_map_detail`), its payload constants at `:400`-`:403`, the shared row
-// @world-fold-authority domain=23 functions=fold_map_detail lines=25273-25478 sha256=48b4c8023bd0a738171e29a4f57afeb49b419986837d484ebb989b3b03570765
+// @world-fold-authority domain=23 functions=fold_map_detail lines=25571-25779 sha256=e1283e9a344743f7de23cb495ef2b63aa1c6fb82e3f2ff8848cd54abbd12ab1b
 //! helpers at `:29977`-`:30044`, and the collector read and packer that produce
 //! the flags (`extractor/native/collector/src/attach_log.rs:58628`-`:58717`,
 //! `:59312`-`:59444`, `:71729`-`:71850`). d23 has no dossier
@@ -89,11 +89,14 @@
 //! upserts and only a full snapshot removes. A delta before any baseline folds
 //! nothing (`world_fold.rs::fold_map_detail`) and is the caller's to exclude.
 //!
-//! **`recompute_map_detail_province_building_totals` (`world_fold.rs::recompute_map_detail_province_building_totals`) is not ported.**
-//! It sums province building levels into their state, which is a host-side
-//! derivation over data this schema already carries in
-//! `province_buildings` + `provinces.state_id`. Storing it would be storing a
-//! join.
+//! **The per-state province-building totals are not ported.**
+//! `world_fold.rs::project_map_detail_province_building_totals` sums province
+//! building levels into their state, which is a host-side derivation over data
+//! this schema already carries in `province_buildings` + `provinces.state_id`.
+//! Storing it would be storing a join. (It is a projection built at snapshot
+//! time rather than a field the fold retains; the only thing the record itself
+//! still owes is the state KEY, via
+//! `world_fold.rs::ensure_map_detail_province_total_states`.)
 
 use core::ops::Range;
 

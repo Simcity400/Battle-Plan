@@ -29511,3 +29511,442 @@ fn field_journal_rolls_back_to_the_value_the_record_opened_with() {
     journal.rollback(&mut slot);
     assert_eq!(slot, 7);
 }
+
+// --- D48 / D23 deferred projection ------------------------------------------
+
+/// A D48 DELTA that adds a state-scoped building row in a state no previous
+/// record named, so the container it creates is observable on its own.
+fn d48_delta_adding_a_building_in_a_new_state() -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_361),
+        status_flags: COMPACT_STATUS_DELTA_DATA,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: Vec::new(),
+        railway_construction_rows: None,
+        building_rows: vec![domain48::BuildingRow {
+            scope: domain48::SCOPE_STATE,
+            location_id: 99,
+            state_id: 99,
+            type_id: 0x2fab,
+            level: 3,
+            healthy_level: Some(3),
+            partial_health_raw: Some(0),
+        }],
+        resource_rows: Vec::new(),
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+/// The retained PROJECTION is part of the accumulator the rollback protects.
+///
+/// A failed record must not leave `build_snapshot` a projection whose captured
+/// inputs came from a frame the fold rolled back: the accumulator it would be
+/// replayed against is the PREVIOUS record's, and pairing one frame's rows with
+/// another frame's roster is exactly the misattribution the deferral exists to
+/// avoid.
+///
+/// Fails if the projection is committed before the outcome is examined: the
+/// failed record's state key set claims a measured-empty D48 resource map for
+/// state 99, which the record that actually committed never observed.
+#[test]
+fn d48_failed_record_does_not_publish_the_projection_it_captured() {
+    let hour = 16_959_360i64;
+    let baseline = d48_payload(0, Some(42));
+    let delta = d48_delta_adding_a_building_in_a_new_state();
+
+    // Reference: the same delta applied cleanly DOES project state 99.
+    let mut applied = WorldFold::new("d48_projection_reference");
+    applied
+        .fold_construction_buildings_state_damage(&baseline)
+        .unwrap();
+    applied
+        .fold_construction_buildings_state_damage(&delta)
+        .unwrap();
+    let applied_snapshot = applied.build_snapshot(hour, "1936-01-01T00");
+    assert!(
+        applied_snapshot["states"]["99"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY].is_object(),
+        "the delta must actually project state 99, or this test is vacuous"
+    );
+
+    let mut failed = WorldFold::new("d48_projection_rollback");
+    failed
+        .fold_construction_buildings_state_damage(&baseline)
+        .unwrap();
+    failed.injected_record_fault = Some(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
+    let error = failed
+        .fold_construction_buildings_state_damage(&delta)
+        .expect_err("the injected fault must fail the record");
+    assert!(error.contains("injected mid-record fault"), "{error}");
+    failed.injected_record_fault = None;
+
+    let snapshot = failed.build_snapshot(hour, "1936-01-01T00");
+    // The CONTAINER the failed record created stays -- that side effect was
+    // never transactional and the key set is shared with every other domain.
+    assert!(
+        snapshot["states"]["99"].is_object(),
+        "the container the failed record created is still a state key"
+    );
+    // The PROJECTION does not.
+    assert_eq!(
+        snapshot["states"]["99"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY],
+        Value::Null,
+        "a failed record must not publish the projection it captured"
+    );
+    // The record that did commit still publishes its own.
+    assert!(
+        snapshot["states"]["42"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY].is_object(),
+        "the previous record's projection must survive the failure"
+    );
+}
+
+/// The completeness set D48 measures its states against is the one the RECORD
+/// read, not the one the document has by the time the snapshot is built.
+///
+/// Fails if the render re-reads `self.states`: a state some later record of the
+/// same hour introduced would receive a measured-empty D48 resource map, which
+/// claims this producer scanned a state it never saw.
+#[test]
+fn d48_projects_measured_empty_resources_only_for_states_the_record_observed() {
+    let hour = 16_959_360i64;
+    let mut fold = WorldFold::new("d48_captured_state_keys");
+    fold.fold_construction_buildings_state_damage(&d48_payload(0, Some(42)))
+        .unwrap();
+    // A later record of the same hour introduces a state D48 never scanned.
+    fold.states.entry("5".to_string()).or_default();
+
+    let snapshot = fold.build_snapshot(hour, "1936-01-01T00");
+    assert!(
+        snapshot["states"]["42"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY]
+            ["resource_amount_raw_by_id"]
+            .is_object(),
+        "a state the record observed must still be measured"
+    );
+    assert_eq!(
+        snapshot["states"]["5"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY],
+        Value::Null,
+        "a state introduced after the record must not be claimed measured-empty"
+    );
+}
+
+/// A clean D18 roster replacement withdraws D48's claim over every country it
+/// no longer names, and witnesses it -- which is what removing the extra from
+/// those countries was.
+///
+/// The country that departs here is the one carrying the CONSTRUCTION rows, not
+/// a measured-empty completeness subject: its rows reach the projection from the
+/// accumulator, so only the narrowed claim can stop them.
+///
+/// Fails two ways: without the coverage read the provenance note stops naming
+/// the departed country, and without the claim being narrowed the projection
+/// RE-CREATES that country in the snapshot under its unresolved numeric key.
+#[test]
+fn d48_roster_eviction_withdraws_the_projection_and_still_witnesses_it() {
+    let hour = 16_959_360i64;
+    let mut fold = WorldFold::new("d48_eviction");
+    fold.fold_country_identity(&country_identity_payload(&[(1, "GER"), (2, "ENG")]))
+        .unwrap();
+    fold.fold_construction_buildings_state_damage(&d48_payload(0, Some(42)))
+        .unwrap();
+    let before = fold.build_snapshot(hour, "1936-01-01T00");
+    assert!(
+        before["countries"]["ENG"]["production"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY]
+            .is_object(),
+        "ENG must be a measured-empty completeness subject first, or this test is vacuous"
+    );
+
+    assert!(
+        !before["countries"]["GER"]["production"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY]
+            ["construction_queue"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "GER must be the country carrying the construction rows"
+    );
+
+    fold.fold_country_identity(&country_identity_payload(&[(2, "ENG")]))
+        .unwrap();
+    let after = fold.build_snapshot(hour, "1936-01-01T00");
+
+    assert!(
+        after["countries"]["ENG"]["production"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY]
+            .is_object(),
+        "a country still on the roster keeps its projection"
+    );
+    assert_eq!(
+        after["countries"]["GER"],
+        Value::Null,
+        "the departed country must not be re-created by the projection"
+    );
+    assert_eq!(
+        after["countries"]["1"],
+        Value::Null,
+        "nor under its now-unresolvable numeric key"
+    );
+    assert!(
+        after["provenance"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| {
+                let note = note.as_str().unwrap_or_default();
+                note.contains("roster replacement evicted") && note.contains('1')
+            }),
+        "the eviction must still witness the country whose D48 extra it withdrew: {:?}",
+        after["provenance"]["notes"]
+    );
+}
+
+/// A D23 baseline whose province mirror names a state with no state row of its
+/// own, so the state key exists ONLY because the province-building totals do.
+fn d23_province_only_state_payload() -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes()); // wall
+    payload.extend_from_slice(&0u32.to_le_bytes()); // state_count
+    payload.extend_from_slice(&1u32.to_le_bytes()); // changed
+    payload.extend_from_slice(&0u32.to_le_bytes()); // status_flags
+    payload.extend_from_slice(&1u32.to_le_bytes()); // province_count
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // resource_count
+    payload.extend_from_slice(&0u32.to_le_bytes()); // state_building_count
+    payload.extend_from_slice(&1u32.to_le_bytes()); // province_building_count
+    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+    payload.extend_from_slice(&2068u32.to_le_bytes()); // province_id
+    payload.extend_from_slice(&9u32.to_le_bytes()); // state_id
+    payload.extend_from_slice(&0b11u32.to_le_bytes()); // flags
+    payload.extend_from_slice(&0u32.to_le_bytes()); // building_first
+    payload.extend_from_slice(&1u32.to_le_bytes()); // building_len
+
+    payload.extend_from_slice(&0x31F6u32.to_le_bytes()); // naval_base
+    payload.extend_from_slice(&10u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload
+}
+
+/// D23's totals are summed at build time, but the STATE KEY they imply is still
+/// created by the record -- because other domains read that key set, and one of
+/// them is D48's own completeness capture in the same hour.
+///
+/// Fails if `ensure_map_detail_province_total_states` is dropped: state 9 is
+/// not a known state when D48's record reads the key set, so D48 stops
+/// measuring it and the state loses its measured-empty resource map.
+#[test]
+fn d23_province_only_state_is_a_key_the_same_hour_can_observe() {
+    let hour = 16_959_360i64;
+    let mut fold = WorldFold::new("d23_province_only_state");
+    fold.fold_map_detail(&d23_province_only_state_payload())
+        .unwrap();
+    assert!(
+        fold.states.contains_key("9"),
+        "the province mirror's state must be a persistent key"
+    );
+    fold.fold_construction_buildings_state_damage(&d48_payload(0, Some(42)))
+        .unwrap();
+
+    let snapshot = fold.build_snapshot(hour, "1936-01-01T00");
+    assert_eq!(
+        snapshot["states"]["9"]["province_buildings"]["naval_base"],
+        json!(10),
+        "the totals themselves still publish"
+    );
+    assert!(
+        snapshot["states"]["9"][CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY]
+            ["resource_amount_raw_by_id"]
+            .is_object(),
+        "D48 must see the state D23's record created"
+    );
+}
+
+/// An unknown D23 hour publishes `province_buildings` as NULL, not as the
+/// carried totals: "unknown this hour" and "no province buildings" are
+/// different claims, and the field said so when `build_snapshot` masked the
+/// value the record had written.
+///
+/// Fails if the deferred sum drops the mask: the retained mirror's totals would
+/// publish as measured on an hour that measured nothing.
+#[test]
+fn d23_unknown_hour_masks_the_deferred_province_building_totals() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(23, d23_baseline_payload(0, 700_000))],
+        vec![(
+            23,
+            d23_baseline_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, 900_000),
+        )],
+    ]);
+    assert_eq!(
+        snaps[0]["states"]["5"]["province_buildings"]["naval_base"],
+        json!(10)
+    );
+    assert_eq!(snaps[1]["states"]["5"]["province_buildings"], Value::Null);
+}
+
+/// Two numeric countries that resolve to the SAME TAG: D18 refuses a duplicate
+/// `tag_db_id` but says nothing about a duplicate TAG string, so this is a
+/// stream the wire admits.
+///
+/// `build_snapshot`'s country loop walks `self.countries`, a `BTreeMap<String,
+/// _>`, so the LAST numeric key in KEY-STRING order owns the output object --
+/// and 9 sorts after 10. Fails if the projection writes both countries into the
+/// shared TAG object in its own numeric order: country 10's measured-empty queue
+/// would land last and erase the construction line country 9 actually has.
+#[test]
+fn d48_two_countries_sharing_a_tag_keep_the_owning_country_s_queue() {
+    let hour = 16_959_360i64;
+    let mut fold = WorldFold::new("d48_duplicate_tag");
+    fold.fold_country_identity(&country_identity_payload(&[(9, "DUP"), (10, "DUP")]))
+        .unwrap();
+    fold.fold_construction_buildings_state_damage(&d48_construction_line_for_country(9))
+        .unwrap();
+
+    let snapshot = fold.build_snapshot(hour, "1936-01-01T00");
+    assert_eq!(
+        snapshot["countries"]["DUP"]["_r2_tag_db_id"],
+        json!(9),
+        "country 9 owns the output object, or this test is vacuous"
+    );
+    assert_eq!(
+        snapshot["countries"]["DUP"]["production"]
+            [CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY]["construction_queue"][0]["id"],
+        json!(77),
+        "the owning country's construction line must be the one that publishes"
+    );
+}
+
+/// `d48_payload`'s clean frame with its construction line re-owned by
+/// `tag_db_id`; every other row is left exactly as the lane gate expects it.
+fn d48_construction_line_for_country(tag_db_id: u32) -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags: 0,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE,
+        observed_country_roots: 1,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: vec![domain48::ConstructionQueueRow {
+            tag_db_id,
+            line_id: 77,
+            template_id: Some(20_013),
+            active_factories: 15,
+            cost_raw: 10_000_000,
+            produced_raw: 5_000_000,
+            priority: 0,
+            target_state_id: Some(42),
+            target_location_id: Some(42),
+            target_scope: Some(domain48::SCOPE_STATE),
+            repair_levels_remaining: Some(0),
+            created_date_raw: Some(60_827_043),
+        }],
+        railway_construction_rows: None,
+        building_rows: vec![
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_STATE,
+                location_id: 42,
+                state_id: 42,
+                type_id: 0x2fab,
+                level: 5,
+                healthy_level: Some(4),
+                partial_health_raw: Some(8_184_501),
+            },
+            domain48::BuildingRow {
+                scope: domain48::SCOPE_PROVINCE,
+                location_id: 2068,
+                state_id: 42,
+                type_id: 0x4cc1,
+                level: 2,
+                healthy_level: Some(2),
+                partial_health_raw: Some(0),
+            },
+        ],
+        resource_rows: vec![domain48::StateResourceRow {
+            state_id: 42,
+            resource_id: 0x3e03,
+            amount_raw: 2_500_000,
+        }],
+    };
+    domain48::encode_lane_frame(&frame)
+}
+
+/// `domain48_subject_ids` is retained accumulator state -- a later hour with no
+/// D18 roster reads it as its completeness fallback -- so a failed record must
+/// not advance it either.
+///
+/// Fails if the subject set is assigned where it is computed instead of at the
+/// commit: the failed record's extra country becomes a measured-empty
+/// completeness subject in a later rosterless hour, which is the fabrication the
+/// completeness set exists to prevent.
+#[test]
+fn d48_failed_record_does_not_advance_the_retained_subject_set() {
+    let baseline = d48_payload(0, Some(42));
+    let delta = d48_delta_adding_a_second_country_construction_line();
+
+    let mut applied = WorldFold::new("d48_subjects_reference");
+    applied
+        .fold_construction_buildings_state_damage(&baseline)
+        .unwrap();
+    let before: BTreeSet<u32> = applied.domain48_subject_ids.clone();
+    applied
+        .fold_construction_buildings_state_damage(&delta)
+        .unwrap();
+    assert_ne!(
+        applied.domain48_subject_ids, before,
+        "the delta must actually add a subject, or this test is vacuous"
+    );
+
+    let mut failed = WorldFold::new("d48_subjects_rollback");
+    failed
+        .fold_construction_buildings_state_damage(&baseline)
+        .unwrap();
+    failed.injected_record_fault = Some(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
+    failed
+        .fold_construction_buildings_state_damage(&delta)
+        .expect_err("the injected fault must fail the record");
+    failed.injected_record_fault = None;
+    assert_eq!(
+        failed.domain48_subject_ids, before,
+        "a failed record must leave the retained subject set where the previous one did"
+    );
+}
+
+/// A D48 DELTA that opens a construction line for a SECOND country, so the
+/// record's subject set is strictly larger than the previous one's.
+fn d48_delta_adding_a_second_country_construction_line() -> Vec<u8> {
+    let frame = domain48::LaneFrame {
+        game_hour_raw: raw_for(16_959_361),
+        status_flags: COMPACT_STATUS_DELTA_DATA,
+        source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+            | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+            | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+            | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE,
+        observed_country_roots: 2,
+        observed_state_roots: 1,
+        observed_province_roots: 1,
+        construction_rows: vec![domain48::ConstructionQueueRow {
+            tag_db_id: 7,
+            line_id: 79,
+            template_id: Some(20_015),
+            active_factories: 1,
+            cost_raw: 1_000_000,
+            produced_raw: 0,
+            priority: 0,
+            target_state_id: Some(42),
+            target_location_id: Some(42),
+            target_scope: Some(domain48::SCOPE_STATE),
+            repair_levels_remaining: Some(0),
+            created_date_raw: Some(60_827_043),
+        }],
+        railway_construction_rows: None,
+        building_rows: Vec::new(),
+        resource_rows: Vec::new(),
+    };
+    domain48::encode_lane_frame(&frame)
+}
