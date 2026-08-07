@@ -133,9 +133,20 @@ impl BenchArena {
     /// place outside that window would be refused before a single field was
     /// read and every measurement would be of the refusal. Same fixed-base
     /// retry loop `critical_path_tests` uses.
+    ///
+    /// THE STRIDE HAS A FLOOR (lane EJ, 2026-08-07). It used to be
+    /// `size.next_power_of_two()`, which is a stride only relative to arenas
+    /// of the SAME size: every arena starts probing at one shared base, so a
+    /// single ~110 MiB fixture reserved across all 64 of a 64 KiB arena's
+    /// slots and the small arena panicked — but only when the two ran
+    /// concurrently, so it reproduced under `cargo test` and never alone. A
+    /// 256 MiB floor steps a small arena past a large neighbour in one slot
+    /// while leaving every large arena's stride exactly as it was.
     fn in_heap_window(size: usize) -> BenchArena {
+        const MIN_ARENA_SLOT: usize = 0x1000_0000;
+        let stride = size.next_power_of_two().max(MIN_ARENA_SLOT);
         for slot in 0..64usize {
-            let want = (HEAP_LO + 0x4000_0000 + slot * size.next_power_of_two()) as *mut c_void;
+            let want = (HEAP_LO + 0x4000_0000 + slot * stride) as *mut c_void;
             let got = unsafe {
                 VirtualAlloc(
                     want,
@@ -4287,4 +4298,634 @@ fn d47_range_census_from_a_traced_frame() {
         row.max_depth
     );
     let _ = std::fs::remove_file(&path);
+}
+
+// === lane EJ, 2026-08-07: the shadow walk =================================
+//
+// TWO JOBS IN ONE SECTION, deliberately: the fixture that builds real MSVC
+// `_Tree`s in real committed pages is the only in-repo world the walk can be
+// driven against, so its SAFETY tests live beside the COST arm that shares it.
+// The safety tests are ordinary tests and gate; the cost arm is `#[ignore]`d
+// like every other instrument in this file.
+
+/// Live per-prewarm widths for the two role containers, from the numbers
+/// recorded in `prewarm_compact_characters_leaders_cabinet_roots`: D04 saw
+/// 1_964 `CCountryLeader` objects deduping to 1_879 identities, and t32
+/// adopted 6_407 advisor roots per prewarm.
+const EJ_LEADER_ENTRIES: usize = 1_964;
+const EJ_LEADER_CHARACTERS: usize = 1_879;
+const EJ_ADVISOR_ENTRIES: usize = 6_407;
+
+/// A small-allocation stride for `_Tree` nodes. Nodes are 0x30/0x50 bytes and
+/// a real allocator packs them into shared pages — giving each its own page
+/// would model an allocator that does not exist and would overstate the walk
+/// by a TLB miss per node.
+const EJ_NODE_STRIDE: usize = 0x80;
+
+/// Write one MSVC `_Tree` into `arena`: a `_Myhead` sentinel plus
+/// `values.len()` nodes in heap order (node `i`'s children are `2i+1` /
+/// `2i+2`), every absent child pointing at the sentinel exactly as MSVC does.
+///
+/// WHAT IS AND IS NOT BUILT. The links are complete and consistent: every
+/// node's `_Parent` is its actual parent (the root's is the sentinel), and the
+/// sentinel's `_Left`/`_Right` are the real leftmost and rightmost nodes
+/// reached by descending the child links, not the root and the last array
+/// slot. What is NOT built is the ORDERING and the COLOURING: the nodes carry
+/// no keys and every `_Color` is left zero, so this is a well-formed binary
+/// tree with MSVC's link discipline rather than a legal `std::map`. That is
+/// deliberate and is the fixture's stated limit — the walk consumes `_Left`,
+/// `_Right`, `_Isnil` and the value, and nothing here should imply the fixture
+/// would satisfy a future check on a field it does not write.
+/// (Codex 019fdc2b, finding 2.)
+fn ej_put_tree(
+    arena: &BenchArena,
+    head: usize,
+    node_at: &dyn Fn(usize) -> usize,
+    value_off: usize,
+    values: &[u64],
+) {
+    // The sentinel: `_Isnil` set, all three links at itself (the empty shape).
+    arena.put_u64(head + DOMAIN47_TREE_NODE_LEFT_OFF, head as u64);
+    arena.put_u64(head + DOMAIN47_TREE_NODE_PARENT_OFF, head as u64);
+    arena.put_u64(head + DOMAIN47_TREE_NODE_RIGHT_OFF, head as u64);
+    arena.put_bytes(head + DOMAIN47_TREE_NODE_ISNIL_OFF, &[1u8]);
+    if values.is_empty() {
+        return;
+    }
+    for (index, value) in values.iter().enumerate() {
+        let addr = node_at(index);
+        let child = |slot: usize| {
+            if slot < values.len() {
+                node_at(slot)
+            } else {
+                head
+            }
+        };
+        arena.put_u64(addr + DOMAIN47_TREE_NODE_LEFT_OFF, child(2 * index + 1) as u64);
+        // The node's ACTUAL parent — `(i-1)/2` in heap order — and the
+        // sentinel only for the root, which is what MSVC writes.
+        arena.put_u64(
+            addr + DOMAIN47_TREE_NODE_PARENT_OFF,
+            if index == 0 {
+                head as u64
+            } else {
+                node_at((index - 1) / 2) as u64
+            },
+        );
+        arena.put_u64(
+            addr + DOMAIN47_TREE_NODE_RIGHT_OFF,
+            child(2 * index + 2) as u64,
+        );
+        arena.put_bytes(addr + DOMAIN47_TREE_NODE_ISNIL_OFF, &[0u8]);
+        arena.put_u64(addr + value_off, *value);
+    }
+    // `_Myhead->_Parent` is the ROOT, and `_Left`/`_Right` are the leftmost
+    // and rightmost nodes — DESCENDED, not guessed at as the root and the last
+    // array slot, which is what they were and which is not where those links
+    // point in any tree wider than one node. This walk reads none of the
+    // three, so getting them wrong cost nothing except the fixture's claim to
+    // be a whole tree (Codex 019fdc2b, finding 2).
+    let descend = |mut index: usize, step: fn(usize) -> usize| {
+        while step(index) < values.len() {
+            index = step(index);
+        }
+        node_at(index)
+    };
+    arena.put_u64(head + DOMAIN47_TREE_NODE_PARENT_OFF, node_at(0) as u64);
+    arena.put_u64(
+        head + DOMAIN47_TREE_NODE_LEFT_OFF,
+        descend(0, |index| 2 * index + 1) as u64,
+    );
+    arena.put_u64(
+        head + DOMAIN47_TREE_NODE_RIGHT_OFF,
+        descend(0, |index| 2 * index + 2) as u64,
+    );
+}
+
+/// One `CCharacter` with both role maps, for the walk's own safety tests.
+struct EjSingleCharacterWorld {
+    arena: BenchArena,
+    character: usize,
+    leader_head: usize,
+    leader_nodes: usize,
+    leaders: Vec<u64>,
+    advisors: Vec<u64>,
+}
+
+impl EjSingleCharacterWorld {
+    fn new(leader_count: usize, advisor_count: usize) -> EjSingleCharacterWorld {
+        let arena = BenchArena::in_heap_window(0x10000);
+        let character = arena.base;
+        let leader_head = arena.base + 0x1000;
+        let advisor_head = arena.base + 0x1080;
+        let leader_nodes = arena.base + 0x2000;
+        let advisor_nodes = arena.base + 0x4000;
+        // Values are never dereferenced by the walk, so they need only be
+        // distinct, 8-aligned, in-window pointers.
+        let leaders: Vec<u64> = (0..leader_count)
+            .map(|index| (arena.base + 0x8000 + index * 0x40) as u64)
+            .collect();
+        let advisors: Vec<u64> = (0..advisor_count)
+            .map(|index| (arena.base + 0xC000 + index * 0x40) as u64)
+            .collect();
+        ej_put_tree(
+            &arena,
+            leader_head,
+            &|index| leader_nodes + index * EJ_NODE_STRIDE,
+            DOMAIN47_LEADER_NODE_VALUE_OFF,
+            &leaders,
+        );
+        ej_put_tree(
+            &arena,
+            advisor_head,
+            &|index| advisor_nodes + index * EJ_NODE_STRIDE,
+            DOMAIN47_ADVISOR_NODE_VALUE_OFF,
+            &advisors,
+        );
+        arena.put_u64(character + DOMAIN47_LEADER_MAP_HEAD_OFF, leader_head as u64);
+        arena.put_u64(character + DOMAIN47_LEADER_MAP_SIZE_OFF, leader_count as u64);
+        arena.put_u64(character + DOMAIN47_ADVISOR_MAP_HEAD_OFF, advisor_head as u64);
+        arena.put_u64(
+            character + DOMAIN47_ADVISOR_MAP_SIZE_OFF,
+            advisor_count as u64,
+        );
+        EjSingleCharacterWorld {
+            arena,
+            character,
+            leader_head,
+            leader_nodes,
+            leaders,
+            advisors,
+        }
+    }
+
+    fn walk(&self) -> Domain47ShadowWalk {
+        let mut walk = Domain47ShadowWalk::default();
+        let mut stack = Vec::new();
+        let mut scratch = Vec::new();
+        page_cache_new_frame();
+        domain47_shadow_walk_character(self.character, &mut walk, &mut stack, &mut scratch);
+        walk
+    }
+}
+
+/// The fixture's link discipline, pinned rather than claimed.
+///
+/// The walk reads `_Left`, `_Right`, `_Isnil` and the value, so a wrong
+/// `_Parent` or a wrong sentinel extremum is invisible to every other test
+/// here — which is exactly how they came to be wrong (Codex 019fdc2b,
+/// finding 2). If a future check ever reads them, this is what says the
+/// fixture is describable as a tree at all.
+#[test]
+fn d47_shadow_walk_fixture_links_are_a_whole_tree() {
+    // Six nodes in heap order: 0 -> {1,2}, 1 -> {3,4}, 2 -> {5}. Leftmost by
+    // descent is 3; rightmost is 2 (node 2's right child, 6, does not exist).
+    let world = EjSingleCharacterWorld::new(6, 0);
+    let node = |index: usize| world.leader_nodes + index * EJ_NODE_STRIDE;
+    let head = world.leader_head;
+    page_cache_new_frame();
+    assert_eq!(
+        read_u64(head + DOMAIN47_TREE_NODE_PARENT_OFF),
+        Some(node(0) as u64),
+        "the sentinel's parent is the root"
+    );
+    assert_eq!(
+        read_u64(head + DOMAIN47_TREE_NODE_LEFT_OFF),
+        Some(node(3) as u64),
+        "the sentinel's left is the LEFTMOST node, not the root"
+    );
+    assert_eq!(
+        read_u64(head + DOMAIN47_TREE_NODE_RIGHT_OFF),
+        Some(node(2) as u64),
+        "the sentinel's right is the RIGHTMOST node, not the last array slot"
+    );
+    assert_eq!(
+        read_u64(node(0) + DOMAIN47_TREE_NODE_PARENT_OFF),
+        Some(head as u64),
+        "only the root's parent is the sentinel"
+    );
+    for index in 1..6usize {
+        assert_eq!(
+            read_u64(node(index) + DOMAIN47_TREE_NODE_PARENT_OFF),
+            Some(node((index - 1) / 2) as u64),
+            "node {index}'s parent link must be its actual parent"
+        );
+    }
+}
+
+#[test]
+fn d47_shadow_walk_reaches_every_entry_of_both_maps() {
+    let world = EjSingleCharacterWorld::new(3, 9);
+    let walk = world.walk();
+    assert_eq!(
+        walk.leaders,
+        world.leaders.iter().copied().collect::<BTreeSet<u64>>(),
+        "the leader map's every value must be reached"
+    );
+    assert_eq!(
+        walk.advisors,
+        world.advisors.iter().copied().collect::<BTreeSet<u64>>(),
+        "the advisor map's every value must be reached"
+    );
+    assert_eq!(walk.refused, 0, "a well-formed pair of maps refuses nothing");
+}
+
+#[test]
+fn d47_shadow_walk_reads_each_map_at_the_value_offset_the_re_proved() {
+    // The two maps have DIFFERENT value offsets (0x28 and 0x48) because their
+    // keys are an `int` and a `std::string`. One offset used for both would
+    // read a node header, or padding, as a pointer.
+    let world = EjSingleCharacterWorld::new(1, 1);
+    let walk = world.walk();
+    assert_eq!(walk.refused, 0);
+    assert!(walk.leaders.contains(&world.leaders[0]));
+    assert!(walk.advisors.contains(&world.advisors[0]));
+    assert_eq!(walk.leaders.len(), 1);
+    assert_eq!(walk.advisors.len(), 1);
+}
+
+#[test]
+fn d47_shadow_walk_refuses_a_map_whose_size_outruns_its_nodes() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    // A concurrent erase leaves `_Mysize` one ahead of what is reachable.
+    world.arena.put_u64(
+        world.character + DOMAIN47_LEADER_MAP_SIZE_OFF,
+        world.leaders.len() as u64 + 1,
+    );
+    let walk = world.walk();
+    assert_eq!(walk.refused, 1, "the torn map, and only it, must refuse");
+    assert!(
+        walk.leaders.is_empty(),
+        "a refused map must contribute NOTHING: a partial merge would inflate \
+         the walk-only residual with entries the walk never proved it had"
+    );
+    assert_eq!(
+        walk.advisors.len(),
+        world.advisors.len(),
+        "the other map on the same character is unaffected"
+    );
+}
+
+#[test]
+fn d47_shadow_walk_refuses_a_map_with_more_nodes_than_its_size_claims() {
+    let world = EjSingleCharacterWorld::new(3, 0);
+    // The other direction: a concurrent insert leaves `_Mysize` behind.
+    world
+        .arena
+        .put_u64(world.character + DOMAIN47_LEADER_MAP_SIZE_OFF, 2);
+    let walk = world.walk();
+    assert_eq!(walk.refused, 1);
+    assert!(walk.leaders.is_empty());
+}
+
+#[test]
+fn d47_shadow_walk_refuses_a_cycle_and_terminates() {
+    let world = EjSingleCharacterWorld::new(3, 0);
+    // The last node's right child points back at the root: a cycle no
+    // `_Mysize` can describe.
+    world.arena.put_u64(
+        world.leader_nodes + 2 * EJ_NODE_STRIDE + DOMAIN47_TREE_NODE_RIGHT_OFF,
+        world.leader_nodes as u64,
+    );
+    let walk = world.walk();
+    assert_eq!(
+        walk.refused, 1,
+        "a cycle must refuse — and this test terminating at all is the bound"
+    );
+    assert!(walk.leaders.is_empty());
+}
+
+#[test]
+fn d47_shadow_walk_refuses_an_implausible_size() {
+    let world = EjSingleCharacterWorld::new(1, 0);
+    world.arena.put_u64(
+        world.character + DOMAIN47_LEADER_MAP_SIZE_OFF,
+        DOMAIN47_SHADOW_WALK_MAX_NODES + 1,
+    );
+    let walk = world.walk();
+    assert_eq!(walk.refused, 1, "a size past the hard cap must refuse");
+    assert!(
+        walk.leaders.is_empty(),
+        "and must not be truncated to the cap: a truncated walk would \
+         manufacture a sweep-only residual out of its own bound"
+    );
+}
+
+#[test]
+fn d47_shadow_walk_refuses_an_unreadable_node() {
+    let world = EjSingleCharacterWorld::new(2, 0);
+    // A node pointer inside the heap window but far outside anything this
+    // process committed: `range_confirmed_good` refuses it.
+    world.arena.put_u64(
+        world.leader_nodes + DOMAIN47_TREE_NODE_LEFT_OFF,
+        (HEAP_HI - 0x1000) as u64,
+    );
+    let walk = world.walk();
+    assert_eq!(walk.refused, 1);
+    assert!(walk.leaders.is_empty());
+}
+
+#[test]
+fn d47_shadow_walk_refuses_a_node_that_claims_to_be_the_sentinel() {
+    let world = EjSingleCharacterWorld::new(2, 0);
+    world.arena.put_bytes(
+        world.leader_nodes + EJ_NODE_STRIDE + DOMAIN47_TREE_NODE_ISNIL_OFF,
+        &[1u8],
+    );
+    let walk = world.walk();
+    assert_eq!(
+        walk.refused, 1,
+        "a nil node reached through a link that is not the sentinel is a shape \
+         this tree cannot have"
+    );
+    assert!(walk.leaders.is_empty());
+}
+
+#[test]
+fn d47_shadow_walk_refuses_a_value_that_is_not_a_heap_pointer() {
+    let world = EjSingleCharacterWorld::new(2, 0);
+    world
+        .arena
+        .put_u64(world.leader_nodes + DOMAIN47_LEADER_NODE_VALUE_OFF, 0x1234);
+    let walk = world.walk();
+    assert_eq!(walk.refused, 1);
+    assert!(walk.leaders.is_empty());
+}
+
+#[test]
+fn d47_shadow_walk_counts_an_empty_map_as_observed_without_reading_its_sentinel() {
+    let world = EjSingleCharacterWorld::new(0, 2);
+    // `_Mysize == 0` short-circuits BEFORE the sentinel is touched, which is
+    // most of this instrument's budget on a roster where most characters hold
+    // neither role. An unreadable head proves the read does not happen.
+    world.arena.put_u64(
+        world.character + DOMAIN47_LEADER_MAP_HEAD_OFF,
+        (HEAP_HI - 0x1000) as u64,
+    );
+    let walk = world.walk();
+    assert_eq!(
+        walk.refused, 0,
+        "an empty map is OBSERVED as empty, not refused"
+    );
+    assert!(walk.leaders.is_empty());
+    assert_eq!(walk.advisors.len(), 2);
+}
+
+#[test]
+fn d47_shadow_walk_refuses_both_maps_when_the_body_is_unreadable() {
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character(HEAP_HI - 0x1000, &mut walk, &mut stack, &mut scratch);
+    assert_eq!(
+        walk.refused, 2,
+        "an unreadable body observed NEITHER map, and the counter is per map"
+    );
+    assert!(walk.leaders.is_empty() && walk.advisors.is_empty());
+}
+
+#[test]
+fn d47_shadow_walk_reuses_its_stack_and_scratch_across_characters() {
+    let first = EjSingleCharacterWorld::new(3, 4);
+    let second = EjSingleCharacterWorld::new(2, 1);
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character(first.character, &mut walk, &mut stack, &mut scratch);
+    domain47_shadow_walk_character(second.character, &mut walk, &mut stack, &mut scratch);
+    assert_eq!(walk.refused, 0);
+    assert_eq!(walk.leaders.len(), 5, "3 + 2 distinct leader pointers");
+    assert_eq!(walk.advisors.len(), 5, "4 + 1 distinct advisor pointers");
+}
+
+// --- what shadowing costs --------------------------------------------------
+
+/// A census-width world whose role maps are populated at live widths.
+struct EjShadowWorld {
+    _arena: BenchArena,
+    roots: ResolvedTypeRoots,
+    census_characters: Vec<usize>,
+}
+
+fn ej_shadow_world() -> EjShadowWorld {
+    let count = T32_CENSUS_CHARACTERS;
+    let node_slots = EJ_LEADER_ENTRIES + EJ_ADVISOR_ENTRIES;
+    // One sentinel per NON-EMPTY map, plus one node per entry. Sentinels and
+    // nodes share the same packed, shuffled region: they are the same size
+    // class and a real allocator makes no distinction between them.
+    let head_slots = EJ_LEADER_CHARACTERS + EJ_ADVISOR_ENTRIES;
+    let node_bytes = (node_slots + head_slots) * EJ_NODE_STRIDE;
+    let arena =
+        BenchArena::in_heap_window(2 * count * SCATTER_PAGE + node_bytes + 2 * SCATTER_PAGE);
+    let string_base = arena.base + count * SCATTER_PAGE;
+    let node_base = string_base + count * SCATTER_PAGE + SCATTER_PAGE;
+
+    let shuffled = |seed: u64, len: usize| {
+        let mut order: Vec<usize> = (0..len).collect();
+        let mut state = seed;
+        for idx in (1..len).rev() {
+            let swap = (scatter_rng(&mut state) % (idx as u64 + 1)) as usize;
+            order.swap(idx, swap);
+        }
+        order
+    };
+    let pages = shuffled(0x5eed_d47_e10a_u64, count);
+    let string_pages = shuffled(0x5eed_d47_e10b_u64, count);
+    // The node region is shuffled too, so following a character's `_Myhead`
+    // is not a fixed displacement from the body that named it.
+    let node_slot_order = shuffled(0x5eed_d47_e10c_u64, node_slots + head_slots);
+    let mut taken = 0usize;
+
+    let roots = ResolvedTypeRoots {
+        ccharacter_vtable: BENCH_CCHARACTER_VTABLE,
+        carmy_leader_vtable: BENCH_CARMY_LEADER_VTABLE,
+        cnavy_leader_vtable: BENCH_CNAVY_LEADER_VTABLE,
+        ccountry_leader_vtable: BENCH_CCOUNTRY_LEADER_VTABLE,
+        cadvisor_vtable: BENCH_CADVISOR_VTABLE,
+        cunit_leader_trait_vtable: BENCH_CUNIT_LEADER_TRAIT_VTABLE,
+    };
+
+    let mut census_characters = Vec::with_capacity(count);
+    for idx in 0..count {
+        let addr = arena.base + pages[idx] * SCATTER_PAGE;
+        let strings = string_base + string_pages[idx] * SCATTER_PAGE;
+        arena.put_u64(addr, BENCH_CCHARACTER_VTABLE);
+        arena.put_u32(addr + CCHARACTER_TYPE_OFF as usize, CCHARACTER_TYPE_ID);
+        arena.put_u32(addr + CCHARACTER_ID_OFF as usize, idx as u32);
+        arena.put_u32(addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF, idx as u32);
+        arena.put_u32(
+            addr + CCHARACTER_COUNTRY_TAG_DB_ID_OFF as usize,
+            (idx % 200) as u32,
+        );
+        arena.put_u64(addr + CCHARACTER_UNIT_LEADER_PTR_OFF as usize, 0);
+        let name = if idx % 2 == 0 {
+            format!("Name {idx}")
+        } else {
+            format!("A Rather Longer Character Name {idx}")
+        };
+        let token = format!("GER_character_token_{idx}");
+        arena.put_msvc_string(addr + CCHARACTER_NAME_OFF as usize, strings, &name);
+        arena.put_msvc_string(addr + CCHARACTER_TOKEN_OFF as usize, strings + 0x40, &token);
+
+        // `EJ_LEADER_ENTRIES` role objects spread over `EJ_LEADER_CHARACTERS`
+        // characters (the surplus models D04's several-roles-per-character),
+        // and one advisor each over the first `EJ_ADVISOR_ENTRIES`. Every
+        // other character holds an EMPTY map, which is the live majority and
+        // the case the walk short-circuits.
+        let leader_entries = if idx < EJ_LEADER_ENTRIES - EJ_LEADER_CHARACTERS {
+            2
+        } else if idx < EJ_LEADER_CHARACTERS {
+            1
+        } else {
+            0
+        };
+        let advisor_entries = usize::from(idx < EJ_ADVISOR_ENTRIES);
+        for (head_off, size_off, value_off, entries) in [
+            (
+                DOMAIN47_LEADER_MAP_HEAD_OFF,
+                DOMAIN47_LEADER_MAP_SIZE_OFF,
+                DOMAIN47_LEADER_NODE_VALUE_OFF,
+                leader_entries,
+            ),
+            (
+                DOMAIN47_ADVISOR_MAP_HEAD_OFF,
+                DOMAIN47_ADVISOR_MAP_SIZE_OFF,
+                DOMAIN47_ADVISOR_NODE_VALUE_OFF,
+                advisor_entries,
+            ),
+        ] {
+            arena.put_u64(addr + size_off, entries as u64);
+            if entries == 0 {
+                // A live empty map still HAS a sentinel allocation; the walk
+                // is what does not read it. Point at the character's own page
+                // so the fixture is well formed without spending a slot.
+                arena.put_u64(addr + head_off, (addr + 0x800) as u64);
+                continue;
+            }
+            let mut slot = || {
+                let at = node_base + node_slot_order[taken] * EJ_NODE_STRIDE;
+                taken += 1;
+                at
+            };
+            let head = slot();
+            let nodes: Vec<usize> = (0..entries).map(|_| slot()).collect();
+            // Distinct in-window values that are not any node's own address,
+            // so a walk reading the wrong field cannot accidentally pass.
+            let values: Vec<u64> = nodes.iter().map(|node| (node + 8) as u64).collect();
+            ej_put_tree(&arena, head, &|index| nodes[index], value_off, &values);
+            arena.put_u64(addr + head_off, head as u64);
+        }
+        census_characters.push(addr);
+    }
+
+    EjShadowWorld {
+        _arena: arena,
+        roots,
+        census_characters,
+    }
+}
+
+/// The production census body over `EjShadowWorld`, optionally shadowing.
+///
+/// The `false` arm issues exactly the reads the census issues today; the
+/// `true` arm is those reads plus the walk, in the position production calls
+/// it from. The difference between the two timings is the whole cost of the
+/// instrument.
+fn ej_census_loop(world: &EjShadowWorld, shadow: bool) -> usize {
+    let mem = Domain47InProcessMemory;
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    let mut sink = 0usize;
+    for (ordinal, addr) in world.census_characters.iter().copied().enumerate() {
+        if let Some(ahead) = world
+            .census_characters
+            .get(ordinal.wrapping_add(DOMAIN47_PREFETCH_DISTANCE))
+        {
+            domain47_prefetch_object(*ahead, domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN);
+        }
+        if shadow {
+            domain47_shadow_walk_character(addr, &mut walk, &mut stack, &mut scratch);
+        }
+        let name_token_addr = addr + DOMAIN47_CCHARACTER_NAME_TOKEN_ID_OFF;
+        let (first, opening) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (second, closing) = domain47::extractor::read_character_census_fields(
+            &mem,
+            &world.roots,
+            addr as u64,
+            || read_u32_stable(name_token_addr),
+        );
+        let (name, token) = domain47_character_root_strings(addr);
+        sink += opening.is_some() as usize
+            + closing.is_some() as usize
+            + first.is_ok() as usize
+            + second.is_ok() as usize
+            + name.map_or(0, |v| v.len())
+            + token.map_or(0, |v| v.len());
+    }
+    sink + walk.leaders.len() + walk.advisors.len() + walk.refused as usize
+}
+
+/// The fixture claims live widths; this is where that claim is checked rather
+/// than trusted, and it is also the walk's only end-to-end test at census
+/// scale: over 13_403 characters the walk must reach every entry of every map
+/// and refuse nothing.
+#[test]
+fn d47_shadow_walk_covers_a_census_width_world_without_refusing() {
+    let world = ej_shadow_world();
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    for addr in &world.census_characters {
+        domain47_shadow_walk_character(*addr, &mut walk, &mut stack, &mut scratch);
+    }
+    assert_eq!(walk.refused, 0, "a well-formed world refuses nothing");
+    assert_eq!(walk.leaders.len(), EJ_LEADER_ENTRIES);
+    assert_eq!(walk.advisors.len(), EJ_ADVISOR_ENTRIES);
+}
+
+/// WHAT THE SHADOW WALK COSTS, on the census fixture that already models the
+/// prewarm's dominant loop.
+///
+/// AN INSTRUMENT, NOT A GATE. It prints the delta and asserts only that both
+/// arms did their job — a wall-time assertion on this machine, which is
+/// usually also building something, would be a flaky gate rather than a
+/// measurement (the same reason every other arm in this file gives).
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_shadow_walk() {
+    let world = ej_shadow_world();
+    page_cache_new_frame();
+    let plain = ej_census_loop(&world, false);
+    let shadowed = ej_census_loop(&world, true);
+    assert!(plain > 0, "the census arm read nothing");
+    assert!(
+        shadowed > plain,
+        "the shadow arm must do strictly more than the census arm"
+    );
+
+    let (without, with) = time_us_median_ab_n(
+        9,
+        20,
+        || ej_census_loop(&world, false),
+        || ej_census_loop(&world, true),
+    );
+    println!(
+        "d47_cost shadow walk (scattered, one page per character): census {without:.1} us -> \
+         census + walk {with:.1} us (+{:.1} us, {:+.1}%) over {} characters, {} leader entries, \
+         {} advisor entries",
+        with - without,
+        (with - without) / without * 100.0,
+        T32_CENSUS_CHARACTERS,
+        EJ_LEADER_ENTRIES,
+        EJ_ADVISOR_ENTRIES,
+    );
 }
