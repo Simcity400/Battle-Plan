@@ -93,6 +93,7 @@ fn read_with(
     let observed_project_rows = owner_progress_rows.len() as u32;
     let changed_rows = observed_facility_rows.saturating_add(observed_scientist_rows);
     CompactProjectsRead {
+        phase: Domain41PhaseTimes::default(),
         facilities,
         projects: Vec::new(),
         scientists,
