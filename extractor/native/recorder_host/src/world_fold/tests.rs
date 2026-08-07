@@ -29194,6 +29194,270 @@ fn d48_failed_delta_leaves_the_construction_accumulator_exactly_as_the_previous_
     );
 }
 
+/// A D41 DELTA that tombstones one row in EVERY one of the five journalled
+/// maps and then fails, so the failure lands after all five have been mutated.
+///
+/// The failure is on the wire, not injected: a deleted facility row must carry
+/// an EMPTY building string, and the string section is read after the last row
+/// loop. `live_string` picks whether this payload is the failing one or the
+/// otherwise identical one that commits -- the second is what proves the first
+/// is not vacuous.
+///
+/// The keys match `chunk3_projects_payload`, which is the baseline these fold
+/// onto: facility 9, project 101, scientist 501, project state 101, and
+/// breakthrough (47, 0, 777) (header extension 4 has no program-status index,
+/// so that component of the key is 0).
+fn d41_delta_tombstoning_every_map(live_string: bool) -> Vec<u8> {
+    let mut out = vec![
+        0u8;
+        SPECIAL_PROJECTS_HEADER_BASE_LEN
+            + SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN
+            + SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN
+            + SPECIAL_PROJECTS_HEADER_PROGRESS_LEN
+    ];
+    put_u64_at(&mut out, 0, 10);
+    put_u32_at(&mut out, 8, 5);
+    put_u32_at(&mut out, 12, 5);
+    put_u32_at(&mut out, 16, COMPACT_STATUS_DELTA_DATA);
+    put_u32_at(&mut out, 20, 1); // facility rows
+    put_u32_at(&mut out, 24, 1); // project rows
+    put_u32_at(&mut out, 28, 1); // scientist rows
+    put_u32_at(&mut out, 32, 1);
+    put_u32_at(&mut out, 36, 1);
+    put_u32_at(&mut out, 40, 1);
+    put_u32_at(&mut out, 44, 1);
+    put_u32_at(&mut out, 48, 1); // source_kind = scan
+    put_u32_at(&mut out, 52, 4); // header extension
+    put_u64_at(&mut out, 56, 7);
+    let progress_offset = SPECIAL_PROJECTS_HEADER_BASE_LEN
+        + SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN
+        + SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN;
+    put_u32_at(&mut out, progress_offset, 1); // project state rows
+    put_u32_at(&mut out, progress_offset + 4, 1); // breakthrough rows
+    put_u32_at(&mut out, progress_offset + 8, 1);
+    put_u32_at(&mut out, progress_offset + 12, 1);
+
+    for value in [9, 0, SPECIAL_PROJECTS_FACILITY_DELETED, 0, 0, 0, 0, 0] {
+        push_u32(&mut out, value);
+    }
+    for value in [101, 0, 0, 0, SPECIAL_PROJECTS_PROJECT_DELETED, 0] {
+        push_u32(&mut out, value);
+    }
+    for value in [501, SPECIAL_PROJECTS_SCIENTIST_DELETED, 0, 0, 0, 0, 0, 0] {
+        push_u32(&mut out, value);
+    }
+    for value in [
+        101,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        SPECIAL_PROJECTS_PROJECT_STATE_DELETED,
+    ] {
+        push_u32(&mut out, value);
+    }
+    for value in [47, 777, 0, SPECIAL_PROJECTS_BREAKTHROUGH_DELETED] {
+        push_u32(&mut out, value);
+    }
+    push_str(&mut out, if live_string { "not empty" } else { "" });
+    push_str(&mut out, "");
+    push_str(&mut out, "");
+    out
+}
+
+/// The five journalled D41 maps by key, plus the one field a string-section
+/// mutation reaches through `get_mut` after its row was inserted.
+fn d41_accumulator_keys(
+    fold: &WorldFold,
+) -> (
+    Vec<u32>,
+    Vec<u32>,
+    Vec<u32>,
+    Vec<u32>,
+    Vec<(u32, u32, u32)>,
+    Option<String>,
+) {
+    let state = fold
+        .special_projects
+        .as_ref()
+        .expect("the baseline must have been retained");
+    (
+        state.facilities.keys().copied().collect(),
+        state.projects.keys().copied().collect(),
+        state.scientists.keys().copied().collect(),
+        state.project_states.keys().copied().collect(),
+        state.breakthroughs.keys().copied().collect(),
+        state
+            .facilities
+            .get(&9)
+            .and_then(|facility| facility.building.clone()),
+    )
+}
+
+/// Fails if the D41 accumulator is taken and mutated without a rollback: the
+/// five tombstones would stick, and every row they removed would be gone from
+/// every later hour without any delta ever having asked for it -- D41 has no
+/// way to restate them, because a delta only carries what moved.
+#[test]
+fn d41_failed_delta_leaves_the_special_projects_accumulator_exactly_as_the_previous_record_left_it()
+{
+    let baseline = chunk3_projects_payload(0);
+
+    // Reference: the same tombstones with a legal string section, to prove the
+    // delta under test really does mutate all five maps.
+    let mut applied = WorldFold::new("d41_txn_reference");
+    applied.fold_special_projects(&baseline, None).unwrap();
+    applied
+        .fold_special_projects(&d41_delta_tombstoning_every_map(false), None)
+        .unwrap();
+    let applied_keys = d41_accumulator_keys(&applied);
+    assert_eq!(
+        applied_keys,
+        (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None
+        ),
+        "the delta must empty every journalled map, or this test is vacuous"
+    );
+
+    // Under test: the same delta, failing in the string section after all five
+    // maps have been mutated.
+    let mut failed = WorldFold::new("d41_txn_rollback");
+    failed.fold_special_projects(&baseline, None).unwrap();
+    let baseline_keys = d41_accumulator_keys(&failed);
+    let error = failed
+        .fold_special_projects(&d41_delta_tombstoning_every_map(true), None)
+        .expect_err("the live building string must fail the record");
+    assert!(
+        error.contains("deleted row has live building string"),
+        "{error}"
+    );
+
+    assert_eq!(
+        d41_accumulator_keys(&failed),
+        baseline_keys,
+        "a failed D41 record must leave the retained accumulator untouched"
+    );
+    assert_eq!(
+        baseline_keys.5.as_deref(),
+        Some("facility_building"),
+        "the string-section mutation must roll back with the row it was written onto"
+    );
+
+    // And the accumulator is still usable: the same delta, applied after the
+    // failure, must reach the state it would have reached without one.
+    failed
+        .fold_special_projects(&d41_delta_tombstoning_every_map(false), None)
+        .unwrap();
+    assert_eq!(
+        d41_accumulator_keys(&failed),
+        applied_keys,
+        "the rolled-back accumulator must still fold the next delta correctly"
+    );
+}
+
+/// The three D41 trailer segments (`PLCF`, `PPGF`, `PRHF`) are folded AFTER the
+/// last thing in the record that can fail, because each merge consumes the
+/// retained segment it supersedes and so cannot leave an undo journal anything
+/// to put back. That placement is the guarantee, and this is what holds it: a
+/// record that fails must not have merged them.
+///
+/// D41's own wire-reachable failures all land before the trailers are even
+/// parsed, so the fault is injected (test-only, see
+/// `WorldFold::injected_record_fault`).
+///
+/// Fails if the merges are moved into the fallible half and write straight into
+/// the accumulator: the patch's rows would stick in a record that was refused.
+#[test]
+fn d41_failed_delta_does_not_merge_the_trailer_segments() {
+    let baseline = d41_delta_pairing_payload(
+        0,
+        &[(9, 101, false)],
+        &[(47, 1, 1), (47, 2, 1)],
+        &[(47, 1, 100, 0), (47, 2, 200, 0)],
+        &[(47, 1, 0, 50, false), (47, 2, 0, 70, false)],
+    );
+    // Every segment moves: one row advances and one is tombstoned in each.
+    let delta = d41_delta_pairing_payload(
+        COMPACT_STATUS_DELTA_DATA,
+        &[(9, 999, false)],
+        &[(47, 1, 3)],
+        &[(47, 1, 111, 0), (47, 2, 0, 1 << 31)],
+        &[(47, 1, 0, 99, false), (47, 2, 0, 0, true)],
+    );
+
+    let trailer_rows = |fold: &WorldFold| {
+        let state = fold
+            .special_projects
+            .as_ref()
+            .expect("the baseline must have been retained");
+        (
+            state.lifecycle.as_ref().map(|fold| {
+                fold.rows
+                    .iter()
+                    .map(|row| (row.tag_db_id, row.local_id, row.started, row.completed))
+                    .collect::<Vec<_>>()
+            }),
+            state.owner_progress.as_ref().map(|fold| {
+                fold.rows
+                    .iter()
+                    .map(|row| (row.tag_db_id, row.local_id, row.phase_progress_raw))
+                    .collect::<Vec<_>>()
+            }),
+            state.reward_history.as_ref().map(|fold| {
+                fold.rows
+                    .iter()
+                    .map(|row| (row.tag_db_id, row.local_id, row.progress_raw))
+                    .collect::<Vec<_>>()
+            }),
+        )
+    };
+
+    let mut applied = WorldFold::new("d41_trailer_reference");
+    applied.fold_special_projects(&baseline, None).unwrap();
+    let baseline_trailers = trailer_rows(&applied);
+    applied.fold_special_projects(&delta, None).unwrap();
+    assert_ne!(
+        trailer_rows(&applied),
+        baseline_trailers,
+        "the delta must actually move the trailer segments, or this test is vacuous"
+    );
+
+    let mut failed = WorldFold::new("d41_trailer_rollback");
+    failed.fold_special_projects(&baseline, None).unwrap();
+    failed.injected_record_fault = Some(SPECIAL_PROJECTS_DOMAIN_ID);
+    let error = failed
+        .fold_special_projects(&delta, None)
+        .expect_err("the injected fault must fail the record");
+    assert!(error.contains("injected mid-record fault"), "{error}");
+    failed.injected_record_fault = None;
+
+    assert_eq!(
+        trailer_rows(&failed),
+        baseline_trailers,
+        "a failed D41 record must not have merged the trailer segments"
+    );
+    assert_eq!(
+        failed
+            .special_projects
+            .as_ref()
+            .and_then(|state| state.facilities.get(&9))
+            .map(|facility| facility.province),
+        Some(101),
+        "the facility row the failed record moved must roll back too"
+    );
+}
+
 /// The undo log's two exactness rules, which the reducers above rely on and
 /// which a plausible-looking journal gets wrong:
 ///
