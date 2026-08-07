@@ -462,6 +462,18 @@ impl FrameRefusalRecordV2 {
                     offender.domain_id
                 ));
             }
+            // A lifted v1 record is a read-side view, not a v2 record: encoding
+            // it would stamp declarations (an authority, a truncation account)
+            // that the original producer never made.
+            if offender.authority == Authority::Undeclared
+                || offender.truncation.kind == TruncationKind::Undeclared
+            {
+                return Err(format!(
+                    "frame refusal for domain {} carries an undeclared authority or truncation \
+                     account; a record lifted from version 1 cannot be re-encoded as version 2",
+                    offender.domain_id
+                ));
+            }
             // The structural guarantee that a domain cannot report nothing.
             // `predicate.code` is a NonZeroU32 in the type system, so the only
             // way to reach here without a producer declaration is to have been
@@ -1249,11 +1261,15 @@ pub fn validate_frame_refusal_payload_any_version(payload: &[u8]) -> Result<(), 
 
 /// Either version, decoded into the v2 shape.
 ///
-/// A v1 record has no predicate, no authority, no locator and no typed units,
-/// so it lifts to `PREDICATE_UNDECLARED` / `SelfDomain` / empty with its whole
-/// reason string preserved. That is an honest lift: the v1 record genuinely did
-/// not carry those facts, and the reader now SEES that rather than being handed
-/// a default that looks like a declaration.
+/// A v1 record has no predicate, no authority, no locator, no typed units and
+/// no truncation accounting, so it lifts to `PREDICATE_UNDECLARED` /
+/// [`Authority::Undeclared`] / empty / [`TruncationAccount::undeclared`] with
+/// its whole reason string preserved. That is an honest lift: every absent
+/// fact is stated as absent — [`FrameRefusalOffenderV2::render`] on a lifted
+/// offender says `authority=undeclared` and `units=undeclared`, never a
+/// default that looks like a declaration. A lifted record is a read-side view
+/// only; [`FrameRefusalRecordV2::encode`] refuses it rather than manufacture
+/// v2 declarations for facts v1 never carried.
 pub fn decode_frame_refusal_any_version(payload: &[u8]) -> Result<FrameRefusalRecordV2, String> {
     match declared_frame_refusal_version(payload) {
         Some(version) if version == FRAME_REFUSAL_VERSION_V2 => {
@@ -1275,10 +1291,10 @@ pub fn decode_frame_refusal_any_version(payload: &[u8]) -> Result<FrameRefusalRe
                 status_flags: offender.status_flags,
                 non_tolerated_flags: offender.non_tolerated_flags,
                 predicate: Predicate::undeclared(),
-                authority: Authority::SelfDomain,
+                authority: Authority::Undeclared,
                 locator: Vec::new(),
                 units: Vec::new(),
-                truncation: TruncationAccount::complete(0),
+                truncation: TruncationAccount::undeclared(),
                 off_frame: None,
                 reason: offender.reason,
                 // A version 1 entry carried no units, so its reason names
@@ -2036,6 +2052,10 @@ mod tests {
         )));
     }
 
+    /// PRODUCTION CHANGE THAT MAKES THIS FAIL: reverting the lift to stamp
+    /// `Authority::SelfDomain` or `TruncationAccount::complete(0)` (each is an
+    /// assertion no v1 producer made), rendering either as anything but an
+    /// explicit `undeclared`, or letting `encode()` serialize a lifted record.
     #[test]
     fn a_v1_record_lifts_to_v2_as_explicitly_undeclared_rather_than_as_a_default() {
         let legacy = sample().encode().unwrap();
@@ -2047,12 +2067,36 @@ mod tests {
                 offender.predicate.is_undeclared(),
                 "a v1 record carried no predicate and must say so, not invent one"
             );
-            assert_eq!(offender.authority, Authority::SelfDomain);
+            assert_eq!(
+                offender.authority,
+                Authority::Undeclared,
+                "a v1 record carried no authority and must say so, not claim self"
+            );
             assert!(offender.locator.is_empty());
             assert!(offender.units.is_empty());
-            assert_eq!(offender.truncation.kind, TruncationKind::None);
+            assert_eq!(
+                offender.truncation.kind,
+                TruncationKind::Undeclared,
+                "a v1 record carried no truncation accounting and must say so, not claim complete"
+            );
             assert_eq!(offender.reason, sample().offenders[index].reason);
+
+            // The render a log line or a consumer sees states each absence and
+            // asserts nothing a v1 producer never said.
+            let rendered = offender.render();
+            assert!(rendered.contains("authority=undeclared"), "{rendered}");
+            assert!(rendered.contains("units=undeclared"), "{rendered}");
+            assert!(!rendered.contains("authority=self"), "{rendered}");
+            assert!(!rendered.contains("complete"), "{rendered}");
         }
+
+        // A lifted record is a read-side view. Re-encoding it as v2 would
+        // manufacture declarations, so the encoder refuses it by name.
+        let error = lifted.encode().unwrap_err();
+        assert!(
+            error.contains("cannot be re-encoded as version 2"),
+            "{error}"
+        );
     }
 
     /// A version this build was never taught is REFUSED, and the refusal says

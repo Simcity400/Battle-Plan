@@ -610,6 +610,12 @@ pub enum Authority {
     Host,
     /// An off-frame worker owned the answer and did not deliver it.
     OffFrameWorker,
+    /// The record never said. Only a lifted version 1 record produces this:
+    /// v1 carried no authority, and the lift must state that absence rather
+    /// than hand a reader a default that looks like a declaration. Its kind
+    /// code is 0 — the value an uninitialised slot holds — and the decoder
+    /// keeps rejecting 0, so this can exist in memory but never on the wire.
+    Undeclared,
 }
 
 /// `kind u16 | domain_id u16 | rva u64`
@@ -623,6 +629,7 @@ impl Authority {
             Self::Engine { .. } => 3,
             Self::Host => 4,
             Self::OffFrameWorker => 5,
+            Self::Undeclared => 0,
         }
     }
 
@@ -668,6 +675,7 @@ impl Authority {
             Self::Engine { rva } => format!("authority=engine@rva=0x{rva:x}"),
             Self::Host => "authority=host".to_string(),
             Self::OffFrameWorker => "authority=off_frame_worker".to_string(),
+            Self::Undeclared => "authority=undeclared".to_string(),
         }
     }
 }
@@ -860,6 +868,12 @@ pub enum TruncationKind {
     UnitTooLarge = 3,
     /// The producer offered more units than the wire can count.
     ProducerOverflow = 4,
+    /// The record never accounted. Only a lifted version 1 record produces
+    /// this: v1 had no truncation accounting, and claiming `complete` would
+    /// assert a fact no v1 producer stated. Code 0 — the uninitialised-slot
+    /// value — and `from_code` keeps rejecting it, so it cannot reach the
+    /// wire.
+    Undeclared = 0,
 }
 
 impl TruncationKind {
@@ -883,6 +897,7 @@ impl TruncationKind {
             Self::BudgetShare => "budget_share",
             Self::UnitTooLarge => "unit_too_large",
             Self::ProducerOverflow => "producer_overflow",
+            Self::Undeclared => "undeclared",
         }
     }
 }
@@ -910,6 +925,17 @@ impl TruncationAccount {
         }
     }
 
+    /// The account a lifted version 1 record carries: v1 never accounted, and
+    /// this says so instead of claiming completeness.
+    pub const fn undeclared() -> Self {
+        Self {
+            kind: TruncationKind::Undeclared,
+            units_offered: 0,
+            units_emitted: 0,
+            bytes_dropped: 0,
+        }
+    }
+
     pub const fn units_dropped(&self) -> u32 {
         self.units_offered.saturating_sub(self.units_emitted)
     }
@@ -920,6 +946,9 @@ impl TruncationAccount {
                 "units={}/{} complete",
                 self.units_emitted, self.units_offered
             ),
+            // No counts: rendering `0/0` here would state an accounting the
+            // record never made.
+            TruncationKind::Undeclared => "units=undeclared".to_string(),
             other => format!(
                 "units={}/{} dropped={} bytes_dropped={} reason={}",
                 self.units_emitted,
