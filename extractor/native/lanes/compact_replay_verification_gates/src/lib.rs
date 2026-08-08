@@ -3590,6 +3590,12 @@ const RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS: &[&str] = &[
     "finalize_seconds",
     "peak_private_bytes",
     "peak_working_set_bytes",
+    // The named-component breakdown behind the two peaks. Same reason as the
+    // peaks: it is read after the container is written, so the pre-pack copy
+    // cannot know it. Like them, it describes the recorder process, never the
+    // recording, so removing it from what a container attests costs the
+    // container nothing.
+    "memory_account",
     "verify",
 ];
 

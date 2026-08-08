@@ -565,7 +565,13 @@ impl StreamMeta {
 // ---------------------------------------------------------------------------
 
 /// One decoded game-hour world state, yielded by [`HourCursor`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Clone` and `PartialEq` are written out rather than derived, because this
+/// struct carries a memory-accounting guard and neither trait should be decided
+/// by it: a cloned hour is a second copy of tens of megabytes and must charge
+/// for them, and two hours must compare by the world state they hold, never by
+/// their bookkeeping.
+#[derive(Debug)]
 pub struct WorldHour {
     /// Canonical sort key: `raw_date - DATE_EPOCH_CONST`.
     pub hour_index: i64,
@@ -577,9 +583,62 @@ pub struct WorldHour {
     /// DOMAIN_DATA record counts per domain id that fed THIS hour (records seen
     /// since the previous `FRAME_END`). Mirrors `fold_check`'s per-hour counts.
     pub domain_data_counts: BTreeMap<u16, u64>,
+    /// Accounts [`Self::snapshot`] to
+    /// [`Component::InflightSnapshots`](recorder_host::mem_account::Component::InflightSnapshots)
+    /// for as long as this hour is alive.
+    ///
+    /// Private, and deliberately: an hour that could be built without one would
+    /// hold tens of megabytes the table never sees. Take the bytes out with
+    /// [`Self::into_charged_snapshot`], which hands the guard over with them,
+    /// rather than moving `snapshot` on its own.
+    snapshot_charge: recorder_host::mem_account::Charge,
 }
 
+impl Clone for WorldHour {
+    fn clone(&self) -> Self {
+        let snapshot = self.snapshot.clone();
+        // The clone's OWN allocation, priced from the clone. `Vec::clone` does
+        // not promise the source's capacity, so copying the original's charge
+        // would be a guess about somebody else's buffer.
+        let snapshot_charge = recorder_host::mem_account::Charge::new(
+            recorder_host::mem_account::Component::InflightSnapshots,
+            snapshot.capacity() as u64,
+        );
+        Self {
+            hour_index: self.hour_index,
+            date: self.date.clone(),
+            snapshot,
+            domain_data_counts: self.domain_data_counts.clone(),
+            snapshot_charge,
+        }
+    }
+}
+
+impl PartialEq for WorldHour {
+    fn eq(&self, other: &Self) -> bool {
+        self.hour_index == other.hour_index
+            && self.date == other.date
+            && self.snapshot == other.snapshot
+            && self.domain_data_counts == other.domain_data_counts
+    }
+}
+
+impl Eq for WorldHour {}
+
 impl WorldHour {
+    /// Take the snapshot bytes out together with the charge that accounts for
+    /// them.
+    ///
+    /// The pair moves as one because the alternative — charging the new owner
+    /// and letting this hour's guard fall later — is not the "momentary"
+    /// double count it looks like. The next thing the new owner does is a
+    /// bounded-channel `send`, which BLOCKS whenever the consumer is busy, so
+    /// the overlap lasts a whole encode interval and shows up in the table as a
+    /// peak of one extra world snapshot that never existed.
+    fn into_charged_snapshot(self) -> (Vec<u8>, recorder_host::mem_account::Charge) {
+        (self.snapshot, self.snapshot_charge)
+    }
+
     /// The canonical snapshot bytes.
     pub fn snapshot_bytes(&self) -> &[u8] {
         &self.snapshot
@@ -1138,6 +1197,71 @@ struct CacheEmitJob {
     start_offset: u64,
     end_offset: u64,
     world_json: Vec<u8>,
+    /// Keeps [`Self::world_json`] accounted while the job sits in the channel
+    /// and while the consumer works on it. Charged by the constructor below,
+    /// which is why nothing else may build this struct, and dropped by the
+    /// consumer the moment the bytes are.
+    snapshot_charge: recorder_host::mem_account::Charge,
+}
+
+/// A cache encoder and the charges for what it retains, moved together.
+///
+/// The two are one object because their lifetimes are: the encoder's delta base
+/// and its per-hour rows are alive from the push that created them until
+/// `finish` consumes the encoder, including across the thread hand-off back to
+/// the finalize driver. Guards held as locals in the consumer closure died at
+/// that hand-off and left both owners charging zero while they were still
+/// resident — which is exactly the shape of accounting error the component
+/// table exists to make impossible.
+struct ChargedCacheEncoder {
+    encoder: ReplayCacheEncoderFile,
+    delta_base: recorder_host::mem_account::Charge,
+    hour_entries: recorder_host::mem_account::Charge,
+}
+
+impl ChargedCacheEncoder {
+    fn new(encoder: ReplayCacheEncoderFile) -> Self {
+        Self {
+            encoder,
+            delta_base: recorder_host::mem_account::Charge::new(
+                recorder_host::mem_account::Component::CacheDeltaBase,
+                0,
+            ),
+            hour_entries: recorder_host::mem_account::Charge::new(
+                recorder_host::mem_account::Component::CacheHourEntries,
+                0,
+            ),
+        }
+    }
+
+    /// Re-read both retained sizes from the encoder itself, so the table cannot
+    /// drift from what the encoder actually holds. Both reads are O(1).
+    fn reprice(&mut self) {
+        self.delta_base.set(self.encoder.delta_base_heap_bytes());
+        self.hour_entries
+            .set(self.encoder.hour_entries_heap_bytes());
+    }
+}
+
+impl CacheEmitJob {
+    /// The only way to build a job, so its snapshot bytes cannot enter the
+    /// pipeline uncharged — and the only way to move an hour's bytes into one,
+    /// so they cannot be charged TWICE either. The hour's existing guard is
+    /// carried over rather than a second one minted: the bytes did not change,
+    /// so neither should their charge.
+    fn from_hour(hour: WorldHour, start_offset: u64, end_offset: u64) -> Self {
+        let hour_index = hour.hour_index;
+        let date = hour.date.clone();
+        let (world_json, snapshot_charge) = hour.into_charged_snapshot();
+        Self {
+            hour_index,
+            date,
+            start_offset,
+            end_offset,
+            world_json,
+            snapshot_charge,
+        }
+    }
 }
 
 /// In-flight hours between the finalize pipeline's producer and consumer.
@@ -1215,8 +1339,21 @@ fn emit_cache_hour(
     cache_encoder: &mut ReplayCacheEncoderFile,
     job: CacheEmitJob,
 ) -> Result<(), OpenError> {
-    let prepared = snapshot::CanonicalWorldHour::parse(job.world_json, job.hour_index)
+    // Destructured rather than field-accessed so the snapshot charge can be
+    // dropped at the exact instant the bytes are: `parse` consumes the `Vec`
+    // and releases it once it has the digest, so a guard that lived to the end
+    // of this function would report a copy of the world that no longer exists.
+    let CacheEmitJob {
+        hour_index,
+        date,
+        start_offset,
+        end_offset,
+        world_json,
+        snapshot_charge,
+    } = job;
+    let prepared = snapshot::CanonicalWorldHour::parse(world_json, hour_index)
         .map_err(|error| OpenError::Certification(error.to_string()))?;
+    drop(snapshot_charge);
     recorder_host::world_fold::preserve_production_render_blobs_from_canon(
         output_dir,
         prepared.value(),
@@ -1224,10 +1361,10 @@ fn emit_cache_hour(
     cache_encoder
         .push_prepared(
             snapshot::CacheBuildHourMeta {
-                hour_index: job.hour_index,
-                date: job.date,
-                h4cr_start_offset: job.start_offset,
-                h4cr_end_offset: job.end_offset,
+                hour_index,
+                date,
+                h4cr_start_offset: start_offset,
+                h4cr_end_offset: end_offset,
             },
             prepared,
         )
@@ -1355,6 +1492,8 @@ pub fn build_certified_replay_artifacts(
     // cache encoder -- the only thing that decides output bytes -- is still a
     // single object driven by a single thread. Nothing is reordered, split or
     // recomputed; only the thread doing the consuming changed.
+    recorder_host::mem_account::mark("finalize.cursor_open");
+
     let (jobs_tx, jobs_rx) = mpsc::sync_channel::<CacheEmitJob>(FINALIZE_PIPELINE_DEPTH);
     let mut pending: Option<(WorldHour, u64)> = None;
     let mut legacy_json_bytes_avoided = 0u64;
@@ -1365,12 +1504,24 @@ pub fn build_certified_replay_artifacts(
         // out-prioritize whatever else the machine is doing, and this same
         // consumer runs on hosts with very few cores, where an eager background
         // thread is a regression rather than a speed-up.
-        let consumer = scope.spawn(move || -> Result<ReplayCacheEncoderFile, OpenError> {
+        let consumer = scope.spawn(move || -> Result<ChargedCacheEncoder, OpenError> {
             lower_current_thread_priority();
+            // The encoder's two retained structures are priced once per hour,
+            // after the push that changed them. Both are read from the encoder
+            // itself rather than modelled here, so the table cannot drift from
+            // what the encoder actually holds.
+            //
+            // The guards travel back OUT with the encoder rather than dying
+            // when this closure returns: the delta base and the hour rows are
+            // still alive until `finish` consumes the encoder, and a guard that
+            // stopped at the thread boundary would report them as freed while
+            // the very next mark could still see them.
+            let mut charged = ChargedCacheEncoder::new(cache_encoder);
             for job in jobs_rx {
-                emit_cache_hour(&consumer_dir, &mut cache_encoder, job)?;
+                emit_cache_hour(&consumer_dir, &mut charged.encoder, job)?;
+                charged.reprice();
             }
-            Ok(cache_encoder)
+            Ok(charged)
         });
 
         let producer = (|| -> Result<(), OpenError> {
@@ -1402,13 +1553,11 @@ pub fn build_certified_replay_artifacts(
                     // is the real one, rather than a send failure describing the
                     // symptom.
                     if jobs_tx
-                        .send(CacheEmitJob {
-                            hour_index: previous.hour_index,
-                            date: previous.date,
-                            start_offset: previous_start,
-                            end_offset: start_offset,
-                            world_json: previous.snapshot,
-                        })
+                        .send(CacheEmitJob::from_hour(
+                            previous,
+                            previous_start,
+                            start_offset,
+                        ))
                         .is_err()
                     {
                         return Ok(());
@@ -1435,9 +1584,27 @@ pub fn build_certified_replay_artifacts(
             // Read before `take_index` consumes the cursor, for the same
             // reason the retained CID1 is.
             let published_hour_coverage_end = cursor.published_hour_coverage_end();
+            // `take_index` consumes the cursor, and with it the `WorldFold`, so
+            // the live-heap difference across this call BOUNDS the fold's
+            // retained world state — the one large finalize owner with no
+            // charge of its own, and the only way to size it without walking
+            // 35k lines of fold.
+            //
+            // It bounds rather than measures: the cache-encode consumer is
+            // still running here and has not been joined, so anything it
+            // allocates or frees between the two marks lands in the same
+            // difference. Read it as an order of magnitude, not a figure.
+            recorder_host::mem_account::mark("finalize.before_fold_release");
+            // `take_index` moves the hour rows OUT of the cursor and into the
+            // returned index, then drops the cursor. The rows' charge is taken
+            // over here, before the move, so they are never unaccounted and
+            // never double-accounted; this guard carries them for the rest of
+            // the build.
+            let index_rows_charge = cursor.take_index_rows_charge();
             let stream_index = cursor
                 .take_index()
                 .map_err(|error| OpenError::Certification(error.to_string()))?;
+            recorder_host::mem_account::mark("finalize.after_fold_release");
             if stream_index.source.decoded_len != expected_source_len
                 || stream_index.source.decoded_sha256 != expected_source_sha256
             {
@@ -1459,17 +1626,16 @@ pub fn build_certified_replay_artifacts(
                         "legacy JSON byte accounting overflowed u64".to_string(),
                     )
                 })?;
-            let _ = jobs_tx.send(CacheEmitJob {
-                hour_index: last.hour_index,
-                date: last.date,
-                start_offset: last_start,
-                end_offset: expected_source_len,
-                world_json: last.snapshot,
-            });
+            let _ = jobs_tx.send(CacheEmitJob::from_hour(
+                last,
+                last_start,
+                expected_source_len,
+            ));
             Ok((
                 excluded,
                 identity,
                 stream_index,
+                index_rows_charge,
                 published_hour_coverage_end,
             ))
         });
@@ -1483,31 +1649,54 @@ pub fn build_certified_replay_artifacts(
         // Consumer errors win: when both fail, the producer's is usually the
         // "receiver hung up" symptom of the consumer's real failure.
         let cache_encoder = consumed?;
-        let (excluded, identity, stream_index, published_hour_coverage_end) = producer_result?;
+        let (excluded, identity, stream_index, index_rows_charge, published_hour_coverage_end) =
+            producer_result?;
         Ok::<_, OpenError>((
             cache_encoder,
             excluded,
             identity,
             stream_index,
+            index_rows_charge,
             published_hour_coverage_end,
         ))
     });
     let (
-        cache_encoder,
+        charged_encoder,
         excluded_domain_data_records,
         campaign_identity_manifest,
         stream_index,
+        // Held for as long as `stream_index` is: it owns the hour rows now.
+        _stream_index_rows_charge,
         published_hour_coverage_end,
     ) = pipeline_result?;
+
+    // The fold, the decoder's framing buffers and the encoder's delta base are
+    // all still alive here and are released over the next few statements; a
+    // mark on either side of that is what separates "the fold's footprint" from
+    // "the packing footprint" in the profile.
+    recorder_host::mem_account::mark("finalize.pipeline_joined");
 
     let cache_identity_mode = match identity_mode {
         StreamIdentityMode::Legacy => snapshot::CacheIdentityMode::Legacy,
         StreamIdentityMode::IdentityV1 => snapshot::CacheIdentityMode::IdentityV1,
     };
     let schema = schema_version().to_string();
+    // Destructured here and not before: the charges must survive right up to
+    // the call that consumes what they account for. `finish` moves the hour
+    // rows into `replay_index`, which is charged separately below.
+    let ChargedCacheEncoder {
+        encoder: cache_encoder,
+        delta_base: delta_base_charge,
+        hour_entries: hour_entries_charge,
+    } = charged_encoder;
     let (mut cache_file, replay_index) = cache_encoder
         .finish(game_id, schema, cache_identity_mode, expected_source_len)
         .map_err(|error| OpenError::Certification(error.to_string()))?;
+    // The delta base died with the encoder. The hour rows did not: `finish`
+    // moved them into `replay_index`, so that charge is handed on rather than
+    // dropped, and only released when the index is.
+    drop(delta_base_charge);
+    let _replay_index_rows_charge = hour_entries_charge;
     cache_file.flush()?;
     cache_file.sync_all()?;
     drop(cache_file);
@@ -1544,6 +1733,7 @@ pub fn build_certified_replay_artifacts(
     // `fs::read` here was a peak-memory term that grows without bound. The proof
     // is unchanged -- same records, same order, same per-hour parity hashes --
     // only the bytes' address changed.
+    recorder_host::mem_account::mark("finalize.before_parity_verify");
     let cache_file = fs::File::open(&cache_path)?;
     let parity_reader = snapshot::CertifiedReplayCache::open_file(
         &index_bytes,
@@ -2301,6 +2491,11 @@ pub struct HourCursor {
     /// Stable re-openable source identity. Reader-only cursors deliberately
     /// lack one and therefore cannot mint a persisted authoritative index.
     index_source: Option<IndexSourceDescriptor>,
+    /// Accounts `carry` + `chunk`, which are fixed multiples of `CHUNK`.
+    framing_charge: recorder_host::mem_account::Charge,
+    /// Accounts `index_hours`, which gains a row per published hour and is
+    /// therefore one of the session-length scalers the table exists to expose.
+    hour_index_charge: recorder_host::mem_account::Charge,
 }
 
 #[derive(Debug, Clone)]
@@ -2366,6 +2561,17 @@ impl HourCursor {
         identity_mode: StreamIdentityMode,
         index_source: Option<IndexSourceDescriptor>,
     ) -> HourCursor {
+        // Charged before the buffers exist, per the accounting rule. Kept up to
+        // date in `pump`, because `carry` can outgrow its initial reservation
+        // when one record spans chunks.
+        let framing_charge = recorder_host::mem_account::Charge::new(
+            recorder_host::mem_account::Component::DecoderFraming,
+            (CHUNK * 3) as u64,
+        );
+        let hour_index_charge = recorder_host::mem_account::Charge::new(
+            recorder_host::mem_account::Component::DecoderHourIndex,
+            0,
+        );
         HourCursor {
             reader,
             fold: WorldFold::new(game_id.clone()),
@@ -2397,6 +2603,8 @@ impl HourCursor {
             strict_validation_error: None,
             source_hasher: Sha256::new(),
             index_source,
+            framing_charge,
+            hour_index_charge,
         }
     }
 
@@ -2507,6 +2715,25 @@ impl HourCursor {
             .validate_structure()
             .map_err(IndexCertificationError::InvalidIndex)?;
         Ok(index)
+    }
+
+    /// Hand the per-hour offset rows' charge to a caller that is about to take
+    /// the rows themselves.
+    ///
+    /// A transfer, not a second charge: minting a fresh guard before
+    /// `take_index` and letting the cursor's own guard fall with the cursor
+    /// leaves both alive at once, which doubles this component's PEAK
+    /// permanently — the peak never comes back down. Swapping in a zero-sized
+    /// guard leaves the cursor's remaining lifetime honestly charging nothing,
+    /// because by then it owns nothing.
+    fn take_index_rows_charge(&mut self) -> recorder_host::mem_account::Charge {
+        std::mem::replace(
+            &mut self.hour_index_charge,
+            recorder_host::mem_account::Charge::new(
+                recorder_host::mem_account::Component::DecoderHourIndex,
+                0,
+            ),
+        )
     }
 
     /// Consume a reader-only cursor after proving that it reached and certified
@@ -2717,7 +2944,28 @@ impl HourCursor {
             }
             self.decoded_read = self.decoded_read.saturating_add(n as u64);
             self.source_hasher.update(&self.chunk[..n]);
+            // Charged BEFORE the append that may reallocate. `carry` starts at
+            // `2 * CHUNK` but is NOT capped there: it has to hold one whole
+            // incomplete record plus the next chunk, and the record header
+            // permits a payload far larger than a chunk. A charge fixed at
+            // construction would report 24 MiB while the buffer held hundreds.
+            //
+            // The pre-charge is `Vec`'s own worst case, `max(2 * cap, cap + n)`,
+            // not `cap + n`: amortized growth DOUBLES, so a buffer that needed
+            // four more MiB can take sixteen, and a pre-charge of the requested
+            // size would miss the peak it exists to catch. Over-charging for
+            // the length of one append is the safe direction; the second `set`
+            // brings it back to what was really reserved.
+            let carry_capacity = self.carry.capacity();
+            self.framing_charge.set(
+                (carry_capacity
+                    .saturating_mul(2)
+                    .max(carry_capacity.saturating_add(n))
+                    + self.chunk.capacity()) as u64,
+            );
             self.carry.extend_from_slice(&self.chunk[..n]);
+            self.framing_charge
+                .set((self.carry.capacity() + self.chunk.capacity()) as u64);
         }
     }
 
@@ -2891,6 +3139,16 @@ impl HourCursor {
                 cheap_seek_point: cheap,
             });
             self.stats.hours_emitted += 1;
+            // Charged BEFORE the hour is queued, so the counter is never
+            // observed low at the instant the snapshot becomes resident; the
+            // guard rides with the hour and releases wherever it is dropped.
+            // `capacity`, not `len`: the allocator is holding the whole
+            // reservation, and the fold's serialization buffer routinely ends
+            // with spare capacity.
+            let snapshot_charge = recorder_host::mem_account::Charge::new(
+                recorder_host::mem_account::Component::InflightSnapshots,
+                bytes.capacity() as u64,
+            );
             self.ready.push_back(WorldHour {
                 hour_index,
                 date,
@@ -2898,8 +3156,23 @@ impl HourCursor {
                 // All hours closed by one FRAME_END share the counts accumulated
                 // for it; normally exactly one hour closes per FRAME_END.
                 domain_data_counts: counts.clone(),
+                snapshot_charge,
             });
         }
+        // `index_hours` gains a row per published hour for the whole session.
+        // Re-charged to its current capacity rather than incremented by one
+        // row, so a reallocation's real cost is what the table shows.
+        //
+        // This is the one charge in the finalize path taken AFTER its
+        // allocation rather than before, because a `Vec`'s next capacity is not
+        // knowable until it has grown. The under-report it can produce is one
+        // growth step, visible for the length of one game hour, on a component
+        // that grows by 24 bytes per hour — stated here rather than papered
+        // over, since every other charge in this module promises the opposite
+        // order.
+        self.hour_index_charge.set(
+            (self.index_hours.capacity() * std::mem::size_of::<HourOffset>()) as u64,
+        );
         self.cur_hour_start = next_hour_start;
         // ONLY when an hour was really published. A `FRAME_END` that closed no
         // hour advances the assembly cursor but adds nothing to the cache, so
@@ -3262,6 +3535,13 @@ pub mod dq_v3_prototype;
 /// no code with the prototype's timed regions.
 #[cfg(feature = "dq-v3-prototype")]
 pub mod dq_v3_census;
+
+/// Lane FR resident-memory measurement instrument. Never on by default and
+/// never packaged; it exists so finalize's footprint is attributed to named
+/// owners from a run, and so the always-on component table has an oracle (the
+/// allocator's own live-heap total) to be checked against.
+#[cfg(feature = "fr-mem-profile")]
+pub mod fr_mem_profile;
 
 #[cfg(test)]
 mod tests;

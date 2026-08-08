@@ -41,6 +41,30 @@ pub const DEFAULT_FRAME_BYTES: u64 = 256 << 20;
 pub const ZSTD_FLUSH_INTERVAL_BYTES: usize = 1 << 20;
 const BUFFER_BYTES: usize = 1 << 20;
 
+/// Bytes a [`StreamWriter`] reserves for as long as it is open, by compression.
+///
+/// This exists so a host can put a NUMBER next to the sentence it has been
+/// publishing for months — "one 64 KiB pipe read buffer + a 1 MiB BufWriter +
+/// one zstd encoder context" — because the third clause is by far the largest
+/// and the sentence hid it. At [`ZSTD_WINDOW_LOG`] = 27 the encoder reserves a
+/// 128 MiB match window, which dominates the recorder's entire capture-time
+/// footprint.
+///
+/// It is a FLOOR, not the whole truth: libzstd also allocates its match tables
+/// and working buffers (single-digit MiB at [`DEFAULT_ZSTD_LEVEL`]) inside its
+/// own context, and no caller can read those from here. Deliberately computed
+/// from the constants this module controls rather than sampled from process
+/// commit around the constructor: a commit delta on a live recorder also
+/// captures whatever the control thread allocated in the same window, which
+/// makes the number quietly wrong in a way nobody would notice.
+pub fn writer_reserved_bytes(compression: StreamCompression) -> u64 {
+    let buffered = BUFFER_BYTES as u64;
+    match compression {
+        StreamCompression::None => buffered,
+        StreamCompression::Zstd => buffered + (1u64 << ZSTD_WINDOW_LOG),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamCompression {
     None,

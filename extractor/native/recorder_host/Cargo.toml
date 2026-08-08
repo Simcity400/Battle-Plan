@@ -9,6 +9,12 @@ default = []
 # this feature, so process creation, resume, minimize, and termination imports
 # are absent from the shipped observer binary.
 evidence-client-driving = []
+# Measurement-only: wrap the global allocator so `mem_account::live_heap_bytes`
+# reports the live Rust-allocator heap, which is the oracle the always-on component table
+# is reconciled against. Off in production: it puts an atomic RMW on every
+# allocation, and the finalize path allocates hundreds of thousands of times per
+# game hour. It cannot change a produced byte.
+mem-alloc-trace = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }

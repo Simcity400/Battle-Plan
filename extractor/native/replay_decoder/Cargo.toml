@@ -35,6 +35,13 @@ cz-finalize-profile = ["dep:mimalloc"]
 # so the architecture decision rests on a measurement. Never on by default and
 # never packaged; it writes no artifact.
 dq-v3-prototype = ["dep:mimalloc", "dep:fold_v3", "snapshot/dq-v3-prototype"]
+# Lane FR resident-memory instrument. Runs `build_certified_replay_artifacts`
+# on an existing capture under an allocation-tracking allocator and samples the
+# live heap, the OS private bytes and every `recorder_host::mem_account`
+# component on a fixed cadence, so finalize's footprint can be attributed to
+# named owners instead of read off a single process peak. Never on by default
+# and never packaged; it writes no artifact outside the caller's spill dir.
+fr-mem-profile = ["dep:mimalloc", "recorder_host/mem-alloc-trace"]
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -76,6 +83,11 @@ required-features = ["dq-v3-prototype"]
 name = "dq_v3_census"
 path = "src/bin/dq_v3_census.rs"
 required-features = ["dq-v3-prototype"]
+
+[[bin]]
+name = "fr_mem_profile"
+path = "src/bin/fr_mem_profile.rs"
+required-features = ["fr-mem-profile"]
 
 [[test]]
 name = "prefold_worker_process"

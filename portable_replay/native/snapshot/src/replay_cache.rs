@@ -476,8 +476,21 @@ pub struct CacheBuildHourMeta {
 /// value with a body it did not come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalWorldHour {
-    world_json: Vec<u8>,
+    /// The digest of the source body, taken at parse time.
+    ///
+    /// The BODY itself is deliberately not retained. It used to be, all the way
+    /// through the delta encode, and the only thing it was ever used for was
+    /// this one hash at the very end — so a whole second copy of the world
+    /// document (34.5 MB on capture t30) stayed resident beside the parsed tree
+    /// it is redundant with, for the whole of the most memory-expensive stretch
+    /// of finalize. Hashing at parse and dropping the bytes changes no output:
+    /// the digest is of exactly the same bytes it always was.
+    world_json_sha256: String,
     value: CanonValue,
+    /// What [`Self::value`]'s tree owns, counted during the parse that built
+    /// it. Carried so the encoder can price its retained delta base without
+    /// walking a million-node tree once per game hour.
+    value_heap_bytes: u64,
 }
 
 impl CanonicalWorldHour {
@@ -498,13 +511,26 @@ impl CanonicalWorldHour {
     /// token shape that survives parsing but not serialization still fails the
     /// build loudly, and it fails it on the bytes a reader will actually follow
     /// instead of on an in-memory copy of them.
+    /// `world_json` is consumed: its digest is taken here and the bytes are
+    /// released, so the caller's copy does not outlive the parse.
     pub fn parse(world_json: Vec<u8>, hour_index: i64) -> Result<Self, ReplayCacheError> {
-        let value = CanonValue::parse(&world_json).map_err(|error| {
+        let (value, value_heap_bytes) = CanonValue::parse_counted(&world_json).map_err(|error| {
             ReplayCacheError::new(format!(
                 "hour {hour_index} is not strict canonical world JSON: {error}"
             ))
         })?;
-        Ok(Self { world_json, value })
+        let world_json_sha256 = Sha256::hex(&world_json);
+        drop(world_json);
+        Ok(Self {
+            world_json_sha256,
+            value,
+            value_heap_bytes,
+        })
+    }
+
+    /// What the parsed tree owns on the heap.
+    pub fn value_heap_bytes(&self) -> u64 {
+        self.value_heap_bytes
     }
 
     /// The parsed world body.
@@ -512,9 +538,9 @@ impl CanonicalWorldHour {
         &self.value
     }
 
-    /// The exact canonical world JSON this value was parsed from.
-    pub fn json(&self) -> &[u8] {
-        &self.world_json
+    /// The digest of the canonical world JSON this value was parsed from.
+    pub fn world_json_sha256(&self) -> &str {
+        &self.world_json_sha256
     }
 }
 
@@ -527,6 +553,14 @@ pub struct ReplayCacheEncoder<W: Write> {
     previous: Option<CanonValue>,
     entries: Vec<ReplayHourEntry>,
     checkpoint_position: usize,
+    /// What `previous`'s tree owns, carried from the parse that built it.
+    previous_heap_bytes: u64,
+    /// Running total of the heap owned by `entries`' `String` fields.
+    ///
+    /// Kept incrementally rather than recomputed: `entries` gains a row per
+    /// game hour, so walking it to price it would cost O(hours) per hour and
+    /// turn a memory question into a quadratic one.
+    entries_string_bytes: u64,
 }
 
 impl<W: Write> ReplayCacheEncoder<W> {
@@ -551,6 +585,8 @@ impl<W: Write> ReplayCacheEncoder<W> {
             previous: None,
             entries: Vec::new(),
             checkpoint_position: 0,
+            previous_heap_bytes: 0,
+            entries_string_bytes: 0,
         };
         encoder.write_hashed(CACHE_MAGIC)?;
         encoder.write_hashed(&FORMAT_VERSION.to_le_bytes())?;
@@ -617,14 +653,15 @@ impl<W: Write> ReplayCacheEncoder<W> {
         meta: CacheBuildHourMeta,
         prepared: CanonicalWorldHour,
     ) -> Result<(), ReplayCacheError> {
-        let CanonicalWorldHour { world_json, value } = prepared;
-        let hour = CacheBuildHour {
-            hour_index: meta.hour_index,
-            date: meta.date,
-            h4cr_start_offset: meta.h4cr_start_offset,
-            h4cr_end_offset: meta.h4cr_end_offset,
-            world_json,
-        };
+        let CanonicalWorldHour {
+            world_json_sha256,
+            value,
+            value_heap_bytes,
+        } = prepared;
+        // `meta` used to be re-wrapped into a `CacheBuildHour` so it could
+        // carry the body alongside; with the body gone there is nothing to wrap
+        // and the caller's `meta` IS the hour.
+        let hour = meta;
         validate_world_identity(&value, hour.hour_index, &hour.date)?;
         let position = self.entries.len();
         let is_checkpoint = position % self.checkpoint_interval_hours as usize == 0;
@@ -678,10 +715,52 @@ impl<W: Write> ReplayCacheEncoder<W> {
             checkpoint_position: u32::try_from(self.checkpoint_position)
                 .map_err(|_| ReplayCacheError::new("checkpoint position does not fit u32"))?,
             delta_steps,
-            world_json_sha256: Sha256::hex(&hour.world_json),
+            world_json_sha256,
         });
+        if let Some(entry) = self.entries.last() {
+            self.entries_string_bytes = self.entries_string_bytes.saturating_add(
+                (entry.date.capacity() + entry.world_json_sha256.capacity()) as u64,
+            );
+        }
         self.previous = Some(value);
+        self.previous_heap_bytes = value_heap_bytes;
         Ok(())
+    }
+
+    /// Bytes the retained delta base (the previous hour's canonical tree) owns.
+    ///
+    /// This is the largest single object the encoder holds between hours, and
+    /// it is proportional to the size of the world, not to how long the session
+    /// ran.
+    ///
+    /// O(1): the number was counted during the parse that built the tree, not
+    /// measured by walking it. Walking cost about 100 ms per game hour on
+    /// capture t30 — an instrument that slowed the thing it was instrumenting
+    /// by more than a tenth. `CanonValue::heap_bytes` is still the authority
+    /// and the two are held together by
+    /// `canon_value::heap_bytes_tests::parse_counted_matches_the_independent_walk`.
+    pub fn delta_base_heap_bytes(&self) -> u64 {
+        if self.previous.is_some() {
+            self.previous_heap_bytes
+        } else {
+            0
+        }
+    }
+
+    /// Bytes the per-hour index rows own: the `Vec`'s reservation plus every
+    /// row's two `String`s.
+    ///
+    /// This one DOES grow with session length — one row per game hour, for the
+    /// whole recording — which is why it is published separately from the
+    /// delta base rather than summed into a single "encoder" number.
+    pub fn hour_entries_heap_bytes(&self) -> u64 {
+        ((self.entries.capacity() * std::mem::size_of::<ReplayHourEntry>()) as u64)
+            .saturating_add(self.entries_string_bytes)
+    }
+
+    /// Hours encoded so far, for the per-hour growth rate the table reports.
+    pub fn hour_entry_count(&self) -> usize {
+        self.entries.len()
     }
 
     pub fn finish(
@@ -2025,6 +2104,92 @@ mod tests {
     use super::*;
     use crate::canon_value::NON_IDENTITY_TOKENS;
     use serde_json::Value;
+
+    /// The recorded per-hour digest is of the SOURCE body, and it stayed that
+    /// way when the body stopped being retained.
+    ///
+    /// `CanonicalWorldHour` used to hold `world_json` all the way through the
+    /// delta encode so the digest could be taken at the end; now the digest is
+    /// taken at parse and the body is released. The number a reader follows
+    /// must not have moved. This fails if the digest is ever re-derived from
+    /// the parsed value (re-serializing a `CanonValue` is NOT guaranteed to
+    /// reproduce a body byte for byte) or taken over a different input.
+    #[test]
+    fn the_recorded_hour_digest_is_of_the_source_body_not_of_the_parse() {
+        let body = world_json(0, r#"{"n":189352.52932739258}"#);
+        let expected = Sha256::hex(&body);
+        let prepared = CanonicalWorldHour::parse(body.clone(), 0).unwrap();
+        assert_eq!(prepared.world_json_sha256(), expected);
+
+        // And it survives the encode: the index row carries the same value.
+        let (_, index, _) = build(1, &[(0, r#"{"n":189352.52932739258}"#)]);
+        assert_eq!(index.hours()[0].world_json_sha256(), expected);
+    }
+
+    /// `push` (which parses internally) and `push_prepared` (which is handed an
+    /// already-parsed hour) must remain byte-identical producers. The seam
+    /// exists only to avoid a second parse; if the digest change had made them
+    /// diverge, a recorder and a re-encode would disagree on the same hours.
+    #[test]
+    fn push_and_push_prepared_produce_identical_cache_bytes() {
+        let source_sha = "cd".repeat(32);
+        let hours = [(0i64, r#"{"a":1}"#), (1, r#"{"a":2}"#)];
+
+        let mut via_push = ReplayCacheEncoder::new(Vec::new(), &source_sha, 8).unwrap();
+        for (hour, body) in hours {
+            via_push.push(world(hour, body)).unwrap();
+        }
+        let (push_bytes, push_index) = via_push
+            .finish("g", "1", CacheIdentityMode::Legacy, 200)
+            .unwrap();
+
+        let mut via_prepared = ReplayCacheEncoder::new(Vec::new(), &source_sha, 8).unwrap();
+        for (hour, body) in hours {
+            let built = world(hour, body);
+            let meta = CacheBuildHourMeta {
+                hour_index: built.hour_index,
+                date: built.date.clone(),
+                h4cr_start_offset: built.h4cr_start_offset,
+                h4cr_end_offset: built.h4cr_end_offset,
+            };
+            let prepared = CanonicalWorldHour::parse(built.world_json, built.hour_index).unwrap();
+            via_prepared.push_prepared(meta, prepared).unwrap();
+        }
+        let (prepared_bytes, prepared_index) = via_prepared
+            .finish("g", "1", CacheIdentityMode::Legacy, 200)
+            .unwrap();
+
+        assert_eq!(push_bytes, prepared_bytes);
+        assert_eq!(
+            push_index.to_bytes().unwrap(),
+            prepared_index.to_bytes().unwrap()
+        );
+    }
+
+    /// The encoder's own accounting must track what it retains. A delta base
+    /// that is present must price above zero, and the per-hour index rows must
+    /// grow with the hours — this is the number the recorder's component table
+    /// publishes, so a stub returning a constant is a defect.
+    #[test]
+    fn encoder_prices_its_retained_delta_base_and_hour_rows() {
+        let source_sha = "ef".repeat(32);
+        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 8).unwrap();
+        assert_eq!(encoder.delta_base_heap_bytes(), 0);
+        assert_eq!(encoder.hour_entry_count(), 0);
+
+        encoder.push(world(0, r#"{"a":1}"#)).unwrap();
+        let one_hour_rows = encoder.hour_entries_heap_bytes();
+        let base = encoder.delta_base_heap_bytes();
+        assert!(base > 0, "a retained delta base must not price as zero");
+        assert!(one_hour_rows > 0);
+
+        encoder.push(world(1, r#"{"a":2}"#)).unwrap();
+        assert_eq!(encoder.hour_entry_count(), 2);
+        assert!(
+            encoder.hour_entries_heap_bytes() > one_hour_rows,
+            "hour rows are a session-length scaler and must be seen to grow"
+        );
+    }
 
     fn world_json(hour: i64, body: &str) -> Vec<u8> {
         // Written by hand rather than through `serde_json`, so a fixture can

@@ -1203,6 +1203,45 @@ fn drain_after_framing_stop_propagates_the_storage_root_error() {
     );
 }
 
+/// `take_index_rows_charge` must HAND OVER the cursor's charge for its hour
+/// rows, not mint a second one beside it.
+///
+/// This exercises the production method, not the `std::mem::replace` idiom it
+/// is built from: the earlier version of this transfer created a fresh
+/// full-size guard while the cursor still held its own, and because a component
+/// peak never falls, that transient double count was published as the peak
+/// forever. A regression to charge-then-drop makes `held` jump here.
+#[test]
+fn taking_the_hour_index_charge_transfers_it_instead_of_doubling_it() {
+    use recorder_host::mem_account::{held, Component};
+
+    let mut cursor = HourCursor::from_reader_compressed(
+        Box::new(io::Cursor::new(Vec::new())),
+        0,
+        "gid".to_string(),
+        false,
+        StreamIdentityMode::Legacy,
+    );
+    // A cursor that has published hours has a non-zero charge; drive it far
+    // enough to have one by charging through the cursor's own accessor.
+    cursor.hour_index_charge.set(4096);
+    let before = held(Component::DecoderHourIndex);
+
+    let handed_on = cursor.take_index_rows_charge();
+    assert_eq!(
+        held(Component::DecoderHourIndex),
+        before,
+        "the transfer must move the charge, not add a second one"
+    );
+    assert_eq!(handed_on.bytes(), 4096);
+
+    // The cursor now accounts for nothing, because it owns nothing.
+    drop(cursor);
+    assert_eq!(held(Component::DecoderHourIndex), before);
+    drop(handed_on);
+    assert_eq!(held(Component::DecoderHourIndex), before - 4096);
+}
+
 // Intact storage after a framing stop on a compressed source: the stop itself
 // is the hard error.
 #[test]

@@ -96,9 +96,21 @@ impl CanonValue {
     /// has always required of a decoded record, and it makes duplicate members
     /// impossible.
     pub fn parse(bytes: &[u8]) -> Result<Self, CanonParseError> {
+        Self::parse_counted(bytes).map(|(value, _)| value)
+    }
+
+    /// Parse, and report the heap the resulting tree owns.
+    ///
+    /// Identical to [`Self::parse`] in every byte it produces and every input
+    /// it rejects; the only difference is that the size comes back for free
+    /// instead of costing a second pass. Use this wherever the size is wanted
+    /// anyway — a whole-world tree is millions of nodes, and
+    /// [`Self::heap_bytes`] over one costs about 100 ms.
+    pub fn parse_counted(bytes: &[u8]) -> Result<(Self, u64), CanonParseError> {
         let mut parser = Parser {
             bytes,
             position: 0,
+            heap_bytes: 0,
         };
         parser.skip_whitespace();
         let value = parser.value(0)?;
@@ -109,7 +121,50 @@ impl CanonValue {
                 parser.position,
             ));
         }
-        Ok(value)
+        Ok((value, parser.heap_bytes))
+    }
+
+    /// Bytes this value's tree owns on the heap, including its own node.
+    ///
+    /// A whole-world document parses into a tree of millions of nodes, and that
+    /// tree is several times the size of the JSON it came from — every scalar
+    /// becomes a `String` with its own allocation and its own header, and every
+    /// member name is stored a second time. That makes it one of the largest
+    /// resident objects the finalize path holds, so it has to be priceable
+    /// rather than estimated from the document length.
+    ///
+    /// This is a `capacity`-based accounting, not a `len`-based one: it reports
+    /// what is actually reserved, which is what the allocator is holding. It
+    /// excludes per-allocation allocator overhead, which no in-process walk can
+    /// see, so it is a floor on the true cost.
+    ///
+    /// Iterative rather than recursive: a deeply nested document must not be
+    /// able to turn a size query into a stack overflow. Cost is one visit per
+    /// node.
+    pub fn heap_bytes(&self) -> u64 {
+        let mut total = 0u64;
+        let mut stack = vec![self];
+        while let Some(value) = stack.pop() {
+            total = total.saturating_add(match value {
+                Self::Null | Self::Bool(_) => 0,
+                Self::Number(token) | Self::String(token) => token.capacity() as u64,
+                Self::Array(items) => {
+                    stack.extend(items.iter());
+                    (items.capacity() * std::mem::size_of::<CanonValue>()) as u64
+                }
+                Self::Object(members) => {
+                    let mut names = 0u64;
+                    for (name, member) in members {
+                        names = names.saturating_add(name.capacity() as u64);
+                        stack.push(member);
+                    }
+                    names.saturating_add(
+                        (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
+                    )
+                }
+            });
+        }
+        total
     }
 
     /// Append this value in `serde_json`'s compact layout, reusing the source
@@ -413,6 +468,17 @@ pub fn key_cmp_decoded(stored: &str, decoded: &str) -> Ordering {
 struct Parser<'a> {
     bytes: &'a [u8],
     position: usize,
+    /// Running total of the heap the parse has committed so far.
+    ///
+    /// Accumulated here rather than measured afterwards. The finished tree's
+    /// size is needed once per game hour by the recorder's memory accounting,
+    /// and walking a whole-world tree to get it costs about 100 ms per hour —
+    /// measurable against the finalize it is supposed to be observing. Every
+    /// allocation the parser makes passes through this function anyway, so
+    /// counting them in flight is free. [`CanonValue::heap_bytes`] remains the
+    /// authority, and `parse_counted_matches_the_independent_walk` holds the
+    /// two together.
+    heap_bytes: u64,
 }
 
 impl<'a> Parser<'a> {
@@ -484,7 +550,9 @@ impl<'a> Parser<'a> {
                             start,
                         ));
                     }
-                    return Ok(body.to_owned());
+                    let body = body.to_owned();
+                    self.heap_bytes = self.heap_bytes.saturating_add(body.capacity() as u64);
+                    return Ok(body);
                 }
                 Some(b'\\') => {
                     // Skip the escape so an escaped quote does not end the body.
@@ -518,7 +586,9 @@ impl<'a> Parser<'a> {
                 start,
             ));
         }
-        Ok(token.to_owned())
+        let token = token.to_owned();
+        self.heap_bytes = self.heap_bytes.saturating_add(token.capacity() as u64);
+        Ok(token)
     }
 
     fn array(&mut self, depth: usize) -> Result<CanonValue, CanonParseError> {
@@ -527,6 +597,9 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.bytes.get(self.position) == Some(&b']') {
             self.position += 1;
+            self.heap_bytes = self
+                .heap_bytes
+                .saturating_add((values.capacity() * std::mem::size_of::<CanonValue>()) as u64);
             return Ok(CanonValue::Array(values));
         }
         loop {
@@ -537,6 +610,9 @@ impl<'a> Parser<'a> {
                 Some(b',') => self.position += 1,
                 Some(b']') => {
                     self.position += 1;
+                    self.heap_bytes = self.heap_bytes.saturating_add(
+                        (values.capacity() * std::mem::size_of::<CanonValue>()) as u64,
+                    );
                     return Ok(CanonValue::Array(values));
                 }
                 _ => return self.error("canonical world JSON array is malformed"),
@@ -550,6 +626,9 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.bytes.get(self.position) == Some(&b'}') {
             self.position += 1;
+            self.heap_bytes = self.heap_bytes.saturating_add(
+                (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
+            );
             return Ok(CanonValue::Object(members));
         }
         loop {
@@ -587,9 +666,134 @@ impl<'a> Parser<'a> {
                 Some(b',') => self.position += 1,
                 Some(b'}') => {
                     self.position += 1;
+                    self.heap_bytes = self.heap_bytes.saturating_add(
+                        (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
+                    );
                     return Ok(CanonValue::Object(members));
                 }
                 _ => return self.error("canonical world JSON object is malformed"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod heap_bytes_tests {
+    use super::*;
+
+    /// `heap_bytes` must count exactly the allocations the value owns, not a
+    /// proxy for them. This document's cost is enumerable by hand, so a change
+    /// that started counting inline struct bytes, or stopped counting member
+    /// names, or double-counted a child node, moves the number and fails here.
+    /// Built with exact capacities rather than parsed, so the expectation is
+    /// arithmetic about ownership and not a restatement of `Vec`'s growth
+    /// policy (a parsed `{"a":[1,2],"bb":"xyz"}` reserves 4 slots per container,
+    /// not 2, and pinning that here would make the test a mirror of the
+    /// standard library).
+    #[test]
+    fn heap_bytes_counts_every_owned_allocation_exactly_once() {
+        let mut items = Vec::with_capacity(2);
+        items.push(CanonValue::Number("1".to_string()));
+        items.push(CanonValue::Number("2".to_string()));
+        let mut members = Vec::with_capacity(2);
+        members.push(("a".to_string(), CanonValue::Array(items)));
+        members.push(("bb".to_string(), CanonValue::String("xyz".to_string())));
+        let value = CanonValue::Object(members);
+
+        let member = std::mem::size_of::<(String, CanonValue)>() as u64;
+        let element = std::mem::size_of::<CanonValue>() as u64;
+        // Root object: 2 member slots, names "a" (1) + "bb" (2).
+        // Array: 2 element slots, tokens "1" (1) + "2" (1).
+        // String member: body "xyz" (3).
+        let expected = 2 * member + 1 + 2 + 2 * element + 1 + 1 + 3;
+        assert_eq!(value.heap_bytes(), expected);
+    }
+
+    /// Capacity, not length. The allocator is holding the reservation, so a
+    /// `len`-based accounting would under-report every container the parser
+    /// grew — which is all of them.
+    #[test]
+    fn heap_bytes_reports_reserved_capacity_not_occupied_length() {
+        let mut items: Vec<CanonValue> = Vec::with_capacity(64);
+        items.push(CanonValue::Null);
+        let value = CanonValue::Array(items);
+        assert_eq!(
+            value.heap_bytes(),
+            64 * std::mem::size_of::<CanonValue>() as u64
+        );
+    }
+
+    /// The cheap counter and the authoritative walk must agree, on every shape
+    /// the format allows.
+    ///
+    /// `parse_counted` accumulates during construction so the recorder does not
+    /// pay a whole-tree walk per game hour; `heap_bytes` is the definition. If
+    /// a future parser gains an allocation that forgets to charge itself — a
+    /// new scalar kind, a `reserve`, a container built a different way — the
+    /// two diverge here rather than silently under-reporting a component of the
+    /// recorder's published memory table.
+    #[test]
+    fn parse_counted_matches_the_independent_walk() {
+        let documents: &[&[u8]] = &[
+            br#"{}"#,
+            br#"[]"#,
+            br#"null"#,
+            br#"{"a":[1,2],"bb":"xyz"}"#,
+            br#"[[[[[]]]]]"#,
+            br#"{"a":{"b":{"c":[true,false,null,-0.0,1e3]}},"z":""}"#,
+            br#"[{"k":"A\\"},{"k":"plain"}]"#,
+            br#"{"date":"1936.1.1.1","game_id":"g","hour_index":0,"schema_version":"1","world":{"n":189352.52932739258}}"#,
+        ];
+        for document in documents {
+            let (value, counted) = CanonValue::parse_counted(document).unwrap();
+            assert_eq!(
+                counted,
+                value.heap_bytes(),
+                "counted parse disagrees with the walk on {}",
+                String::from_utf8_lossy(document)
+            );
+        }
+    }
+
+    /// Scalars that own nothing must cost nothing: a `heap_bytes` that charged
+    /// per node regardless of ownership would inflate every world document by
+    /// the node count and make the component table wrong in the safe-looking
+    /// direction.
+    #[test]
+    fn heap_bytes_of_ownerless_scalars_is_zero() {
+        assert_eq!(CanonValue::Null.heap_bytes(), 0);
+        assert_eq!(CanonValue::Bool(true).heap_bytes(), 0);
+        assert_eq!(CanonValue::Array(Vec::new()).heap_bytes(), 0);
+        assert_eq!(CanonValue::Object(Vec::new()).heap_bytes(), 0);
+    }
+
+    /// The walk is iterative on purpose: a recursive one overflows the stack
+    /// on a value this deep, turning a size query into a process death. Making
+    /// `heap_bytes` recursive again fails this test rather than failing a
+    /// capture.
+    ///
+    /// The value is dismantled iteratively at the end because `CanonValue`'s
+    /// derived `Drop` IS recursive — so the test would otherwise die on the way
+    /// out and prove nothing about the walk.
+    #[test]
+    fn heap_bytes_survives_a_value_too_deep_to_recurse() {
+        const DEPTH: usize = 200_000;
+        let mut value = CanonValue::String("leaf".to_string());
+        for _ in 0..DEPTH {
+            value = CanonValue::Array(vec![value]);
+        }
+        let element = std::mem::size_of::<CanonValue>() as u64;
+        assert_eq!(value.heap_bytes(), DEPTH as u64 * element + 4);
+
+        let mut unwind = value;
+        loop {
+            let next = match &mut unwind {
+                CanonValue::Array(items) if !items.is_empty() => items.pop(),
+                _ => None,
+            };
+            match next {
+                Some(inner) => unwind = inner,
+                None => break,
             }
         }
     }
