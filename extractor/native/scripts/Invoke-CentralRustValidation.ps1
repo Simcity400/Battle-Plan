@@ -805,7 +805,12 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "passive capture-policy source tests exited with code $LASTEXITCODE"
         }
-        $passivePolicyEveryModeResult = (($passivePolicyEveryMode -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+        # The verdict is the LAST non-empty line: suites are allowed to narrate
+        # (the harness unit suite prints its executed supervision probes'
+        # phase= lines) and the JSON authority line always comes last. Feeding
+        # the whole transcript to ConvertFrom-Json failed on the first narrated
+        # line and read as "no authority" for a suite that passed.
+        $passivePolicyEveryModeResult = (@($passivePolicyEveryMode | Where-Object { $_ -and ([string]$_).Trim() }) | Select-Object -Last 1 | ConvertFrom-Json)
         if ([string]$passivePolicyEveryModeResult.Schema -cne 'hoi4-passive-capture-policy-test-v1' -or
             [string]$passivePolicyEveryModeResult.Status -cne 'pass') {
             throw "passive capture-policy source tests returned no authority"
@@ -825,7 +830,7 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "headless raw-capture harness unit tests exited with code $LASTEXITCODE"
         }
-        $harnessUnitsResult = (($harnessUnits -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
+        $harnessUnitsResult = (@($harnessUnits | Where-Object { $_ -and ([string]$_).Trim() }) | Select-Object -Last 1 | ConvertFrom-Json)
         if ([string]$harnessUnitsResult.Schema -cne 'hoi4-headless-raw-capture-unit-test-v1' -or
             [string]$harnessUnitsResult.Status -cne 'pass' -or
             [int]$harnessUnitsResult.Cases -lt 200) {
