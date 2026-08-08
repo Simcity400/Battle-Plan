@@ -96,6 +96,35 @@ impl DomainGapReason {
         self as u16
     }
 
+    /// The reason's canonical name outside the wire: the string the sealed
+    /// manifest writes and every offline consumer matches on.
+    ///
+    /// IT LIVES HERE BECAUSE IT WAS TWO HAND LISTS (lane FJ, 2026-08-08).
+    /// `recorder_host` rendered these names for the manifest, and
+    /// `scripts/verify_sink_reconciliation.py` kept its own admission set of
+    /// them -- which had gone stale at five entries and reported a manifest
+    /// carrying `source_unavailable`, `reader_silent` or `hour_label_mismatch`
+    /// as `domain_gap_N_reason_invalid`. A name the producer is entitled to emit
+    /// and a verifier calls invalid is a capture failed for being honest.
+    ///
+    /// One authority, derived by both: this match cannot compile without an arm
+    /// for a new variant, and
+    /// `verify_sink_reconciliation_admits_exactly_the_contract_gap_reasons`
+    /// rebuilds the script's set from [`DomainGapReason::ALL`] mapped through
+    /// here.
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Torn => "torn",
+            Self::Overrun => "overrun",
+            Self::Backpressure => "backpressure",
+            Self::ClockUnreadable => "clock_unreadable",
+            Self::WorkerPanic => "worker_panic",
+            Self::SourceUnavailable => "source_unavailable",
+            Self::ReaderSilent => "reader_silent",
+            Self::HourLabelMismatch => "hour_label_mismatch",
+        }
+    }
+
     fn from_code(code: u16) -> Result<Self, DomainGapError> {
         match code {
             DOMAIN_GAP_REASON_TORN => Ok(Self::Torn),
@@ -366,6 +395,44 @@ mod tests {
             assert_eq!(read_u16(&wire, 6) as usize, wire.len());
             assert_eq!(read_u16(&wire, 8), reason.code());
             assert_eq!(DomainGapRecordV1::decode(&wire).unwrap(), value);
+        }
+    }
+
+    /// The payload grammar and the typed decoder admit the SAME reason codes.
+    ///
+    /// There are two admission lists, not one: `DomainGapReason::from_code`
+    /// above, and the `matches!` in `validate_domain_gap_payload`. Every decode
+    /// runs both, so a code admitted by one and refused by the other is not a
+    /// second opinion -- it is a reason that either cannot be decoded despite
+    /// being on the wire, or (the dangerous direction) passes the payload
+    /// grammar's reason check and then falls through to whichever witness arm
+    /// happens to match. `all_covers_every_decodable_reason` proves `ALL` is
+    /// complete against `from_code`; nothing proved `from_code` complete against
+    /// the grammar.
+    ///
+    /// Swept over the entire u16 space rather than over the assigned names, for
+    /// the same reason: a list checked against a list is satisfied by forgetting
+    /// the code in both.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: adding a reason constant to
+    /// `from_code` without adding it to the grammar's `matches!` (that code then
+    /// decodes to a typed reason the payload validator calls unknown), or the
+    /// reverse (the grammar admits a code no consumer can name).
+    #[test]
+    fn the_payload_grammar_admits_exactly_the_codes_from_code_decodes() {
+        let base = sample(DomainGapReason::Torn).encode().unwrap();
+        for code in 0..=u16::MAX {
+            let mut wire = base.clone();
+            wire[8..10].copy_from_slice(&code.to_le_bytes());
+            let grammar_calls_it_unknown = validate_domain_gap_payload(&wire)
+                .err()
+                .is_some_and(|error| error == format!("DOMAIN_GAP reason {code} is unknown"));
+            assert_eq!(
+                grammar_calls_it_unknown,
+                DomainGapReason::from_code(code).is_err(),
+                "reason {code} is admitted by one vocabulary and refused by the \
+                 other"
+            );
         }
     }
 

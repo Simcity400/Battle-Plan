@@ -32,12 +32,29 @@ FORBIDDEN_RECORDER_ARGUMENTS = {
     "--hour-latch",
 }
 ALLOWED_GAP_PARTS = {"state", "event", "both"}
+# The COMPLETE H4DG reason vocabulary, and it must stay complete.
+#
+# It stopped at `worker_panic` for as long as those were the only five reasons,
+# and then three were assigned without it: a manifest carrying
+# `source_unavailable`, `reader_silent` or `hour_label_mismatch` was reported
+# `domain_gap_N_reason_invalid` -- a capture failed for naming a loss the
+# producer is entitled to name. `hour_label_mismatch` is the one that made it
+# reachable in bulk, since d81's split now publishes it directly.
+#
+# Kept honest from the other side: compact_contract's
+# `verify_sink_reconciliation_admits_exactly_the_contract_gap_reasons` rebuilds
+# this set from `DomainGapReason::ALL` and requires an exact match, so a reason
+# added to the wire without being added here fails that test rather than a
+# capture.
 ALLOWED_GAP_REASONS = {
     "torn",
     "overrun",
     "backpressure",
     "clock_unreadable",
     "worker_panic",
+    "source_unavailable",
+    "reader_silent",
+    "hour_label_mismatch",
 }
 PRODUCTION_DOMAIN_STATUSES = {
     "existing",

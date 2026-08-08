@@ -519,10 +519,10 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         bracket_hour_verdict(&coherent, hour),
         BracketHourVerdict::InFrameHour
     );
-    // THE LABEL MISMATCH IS NOT LOCAL, and the split still does not skip it.
-    // Lane EK gave the reason as "no worker has the frame's hour when its guard
-    // closes"; that is false (see `LocalBracketVerdict`), and the real reason is
-    // pinned by `a_label_mismatched_bracket_cannot_yet_skip_its_compute`.
+    // THE LABEL MISMATCH IS NOT LOCAL, and since lane FJ the split refuses it
+    // too -- under its own name, with the observed hour attached. The local
+    // verdict still cannot see it, which is why the sink carries the FULL
+    // verdict and the guard is handed the frame's label.
     assert_eq!(
         local_bracket_verdict(&coherent),
         LocalBracketVerdict::CoherentHour,
@@ -532,25 +532,50 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         bracket_hour_verdict(&coherent, next_hour),
         BracketHourVerdict::LabelMismatch
     );
+    assert_eq!(
+        split_bracket_refusal(&coherent, hour, HOUR_LABEL_MISMATCH_POLICY),
+        None,
+        "a bracket that observed the frame's own hour admits the compute"
+    );
+    assert_eq!(
+        split_bracket_refusal(&unreadable, hour, HOUR_LABEL_MISMATCH_POLICY),
+        Some(SplitBracketRefusal::BracketIncoherent)
+    );
+    assert_eq!(
+        split_bracket_refusal(&straddled, hour, HOUR_LABEL_MISMATCH_POLICY),
+        Some(SplitBracketRefusal::BracketIncoherent)
+    );
+    assert_eq!(
+        split_bracket_refusal(&coherent, next_hour, HourLabelMismatchPolicy::Refuse),
+        Some(SplitBracketRefusal::LabelMismatch {
+            observed_hour_raw: u64::try_from(hour).expect("fixture hour fits u64"),
+        }),
+        "and a mismatched bracket refuses under a DIFFERENT name, carrying the \
+         hour it actually observed -- collapsing the two would put the skip back \
+         on the SourceUnavailable path lane FG refused"
+    );
 
     // Now the production seam, through a real guard on a real tracker. The
     // fixture-less tracker cannot read a clock, so the guard publishes
-    // `ClockUnreadable` and the compute must be skipped.
+    // `BracketIncoherent` and the compute must be skipped.
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
-    let verdict = Cell::new(LocalBracketVerdict::CoherentHour);
+    let verdict: Cell<Option<SplitBracketRefusal>> = Cell::new(None);
     let observed_ran = Cell::new(false);
     {
         let _guard = ReaderClockBracketGuard::new_reporting(
             &lanes,
             COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
-            Some(&verdict),
+            Some(BracketVerdictSink {
+                sink: &verdict,
+                frame_hour_raw: hour,
+            }),
         );
         observed_ran.set(true);
     }
     assert!(observed_ran.get(), "the observe half always runs");
     assert_eq!(
         verdict.get(),
-        LocalBracketVerdict::ClockUnreadable,
+        Some(SplitBracketRefusal::BracketIncoherent),
         "a guard with no readable clock must publish its refusal, or the split \
          has nothing to branch on"
     );
@@ -588,23 +613,34 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         .expect("the end of the split spawn")
         .0;
     assert!(
-        split.contains("let out = if verdict.get() == LocalBracketVerdict::CoherentHour {")
-            && split.contains("drop(observed);")
-            && split.contains("rejected()"),
+        split.contains("let out = match verdict.get() {")
+            && split.contains("None => compute(observed),")
+            && !split.contains("Some(_) => compute(")
+            && split.contains("drop(observed);"),
         "a bracket the guard refused must not reach the deferred compute, and \
-         its copy must be dropped unread"
+         an incoherent bracket's copy must be dropped unread"
     );
     assert!(
-        split.contains(
-            "ReaderClockBracketGuard::new_reporting(lanes, tag, Some(&verdict))"
-        ),
-        "and the guard must be the one that publishes the verdict; a verdict \
-         computed anywhere else is a second predicate that can drift"
+        split.contains("rejected(refusal, None)")
+            && split.contains("rejected(refusal, Some(observed))"),
+        "and the refusal each arm publishes under must be the one the guard \
+         decided -- see \
+         `a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip` \
+         for why exactly one of the two arms keeps its observation"
+    );
+    assert!(
+        split.contains("ReaderClockBracketGuard::new_reporting(")
+            && split.contains("sink: &verdict,")
+            && split.contains("frame_hour_raw,"),
+        "and the guard must be the one that publishes the verdict, against the \
+         label the caller will publish the frame under; a verdict computed \
+         anywhere else is a second predicate that can drift"
     );
 
     // The rejected arm's own outcome refuses the hour rather than publishing an
     // empty one, and it does no work.
-    let refused = compact_rail_replay_bracket_refused_read(0);
+    let refused =
+        compact_rail_replay_bracket_refused_read(0, SplitBracketRefusal::BracketIncoherent);
     assert!(refused.hub_simulation.is_none());
     assert_eq!(
         refused.status_flags,
@@ -617,55 +653,76 @@ fn a_rejected_bracket_never_reaches_the_compute() {
     assert_eq!(refused.phase_times, D81PhaseTimes::default());
 }
 
-/// WHY THE SPLIT STILL COMPUTES ON A LABEL-MISMATCHED BRACKET, and it is not
-/// because the worker cannot tell (lane FG, 2026-08-08).
+/// THE SKIP, AND THE THREE LINKS THAT MAKE IT TRUTHFUL (lane FJ, 2026-08-08).
 ///
 /// t37 turned 211 of d81's 621 frames into `HourLabelMismatch` gaps, and every
 /// one of them ran the whole post-bracket compute first — `lw_d81_post_us`
-/// averages 6.4 ms a frame. Skipping it is worth having, and lane EK's stated
-/// reason for not doing so is false: `game_hour_raw` is fixed by the scheduler
-/// request before the fan-out opens and is in scope where the `FrameLaneTracker`
-/// is built, so the guard could publish the full verdict.
-///
-/// THE REAL BLOCKER IS THE GAP PRECEDENCE, and this test is what a naive
-/// attempt runs into. The chain, asserted below:
+/// averages 6.4 ms a frame. Lane EK did not skip them because it believed the
+/// frame's label was unavailable to a worker; that was false. Lane FG found the
+/// real blocker and REVERTED its own skip for it, leaving
+/// `a_label_mismatched_bracket_cannot_yet_skip_its_compute` — a guard test
+/// asserting a chain that made the skip publish a lie:
 ///
 ///  1. skipping means returning `compact_rail_replay_bracket_refused_read`,
-///     which carries no `hub_simulation`, so the encoder produces no payload and
-///     d81's record is a DOMAIN_GAP;
-///  2. that gap's reason is `SourceUnavailable` — a claim that the engine could
+///     which carries no `hub_simulation`, so d81's record is a DOMAIN_GAP;
+///  2. that gap's reason was `SourceUnavailable` — a claim that the ENGINE could
 ///     not be read, which on a label-mismatched frame is simply false;
 ///  3. `replace_rejected_domain_records_with_gaps` DROPS a `HourLabelMismatch`
-///     rejection when the domain already carries a gap, deliberately, because a
-///     read failure is the more specific fact than an attribution failure.
+///     rejection when the domain already carries a gap, so the false reason is
+///     the one that ships.
 ///
-/// So the skip would replace `HourLabelMismatch` with a fabricated
-/// `SourceUnavailable` on 34% of d81's frames. Closing it needs d81's
-/// bracket-refused read to be able to name the mismatch and the hour it
-/// observed, so the encoder can mint the same gap reconciliation would have —
-/// new wire vocabulary, and an owner decision.
+/// The chain is unchanged. What changed is link 2: the refused read now names
+/// [`D81FailureReason::HourLabelMismatch`] and carries the hour it observed, so
+/// the gap link 3 preserves is the SAME gap reconciliation would have minted.
+/// This test asserts each link individually, so a regression on any one of them
+/// fails here rather than silently restoring the swallowed reason.
 ///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: extending the rejected arm to cover a
-/// label-mismatched bracket without also giving that read its own reason. The
-/// assertions are the three links; whichever one a future change breaks is the
-/// one it has to have fixed.
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: pointing the label-mismatch refusal
+/// back at `D81FailureReason::Torn` (link 2 fails — that reason maps to
+/// `SourceUnavailable`); dropping the observed hour from the refusal (link 2's
+/// witness assertion fails); or making the yield rule replace the domain's own
+/// mismatch gap (link 3 fails, with the ordinal spent twice).
 #[test]
-fn a_label_mismatched_bracket_cannot_yet_skip_its_compute() {
-    // LINK 1 -- the placeholder read cannot produce a payload, so its record is
-    // a gap and not data.
-    let mut refused = compact_rail_replay_bracket_refused_read(0);
+fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
+    use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
+
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let observed_hour = hour + 1;
+    let observed = u64::try_from(observed_hour).expect("fixture hour fits u64");
+
+    // LINK 1 -- unchanged. The placeholder read cannot produce a payload, so
+    // d81's record for that frame is a gap and not data.
+    let mut refused = compact_rail_replay_bracket_refused_read(
+        0,
+        SplitBracketRefusal::LabelMismatch {
+            observed_hour_raw: observed,
+        },
+    );
     assert!(
         encode_compact_rail_replay_production(&mut refused, 0).is_none(),
         "the bracket-refused read has no hub snapshot, so d81's record for that \
          frame is a DOMAIN_GAP"
     );
 
-    // LINK 2 -- and the reason that gap carries. `Torn` at stage `Worker` is
-    // what the placeholder names, and the encoder maps it to
-    // `SourceUnavailable`.
+    // LINK 2 -- CLOSED. The reason is the mismatch's own, not a borrowed
+    // `Torn`, and it carries the observed hour as its witness.
     assert_eq!(
         refused.first_failure.map(|failure| failure.reason),
-        Some(D81FailureReason::Torn)
+        Some(D81FailureReason::HourLabelMismatch),
+        "the label-mismatch refusal must not borrow `Torn`: the encode site maps \
+         `Torn` to SourceUnavailable, which is the false claim this closes"
+    );
+    assert_eq!(
+        refused.first_failure.map(|failure| failure.raw_value),
+        Some(observed),
+        "and it must carry the hour actually observed -- the encode site has no \
+         other source for it and may not invent one"
+    );
+    assert_eq!(
+        d81_failure_reason_unit_name(D81FailureReason::HourLabelMismatch),
+        "d81_failure_reason_24_hour_label_mismatch",
+        "a NEW assigned code: sharing `Torn`'s name would make an attribution \
+         failure indistinguishable from a graph tear in the sealed diagnostics"
     );
     let source = collector_source_lf();
     assert!(
@@ -674,25 +731,44 @@ fn a_label_mismatched_bracket_cannot_yet_skip_its_compute() {
              \x20                   DomainGapReason::SourceUnavailable\n\
              \x20               }"
         ),
-        "the placeholder's reason must still map to SourceUnavailable, or this \
-         test is describing a chain that no longer exists"
+        "`Torn` must still map to SourceUnavailable -- that mapping is exactly \
+         why the mismatch needed a reason of its own"
     );
+    assert!(
+        source.contains("Some(D81FailureReason::HourLabelMismatch) => match d81_mismatch_witness {")
+            && source.contains("Some(_) => DomainGapReason::HourLabelMismatch,"),
+        "and the new reason must reach the wire as the mismatch, gated on its \
+         witness being present"
+    );
+    // The payload that pairing produces is one the wire's self-proving grammar
+    // ACCEPTS. Asserted by encoding it, not by reading the grammar: a witness
+    // that cannot prove the claim fails `encode`, and at the production site
+    // that is an `expect` on the publication path.
+    let staged = DomainGapRecordV1 {
+        part: DomainGapPart::State,
+        reason: DomainGapReason::HourLabelMismatch,
+        target_hour_raw: hour,
+        range_start_hour_raw: hour,
+        range_end_hour_raw: hour,
+        tick_before: observed,
+        tick_after: observed,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    };
+    let staged_bytes = staged
+        .encode()
+        .expect("the skip's own payload must be one the wire can carry");
 
-    // LINK 3 -- and the precedence that then discards the mismatch. A d81
-    // bracket that read the wrong hour IS rejected under `Refuse` ...
-    let hour = super::state_fixture::fixture_game_hour_raw();
+    // LINK 3 -- the yield rule still yields, and that is now the RIGHT answer.
+    // The bracket rejection and the domain's own record are the same claim over
+    // the same observation, so the record that ships is the one already in the
+    // buffer, with its staged ordinal intact.
     let mismatched = DomainClockBracket {
         tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
-        opening: Some(ClockObservation {
-            hour: hour + 1,
-            ordinal: 1,
-            at_us: 0,
-        }),
-        closing: Some(ClockObservation {
-            hour: hour + 1,
-            ordinal: 2,
-            at_us: 1,
-        }),
+        opening: Some(clock_obs(observed_hour, 1)),
+        closing: Some(clock_obs(observed_hour, 2)),
         worker_panicked: false,
     };
     assert_eq!(
@@ -706,23 +782,715 @@ fn a_label_mismatched_bracket_cannot_yet_skip_its_compute() {
             HourLabelMismatchPolicy::Refuse
         )
         .get(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE)
-        .map(|&(reason, _, _)| reason),
-        Some(compact_contract::domain_gap::DomainGapReason::HourLabelMismatch),
-        "reconciliation does name the mismatch"
+        .copied(),
+        Some((DomainGapReason::HourLabelMismatch, observed, observed)),
+        "reconciliation names the mismatch and witnesses the same hour the \
+         worker did -- one predicate, two callers"
     );
-    // ... and that naming is exactly what the yield rule removes when the
-    // domain's own record is already a gap.
+    // And the whole seam, over a real frame buffer.
+    let mut records = Vec::new();
+    append_compact_record(
+        &mut records,
+        1,
+        hour,
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        0,
+        &staged_bytes,
+    );
+    let before = records.clone();
+    let key = (
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        DomainGapPart::State.code(),
+    );
+    let mut ordinals = std::collections::BTreeMap::from([(key, 1u64)]);
+    let (_next, rejected) = replace_rejected_domain_records_with_gaps(
+        &mut records,
+        1,
+        hour,
+        std::slice::from_ref(&mismatched),
+        &mut ordinals,
+        HourLabelMismatchPolicy::Refuse,
+    )
+    .expect("a skipped mismatch frame reconciles");
     assert!(
-        source.contains(
-            "*reason == compact_contract::domain_gap::DomainGapReason::HourLabelMismatch"
-        ) && source.contains(
-            "&& header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP\n\
-             \x20       {\n\
-             \x20           rejected.remove(&header.domain_id);"
-        ),
-        "a HourLabelMismatch rejection yields to an existing gap, which is what \
-         makes link 1 fatal"
+        rejected.is_empty(),
+        "the domain already published the mismatch, so nothing is replaced"
     );
+    assert_eq!(
+        records, before,
+        "and the bytes that ship are the ones the skip wrote -- reason, \
+         witnesses and outcome ordinal all its own"
+    );
+    assert_eq!(
+        ordinals.get(&key),
+        Some(&1),
+        "one terminal outcome, one ordinal"
+    );
+}
+
+/// The skipped frame publishes no `source_unavailable` claim about the engine.
+///
+/// The gap reason is the load-bearing statement, but it is not the only one a
+/// consumer reads: `COMPACT_STATUS_SOURCE_UNAVAILABLE` drives
+/// `compact_source_unavailable` in the host's problem list and its own row in
+/// `report_raw_capture.py`. A mismatch shape that set it would put the same
+/// false claim on a second channel.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: giving both refusal shapes the same
+/// status word again.
+#[test]
+fn the_skipped_frame_publishes_no_source_unavailable_claim() {
+    let mismatch = compact_rail_replay_bracket_refused_read(
+        0,
+        SplitBracketRefusal::LabelMismatch {
+            observed_hour_raw: 7,
+        },
+    );
+    assert_eq!(
+        mismatch.status_flags, COMPACT_STATUS_PARTIAL_DATA,
+        "the engine was read perfectly; only its attribution failed"
+    );
+    let incoherent =
+        compact_rail_replay_bracket_refused_read(0, SplitBracketRefusal::BracketIncoherent);
+    assert_eq!(
+        incoherent.status_flags,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        "a bracket that could not vouch for its observation is unchanged"
+    );
+    // Neither reaches the wire today -- both have `hub_simulation: None`, so the
+    // gap branch publishes status 0 on probe 250 and never d81's own word. That
+    // is a property of today's encode site, which is why the values above are
+    // written truthfully rather than left inert.
+    assert!(mismatch.hub_simulation.is_none() && incoherent.hub_simulation.is_none());
+}
+
+/// A mismatch gap and the bracket behind it must witness the SAME hour.
+///
+/// The yield rule keeps the domain's own record and discards the rejection, so
+/// the rejection's witnesses never reach the wire — which means a skip that
+/// published a different observed hour than reconciliation computed would ship
+/// unchallenged, and nothing downstream could tell. Hour misattribution is the
+/// project's stop condition, so the disagreement is a frame error.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: deleting the equality check from the
+/// yield rule, or letting the skip's witness come from anywhere other than the
+/// bracket the guard closed.
+#[test]
+fn a_mismatch_gap_and_its_bracket_must_witness_the_same_hour() {
+    use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
+
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let observed_hour = hour + 1;
+    let observed = u64::try_from(observed_hour).expect("fixture hour fits u64");
+    let mismatched = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: Some(clock_obs(observed_hour, 1)),
+        closing: Some(clock_obs(observed_hour, 2)),
+        worker_panicked: false,
+    };
+    // A gap claiming a DIFFERENT observed hour than the bracket recorded. Still
+    // a well-formed payload -- the grammar checks the witness against the target
+    // hour, and this one is nonzero and not the label -- so nothing but this
+    // rule can see it.
+    let lying = DomainGapRecordV1 {
+        part: DomainGapPart::State,
+        reason: DomainGapReason::HourLabelMismatch,
+        target_hour_raw: hour,
+        range_start_hour_raw: hour,
+        range_end_hour_raw: hour,
+        tick_before: observed + 5,
+        tick_after: observed + 5,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    }
+    .encode()
+    .expect("a disagreeing witness is still a legal payload, which is the point");
+    let mut records = Vec::new();
+    append_compact_record(
+        &mut records,
+        1,
+        hour,
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        0,
+        &lying,
+    );
+    let mut ordinals = std::collections::BTreeMap::from([(
+        (
+            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+            DomainGapPart::State.code(),
+        ),
+        1u64,
+    )]);
+    let error = replace_rejected_domain_records_with_gaps(
+        &mut records,
+        1,
+        hour,
+        std::slice::from_ref(&mismatched),
+        &mut ordinals,
+        HourLabelMismatchPolicy::Refuse,
+    )
+    .expect_err("a witness disagreement must not reach the wire");
+    assert!(
+        error.contains("HourLabelMismatch gap witnessing hour"),
+        "and it must say which two hours disagreed: {error}"
+    );
+}
+
+/// Every OTHER existing gap still outranks a label mismatch, exactly as before.
+///
+/// The yield rule was made reason-aware; it was not made reason-selective. A
+/// domain whose own record says the READ failed keeps saying that — the mismatch
+/// names only the attribution, and a read failure is the more specific fact.
+/// Symmetrically, a torn or unreadable bracket still REPLACES whatever the
+/// domain published, because those say the read itself was invalid.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: making a mismatch rejection overwrite
+/// an existing gap, or making the new mismatch handling swallow the tear
+/// precedence on its way past.
+#[test]
+fn a_read_failure_still_outranks_a_label_mismatch() {
+    use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
+
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let observed_hour = hour + 1;
+    let key = (
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        DomainGapPart::State.code(),
+    );
+    // THE TICK PAIR IS THE HOUR THE READ HAPPENED IN, which on a mismatched
+    // frame is the OBSERVED hour and not the label. Written that way here on
+    // purpose: d81's encode site currently fills a `SourceUnavailable` tick pair
+    // from `game_hour_raw`, which is right on every in-hour frame and wrong on
+    // this one, and a fixture that copied the label would quietly enshrine that
+    // as the expected shape. What this test asserts is PRECEDENCE -- which
+    // record survives -- and it must not double as an endorsement of the
+    // witnesses that record carries.
+    let source_unavailable = DomainGapRecordV1 {
+        part: DomainGapPart::State,
+        reason: DomainGapReason::SourceUnavailable,
+        target_hour_raw: hour,
+        range_start_hour_raw: hour,
+        range_end_hour_raw: hour,
+        tick_before: u64::try_from(observed_hour).expect("fixture hour fits u64"),
+        tick_after: u64::try_from(observed_hour).expect("fixture hour fits u64"),
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    }
+    .encode()
+    .expect("a genuine read failure d81 staged for itself");
+
+    let frame = |payload: &[u8]| {
+        let mut records = Vec::new();
+        append_compact_record(
+            &mut records,
+            1,
+            hour,
+            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            0,
+            payload,
+        );
+        records
+    };
+    let reason_of = |records: &[u8]| {
+        let header = compact_contract::parse_compact_record_header(records).expect("H4DG header");
+        DomainGapRecordV1::decode(
+            &records[compact_contract::COMPACT_RECORD_HEADER_LEN..header.record_len()],
+        )
+        .expect("H4DG payload")
+        .reason
+    };
+
+    // A MISMATCHED bracket over a genuine read failure: the read failure stands.
+    let mismatched = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: Some(clock_obs(observed_hour, 1)),
+        closing: Some(clock_obs(observed_hour, 2)),
+        worker_panicked: false,
+    };
+    let mut records = frame(&source_unavailable);
+    let mut ordinals = std::collections::BTreeMap::from([(key, 1u64)]);
+    let (_next, rejected) = replace_rejected_domain_records_with_gaps(
+        &mut records,
+        1,
+        hour,
+        std::slice::from_ref(&mismatched),
+        &mut ordinals,
+        HourLabelMismatchPolicy::Refuse,
+    )
+    .expect("reconciliation");
+    assert!(rejected.is_empty());
+    assert_eq!(
+        reason_of(&records),
+        DomainGapReason::SourceUnavailable,
+        "the engine really could not be read; the attribution failure does not \
+         overwrite that"
+    );
+
+    // A TORN bracket over a mismatch gap: the tear replaces it.
+    let torn = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: Some(clock_obs(hour, 1)),
+        closing: Some(clock_obs(hour + 1, 2)),
+        worker_panicked: false,
+    };
+    let staged_mismatch = DomainGapRecordV1 {
+        part: DomainGapPart::State,
+        reason: DomainGapReason::HourLabelMismatch,
+        target_hour_raw: hour,
+        range_start_hour_raw: hour,
+        range_end_hour_raw: hour,
+        tick_before: u64::try_from(observed_hour).expect("fixture hour fits u64"),
+        tick_after: u64::try_from(observed_hour).expect("fixture hour fits u64"),
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    }
+    .encode()
+    .expect("a skipped mismatch frame");
+    let mut records = frame(&staged_mismatch);
+    let mut ordinals = std::collections::BTreeMap::from([(key, 1u64)]);
+    let (_next, rejected) = replace_rejected_domain_records_with_gaps(
+        &mut records,
+        1,
+        hour,
+        std::slice::from_ref(&torn),
+        &mut ordinals,
+        HourLabelMismatchPolicy::Refuse,
+    )
+    .expect("reconciliation");
+    assert_eq!(
+        rejected,
+        std::collections::BTreeSet::from([COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE])
+    );
+    assert_eq!(
+        reason_of(&records),
+        DomainGapReason::Torn,
+        "a bracket that tore says the read itself was invalid, which outranks \
+         anything the reader thought it was reporting"
+    );
+}
+
+/// A bracket whose observed hour cannot serve as a wire witness refuses the
+/// domain-hour WITHOUT killing the frame.
+///
+/// `HourLabelMismatch` is the wire's one self-proving reason: its grammar
+/// demands two equal, NONZERO ticks that differ from the target hour, because
+/// the observed hour is the reason's entire content. `clock_tick_witness`
+/// collapses every hour it cannot fit in a `u64` to 0, the wire's "no witness"
+/// value — so a negative clock reading used to build a payload `encode` REFUSES,
+/// which returned `Err` from reconciliation and took the whole frame, including
+/// every genuine tear in it, down with it.
+///
+/// The domain-hour is still refused; the owner's ruling that a mismatched sweep
+/// loses its hour visibly is untouched. It is refused under `ClockUnreadable`,
+/// whose required zero ticks say exactly what such a reading supports.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: minting `HourLabelMismatch` from a
+/// bracket whose witness `hour_label_mismatch_witness` rejects — the frame then
+/// fails to reconcile at all, and the assertion below is an `expect`.
+#[test]
+fn an_unusable_observed_hour_refuses_without_killing_the_frame() {
+    use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
+
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    // A negative engine reading: a real hour label, an observation that is not
+    // one. `LabelMismatch` by verdict, unusable as a witness.
+    let unusable = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: Some(clock_obs(-5, 1)),
+        closing: Some(clock_obs(-5, 2)),
+        worker_panicked: false,
+    };
+    assert_eq!(
+        bracket_hour_verdict(&unusable, hour),
+        BracketHourVerdict::LabelMismatch,
+        "the verdict is unchanged -- it is the WITNESS that cannot be built"
+    );
+    assert_eq!(hour_label_mismatch_witness(&unusable, hour), None);
+    // THE CAUSE STAYS THE MISMATCH IN THE REJECTION MAP. That map is what the
+    // precedence rule reads, and the cause has not changed just because the wire
+    // cannot carry its witness. Downgrading here would make this rejection
+    // outrank a genuine read failure the domain had already published, which is
+    // the inversion `a_mismatch_without_a_witness_still_yields_to_a_read_failure`
+    // exercises end to end.
+    assert_eq!(
+        rejected_bracket_domains(
+            std::slice::from_ref(&unusable),
+            hour,
+            HourLabelMismatchPolicy::Refuse
+        )
+        .get(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE)
+        .copied(),
+        Some((DomainGapReason::HourLabelMismatch, 0, 0)),
+        "still refused, still as a mismatch, with the wire's no-witness value"
+    );
+    assert_eq!(
+        split_bracket_refusal(&unusable, hour, HourLabelMismatchPolicy::Refuse),
+        None,
+        "and the split does NOT skip: the compute runs as before, which costs \
+         6.4 ms and lies about nothing"
+    );
+
+    // THE RECORD is what gives, at the mint site. d81 published DATA, so there
+    // is no read failure to preserve and the rejection really does replace it --
+    // under `ClockUnreadable`, whose grammar requires the same two zeros.
+    let mut records = Vec::new();
+    append_compact_record(
+        &mut records,
+        1,
+        hour,
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        0,
+        &[7u8; 8],
+    );
+    let healthy: u16 = 10;
+    append_compact_record(
+        &mut records,
+        2,
+        hour,
+        healthy,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        0,
+        &[9u8; 8],
+    );
+    let healthy_bracket = DomainClockBracket {
+        tag: healthy,
+        opening: Some(clock_obs(hour, 3)),
+        closing: Some(clock_obs(hour, 4)),
+        worker_panicked: false,
+    };
+    let mut ordinals = std::collections::BTreeMap::new();
+    let (_next, rejected) = replace_rejected_domain_records_with_gaps(
+        &mut records,
+        1,
+        hour,
+        &[unusable, healthy_bracket],
+        &mut ordinals,
+        HourLabelMismatchPolicy::Refuse,
+    )
+    .expect("an unusable mismatch witness must not fail the whole frame");
+    assert_eq!(
+        rejected,
+        std::collections::BTreeSet::from([COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE]),
+        "the domain-hour is still refused -- the owner's ruling is untouched"
+    );
+    // Walk the frame: the healthy domain keeps its DATA, and d81's replacement
+    // is an encodable gap. Before the mint-site downgrade the call above
+    // returned `Err` and this whole frame -- healthy domain included -- was lost.
+    let mut offset = 0usize;
+    let mut seen = Vec::new();
+    while offset < records.len() {
+        let header = compact_contract::parse_compact_record_header(&records[offset..]).unwrap();
+        if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP {
+            let gap = DomainGapRecordV1::decode(
+                &records[offset + compact_contract::COMPACT_RECORD_HEADER_LEN..offset + header.record_len()],
+            )
+            .expect("the replacement must satisfy the H4DG grammar");
+            assert_eq!(gap.reason, DomainGapReason::ClockUnreadable);
+            assert_eq!((gap.tick_before, gap.tick_after), (0, 0));
+        }
+        seen.push((header.domain_id, header.record_type));
+        offset += header.record_len();
+    }
+    assert!(
+        seen.contains(&(healthy, COMPACT_RECORD_TYPE_DOMAIN_DATA)),
+        "the healthy domain's DATA record survives: {seen:?}"
+    );
+    assert!(
+        seen.contains(&(
+            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP
+        )),
+        "and d81's DATA is replaced by a gap: {seen:?}"
+    );
+
+    // AND THE PRECEDENCE HOLDS WITHOUT A WITNESS. The same unusable bracket over
+    // a domain that already published a genuine read failure leaves that failure
+    // alone: the cause is an attribution failure either way, and a read failure
+    // is the more specific fact.
+    // Witnesses that are NOT a copy of the label, for the reason given in
+    // `a_read_failure_still_outranks_a_label_mismatch`: this test is about which
+    // record survives, and must not also stand as an expectation about the
+    // witnesses that record carries. -5 is what this bracket observed.
+    let source_unavailable = DomainGapRecordV1 {
+        part: DomainGapPart::State,
+        reason: DomainGapReason::SourceUnavailable,
+        target_hour_raw: hour,
+        range_start_hour_raw: hour,
+        range_end_hour_raw: hour,
+        tick_before: 7,
+        tick_after: 7,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    }
+    .encode()
+    .expect("a genuine read failure d81 staged for itself");
+    let mut records = Vec::new();
+    append_compact_record(
+        &mut records,
+        1,
+        hour,
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        0,
+        &source_unavailable,
+    );
+    let before = records.clone();
+    let mut ordinals = std::collections::BTreeMap::from([(
+        (
+            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+            DomainGapPart::State.code(),
+        ),
+        1u64,
+    )]);
+    let (_next, rejected) = replace_rejected_domain_records_with_gaps(
+        &mut records,
+        1,
+        hour,
+        std::slice::from_ref(&unusable),
+        &mut ordinals,
+        HourLabelMismatchPolicy::Refuse,
+    )
+    .expect("reconciliation");
+    assert!(rejected.is_empty());
+    assert_eq!(
+        records, before,
+        "the engine really could not be read; a mismatch that cannot even name \
+         the hour it observed must not overwrite that with `clock_unreadable`"
+    );
+}
+
+/// A READ FAILURE PRODUCED INSIDE THE BRACKET SURVIVES THE SKIP.
+///
+/// Found by review, not by a test (Codex 019fdeb9-2ff3-7700-b799-737eff4c4302,
+/// finding 1). The first version of the skip dropped the observe half's outcome
+/// unconditionally and returned the placeholder, exactly as the incoherent-
+/// bracket arm does. That arm is right to: reconciliation replaces its record
+/// whatever it says. The MISMATCH arm is not, because its record is the one that
+/// ships — so a d81 whose reader had already failed inside the bracket
+/// (`EmptySnapshot`, `InvalidPointer`, any of the nineteen) would have published
+/// `HourLabelMismatch`: "the engine read fine, only the hour was wrong", about a
+/// frame where the engine did not read at all. That is this lane's own defect
+/// pointed the other way, and it is the same precedence
+/// `replace_rejected_domain_records_with_gaps` states.
+///
+/// There is also nothing to save: `D81ObserveOutcome::Complete` is terminal, and
+/// `d81_finish_rail_replay_state` returns it untouched, so no deferred compute
+/// runs on it in the first place.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: returning the placeholder for a
+/// `Complete` observation on the mismatch arm, or handing the observation to the
+/// incoherent arm (whose copy must still be dropped unread).
+#[test]
+fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
+    let observed_hour_raw = 42u64;
+    let mismatch = SplitBracketRefusal::LabelMismatch { observed_hour_raw };
+
+    // The observe half's own terminal answer, with a reason of its own.
+    let already_failed = CompactRailReplayRead {
+        provinces: Vec::new(),
+        hub_simulation: None,
+        observed_neighbors: 0,
+        read_time_us: 4_321,
+        status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        first_failure: Some(D81FirstFailure::new(
+            D81FailureStage::HubObject,
+            D81FailureReason::EmptySnapshot,
+        )),
+        map_reciprocity_record_is_province: 5,
+        map_reciprocity_key_is_province_id: 6,
+        phase_times: D81PhaseTimes::default(),
+    };
+    let kept = d81_bracket_refused_outcome(
+        mismatch,
+        Some(D81ObserveOutcome::Complete(already_failed)),
+        0,
+    );
+    assert_eq!(
+        kept.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::EmptySnapshot),
+        "a read that already failed keeps its OWN reason; the encode site turns \
+         this into `SourceUnavailable`, which is true of this frame and is what \
+         must outrank the attribution failure"
+    );
+    assert_eq!(
+        kept.read_time_us, 4_321,
+        "and the whole outcome is handed back untouched, not rebuilt"
+    );
+    assert_eq!(
+        (
+            kept.map_reciprocity_record_is_province,
+            kept.map_reciprocity_key_is_province_id
+        ),
+        (5, 6)
+    );
+
+    // A DEFERRED observation on the same refusal IS the skip: nothing terminal
+    // exists yet, so the copy is dropped UNCOMPUTED and the mismatch is named.
+    // Driven through a real `Deferred`, not through `None`, because those are
+    // different arms of the handler and only this one can prove the copy went
+    // unread.
+    // A three-province ring, so every directed edge has its reciprocal and the
+    // deferred fold runs to completion rather than refusing part-way. An empty
+    // province list would refuse `EmptySnapshot`, and then "the compute did not
+    // run" and "the compute ran and refused" would look identical.
+    let ring: Vec<RailProvinceState> = (1..=3u32)
+        .map(|province_id| RailProvinceState {
+            province_id,
+            active_terminal: false,
+            anchor_variant: 0,
+            anchor_bits: [0; 3],
+            neighbors: (1..=3u32)
+                .filter(|neighbor| *neighbor != province_id)
+                .map(|neighbor| RailNeighborState {
+                    province_id: neighbor,
+                    edge_level: 1,
+                })
+                .collect(),
+        })
+        .collect();
+    let observed_neighbors = ring
+        .iter()
+        .map(|province| province.neighbors.len())
+        .sum::<usize>();
+    let deferred_copy = || {
+        D81ObserveOutcome::Deferred(Box::new(D81DeferredCompute {
+            started: Instant::now(),
+            status_flags: 0,
+            phases: D81PhaseAccum::default(),
+            admitted_record_is_province: 0,
+            admitted_key_is_province_id: 0,
+            provinces: ring.clone(),
+            observed_neighbors,
+            hub: D81HubObservation {
+                foreign_tables: BTreeMap::new(),
+                povs: Vec::new(),
+                read_failure: None,
+                reread_refused: Some(false),
+            },
+            closure_failure: None,
+            hour_stamp: None,
+            snapshot_bytes: 0,
+        }))
+    };
+    // THE CONTROL, and what makes the assertion below mean anything: this exact
+    // copy DOES compute to a published snapshot when it is not refused.
+    let computed = d81_finish_rail_replay_state(deferred_copy());
+    assert!(
+        computed.hub_simulation.is_some() && computed.first_failure.is_none(),
+        "the fixture must be a copy the compute half would publish, or 'the \
+         compute did not run' is indistinguishable from 'there was nothing to \
+         run'"
+    );
+
+    let deferred = d81_bracket_refused_outcome(mismatch, Some(deferred_copy()), 0);
+    assert!(
+        deferred.hub_simulation.is_none(),
+        "the deferred copy must be dropped UNREAD -- a hub snapshot here is the \
+         compute having run on an hour the bracket refuses"
+    );
+    assert_eq!(
+        deferred.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::HourLabelMismatch)
+    );
+    assert_eq!(
+        deferred.first_failure.map(|failure| failure.raw_value),
+        Some(observed_hour_raw)
+    );
+
+    // And the incoherent arm is untouched: it never receives an observation at
+    // all, because `spawn_gated_split` has already dropped its copy unread.
+    let incoherent =
+        d81_bracket_refused_outcome(SplitBracketRefusal::BracketIncoherent, None, 0);
+    assert_eq!(
+        incoherent.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::Torn)
+    );
+
+    // The wiring, asserted against the source: reaching the real branch needs a
+    // live game process, and the defect is exactly which arm gets the copy.
+    let source = collector_source_lf();
+    let split = source
+        .split_once("fn spawn_gated_split<")
+        .expect("the split spawn")
+        .1
+        .split_once("\nfn ")
+        .expect("the end of the split spawn")
+        .0;
+    assert!(
+        split.contains("Some(refusal @ SplitBracketRefusal::BracketIncoherent) => {")
+            && split.contains("drop(observed);")
+            && split.contains("rejected(refusal, None)"),
+        "a bracket that cannot vouch for its observation still has its copy \
+         dropped unread"
+    );
+    assert!(
+        split.contains("Some(refusal @ SplitBracketRefusal::LabelMismatch { .. }) => {")
+            && split.contains("rejected(refusal, Some(observed))"),
+        "and a label-mismatched bracket hands its observation to the handler, \
+         which is the only way a terminal read failure can survive the skip"
+    );
+}
+
+/// `CountOnly` never skips the compute.
+///
+/// The policy switch's standing claim is that it changes only WHETHER a
+/// mismatched domain is refused. Under `CountOnly` a mismatched bracket is
+/// counted and its domain still publishes its rows — so a split that skipped
+/// regardless would DELETE data the policy says to keep, which is a change of a
+/// different kind entirely.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: dropping the policy gate from
+/// `split_bracket_refusal`, or reading `HOUR_LABEL_MISMATCH_POLICY` inside it
+/// instead of taking it as an argument (the second makes this test impossible to
+/// write, which is why the argument exists).
+#[test]
+fn the_count_only_policy_never_skips_the_compute() {
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let mismatched = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: Some(clock_obs(hour + 1, 1)),
+        closing: Some(clock_obs(hour + 1, 2)),
+        worker_panicked: false,
+    };
+    assert_eq!(
+        split_bracket_refusal(&mismatched, hour, HourLabelMismatchPolicy::CountOnly),
+        None,
+        "under CountOnly the domain still publishes, so its compute must run"
+    );
+    assert!(
+        split_bracket_refusal(&mismatched, hour, HourLabelMismatchPolicy::Refuse).is_some(),
+        "and under Refuse it must not"
+    );
+    // The two locally-decidable refusals are policy-INDEPENDENT: the bracket
+    // could not vouch for its observation, which no mismatch policy makes true.
+    let unreadable = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: None,
+        closing: None,
+        worker_panicked: false,
+    };
+    for policy in [
+        HourLabelMismatchPolicy::Refuse,
+        HourLabelMismatchPolicy::CountOnly,
+    ] {
+        assert_eq!(
+            split_bracket_refusal(&unreadable, hour, policy),
+            Some(SplitBracketRefusal::BracketIncoherent),
+            "{policy:?}"
+        );
+    }
 }
 
 /// The owned copy is bounded, and exhausting the bound refuses the domain-hour
@@ -908,16 +1676,29 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
         .split_once("\nfn ")
         .expect("the end of the split spawn")
         .0;
+    // The BRACKET SCOPE, read out of the source rather than matched as one
+    // literal line. It used to be pinned as an exact one-line string, which made
+    // the assertion hostage to `rustfmt` -- the guard grew a third argument and
+    // the same correct code stopped matching. What matters is the SHAPE: the
+    // guard and the observation are inside the scope, and the compute is not.
+    let observed_scope = split
+        .split_once("let observed = {")
+        .expect("the observe scope")
+        .1
+        .split_once("\n        };")
+        .expect("the end of the observe scope")
+        .0;
     assert!(
-        split.contains(
-            "let observed = {\n            let _clock_guard = ReaderClockBracketGuard::new_reporting(lanes, tag, Some(&verdict));\n            observe()\n        };"
-        ),
+        observed_scope.contains("let _clock_guard = ReaderClockBracketGuard::new_reporting(")
+            && observed_scope.contains("observe()"),
         "the guard must be scoped to the OBSERVE half alone; a guard that lives \
          to the end of the worker is the shape this lane exists to remove"
     );
     assert!(
-        split.contains("compute(observed)"),
-        "and the compute must run after that scope, on the same worker"
+        !observed_scope.contains("compute(") && split.contains("compute(observed)"),
+        "and the compute must run AFTER that scope, on the same worker -- \
+         inside it, the deferred half would be back under the clock bracket \
+         and the whole split would be undone"
     );
     let d81_spawn = source
         .split_once("let rail_replay_state_handle = rail_replay_state_live_enabled.then(|| {")

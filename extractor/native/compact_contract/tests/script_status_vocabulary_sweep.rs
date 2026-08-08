@@ -700,6 +700,62 @@ fn report_raw_capture_global_masks_match_the_contract() {
 ///      spelling;
 ///   3. the standalone fallback -- reachable only when the mirror cannot be
 ///      read at all -- must be the same set.
+/// The sink verifier admits EXACTLY the contract's H4DG reason vocabulary.
+///
+/// THE DRIFT THIS CLOSES (lane FJ, 2026-08-08). `verify_sink_reconciliation.py`
+/// grades a sealed manifest and rejects any `domain_gap_outcomes` row whose
+/// `reason` is outside `ALLOWED_GAP_REASONS`. That set stopped at the first five
+/// reasons; `source_unavailable`, `reader_silent` and `hour_label_mismatch` were
+/// assigned afterwards and never added, so a manifest carrying any of them was
+/// reported `domain_gap_N_reason_invalid` -- a capture graded a failure for
+/// naming a loss the producer is entitled to name. Nothing caught it, because
+/// nothing tied the script's list to the wire's.
+///
+/// Derived from `DomainGapReason::ALL` through `wire_name`, which is also what
+/// `recorder_host` writes into the manifest, so this compares the verifier
+/// against the exact strings it will actually be handed rather than against a
+/// second transcription.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: assigning a ninth reason without
+/// widening the script's set, or renaming one on either side.
+#[test]
+fn verify_sink_reconciliation_admits_exactly_the_contract_gap_reasons() {
+    use compact_contract::DomainGapReason;
+
+    let code = read_code("verify_sink_reconciliation.py");
+    let block = block_after(&code, "ALLOWED_GAP_REASONS = ");
+    let declared: BTreeSet<String> = top_level_elements(&block)
+        .into_iter()
+        .map(|element| {
+            let trimmed = element.trim().to_string();
+            let unquoted = trimmed
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+                .unwrap_or_else(|| {
+                    // FAIL CLOSED: an element this sweep cannot read is an
+                    // element it must not silently drop from the comparison.
+                    panic!("ALLOWED_GAP_REASONS element is not a plain string literal: {trimmed:?}")
+                });
+            unquoted.to_string()
+        })
+        .collect();
+    let expected: BTreeSet<String> = DomainGapReason::ALL
+        .iter()
+        .map(|reason| reason.wire_name().to_string())
+        .collect();
+    assert_eq!(
+        expected.len(),
+        DomainGapReason::ALL.len(),
+        "two reasons share a wire name, so the manifest cannot distinguish them"
+    );
+    assert_eq!(
+        declared, expected,
+        "verify_sink_reconciliation.py's ALLOWED_GAP_REASONS must be exactly the \
+         contract's reason vocabulary; a manifest naming a reason it omits is \
+         graded `domain_gap_N_reason_invalid` for being honest"
+    );
+}
+
 #[test]
 fn report_raw_capture_pseudo_domains_match_the_contract() {
     let text = read_script("report_raw_capture.py");
