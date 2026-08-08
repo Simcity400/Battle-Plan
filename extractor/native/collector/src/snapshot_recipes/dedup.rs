@@ -738,6 +738,22 @@ impl OwnershipMap {
         );
     }
 
+    /// Room for `intervals` more records and index entries, charged first.
+    ///
+    /// TEST-ONLY, and deliberately so: this exists to PRICE what the record
+    /// table's growth costs, not to take it. `insert` grows both tables through
+    /// `charged_push`/`charged_reserve` one element at a time, which is
+    /// amortised but still pays a reallocation memcpy and a first touch at
+    /// every doubling. Lane FK measured the same pathology on the executor's
+    /// wave queue and request buffer and removed it there; whether this one is
+    /// worth a production reservation is a question for whoever owns the
+    /// ownership index, and this is the row that answers it.
+    #[cfg(test)]
+    pub(super) fn reserve_for(&mut self, intervals: usize) -> Result<(), CustodyRefusal> {
+        charged_reserve(&mut self.records, &self.ledger, intervals)?;
+        charged_reserve(&mut self.runs[FRESH], &self.ledger, intervals)
+    }
+
     pub fn insert(
         &mut self,
         span: Span,

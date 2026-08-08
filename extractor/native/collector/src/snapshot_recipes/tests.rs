@@ -12,8 +12,8 @@
 use super::arena::{Arena, ArenaAllocator};
 use super::dedup::OwnershipMap;
 use super::executor::{
-    observe, observe_in, validate, ObservationConfig, Recipe, RecipeOp, RecipeOutcome, RelWindow,
-    Root, SnapshotBuild,
+    observe, observe_in, validate, ObservationConfig, Recipe, RecipeOp, RecipeOutcome, RecipeReport,
+    RelWindow, Root, SnapshotBuild,
 };
 use super::policy::{
     merge_allowance, plan_copies, AnchorKind, CopyRequest, GapPolicy, PolicyRefusal, Proof,
@@ -2828,6 +2828,754 @@ fn the_visited_sets_two_task_kinds_do_not_prune_each_other() {
     // it would copy a prefix of the array and report `Captured`.
     assert!(visited.insert_extent(0x1000, 0x80, tag));
     assert_eq!(visited.len(), 3);
+}
+
+/// Two windows `gap` bytes apart, reached either straight from a root or
+/// through one pointer dereference.
+///
+/// The two shapes produce copy requests that are IDENTICAL in span, in policy
+/// and in proof — the windows are the same widths at the same distance and
+/// nothing about the surrounding allocation is proven either way. The single
+/// difference is the anchor the task carries: a root address in one, the
+/// dereferenced pointer value in the other.
+fn windowed_report(through_pointer: bool, gap: u64) -> RecipeReport {
+    const HOLDER: u64 = BASE;
+    const TARGET: u64 = BASE + 0x8000;
+    let window_len = 8u32;
+    let far = (u64::from(window_len) + gap) as i64;
+
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(HOLDER, 16);
+    memory.map_zeroed(TARGET, (far as u64 + u64::from(window_len)) as usize);
+    memory.write_u64(HOLDER, TARGET);
+
+    let windows = vec![RelWindow::new(0, window_len), RelWindow::new(far, window_len)];
+    let recipe = if through_pointer {
+        // CopyHeader at the holder, dereference its first field, and take the
+        // windows at the VALUE. The window task's anchor is that value.
+        Recipe::new(
+            RecipeId(1),
+            ConsumerId(1),
+            vec![
+                RecipeOp::CopyHeader {
+                    size: 16,
+                    next: vec![1],
+                },
+                RecipeOp::DecodePointer { offset: 0, next: 2 },
+                RecipeOp::CopyRanges {
+                    windows,
+                    next: vec![3],
+                },
+                RecipeOp::Freeze,
+            ],
+            vec![Root { op: 0, addr: HOLDER }],
+        )
+    } else {
+        // The same windows at the same address, named as a root.
+        Recipe::new(
+            RecipeId(1),
+            ConsumerId(1),
+            vec![
+                RecipeOp::CopyRanges {
+                    windows,
+                    next: vec![1],
+                },
+                RecipeOp::Freeze,
+            ],
+            vec![Root { op: 0, addr: TARGET }],
+        )
+    };
+
+    let build = observe(&[recipe], &memory, config()).expect("custody budget");
+    *build.report_for(RecipeId(1)).expect("the recipe ran")
+}
+
+/// SENTINEL. A copy task carries its anchor as a KIND, and the address the
+/// anchor rests on is rebuilt from the task's own address at request time.
+///
+/// That erasure is only sound because the two are the same at every site that
+/// builds a task: a root anchors on the address it copies at, a dereferenced
+/// pointer anchors on the value it copies at, and a bounded join anchors on the
+/// element address it computed. If the rebuild ever names the wrong ADDRESS,
+/// two windows under one pointer stop sharing an anchor and the generic tier
+/// stops bridging between them. If it ever names the wrong KIND, a root's
+/// windows start bridging — which is the proximity merge §4 of the gap-curve
+/// verdict refuses, and it would over-copy across an unproven neighbourhood.
+///
+/// Both directions are asserted here, on window pairs that differ in nothing
+/// else. A production change that made `TaskAnchor::at` return a constant
+/// address, or that mapped `Root` onto `Pointer`, breaks one arm or the other.
+#[test]
+fn the_task_anchor_rebuilds_the_address_and_the_kind_it_erased() {
+    // `planned_ranges` accumulates over the whole recipe, so the pointer shape
+    // carries its holder's `CopyHeader` in every count below: one range for the
+    // header, then whatever the two windows coalesce to.
+    const HEADER: u32 = 1;
+
+    // A 32 B hole is exactly the generic tier, so it bridges when — and only
+    // when — both requests share one pointer anchor.
+    let bridged = windowed_report(true, u64::from(GENERIC_GAP_BYTES));
+    assert_eq!(
+        bridged.outcome,
+        RecipeOutcome::Captured,
+        "the windowed recipe ran to Freeze",
+    );
+    assert_eq!(
+        bridged.planned_ranges,
+        HEADER + 1,
+        "two windows under ONE dereferenced pointer share an anchor, so a 32 B hole is \
+         inside the generic tier and they coalesce into one transaction",
+    );
+
+    // The same pair one byte past the tier. This is the control that says the
+    // merge above was the TIER and not proximity, and it is also what fails if
+    // the rebuilt anchor ever stops depending on the address at all.
+    let too_far = windowed_report(true, u64::from(GENERIC_GAP_BYTES) + 1);
+    assert_eq!(
+        too_far.planned_ranges,
+        HEADER + 2,
+        "33 B is past the generic tier; the pair must separate again",
+    );
+
+    // The same two windows at the same address, at the same distance, anchored
+    // on a ROOT instead. No header in this shape — the windows are the whole
+    // recipe — and a root address proves nothing about its neighbours, so the
+    // pair that merged above must not merge here.
+    let unbridged = windowed_report(false, u64::from(GENERIC_GAP_BYTES));
+    assert_eq!(unbridged.outcome, RecipeOutcome::Captured);
+    assert_eq!(
+        unbridged.planned_ranges, 2,
+        "a ROOT anchor never satisfies the generic tier, so the identical pair stays two \
+         transactions",
+    );
+}
+
+/// SENTINEL, and the arm the test above cannot reach on its own.
+///
+/// Every assertion up there involves ONE window task, so a rebuild that ignored
+/// the task's address and returned a CONSTANT one would satisfy all of them:
+/// the windows of a single task share whatever anchor they are given. What a
+/// constant breaks is the boundary BETWEEN tasks — two windows reached through
+/// two different pointers would start claiming one anchor, and the generic tier
+/// would bridge across two objects nothing tied together.
+///
+/// Two roots, two dereferences, two single-window copies placed exactly one
+/// generic tier apart, all inside one recipe so they plan as one batch.
+#[test]
+fn two_window_tasks_under_different_pointers_do_not_share_an_anchor() {
+    const HOLDER_A: u64 = BASE;
+    const HOLDER_B: u64 = BASE + 0x1000;
+    const TARGET_A: u64 = BASE + 0x8000;
+    // Eight bytes of window, then exactly the generic tier of hole.
+    const TARGET_B: u64 = TARGET_A + 8 + GENERIC_GAP_BYTES as u64;
+
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(HOLDER_A, 16);
+    memory.map_zeroed(HOLDER_B, 16);
+    memory.map_zeroed(TARGET_A, (TARGET_B - TARGET_A) as usize + 8);
+    memory.write_u64(HOLDER_A, TARGET_A);
+    memory.write_u64(HOLDER_B, TARGET_B);
+
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 16,
+                next: vec![1],
+            },
+            RecipeOp::DecodePointer { offset: 0, next: 2 },
+            RecipeOp::CopyRanges {
+                windows: vec![RelWindow::new(0, 8)],
+                next: vec![3],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![
+            Root {
+                op: 0,
+                addr: HOLDER_A,
+            },
+            Root {
+                op: 0,
+                addr: HOLDER_B,
+            },
+        ],
+    );
+    let build = observe(&[recipe], &memory, config()).expect("custody budget");
+    let report = build.report_for(RecipeId(1)).expect("the recipe ran");
+    assert_eq!(report.outcome, RecipeOutcome::Captured);
+    // Two headers, far apart and each proving only its own 16 bytes, plus two
+    // windows that must stay apart. A constant rebuilt anchor merges the
+    // windows and this reads 3.
+    assert_eq!(
+        report.planned_ranges, 4,
+        "two windows reached through DIFFERENT pointers carry different anchors, so the \
+         generic tier cannot bridge between them",
+    );
+    assert_eq!(
+        build.snapshot.custody_bytes(),
+        16 + 16 + 8 + 8,
+        "and the hole between the windows was not copied",
+    );
+}
+
+/// SENTINEL. The executor's own tables are charged by RECONCILIATION — they
+/// grow inside `enqueue` and the decode dispatch, and `charge_own_tables`
+/// brings the ledger up to their real capacity once per wave. A RESERVATION
+/// cannot use that route unaided: `charged_reserve` charges the growth it
+/// takes, and the next reconciliation would see the larger capacity and charge
+/// the same bytes a second time.
+///
+/// `Observation::reserve_own` advances the reconciliation baseline by exactly
+/// what it reserved, which keeps the two accountings disjoint. This test walks
+/// the seeding path — reserve the root queue, enqueue every root, reconcile —
+/// and asserts the ledger charged each byte once.
+///
+/// The production change that breaks it: drop the `*charged +=` from
+/// `reserve_own`. The reservation is then charged by `charged_reserve` and
+/// charged AGAIN by the reconciliation that follows it, and custody reports a
+/// footprint the observation does not have — which at the ceiling refuses
+/// observations that would have fitted.
+#[test]
+fn a_reserved_table_is_charged_to_custody_exactly_once() {
+    use super::executor::DispatchProbe;
+
+    const ROOTS: usize = 4_096;
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(BASE, ROOTS * 64);
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 16,
+                next: vec![1],
+            },
+            RecipeOp::Freeze,
+        ],
+        (0..ROOTS)
+            .map(|index| Root {
+                op: 0,
+                addr: BASE + index as u64 * 64,
+            })
+            .collect(),
+    );
+    let recipes = [recipe];
+    let mut probe =
+        DispatchProbe::new(&recipes, &memory, config()).expect("the default budget fits it");
+
+    // Nothing has been copied and no interval exists, so the ownership map has
+    // charged nothing: every table byte on the ledger is one the executor's own
+    // reconciliation is responsible for. Asserted rather than assumed, because
+    // it is what makes the equality below exact.
+    assert_eq!(
+        probe.ledger_table_bytes(),
+        probe.own_tables_charged(),
+        "before the reservation the two accountings already agree",
+    );
+
+    // Measured BEFORE the reservation, so what follows is about the
+    // reservation and not about the visited set's preallocation, which
+    // `Observation::new` already charged.
+    let before_reserve = probe.ledger_table_bytes();
+    let capacity_before = probe.wave_capacity(0);
+
+    probe.reserve_root_queue().expect("the default budget fits it");
+    let after_reserve = probe.ledger_table_bytes();
+    let reserved_capacity = probe.wave_capacity(0);
+    // The reservation must have DONE something, or every equality below is a
+    // tautology about a no-op. `>= ROOTS` rather than `== ROOTS`: the allocator
+    // is allowed to hand back more room than it was asked for, and custody is
+    // charged for whatever it handed back.
+    assert!(
+        reserved_capacity >= ROOTS && reserved_capacity > capacity_before,
+        "the reservation gave the queue room for the roots: {reserved_capacity} slots, was \
+         {capacity_before}",
+    );
+    assert!(
+        after_reserve > before_reserve,
+        "and charged for them: {after_reserve} table bytes, was {before_reserve}",
+    );
+
+    assert_eq!(probe.seed_roots(), ROOTS, "every root was queued");
+    assert_eq!(
+        probe.wave_capacity(0),
+        reserved_capacity,
+        "seeding did not have to grow the queue the reservation sized",
+    );
+    probe.charge_tables().expect("the default budget fits it");
+
+    // THE POINT. The ledger's table charge is the executor's own reconciled
+    // footprint — not that footprint plus the reservation a second time.
+    assert_eq!(
+        probe.ledger_table_bytes(),
+        probe.own_tables_charged(),
+        "the reservation was charged once: the ledger holds {} table bytes against a \
+         reconciled footprint of {}",
+        probe.ledger_table_bytes(),
+        probe.own_tables_charged(),
+    );
+    assert!(
+        probe.ledger_table_bytes() >= after_reserve,
+        "reconciliation never releases what the reservation charged",
+    );
+
+}
+
+/// SENTINEL, and the third `TaskBody::Op` constructor — the one the two tests
+/// above do not reach.
+///
+/// `JoinBounded` computes an element address by bounded index arithmetic into a
+/// registered extent and builds a task there. Its anchor is a POINTER: the
+/// address it computed is a discovered object address, not a static one, so it
+/// is a legitimate window anchor even though no pointer was dereferenced to
+/// reach it. A rebuild that named `Root` for this task would silently stop its
+/// windows merging; the root and pointer arms above would both still pass,
+/// because neither of them runs a join.
+///
+/// The windows are placed WELL CLEAR of the table, and both parts of that
+/// matter.
+///
+/// Clear of it by address, because the join's task and the extent's own copy
+/// land in the same wave and therefore the same coalescing batch: a window
+/// overlapping the element array merges into that copy, and the merged anchor
+/// is `Mixed`, which decides everything afterwards without the join's anchor
+/// ever being consulted. The first draft of this test made that mistake and
+/// passed with the anchor mutated.
+///
+/// Clear of it by PROOF, because the join's task inherits `Proof::Extent` over
+/// the table: a merged footprint inside the table bridges on the proven tier
+/// (128 B) rather than the anchor tier. Outside it, only the anchor is left.
+#[test]
+fn a_bounded_joins_task_anchors_on_the_element_address_it_computed() {
+    const TABLE: u64 = BASE + 0x1000;
+    const STRIDE: u64 = 16;
+    const ELEMENTS: u32 = 4;
+    /// Element 2 — where the join lands, and what the windows are relative to.
+    const KEY: u32 = 2;
+    /// Far enough from the element that neither window can touch the 64-byte
+    /// table, so nothing in this recipe merges except the two windows.
+    const NEAR: i64 = 0x200;
+    /// Eight bytes of window, then exactly the generic tier of hole.
+    const FAR: i64 = NEAR + 8 + GENERIC_GAP_BYTES as i64;
+
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(BASE, 24);
+    memory.write_u32(BASE, ELEMENTS);
+    memory.write_u64(BASE + 8, TABLE);
+    memory.write_u32(BASE + 16, KEY);
+    // Room for the table and for both windows well past the end of it.
+    memory.map_zeroed(TABLE, 0x400);
+    // A distinct value under each window of the element the join is supposed
+    // to land on, and a different one under the neighbouring elements'
+    // windows. Without these the whole region is zeroes, and a join that
+    // computed the WRONG element address would copy two equally mergeable
+    // zero-filled windows: the range count and the byte count would be
+    // identical and the test would prove only that some address was used.
+    let element = TABLE + u64::from(KEY) * STRIDE;
+    memory.write_u64(element + NEAR as u64, 0xE1E1_0000_0002);
+    memory.write_u64(element + FAR as u64, 0xFAFA_0000_0002);
+    for other in [KEY - 1, KEY + 1] {
+        let base = TABLE + u64::from(other) * STRIDE;
+        memory.write_u64(base + NEAR as u64, 0xE1E1_0000_0000 + u64::from(other));
+        memory.write_u64(base + FAR as u64, 0xFAFA_0000_0000 + u64::from(other));
+    }
+
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 24,
+                next: vec![1, 2],
+            },
+            RecipeOp::DecodeExtent {
+                count_offset: 0,
+                count_width: 4,
+                ptr_offset: 8,
+                stride: STRIDE as u32,
+                max_count: 16,
+                max_bytes: 4096,
+                register: Some(TableId(7)),
+                element: vec![4],
+            },
+            RecipeOp::JoinBounded {
+                table: TableId(7),
+                key_offset: 16,
+                key_width: 4,
+                next: 3,
+            },
+            RecipeOp::CopyRanges {
+                windows: vec![RelWindow::new(NEAR, 8), RelWindow::new(FAR, 8)],
+                next: vec![4],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: BASE }],
+    );
+
+    // The fixture's own preconditions. Each of these is a way the test could
+    // pass without ever consulting the join's anchor, so they are checked
+    // rather than intended.
+    let table_end = TABLE + u64::from(ELEMENTS) * STRIDE;
+    assert!(
+        element + NEAR as u64 > table_end,
+        "the near window must clear the element array, or it merges into the extent's own \
+         copy and the merged anchor is Mixed",
+    );
+    assert!(
+        element + FAR as u64 + 8 > table_end,
+        "and the merged footprint must leave the proven extent, or the 128 B proven tier \
+         decides the merge instead of the 32 B anchor tier",
+    );
+
+    let build = observe(&[recipe], &memory, config()).expect("custody budget");
+    let report = build.report_for(RecipeId(1)).expect("the recipe ran");
+    assert_eq!(report.outcome, RecipeOutcome::Captured);
+    // The header, the element array, and the join's two windows merged into
+    // one. A `Root` anchor on the join's task splits the last of those, and
+    // this reads 4.
+    assert_eq!(
+        report.planned_ranges, 3,
+        "the join's windows share the pointer anchor of the element address the join \
+         computed, so the generic tier bridges the 32 B hole between them",
+    );
+    // And the merge is a real over-copy of the bridged hole, not a bookkeeping
+    // artefact: 24 B header, 64 B element array, and 48 B spanning both
+    // windows and the 32 B between them.
+    assert_eq!(
+        build.snapshot.custody_bytes(),
+        24 + 64 + 48,
+        "the bridged hole was copied, which is what a merge at the generic tier means",
+    );
+
+    // AND THE ADDRESS. Everything above is a count, and counts are the same
+    // whichever element the join landed on: the neighbours' windows are just as
+    // mergeable and just as wide. This reads the bytes back and pins the
+    // element the join was supposed to compute — key 2 at stride 16 — so a
+    // change to that arithmetic is a different value here rather than an
+    // identical tally.
+    let closed = build.close_witnesses();
+    let view = closed.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
+    assert_eq!(
+        view.u64_le(element + NEAR as u64).expect("captured"),
+        0xE1E1_0000_0002,
+        "the near window was taken at element {KEY}, not at a neighbour",
+    );
+    assert_eq!(
+        view.u64_le(element + FAR as u64).expect("captured"),
+        0xFAFA_0000_0002,
+        "and so was the far one",
+    );
+}
+
+/// SENTINEL. The root-queue reservation is sized by what `enqueue` can ACCEPT,
+/// never by what a recipe declared.
+///
+/// A root count arrives from the recipe with no limit applied to it:
+/// `max_copy_tasks` is checked per task during discovery, so a recipe may
+/// declare a hundred thousand roots against a task limit of sixteen and reach
+/// exactly sixteen of them. Reserving the declared count would take — and
+/// charge — memory the observation can never fill, and at the ceiling that
+/// converts an observation which used to run into a global custody refusal.
+/// Custody failure is not per-recipe: it aborts every recipe in the
+/// observation, including the well-formed ones.
+///
+/// The production change that breaks this: size `reserve_root_queue` from
+/// `recipe.roots.len()` instead of `min(roots, max_copy_tasks)`.
+#[test]
+fn the_root_reservation_is_bounded_by_what_a_recipe_may_enqueue() {
+    use super::executor::DispatchProbe;
+
+    const ROOTS: usize = 100_000;
+    const TASKS: u32 = 16;
+
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(BASE, ROOTS * 64);
+    let mut recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 16,
+                next: vec![1],
+            },
+            RecipeOp::Freeze,
+        ],
+        (0..ROOTS)
+            .map(|index| Root {
+                op: 0,
+                addr: BASE + index as u64 * 64,
+            })
+            .collect(),
+    );
+    recipe.limits.max_copy_tasks = TASKS;
+    let recipes = [recipe];
+
+    let mut probe =
+        DispatchProbe::new(&recipes, &memory, config()).expect("the default budget fits it");
+    probe.reserve_root_queue().expect("the default budget fits it");
+    // Tight against the limit rather than merely "much less than the roots".
+    // A loose bound — anything under a thousand, say — is passed by a rule that
+    // reserves thirty-two times what the recipe can enqueue, which is the same
+    // defect in a smaller coat. The allocator may round the request up, so this
+    // allows a factor of two over the sixteen tasks the limit admits and
+    // nothing like the six thousand the declared roots would take.
+    assert!(
+        probe.wave_capacity(0) <= 2 * TASKS as usize,
+        "the queue was sized for the {TASKS} tasks the limit admits, not the {ROOTS} roots \
+         the recipe declared; it has room for {}",
+        probe.wave_capacity(0),
+    );
+
+    // And the recipe still behaves exactly as it did: the task limit refuses
+    // it, per-recipe, rather than custody aborting the observation.
+    let build = observe(&recipes, &memory, config()).expect("no custody refusal");
+    let report = build.report_for(RecipeId(1)).expect("the recipe ran");
+    assert!(
+        matches!(
+            report.outcome,
+            RecipeOutcome::Refused(Refusal::CopyTaskLimitExceeded { limit: TASKS, .. })
+        ),
+        "the declared roots are refused by the recipe's own task limit, not by custody: {:?}",
+        report.outcome,
+    );
+}
+
+/// SENTINEL. A recipe that fails validation must not size the reservation.
+///
+/// A malformed recipe enqueues nothing: `run` passes over it and `enqueue`
+/// refuses it again. Counting its declared roots therefore charges custody for
+/// queue slots that cannot exist — and custody failure is the one GLOBAL
+/// refusal, so at the ceiling a malformed recipe would abort the well-formed
+/// recipes sharing its observation. Per-recipe refusals exist precisely so one
+/// bad recipe cannot do that.
+///
+/// The production change that breaks it: reserve before the validation pass, or
+/// drop the `refusal.is_none()` filter in `reserve_root_queue`.
+#[test]
+fn a_recipe_that_fails_validation_does_not_size_the_root_reservation() {
+    use super::executor::DispatchProbe;
+
+    const ROOTS: usize = 50_000;
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(BASE, 64);
+
+    // Op 0 is a copy op whose `next` names op 0 — a copy op in a decode slot,
+    // which `validate` rejects. Fifty thousand roots point at it.
+    let malformed = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![RecipeOp::CopyHeader {
+            size: 16,
+            next: vec![0],
+        }],
+        (0..ROOTS).map(|_| Root { op: 0, addr: BASE }).collect(),
+    );
+    let sound = Recipe::new(
+        RecipeId(2),
+        ConsumerId(2),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 16,
+                next: vec![1],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: BASE }],
+    );
+    let recipes = [malformed, sound];
+
+    // The probe arm: the reservation itself, with the validation pass in front
+    // of it. Tight against what the SOUND recipe can enqueue — one root, so the
+    // growth schedule's floor — because a loose bound is passed by a rule that
+    // still counts the malformed recipe, just less of it.
+    let mut probe =
+        DispatchProbe::new(&recipes, &memory, config()).expect("the default budget fits it");
+    probe.validate_recipes();
+    probe.reserve_root_queue().expect("the default budget fits it");
+    assert!(
+        probe.wave_capacity(0) <= 32,
+        "only the sound recipe's single root may be reserved for, not the malformed \
+         recipe's {ROOTS}; the queue has room for {}",
+        probe.wave_capacity(0),
+    );
+
+    // The `run` arm. The probe drives the validation pass itself, so it cannot
+    // see `run` reordering the two; this measures what a whole observation
+    // HOLDS, which the reservation's charge is part of and which no amount of
+    // reordering hides.
+    let sound_only = observe(&recipes[1..], &memory, config()).expect("no custody refusal");
+    let build = observe(&recipes, &memory, config()).expect("no custody refusal");
+    let added = build.custody_held - sound_only.custody_held;
+    assert!(
+        added < ROOTS as u64 * 48,
+        "adding the malformed recipe added {added} bytes of custody. Its roots are entitled \
+         to the discovery visited set's preallocation and nothing else; a queue reserved for \
+         them is {} bytes on top of that",
+        ROOTS as u64 * 64,
+    );
+
+    // And the observation still behaves as it always did: one recipe refuses
+    // for being malformed, the other captures.
+    assert!(
+        matches!(
+            outcome(&build, 1),
+            RecipeOutcome::Refused(Refusal::Malformed { .. })
+        ),
+        "the malformed recipe refuses on its own account: {:?}",
+        outcome(&build, 1),
+    );
+    assert_eq!(
+        outcome(&build, 2),
+        RecipeOutcome::Captured,
+        "and the sound recipe sharing the observation is untouched by it",
+    );
+}
+
+/// SENTINEL. The per-wave reconciliation must see the wave that is IN FLIGHT.
+///
+/// `run` takes a wave's tasks out of `self.waves` before running it, so for the
+/// whole of that wave the queue the reconciliation measures is empty while the
+/// memory is still held in a local. The baseline it compares against still
+/// contains that capacity, so the `bytes <= charged` exit fires and growth
+/// elsewhere in the wave — the next wave's queue filling up as the decode
+/// dispatch discovers — is charged to nobody up to the size of the invisible
+/// queue. The ledger then sits BELOW what the observation holds, which is the
+/// one direction custody must never take: the ceiling stops being a ceiling.
+///
+/// `run` therefore hands the held queue's size to `charge_own_tables`. This
+/// test reproduces the exact sequence — seed, reconcile, take the wave, copy,
+/// decode into the next wave, reconcile again — and asserts the ledger covers
+/// the footprint including the wave in hand.
+///
+/// The production change that breaks it: pass `0` instead of
+/// `vec_bytes(&tasks)` at the end of `run`'s wave loop.
+#[test]
+fn the_reconciliation_counts_the_wave_that_is_in_flight() {
+    use super::executor::DispatchProbe;
+
+    // A chain, so the decode dispatch discovers into the next wave and that
+    // queue grows through the RECONCILED path rather than being charged
+    // eagerly the way a reservation is.
+    let memory = chain_memory(64, 0);
+    let recipes = [chain_recipe(1, 1)];
+    let mut probe =
+        DispatchProbe::new(&recipes, &memory, config()).expect("the default budget fits it");
+    probe.reserve_root_queue().expect("custody");
+    probe.seed_roots();
+    probe.charge_tables().expect("custody");
+
+    // The wave leaves `self.waves` and stays alive here, exactly as it does
+    // inside `run`.
+    let tasks = probe.take_wave(0);
+    assert!(!tasks.is_empty(), "there is a wave to hold");
+    let in_flight = DispatchProbe::<SyntheticMemory>::wave_bytes(&tasks);
+    assert!(in_flight > 0, "and holding it costs something");
+
+    probe.copy_pass(&tasks).expect("custody");
+    probe.decode_pass(&tasks);
+    assert!(
+        probe.queued_at(1) > 0,
+        "the decode dispatch discovered into the next wave, so a table grew while the \
+         wave was out of sight",
+    );
+
+    // Through the same method `run`'s wave loop calls, so this exercises the
+    // production path rather than arithmetic the test invented.
+    //
+    // WHAT THIS TEST STILL DOES NOT COVER, stated rather than implied: it
+    // cannot catch the wave loop calling `charge_own_tables(0)` instead, since
+    // it drives the reconciliation itself. That call site is guarded by
+    // construction rather than by this test — `charge_own_tables_holding` takes
+    // the queue, so there is no `in_flight` number at that site to get wrong.
+    probe.charge_tables_holding(&tasks).expect("custody");
+
+    // THE POINT. What the executor has been charged for covers everything it
+    // holds, including the queue that is not in `self.waves` at this instant.
+    //
+    // Two things about how this is written, and both were mistakes first.
+    //
+    // The floor is built as `own_tables_bytes(0) + in_flight` — the production
+    // sum of everything the observation still owns, plus the held queue added
+    // HERE — rather than by asking `own_tables_bytes(in_flight)`. The latter
+    // could not fail: a reconciliation that ignored `in_flight` would have made
+    // the expectation ignore it too, and the assertion would have compared a
+    // mutated number against itself.
+    //
+    // And it reads the EXECUTOR's reconciled total rather than the ledger's.
+    // The ledger also carries the ownership map's records and link arenas,
+    // which this fixture grows by far more than one wave queue is worth; a
+    // ledger-level comparison is satisfied by the index's charges no matter
+    // what the executor did with its own.
+    let floor = probe.own_tables_bytes(0) + in_flight;
+    assert!(
+        probe.own_tables_charged() >= floor,
+        "custody must never sit below the footprint: the executor is charged for {} against \
+         {floor} held ({} in tables it still owns, {in_flight} in the wave in hand)",
+        probe.own_tables_charged(),
+        probe.own_tables_bytes(0),
+    );
+    // And the ledger is at least that, since the executor's share is part of
+    // it.
+    assert!(probe.ledger_table_bytes() >= probe.own_tables_charged());
+}
+
+/// The reservation covers DEPTH ZERO and nothing else, and every wave under it
+/// still grows the way it always did.
+///
+/// A behaviour-preservation test rather than a sentinel, and labelled as one:
+/// it passes with the reservation removed entirely, which is exactly what a
+/// test of "the optimisation changed no result" should do. What it watches for
+/// is the opposite mistake — a reservation that became a BOUND, or a sizing
+/// rule that leaked into the discovered waves. Six chained nodes are reached
+/// from two entry points, so waves one through five run on queues nothing sized
+/// in advance, and the second entry point lands inside the chain the first one
+/// already walked, so deduplication has to prune it rather than copy it twice.
+#[test]
+fn discovery_past_depth_zero_runs_on_queues_that_were_not_reserved() {
+    let memory = chain_memory(6, 0);
+    // Two roots into the same chain: the second is pruned as a duplicate of
+    // what the first discovered, so the queue's final occupancy and the
+    // reservation's size are not the same number.
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 16,
+                next: vec![1, 2],
+            },
+            RecipeOp::DecodePointer { offset: 0, next: 0 },
+            RecipeOp::Freeze,
+        ],
+        vec![
+            Root {
+                op: 0,
+                addr: node_addr(0),
+            },
+            Root {
+                op: 0,
+                addr: node_addr(3),
+            },
+        ],
+    );
+    let build = observe(&[recipe], &memory, config()).expect("custody budget");
+    assert_eq!(
+        build.report_for(RecipeId(1)).unwrap().outcome,
+        RecipeOutcome::Captured,
+    );
+    assert_eq!(
+        build.snapshot.interval_count(),
+        6,
+        "every node of the chain was captured exactly once, from both entry points",
+    );
+    assert_eq!(
+        build.snapshot.custody_bytes(),
+        6 * 16,
+        "and nothing was copied twice",
+    );
 }
 
 /// SENTINEL. The key packs the recipe index and the op into one word. The key

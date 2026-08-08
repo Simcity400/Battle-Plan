@@ -562,13 +562,48 @@ struct TableBinding {
     stride: u32,
 }
 
+/// Which anchor a task's copy requests rest on.
+///
+/// # Why this is a tag and not an [`AnchorKind`]
+///
+/// A task used to carry the whole `AnchorKind`, whose two inhabited variants
+/// each hold an address — and at every one of the three sites that builds a
+/// `TaskBody::Op`, THAT ADDRESS IS THE TASK'S OWN `addr`: a root anchors on
+/// `root.addr` and copies at `root.addr`, a dereferenced pointer anchors on the
+/// value it read and copies at that value, and a bounded join anchors on the
+/// element address it computed and copies there. So the payload was sixteen
+/// bytes per task restating a field the task already had, on a value that is
+/// memcpy'd into a wave queue and back out of it.
+///
+/// [`AnchorKind::Mixed`] is deliberately not representable here. It is what
+/// COALESCING produces when it merges requests with different anchors — a
+/// property of a planned copy, never of a task — and a task that could claim it
+/// would be claiming a merge that had not happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskAnchor {
+    Root,
+    Pointer,
+}
+
+impl TaskAnchor {
+    /// Rebuild the anchor at the task's address. The inverse of the erasure
+    /// above, and the only place it is undone.
+    #[inline]
+    fn at(self, addr: u64) -> AnchorKind {
+        match self {
+            TaskAnchor::Root => AnchorKind::Root(addr),
+            TaskAnchor::Pointer => AnchorKind::Pointer(addr),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum TaskBody {
     /// A copy op acting at `addr`.
     Op {
         op: u16,
         addr: u64,
-        anchor: AnchorKind,
+        anchor: TaskAnchor,
         /// What is proven about the region the address sits in, inherited from
         /// whatever produced it. `None` for a pointer target: a pointee's
         /// allocation is not proven by the pointer.
@@ -579,7 +614,7 @@ enum TaskBody {
 }
 
 #[derive(Clone, Debug)]
-struct CopyTask {
+pub(super) struct CopyTask {
     recipe: usize,
     depth: u32,
     /// The interval whose bytes produced this task's address.
@@ -728,8 +763,48 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// in the observation, which does not scale with the work. `by_recipe`
     /// holds one group per recipe and its groups' capacities are counted
     /// below.
-    fn charge_own_tables(&mut self) -> Result<(), CustodyRefusal> {
-        let mut bytes = super::arena::vec_bytes(&self.pruned)
+    ///
+    /// # `in_flight`, and the hole it closes
+    ///
+    /// `run` takes a wave's tasks OUT of `self.waves` before running it, so for
+    /// the whole of that wave the queue this function measures is empty while
+    /// the memory is still held in a local. The baseline it reconciles against
+    /// still contains that capacity, so the `bytes <= charged` exit fires, and
+    /// growth elsewhere in the wave up to the size of the invisible queue is
+    /// charged to nobody. The ledger could therefore sit BELOW what the
+    /// observation held — the one direction custody must never take.
+    ///
+    /// The caller passes the in-flight queue's capacity, so the sum is the
+    /// whole footprint whether the tasks are in `self.waves` or in a local.
+    /// Callers that hold no wave pass zero.
+    fn charge_own_tables(&mut self, in_flight: u64) -> Result<(), CustodyRefusal> {
+        let bytes = self.own_tables_bytes(in_flight);
+        if bytes <= self.own_tables_charged {
+            return Ok(());
+        }
+        let delta = bytes - self.own_tables_charged;
+        self.own_tables_charged = bytes;
+        self.arena.ledger_ref().charge_tables_overshoot(delta)
+    }
+
+    /// Reconcile while `tasks` is held outside `self.waves`.
+    ///
+    /// The wave loop calls THIS rather than passing a number, so the one thing
+    /// that has to be right at that call site — that the held queue is counted
+    /// — is carried by the type rather than by whoever edits the argument next.
+    fn charge_own_tables_holding(&mut self, tasks: &Vec<CopyTask>) -> Result<(), CustodyRefusal> {
+        self.charge_own_tables(super::arena::vec_bytes(tasks))
+    }
+
+    /// The footprint [`Self::charge_own_tables`] reconciles against.
+    ///
+    /// Split out so a test can ask for the same number the charging asks for.
+    /// A test that recomputed this sum itself would drift from it the first
+    /// time a table was added, and would then agree with the production code
+    /// about a footprint neither of them measured.
+    fn own_tables_bytes(&self, in_flight: u64) -> u64 {
+        let mut bytes = in_flight
+            + super::arena::vec_bytes(&self.pruned)
             + super::arena::vec_bytes(&self.waves)
             + super::arena::vec_bytes(&self.by_recipe)
             + super::arena::vec_bytes(&self.requests)
@@ -744,12 +819,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         for group in &self.by_recipe {
             bytes += super::arena::vec_bytes(group);
         }
-        if bytes <= self.own_tables_charged {
-            return Ok(());
-        }
-        let delta = bytes - self.own_tables_charged;
-        self.own_tables_charged = bytes;
-        self.arena.ledger_ref().charge_tables_overshoot(delta)
+        bytes
     }
 
     fn refuse(&mut self, recipe: usize, refusal: Refusal) {
@@ -777,10 +847,105 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         );
     }
 
+    /// Make room in one of the executor's own tables, charged BEFORE it is
+    /// taken and reflected in the reconciliation baseline.
+    ///
+    /// The executor's tables are normally charged by reconciliation — they grow
+    /// inside `enqueue` and the decode dispatch, and `charge_own_tables` brings
+    /// the ledger up to their real capacity once per wave. A reservation cannot
+    /// use that route on its own: `charged_reserve` charges the growth it takes,
+    /// and the next reconciliation would then see the larger capacity and charge
+    /// the same bytes a second time. So the baseline is advanced by exactly what
+    /// the reservation added, and the two accountings stay disjoint.
+    ///
+    /// The charge is still taken first and is still fallible, which is the
+    /// property that matters: a reservation sized from a recipe's declared root
+    /// count is a CLAIM, not a bound, and an infallible `reserve` on it would
+    /// let a recipe take the machine out before the observation admitted a byte.
+    fn reserve_own<T>(
+        table: &mut Vec<T>,
+        ledger: &super::arena::CustodyLedger,
+        charged: &mut u64,
+        additional: usize,
+    ) -> Result<(), CustodyRefusal> {
+        let before = super::arena::vec_bytes(table);
+        super::arena::charged_reserve(table, ledger, additional)?;
+        *charged += super::arena::vec_bytes(table) - before;
+        Ok(())
+    }
+
+    /// Give the depth-zero queue room for every declared root before the first
+    /// one is built.
+    ///
+    /// Depth zero takes one task per root, so its final size is known up front.
+    /// Without this the queue doubles its way up from nothing while the roots
+    /// are seeded, and at the substrate's own bench shape that growth — the
+    /// reallocation memcpys and the first touch of the pages behind them — was
+    /// most of what a root's construct-and-push cost. `bench_dispatch_components`
+    /// runs a row with this and a row without it.
+    ///
+    /// # The size is what `enqueue` can ACCEPT, not what the recipe declared
+    ///
+    /// A root count is a recipe's claim and no limit has been applied to it
+    /// yet, so the declared count is not a safe size to reserve: `enqueue`
+    /// refuses a recipe once it has expanded `max_copy_tasks` of them, and a
+    /// recipe may declare millions of roots against a task limit of a thousand.
+    /// Reserving the declared count there would take — and charge — memory the
+    /// observation could never fill, and at the ceiling that turns an
+    /// observation which used to run into a custody refusal. So each recipe
+    /// contributes `min(roots, max_copy_tasks)`, which is exactly the most of
+    /// its roots that can ever be queued.
+    ///
+    /// It is still charged and still fallible. The bound above makes the
+    /// reservation honest; it does not make it free, and the sum across recipes
+    /// is still large enough to be worth refusing before a byte is copied.
+    /// Over-reserving for a recipe that later fails `validate` or refuses
+    /// mid-observation is capacity custody has been told about.
+    /// # A recipe that failed validation contributes nothing
+    ///
+    /// `run` validates before it reserves, and this skips every recipe already
+    /// carrying a refusal. A malformed recipe enqueues no tasks at all — the
+    /// seeding loop passes over it and `enqueue` refuses it a second time — so
+    /// counting its declared roots would charge custody for queue slots that
+    /// cannot exist. At the ceiling that is not merely wasteful: custody
+    /// failure is the one GLOBAL refusal, so a malformed recipe would be able
+    /// to abort the well-formed recipes sharing its observation, which is
+    /// precisely the blast radius per-recipe refusals exist to prevent.
+    fn reserve_root_queue(&mut self) -> Result<(), CustodyRefusal> {
+        let roots: usize = self
+            .recipes
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.states[*index].refusal.is_none())
+            .map(|(_, recipe)| recipe.roots.len().min(recipe.limits.max_copy_tasks as usize))
+            .sum();
+        let ledger = self.arena.ledger_ref();
+        Self::reserve_own(
+            &mut self.waves[0],
+            ledger,
+            &mut self.own_tables_charged,
+            roots,
+        )
+    }
+
     fn run(mut self) -> Result<SnapshotBuild, CustodyRefusal> {
+        // Validation FIRST, as its own pass, and only then the reservation.
+        //
+        // These used to be one loop, with the reservation in front of it, so a
+        // recipe that `validate` was about to reject still had its declared
+        // roots counted into the queue custody was charged for. `validate` is a
+        // pure function of the recipe, so hoisting it changes nothing about
+        // which recipes refuse or with what — it only means the reservation
+        // knows which of them can enqueue anything.
         for (index, recipe) in self.recipes.iter().enumerate() {
             if let Err(refusal) = validate(recipe) {
                 self.states[index].refusal = Some(refusal);
+            }
+        }
+        self.reserve_root_queue()?;
+
+        for (index, recipe) in self.recipes.iter().enumerate() {
+            if self.refused(index) {
                 continue;
             }
             for root in &recipe.roots {
@@ -791,14 +956,14 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     body: TaskBody::Op {
                         op: root.op,
                         addr: root.addr,
-                        anchor: AnchorKind::Root(root.addr),
+                        anchor: TaskAnchor::Root,
                         inherited: Proof::None,
                     },
                 };
                 self.enqueue(task);
             }
         }
-        self.charge_own_tables()?;
+        self.charge_own_tables(0)?;
 
         for depth in 0..FORWARD_WAVES {
             let tasks = std::mem::take(&mut self.waves[depth as usize]);
@@ -815,7 +980,12 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             // The executor's own tables grew by this wave's discoveries.
             // Reconcile them against the ledger before the next wave copies a
             // byte. See `charge_own_tables`.
-            self.charge_own_tables()?;
+            //
+            // `tasks` is still alive and still held: the take above moved this
+            // wave's queue out of `self.waves`, so it has to be handed back in
+            // or the reconciliation measures a footprint smaller than the one
+            // the observation has.
+            self.charge_own_tables_holding(&tasks)?;
         }
 
         // Anything still queued at depth FORWARD_WAVES was enqueued by the
@@ -825,7 +995,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         debug_assert!(self.waves[FORWARD_WAVES as usize].is_empty());
 
         self.link_pruned()?;
-        self.charge_own_tables()?;
+        self.charge_own_tables(0)?;
         self.enrol_witnesses()?;
         let (witnessed, unreadable_closes) = self.closing_wave()?;
 
@@ -956,10 +1126,13 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 anchor,
                 inherited,
             } => match &self.recipes[task.recipe].ops[*op as usize] {
+                // `anchor.at(*addr)` is the anchor the task used to carry
+                // whole. See [`TaskAnchor`]: the address it rebuilds with is
+                // the one the payload always held.
                 RecipeOp::CopyHeader { size, .. } => push(
                     Span::new(*addr, u64::from(*size)),
                     Provenance::new(
-                        *anchor,
+                        anchor.at(*addr),
                         Proof::Object {
                             base: *addr,
                             len: u64::from(*size),
@@ -969,7 +1142,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 RecipeOp::CopyRanges { windows, .. } => {
                     for window in windows {
                         match window.resolve(*addr) {
-                            Some(span) => push(span, Provenance::new(*anchor, *inherited)),
+                            Some(span) => push(span, Provenance::new(anchor.at(*addr), *inherited)),
                             None => return Err((*addr, window.offset)),
                         }
                     }
@@ -1059,6 +1232,65 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             let policy = self.recipes[recipe].policy;
 
             requests.clear();
+            // Every task in the batch produces at least one request, so the
+            // batch's task count is a floor on what this buffer is about to
+            // hold. Reserved rather than grown into: the buffer starts empty on
+            // the first batch of the observation, and doubling up to a hundred
+            // thousand requests was 21 of the 26 ns `requests_of` cost per task
+            // — the resolution itself is under 5.
+            //
+            // A floor, not the exact size: a `CopyRanges` task pushes one
+            // request per window, so a later push may still grow the buffer.
+            // That growth is charged where all of the executor's table growth
+            // is, by the per-wave reconciliation.
+            //
+            // WHAT THIS CHANGES ABOUT REFUSALS, stated rather than left to be
+            // discovered. This is a charge point where there was none, so an
+            // observation right at the ceiling can now take a global
+            // `CustodyRefusal` here instead of reaching a per-recipe refusal
+            // — an unrepresentable window, or a range or byte limit — that the
+            // resolution below would have produced a moment later.
+            //
+            // For the range and byte limits that is the module's
+            // charge-before-allocate law reaching a buffer that previously grew
+            // unadmitted, and nothing more: those limits are checked AFTER the
+            // requests are materialised and coalesced, so the buffer was always
+            // going to be filled and the only question was whether custody was
+            // told before or after.
+            //
+            // For `AddressNotRepresentable` it is a real widening, and it is
+            // not covered by that argument. A task whose FIRST `CopyRanges`
+            // window carries its base off the address space breaks out of the
+            // resolution loop before it pushes anything, so the old buffer
+            // could stay empty and the recipe refused on its own account. This
+            // reservation is taken in front of that.
+            //
+            // AND THE BAND IS NOT NARROW. The reservation is the batch's task
+            // count times `size_of::<CopyRequest>()`, which is 64 bytes: at the
+            // hundred-thousand-task shape this module's own bench runs, that is
+            // 6.1 MiB. An observation with less headroom than that, whose first
+            // window is unrepresentable, now takes a GLOBAL custody refusal
+            // where it used to gap one consumer.
+            //
+            // Restoring the old precedence needs a representability preflight
+            // over the batch's windows, in the same order, before the
+            // reservation — which is a second `resolve` pass over every window
+            // on the hottest path in the substrate, i.e. paying throughput for
+            // a refusal-precedence guarantee. That trade is the owner's to make
+            // and is recorded here rather than taken.
+            //
+            // The buffer is reused for the whole observation, so the charge is
+            // taken on the first batch that needs the room and is a no-op on
+            // every batch after it.
+            if let Err(custody) = Self::reserve_own(
+                &mut requests,
+                self.arena.ledger_ref(),
+                &mut self.own_tables_charged,
+                indices.len(),
+            ) {
+                result = Err(custody);
+                break;
+            }
             let mut unrepresentable = None;
             for &index in indices {
                 if let Err((base, offset)) =
@@ -1414,7 +1646,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     body: TaskBody::Op {
                         op: next,
                         addr: value,
-                        anchor: AnchorKind::Pointer(value),
+                        anchor: TaskAnchor::Pointer,
                         inherited: Proof::None,
                     },
                 };
@@ -1616,7 +1848,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         // a PROVEN extent is a discovered object address, not a
                         // static one, so it is a legitimate window anchor. The
                         // extent proof travels with it.
-                        anchor: AnchorKind::Pointer(addr),
+                        anchor: TaskAnchor::Pointer,
                         inherited: Proof::Extent {
                             base: binding.span.start,
                             len: binding.span.len,
@@ -1805,5 +2037,314 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 witness_required: state.witness_required,
             })
             .collect()
+    }
+}
+
+/// Per-phase access to a live [`Observation`], so the executor's dispatch
+/// block can be PRICED rather than inferred from a residual.
+///
+/// The substrate's flat 100k-transaction figure is about twice the sum of the
+/// named component rows in [`super::bench`], and until this existed the
+/// difference had no owner: task materialisation, the wave queue, request
+/// resolution and the decode dispatch are all inside `run`, none of them is
+/// reachable from outside the module, and none of them had a row. This probe
+/// runs the REAL methods — `enqueue`, `requests_of`, `copy_wave`, `decode_wave`
+/// — one phase per call, so the caller can put a timer around exactly one of
+/// them.
+///
+/// Test-only. It exposes the observation's internal phase order, which nothing
+/// in production may drive out of order.
+#[cfg(test)]
+pub(super) struct DispatchProbe<'a, M: SnapshotMemory> {
+    observation: Observation<'a, M>,
+}
+
+#[cfg(test)]
+impl<'a, M: SnapshotMemory> DispatchProbe<'a, M> {
+    pub(super) fn new(
+        recipes: &'a [Recipe],
+        memory: &'a M,
+        config: ObservationConfig,
+    ) -> Result<Self, CustodyRefusal> {
+        let arena = Arena::with_budget(config.custody_budget());
+        Ok(Self {
+            observation: Observation::new(recipes, memory, config, arena)?,
+        })
+    }
+
+    /// Fold every task's fields into a checksum.
+    ///
+    /// The construct row's sink is otherwise observed only through its length,
+    /// and a length is something the optimiser can keep while dropping the
+    /// stores that filled the elements — which would price an empty loop. This
+    /// reads the parts of every task that construction wrote, so none of them
+    /// is dead.
+    pub(super) fn checksum(tasks: &[CopyTask]) -> u64 {
+        let mut sum = 0u64;
+        for task in tasks {
+            sum = sum
+                .wrapping_mul(31)
+                .wrapping_add(task.recipe as u64)
+                .wrapping_add(u64::from(task.depth))
+                .wrapping_add(u64::from(task.parent.map_or(0, |id| id.0)));
+            sum = sum.wrapping_add(match &task.body {
+                TaskBody::Op {
+                    op,
+                    addr,
+                    anchor,
+                    inherited,
+                } => {
+                    // EVERY field construction wrote, `inherited` included. A
+                    // checksum that skipped it would let the optimiser drop the
+                    // twenty-four bytes it stores and the row would price a
+                    // narrower task than the executor builds.
+                    let proof = match inherited {
+                        Proof::None => 1,
+                        Proof::Object { base, len } => base ^ len ^ 2,
+                        Proof::Extent { base, len } => base ^ len ^ 3,
+                    };
+                    addr ^ u64::from(*op) ^ u64::from(*anchor == TaskAnchor::Root) ^ proof
+                }
+                TaskBody::Extent { op, span, count } => {
+                    span.start ^ span.len ^ u64::from(*op) ^ u64::from(*count)
+                }
+            });
+        }
+        sum
+    }
+
+    /// Fold every request's fields into a checksum, for the same reason.
+    ///
+    /// `requests_of` writes a span, an anchor and a proof per request, and a
+    /// row that only counted them would let the provenance construction — the
+    /// part the anchor erasure changed — be optimised away.
+    pub(super) fn requests_checksum(&self) -> u64 {
+        let mut sum = 0u64;
+        for request in &self.observation.requests {
+            let anchor = match request.provenance.anchor {
+                AnchorKind::Root(addr) => addr ^ 1,
+                AnchorKind::Pointer(addr) => addr ^ 2,
+                AnchorKind::Mixed => 3,
+            };
+            let proof = match request.provenance.proof {
+                Proof::None => 1,
+                Proof::Object { base, len } => base ^ len ^ 2,
+                Proof::Extent { base, len } => base ^ len ^ 3,
+            };
+            sum = sum
+                .wrapping_mul(31)
+                .wrapping_add(request.span.start ^ request.span.len)
+                .wrapping_add(anchor)
+                .wrapping_add(proof)
+                .wrapping_add(u64::from(request.task));
+        }
+        sum
+    }
+
+    /// Fold the grouping pass's output, so the indices it wrote are read.
+    pub(super) fn groups_checksum(&self) -> u64 {
+        let mut sum = 0u64;
+        for group in &self.observation.by_recipe {
+            for index in group {
+                sum = sum.wrapping_mul(31).wrapping_add(u64::from(*index));
+            }
+        }
+        sum
+    }
+
+    /// Sizes of the values the dispatch block moves, in bytes. A queue push is
+    /// a memcpy of `CopyTask`, so its width is a priced quantity and not a
+    /// detail.
+    pub(super) fn value_sizes() -> [(&'static str, usize); 4] {
+        [
+            ("CopyTask", std::mem::size_of::<CopyTask>()),
+            ("TaskBody", std::mem::size_of::<TaskBody>()),
+            ("CopyRequest", std::mem::size_of::<CopyRequest>()),
+            ("DecodeSite", std::mem::size_of::<DecodeSite>()),
+        ]
+    }
+
+    /// Every recipe's roots, constructed and enqueued: the whole
+    /// materialisation path (`CopyTask` literal, depth check, visited insert,
+    /// task-limit check, wave push). Returns the tasks queued at depth zero.
+    pub(super) fn seed_roots(&mut self) -> usize {
+        for (index, recipe) in self.observation.recipes.iter().enumerate() {
+            for root in &recipe.roots {
+                let task = CopyTask {
+                    recipe: index,
+                    depth: 0,
+                    parent: None,
+                    body: TaskBody::Op {
+                        op: root.op,
+                        addr: root.addr,
+                        anchor: TaskAnchor::Root,
+                        inherited: Proof::None,
+                    },
+                };
+                self.observation.enqueue(task);
+            }
+        }
+        self.observation.waves[0].len()
+    }
+
+    /// The `CopyTask` values alone, into a caller-owned sink: construction and
+    /// the queue push, with the visited insert and the limit checks left out.
+    /// The sink is the same shape as a wave queue (`Vec<CopyTask>`, reused), so
+    /// the push side is the real one.
+    pub(super) fn construct_only(recipes: &[Recipe], sink: &mut Vec<CopyTask>) {
+        sink.clear();
+        for (index, recipe) in recipes.iter().enumerate() {
+            for root in &recipe.roots {
+                sink.push(CopyTask {
+                    recipe: index,
+                    depth: 0,
+                    parent: None,
+                    body: TaskBody::Op {
+                        op: root.op,
+                        addr: root.addr,
+                        anchor: TaskAnchor::Root,
+                        inherited: Proof::None,
+                    },
+                });
+            }
+        }
+    }
+
+    /// Take a wave's tasks out of the queue, as `run` does.
+    pub(super) fn take_wave(&mut self, depth: u32) -> Vec<CopyTask> {
+        std::mem::take(&mut self.observation.waves[depth as usize])
+    }
+
+    pub(super) fn put_wave(&mut self, depth: u32, tasks: Vec<CopyTask>) {
+        self.observation.waves[depth as usize] = tasks;
+    }
+
+    /// The production root-queue reservation, so a row can price the seeding
+    /// path WITH it against a row that prices the same path without it. A probe
+    /// that skipped this would be pricing a shape production does not run.
+    pub(super) fn reserve_root_queue(&mut self) -> Result<(), CustodyRefusal> {
+        self.observation.reserve_root_queue()
+    }
+
+    /// `run`'s validation pass, which the reservation depends on having run:
+    /// it is what tells `reserve_root_queue` which recipes can enqueue.
+    pub(super) fn validate_recipes(&mut self) {
+        for (index, recipe) in self.observation.recipes.iter().enumerate() {
+            if let Err(refusal) = validate(recipe) {
+                self.observation.states[index].refusal = Some(refusal);
+            }
+        }
+    }
+
+    /// `copy_wave`'s grouping pass on its own: clear the groups, size them to
+    /// the recipe count, and index every task into its recipe's group.
+    pub(super) fn group_pass(&mut self, tasks: &[CopyTask]) -> usize {
+        let observation = &mut self.observation;
+        for group in observation.by_recipe.iter_mut() {
+            group.clear();
+        }
+        observation.by_recipe.resize_with(observation.recipes.len(), Vec::new);
+        for (index, task) in tasks.iter().enumerate() {
+            observation.by_recipe[task.recipe].push(index as u32);
+        }
+        observation.by_recipe.iter().map(|group| group.len()).sum()
+    }
+
+    /// `requests_of` over a whole wave, appending into the observation's own
+    /// reused request buffer exactly as `copy_wave` does.
+    ///
+    /// `reserve` selects which of the two shapes is priced: `true` is what
+    /// `copy_wave` does — the batch's task count reserved before the first
+    /// request is pushed — and `false` is the buffer growing from wherever it
+    /// is, which is what the same loop cost before that reservation existed.
+    pub(super) fn requests_pass(&mut self, tasks: &[CopyTask], reserve: bool) -> usize {
+        let mut requests = std::mem::take(&mut self.observation.requests);
+        requests.clear();
+        if reserve {
+            Observation::<M>::reserve_own(
+                &mut requests,
+                self.observation.arena.ledger_ref(),
+                &mut self.observation.own_tables_charged,
+                tasks.len(),
+            )
+            .expect("custody budget");
+        }
+        for (index, task) in tasks.iter().enumerate() {
+            self.observation
+                .requests_of(task, index as u32, &mut requests)
+                .expect("bench tasks have representable addresses");
+        }
+        let produced = requests.len();
+        self.observation.requests = requests;
+        produced
+    }
+
+    /// The real `copy_wave`, so a probe can get bytes on the ground before the
+    /// decode row runs against them.
+    pub(super) fn copy_pass(&mut self, tasks: &[CopyTask]) -> Result<(), CustodyRefusal> {
+        self.observation.copy_wave(tasks)?;
+        self.observation.owners.end_wave()
+    }
+
+    /// The real `decode_wave`: the per-task body match, the `DecodeSite` push
+    /// per branch, and `run_sites`/`run_site` draining them.
+    pub(super) fn decode_pass(&mut self, tasks: &[CopyTask]) {
+        self.observation.decode_wave(tasks);
+    }
+
+    /// Tasks the decode pass enqueued at `depth`, so a probe can assert it did
+    /// the work rather than trusting the clock.
+    pub(super) fn queued_at(&self, depth: u32) -> usize {
+        self.observation.waves[depth as usize].len()
+    }
+
+    pub(super) fn frozen_branches(&self) -> u32 {
+        self.observation.states.iter().map(|state| state.frozen_branches).sum()
+    }
+
+    pub(super) fn charge_tables(&mut self) -> Result<(), CustodyRefusal> {
+        self.observation.charge_own_tables(0)
+    }
+
+    /// Reconcile with a wave's queue held outside `self.waves`.
+    ///
+    /// Routed through the SAME method `run`'s wave loop calls, not through
+    /// `charge_own_tables` with a number this probe made up. A probe that
+    /// passed its own `in_flight` would be testing arithmetic rather than the
+    /// path production takes, and would keep passing if the wave loop stopped
+    /// handing its queue over.
+    pub(super) fn charge_tables_holding(
+        &mut self,
+        tasks: &Vec<CopyTask>,
+    ) -> Result<(), CustodyRefusal> {
+        self.observation.charge_own_tables_holding(tasks)
+    }
+
+    /// The footprint the reconciliation measures, asked for through the
+    /// production accessor rather than recomputed.
+    pub(super) fn own_tables_bytes(&self, in_flight: u64) -> u64 {
+        self.observation.own_tables_bytes(in_flight)
+    }
+
+    /// Bytes a held wave queue occupies, measured the way custody measures a
+    /// table.
+    pub(super) fn wave_bytes(tasks: &Vec<CopyTask>) -> u64 {
+        super::arena::vec_bytes(tasks)
+    }
+
+    /// Table bytes the custody ledger says the observation holds.
+    pub(super) fn ledger_table_bytes(&self) -> u64 {
+        self.observation.arena.ledger_ref().table_bytes()
+    }
+
+    /// The executor's own reconciled footprint: what `charge_own_tables` has
+    /// brought the ledger up to, plus anything a reservation advanced it by.
+    /// Against [`Self::ledger_table_bytes`] this is the double-charge check.
+    pub(super) fn own_tables_charged(&self) -> u64 {
+        self.observation.own_tables_charged
+    }
+
+    pub(super) fn wave_capacity(&self, depth: u32) -> usize {
+        self.observation.waves[depth as usize].capacity()
     }
 }

@@ -346,6 +346,9 @@ fn bench_component_attribution() {
         ownership,
     );
 
+    // 1a. The same sweep and the same inserts into a map whose record table
+    // and index run were sized first.
+    //
     // 1b. The same work with a fresh cursor per query — the cost shape of a
     // per-transaction probe, kept so the sweep's saving is visible rather than
     // asserted.
@@ -590,6 +593,406 @@ fn bench_component_attribution() {
     report("  SUM of the rows above (not a model)", objects as u64, 0, total);
     println!("  the rows are independent microbenchmarks: the sum is neither an upper");
     println!("  nor a lower bound on `substrate: opening image only`");
+
+    // LAST, AND DELIBERATELY LAST. Every row above this point predates lane FK
+    // and is what an A/B between two binaries reads as a canary: if they move
+    // together across a change that did not touch them, the box moved and not
+    // the code. A row inserted among them perturbs the ones after it — its
+    // allocations change the heap the next row starts from — and the first
+    // draft of this row sat at position 1a and moved `sweep overlap + attach`
+    // by 32% on an otherwise quiet A/B. So it goes at the end, after every row
+    // anything is compared against.
+    //
+    // WHY IT IS HERE AT ALL. Lane FK found that most of what the executor's
+    // dispatch block cost was two of its own buffers doubling up from empty
+    // inside the bracket, and removed it by reserving them. The ownership index
+    // grows the same way — `charged_push` per record, `charged_reserve` per
+    // index entry — and after that cut `sweep plan + insert` is the largest
+    // single component left. This row says how much of it is the same
+    // pathology, so whoever takes it next starts from a number and not from an
+    // analogy.
+    //
+    // NOT A CUT, and `reserve_for` is test-only: the interval count is not
+    // known before the copies are planned, so a production reservation has to
+    // be sized from the planned range count per batch, which is a change to the
+    // ownership index's contract and not to this bench.
+    let mut sized = OwnershipMap::new();
+    sized.reserve_for(objects).unwrap();
+    let started = Instant::now();
+    let mut cursor = sized.sweep();
+    for (index, span) in spans.iter().enumerate() {
+        sized.sweep_plan(&mut cursor, *span, &mut plan);
+        sized.insert(*span, index * 48).unwrap();
+    }
+    sized.end_wave().unwrap();
+    let ownership_sized = started.elapsed();
+    assert_eq!(sized.len(), objects);
+    report(
+        "  OwnershipMap: sweep plan + insert, sized",
+        objects as u64,
+        0,
+        ownership_sized,
+    );
+    println!("  compare against `OwnershipMap: sweep plan + insert` at the top: the gap is what");
+    println!("  the record table and index run cost by growing element by element");
+    println!();
+}
+
+/// The executor's DISPATCH block, priced one phase at a time.
+///
+/// # Why this test exists
+///
+/// [`bench_component_attribution`] names six components and they sum to a
+/// little over half of `substrate: opening image only`. Adding the two on-path
+/// rows it does not contain — `policy: plan_copies, nothing merges` and
+/// `baseline: bare copies, no substrate` — still leaves roughly a hundred
+/// nanoseconds per transaction with no row against its name. That residual is
+/// the dispatch block: materialising a [`CopyTask`], pushing it into a wave
+/// queue and taking it back out, resolving it into [`CopyRequest`]s, and the
+/// decode-side match that turns a copied header into the next wave's tasks.
+///
+/// A residual is not a measurement. These rows run the executor's own methods,
+/// one phase per timer, through [`super::executor::DispatchProbe`].
+///
+/// # How to read it
+///
+/// The rows run back to back inside ONE invocation against ONE prepared
+/// observation, in the order the executor runs them, so a busy box moves the
+/// whole block together and the shares survive load the absolute numbers do
+/// not. Quote the per-row minimum over at least five invocations with
+/// `--test-threads=1`, the same rule as every other row in this file.
+///
+/// `construct + queue push` and `enqueue` are the SAME 100k task literals: the
+/// first pushes them into a bare `Vec<CopyTask>` and the second runs the real
+/// `enqueue`, so the gap between them is the depth check, the visited insert
+/// and the copy-task limit — and the visited insert already has its own row
+/// above, which is what makes that gap attributable rather than lumped.
+///
+/// WHAT THESE ROWS DO NOT SEPARATE, stated rather than implied.
+///
+/// `queue push` is inside `construct + queue push` and not on its own, because
+/// a `CopyTask` that is constructed and not pushed is a construction the
+/// optimiser is free to delete. The two are priced as the pair they are, and
+/// the pair's width is printed alongside as `size_of::<CopyTask>()`.
+///
+/// The two `at capacity` rows re-run a loop into the buffer the row above them
+/// just filled, so they have that buffer's PAGES warm as well as its capacity.
+/// They are therefore an upper bound on what a reservation can recover, not a
+/// measurement of it: a reservation maps fresh pages that are still cold on
+/// first touch. The rows that price the reservations as production takes them
+/// — `enqueue, root queue reserved` and `requests_of, reserved` — time the
+/// reservation itself along with the work, and the honest whole-path figure is
+/// `substrate: opening image only`, which contains everything either way.
+///
+/// None of these rows decomposes the observation. `find` is off the flat
+/// recipe's path, the copy phase and the freeze are not here, and the sums at
+/// the bottom are sums of the rows above them and nothing more.
+#[test]
+#[ignore = "instrument, not a gate"]
+fn bench_dispatch_components() {
+    use super::executor::DispatchProbe;
+
+    let objects = 100_000usize;
+    let memory = bench_memory(objects);
+    let recipes = vec![flat_recipe(objects, false)];
+
+    println!();
+    println!("dispatch components, {objects} tasks each");
+    let widths = DispatchProbe::<SyntheticMemory>::value_sizes();
+    let sizes = widths
+        .iter()
+        .map(|(name, bytes)| format!("{name} {bytes} B"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("  value widths: {sizes}");
+
+    // 1. Construction and the queue push, with nothing else. The sink is a
+    // `Vec<CopyTask>` — the same container a wave queue is — and it is read
+    // afterwards, so neither the construction nor the push is dead.
+    let mut sink: Vec<super::executor::CopyTask> = Vec::new();
+    let started = Instant::now();
+    DispatchProbe::<SyntheticMemory>::construct_only(&recipes, &mut sink);
+    let construct = started.elapsed();
+    assert_eq!(sink.len(), objects, "every root became a task");
+    // CONSUMED, not merely counted. A length is something the optimiser can
+    // keep while dropping the stores that filled the elements, and a row that
+    // measured a loop with its stores removed would make every attribution
+    // below it wrong.
+    let mut checksum = DispatchProbe::<SyntheticMemory>::checksum(&sink);
+    assert_ne!(checksum, 0, "the constructed tasks were read back");
+    report("  dispatch: construct + queue push", objects as u64, 0, construct);
+
+    // 1b. The SAME loop into the SAME vector, which is now at capacity and
+    // whose pages are mapped. `construct_only` clears rather than reallocates,
+    // so the second pass constructs and pushes exactly what the first did with
+    // the doubling reallocations and the first-touch page faults taken out.
+    //
+    // This row exists to answer one question before anything is changed: is
+    // the construct-and-push cost the STORE, or is it the queue growing from
+    // nothing? A wave queue starts empty on every observation, so if the gap
+    // between these two rows is most of the first one, the cut is a reservation
+    // and not a narrower task.
+    let started = Instant::now();
+    DispatchProbe::<SyntheticMemory>::construct_only(&recipes, &mut sink);
+    let construct_warm = started.elapsed();
+    assert_eq!(sink.len(), objects);
+    checksum ^= DispatchProbe::<SyntheticMemory>::checksum(&sink);
+    report(
+        "  dispatch: construct + push, at capacity",
+        objects as u64,
+        0,
+        construct_warm,
+    );
+    assert_eq!(checksum, 0, "the two passes constructed identical tasks");
+    drop(sink);
+
+    // 2. The real `enqueue` over the same roots: construction and push again,
+    // plus the depth check, the visited insert and the copy-task limit.
+    let mut probe = DispatchProbe::new(&recipes, &memory, ObservationConfig::new(HourStamp(1)))
+        .expect("custody budget");
+    let started = Instant::now();
+    let queued = probe.seed_roots();
+    let enqueue = started.elapsed();
+    assert_eq!(queued, objects, "every root was queued, none pruned");
+    report(
+        "  dispatch: enqueue, queue from empty",
+        objects as u64,
+        0,
+        enqueue,
+    );
+    probe.charge_tables().expect("custody budget");
+    // The tasks this row queued, read back before the observation is dropped.
+    // Observing only the queue's LENGTH leaves the element stores available for
+    // the optimiser to remove.
+    let seeded = probe.take_wave(0);
+    checksum ^= DispatchProbe::<SyntheticMemory>::checksum(&seeded);
+    assert_ne!(checksum, 0, "the enqueued tasks were read back");
+    drop(seeded);
+    drop(probe);
+
+    // 2b. The same `enqueue` over the same roots on a fresh observation that
+    // called the production `reserve_root_queue` first. A whole separate
+    // observation, so the visited set is empty again and every root is fresh:
+    // the ONLY difference from the row above is the reservation, and it is the
+    // one `run` takes, not a reservation this bench invented.
+    let mut probe = DispatchProbe::new(&recipes, &memory, ObservationConfig::new(HourStamp(1)))
+        .expect("custody budget");
+    // The reservation is INSIDE the timer. It is not free — it charges the
+    // ledger and it takes the pages — and a row that excluded it would be
+    // pricing a production path that does not exist.
+    let started = Instant::now();
+    probe.reserve_root_queue().expect("custody budget");
+    let queued = probe.seed_roots();
+    let enqueue_reserved = started.elapsed();
+    assert_eq!(queued, objects);
+    report(
+        "  dispatch: enqueue, root queue reserved",
+        objects as u64,
+        0,
+        enqueue_reserved,
+    );
+    probe.charge_tables().expect("custody budget");
+
+    // 3. Taking the wave back out of the queue.
+    let started = Instant::now();
+    let tasks = probe.take_wave(0);
+    let take = started.elapsed();
+    assert_eq!(tasks.len(), objects);
+    report("  dispatch: take wave", objects as u64, 0, take);
+
+    // The reserved row's tasks, read back — and required to be the SAME tasks
+    // the unreserved row built. Length alone left the reserved row's element
+    // stores available for removal even though the unreserved row's were
+    // consumed, and the two rows are only comparable if they built the same
+    // thing. The flat recipe's path never reads `inherited`, so without this
+    // the twenty-four bytes it stores could be specialised away from one row
+    // and not the other.
+    let reserved_tasks = DispatchProbe::<SyntheticMemory>::checksum(&tasks);
+    assert_eq!(
+        reserved_tasks,
+        checksum,
+        "the reserved row queued the same tasks the unreserved row did",
+    );
+
+    // 4. `copy_wave`'s grouping pass: one push per task into its recipe's
+    // group.
+    let started = Instant::now();
+    let grouped = probe.group_pass(&tasks);
+    let group = started.elapsed();
+    assert_eq!(grouped, objects, "every task landed in a group");
+    // The indices, not just how many there are: a count survives an optimiser
+    // that never wrote them.
+    checksum ^= probe.groups_checksum();
+    report("  dispatch: group by recipe", objects as u64, 0, group);
+
+    // 5. `requests_of`: the op lookup, the provenance construction and the
+    // `CopyRequest` push, per task.
+    // The buffer starts empty on the observation's first batch, so this row is
+    // the resolution plus the buffer doubling up to a hundred thousand
+    // requests — the shape before `copy_wave` reserved.
+    let started = Instant::now();
+    let produced = probe.requests_pass(&tasks, false);
+    let resolve = started.elapsed();
+    assert_eq!(produced, objects, "one request per flat header");
+    checksum ^= probe.requests_checksum();
+    assert_ne!(checksum, 0, "the resolved requests were read back");
+    report(
+        "  dispatch: requests_of, buffer from empty",
+        objects as u64,
+        0,
+        resolve,
+    );
+
+    // The same pass with `copy_wave`'s reservation in front of it, on a FRESH
+    // observation whose request buffer has never been touched.
+    //
+    // The earlier draft re-ran into the buffer the row above had just filled,
+    // so the reservation was a no-op against warm pages — an "at capacity"
+    // row wearing the reserved row's label, and the sum at the bottom then
+    // claimed it as the production shape. Production's first batch reserves an
+    // EMPTY buffer and still first-touches every page of it, which is what this
+    // measures.
+    let mut fresh = DispatchProbe::new(&recipes, &memory, ObservationConfig::new(HourStamp(1)))
+        .expect("custody budget");
+    fresh.reserve_root_queue().expect("custody budget");
+    fresh.seed_roots();
+    fresh.charge_tables().expect("custody budget");
+    let fresh_tasks = fresh.take_wave(0);
+    let started = Instant::now();
+    let produced = fresh.requests_pass(&fresh_tasks, true);
+    let resolve_reserved = started.elapsed();
+    assert_eq!(produced, objects);
+    let fresh_checksum = fresh.requests_checksum();
+    assert_eq!(
+        fresh_checksum,
+        probe.requests_checksum(),
+        "the reserved pass resolved the same requests as the unreserved one, so the two \
+         rows price the same work",
+    );
+    report(
+        "  dispatch: requests_of, reserved",
+        objects as u64,
+        0,
+        resolve_reserved,
+    );
+    drop(fresh_tasks);
+    drop(fresh);
+
+    // 6. The whole copy phase, for context and so the decode row below runs
+    // against bytes that have actually landed. NOT a dispatch row: it contains
+    // the coalescer, the acquisition sweep, the arena and the real copies.
+    let started = Instant::now();
+    probe.copy_pass(&tasks).expect("custody budget");
+    let copy = started.elapsed();
+    report("  (copy_wave, for context)", objects as u64, 0, copy);
+
+    // 7. The decode dispatch: per task, match the body, read the op, push a
+    // `DecodeSite` per branch, then `run_sites` drains the stack through
+    // `run_site`'s op match. The flat recipe's only decode op is `Freeze`, so
+    // this row is the DISPATCH with no field reads and no discoveries under
+    // it — which is exactly what it is meant to isolate.
+    let started = Instant::now();
+    probe.decode_pass(&tasks);
+    let decode = started.elapsed();
+    assert_eq!(
+        probe.frozen_branches() as usize,
+        objects,
+        "every task's branch reached Freeze, so the dispatch really ran"
+    );
+    assert_eq!(probe.queued_at(1), 0, "a flat recipe discovers nothing");
+    report("  dispatch: decode_wave (Freeze only)", objects as u64, 0, decode);
+
+    // TWO sums, because there are two shapes above and only one of them is
+    // what the executor runs. The first is what the dispatch block cost when
+    // both buffers grew from empty; the second is the same block with the two
+    // reservations `run` and `copy_wave` now take, priced with the reservations
+    // inside the timers.
+    //
+    // Neither is a decomposition of `substrate: opening image only` — the copy
+    // phase, the coalescer, the ownership sweep and the freeze are not in
+    // either. And the difference between them is an INDICATION of what the
+    // reservations bought, not a measurement of it: `requests_of, reserved`
+    // inherits warm pages from the row before it. The measurement is the
+    // whole-observation row, taken against the previous binary, interleaved.
+    let grown = enqueue + take + group + resolve + decode;
+    let reserved = enqueue_reserved + take + group + resolve_reserved + decode;
+    report("  dispatch: SUM, buffers from empty", objects as u64, 0, grown);
+    report("  dispatch: SUM, buffers reserved", objects as u64, 0, reserved);
+    println!("  `visited set: insert, hashed` above is inside both enqueue rows.");
+    println!();
+}
+
+/// The decode dispatch on a shape that DISCOVERS.
+///
+/// [`bench_dispatch_components`]'s decode row runs a recipe whose only decode
+/// op is `Freeze`: it prices the match and the stack, and deliberately nothing
+/// under them. A real decode reads a pointer field out of copied bytes and
+/// enqueues the next wave, so this row is the same dispatch with `read_uint`
+/// and the enqueue of a discovered task in it. The two together separate the
+/// dispatch from what the dispatch does.
+#[test]
+#[ignore = "instrument, not a gate"]
+fn bench_decode_dispatch_with_discovery() {
+    use super::executor::DispatchProbe;
+
+    const NODE: u64 = 64;
+    const SLOT: u64 = 256;
+    const LINK_BASE: u64 = 0x4000_0000;
+    let roots = 100_000usize;
+
+    // Two slots per root: the header the root copies, and the node its pointer
+    // field names. Depth one is enough — the dispatch is per task, not per
+    // depth.
+    let mut memory = SyntheticMemory::new();
+    let mut region = vec![0u8; roots * 2 * SLOT as usize];
+    for root in 0..roots {
+        let target = LINK_BASE + (roots + root) as u64 * SLOT;
+        let at = root * SLOT as usize;
+        region[at..at + 8].copy_from_slice(&target.to_le_bytes());
+    }
+    memory.map(LINK_BASE, region);
+
+    let recipes = vec![Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: NODE as u32,
+                next: vec![1],
+            },
+            RecipeOp::DecodePointer { offset: 0, next: 0 },
+            RecipeOp::Freeze,
+        ],
+        (0..roots)
+            .map(|root| Root {
+                op: 0,
+                addr: LINK_BASE + root as u64 * SLOT,
+            })
+            .collect(),
+    )];
+
+    let mut probe = DispatchProbe::new(&recipes, &memory, ObservationConfig::new(HourStamp(1)))
+        .expect("custody budget");
+    assert_eq!(probe.seed_roots(), roots);
+    probe.charge_tables().expect("custody budget");
+    let tasks = probe.take_wave(0);
+    probe.copy_pass(&tasks).expect("custody budget");
+
+    println!();
+    let started = Instant::now();
+    probe.decode_pass(&tasks);
+    let decode = started.elapsed();
+    assert_eq!(
+        probe.queued_at(1),
+        roots,
+        "every pointer was read and enqueued, so the row priced discovery"
+    );
+    report(
+        "  dispatch: decode_wave + read + enqueue",
+        roots as u64,
+        0,
+        decode,
+    );
     println!();
 }
 
