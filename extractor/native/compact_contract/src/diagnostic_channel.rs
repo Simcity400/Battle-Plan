@@ -2341,6 +2341,20 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
         "domain47_prewarm_portrait_probe_terminator_value",
         Accumulation::LastValue,
     ),
+    // `Domain47PortraitReaderReason` (lane FI): WHICH refusal point of the
+    // SHARED `std::string` reader refused the non-empty identity — 0 no reader
+    // refusal, 1..=12 one point each. A code, like the two beside it.
+    //
+    // It ends in `_reason`, so `RAW_WORD_SUFFIXES` would land it on `LastValue`
+    // anyway — and that is precisely why it needs an entry: this table is
+    // consulted FIRST and is the family's authority, so a member of it left out
+    // of the table would have its class decided somewhere else, which is the
+    // state the table exists to end. The producer-side sweep enforces exactly
+    // that membership.
+    (
+        "domain47_prewarm_portrait_probe_reader_reason",
+        Accumulation::LastValue,
+    ),
     // --- per-frame quantities, unchanged -----------------------------------
     // Booleans raised for THIS frame: whether the prewarm ran, took the
     // negative-cache branch, was a refresh, and whether that refresh held the
