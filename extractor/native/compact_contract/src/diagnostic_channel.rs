@@ -2270,6 +2270,64 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
         "domain47_prewarm_shadow_walk_sweep_only_map",
         Accumulation::LastValue,
     ),
+    // --- WHERE that element is (lane FS) -----------------------------------
+    // Eight words describing the SAME element the two above name, emitted in
+    // the same conditional. Every one of them is a RAW OBSERVATION of one
+    // element — two addresses, two codes, two engine identifiers, one map
+    // size, two examined-counts — so every one is `LastValue`: adding an
+    // address to another address, or a `Censused` code to a `NotCensused` one,
+    // produces a number with no referent, which is the defect this table
+    // exists to end.
+    //
+    // THE TWO COUNTS ARE `LastValue` AND THEIR NEIGHBOURS `_recheck_*_count`
+    // ARE `PerFrame`, and the difference is not an oversight. The tally counts
+    // ELEMENTS, one per re-check, so its capture-wide sum is the figure the
+    // promotion gate reads. These two describe the ONE latched element — how
+    // many bodies the re-check examined for IT — so summing them across
+    // prewarms would answer no question at all.
+    //
+    // `_address` and `_owner_address` would each reach `LastValue` through
+    // `RAW_WORD_SUFFIXES`, and `_owner_char_id` through `_id`; they are stated
+    // here for the reason the table states everything — a member of this family
+    // whose class is decided by a suffix rule is a member whose class lives
+    // somewhere else. `_owner_censused`, `_owner_map`, `_owner_map_size`,
+    // `_candidate_bodies` and `_candidate_entries` reach NO rule and would land
+    // on the summed default without an entry.
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_address",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_owner_address",
+        Accumulation::LastValue,
+    ),
+    // `Domain47ShadowWalkOwnerBody`: 0 NotDerived, 1 Censused, 2 NotCensused.
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_owner_censused",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_owner_char_id",
+        Accumulation::LastValue,
+    ),
+    // `Domain47ShadowWalkOwnerMap`: 0 NotAttempted, 1 Holds, 2 CleanWithout,
+    // 3 Refused.
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_owner_map",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_owner_map_size",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_candidate_bodies",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_candidate_entries",
+        Accumulation::LastValue,
+    ),
     // --- raw codes and identifiers, unchanged ------------------------------
     // These four already resolved to `LastValue` through `RAW_WORD_SUFFIXES`
     // (`_reason`, `_kind`, `_id`, `_ordinal`) and are restated here because
@@ -3815,6 +3873,64 @@ mod tests {
             Accumulation::PerFrame.fold(Some(2), 3),
             5,
             "which is the arithmetic that answers it"
+        );
+    }
+
+    /// The eight words that say WHERE the `sweep_only` element is (lane FS)
+    /// are declared IN the table, and every one of them is `LastValue`.
+    ///
+    /// They describe ONE element — two addresses, two codes, an engine
+    /// identifier, a map size and two examined-counts — and five of the eight
+    /// reach NO suffix rule at all, so without their entries they would land on
+    /// the summed default. A summed address is a number naming no object; a
+    /// summed `Domain47ShadowWalkOwnerMap` code turns two `Holds` frames into
+    /// the code for a body that walked cleanly WITHOUT the entry, which is the
+    /// opposite conclusion.
+    ///
+    /// The two `_candidate_*` words are the trap this test exists for: they
+    /// count, they sit beside three `_count` units that are correctly
+    /// `PerFrame`, and they are NOT per-frame quantities — they describe the
+    /// one latched element, so summing them across prewarms answers nothing.
+    ///
+    /// MUTATION: delete any of the eight entries and this fails on that unit;
+    /// class either `_candidate_*` as `PerFrame` and the last assertion fails.
+    #[test]
+    fn the_d47_sweep_only_location_units_are_all_last_value() {
+        const LOCATION_UNITS: &[&str] = &[
+            "domain47_prewarm_shadow_walk_sweep_only_address",
+            "domain47_prewarm_shadow_walk_sweep_only_owner_address",
+            "domain47_prewarm_shadow_walk_sweep_only_owner_censused",
+            "domain47_prewarm_shadow_walk_sweep_only_owner_char_id",
+            "domain47_prewarm_shadow_walk_sweep_only_owner_map",
+            "domain47_prewarm_shadow_walk_sweep_only_owner_map_size",
+            "domain47_prewarm_shadow_walk_sweep_only_candidate_bodies",
+            "domain47_prewarm_shadow_walk_sweep_only_candidate_entries",
+        ];
+        for name in LOCATION_UNITS {
+            assert!(
+                DOMAIN47_PREWARM_UNITS.iter().any(|(unit, _)| unit == name),
+                "{name} must be declared IN the table; five of these eight reach \
+                 no suffix rule and would be SUMMED"
+            );
+            assert_eq!(
+                unit_accumulation(name),
+                Accumulation::LastValue,
+                "{name} describes ONE element and arithmetic over frames on it \
+                 has no referent"
+            );
+        }
+        // What the default would have done to the owner-map code: two frames
+        // reporting `Holds` (1) publish 2, which is `CleanWithout` — the
+        // opposite finding, and the one that would retire the sweep.
+        assert_eq!(
+            Accumulation::PerFrame.fold(Some(1), 1),
+            2,
+            "the summed default turns two Holds into a CleanWithout"
+        );
+        assert_eq!(
+            Accumulation::LastValue.fold(Some(1), 1),
+            1,
+            "which is why the class is LastValue"
         );
     }
 
