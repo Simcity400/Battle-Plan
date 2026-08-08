@@ -400,6 +400,7 @@ fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
         map_reciprocity_record_is_province: 3,
         map_reciprocity_key_is_province_id: 4,
         phase_times: D81PhaseTimes::default(),
+        bracket_observed_hour_raw: None,
     };
     let finished = d81_finish_rail_replay_state(D81ObserveOutcome::Complete(read));
     assert_eq!(finished.first_failure, Some(refusal));
@@ -559,7 +560,7 @@ fn a_rejected_bracket_never_reaches_the_compute() {
     // fixture-less tracker cannot read a clock, so the guard publishes
     // `BracketIncoherent` and the compute must be skipped.
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
-    let verdict: Cell<Option<SplitBracketRefusal>> = Cell::new(None);
+    let verdict: Cell<BracketGuardOutcome> = Cell::new(BracketGuardOutcome::default());
     let observed_ran = Cell::new(false);
     {
         let _guard = ReaderClockBracketGuard::new_reporting(
@@ -574,10 +575,17 @@ fn a_rejected_bracket_never_reaches_the_compute() {
     }
     assert!(observed_ran.get(), "the observe half always runs");
     assert_eq!(
-        verdict.get(),
+        verdict.get().refusal,
         Some(SplitBracketRefusal::BracketIncoherent),
         "a guard with no readable clock must publish its refusal, or the split \
          has nothing to branch on"
+    );
+    assert_eq!(
+        verdict.get().observed_hour_raw,
+        None,
+        "and it must publish NO observation. A clock it could not read is not an \
+         hour it observed, and seeding one would put a fabricated witness on \
+         d81's gap record -- which is the whole defect the stamp closes"
     );
     // AND THE REASON STILL REACHES THE WIRE. Skipping the compute must not
     // skip the RECORD of the bracket: the gap and its reason are minted at
@@ -613,12 +621,22 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         .expect("the end of the split spawn")
         .0;
     assert!(
-        split.contains("let out = match verdict.get() {")
+        split.contains("let guard_outcome = verdict.get();")
+            && split.contains("let out = match guard_outcome.refusal {")
             && split.contains("None => compute(observed),")
             && !split.contains("Some(_) => compute(")
             && split.contains("drop(observed);"),
         "a bracket the guard refused must not reach the deferred compute, and \
          an incoherent bracket's copy must be dropped unread"
+    );
+    assert!(
+        split.contains("let out = stamp(out, guard_outcome.observed_hour_raw);")
+            && split.matches("verdict.get()").count() == 1,
+        "and EVERY outcome must leave the worker stamped with the observation \
+         of the SAME closed bracket the branch was taken on -- a second \
+         `verdict.get()` is a second value the guard could have rewritten \
+         between the branch and the stamp, and an unstamped path is one whose \
+         gap record falls back to the frame's label (lane FQ)"
     );
     assert!(
         split.contains("rejected(refusal, None)")
@@ -1311,6 +1329,7 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         map_reciprocity_record_is_province: 5,
         map_reciprocity_key_is_province_id: 6,
         phase_times: D81PhaseTimes::default(),
+        bracket_observed_hour_raw: None,
     };
     let kept = d81_bracket_refused_outcome(
         mismatch,
@@ -2018,4 +2037,495 @@ fn d81_bracket_split_cost_model() {
          ({published} railed provinces, {observed_neighbors} directed edges):"
     );
     println!("  {}", percentiles_us(fold_samples));
+}
+
+// ---- Witness provenance (lane FQ, 2026-08-08) ------------------------------
+//
+// THE DEFECT. d81's gap record used to fill both tick witnesses from
+// `game_hour_raw` -- the FRAME'S LABEL -- for every reason but the mismatch. On
+// an in-hour frame that is right by coincidence; on a label-mismatched one it
+// published `SourceUnavailable(target=H, ticks=H/H)` about a read that ran
+// wholly in H+1, which contradicts that reason's own documented witness and
+// forced `hour_label_audit` to exclude the whole reason as a tautology it could
+// not tell from an observation.
+//
+// THE FIX has three seams and each is exercised below: the bracket publishes
+// what it observed, the worker carries that observation out on EVERY outcome,
+// and the emit site mints its witnesses from it and states on the wire where
+// they came from.
+
+/// What a bracket may claim to have observed, and the four shapes that may not
+/// claim anything.
+///
+/// The refusals are the whole safety property: a witness fabricated from a
+/// bracket that tore, panicked, or could not read its clock is worse than no
+/// witness, because the wire's grammar cannot tell it from a real one.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: reading the opening observation
+/// without consulting `local_bracket_verdict` (the panic, unreadable and
+/// straddle cases start reporting an hour); dropping the nonzero filter (the
+/// negative case starts claiming it observed hour 0, which is the wire's
+/// no-witness value); or deriving the answer from `game_hour_raw` (the in-hour
+/// and mismatched cases stop differing).
+#[test]
+fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let observed = u64::try_from(hour).expect("fixture hour fits u64");
+    let bracket = |opening: Option<ClockObservation>,
+                   closing: Option<ClockObservation>,
+                   worker_panicked: bool| DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening,
+        closing,
+        worker_panicked,
+    };
+
+    // COHERENT, IN THE FRAME'S OWN HOUR. The observation exists and equals the
+    // label -- and that equality is now EVIDENCE rather than arithmetic,
+    // because the next case proves the two can differ.
+    assert_eq!(
+        bracket_observed_hour_raw(&bracket(
+            Some(clock_obs(hour, 1)),
+            Some(clock_obs(hour, 2)),
+            false
+        )),
+        Some(observed)
+    );
+
+    // COHERENT, IN ANOTHER HOUR. THE CASE THE WHOLE LANE EXISTS FOR: the read
+    // ran entirely in hour+1 and the frame will publish under `hour`.
+    assert_eq!(
+        bracket_observed_hour_raw(&bracket(
+            Some(clock_obs(hour + 1, 1)),
+            Some(clock_obs(hour + 1, 2)),
+            false
+        )),
+        Some(observed + 1),
+        "the observation must be what the bracket SAW, never the label the \
+         frame will publish under"
+    );
+
+    // STRADDLED. Two different hours, and every reason d81 mints requires the
+    // two ticks to be equal, so there is no admissible pair to publish.
+    assert_eq!(
+        bracket_observed_hour_raw(&bracket(
+            Some(clock_obs(hour, 1)),
+            Some(clock_obs(hour + 1, 2)),
+            false
+        )),
+        None
+    );
+    // UNREADABLE CLOCK, on either end. "Could not observe" is never "observed".
+    assert_eq!(
+        bracket_observed_hour_raw(&bracket(None, Some(clock_obs(hour, 2)), false)),
+        None
+    );
+    assert_eq!(
+        bracket_observed_hour_raw(&bracket(Some(clock_obs(hour, 1)), None, false)),
+        None
+    );
+    // PANICKED WORKER. Nothing the bracket says is trustworthy, even though
+    // both reads succeeded and agree.
+    assert_eq!(
+        bracket_observed_hour_raw(&bracket(
+            Some(clock_obs(hour, 1)),
+            Some(clock_obs(hour, 2)),
+            true
+        )),
+        None
+    );
+    // A NEGATIVE READING. `clock_tick_witness` collapses it to 0, which is the
+    // wire's no-witness value; publishing it would claim an observation of
+    // hour zero.
+    assert_eq!(
+        bracket_observed_hour_raw(&bracket(
+            Some(clock_obs(-5, 1)),
+            Some(clock_obs(-5, 2)),
+            false
+        )),
+        None
+    );
+}
+
+/// The guard publishes the observation and the refusal TOGETHER, off one closed
+/// bracket.
+///
+/// The two are not the same fact and come apart in both directions: an ADMITTED
+/// bracket still has an observation its outcome must carry, and a refused one
+/// may have none. A guard that wrote only the refusal would leave every
+/// successful d81 hour with no witness at all.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: writing the sink from a second pair
+/// of clock reads instead of the recorded bracket (the observation stops
+/// matching the bracket the tracker holds), or seeding the outcome with anything
+/// but `None` (the no-clock fixture below starts reporting an hour it never
+/// read).
+#[test]
+fn a_guard_publishes_its_observation_beside_its_refusal() {
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
+    let verdict: Cell<BracketGuardOutcome> = Cell::new(BracketGuardOutcome::default());
+    {
+        let _guard = ReaderClockBracketGuard::new_reporting(
+            &lanes,
+            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+            Some(BracketVerdictSink {
+                sink: &verdict,
+                frame_hour_raw: hour,
+            }),
+        );
+    }
+    let recorded = lanes.take_clock_brackets();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        verdict.get().observed_hour_raw,
+        bracket_observed_hour_raw(&recorded[0]),
+        "the observation the worker branches on and the bracket reconciliation \
+         later judges must be ONE closed bracket, not two"
+    );
+    assert_eq!(
+        verdict.get(),
+        BracketGuardOutcome {
+            refusal: Some(SplitBracketRefusal::BracketIncoherent),
+            observed_hour_raw: None,
+        },
+        "a fixture-less tracker cannot read a clock, so the guard must refuse \
+         AND publish no observation; the two are written together off one \
+         closed bracket"
+    );
+    assert_eq!(
+        BracketGuardOutcome::default().observed_hour_raw,
+        None,
+        "and the SEEDED value must publish none either -- a guard that somehow \
+         failed to write must leave the outcome unable to claim an hour, not \
+         holding a plausible one"
+    );
+}
+
+/// The refusal's own witness and the bracket's stamp are ONE observation.
+///
+/// Lane FJ's `LabelMismatch` refusal carries the observed hour on
+/// `first_failure.raw_value`, and lane FQ's stamp carries it on the read. Both
+/// are minted from the same closed bracket, and the emit site now takes the
+/// witness from the STAMP -- so if the two could disagree, the diagnostic unit a
+/// capture reads (`d81_failure_reason_24_hour_label_mismatch`'s raw value) and
+/// the witness on the wire would name different hours.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: stamping the refused outcome from
+/// anything but the guard that decided the refusal -- for instance from the
+/// frame label, or from a bracket re-read after the close.
+#[test]
+fn the_refusals_own_witness_and_the_brackets_stamp_are_one_observation() {
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let observed_hour = hour + 1;
+    let mismatched = DomainClockBracket {
+        tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        opening: Some(clock_obs(observed_hour, 1)),
+        closing: Some(clock_obs(observed_hour, 2)),
+        worker_panicked: false,
+    };
+    let refusal = split_bracket_refusal(&mismatched, hour, HourLabelMismatchPolicy::Refuse)
+        .expect("a mismatched bracket with a usable witness refuses");
+    let SplitBracketRefusal::LabelMismatch { observed_hour_raw } = refusal else {
+        panic!("expected a label mismatch, got {refusal:?}");
+    };
+    let stamp = bracket_observed_hour_raw(&mismatched);
+    assert_eq!(
+        Some(observed_hour_raw),
+        stamp,
+        "the refusal's witness and the bracket's stamp are two spellings of one \
+         reading and must not drift"
+    );
+
+    // And the placeholder read the refusal builds, once stamped, agrees with
+    // itself: the emit site reads the reason from `first_failure` and the hour
+    // from the stamp, so those two are what must not contradict.
+    let refused =
+        d81_stamp_bracket_observation(compact_rail_replay_bracket_refused_read(0, refusal), stamp);
+    assert_eq!(
+        refused.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::HourLabelMismatch)
+    );
+    assert_eq!(
+        refused.first_failure.map(|failure| failure.raw_value),
+        refused.bracket_observed_hour_raw,
+    );
+}
+
+/// EVERY outcome leaves the worker carrying its bracket's observation.
+///
+/// Three shapes reach the join -- the computed one, the observe half's own
+/// terminal answer kept across a label mismatch, and the placeholder for a
+/// refused bracket -- and an unstamped one is a gap record whose witnesses fall
+/// back to nothing. Each is built here through the SAME handler
+/// `spawn_gated_split` calls, then through the same stamp, because the split's
+/// own branch cannot be driven without a live game process.
+///
+/// The stamp must OVERWRITE: every constructor seeds the field absent (the
+/// observe half's answers are built before the guard closes and therefore
+/// before the observation exists), so a stamp that preserved a seed would drop
+/// the observation on exactly the paths that need it most.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: applying the stamp on one branch of
+/// `spawn_gated_split` instead of to the branch result; seeding a constructor
+/// with a value of its own; or making the stamp merge instead of overwrite.
+#[test]
+fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let observed = u64::try_from(hour + 1).expect("fixture hour fits u64");
+    let mismatch = SplitBracketRefusal::LabelMismatch {
+        observed_hour_raw: observed,
+    };
+
+    // 1. THE OBSERVE HALF'S OWN TERMINAL ANSWER, kept across a mismatch.
+    let already_failed = CompactRailReplayRead {
+        provinces: Vec::new(),
+        hub_simulation: None,
+        observed_neighbors: 0,
+        read_time_us: 4_321,
+        status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        first_failure: Some(D81FirstFailure::new(
+            D81FailureStage::HubObject,
+            D81FailureReason::EmptySnapshot,
+        )),
+        map_reciprocity_record_is_province: 5,
+        map_reciprocity_key_is_province_id: 6,
+        phase_times: D81PhaseTimes::default(),
+        bracket_observed_hour_raw: None,
+    };
+    assert_eq!(
+        already_failed.bracket_observed_hour_raw, None,
+        "the observe half builds its answer before the bracket closes, so it \
+         cannot know the observation and must not pretend to"
+    );
+    let kept = d81_stamp_bracket_observation(
+        d81_bracket_refused_outcome(
+            mismatch,
+            Some(D81ObserveOutcome::Complete(already_failed)),
+            0,
+        ),
+        Some(observed),
+    );
+    assert_eq!(kept.bracket_observed_hour_raw, Some(observed));
+    assert_eq!(
+        kept.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::EmptySnapshot),
+        "and the stamp must not disturb the outcome it stamps"
+    );
+
+    // 2. THE PLACEHOLDER for a refused bracket, on both refusal shapes.
+    for refusal in [mismatch, SplitBracketRefusal::BracketIncoherent] {
+        let placeholder = d81_stamp_bracket_observation(
+            d81_bracket_refused_outcome(refusal, None, 0),
+            Some(observed),
+        );
+        assert_eq!(
+            placeholder.bracket_observed_hour_raw,
+            Some(observed),
+            "{refusal:?}"
+        );
+    }
+
+    // 3. THE COMPUTED OUTCOME. `d81_finish_rail_replay_state` returns a
+    // `Complete` observation untouched, so the stamp is the only thing that can
+    // fill it -- and it must, since this is the ordinary in-hour path that
+    // supplies every honest `SourceUnavailable` witness in a capture.
+    let computed = d81_stamp_bracket_observation(
+        d81_finish_rail_replay_state(D81ObserveOutcome::Complete(CompactRailReplayRead {
+            provinces: Vec::new(),
+            hub_simulation: None,
+            observed_neighbors: 0,
+            read_time_us: 7,
+            status_flags: 0,
+            first_failure: None,
+            map_reciprocity_record_is_province: 0,
+            map_reciprocity_key_is_province_id: 0,
+            phase_times: D81PhaseTimes::default(),
+            bracket_observed_hour_raw: None,
+        })),
+        Some(observed),
+    );
+    assert_eq!(computed.bracket_observed_hour_raw, Some(observed));
+
+    // 4. AND AN ABSENT OBSERVATION STAYS ABSENT. A stamp that filled in a
+    // default here would be the fabricated witness this lane removes.
+    let unobserved = d81_stamp_bracket_observation(
+        d81_bracket_refused_outcome(SplitBracketRefusal::BracketIncoherent, None, 0),
+        None,
+    );
+    assert_eq!(unobserved.bracket_observed_hour_raw, None);
+
+    // The worker-panic substitute is built at `join()`, outside the bracket, so
+    // it never reaches the stamp at all and must carry no observation.
+    assert_eq!(
+        compact_rail_replay_worker_panic_read(0).bracket_observed_hour_raw,
+        None,
+        "a read substituted after the join holds no bracket and may not borrow \
+         one"
+    );
+}
+
+/// THE WITNESSES d81 PUBLISHES COME FROM ITS BRACKET, AND NEVER FROM THE LABEL.
+///
+/// Swept over every wire reason under three observations -- an hour equal to the
+/// label, an hour that is NOT (the mismatched-bracket case), and none -- because
+/// the defect was invisible in exactly the first of the three.
+///
+/// The check is made against `game_hour_raw` explicitly: for every reason that
+/// carries a witness at all, a bracket that observed `label + 1` must publish
+/// `label + 1`. Before this lane every one of them published `label`.
+///
+/// Each result is then ENCODED, so the payload grammar -- including the rule
+/// that a provenance may not contradict its witnesses -- is what accepts it,
+/// rather than this test's own opinion of the shape.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: restoring `_ => (tick, tick)` at the
+/// emit site or passing `game_hour_raw` into the rule (the mismatched column
+/// collapses onto the label); stamping `Unstated` instead of `Unobserved` on the
+/// no-observation path (the provenance assertion fails); or claiming
+/// `BracketObserved` on a zero witness (the encode fails).
+#[test]
+fn the_witnesses_a_d81_gap_publishes_come_from_its_bracket() {
+    use compact_contract::domain_gap::{
+        DomainGapPart, DomainGapReason, DomainGapRecordV1, DomainGapWitnessProvenance,
+    };
+
+    let label = super::state_fixture::fixture_game_hour_raw();
+    let label_hour = u64::try_from(label).expect("fixture hour fits u64");
+    let elsewhere = label_hour + 1;
+
+    for reason in DomainGapReason::ALL {
+        // The two reasons the wire requires zeros for state the absence
+        // regardless of what the bracket saw; every other reason carries the
+        // observation.
+        let zero_witness_reason = matches!(
+            reason,
+            DomainGapReason::ReaderSilent | DomainGapReason::ClockUnreadable
+        );
+        // `HourLabelMismatch` takes its witness from the mismatch channel, and
+        // its grammar forbids the label, so its "in-hour" column is not a
+        // reachable state and is exercised only at `elsewhere`.
+        let mismatch_reason = reason == DomainGapReason::HourLabelMismatch;
+
+        for observation in [Some(label_hour), Some(elsewhere), None] {
+            if mismatch_reason && observation != Some(elsewhere) {
+                continue;
+            }
+            let mismatch_witness = mismatch_reason.then_some(elsewhere);
+            let (tick_before, tick_after, provenance) =
+                d81_gap_witnesses(reason, mismatch_witness, observation);
+            assert_eq!(tick_before, tick_after, "{reason:?} {observation:?}");
+
+            let expected = if zero_witness_reason {
+                None
+            } else if mismatch_reason {
+                Some(elsewhere)
+            } else {
+                observation
+            };
+            match expected {
+                Some(hour) => {
+                    assert_eq!(tick_before, hour, "{reason:?} {observation:?}");
+                    assert_eq!(
+                        provenance,
+                        DomainGapWitnessProvenance::BracketObserved,
+                        "{reason:?} {observation:?}"
+                    );
+                }
+                None => {
+                    assert_eq!(tick_before, 0, "{reason:?} {observation:?}");
+                    assert_eq!(
+                        provenance,
+                        DomainGapWitnessProvenance::Unobserved,
+                        "{reason:?} {observation:?}: absence must be a POSITIVE \
+                         claim, not the `Unstated` an unconverted producer writes"
+                    );
+                }
+            }
+            // THE CLAIM THIS TEST EXISTS FOR.
+            if observation == Some(elsewhere) && !zero_witness_reason {
+                assert_ne!(
+                    tick_before, label_hour,
+                    "{reason:?}: a read that ran outside the frame's hour must \
+                     not publish the frame's label as its witness"
+                );
+            }
+
+            // Only the single-hour reasons can be encoded at this shape;
+            // `Overrun`/`Backpressure` carry a coalesced range and a queue
+            // witness this emit site never builds, and `Torn` requires two
+            // DIFFERENT ticks. d81 mints none of the three.
+            if matches!(
+                reason,
+                DomainGapReason::Overrun | DomainGapReason::Backpressure | DomainGapReason::Torn
+            ) {
+                continue;
+            }
+            let encoded = DomainGapRecordV1 {
+                part: DomainGapPart::State,
+                reason,
+                target_hour_raw: label,
+                range_start_hour_raw: label,
+                range_end_hour_raw: label,
+                tick_before,
+                tick_after,
+                queue_capacity: 0,
+                queue_depth: 0,
+                queue_dropped: 0,
+                outcome_ordinal: 0,
+            }
+            .encode_with_witness_provenance(provenance)
+            .unwrap_or_else(|error| {
+                panic!("{reason:?} {observation:?} must be encodable: {error}")
+            });
+            assert_eq!(
+                DomainGapRecordV1::decode_witness_provenance(&encoded).unwrap(),
+                provenance,
+                "{reason:?} {observation:?}"
+            );
+        }
+    }
+}
+
+/// The emit site mints its witnesses through the rule above, and holds no second
+/// source for them.
+///
+/// A source pin, because `build_compact_extraction_gate_records` needs an
+/// injected `hoi4.exe`. It is narrow on purpose: the BEHAVIOUR is
+/// `the_witnesses_a_d81_gap_publishes_come_from_its_bracket`, and all this adds
+/// is that the production block calls it with the bracket's stamp rather than
+/// keeping a copy of the old label arithmetic.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: reintroducing a
+/// `u64::try_from(game_hour_raw)` witness in the gap branch, or encoding the
+/// payload without stating its provenance.
+#[test]
+fn the_d81_emit_site_has_no_witness_source_but_its_bracket() {
+    let source = collector_source_lf();
+    let gap_branch = source
+        .split_once("if let Some(mut read) = rail_replay_state_read {")
+        .expect("the d81 emit block")
+        .1
+        .split_once("use compact_contract::domain_gap::{")
+        .expect("the gap branch")
+        .1
+        .split_once("let payload = DomainGapRecordV1 {")
+        .expect("the gap payload is built")
+        .0;
+    assert!(
+        gap_branch.contains("let d81_bracket_observation = read.bracket_observed_hour_raw;")
+            && gap_branch.contains(
+                "d81_gap_witnesses(reason, d81_mismatch_witness, d81_bracket_observation)"
+            ),
+        "the gap branch must take its witnesses from the bracket's stamp, \
+         through the one rule that decides them"
+    );
+    assert_eq!(
+        gap_branch.matches("u64::try_from(game_hour_raw)").count(),
+        1,
+        "the frame's label may appear in the gap branch exactly once -- in the \
+         mismatch witness's `!=` check -- and never as a witness VALUE; the \
+         defect this lane closes was `let tick = u64::try_from(game_hour_raw)` \
+         feeding every reason's tick pair"
+    );
 }

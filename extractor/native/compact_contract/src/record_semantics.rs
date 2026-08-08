@@ -94,6 +94,45 @@ pub const DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH: u16 = 8;
 pub const DOMAIN_GAP_PART_STATE: u16 = 0;
 pub const DOMAIN_GAP_PART_EVENT: u16 = 1;
 pub const DOMAIN_GAP_PART_BOTH: u16 = 2;
+
+/// WHERE THE TWO TICK WITNESSES CAME FROM, spelled on the wire instead of
+/// inferred from the reason (lane FQ, 2026-08-08).
+///
+/// THE DEFECT THIS CLOSES. A gap record's `tick_before`/`tick_after` are read
+/// by offline tools as an ENGINE OBSERVATION, and for several reasons the
+/// grammar cannot tell an observation from a restatement of the frame's own
+/// label: `SOURCE_UNAVAILABLE` and `WORKER_PANIC` require only that the two
+/// ticks are EQUAL, which a label copy satisfies exactly as well as a real
+/// non-advancing clock reading does. `hour_label_audit` therefore had to
+/// exclude those reasons wholesale — comparing a label against itself is
+/// arithmetic, not evidence, and presenting it beside real witnesses would
+/// manufacture corroboration. That exclusion keyed on the REASON, so a producer
+/// that started stamping real observations could not be believed either.
+///
+/// The provenance is a claim by the PRODUCER, in the same way `TORN`'s
+/// unequal ticks are. What the grammar adds is that the claim cannot contradict
+/// the witnesses it describes: an observation may not be built on the wire's
+/// no-witness zero, and "no observation" may not carry a nonzero one.
+///
+/// IT LIVES IN THE FIRST RESERVED WORD, which every previous producer wrote as
+/// zero and every previous decoder REQUIRED to be zero. Zero is therefore
+/// exactly `UNSTATED`, and every record sealed before this field existed
+/// decodes as "this producer did not say" rather than as a claim it never made.
+/// The remaining half of that word stays reserved and is still required to be
+/// zero, so the next field to be spent here is admitted the same way.
+pub const DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED: u16 = 0;
+/// The two ticks are hours a reader's own clock bracket ACTUALLY OBSERVED.
+///
+/// Both must be nonzero: zero is the wire's no-witness value everywhere else in
+/// this record, and an observation that could not be represented is not an
+/// observation.
+pub const DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED: u16 = 1;
+/// No clock observation reached the site that minted this record, and the two
+/// ticks are the wire's no-witness zero rather than a borrowed reading.
+///
+/// A POSITIVE CLAIM, and not the same as `UNSTATED`: this says the producer
+/// looked and had nothing, where `UNSTATED` says the producer never spoke.
+pub const DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED: u16 = 2;
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] = b"PDU1";
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 = 1;
 /// Trailer version written by the current producer.
@@ -283,7 +322,23 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
     ) {
         return Err(format!("DOMAIN_GAP part {part} is unknown"));
     }
-    if u32::from_le_bytes(payload[12..16].try_into().expect("fixed reserved slice")) != 0
+    // The first reserved word is now HALF SPENT: bytes 12..14 carry the witness
+    // provenance and bytes 14..16 are still reserved. Both halves are admitted
+    // exactly -- an unknown provenance code is refused here rather than falling
+    // through to a witness arm that happens to match, which is the same
+    // admission discipline the reason and part codes get above.
+    let witness_provenance = u16::from_le_bytes([payload[12], payload[13]]);
+    if !matches!(
+        witness_provenance,
+        DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED
+            | DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED
+            | DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED
+    ) {
+        return Err(format!(
+            "DOMAIN_GAP witness provenance {witness_provenance} is unknown"
+        ));
+    }
+    if u16::from_le_bytes([payload[14], payload[15]]) != 0
         || u32::from_le_bytes(payload[28..32].try_into().expect("fixed reserved slice")) != 0
     {
         return Err("DOMAIN_GAP reserved field is nonzero".to_string());
@@ -376,6 +431,17 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
         // The reader held a bracket, so the two tick witnesses are a real,
         // non-advancing clock reading for the hour it failed in. One hour, no
         // queue: nothing was dropped, the source simply was not there.
+        //
+        // THE HOUR IT FAILED IN IS NOT ALWAYS THE FRAME'S LABEL, and the
+        // equality below is deliberately silent about which. A reader whose
+        // bracket held steady in H+1 and then failed carries H+1 here; the
+        // frame still publishes under H. Which of the two a given record holds
+        // is not inferable from the reason, which is what the witness
+        // provenance stamp says (see
+        // [`DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED`]). Where no observation
+        // reached the mint site the honest pair is the wire's no-witness zero,
+        // which this arm's equality also admits and which the provenance rule
+        // below requires to be declared `UNOBSERVED`.
         DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE
             if range_start == range_end
                 && target_hour == range_start
@@ -424,6 +490,35 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
                 "DOMAIN_GAP witnesses do not prove closed reason {reason}"
             ))
         }
+    }
+    // THE PROVENANCE MAY NOT CONTRADICT THE WITNESSES IT DESCRIBES.
+    //
+    // It is a producer claim, like `TORN`'s unequal ticks, and the grammar
+    // cannot check that a nonzero pair really came off a clock. What it CAN
+    // check is the one confusion that would let the claim be free: zero is the
+    // wire's no-witness value in every other rule in this function, so an
+    // observation may not be built on it and an absence may not be dressed in a
+    // nonzero reading. Without these two conjuncts a producer could stamp
+    // `BRACKET_OBSERVED` on `READER_SILENT`'s required zeros and an offline tool
+    // would read "the reader observed hour 0".
+    //
+    // `UNSTATED` is deliberately unconstrained. It is what every record sealed
+    // before this field existed carries, and adding a predicate to it would
+    // make old captures undecodable.
+    match witness_provenance {
+        DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED if tick_before == 0 || tick_after == 0 => {
+            return Err(
+                "DOMAIN_GAP claims a bracket-observed witness on the wire's no-witness zero"
+                    .to_string(),
+            )
+        }
+        DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED if tick_before != 0 || tick_after != 0 => {
+            return Err(
+                "DOMAIN_GAP claims no observation while carrying a nonzero tick witness"
+                    .to_string(),
+            )
+        }
+        _ => {}
     }
     Ok(())
 }

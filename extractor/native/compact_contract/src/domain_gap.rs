@@ -14,6 +14,8 @@ use crate::record_semantics::{
     DOMAIN_GAP_REASON_BACKPRESSURE, DOMAIN_GAP_REASON_CLOCK_UNREADABLE,
     DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH, DOMAIN_GAP_REASON_OVERRUN, DOMAIN_GAP_REASON_READER_SILENT,
     DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE, DOMAIN_GAP_REASON_TORN, DOMAIN_GAP_REASON_WORKER_PANIC,
+    DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED, DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED,
+    DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +144,69 @@ impl DomainGapReason {
     }
 }
 
+/// Where a record's two tick witnesses came from, as the producer states it.
+///
+/// See [`DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED`] for what this field exists to
+/// close and why zero is `Unstated`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u16)]
+pub enum DomainGapWitnessProvenance {
+    /// THE DEFAULT, AND THE ONLY HONEST ONE FOR A PRODUCER THAT HAS NOT BEEN
+    /// CONVERTED. A consumer must not read these ticks as an independent
+    /// observation on the strength of this value alone.
+    #[default]
+    Unstated = DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED,
+    /// The ticks are hours a reader's own clock bracket observed.
+    BracketObserved = DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED,
+    /// No observation reached the mint site; the ticks are the wire's zero.
+    Unobserved = DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED,
+}
+
+impl DomainGapWitnessProvenance {
+    /// Every provenance, for the same reason [`DomainGapReason::ALL`] exists and
+    /// with the same proof: `the_provenance_vocabulary_is_complete` rebuilds
+    /// this set from [`DomainGapWitnessProvenance::from_code`] over the whole
+    /// `u16` space, so a value that can arrive off the wire and is missing here
+    /// fails rather than being silently dropped by every consumer that iterates.
+    pub const ALL: [DomainGapWitnessProvenance; 3] =
+        [Self::Unstated, Self::BracketObserved, Self::Unobserved];
+
+    pub const fn code(self) -> u16 {
+        self as u16
+    }
+
+    /// The name offline consumers match on, exactly as [`DomainGapReason::wire_name`].
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unstated => "unstated",
+            Self::BracketObserved => "bracket_observed",
+            Self::Unobserved => "unobserved",
+        }
+    }
+
+    /// Whether these ticks are an ENGINE OBSERVATION this record's producer
+    /// vouches for.
+    ///
+    /// THE ONE PLACE the question is answered, so a consumer cannot decide it
+    /// with its own spelling. `Unstated` is false and that is the whole point:
+    /// a capture sealed before the field existed may not be read as if it had
+    /// made a claim it never made.
+    pub const fn is_a_bracket_observation(self) -> bool {
+        matches!(self, Self::BracketObserved)
+    }
+
+    fn from_code(code: u16) -> Result<Self, DomainGapError> {
+        match code {
+            DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED => Ok(Self::Unstated),
+            DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED => Ok(Self::BracketObserved),
+            DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED => Ok(Self::Unobserved),
+            other => Err(DomainGapError::InvalidSemantics(format!(
+                "DOMAIN_GAP witness provenance {other} is unknown"
+            ))),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum DomainGapPart {
@@ -190,7 +255,28 @@ pub struct DomainGapRecordV1 {
 }
 
 impl DomainGapRecordV1 {
+    /// Encode STATING NO PROVENANCE for the tick witnesses.
+    ///
+    /// This is the honest encoding for every producer that has not been
+    /// converted, and it is byte-identical to what this contract emitted before
+    /// the field existed. A producer that KNOWS where its ticks came from must
+    /// say so with [`DomainGapRecordV1::encode_with_witness_provenance`];
+    /// forgetting to costs an offline consumer the right to believe the
+    /// witnesses, which is the safe direction — the reverse would be a claim
+    /// nothing made.
     pub fn encode(&self) -> Result<Vec<u8>, DomainGapError> {
+        self.encode_with_witness_provenance(DomainGapWitnessProvenance::Unstated)
+    }
+
+    /// Encode, stating where the two tick witnesses came from.
+    ///
+    /// The grammar refuses a provenance that contradicts the witnesses it
+    /// describes (see [`validate_domain_gap_payload`]), so a wrong stamp fails
+    /// here rather than shipping.
+    pub fn encode_with_witness_provenance(
+        &self,
+        witness_provenance: DomainGapWitnessProvenance,
+    ) -> Result<Vec<u8>, DomainGapError> {
         validate_hours(self)?;
         let mut out = vec![0u8; COMPACT_DOMAIN_GAP_PAYLOAD_LEN];
         out[..4].copy_from_slice(COMPACT_DOMAIN_GAP_MAGIC);
@@ -198,6 +284,7 @@ impl DomainGapRecordV1 {
         out[6..8].copy_from_slice(&(COMPACT_DOMAIN_GAP_PAYLOAD_LEN as u16).to_le_bytes());
         out[8..10].copy_from_slice(&self.reason.code().to_le_bytes());
         out[10..12].copy_from_slice(&self.part.code().to_le_bytes());
+        out[12..14].copy_from_slice(&witness_provenance.code().to_le_bytes());
         out[16..20].copy_from_slice(&self.target_hour_raw.to_le_bytes());
         out[20..24].copy_from_slice(&self.range_start_hour_raw.to_le_bytes());
         out[24..28].copy_from_slice(&self.range_end_hour_raw.to_le_bytes());
@@ -234,6 +321,30 @@ impl DomainGapRecordV1 {
         };
         validate_hours(&value)?;
         Ok(value)
+    }
+
+    /// The provenance stamped on an encoded payload.
+    ///
+    /// A SEPARATE READER, and not a field of [`DomainGapRecordV1`], for the
+    /// same reason [`crate::record_semantics::domain_gap_target_hour_raw`] is
+    /// one: every one of the sixty-odd construction sites in this tree would
+    /// otherwise have to state a provenance it does not know, and a value
+    /// nobody knows is a value everybody defaults. The producers that DO know
+    /// state it at `encode`; the consumers that need it ask for it here.
+    ///
+    /// Validates the whole payload first, so a provenance can never be read off
+    /// bytes the grammar would refuse.
+    pub fn decode_witness_provenance(
+        bytes: &[u8],
+    ) -> Result<DomainGapWitnessProvenance, DomainGapError> {
+        if bytes.len() != COMPACT_DOMAIN_GAP_PAYLOAD_LEN {
+            return Err(DomainGapError::WrongLength {
+                expected: COMPACT_DOMAIN_GAP_PAYLOAD_LEN,
+                actual: bytes.len(),
+            });
+        }
+        validate_domain_gap_payload(bytes).map_err(DomainGapError::InvalidSemantics)?;
+        DomainGapWitnessProvenance::from_code(read_u16(bytes, 12))
     }
 }
 
@@ -533,6 +644,167 @@ mod tests {
     /// `all_covers_every_decodable_reason`, so a reason cannot be omitted from
     /// this sweep without first being unreachable.
     ///
+    /// The provenance vocabulary is complete against the wire, exactly as
+    /// `all_covers_every_decodable_reason` proves `DomainGapReason::ALL` is.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: assigning a fourth provenance
+    /// code in `from_code` (or in the grammar's `matches!`) without adding it to
+    /// `ALL`, which would leave every consumer that iterates the vocabulary
+    /// silently dropping it.
+    #[test]
+    fn the_provenance_vocabulary_is_complete() {
+        let decodable: Vec<DomainGapWitnessProvenance> = (0..=u16::MAX)
+            .filter_map(|code| DomainGapWitnessProvenance::from_code(code).ok())
+            .collect();
+        assert_eq!(
+            decodable.len(),
+            DomainGapWitnessProvenance::ALL.len(),
+            "the wire decodes {decodable:?} but ALL lists {:?}",
+            DomainGapWitnessProvenance::ALL
+        );
+        for provenance in decodable {
+            assert!(DomainGapWitnessProvenance::ALL.contains(&provenance));
+        }
+    }
+
+    /// The payload grammar and the typed decoder admit the SAME provenance
+    /// codes, swept over the whole `u16` space.
+    ///
+    /// The same defect `the_payload_grammar_admits_exactly_the_codes_from_code_decodes`
+    /// exists for this field: a code the grammar admits and `from_code` refuses
+    /// is a byte on the wire nothing can name, and the reverse is a claim that
+    /// passes the grammar and then falls through to whichever provenance rule
+    /// happens to match.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: adding a constant to one
+    /// admission list and not the other.
+    #[test]
+    fn the_grammar_admits_exactly_the_provenance_codes_from_code_decodes() {
+        // Torn's sample carries two nonzero, unequal ticks, so neither
+        // provenance rule can refuse it and the only thing under test is the
+        // code's admission.
+        let base = sample(DomainGapReason::Torn).encode().unwrap();
+        for code in 0..=u16::MAX {
+            let mut wire = base.clone();
+            wire[12..14].copy_from_slice(&code.to_le_bytes());
+            let grammar_calls_it_unknown = validate_domain_gap_payload(&wire)
+                .err()
+                .is_some_and(|error| {
+                    error == format!("DOMAIN_GAP witness provenance {code} is unknown")
+                });
+            assert_eq!(
+                grammar_calls_it_unknown,
+                DomainGapWitnessProvenance::from_code(code).is_err(),
+                "provenance {code} is admitted by one vocabulary and refused by \
+                 the other"
+            );
+        }
+    }
+
+    /// Every reason round-trips under every provenance its witnesses can
+    /// support, and `encode` is byte-identical to `encode_with_witness_provenance(Unstated)`.
+    ///
+    /// The second half is what keeps a capture sealed before this field existed
+    /// readable: `Unstated` IS the zero the old producer wrote and the old
+    /// decoder required.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: spending the second half of the
+    /// reserved word (bytes 14..16), moving the provenance to another offset, or
+    /// giving `encode` a default other than `Unstated`.
+    #[test]
+    fn provenance_round_trips_and_unstated_is_the_legacy_encoding() {
+        for reason in DomainGapReason::ALL {
+            let value = sample(reason);
+            let plain = value.encode().unwrap();
+            let unstated = value
+                .encode_with_witness_provenance(DomainGapWitnessProvenance::Unstated)
+                .unwrap();
+            assert_eq!(plain, unstated, "{reason:?}");
+            assert_eq!(read_u16(&plain, 12), 0, "{reason:?}");
+            assert_eq!(
+                DomainGapRecordV1::decode_witness_provenance(&plain).unwrap(),
+                DomainGapWitnessProvenance::Unstated,
+                "{reason:?}"
+            );
+            assert!(
+                !DomainGapWitnessProvenance::Unstated.is_a_bracket_observation(),
+                "an unconverted producer's ticks may never read as an observation"
+            );
+
+            // The provenance the witnesses DO support, decided by the witnesses
+            // and not by the reason, so a reason whose sample changes shape is
+            // still exercised.
+            let supported = if value.tick_before == 0 && value.tick_after == 0 {
+                DomainGapWitnessProvenance::Unobserved
+            } else {
+                DomainGapWitnessProvenance::BracketObserved
+            };
+            let stamped = value.encode_with_witness_provenance(supported).unwrap();
+            assert_eq!(
+                DomainGapRecordV1::decode_witness_provenance(&stamped).unwrap(),
+                supported,
+                "{reason:?}"
+            );
+            // The record itself is unchanged by the stamp: provenance describes
+            // the witnesses, it does not alter them.
+            assert_eq!(DomainGapRecordV1::decode(&stamped).unwrap(), value);
+        }
+    }
+
+    /// A provenance that contradicts its own witnesses does not encode.
+    ///
+    /// This is the whole strength of the field. Without these two rules a
+    /// producer could stamp `BracketObserved` on `ReaderSilent`'s required zeros
+    /// and `hour_label_audit` would report "the reader observed hour 0", or
+    /// stamp `Unobserved` on a real reading and hide it.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: deleting either conjunct of the
+    /// provenance match in `validate_domain_gap_payload`.
+    #[test]
+    fn a_provenance_that_contradicts_its_witnesses_fails_closed() {
+        let observed_on_zero = sample(DomainGapReason::ReaderSilent)
+            .encode_with_witness_provenance(DomainGapWitnessProvenance::BracketObserved);
+        assert!(
+            matches!(observed_on_zero, Err(DomainGapError::InvalidSemantics(_))),
+            "zero is the wire's no-witness value; it cannot be an observation"
+        );
+
+        let unobserved_on_reading = sample(DomainGapReason::Torn)
+            .encode_with_witness_provenance(DomainGapWitnessProvenance::Unobserved);
+        assert!(
+            matches!(unobserved_on_reading, Err(DomainGapError::InvalidSemantics(_))),
+            "a record carrying a real reading cannot claim it observed nothing"
+        );
+
+        // And the same two rules hold on DECODE, over bytes a hostile or
+        // corrupt producer could have written directly.
+        let mut forged = sample(DomainGapReason::ReaderSilent).encode().unwrap();
+        forged[12..14]
+            .copy_from_slice(&DomainGapWitnessProvenance::BracketObserved.code().to_le_bytes());
+        assert!(matches!(
+            DomainGapRecordV1::decode_witness_provenance(&forged),
+            Err(DomainGapError::InvalidSemantics(_))
+        ));
+        assert!(matches!(
+            DomainGapRecordV1::decode(&forged),
+            Err(DomainGapError::InvalidSemantics(_))
+        ));
+    }
+
+    /// The second half of the first reserved word is STILL reserved.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: widening the provenance to the
+    /// whole `u32` word, which would silently admit bytes the next field wants.
+    #[test]
+    fn the_unspent_half_of_the_reserved_word_is_still_refused() {
+        let mut wire = sample(DomainGapReason::Torn).encode().unwrap();
+        wire[14..16].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(
+            validate_domain_gap_payload(&wire),
+            Err("DOMAIN_GAP reserved field is nonzero".to_string())
+        );
+    }
+
     /// Backpressure is the single exclusion, stated as a `match` so that a new
     /// reason has to be classified rather than silently inheriting either side.
     #[test]

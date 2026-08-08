@@ -2,7 +2,8 @@ use compact_contract::campaign_identity::{parse_cid1_record, COMPACT_RECORD_TYPE
 use compact_contract::diagnostic_channel::{decode_units, DiagUnit};
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, DomainGapReason,
-    DomainGapRecordV1, COMPACT_DOMAIN_PERF_BASE_LEN, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC,
+    DomainGapRecordV1, DomainGapWitnessProvenance, COMPACT_DOMAIN_PERF_BASE_LEN,
+    COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC,
     COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2, COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_CAPTURE_TERMINATED,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
@@ -171,6 +172,9 @@ struct Stats {
 struct GapCensus {
     reason_counts: Vec<ReasonCount>,
     undecoded_gap_records: u64,
+    /// See [`AuditState::provenance_counts`]. Reported for every gap, whether
+    /// or not its witnesses were admitted.
+    witness_provenance_counts: Vec<ProvenanceCount>,
     clock_witness_delta_counts: Vec<WitnessDeltaCount>,
     clock_witness_examples: Vec<WitnessExample>,
     clock_witness_examples_suppressed: u64,
@@ -205,20 +209,37 @@ struct ReasonCount {
     count: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct ProvenanceCount {
+    reason: &'static str,
+    witness_provenance: &'static str,
+    count: u64,
+    /// Whether rows in this cell had their witnesses ADMITTED as an
+    /// observation. Derived from the same function the accounting uses, so the
+    /// report cannot describe a rule the tool did not apply.
+    witnesses_admitted: bool,
+}
+
 #[derive(Serialize)]
 struct WitnessDeltaCount {
     reason: &'static str,
+    witness_provenance: &'static str,
     opening_delta: i128,
     closing_delta: i128,
     count: u64,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct WitnessExample {
     offset: u64,
     sequence: u64,
     domain_id: u16,
     reason: &'static str,
+    /// WHY THIS ROW IS IN THE TABLE AT ALL. `bracket_observed` is the record's
+    /// own claim; `unstated` means it was admitted by the pre-provenance
+    /// fallback on its reason alone. Printing it is what lets a reader tell a
+    /// capture's real corroboration from its inherited assumptions.
+    witness_provenance: &'static str,
     frame_label: i32,
     opening_witness: u64,
     closing_witness: u64,
@@ -322,6 +343,10 @@ struct FrameGap {
     sequence: u64,
     domain_id: u16,
     reason: &'static str,
+    /// Stated for EVERY gap, including the ones whose witnesses are suppressed
+    /// below: "excluded" and "excluded because the producer said it had no
+    /// observation" are different findings.
+    witness_provenance: &'static str,
     opening_witness: Option<u64>,
     closing_witness: Option<u64>,
     opening_delta: Option<i128>,
@@ -360,6 +385,7 @@ struct RecordDetail {
 struct GapRecordDetail {
     part: &'static str,
     reason: &'static str,
+    witness_provenance: &'static str,
     target_hour_raw: i32,
     range_start_hour_raw: i32,
     range_end_hour_raw: i32,
@@ -468,7 +494,14 @@ struct AuditState {
     /// [`MAX_ENUMERATED_RANGE_HOURS`]).
     reason_hours: BTreeMap<&'static str, BTreeSet<i32>>,
     undecoded_gaps: u64,
-    witness_delta_counts: BTreeMap<(&'static str, i128, i128), u64>,
+    /// Every gap record counted by (reason, stated witness provenance).
+    ///
+    /// THE CENSUS THAT MAKES THE INCLUSION RULE AUDITABLE. Without it a reader
+    /// cannot tell a capture whose witnesses were believed on the producer's
+    /// stamp from one whose rows entered on the pre-provenance fallback, and
+    /// those are different amounts of evidence.
+    provenance_counts: BTreeMap<(&'static str, &'static str), u64>,
+    witness_delta_counts: BTreeMap<(&'static str, &'static str, i128, i128), u64>,
     witness_examples: Vec<WitnessExample>,
     witness_examples_suppressed: u64,
     frame_summaries: Vec<FrameSummary>,
@@ -732,7 +765,16 @@ fn process_record(
                         detail.decode_error = Some(message.clone());
                         record_error(state, offset, message);
                     }
-                    detail.gap = Some(gap_record_detail(gap));
+                    // The stamp is read from the SAME bytes `decode` just
+                    // accepted, so a record cannot be accounted under one
+                    // provenance and printed under another. `decode` has
+                    // already run the full grammar, including the rule that
+                    // refuses a provenance contradicting its own witnesses, so
+                    // this cannot fail for a payload that reached here; the
+                    // fallback is `Unstated`, which is the EXCLUDING value.
+                    let provenance = DomainGapRecordV1::decode_witness_provenance(payload)
+                        .unwrap_or(DomainGapWitnessProvenance::Unstated);
+                    detail.gap = Some(gap_record_detail(gap, provenance));
                     account_gap(
                         state,
                         offset,
@@ -740,6 +782,7 @@ fn process_record(
                         header.domain_id,
                         header.game_hour_raw,
                         gap,
+                        provenance,
                     );
                 }
                 Err(error) => {
@@ -859,8 +902,13 @@ fn account_gap(
     domain_id: u16,
     frame_label: i32,
     gap: DomainGapRecordV1,
+    provenance: DomainGapWitnessProvenance,
 ) {
     let reason = reason_name(gap.reason);
+    *state
+        .provenance_counts
+        .entry((reason, provenance_name(provenance)))
+        .or_default() += 1;
     *state.reason_counts.entry(reason).or_default() += 1;
     // The hours this ONE record stands for. A `Backpressure`/`Overrun` range is
     // coalesced, so this is where the record count and the domain-hour count
@@ -905,19 +953,34 @@ fn account_gap(
     // the wire's ABSENT-witness value -- `ClockUnreadable` and `ReaderSilent`
     // are required to carry it -- and subtracting the label from it produced a
     // `-frame_label` entry that reads as an enormous clock excursion.
-    let clock_derived = is_clock_derived(gap.reason) && gap.tick_before != 0 && gap.tick_after != 0;
+    //
+    // The nonzero gate is KEPT ALONGSIDE the provenance rather than replaced by
+    // it. The grammar already refuses a `BracketObserved` claim on a zero, so
+    // for that provenance the conjunct is redundant today -- but it is the
+    // `Unstated` fallback's only defence, and an audit that depended on a
+    // producer-side rule to keep a division by nothing out of its own table
+    // would be trusting the input it exists to check.
+    let clock_derived = witnesses_are_a_clock_observation(gap.reason, provenance)
+        && gap.tick_before != 0
+        && gap.tick_after != 0;
     let opening_delta = witness_delta(gap.tick_before, frame_label);
     let closing_delta = witness_delta(gap.tick_after, frame_label);
     if clock_derived {
         *state
             .witness_delta_counts
-            .entry((reason, opening_delta, closing_delta))
+            .entry((
+                reason,
+                provenance_name(provenance),
+                opening_delta,
+                closing_delta,
+            ))
             .or_default() += 1;
         let example = WitnessExample {
             offset,
             sequence,
             domain_id,
             reason,
+            witness_provenance: provenance_name(provenance),
             frame_label,
             opening_witness: gap.tick_before,
             closing_witness: gap.tick_after,
@@ -935,6 +998,7 @@ fn account_gap(
         sequence,
         domain_id,
         reason,
+        witness_provenance: provenance_name(provenance),
         opening_witness: clock_derived.then_some(gap.tick_before),
         closing_witness: clock_derived.then_some(gap.tick_after),
         opening_delta: clock_derived.then_some(opening_delta),
@@ -1242,15 +1306,28 @@ fn finish_report(input: &Path, mut state: AuditState) -> AuditReport {
                 })
                 .collect(),
             undecoded_gap_records: state.undecoded_gaps,
+            witness_provenance_counts: state
+                .provenance_counts
+                .into_iter()
+                .map(|((reason, witness_provenance), count)| ProvenanceCount {
+                    reason,
+                    witness_provenance,
+                    count,
+                    witnesses_admitted: admitted_by_name(reason, witness_provenance),
+                })
+                .collect(),
             clock_witness_delta_counts: state
                 .witness_delta_counts
                 .into_iter()
                 .map(
-                    |((reason, opening_delta, closing_delta), count)| WitnessDeltaCount {
-                        reason,
-                        opening_delta,
-                        closing_delta,
-                        count,
+                    |((reason, witness_provenance, opening_delta, closing_delta), count)| {
+                        WitnessDeltaCount {
+                            reason,
+                            witness_provenance,
+                            opening_delta,
+                            closing_delta,
+                            count,
+                        }
                     },
                 )
                 .collect(),
@@ -1519,9 +1596,27 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
         "undecoded DOMAIN_GAP records: {}",
         b.undecoded_gap_records
     )?;
+    writeln!(out, "gap witness provenance (reason, provenance) -> count:")?;
+    if b.witness_provenance_counts.is_empty() {
+        writeln!(out, "  (none)")?;
+    }
+    for row in &b.witness_provenance_counts {
+        writeln!(
+            out,
+            "  ({}, {}) -> {} [witnesses {}]",
+            row.reason,
+            row.witness_provenance,
+            row.count,
+            if row.witnesses_admitted {
+                "admitted"
+            } else {
+                "excluded"
+            }
+        )?;
+    }
     writeln!(
         out,
-        "clock witness deltas (reason, opening-label, closing-label) -> count:"
+        "clock witness deltas (reason, provenance, opening-label, closing-label) -> count:"
     )?;
     if b.clock_witness_delta_counts.is_empty() {
         writeln!(out, "  (none)")?;
@@ -1529,8 +1624,12 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
     for row in &b.clock_witness_delta_counts {
         writeln!(
             out,
-            "  ({}, {:+}, {:+}) -> {}",
-            row.reason, row.opening_delta, row.closing_delta, row.count
+            "  ({}, {}, {:+}, {:+}) -> {}",
+            row.reason,
+            row.witness_provenance,
+            row.opening_delta,
+            row.closing_delta,
+            row.count
         )?;
     }
     writeln!(
@@ -1543,11 +1642,12 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
     for example in &b.clock_witness_examples {
         writeln!(
             out,
-            "  offset={} seq={} d{} {} (label={}, opening={}, closing={}) deltas=({:+},{:+})",
+            "  offset={} seq={} d{} {} [{}] (label={}, opening={}, closing={})              deltas=({:+},{:+})",
             example.offset,
             example.sequence,
             example.domain_id,
             example.reason,
+            example.witness_provenance,
             example.frame_label,
             example.opening_witness,
             example.closing_witness,
@@ -1769,42 +1869,112 @@ fn witness_delta(witness: u64, frame_label: i32) -> i128 {
     i128::from(witness) - i128::from(frame_label)
 }
 
-/// Every reason whose two tick witnesses are a real ENGINE-CLOCK OBSERVATION,
-/// so comparing them against the frame's label is evidence rather than
-/// arithmetic.
+/// Whether THIS RECORD's two tick witnesses are a real engine-clock
+/// observation, so comparing them against the frame's label is evidence rather
+/// than arithmetic.
 ///
-/// `HourLabelMismatch` belongs here and was missing: its entire content is an
-/// observed hour that disagrees with the label, and it would have been dropped
-/// from this table silently -- invisible in t17 only because t17 predates the
-/// reason, so the tool would have begun under-reporting the moment it became
-/// useful.
+/// KEYED ON THE RECORD'S OWN PROVENANCE FIRST, AND ON THE REASON ONLY AS A
+/// FALLBACK (lane FQ, 2026-08-08). The question was previously answered from
+/// the reason code alone, which is a property of the whole VOCABULARY and not
+/// of the row in hand; a producer that started stamping real observations under
+/// an excluded reason could not be believed, and one that restated the label
+/// under an included reason could not be caught. `DomainGapWitnessProvenance`
+/// is that missing fact, written by the producer at the mint site and
+/// cross-checked by the payload grammar against the witnesses it describes.
 ///
-/// `WorkerPanic` does not belong here either, for the same reason and found the
-/// same way: d81 maps its own panic path to that reason and fills both ticks
-/// from the label, so the reason does not establish provenance -- even though
-/// the ORDINARY panic path, `ReaderClockBracketGuard`'s drop during the unwind,
-/// does carry real bracket reads. Nothing on the wire separates the two
-/// producers, and the nonzero gate cannot: a label copy is nonzero.
+/// THE THREE ANSWERS, AND WHY EACH IS THE ONLY SAFE ONE:
 ///
-/// `SourceUnavailable` does NOT belong here, and briefly did. Its only producer
-/// is d81, which fills BOTH ticks from `game_hour_raw` -- the frame label
-/// itself -- and never consults its bracket reads. Every such row is therefore
-/// `(+0, +0)` by construction and can be nothing else. t17's 501 of them are a
-/// tautology, not 501 observations that the reader ran in its labelled hour,
-/// and presenting them beside the Torn witnesses would have manufactured
-/// corroboration this capture does not contain.
+///  * `BracketObserved` — INCLUDE. The producer states these ticks are hours a
+///    reader's own clock bracket observed, and `validate_domain_gap_payload`
+///    has already refused the claim if either is the wire's no-witness zero.
+///    This is what makes d81's `SourceUnavailable` rows evidence: a row whose
+///    delta is `(+0, +0)` now says the sweep really did run in its labelled
+///    hour, because a sweep that ran in H+1 would have published H+1 here.
+///  * `Unobserved` — EXCLUDE. A positive statement that no observation reached
+///    the mint site. Its ticks are required to be zero, so there is nothing to
+///    compare.
+///  * `Unstated` — FALL BACK TO THE REASON, which is exactly the old table and
+///    exactly the old behaviour. THIS IS THE LOAD-BEARING HALF: every capture
+///    sealed before the provenance field existed carries `Unstated` on every
+///    record, and reading those as observations is the manufactured
+///    corroboration this whole function exists to refuse. An old d81
+///    `SourceUnavailable` row is `Unstated`, is not in the fallback table, and
+///    stays excluded — it cannot masquerade as bracket-stamped, because the
+///    only way into the included set is a nonzero code no old producer ever
+///    wrote and no old decoder would have admitted.
 ///
-/// The payload grammar cannot rescue it either: `SOURCE_UNAVAILABLE` requires
-/// only that the two ticks are EQUAL, which a label copy satisfies, so nothing
-/// on the wire distinguishes an observed hour from a restated label for that
-/// reason. `ReaderSilent` and `ClockUnreadable` are required to carry zeros,
-/// and `Overrun`/`Backpressure` carry a coalesced RANGE rather than one frame's
-/// observation, so a delta against a single label is meaningless for all four.
+/// The fallback table itself is unchanged and its reasoning still stands:
+///
+///  * `Torn` and `HourLabelMismatch` are minted by reconciliation from
+///    `take_clock_brackets`, off real clock reads.
+///  * `WorkerPanic` is not, because d81 also maps its own panic path to that
+///    reason; nothing in an `Unstated` capture separates the two producers, and
+///    the nonzero gate cannot, since a label copy is nonzero.
+///  * `SourceUnavailable` is not, because in an `Unstated` capture its only
+///    producer is d81 filling BOTH ticks from `game_hour_raw`. t17's 501 of
+///    them are a tautology, not 501 observations.
+///  * `ReaderSilent` and `ClockUnreadable` are required to carry zeros, and
+///    `Overrun`/`Backpressure` carry a coalesced RANGE rather than one frame's
+///    observation, so a delta against a single label is meaningless for all
+///    four.
+///
+/// A CONSIDERED RESIDUAL, recorded so it is not rediscovered as a bug. Under
+/// `BracketObserved` this admits every reason, including the two coalesced-range
+/// ones, whose two ticks span several hours rather than witnessing one — so a
+/// delta against the single frame label would read oddly for them. It is left
+/// admitting them deliberately: no producer stamps `BracketObserved` on a
+/// coalesced range (both are minted by the host scheduler, which writes
+/// `Unstated`), and vetoing a provenance by reason would put the reason back in
+/// charge of provenance, which is the coupling this function exists to remove.
+/// A producer that ever wants to stamp a range is the right occasion to decide
+/// what its delta means.
+fn witnesses_are_a_clock_observation(
+    reason: DomainGapReason,
+    provenance: DomainGapWitnessProvenance,
+) -> bool {
+    match provenance {
+        DomainGapWitnessProvenance::BracketObserved => true,
+        DomainGapWitnessProvenance::Unobserved => false,
+        DomainGapWitnessProvenance::Unstated => is_clock_derived(reason),
+    }
+}
+
+/// The pre-provenance table, kept as the `Unstated` fallback and as nothing
+/// else. See [`witnesses_are_a_clock_observation`] for why each reason is in or
+/// out.
 fn is_clock_derived(reason: DomainGapReason) -> bool {
     matches!(
         reason,
         DomainGapReason::Torn | DomainGapReason::HourLabelMismatch
     )
+}
+
+fn provenance_name(provenance: DomainGapWitnessProvenance) -> &'static str {
+    provenance.wire_name()
+}
+
+/// The inclusion rule, re-asked by NAME for the report's own census.
+///
+/// It rebuilds the typed pair from the two strings and calls the SAME
+/// predicate the accounting called, rather than restating the rule: a report
+/// that described an admission policy the tool did not apply would be worse
+/// than one that described none. An unrecognised pair is reported as excluded,
+/// which is the fail-closed direction and unreachable while both names come
+/// from `reason_name`/`provenance_name`.
+fn admitted_by_name(reason: &str, provenance: &str) -> bool {
+    let Some(reason) = DomainGapReason::ALL
+        .into_iter()
+        .find(|candidate| reason_name(*candidate) == reason)
+    else {
+        return false;
+    };
+    let Some(provenance) = DomainGapWitnessProvenance::ALL
+        .into_iter()
+        .find(|candidate| provenance_name(*candidate) == provenance)
+    else {
+        return false;
+    };
+    witnesses_are_a_clock_observation(reason, provenance)
 }
 
 fn reason_name(reason: DomainGapReason) -> &'static str {
@@ -1820,7 +1990,10 @@ fn reason_name(reason: DomainGapReason) -> &'static str {
     }
 }
 
-fn gap_record_detail(gap: DomainGapRecordV1) -> GapRecordDetail {
+fn gap_record_detail(
+    gap: DomainGapRecordV1,
+    provenance: DomainGapWitnessProvenance,
+) -> GapRecordDetail {
     GapRecordDetail {
         part: match gap.part {
             compact_contract::DomainGapPart::State => "State",
@@ -1828,6 +2001,7 @@ fn gap_record_detail(gap: DomainGapRecordV1) -> GapRecordDetail {
             compact_contract::DomainGapPart::Both => "Both",
         },
         reason: reason_name(gap.reason),
+        witness_provenance: provenance_name(provenance),
         target_hour_raw: gap.target_hour_raw,
         range_start_hour_raw: gap.range_start_hour_raw,
         range_end_hour_raw: gap.range_end_hour_raw,
@@ -1968,6 +2142,272 @@ mod tests {
         let mut state = AuditState::default();
         scan_stream(&mut &stream[..], &mut state).expect("scan");
         finish_report(Path::new("synthetic"), state)
+    }
+
+    /// One frame carrying a single d81 `SourceUnavailable` gap, stamped with
+    /// `provenance`, whose ticks are `observed`.
+    ///
+    /// `observed` is a parameter and not derived from `hour`, because the whole
+    /// question this section answers is whether the two are the same value.
+    fn frame_with_d81_source_unavailable_gap(
+        sequence: &mut u64,
+        hour: i32,
+        observed: u64,
+        provenance: DomainGapWitnessProvenance,
+    ) -> Vec<u8> {
+        let payload = DomainGapRecordV1 {
+            part: compact_contract::DomainGapPart::State,
+            reason: DomainGapReason::SourceUnavailable,
+            target_hour_raw: hour,
+            range_start_hour_raw: hour,
+            range_end_hour_raw: hour,
+            tick_before: observed,
+            tick_after: observed,
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: 0,
+        }
+        .encode_with_witness_provenance(provenance)
+        .expect("the fixture gap must be one the wire can carry");
+        let mut out = record(
+            *sequence,
+            hour,
+            RC_PROBE_DOMAIN_ID,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &lane_wall_payload(&probe_units(Some((1, 68)), 0)),
+        );
+        *sequence += 1;
+        out.extend_from_slice(&record(
+            *sequence,
+            hour,
+            81,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            0,
+            &payload,
+        ));
+        *sequence += 1;
+        out.extend_from_slice(&record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        *sequence += 1;
+        out
+    }
+
+    /// A BRACKET-STAMPED `SourceUnavailable` row is evidence; the SAME bytes
+    /// without the stamp are not (lane FQ, 2026-08-08).
+    ///
+    /// This is the whole audit revision in one test, and it is deliberately run
+    /// over two streams that differ in EXACTLY ONE `u16` — the provenance word.
+    /// Everything else, including the witnesses, is identical, so nothing but
+    /// the stamp can be doing the work.
+    ///
+    /// The stamped row's witnesses are `HOUR_B` under a frame labelled `HOUR_A`:
+    /// a reader that failed inside a mismatched bracket, which is precisely the
+    /// shape that used to publish `(H, H)` and could not be told from a
+    /// tautology. It lands in the delta table at `(+1, +1)` — a real, nonzero
+    /// clock excursion the old tool could not have reported at all.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: keying the inclusion on the
+    /// reason again (the stamped row disappears); admitting `Unstated` as an
+    /// observation (the unstamped row appears, which is the manufactured
+    /// corroboration); or dropping the provenance from `WitnessExample` (the
+    /// report can no longer say why a row was believed).
+    #[test]
+    fn only_a_bracket_stamped_source_unavailable_row_is_read_as_an_observation() {
+        let observed = u64::try_from(HOUR_B).expect("fixture hour fits u64");
+
+        let mut sequence = 0u64;
+        let stamped = frame_with_d81_source_unavailable_gap(
+            &mut sequence,
+            HOUR_A,
+            observed,
+            DomainGapWitnessProvenance::BracketObserved,
+        );
+        let report = audit(&stamped);
+        assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
+        let b = &report.section_b_domain_gaps;
+        assert_eq!(
+            b.clock_witness_examples.len(),
+            1,
+            "a bracket-stamped SourceUnavailable row must reach the witness \
+             table: {:?}",
+            b.clock_witness_examples
+        );
+        assert_eq!(
+            b.clock_witness_examples[0].witness_provenance,
+            "bracket_observed"
+        );
+        assert_eq!(b.clock_witness_examples[0].opening_witness, observed);
+        assert_eq!(
+            (
+                b.clock_witness_delta_counts[0].opening_delta,
+                b.clock_witness_delta_counts[0].closing_delta
+            ),
+            (1, 1),
+            "and it must report the excursion it actually observed, not a \
+             comparison of the label with itself"
+        );
+        assert!(
+            b.witness_provenance_counts
+                .iter()
+                .any(|row| row.reason == "SourceUnavailable"
+                    && row.witness_provenance == "bracket_observed"
+                    && row.count == 1
+                    && row.witnesses_admitted),
+            "the census must say WHY the row was believed: {:?}",
+            b.witness_provenance_counts
+        );
+
+        // THE SAME BYTES, MINUS THE STAMP. This is an old capture: every record
+        // it holds was written before the provenance field existed, so it
+        // carries the reserved zero and must not be read as a claim.
+        let mut sequence = 0u64;
+        let unstamped = frame_with_d81_source_unavailable_gap(
+            &mut sequence,
+            HOUR_A,
+            observed,
+            DomainGapWitnessProvenance::Unstated,
+        );
+        let report = audit(&unstamped);
+        assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
+        let b = &report.section_b_domain_gaps;
+        assert!(
+            b.clock_witness_examples.is_empty()
+                && b.clock_witness_delta_counts.is_empty(),
+            "an unstated row must stay excluded -- believing it is exactly the \
+             corroboration the capture does not contain: {:?}",
+            b.clock_witness_examples
+        );
+        assert!(
+            b.witness_provenance_counts
+                .iter()
+                .any(|row| row.reason == "SourceUnavailable"
+                    && row.witness_provenance == "unstated"
+                    && row.count == 1
+                    && !row.witnesses_admitted),
+            "and it must still be COUNTED, with its exclusion stated: {:?}",
+            b.witness_provenance_counts
+        );
+
+        // And the two streams really are one field apart.
+        assert_eq!(stamped.len(), unstamped.len());
+        assert_eq!(
+            stamped
+                .iter()
+                .zip(unstamped.iter())
+                .filter(|(a, b)| a != b)
+                .count(),
+            1,
+            "the fixtures must differ in the provenance byte and nothing else, \
+             or this test is comparing two different captures"
+        );
+    }
+
+    /// The inclusion rule over the whole vocabulary, and the one shape a
+    /// producer must not be able to build.
+    ///
+    /// Swept over `ALL` rather than spot-checked, so a reason or provenance
+    /// added later has to be classified here instead of inheriting an answer.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: making `Unstated` or
+    /// `Unobserved` admit witnesses, or making `BracketObserved` depend on the
+    /// reason (which would put the reason back in charge of provenance).
+    #[test]
+    fn the_inclusion_rule_keys_on_provenance_and_never_manufactures_one() {
+        for reason in DomainGapReason::ALL {
+            assert!(
+                witnesses_are_a_clock_observation(
+                    reason,
+                    DomainGapWitnessProvenance::BracketObserved
+                ),
+                "{reason:?}: a producer's own bracket stamp is the fact this \
+                 tool asks for; the reason may not veto it"
+            );
+            assert!(
+                !witnesses_are_a_clock_observation(
+                    reason,
+                    DomainGapWitnessProvenance::Unobserved
+                ),
+                "{reason:?}: `Unobserved` is a statement that there is nothing \
+                 to compare"
+            );
+            assert_eq!(
+                witnesses_are_a_clock_observation(
+                    reason,
+                    DomainGapWitnessProvenance::Unstated
+                ),
+                is_clock_derived(reason),
+                "{reason:?}: an unstated row must be judged EXACTLY as the \
+                 pre-provenance tool judged it, or old captures change meaning"
+            );
+        }
+
+        // The dangerous row cannot be built at all: `Unobserved` requires the
+        // wire's zeros, so no producer can claim "nothing was observed" while
+        // shipping a reading, and no reading can be smuggled past the
+        // exclusion by mislabelling it.
+        let forgeable = DomainGapRecordV1 {
+            part: compact_contract::DomainGapPart::State,
+            reason: DomainGapReason::SourceUnavailable,
+            target_hour_raw: HOUR_A,
+            range_start_hour_raw: HOUR_A,
+            range_end_hour_raw: HOUR_A,
+            tick_before: 7,
+            tick_after: 7,
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: 0,
+        }
+        .encode_with_witness_provenance(DomainGapWitnessProvenance::Unobserved);
+        assert!(forgeable.is_err());
+    }
+
+    /// A capture sealed before the field existed decodes as `Unstated`.
+    ///
+    /// Built from RAW BYTES with the reserved word zeroed, not by asking the
+    /// current encoder for an `Unstated` record: the claim is about what the
+    /// OLD producer wrote, and an encoder that changed its default would still
+    /// satisfy a test that used it.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: moving the provenance off byte
+    /// 12, or assigning a nonzero code to `Unstated` — either would make every
+    /// sealed capture decode as a claim it never made.
+    #[test]
+    fn a_capture_written_before_the_field_existed_decodes_as_unstated() {
+        let mut wire = DomainGapRecordV1 {
+            part: compact_contract::DomainGapPart::State,
+            reason: DomainGapReason::SourceUnavailable,
+            target_hour_raw: HOUR_A,
+            range_start_hour_raw: HOUR_A,
+            range_end_hour_raw: HOUR_A,
+            tick_before: u64::try_from(HOUR_A).unwrap(),
+            tick_after: u64::try_from(HOUR_A).unwrap(),
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: 0,
+        }
+        .encode()
+        .expect("a t17-shaped d81 row");
+        // The old layout, restated: bytes 12..16 were one reserved word the old
+        // producer wrote as zero and the old decoder required to be zero.
+        wire[12..16].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            DomainGapRecordV1::decode_witness_provenance(&wire).unwrap(),
+            DomainGapWitnessProvenance::Unstated
+        );
+        assert!(!witnesses_are_a_clock_observation(
+            DomainGapReason::SourceUnavailable,
+            DomainGapWitnessProvenance::Unstated
+        ));
     }
 
     /// The build-start lateness is reduced against the mismatch counts it must
