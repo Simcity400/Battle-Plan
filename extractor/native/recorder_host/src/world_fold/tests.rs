@@ -7538,6 +7538,7 @@ fn domain47_navy_leaders_fold_into_canonical_admirals_without_losing_raw_fields(
                 role: "navy",
                 size: "large",
                 gfx: "GFX_portrait_POR_adm_a",
+                gfx_encoding: domain47_lane::PortraitIdentityEncoding::Utf8,
             },
         ),
         domain47_lane::CharacterLaneRow::UnitLeader(domain47_lane::UnitLeaderRow {
@@ -7607,6 +7608,13 @@ fn domain47_navy_leaders_fold_into_canonical_admirals_without_losing_raw_fields(
         commanders["admirals"][0]["portrait_gfx"],
         json!("GFX_portrait_POR_adm_a")
     );
+    // The join republishes the identity, so it republishes its provenance
+    // too — a `portrait_gfx` without one would be the same silent guess the
+    // sidecar row was taught to avoid, one join away.
+    assert_eq!(
+        commanders["admirals"][0]["portrait_gfx_encoding"],
+        json!("utf8")
+    );
     assert!(commanders["admirals"][0]
         .as_object()
         .unwrap()
@@ -7668,6 +7676,12 @@ fn domain47_portrait_rows_join_character_identity_and_replace_state() {
             role: "civilian",
             size: "large",
             gfx: "GFX_portrait_por_1002",
+            // NOT UTF-8 IN THE ENGINE. The recorder read this identity through
+            // its Windows-1252 fallback, and the snapshot has to say so: the
+            // decoded text is indistinguishable from a UTF-8 identity, so a
+            // consumer matching it against a mod's own files learns this here
+            // or not at all.
+            gfx_encoding: domain47_lane::PortraitIdentityEncoding::Windows1252,
         }),
     ];
     let mut stream = Vec::new();
@@ -7727,6 +7741,7 @@ fn domain47_portrait_rows_join_character_identity_and_replace_state() {
             "role": "civilian",
             "size": "large",
             "gfx": "GFX_portrait_por_1002",
+            "gfx_encoding": "windows1252",
         })
     );
     assert!(!second["provenance"]["collector"]["domain_problems"]

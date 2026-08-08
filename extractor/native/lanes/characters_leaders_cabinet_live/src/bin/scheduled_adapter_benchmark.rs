@@ -366,6 +366,7 @@ fn build_live_scale_fixture(
             role: if idx % 5 == 0 { "army" } else { "civilian" }.to_string(),
             size: "large".to_string(),
             gfx: format!("GFX_portrait_scheduled_{idx}"),
+            gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
         });
     }
 

@@ -211,6 +211,7 @@ pub use world::{
     AirRegionDamageRow, AirSuperiorityRow, AppointedAdvisorRow, BuildingStatus,
     ChannelCoverage, CharacterAceListContext, CharacterAcePortraitObservation,
     CharacterIdentityExactRow, CharacterPortraitExactRow,
+    CharacterPortraitIdentityEncoding,
     CharacterPresentationExact, CharacterPresentationExactView, CharacterRosterExactView,
     CharacterTraitNodeObservation, CharacterTraitNodeState, CharacterTraitTreeObservation,
     CombatParticipantEvent,

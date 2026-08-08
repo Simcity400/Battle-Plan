@@ -176,6 +176,10 @@ pub struct CharacterPortraitInput {
     pub role: String,
     pub size: String,
     pub gfx: String,
+    /// Which decoding produced `gfx` in the producer that read it. Carried,
+    /// never re-derived: the decoded text is identical under both encodings, so
+    /// nothing downstream can recover this from `gfx` alone.
+    pub gfx_encoding: compact::PortraitIdentityEncoding,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -592,6 +596,7 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
                 role: portrait.role.clone(),
                 size: portrait.size.clone(),
                 gfx: portrait.gfx.clone(),
+                gfx_encoding: portrait.gfx_encoding,
             });
         } else {
             stats.rejected_roots = stats.rejected_roots.saturating_add(1);
@@ -1112,6 +1117,7 @@ mod tests {
                 role: "civilian".to_string(),
                 size: "large".to_string(),
                 gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
+                gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
             }],
             ..AdapterInput::default()
         };

@@ -2343,7 +2343,14 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
     ),
     // `Domain47PortraitReaderReason` (lane FI): WHICH refusal point of the
     // SHARED `std::string` reader refused the non-empty identity — 0 no reader
-    // refusal, 1..=12 one point each. A code, like the two beside it.
+    // refusal, 1..=13 one point each. A code, like the two beside it.
+    //
+    // Code 11 (`TextNotDecodable`) CHANGED MEANING on 2026-08-08 (lane FP):
+    // the portrait identity is now read under a tolerant decode policy, so 11
+    // means the bytes failed BOTH UTF-8 and Windows-1252 rather than "the bytes
+    // are not ASCII". Code 13 (`DecodedTextOverMax`) is new and is reachable
+    // only through that fallback's expansion. Captures t37..t40b carry 11 with
+    // the old meaning.
     //
     // It ends in `_reason`, so `RAW_WORD_SUFFIXES` would land it on `LastValue`
     // anyway — and that is precisely why it needs an entry: this table is
@@ -2373,6 +2380,22 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
         Accumulation::PerFrame,
     ),
     ("domain47_prewarm_portrait_rows", Accumulation::PerFrame),
+    // How many of THIS frame's portrait rows carried an identity the producer
+    // decoded through its Windows-1252 fallback (owner ruling 2026-08-08). A
+    // published row count exactly like `portrait_rows` above, and summed the
+    // same way — the manifest total is "portrait identities that needed the
+    // fallback, across the capture", which is the figure that says how much of
+    // the world the tolerant decode recovered.
+    //
+    // NOT a code, despite the `_count` ending: `_count` is in no suffix list,
+    // so without this entry it would land on the `PerFrame` default and happen
+    // to be right for the wrong reason. Stated here because this table is the
+    // family's authority and a member left out of it has its class decided
+    // somewhere else.
+    (
+        "domain47_prewarm_portrait_cp1252_count",
+        Accumulation::PerFrame,
+    ),
     // The shadow walk's six counters. Per-walk observations, summed the way
     // the adapter row counters are, and meaningless without
     // `domain47_prewarm_shadow_walk_state` above.

@@ -1064,6 +1064,12 @@ mod tests {
             appointed_advisors_complete: true,
             appointed_advisors: Vec::new(),
             character_portraits: Vec::new(),
+            // PRE-EXISTING BUILD BREAK, found by lane FP and fixed in place:
+            // `family_gaps` was added to `CharacterRosterExactView` without
+            // this test fixture, so `cargo test -p game_ui` has not compiled
+            // since. Empty is the right value here — this fixture's roster
+            // declares every family observed.
+            family_gaps: Default::default(),
             unit_leaders: vec![UnitLeaderExactRow {
                 producer_ordinal: 0,
                 unit_leader_id: 7,
@@ -1393,6 +1399,7 @@ mod tests {
             role: "civilian".into(),
             size: "large".into(),
             gfx: "GFX_portrait_GER_test_civilian".into(),
+            gfx_encoding: Default::default(),
         });
         let gfx_doc = crate::paradox_text::parse_str(
             r#"spriteTypes = {

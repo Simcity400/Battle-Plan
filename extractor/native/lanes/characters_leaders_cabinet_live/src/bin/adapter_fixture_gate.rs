@@ -183,6 +183,7 @@ fn fixture_input(mem: &mut FakeMemory) -> AdapterInput {
             role: "civilian".to_string(),
             size: "large".to_string(),
             gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
+            gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
         }],
         ..AdapterInput::default()
     }

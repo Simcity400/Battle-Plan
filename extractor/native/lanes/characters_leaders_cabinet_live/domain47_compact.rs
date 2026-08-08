@@ -144,6 +144,74 @@ pub const UNIT_LEADER_NAVY: u8 = 2;
 pub const ROW_FLAG_AMBIGUOUS: u16 = 1;
 pub const ROW_FLAG_SKILL_PRESENT: u16 = 1 << 1;
 pub const ROW_FLAG_EXPERIENCE_PRESENT: u16 = 1 << 2;
+/// SET on a [`ROW_CHARACTER_PORTRAIT`] row whose `gfx` identity was NOT valid
+/// UTF-8 in the engine's memory and was decoded through the producer's
+/// Windows-1252 fallback.
+///
+/// # Why the provenance rides the row
+///
+/// The string in the table is the DECODED text either way, and the two
+/// decodings are indistinguishable from it: `caf\u{e9}` is `caf\u{e9}` whether
+/// the engine held `caf\xc3\xa9` or `caf\xe9`. A consumer that has to know
+/// which it was — anyone matching an identity against a mod's own files, or
+/// auditing how much of a world needed the fallback — cannot recover it from
+/// the payload, so the producer states it.
+///
+/// CLEAR means the identity's bytes WERE valid UTF-8, and that reading is
+/// sound for every stream ever produced: before the fallback existed the
+/// producer's strict reader admitted only bytes in `32..127`, so no payload has
+/// ever carried a non-UTF-8 identity without this flag.
+pub const ROW_FLAG_PORTRAIT_GFX_WINDOWS1252: u16 = 1 << 3;
+
+/// Every flag bit a [`ROW_CHARACTER_PORTRAIT`] row may carry.
+///
+/// A bit outside this mask has no defined meaning, so a portrait row carrying
+/// one is REFUSED rather than interpreted — the same rule
+/// [`SCHEMA_ALL_ASSIGNED`] applies to the header's schema word. Without it a
+/// future producer's flag would be silently dropped by today's decoder and the
+/// row would read as ordinary, which is exactly the silent guess the provenance
+/// flag exists to end.
+///
+/// SCOPED TO THE PORTRAIT ROW on purpose: it is the row family this rule was
+/// written for, and extending the same admission to the other seven kinds is a
+/// change to their contracts, not a side effect of this one.
+pub const ROW_FLAGS_ALL_ASSIGNED_CHARACTER_PORTRAIT: u16 = ROW_FLAG_PORTRAIT_GFX_WINDOWS1252;
+
+/// WHICH DECODING produced a portrait `gfx` identity, as carried by
+/// [`ROW_FLAG_PORTRAIT_GFX_WINDOWS1252`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PortraitIdentityEncoding {
+    /// The engine's bytes were valid UTF-8 (which includes every pure-ASCII
+    /// identity). The default, and what every identity published before the
+    /// fallback existed was.
+    #[default]
+    Utf8,
+    /// The engine's bytes were NOT valid UTF-8 and were decoded as
+    /// Windows-1252 by the producer.
+    Windows1252,
+}
+
+impl PortraitIdentityEncoding {
+    /// The wire spelling, for the snapshot sidecar and any other text surface.
+    /// Stable: a consumer may match on it.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Utf8 => "utf8",
+            Self::Windows1252 => "windows1252",
+        }
+    }
+
+    /// The inverse of [`Self::wire_name`]. `None` for a spelling nobody
+    /// assigned, so a consumer refuses it rather than defaulting it to `Utf8`
+    /// and publishing a provenance claim the producer never made.
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "utf8" => Some(Self::Utf8),
+            "windows1252" => Some(Self::Windows1252),
+            _ => None,
+        }
+    }
+}
 
 const CHARACTER_ROW_LEN: u8 = 20;
 const UNIT_LEADER_ROW_LEN: u8 = 42;
@@ -237,6 +305,10 @@ pub struct CharacterPortraitRow<'a> {
     pub role: &'a str,
     pub size: &'a str,
     pub gfx: &'a str,
+    /// Which decoding produced `gfx`. Encoded as
+    /// [`ROW_FLAG_PORTRAIT_GFX_WINDOWS1252`] in the row header's flag word, so
+    /// it costs no row bytes.
+    pub gfx_encoding: PortraitIdentityEncoding,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,6 +340,12 @@ pub struct Domain44GateSummary {
     pub advisor_roster_rows: u64,
     pub appointed_advisor_rows: u64,
     pub character_portrait_rows: u64,
+    /// The subset of `character_portrait_rows` whose `gfx` identity was decoded
+    /// through the producer's Windows-1252 fallback
+    /// ([`ROW_FLAG_PORTRAIT_GFX_WINDOWS1252`]). Zero on every payload written
+    /// before the fallback existed, and on every world whose portrait
+    /// identities are UTF-8.
+    pub character_portrait_windows1252_rows: u64,
     pub string_count: u64,
     pub string_bytes: u64,
     pub data_units_total: BTreeMap<&'static str, u64>,
@@ -349,6 +427,11 @@ pub enum DecodedDomain47Row {
         role: String,
         size: String,
         gfx: String,
+        /// Which decoding produced `gfx`, from
+        /// [`ROW_FLAG_PORTRAIT_GFX_WINDOWS1252`]. A payload written before the
+        /// flag existed decodes to [`PortraitIdentityEncoding::Utf8`], which is
+        /// what its producer's strict reader guaranteed.
+        gfx_encoding: PortraitIdentityEncoding,
     },
 }
 
@@ -612,11 +695,15 @@ fn encode_payload_inner(
             }
             CharacterLaneRow::CharacterPortrait(row) => {
                 counts.character_portraits = counts.character_portraits.saturating_add(1);
+                let flags = match row.gfx_encoding {
+                    PortraitIdentityEncoding::Utf8 => 0,
+                    PortraitIdentityEncoding::Windows1252 => ROW_FLAG_PORTRAIT_GFX_WINDOWS1252,
+                };
                 push_header(
                     &mut row_bytes,
                     ROW_CHARACTER_PORTRAIT,
                     CHARACTER_PORTRAIT_ROW_LEN,
-                    0,
+                    flags,
                 );
                 push_u32(&mut row_bytes, row.country_tag_db_id);
                 push_u32(&mut row_bytes, row.char_id);
@@ -1233,6 +1320,19 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 let size_sid = read_u32(payload, cursor + 16);
                 let gfx_sid = read_u32(payload, cursor + 20);
                 summary.character_portrait_rows = summary.character_portrait_rows.saturating_add(1);
+                // Same admission rule the row decoder applies, reported as a
+                // parse error rather than a hard stop so the gate still counts
+                // the rest of the payload.
+                let unassigned = flags & !ROW_FLAGS_ALL_ASSIGNED_CHARACTER_PORTRAIT;
+                if unassigned != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: row {row_index} character portrait carries unassigned flag bits {unassigned:#06x}"
+                    ));
+                }
+                if (flags & ROW_FLAG_PORTRAIT_GFX_WINDOWS1252) != 0 {
+                    summary.character_portrait_windows1252_rows =
+                        summary.character_portrait_windows1252_rows.saturating_add(1);
+                }
                 validate_country(&mut summary, offset, row_index, country, false);
                 validate_character(&mut summary, offset, row_index, char_id);
                 validate_required_string(
@@ -1618,12 +1718,26 @@ fn decode_payload_rows_checked(payload: &[u8]) -> Result<DecodedDomain47Payload,
             }
             ROW_CHARACTER_PORTRAIT => {
                 require_decode_len(kind, row_len, CHARACTER_PORTRAIT_ROW_LEN)?;
+                // An unassigned flag bit is a claim by a producer this decoder
+                // does not understand. Refused, not masked away: masking would
+                // silently publish the row as if the producer had said nothing.
+                let unassigned = flags & !ROW_FLAGS_ALL_ASSIGNED_CHARACTER_PORTRAIT;
+                if unassigned != 0 {
+                    return Err(format!(
+                        "domain47 character portrait row carries unassigned flag bits {unassigned:#06x}"
+                    ));
+                }
                 rows.push(DecodedDomain47Row::CharacterPortrait {
                     country_tag_db_id: read_u32(payload, cursor + 4),
                     char_id: read_u32(payload, cursor + 8),
                     role: decoded_required_string(&strings, read_u32(payload, cursor + 12))?,
                     size: decoded_required_string(&strings, read_u32(payload, cursor + 16))?,
                     gfx: decoded_required_string(&strings, read_u32(payload, cursor + 20))?,
+                    gfx_encoding: if (flags & ROW_FLAG_PORTRAIT_GFX_WINDOWS1252) != 0 {
+                        PortraitIdentityEncoding::Windows1252
+                    } else {
+                        PortraitIdentityEncoding::Utf8
+                    },
                 });
             }
             _ => return Err(format!("domain47 unknown row kind {kind}")),
@@ -1946,7 +2060,7 @@ fn summary_json(
     }
     units.push('}');
     format!(
-        "{{\"domain\":\"{}\",\"domain_id\":{},\"wrapped_record\":{},\"payload_bytes\":{},\"status_flags_or\":{},\"schema_flags_or\":{},\"row_count_total\":{},\"character_rows\":{},\"unit_leader_rows\":{},\"unit_leader_trait_rows\":{},\"country_leader_role_rows\":{},\"active_ruler_rows\":{},\"advisor_roster_rows\":{},\"appointed_advisor_rows\":{},\"character_portrait_rows\":{},\"string_count\":{},\"string_bytes\":{},\"data_units_total\":{},\"parse_errors\":{}}}",
+        "{{\"domain\":\"{}\",\"domain_id\":{},\"wrapped_record\":{},\"payload_bytes\":{},\"status_flags_or\":{},\"schema_flags_or\":{},\"row_count_total\":{},\"character_rows\":{},\"unit_leader_rows\":{},\"unit_leader_trait_rows\":{},\"country_leader_role_rows\":{},\"active_ruler_rows\":{},\"advisor_roster_rows\":{},\"appointed_advisor_rows\":{},\"character_portrait_rows\":{},\"character_portrait_windows1252_rows\":{},\"string_count\":{},\"string_bytes\":{},\"data_units_total\":{},\"parse_errors\":{}}}",
         json_escape(DOMAIN_NAME),
         DOMAIN_ID,
         wrapped_record,
@@ -1962,6 +2076,7 @@ fn summary_json(
         summary.advisor_roster_rows,
         summary.appointed_advisor_rows,
         summary.character_portrait_rows,
+        summary.character_portrait_windows1252_rows,
         summary.string_count,
         summary.string_bytes,
         units,
@@ -2247,6 +2362,7 @@ mod tests {
                 role: "army",
                 size: "large",
                 gfx: "GFX_portrait_SOV_georgy_zhukov",
+                gfx_encoding: PortraitIdentityEncoding::Utf8,
             }),
         ];
         let payload = encode_payload(
@@ -2299,6 +2415,174 @@ mod tests {
             u16::from_le_bytes(compact[22..24].try_into().unwrap()),
             COMPACT_RECORD_TYPE_DOMAIN_DATA
         );
+    }
+
+    /// THE PORTRAIT IDENTITY'S PROVENANCE SURVIVES THE WIRE, PER ROW.
+    ///
+    /// The producer decodes a non-UTF-8 engine identity as Windows-1252 and
+    /// says that it did; the string in the table is the decoded text either
+    /// way, so a consumer that has to know which decoding produced it can only
+    /// learn that from this flag. Three rows go in — UTF-8, Windows-1252, UTF-8
+    /// — and all three must come back with the encoding they went in with, in
+    /// order.
+    ///
+    /// The encoded ROW LENGTH is unchanged: the flag lives in the row header's
+    /// existing flag word, which every portrait row has always carried as zero.
+    ///
+    /// WHAT PRODUCTION CHANGE WOULD MAKE THIS FAIL: dropping the flag in the
+    /// encoder (every row decodes as `Utf8`), setting it unconditionally,
+    /// reading it from the wrong bit, or widening the portrait row to carry the
+    /// provenance as a payload field without updating both sides.
+    #[test]
+    fn a_portrait_identity_carries_its_decoding_across_the_wire() {
+        let rows = vec![
+            CharacterLaneRow::CharacterPortrait(CharacterPortraitRow {
+                country_tag_db_id: 3,
+                char_id: 2458,
+                role: "army",
+                size: "large",
+                gfx: "GFX_portrait_SOV_georgy_zhukov",
+                gfx_encoding: PortraitIdentityEncoding::Utf8,
+            }),
+            CharacterLaneRow::CharacterPortrait(CharacterPortraitRow {
+                country_tag_db_id: 3,
+                char_id: 2459,
+                role: "navy",
+                size: "small",
+                gfx: "GFX_portrait_caf\u{e9}",
+                gfx_encoding: PortraitIdentityEncoding::Windows1252,
+            }),
+            CharacterLaneRow::CharacterPortrait(CharacterPortraitRow {
+                country_tag_db_id: 3,
+                char_id: 2460,
+                role: "civilian",
+                size: "large",
+                gfx: "GFX_portrait_plain",
+                gfx_encoding: PortraitIdentityEncoding::Utf8,
+            }),
+        ];
+        let payload = encode_payload(11, 0, SCHEMA_ROOTS_VALIDATED, &rows);
+        let decoded = decode_payload_rows(0, &payload).expect("payload must decode");
+        let encodings: Vec<PortraitIdentityEncoding> = decoded
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                DecodedDomain47Row::CharacterPortrait { gfx_encoding, .. } => Some(*gfx_encoding),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            encodings,
+            vec![
+                PortraitIdentityEncoding::Utf8,
+                PortraitIdentityEncoding::Windows1252,
+                PortraitIdentityEncoding::Utf8,
+            ],
+            "each row must come back with the decoding it was encoded with"
+        );
+        assert_eq!(
+            decoded.rows[1],
+            DecodedDomain47Row::CharacterPortrait {
+                country_tag_db_id: 3,
+                char_id: 2459,
+                role: "navy".to_string(),
+                size: "small".to_string(),
+                gfx: "GFX_portrait_caf\u{e9}".to_string(),
+                gfx_encoding: PortraitIdentityEncoding::Windows1252,
+            }
+        );
+
+        // The gate summary sees the same census.
+        let summary = decode_payload(0, &payload);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert_eq!(summary.character_portrait_rows, 3);
+        assert_eq!(summary.character_portrait_windows1252_rows, 1);
+
+        // AND THE FLAG IS THE ONLY DIFFERENCE. The same rows all-UTF-8 encode
+        // to a payload of the same length, so the provenance costs no row bytes
+        // and cannot have been smuggled into the payload.
+        let utf8_rows: Vec<CharacterLaneRow> = rows
+            .iter()
+            .map(|row| match row {
+                CharacterLaneRow::CharacterPortrait(portrait) => {
+                    CharacterLaneRow::CharacterPortrait(CharacterPortraitRow {
+                        gfx_encoding: PortraitIdentityEncoding::Utf8,
+                        ..portrait.clone()
+                    })
+                }
+                other => other.clone(),
+            })
+            .collect();
+        let utf8_payload = encode_payload(11, 0, SCHEMA_ROOTS_VALIDATED, &utf8_rows);
+        assert_eq!(utf8_payload.len(), payload.len());
+        assert_ne!(
+            utf8_payload, payload,
+            "the two payloads must differ in the flag word, or the flag is not \
+             being written at all"
+        );
+        assert_eq!(
+            decode_payload(0, &utf8_payload).character_portrait_windows1252_rows,
+            0
+        );
+    }
+
+    /// AN UNASSIGNED PORTRAIT ROW FLAG IS REFUSED, not masked away.
+    ///
+    /// A bit this decoder does not understand is a claim by a producer it does
+    /// not understand. Dropping it would publish the row as if the producer had
+    /// said nothing — which is exactly how the provenance flag itself would
+    /// have been lost, silently, by any decoder written before it existed.
+    ///
+    /// WHAT PRODUCTION CHANGE WOULD MAKE THIS FAIL: masking the flag word to
+    /// the assigned bits instead of refusing, or forgetting to widen
+    /// `ROW_FLAGS_ALL_ASSIGNED_CHARACTER_PORTRAIT` when a new bit is assigned
+    /// (the new bit's own round-trip test would then fail here first).
+    #[test]
+    fn a_portrait_row_with_an_unassigned_flag_bit_is_refused() {
+        let rows = vec![CharacterLaneRow::CharacterPortrait(CharacterPortraitRow {
+            country_tag_db_id: 3,
+            char_id: 2458,
+            role: "army",
+            size: "large",
+            gfx: "GFX_portrait_SOV_georgy_zhukov",
+            gfx_encoding: PortraitIdentityEncoding::Utf8,
+        })];
+        let payload = encode_payload(11, 0, SCHEMA_ROOTS_VALIDATED, &rows);
+        // The row block starts after the header and the string table; the
+        // string-table byte count is the header word at offset 20.
+        let string_bytes = u32::from_le_bytes(payload[20..24].try_into().unwrap()) as usize;
+        let row_start = HEADER_LEN + string_bytes;
+        assert_eq!(payload[row_start], ROW_CHARACTER_PORTRAIT);
+        // The clean payload decodes, so the flag word is the only thing the
+        // surgery below changes.
+        assert!(decode_payload_rows(0, &payload).is_ok());
+
+        // Bit 0 means something on ANOTHER row kind (`ROW_FLAG_AMBIGUOUS` on an
+        // active-ruler row) and bit 15 means nothing anywhere. Neither is
+        // assigned on a portrait row, and the rule is about THIS row's
+        // vocabulary, so both must refuse.
+        for bit in [1u16, 1u16 << 15] {
+            assert_eq!(
+                bit & ROW_FLAGS_ALL_ASSIGNED_CHARACTER_PORTRAIT,
+                0,
+                "the fixture bit must be unassigned for a portrait row"
+            );
+            let mut tampered = payload.clone();
+            tampered[row_start + 2..row_start + 4].copy_from_slice(&bit.to_le_bytes());
+            let error = decode_payload_rows(0, &tampered)
+                .expect_err("an unassigned portrait flag bit must be refused");
+            assert!(
+                error.iter().any(|line| line.contains("unassigned flag bits")),
+                "{error:?}"
+            );
+            assert!(
+                decode_payload(0, &tampered)
+                    .parse_errors
+                    .iter()
+                    .any(|line| line.contains("unassigned flag bits")),
+                "the offline gate must report it too"
+            );
+        }
     }
 
     #[test]
@@ -2767,6 +3051,7 @@ mod tests {
                 role: "navy",
                 size: "large",
                 gfx: "gfx/leaders/SOV/portrait_sov_iosif_stalin.dds",
+                gfx_encoding: PortraitIdentityEncoding::Utf8,
             }),
         ]
     }

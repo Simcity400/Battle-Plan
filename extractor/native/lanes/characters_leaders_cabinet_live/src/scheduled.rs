@@ -414,6 +414,7 @@ mod tests {
                 role: "civilian".to_string(),
                 size: "large".to_string(),
                 gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
+                gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
             }],
         };
         let read = read_native_scheduled_frame(
@@ -819,6 +820,7 @@ mod tests {
                 role: "civilian".to_string(),
                 size: "large".to_string(),
                 gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
+                gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
             }],
         };
         let frame_input = NativeFrameInput {
@@ -950,6 +952,7 @@ mod tests {
             role: "civilian".to_string(),
             size: "large".to_string(),
             gfx: "GFX_portrait_ENG_maxwell_aitken".to_string(),
+            gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
         });
         assert_eq!(cache.stable_root_count(), 1);
         assert!(cache.has_stable_roots());
