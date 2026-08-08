@@ -60,13 +60,15 @@
 //! measured against the v2 path on real captures.
 
 use std::collections::BTreeMap;
-use std::ops::Bound::{Excluded, Included, Unbounded};
 
 use snapshot::canon_value::{key_cmp, CanonValue};
 use snapshot::sha256::Sha256;
 
+mod grains;
 pub mod intern;
 pub use intern::KeyRef;
+
+use grains::GrainStore;
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -116,10 +118,11 @@ impl Seg {
 /// Equality is ADDRESS equality, deliberately delegated to [`Ord`].
 ///
 /// A derived `PartialEq` would compare the escaped spelling while `Ord` compares
-/// the decoded text, and the two would disagree on `a` versus `a`. A
-/// `BTreeMap` keyed on such a type is a trap: it looks up by `Ord` and every
-/// other caller reasons by `==`, so one address would be two keys to half the
-/// code and one key to the other half.
+/// the decoded text, and the two would disagree on `a` versus `a`. Any
+/// container keyed on such a type is a trap: it looks up by one of them while
+/// every other caller reasons by the other, so one address would be two keys to
+/// half the code and one key to the other half. [`grains`] depends on the two
+/// agreeing twice over -- its order is `Ord` and its index confirms with `==`.
 impl PartialEq for Seg {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
@@ -535,7 +538,16 @@ pub struct SectionState {
     /// iterator, no `entry`, and no `IndexMut`: the transaction is the only way
     /// in, which is what makes "every change is journalled" a property of the
     /// type rather than of the caller's discipline.
-    grains: BTreeMap<Path, Grain>,
+    ///
+    /// A dense slot table with a hash index and a separately maintained
+    /// canonical order, rather than the `BTreeMap` it was: an address lookup is
+    /// the mutation path's whole traffic with the state, and a comparison-
+    /// ordered container answers it in ~28 pointer-chasing key comparisons on
+    /// the corpus's largest section. See [`grains`] for the order argument --
+    /// the sequence this store iterates in is `<[Seg]>::cmp` ascending, which
+    /// is the order the map was keyed on and the one the projection and the
+    /// delta encoding require.
+    grains: GrainStore,
     accumulator: Accumulator,
     /// What every address touched this hour held when the hour OPENED: its
     /// stored spelling and digest, or `None` if nothing stood there.
@@ -567,24 +579,6 @@ pub struct SectionState {
     /// Scratch for the upsert half of [`HourTxn::commit`], kept across hours for
     /// the same reason `hour_touched` is.
     commit_upserts: Vec<u8>,
-    /// Has this section ever seen an ESCAPED member name, in a stored address or
-    /// in an incoming one?
-    ///
-    /// This is what licenses `install`'s one-descent path. A REKEY -- an address
-    /// arriving under a different escaped spelling of the name it already stands
-    /// under -- needs the incoming spelling in hand to replace the stored key,
-    /// and the one-descent path has given the incoming address away to
-    /// `BTreeMap::entry`. Two bodies can only denote one address while spelling
-    /// it differently if at least one of them carries an escape, so a section in
-    /// which no escaped name has ever appeared -- on EITHER side, because the
-    /// stored side could be the escaped one -- cannot rekey. Once one has, the
-    /// section falls back to the two-descent path permanently and behaves
-    /// exactly as it did before.
-    ///
-    /// It is set from the INCOMING path on every mutation, and a stored escaped
-    /// name can only have got there through such a mutation, so the flag is
-    /// already true whenever either side could be escaped.
-    may_respell: bool,
     stats: MutationStats,
     /// Set when a transaction with pending changes was dropped instead of
     /// committed, or when a revision counter overflowed. A poisoned section
@@ -601,14 +595,13 @@ impl SectionState {
         Self {
             spec,
             kind,
-            grains: BTreeMap::new(),
+            grains: GrainStore::new(),
             accumulator: Accumulator::default(),
             hour_touched: Vec::new(),
             hour_root_baseline: None,
             revision: 0,
             scratch: Vec::with_capacity(128),
             commit_upserts: Vec::new(),
-            may_respell: false,
             stats: MutationStats::default(),
             poison: None,
         }
@@ -652,7 +645,9 @@ impl SectionState {
         self.hour_root_baseline = None;
     }
     pub fn grain(&self, path: &[Seg]) -> Option<&Grain> {
-        self.grains.get(path)
+        self.grains
+            .get_slot(path)
+            .map(|slot| self.grains.grain_of(slot))
     }
 
     /// The grain at `path` together with the address it is STORED under.
@@ -662,19 +657,24 @@ impl SectionState {
     /// that nothing had changed while the projection kept writing the old
     /// spelling.
     pub fn grain_entry(&self, path: &[Seg]) -> Option<(&Path, &Grain)> {
-        self.grains.get_key_value(path)
+        self.grains
+            .get_slot(path)
+            .map(|slot| (self.grains.path_of(slot), self.grains.grain_of(slot)))
     }
 
     /// Every address the state holds, in canonical order. Read-only: a caller
     /// that wants to change one has to go through a transaction.
     pub fn grain_paths(&self) -> impl Iterator<Item = &Path> {
-        self.grains.keys()
+        self.grains.iter().map(|(path, _)| path)
     }
 
     /// Bytes of grain payload retained. The state's own accounting, so the
     /// memory question can be answered without trusting a process-level number.
     pub fn retained_grain_bytes(&self) -> u64 {
-        self.grains.values().map(|g| g.bytes.len() as u64).sum()
+        self.grains
+            .iter()
+            .map(|(_, grain)| grain.bytes.len() as u64)
+            .sum()
     }
 
     /// Bytes of grain ADDRESSES retained -- the paths' own heap.
@@ -686,10 +686,7 @@ impl SectionState {
     /// [`intern::retained_bytes`] rather than counted here per section -- adding
     /// it in would charge one copy of the vocabulary to each of the 39 sections.
     pub fn retained_path_bytes(&self) -> u64 {
-        self.grains
-            .keys()
-            .map(|path| (path.len() * std::mem::size_of::<Seg>()) as u64)
-            .sum()
+        self.grains.retained_path_bytes()
     }
 
     /// Bytes the section retains BESIDE its grains and their addresses: the
@@ -704,11 +701,40 @@ impl SectionState {
     /// accumulator introduced; `hour_touched` was retained before either and was
     /// not being counted either, so it is counted here rather than left out on
     /// the grounds that it is somebody else's omission.
+    ///
+    /// The grain store's own overhead is added for the same reason and is the
+    /// same kind of thing: its hash index, its two order arrays and its free
+    /// list are held across hours on purpose, and so is every slot the table
+    /// has reserved that no grain is standing in. The slots that DO hold a
+    /// grain are not counted here -- the driver's per-grain overhead constant
+    /// charges those -- so nothing is counted twice. See
+    /// [`grains::GrainStore::retained_overhead_bytes`].
     pub fn retained_scratch_bytes(&self) -> u64 {
         (self.commit_upserts.capacity()
             + self.scratch.capacity()
             + self.hour_touched.capacity() * std::mem::size_of::<(Path, Option<Before>)>())
             as u64
+            + self.grains.retained_overhead_bytes()
+    }
+
+    /// The store's neighbour queries, so a test can compare them against the
+    /// `BTreeMap` range they replaced. `check_path` is the only caller in
+    /// production and it consumes the answer rather than returning it.
+    #[cfg(test)]
+    pub(crate) fn first_at_or_after_for_test(&self, path: &[Seg]) -> Option<Path> {
+        self.grains.first_at_or_after(path).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_before_for_test(&self, path: &[Seg]) -> Option<Path> {
+        self.grains.last_before(path).cloned()
+    }
+
+    /// `(rows, live, tombstoned, free)` in the grain store's slot table. See
+    /// [`grains::GrainStore::accounting`].
+    #[cfg(test)]
+    pub(crate) fn slot_accounting_for_test(&self) -> (usize, usize, usize, usize) {
+        self.grains.accounting()
     }
 
     /// A commitment to the section's CONTENT: its root kind and the set of
@@ -735,7 +761,7 @@ impl SectionState {
     pub fn recomputed_state_root(&self) -> [u8; 32] {
         let mut accumulator = Accumulator::default();
         let mut scratch = Vec::with_capacity(128);
-        for (path, grain) in &self.grains {
+        for (path, grain) in self.grains.iter() {
             // From the path and the digest, NOT from `grain.contribution`. The
             // cached term is part of what this is disbelieving: a contribution
             // computed from the wrong path or a superseded digest would leave a
@@ -864,21 +890,23 @@ impl SectionState {
         // An ancestor holding a grain would be a value where this path needs a
         // container.
         for depth in 1..path.len() {
-            if self.grains.contains_key(&path[..depth]) {
+            if self.grains.get_slot(&path[..depth]).is_some() {
                 return Err(FoldV3Error::new(
                     "a grain already stands at an ancestor of this path",
                 ));
             }
         }
-        // And a descendant would be a container where this path needs a value.
+        // The three remaining questions are all about the addresses either side
+        // of this one, so they are asked ONCE. This runs on every newly
+        // addressed grain, the corpus installs thousands an hour, and each
+        // order query is a chain of random reads into the slot table.
         //
-        // The ranges borrow `path` as a slice rather than cloning it into a
-        // `Vec`. This runs on every installed grain, and the corpus installs
-        // ~18,000 an hour, so two allocations here would be two allocations
-        // there -- and they would land inside the very region this prototype
-        // exists to price.
-        if let Some((candidate, _)) = self.grains.range::<[Seg], _>((Included(path), Unbounded)).next()
-        {
+        // The query borrows `path` as a slice rather than cloning it into a
+        // `Vec`, for the same reason: an allocation here would be an allocation
+        // there, inside the very region this prototype exists to price.
+        let (before, after) = self.grains.neighbours(path);
+        // A descendant would be a container where this path needs a value.
+        if let Some(candidate) = after {
             if candidate.len() > path.len() && candidate[..path.len()] == *path {
                 return Err(FoldV3Error::new(
                     "a grain already stands beneath this path",
@@ -888,25 +916,14 @@ impl SectionState {
         // Siblings must agree on how their container addresses them, and
         // checking the two immediate NEIGHBOURS is enough to know it.
         //
-        // Every path sharing a prefix occupies one contiguous run of the map,
+        // Every path sharing a prefix occupies one contiguous run of the order,
         // because the order is lexicographic. Within such a run, `Seg::cmp` puts
         // every name before every ordinal, so a container addressed both ways
         // would have its names and its ordinals in two adjacent blocks -- and an
         // incoming path lands either at that boundary or with a neighbour that
         // is already on the wrong side of it. A disagreement therefore cannot
         // hide several entries away while both neighbours agree.
-        let mut neighbours = self
-            .grains
-            .range::<[Seg], _>((Unbounded, Excluded(path)))
-            .next_back()
-            .into_iter()
-            .map(|(candidate, _)| candidate)
-            .chain(
-                self.grains
-                    .range::<[Seg], _>((Included(path), Unbounded))
-                    .next()
-                    .map(|(candidate, _)| candidate),
-            );
+        let mut neighbours = before.into_iter().chain(after);
         neighbours.try_for_each(|candidate| {
             let shared = candidate
                 .iter()
@@ -926,8 +943,8 @@ impl SectionState {
     ///
     /// `before` is what the caller's own lookup already found there, passed in
     /// rather than looked up again: `install` and `erase` both have to probe the
-    /// grain anyway, and probing twice per mutation is one `BTreeMap` descent
-    /// per mutation spent re-deriving something the caller is holding.
+    /// grain anyway, and probing twice per mutation is a whole index probe per
+    /// mutation spent re-deriving something the caller is holding.
     /// Appended unconditionally: a second record for one address inside one hour
     /// is discarded at commit, where the log is already being sorted, instead of
     /// being prevented here at the cost of a lookup on every mutation.
@@ -935,173 +952,35 @@ impl SectionState {
         self.hour_touched.push((path.to_vec(), before));
     }
 
+    /// Install `bytes` at `path`.
+    ///
+    /// ONE probe of the state, from which everything below is decided: what
+    /// stands at this address, under which spelling, whether it already holds
+    /// these bytes, and what has to be retracted from the state root. That was
+    /// the intent before the store was dense too, but a `BTreeMap` could not
+    /// keep it: a lookup that hands back a position cannot also let
+    /// `check_path` read the map, and `BTreeMap::insert` keeps the ORIGINAL key
+    /// when the new one compares equal, so a respelling had to be removed
+    /// before it could be replaced. The fast/general split and the sticky
+    /// `may_respell` flag that routed between them existed for those two
+    /// reasons, and the store having slot numbers instead of tree positions
+    /// removes both: the slot survives `check_path`, and a respelling is
+    /// written over the slot's own `path` field.
+    ///
+    /// The retraction is addressed by the spelling the grain was ADDED under.
+    /// Retracting under the incoming spelling would subtract a different
+    /// contribution and leave the root silently wrong, because the spelling is
+    /// inside the hash -- which is exactly why the contribution is carried on
+    /// the grain and not recomputed here from `path`.
     fn install(&mut self, path: Path, bytes: Vec<u8>) -> Result<bool, FoldV3Error> {
-        // A rekey needs the INCOMING spelling after the state has been probed,
-        // and the one-descent path below hands that spelling to
-        // `BTreeMap::entry`. See `may_respell`: only an escaped name can make
-        // two spellings one address, and the flag is sticky, so a section that
-        // has never seen one takes the fast path and one that has never leaves
-        // the original.
-        if !self.may_respell {
-            if path
-                .iter()
-                .any(|seg| matches!(seg, Seg::Key(name) if !name.plain()))
-            {
-                self.may_respell = true;
-            } else {
-                return self.install_unrespellable(path, bytes);
-            }
-        }
-        self.install_general(path, bytes)
-    }
-
-    /// [`Self::install`] where no address in this section can have two
-    /// spellings, which is every address in every capture measured.
-    ///
-    /// The whole point is the ONE map descent. `BTreeMap::entry` hands back the
-    /// stored key and a mutable value together, so an address that already
-    /// stands is read, compared and overwritten in a single traversal, where
-    /// `get_key_value` followed by `insert` walked the tree twice. On the
-    /// corpus's largest section a descent is ~28 key comparisons over a
-    /// 105,000-entry map, and the per-mutation constant is dominated by those,
-    /// so the second traversal was most of a microsecond for a position already
-    /// known.
-    ///
-    /// A NEW address still costs two: `check_path` has to read the map and
-    /// cannot do so while the entry holds it, so the entry is dropped and the
-    /// general path finishes the job -- but it is told the address is absent, so
-    /// it does not re-descend to learn what this descent already found. That is
-    /// the same two the old code paid, so nothing regresses.
-    fn install_unrespellable(&mut self, path: Path, bytes: Vec<u8>) -> Result<bool, FoldV3Error> {
-        use std::collections::btree_map::Entry;
         self.stats.calls += 1;
-        // Split the borrow by hand: the entry keeps `grains` for the whole
-        // block, and everything the update touches is a different field.
-        // `bump`, `remember` and the accumulator are inlined here for that
-        // reason and for no other; their contracts are unchanged and their
-        // ORDER is the same one `install_general` documents.
-        let Self {
-            grains,
-            accumulator,
-            hour_touched,
-            revision,
-            scratch,
-            stats,
-            poison,
-            ..
-        } = self;
-        let mut slot = match grains.entry(path) {
-            Entry::Occupied(slot) => slot,
-            // Not here: fall back to the general path, which validates the new
-            // address before it installs one. The entry is dropped first, so
-            // `check_path` may read the map.
-            Entry::Vacant(slot) => {
-                let path = slot.into_key();
-                // The call is already counted, and the descent that reached this
-                // vacancy is the probe `install_body` would otherwise make, so
-                // neither is repeated.
-                return self.install_body(path, bytes, true);
-            }
-        };
-        {
-            let existing = slot.get();
-            // Bytes, not digests. See `install_general`.
-            if existing.bytes == bytes {
-                stats.no_ops += 1;
-                return Ok(false);
-            }
-        }
-        // The stored key and the incoming one are the same bytes -- no address
-        // in this section has two spellings -- so the encoding, and therefore
-        // the accumulator contribution, may be taken from either.
-        let digest = Sha256::digest(&bytes);
-        let contribution = Accumulator::contribution(slot.key(), &digest, scratch);
-        let next = match revision.checked_add(1) {
-            Some(next) => next,
-            None => {
-                // Poisoning empties the section, and `grains` is borrowed here,
-                // so the flag is set and the emptying is done by the caller-side
-                // helper once the borrow has ended.
-                let reason = "section revision counter overflowed".to_string();
-                *poison = Some(reason.clone());
-                drop(slot);
-                self.empty_for_poison();
-                return Err(FoldV3Error::new(reason));
-            }
-        };
-        *revision = next;
-        hour_touched.push((
-            slot.key().clone(),
-            Some(Before {
-                // Unreachable in this path by construction: a respelling needs
-                // an escaped name and this section has never seen one.
-                spelling: None,
-                digest: slot.get().digest,
-            }),
-        ));
-        accumulator.remove(slot.get().contribution);
-        accumulator.add(contribution);
-        stats.upserts += 1;
-        stats.grain_bytes_written += bytes.len() as u64;
-        *slot.get_mut() = Grain {
-            bytes,
-            digest,
-            rev: next,
-            contribution,
-        };
-        Ok(true)
-    }
-
-    /// Empty a section whose poison flag has already been set.
-    fn empty_for_poison(&mut self) {
-        self.grains.clear();
-        self.accumulator = Accumulator::default();
-        self.hour_touched.clear();
-        self.hour_root_baseline = None;
-    }
-
-    /// [`Self::install_body`], counting the API call. The original two-descent
-    /// path, unchanged, and the one every rekey-capable section uses.
-    fn install_general(&mut self, path: Path, bytes: Vec<u8>) -> Result<bool, FoldV3Error> {
-        self.stats.calls += 1;
-        self.install_body(path, bytes, false)
-    }
-
-    /// `already_probed_absent` says the caller has ALREADY descended to this
-    /// address and found nothing there -- which the one-descent path has, on
-    /// its way to a vacant entry. Passing it is what keeps a new address at two
-    /// descents rather than three; passing it wrongly would skip the retraction
-    /// of a contribution that is still in the accumulator, which
-    /// `recomputed_state_root` checks every hour in the driver and in the tests.
-    fn install_body(
-        &mut self,
-        path: Path,
-        bytes: Vec<u8>,
-        already_probed_absent: bool,
-    ) -> Result<bool, FoldV3Error> {
-        // ONE probe of the state, from which everything below is decided: what
-        // stands at this address, under which spelling, whether it already holds
-        // these bytes, and what has to be retracted from the state root.
-        //
-        // The retraction is addressed by the spelling the grain was ADDED under.
-        // Retracting under the incoming spelling would subtract a different
-        // contribution and leave the root silently wrong, because the spelling
-        // is inside the hash -- which is exactly why the contribution is carried
-        // on the grain and not recomputed here from `path`.
         let mut rekey = false;
         let mut retract: Option<[u64; 4]> = None;
         let mut before: Option<Before> = None;
-        let probe = if already_probed_absent {
-            debug_assert!(
-                !self.grains.contains_key(&path),
-                "a caller claimed an address is absent that is not"
-            );
-            None
-        } else {
-            self.grains.get_key_value(&path)
-        };
-        let known_address = if let Some((stored_path, existing)) = probe {
-            rekey = same_address_other_spelling(stored_path, &path);
+        let probe = self.grains.get_slot(&path);
+        let known_address = if let Some(slot) = probe {
+            rekey = same_address_other_spelling(self.grains.path_of(slot), &path);
+            let existing = self.grains.grain_of(slot);
             // Bytes, not digests. A digest comparison would answer this question
             // through a hash of the incoming value; comparing the bytes answers
             // it directly, costs one memcmp over the changed grain, removes the
@@ -1112,9 +991,10 @@ impl SectionState {
                 return Ok(false);
             }
             retract = Some(existing.contribution);
+            let digest = existing.digest;
             before = Some(Before {
-                spelling: rekey.then(|| stored_path.clone()),
-                digest: existing.digest,
+                spelling: rekey.then(|| self.grains.path_of(slot).clone()),
+                digest,
             });
             true
         } else {
@@ -1128,9 +1008,9 @@ impl SectionState {
         // installed, and none of those facts can have moved since: the set has
         // not changed, the shape is fixed for the section's lifetime, and
         // `set_kind` refuses every root kind that would contradict the grains.
-        // Re-deriving them is five `BTreeMap` descents per mutation for an
-        // answer already known. A REKEY does change the stored spelling, so it
-        // is checked like a new address.
+        // Re-deriving them is five index probes and three order queries per
+        // mutation for an answer already known. A REKEY does change the stored
+        // spelling, so it is checked like a new address.
         if !known_address || rekey {
             self.check_path(&path)?;
         }
@@ -1146,23 +1026,22 @@ impl SectionState {
         self.stats.upserts += 1;
         self.stats.grain_bytes_written += bytes.len() as u64;
         self.accumulator.add(contribution);
-        if rekey {
-            // `BTreeMap::insert` keeps the ORIGINAL key when the new one
-            // compares equal, so an escaped respelling has to be removed before
-            // it can be replaced, or the projection would keep writing the old
-            // spelling. The DELTA carries whatever spelling stands at commit,
-            // because it is derived from the state and not accumulated.
-            self.grains.remove(&path);
+        let grain = Grain {
+            bytes,
+            digest,
+            rev: revision,
+            contribution,
+        };
+        match probe {
+            // A REKEY writes the incoming spelling over the slot's own `path`.
+            // The address is unchanged by definition, so the slot does not move
+            // in the order and its index bucket does not change -- the store
+            // hashes the address, not the spelling. The DELTA carries whatever
+            // spelling stands at commit, because it is derived from the state
+            // and not accumulated.
+            Some(slot) => self.grains.replace(slot, rekey.then_some(path), grain),
+            None => self.grains.insert(path, grain),
         }
-        self.grains.insert(
-            path,
-            Grain {
-                bytes,
-                digest,
-                rev: revision,
-                contribution,
-            },
-        );
         Ok(true)
     }
 
@@ -1171,25 +1050,26 @@ impl SectionState {
         // One probe, as in `install`. The stored spelling need not be the one
         // the caller looked the grain up with, and both the baseline and the
         // retraction need the stored one.
-        let Some((stored_path, existing)) = self.grains.get_key_value(path) else {
+        let Some(slot) = self.grains.get_slot(path) else {
             self.stats.no_ops += 1;
             return Ok(false);
         };
+        let stored_path = self.grains.path_of(slot);
         let before = Before {
             spelling: (!same_spelling(stored_path, path)).then(|| stored_path.clone()),
-            digest: existing.digest,
+            digest: self.grains.grain_of(slot).digest,
         };
-        let contribution = existing.contribution;
+        let contribution = self.grains.grain_of(slot).contribution;
         // The counter moves BEFORE the state does, so an overflow leaves a state
-        // whose root still describes its grains and needs no rollback.
+        // whose root still describes its grains and needs no rollback. It also
+        // empties the store on the way out, which is why nothing may touch the
+        // slot number after this point without going through `?`.
         self.bump()?;
         // BEFORE the grain goes: the hour's baseline is what stood here when the
         // hour opened, and a baseline taken after the removal would record that
         // nothing did.
         self.remember(path, Some(before));
-        self.grains
-            .remove(path)
-            .expect("the grain was there a statement ago");
+        self.grains.remove(slot);
         self.stats.removes += 1;
         self.accumulator.remove(contribution);
         Ok(true)
@@ -1205,12 +1085,12 @@ impl SectionState {
         // disagrees with the grains produces a document that silently omits
         // them while the state root still commits them.
         match kind {
-            RootKind::Scalar if self.grains.keys().any(|path| !path.is_empty()) => {
+            RootKind::Scalar if self.grains.iter().any(|(path, _)| !path.is_empty()) => {
                 return Err(FoldV3Error::new(
                     "a section cannot become a scalar while it still holds children",
                 ))
             }
-            RootKind::Object | RootKind::Array if self.grains.contains_key(&Vec::new()) => {
+            RootKind::Object | RootKind::Array if self.grains.get_slot(&[]).is_some() => {
                 return Err(FoldV3Error::new(
                     "a section cannot become a container while it still holds a whole-section value",
                 ))
@@ -1240,7 +1120,7 @@ impl SectionState {
 
     pub fn project_into(&self, out: &mut Vec<u8>) {
         if self.kind == RootKind::Scalar {
-            match self.grains.get(&Vec::new()) {
+            match self.grain(&[]) {
                 Some(grain) => out.extend_from_slice(&grain.bytes),
                 // A scalar root with no grain is a state nothing ever assigned.
                 None => out.extend_from_slice(b"null"),
@@ -1252,7 +1132,7 @@ impl SectionState {
         // root, outermost first.
         let mut stack: Vec<(Seg, u8)> = Vec::new();
         let mut first = true;
-        for (path, grain) in &self.grains {
+        for (path, grain) in self.grains.iter() {
             if path.is_empty() {
                 // Unreachable: `check_path` refuses the empty path under a
                 // container root, and `decompose` refuses to produce one, so a
@@ -1361,14 +1241,13 @@ impl SectionState {
 
     /// Is there a grain AT `prefix` or anywhere beneath it?
     ///
-    /// One `BTreeMap` descent, not a scan: every path sharing a prefix occupies
-    /// one contiguous run, so the first entry at or after `prefix` is the only
+    /// One ordered lookup, not a scan: every path sharing a prefix occupies one
+    /// contiguous run, so the first entry at or after `prefix` is the only
     /// candidate that could be in it.
     fn occupied(&self, prefix: &[Seg]) -> bool {
         self.grains
-            .range::<[Seg], _>((Included(prefix), Unbounded))
-            .next()
-            .is_some_and(|(candidate, _)| {
+            .first_at_or_after(prefix)
+            .is_some_and(|candidate| {
                 candidate.len() >= prefix.len() && candidate[..prefix.len()] == *prefix
             })
     }
@@ -1392,7 +1271,7 @@ impl SectionState {
         // the previous path's segment at the same depth is the only neighbour
         // that matters.
         let mut previous: Option<&Path> = None;
-        for path in self.grains.keys() {
+        for (path, _) in self.grains.iter() {
             for (depth, seg) in path.iter().enumerate() {
                 let Seg::Index(index) = seg else { continue };
                 let before = previous.and_then(|previous| {
@@ -1424,7 +1303,7 @@ impl SectionState {
     /// was dense before the delta.
     ///
     /// A delta can only break density at an ordinal it touched, so only those
-    /// need checking, and each costs two `BTreeMap` descents rather than a scan
+    /// need checking, and each costs two ordered lookups rather than a scan
     /// of the container: an ordinal that is now PRESENT needs its predecessor,
     /// and one that is now GONE must not have left a successor stranded.
     ///
@@ -1691,7 +1570,8 @@ impl HourTxn<'_> {
         let stale: Vec<Path> = self
             .state
             .grains
-            .keys()
+            .iter()
+            .map(|(path, _)| path)
             .filter(|path| !seen.contains_key(*path))
             .cloned()
             .collect();
@@ -1740,19 +1620,19 @@ impl HourTxn<'_> {
         // The upsert phase is built BESIDE the removal phase and appended after
         // the root record, so the whole baseline is walked ONCE.
         //
-        // Two passes over it meant two `BTreeMap` descents per touched address,
-        // one to ask whether the grain is still there and one to fetch it, and
-        // on the corpus's largest section a descent is ~28 key comparisons over
-        // a 105,000-entry map -- the term the per-mutation constant is made of.
-        // The bytes are identical because the baseline is sorted: removals come
-        // out ascending in the first buffer and upserts ascending in the second,
-        // which is exactly what two ordered passes produced.
+        // Two passes over it meant two lookups per touched address, one to ask
+        // whether the grain is still there and one to fetch it. When the state
+        // was a `BTreeMap` that was two descents -- ~28 key comparisons each
+        // over a 105,000-entry map on the largest section, and the term the
+        // per-mutation constant was made of. It is now two index probes, which
+        // is a much smaller saving, but it is still one lookup rather than two
+        // and the bytes are identical either way: the baseline is sorted, so
+        // removals come out ascending in the first buffer and upserts ascending
+        // in the second, which is exactly what two ordered passes produced.
         //
-        // The price is one memcpy of the upsert phase at the end. That is a
-        // linear copy of bytes already in cache, against a `BTreeMap` descent
-        // per touched address -- ~28 key comparisons over a 105,000-entry map on
-        // the largest section -- and the measured net is what settles it, not
-        // this comment.
+        // The price is one memcpy of the upsert phase at the end -- a linear
+        // copy of bytes already in cache -- and the measured net is what settles
+        // it, not this comment.
         let mut upserts = std::mem::take(&mut self.state.commit_upserts);
         upserts.clear();
         let mut mutations = 0u64;
@@ -1769,7 +1649,12 @@ impl HourTxn<'_> {
         // at once, so two ascending phases are a total order that is always
         // applicable.
         for (path, before) in &baseline {
-            let Some((stored, grain)) = self.state.grains.get_key_value(path) else {
+            let Some((stored, grain)) = self
+                .state
+                .grains
+                .get_slot(path)
+                .map(|slot| (self.state.grains.path_of(slot), self.state.grains.grain_of(slot)))
+            else {
                 // Present at the start and gone now. The removal is addressed by
                 // the spelling the replica holds, which is the one it was stored
                 // under.
@@ -1809,6 +1694,26 @@ impl HourTxn<'_> {
         self.state.hour_touched = baseline;
         upserts.clear();
         self.state.commit_upserts = upserts;
+        // Close the hour with ONE array of addresses in canonical order.
+        //
+        // The store can always answer an ordered question with two arrays and a
+        // tombstone skip, so this is not needed for correctness. It is needed
+        // because of who reads the order: everything that walks the WHOLE
+        // section -- the projection, the driver's own scan for retired
+        // addresses, the density check -- and a walk of two arrays pays a path
+        // comparison per grain to interleave them, which a walk of one does not.
+        // Those readers all run between hours, so merging here is the difference
+        // between paying that comparison 58,961 times an hour on the corpus's
+        // churning section and not paying it at all.
+        //
+        // It also opens the next hour with an empty `pending`, which halves the
+        // binary searches every newly addressed grain makes.
+        //
+        // The merge itself is charged to the hour that earned it, inside the
+        // timed region, and it is skipped entirely by a section whose address
+        // set did not move -- which on capture t30 is the largest section there
+        // is.
+        self.state.grains.compact();
         SectionDelta {
             section: self.state.spec.name.clone(),
             bytes,

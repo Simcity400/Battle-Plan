@@ -209,14 +209,22 @@ pub const MEASURED_GRAIN_DEPTHS: &str = "3,supply=2,divisions=2,\
 
 /// What one grain costs in resident state BEYOND its own payload.
 ///
-/// A `Grain` is a `Vec` header, a 32-byte digest, a revision and a 32-byte
-/// cached state-root contribution (96 B); a `Path` is a `Vec` header (24 B); and
-/// a `BTreeMap` entry carries roughly another 16 B of node share. Counting only
-/// the payload would answer the memory threshold with the flattering half of the
-/// number -- and it would also make every grain-depth choice look free, when a
-/// section cut three levels deep instead of one pays this constant on ten times
-/// as many grains for the same bytes.
-pub const PER_GRAIN_OVERHEAD: u64 = 136;
+/// This is the grain store's slot row, which is where a grain now lives: a
+/// `Grain` is a `Vec` header, a 32-byte digest, a revision and a 32-byte cached
+/// state-root contribution (96 B); a `Path` is a `Vec` header (24 B); and the
+/// slot caches the address's hash (8 B). Counting only the payload would answer
+/// the memory threshold with the flattering half of the number -- and it would
+/// also make every grain-depth choice look free, when a section cut three
+/// levels deep instead of one pays this constant on ten times as many grains
+/// for the same bytes.
+///
+/// It is the OCCUPIED row and nothing else. The store's hash index, its two
+/// order arrays, its free list and every reserved row no grain is standing in
+/// are reported by `SectionState::retained_scratch_bytes`, so charging a share
+/// of them here as well would invent memory. The number it replaced was 136 --
+/// the same `Grain` and `Path` plus a `BTreeMap` node's share -- so the change
+/// is 8 bytes a grain of accounting, not of behaviour.
+pub const PER_GRAIN_OVERHEAD: u64 = 128;
 
 fn shape_for(spelling: &str) -> Result<Shape, String> {
     match spelling {

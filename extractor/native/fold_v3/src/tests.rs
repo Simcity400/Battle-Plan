@@ -1661,18 +1661,58 @@ fn the_interner_accounts_for_the_names_it_holds() {
     let name = "lane_fb_accounting_probe_0123456789";
     let before = intern::retained_bytes();
     let names_before = intern::interned_names();
-    let _ = Seg::key(name);
-    assert_eq!(intern::interned_names(), names_before + 1);
+    let first = Seg::key(name);
     let after = intern::retained_bytes();
+    // ONE-SIDED, because the interner is process-global and every test running
+    // beside this one is interning into it. `>=` is the whole of what this test
+    // can honestly say about a shared counter: an equality here reads as an
+    // assertion about the name and is in fact an assertion about which other
+    // tests the harness happened to schedule. It was one, and the tests added
+    // for the dense-slot store -- which intern thousands of names -- are what
+    // made it fail.
+    assert!(
+        intern::interned_names() > names_before,
+        "interning {name:?} did not add an entry"
+    );
     assert!(
         after >= before + name.len() as u64,
         "interning {name:?} added {} bytes",
         after - before
     );
-    // Interning it again is free: one body, one entry.
-    let _ = Seg::key(name);
-    assert_eq!(intern::interned_names(), names_before + 1);
-    assert_eq!(intern::retained_bytes(), after);
+    // Interning it again is free: one body, one entry. Asserted as the entry
+    // IDENTITY rather than as a global count that stands still, which is the
+    // fact the counts were standing in for. `one_body_interns_to_one_entry`
+    // makes the same point about the table.
+    let again = Seg::key(name);
+    match (first, again) {
+        (Seg::Key(first), Seg::Key(again)) => assert!(
+            first.same_spelling(&again),
+            "one body interned to two entries"
+        ),
+        _ => unreachable!("Seg::key builds a Key"),
+    }
+    // An escaped body whose decoding FAILS, which is the case the charge got
+    // wrong: it is escaped, so a test that asked "was it escaped" would charge
+    // for an ordering text; but the decode returned nothing, so the ordering
+    // text IS the body, one string, and charging for both overstates the
+    // interner by a body length. A lone surrogate is the shortest way to write
+    // an escape that cannot decode. Interned before the assertion below, so
+    // there is such an entry in the table for it to find.
+    let _ = Seg::key(&format!("{ESCAPE}ud800_lane_fl_undecodable_probe"));
+    // And the counter is what the entries add up to.
+    //
+    // This is the assertion the one-sided deltas above cannot make: a charge
+    // added on the path that returns an ALREADY interned name -- which the two
+    // calls to `Seg::key` just took -- would make the total drift above the
+    // vocabulary, and a charge removed would make it drift below, and a running
+    // total that is only ever compared against itself would report both as
+    // progress. Recomputed inside one acquisition of the interner's lock, so
+    // the comparison is not racing every other test in this file.
+    assert_eq!(
+        intern::accounting_disagreement(),
+        None,
+        "the interner's byte counter is not the sum of what it holds"
+    );
 }
 
 /// A path costs its own segment array and nothing per name, because the names
@@ -1686,4 +1726,437 @@ fn a_paths_retained_bytes_are_its_segments() {
         2 * std::mem::size_of::<Seg>() as u64,
         "a name's bytes must not be charged to every path that mentions it"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The dense-slot store: the order it iterates in, and what it does with a slot
+// ---------------------------------------------------------------------------
+
+/// A deterministic 64-bit stream (SplitMix64), so a failure is reproducible
+/// from the seed in the test rather than from a lucky rerun.
+struct Rng(u64);
+
+impl Rng {
+    fn next_word(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut word = self.0;
+        word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        word ^ (word >> 31)
+    }
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next_word() % bound
+    }
+}
+
+/// A member name for address `index`. Decimal, so the STRING order these are
+/// held in disagrees with the numeric order they are generated in -- which is
+/// the order the store has to reproduce and not the one it would fall into.
+fn churn_key(index: u64) -> String {
+    format!("k{index}")
+}
+
+/// The store's iteration order is `<[Seg]>::cmp` ascending -- the `BTreeMap`
+/// order -- through every insertion, removal, reinstallation and merge.
+///
+/// This is the property the dense-slot rewrite rests on and the one nothing
+/// else in this file can see: the projection, the delta encoding and
+/// `check_path`'s neighbour tests all read the order, and a store that got it
+/// wrong would still agree with itself. So the order is compared against an
+/// actual `BTreeMap` driven by the same operations, after EVERY operation, over
+/// a state big enough to cross both merge thresholds many times.
+#[test]
+fn the_store_iterates_in_the_btreemap_order_through_churn() {
+    let mut rng = Rng(0x5eed_1234_abcd_0001);
+    let mut state = object_state("countries", 1);
+    let mut shadow: BTreeMap<Path, Vec<u8>> = BTreeMap::new();
+    // 600 distinct addresses against a merge floor of 64: the pending array is
+    // merged repeatedly, and so are the tombstones.
+    const ADDRESSES: u64 = 600;
+    {
+        let mut hour = state.begin_hour().expect("hour opens");
+        for step in 0..12_000u64 {
+            let index = rng.below(ADDRESSES);
+            let path: Path = vec![Seg::key(&churn_key(index))];
+            if rng.below(3) == 0 {
+                hour.remove(&path).expect("removal is legal");
+                shadow.remove(&path);
+            } else {
+                let value = parse(&format!("{}", rng.below(1_000_000)));
+                let mut bytes = Vec::new();
+                value.write_json(&mut bytes);
+                hour.upsert(path.clone(), &value).expect("upsert is legal");
+                shadow.insert(path, bytes);
+            }
+            // Every step, not every hundredth: a store that drifts and drifts
+            // back between samples was wrong in between.
+            let observed: Vec<&Path> = hour.state().grain_paths().collect();
+            assert_eq!(
+                observed.len(),
+                shadow.len(),
+                "step {step}: the store holds {} addresses, the map holds {}",
+                observed.len(),
+                shadow.len()
+            );
+            assert!(
+                observed
+                    .iter()
+                    .zip(shadow.keys())
+                    .all(|(left, right)| *left == right),
+                "step {step}: the store's order is not the map's"
+            );
+            assert_eq!(hour.state().grain_count(), shadow.len(), "step {step}");
+        }
+        hour.commit();
+    }
+    // And the bytes that order produces are the bytes the same grains in a
+    // `BTreeMap` produce.
+    let mut expected = vec![b'{'];
+    for (index, (path, bytes)) in shadow.iter().enumerate() {
+        if index > 0 {
+            expected.push(b',');
+        }
+        let Seg::Key(name) = path[0] else {
+            unreachable!("every address here is a member name")
+        };
+        expected.push(b'"');
+        expected.extend_from_slice(name.body().as_bytes());
+        expected.extend_from_slice(b"\":");
+        expected.extend_from_slice(bytes);
+    }
+    expected.push(b'}');
+    assert_eq!(state.project(), expected, "the projection is not the map's");
+    assert_eq!(state.state_root(), state.recomputed_state_root());
+}
+
+/// A replica driven only by the deltas of a churning section stays byte
+/// identical to the producer, hour after hour.
+///
+/// The order test above compares the producer against a map. This compares it
+/// against an independent state that has seen nothing but the encoded deltas,
+/// so it is the one that can see a removal encoded under the wrong spelling, an
+/// upsert emitted for a grain that did not move, or a phase boundary the strict
+/// decoder rejects -- none of which the order alone can show.
+#[test]
+fn a_churning_section_replicates_hour_after_hour() {
+    let mut rng = Rng(0x5eed_1234_abcd_0002);
+    let mut producer = object_state("countries", 1);
+    let mut replica = object_state("countries", 1);
+    const ADDRESSES: u64 = 400;
+    for hour_index in 0..40u64 {
+        let delta = {
+            let mut hour = producer.begin_hour().expect("hour opens");
+            for _ in 0..500 {
+                let path: Path = vec![Seg::key(&churn_key(rng.below(ADDRESSES)))];
+                if rng.below(3) == 0 {
+                    hour.remove(&path).expect("removal is legal");
+                } else {
+                    let value = parse(&format!("{}", rng.below(1_000_000)));
+                    hour.upsert(path, &value).expect("upsert is legal");
+                }
+            }
+            hour.commit()
+        };
+        replica.apply_delta(&delta.bytes).unwrap_or_else(|error| {
+            panic!("hour {hour_index}: replica rejects the delta: {error}")
+        });
+        assert_eq!(replica.state_root(), delta.state_root, "hour {hour_index}");
+        assert_eq!(replica.project(), producer.project(), "hour {hour_index}");
+        assert_eq!(
+            producer.state_root(),
+            producer.recomputed_state_root(),
+            "hour {hour_index}"
+        );
+    }
+}
+
+/// An address removed and reinstalled comes back as itself, not as whatever the
+/// slot it landed in used to hold.
+///
+/// A dense store recycles slots, and a slot brought back into service while the
+/// sorted order still named it would sit in that order under its OLD path. The
+/// store therefore releases a slot only once no order array names it. This
+/// drives the exact sequence that would break the rule -- remove, install a
+/// DIFFERENT address, reinstall the removed one -- inside one hour and across
+/// thirty of them, and reads the order back each round.
+#[test]
+fn a_removed_address_reinstalled_does_not_inherit_a_slot() {
+    let mut state = object_state("countries", 1);
+    let mut shadow: BTreeMap<Path, ()> = BTreeMap::new();
+    for round in 0..30u64 {
+        {
+            let mut hour = state.begin_hour().expect("hour opens");
+            for index in 0..40u64 {
+                let path: Path = vec![Seg::key(&churn_key(index))];
+                hour.upsert(path.clone(), &parse(&format!("{}", round * 100 + index)))
+                    .expect("upsert is legal");
+                shadow.insert(path, ());
+            }
+            // Retire every third address, install a fresh one in its place, and
+            // bring the retired one back -- all inside this hour, so the freed
+            // slot and the new address exist at once.
+            for index in (0..40u64).step_by(3) {
+                let gone: Path = vec![Seg::key(&churn_key(index))];
+                assert!(hour.remove(&gone).expect("removal is legal"));
+                shadow.remove(&gone);
+                let fresh: Path = vec![Seg::key(&churn_key(1_000 + round * 40 + index))];
+                hour.upsert(fresh.clone(), &parse("7")).expect("upsert");
+                shadow.insert(fresh, ());
+                hour.upsert(gone.clone(), &parse("8")).expect("upsert");
+                shadow.insert(gone, ());
+            }
+            let observed: Vec<&Path> = hour.state().grain_paths().collect();
+            assert!(
+                observed.len() == shadow.len()
+                    && observed
+                        .iter()
+                        .zip(shadow.keys())
+                        .all(|(left, right)| *left == right),
+                "round {round}: a reinstalled address did not come back at its own place"
+            );
+            // Retire the fresh ones again, so the next round opens with a free
+            // list the order arrays have already released.
+            for index in (0..40u64).step_by(3) {
+                let fresh: Path = vec![Seg::key(&churn_key(1_000 + round * 40 + index))];
+                assert!(hour.remove(&fresh).expect("removal is legal"));
+                shadow.remove(&fresh);
+            }
+            hour.commit();
+        }
+        assert_eq!(
+            state.state_root(),
+            state.recomputed_state_root(),
+            "round {round}"
+        );
+    }
+    let observed: Vec<&Path> = state.grain_paths().collect();
+    assert!(observed
+        .iter()
+        .zip(shadow.keys())
+        .all(|(left, right)| *left == right));
+    assert_eq!(state.grain_count(), shadow.len());
+}
+
+/// Two spellings of one member name find one another in the index.
+///
+/// The store hashes the ADDRESS -- the name's decoded ordering text -- and not
+/// the spelling, because a hash taken over the spelling would put `a` and the
+/// escaped spelling of `a` in different buckets, and the store would then hold
+/// one address twice: two grains, two contributions in the state root, and a
+/// projection with a duplicate member. The order tests above cannot see this,
+/// because no escaped name appears in them.
+#[test]
+fn a_respelled_address_lands_in_the_same_bucket() {
+    let escaped = format!("{ESCAPE}u0061");
+    let mut state = object_state("countries", 1);
+    let delta = {
+        let mut hour = state.begin_hour().expect("hour opens");
+        // Enough plain neighbours that the index has grown and rehashed several
+        // times, so this is not a question answered by an empty table.
+        for index in 0..200u64 {
+            hour.upsert(vec![Seg::key(&churn_key(index))], &parse("1"))
+                .expect("upsert");
+        }
+        hour.upsert(vec![Seg::key("a")], &parse("1"))
+            .expect("upsert");
+        assert_eq!(hour.state().grain_count(), 201);
+        // The SAME address, spelled the other way.
+        assert!(
+            hour.state().grain_entry(&[Seg::key(&escaped)]).is_some(),
+            "the escaped spelling did not find the grain the plain one installed"
+        );
+        hour.upsert(vec![Seg::key(&escaped)], &parse("2"))
+            .expect("upsert");
+        assert_eq!(
+            hour.state().grain_count(),
+            201,
+            "a respelling installed a second grain at one address"
+        );
+        hour.commit()
+    };
+    let mut replica = object_state("countries", 1);
+    replica.apply_delta(&delta.bytes).expect("replica applies");
+    assert_eq!(replica.project(), state.project());
+    assert_eq!(state.state_root(), state.recomputed_state_root());
+    assert_eq!(replica.state_root(), delta.state_root);
+    let projected = String::from_utf8(state.project()).expect("utf-8");
+    assert!(
+        projected.contains(&format!("{QUOTE}{escaped}{QUOTE}:2")),
+        "the stored spelling was not replaced: {projected}"
+    );
+}
+
+/// A section that retires an address and installs another reuses the row,
+/// rather than growing its slot table once per address it has ever held.
+///
+/// This is the one property of the dense store that every other test is blind
+/// to. A `compact` that stopped returning its tombstoned slots to the free list
+/// would leave the iteration order, the projection, the state root and the
+/// replica all correct and all agreeing -- and would leak one row, with its
+/// path allocation, for every address ever removed. On a capture whose busiest
+/// section retires ~1,925 addresses an hour that is the difference between a
+/// bounded state and one that grows for the length of the campaign.
+///
+/// So the table is measured across six cycles of "retire the whole set in one
+/// hour, install a fresh set of the same size in the next". Committing an hour
+/// merges the store, so the retirement hour ends with every row reclaimed and
+/// the installation hour has a free list to draw the whole set from: the table
+/// is EXACTLY the set size, at every cycle, with no dependence on where the
+/// merge thresholds happen to sit.
+///
+/// The row count alone would not be enough. A leak that stranded the first
+/// cohort and then reclaimed correctly would settle at twice the set size and
+/// hold there, which a plateau test would accept. So the assertion is the
+/// IDENTITY `rows == live + tombstoned + free`: an orphaned row is a row that
+/// is none of the three.
+#[test]
+fn a_retired_address_gives_its_row_back() {
+    const ADDRESSES: u64 = 400;
+    let mut state = object_state("countries", 1);
+    let mut previous: Vec<Path> = Vec::new();
+
+    fn every_row_is_accounted_for(state: &SectionState, at: &str) {
+        let (rows, live, dead, free) = state.slot_accounting_for_test();
+        assert_eq!(
+            rows,
+            live + dead + free,
+            "{at}: {rows} rows are {live} live + {dead} tombstoned + {free} free, so \
+             {} are orphaned",
+            rows - (live + dead + free)
+        );
+    }
+
+    for cycle in 0..6u64 {
+        // The retirement hour. Committing it merges the store, so every row the
+        // retired addresses held is back on the free list before the next hour
+        // asks for one.
+        {
+            let mut hour = state.begin_hour().expect("hour opens");
+            for path in &previous {
+                assert!(hour.remove(path).expect("removal is legal"));
+            }
+            hour.commit();
+        }
+        assert_eq!(state.grain_count(), 0, "cycle {cycle}");
+        every_row_is_accounted_for(&state, &format!("cycle {cycle} after retiring"));
+        let (rows, _, dead, free) = state.slot_accounting_for_test();
+        assert_eq!(dead, 0, "cycle {cycle}: commit left the store unmerged");
+        assert_eq!(
+            free, rows,
+            "cycle {cycle}: {rows} rows but only {free} free after retiring everything"
+        );
+
+        // The installation hour, from addresses this section has never held.
+        {
+            let mut hour = state.begin_hour().expect("hour opens");
+            let mut installed = Vec::with_capacity(ADDRESSES as usize);
+            for index in 0..ADDRESSES {
+                let path: Path = vec![Seg::key(&churn_key(cycle * ADDRESSES + index))];
+                hour.upsert(path.clone(), &parse("1")).expect("upsert");
+                installed.push(path);
+            }
+            previous = installed;
+            hour.commit();
+        }
+        assert_eq!(state.grain_count(), ADDRESSES as usize, "cycle {cycle}");
+        every_row_is_accounted_for(&state, &format!("cycle {cycle} after installing"));
+        let (rows, _, _, _) = state.slot_accounting_for_test();
+        assert_eq!(
+            rows, ADDRESSES as usize,
+            "cycle {cycle}: {rows} rows for {ADDRESSES} addresses, so retired rows are not \
+             coming back"
+        );
+    }
+}
+
+/// The order holds through churn on NESTED addresses, not only on the
+/// single-segment ones the churn test above uses.
+///
+/// A grain's address is a path, and the corpus's byte-dominant sections put
+/// their megabytes two levels down. Ordering, hashing and the neighbour queries
+/// all run over the whole path, so a defect that only shows up past the first
+/// segment -- a hash that stopped mixing in the position, a comparison that
+/// stopped at the first segment -- would be invisible to a test whose addresses
+/// are all one segment long. The prefixes are disjoint from the leaves, because
+/// a grain standing at another grain's ancestor is a path set `check_path`
+/// refuses and this test is not about that.
+#[test]
+fn the_store_iterates_in_the_btreemap_order_through_nested_churn() {
+    let mut rng = Rng(0x5eed_1234_abcd_0004);
+    let mut state = object_state("map", 2);
+    let mut shadow: BTreeMap<Path, ()> = BTreeMap::new();
+    let mut hour = state.begin_hour().expect("hour opens");
+    for step in 0..6_000u64 {
+        let path: Path = vec![
+            Seg::key(&format!("g{}", rng.below(12))),
+            Seg::key(&churn_key(rng.below(120))),
+        ];
+        if rng.below(3) == 0 {
+            hour.remove(&path).expect("removal is legal");
+            shadow.remove(&path);
+        } else {
+            hour.upsert(path.clone(), &parse("1")).expect("upsert");
+            shadow.insert(path, ());
+        }
+        let observed: Vec<&Path> = hour.state().grain_paths().collect();
+        assert!(
+            observed.len() == shadow.len()
+                && observed
+                    .iter()
+                    .zip(shadow.keys())
+                    .all(|(left, right)| *left == right),
+            "step {step}: the store's order over nested addresses is not the map's"
+        );
+    }
+    let delta = hour.commit();
+    let mut replica = object_state("map", 2);
+    replica.apply_delta(&delta.bytes).expect("replica applies");
+    assert_eq!(replica.project(), state.project());
+    assert_eq!(state.state_root(), state.recomputed_state_root());
+}
+
+/// The store's neighbour queries answer what a `BTreeMap` range answers, with
+/// tombstones and unmerged insertions sitting in the order arrays.
+///
+/// `check_path` decides whether two siblings disagree about how their container
+/// addresses them by asking for the entries either side of an incoming address.
+/// Both queries walk two arrays and skip retired slots, and one that skipped an
+/// entry too few or too many would admit a path set the projection cannot write
+/// back.
+#[test]
+fn the_neighbour_queries_answer_what_a_range_answers() {
+    let mut rng = Rng(0x5eed_1234_abcd_0003);
+    let mut state = object_state("countries", 1);
+    let mut shadow: BTreeMap<Path, ()> = BTreeMap::new();
+    let mut hour = state.begin_hour().expect("hour opens");
+    for step in 0..4_000u64 {
+        let path: Path = vec![Seg::key(&churn_key(rng.below(300)))];
+        if rng.below(3) == 0 {
+            hour.remove(&path).expect("removal is legal");
+            shadow.remove(&path);
+        } else {
+            hour.upsert(path.clone(), &parse("1")).expect("upsert");
+            shadow.insert(path, ());
+        }
+        // A probe address that is often NOT in the state, so the queries have to
+        // answer about a gap and not only about an entry.
+        let probe: Path = vec![Seg::key(&churn_key(rng.below(400)))];
+        assert_eq!(
+            hour.state().first_at_or_after_for_test(&probe),
+            shadow
+                .range(probe.clone()..)
+                .next()
+                .map(|(path, _)| path.clone()),
+            "step {step}: the first address at or after {probe:?} is wrong"
+        );
+        assert_eq!(
+            hour.state().last_before_for_test(&probe),
+            shadow
+                .range(..probe.clone())
+                .next_back()
+                .map(|(path, _)| path.clone()),
+            "step {step}: the last address before {probe:?} is wrong"
+        );
+    }
+    hour.commit();
 }

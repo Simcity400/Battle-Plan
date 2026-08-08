@@ -113,6 +113,14 @@ pub struct KeyEntry {
     /// either without building a new entry.
     head: u64,
     plain: bool,
+    /// FNV-1a of `order_text`, for [`crate::grains`]'s index.
+    ///
+    /// Over the ORDERING TEXT and not the body, because the index is keyed on
+    /// the ADDRESS: two spellings of one name must land in one bucket or the
+    /// store would hold one address twice. See `grains::hash_path` for the
+    /// case-by-case argument that equal-by-`cmp_key` implies equal ordering
+    /// text.
+    text_hash: u64,
 }
 
 /// A handle to one interned member name.
@@ -132,6 +140,17 @@ pub struct KeyRef {
     /// fast path never dereferences.
     plain: bool,
     entry: &'static KeyEntry,
+}
+
+/// FNV-1a over `bytes`. `wrapping_mul` because this workspace builds release
+/// with `overflow-checks = true`.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// The first eight bytes of `text`, big-endian, zero-padded.
@@ -178,6 +197,12 @@ impl KeyRef {
             None
         };
         let undecodable = escaped && decoded.is_none();
+        // Whether the ordering text is its OWN allocation, which is not the same
+        // question as whether the body was escaped. An escaped body whose
+        // decoding FAILS keeps the body as its ordering text -- there is one
+        // string, aliased -- and charging for it twice overstates the interner
+        // by a body length per such name.
+        let order_text_is_owned = decoded.is_some();
         let order_text: &'static str = match decoded {
             Some(text) => Box::leak(text.into_boxed_str()),
             None => body,
@@ -195,9 +220,10 @@ impl KeyRef {
             encoded,
             head: head_of(order_text),
             plain: !escaped,
+            text_hash: fnv1a(order_text.as_bytes()),
         }));
         table.bytes += (body.len()
-            + if escaped { order_text.len() } else { 0 }
+            + if order_text_is_owned { order_text.len() } else { 0 }
             + encoded.len()
             + std::mem::size_of::<KeyEntry>()
             // The table's own row: a `&str` key and a pointer, plus a share of
@@ -233,9 +259,10 @@ impl KeyRef {
         self.entry.valid_member_name
     }
 
-    /// The body carries no backslash, so no other spelling can denote it.
-    pub(crate) fn plain(&self) -> bool {
-        self.plain
+    /// A hash of the name's ORDERING TEXT, so that two spellings of one name
+    /// hash alike. Frozen on the entry, like everything else here.
+    pub(crate) fn order_hash(&self) -> u64 {
+        self.entry.text_hash
     }
 
     /// Same body, byte for byte.
@@ -320,6 +347,50 @@ pub fn retained_bytes() -> u64 {
         .lock()
         .expect("the name interner is poisoned")
         .bytes
+}
+
+/// `(what the counter says, what the entries add up to)` when the two differ.
+///
+/// [`retained_bytes`] is a running total, incremented once per newly interned
+/// name, and a running total is exactly the shape that can drift: a charge
+/// added on the path that returns an ALREADY interned name would count a
+/// popular member name thousands of times, and a charge removed would report a
+/// vocabulary that costs nothing. Neither is visible from outside -- the number
+/// is only ever compared against itself.
+///
+/// So this recomputes the total from the table, under ONE acquisition of the
+/// lock, so that a test can compare the two without another thread interning
+/// between the reads. The summand is deliberately spelled out again rather than
+/// factored out and shared with [`KeyRef::intern_slow`]: a shared helper would
+/// make the two agree by construction, which is not the thing worth asserting.
+///
+/// Whether the ordering text costs anything is decided HERE by asking whether it
+/// is a distinct allocation, not by re-reading the flag the charge was computed
+/// from. The first version of this function copied the charge's `escaped` test
+/// and therefore reproduced its bug -- an escaped body whose decoding fails
+/// aliases its ordering text to the body, one string, charged twice -- and
+/// agreed with the wrong answer.
+#[cfg(test)]
+pub(crate) fn accounting_disagreement() -> Option<(u64, u64)> {
+    let table = interner().lock().expect("the name interner is poisoned");
+    let expected: u64 = table
+        .by_body
+        .values()
+        .map(|entry| {
+            let order_text_is_owned =
+                !std::ptr::eq(entry.body.as_ptr(), entry.order_text.as_ptr());
+            (entry.body.len()
+                + if order_text_is_owned {
+                    entry.order_text.len()
+                } else {
+                    0
+                }
+                + entry.encoded.len()
+                + std::mem::size_of::<KeyEntry>()
+                + 40) as u64
+        })
+        .sum();
+    (expected != table.bytes).then_some((table.bytes, expected))
 }
 
 /// Distinct member-name bodies interned so far.
