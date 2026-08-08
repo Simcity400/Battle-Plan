@@ -11,6 +11,261 @@
 
 Set-StrictMode -Version Latest
 
+# --- named refusals -----------------------------------------------------------
+#
+# WHY A STRUCTURED THROW AND NOT A SENTENCE.
+#
+# Everything in this file that compares the verifier's mirror against the
+# collector's own producer source used to fail with a bare `throw '<sentence>'`.
+# A sentence is enough for a human reading a transcript and useless to the
+# harness, which has to decide what to do with a live recorder and then say why
+# in a receipt somebody can grep. Run t36 is the whole argument: the mirror
+# refused the READY receipt with "Passive READY wire field order differs at
+# ...", the harness had no idea what class of failure that was, and the capture
+# ended with the game pinned, the settings guard applied and no machine-readable
+# statement of what had gone wrong anywhere on disk.
+#
+# So the mirror-versus-producer checks throw an ErrorRecord whose TargetObject
+# carries the class, the field, and the two sides of the comparison. The
+# Exception.Message is unchanged in kind -- every existing caller that prints
+# `$_.Exception.Message` still prints a sentence -- and MEASURED on Windows
+# PowerShell 5.1: `throw $errorRecord` preserves both TargetObject and
+# FullyQualifiedErrorId, including through an intermediate `catch { throw }`.
+$script:PassiveReadyMismatchSchema = 'hoi4-passive-ready-contract-mismatch-v1'
+
+function New-PassiveReadyContractMismatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$Class,
+        [Parameter(Mandatory = $true)][string]$Field,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Expected,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Observed,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $detail = [pscustomobject]@{
+        schema   = $script:PassiveReadyMismatchSchema
+        class    = $Class
+        field    = $Field
+        expected = $Expected
+        observed = $Observed
+        message  = $Message
+    }
+    return [Management.Automation.ErrorRecord]::new(
+        [InvalidOperationException]::new($Message),
+        "PassiveReadyContractMismatch.$Class",
+        [Management.Automation.ErrorCategory]::InvalidData,
+        $detail
+    )
+}
+
+# The fragment checks are all the same shape -- "this exact text must still be
+# in the producer source" -- and there are two dozen of them. A helper keeps
+# each one a single line so that adding a pinned fragment cannot accidentally
+# reintroduce an unnamed `throw`.
+function Assert-PassiveProducerFragment {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Fragment,
+        [Parameter(Mandatory = $true)][string]$Class,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    if ($Source.Contains($Fragment)) { return }
+    throw (New-PassiveReadyContractMismatch `
+        -Class $Class `
+        -Field $Fragment `
+        -Expected 'present in the canonical producer source' `
+        -Observed 'absent' `
+        -Message $Message)
+}
+
+# Reads the structured detail back off ANY error, and answers $null when there
+# is none.
+#
+# The schema test is load-bearing rather than a null check: PowerShell sets
+# TargetObject to the thrown value for a plain `throw '<string>'` too, so an
+# unstructured refusal arrives here carrying its own message as a TargetObject.
+# Without the schema test that string would be read as a mismatch record and
+# every property access on it would be $null under StrictMode.
+function Get-PassiveReadyContractMismatch {
+    param([Parameter(Mandatory = $true)][AllowNull()]$ErrorRecord)
+
+    if ($null -eq $ErrorRecord) { return $null }
+    $target = $null
+    try { $target = $ErrorRecord.TargetObject } catch { return $null }
+    if ($null -eq $target -or $target -is [string]) { return $null }
+    $schema = $null
+    try { $schema = [string]$target.schema } catch { return $null }
+    if ($schema -cne $script:PassiveReadyMismatchSchema) { return $null }
+    return $target
+}
+
+# Turns the accumulated-admission refusal back into per-clause records.
+#
+# `Add-PassiveAdmissionFailure` formats every clause as either `<name>` or
+# `<name> (expected='<x>' actual='<y>')`, and `Test-PassiveCaptureReadyReceipt`
+# joins them with '; '. That format is the only machine-readable statement of
+# WHICH field disagreed, and it was being thrown away into a sentence. Parsed
+# here, next to the code that writes it, so the two cannot drift apart
+# unnoticed -- the unit suite round-trips a formatted clause list through both.
+function ConvertFrom-PassiveAdmissionFailureClause {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Clause)
+
+    $match = [regex]::Match(
+        $Clause,
+        "^(?<field>.*?) \(expected='(?<expected>.*)' actual='(?<actual>.*)'\)$",
+        [Text.RegularExpressions.RegexOptions]::Singleline
+    )
+    if ($match.Success) {
+        return [pscustomobject]@{
+            field    = $match.Groups['field'].Value
+            expected = $match.Groups['expected'].Value
+            observed = $match.Groups['actual'].Value
+        }
+    }
+    return [pscustomobject]@{
+        field    = $Clause
+        expected = ''
+        observed = ''
+    }
+}
+
+$script:PassiveReadyAdmissionSchema = 'hoi4-passive-ready-admission-refusal-v1'
+
+# The clause-accumulator refusal, carried as data rather than only as prose.
+#
+# The two lists are already the answer to "which field disagreed, and does the
+# disagreement cost custody" -- they were being joined into one sentence and the
+# structure discarded at the throw. Both are attached here so the harness's
+# refusal receipt can name them per clause and per side without re-parsing the
+# composed message.
+function New-PassiveReadyAdmissionRefusal {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [Collections.Generic.List[string]]$CustodyFailures,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [Collections.Generic.List[string]]$GradingFailures
+    )
+
+    $detail = [pscustomobject]@{
+        schema           = $script:PassiveReadyAdmissionSchema
+        class            = 'receipt_admission'
+        custody_failures = [string[]]$CustodyFailures.ToArray()
+        grading_failures = [string[]]$GradingFailures.ToArray()
+        message          = $Message
+    }
+    return [Management.Automation.ErrorRecord]::new(
+        [InvalidOperationException]::new($Message),
+        'PassiveReadyContractMismatch.receipt_admission',
+        [Management.Automation.ErrorCategory]::InvalidData,
+        $detail
+    )
+}
+
+# The single classifier: ANY error out of READY validation becomes a named
+# refusal record, and there is no route through it that produces an unnamed one.
+#
+# Three inputs are possible and all three are covered. A mirror-versus-producer
+# mismatch arrives structured and keeps its class, field and both sides. A
+# clause-accumulator refusal arrives structured and is expanded per clause, with
+# the custody/grading side kept -- that side is what decides whether the
+# recorder's later teardown record can still be believed. Anything else -- an
+# unreadable receipt, a torn control file, a defect in this verifier -- is
+# classed `unclassified` and still names the exception type and message, because
+# "the harness could not say what went wrong" has to be a statement on disk
+# rather than an absence.
+function New-PassiveReadyRefusalRecord {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$ErrorRecord,
+        [Parameter(Mandatory = $true)][bool]$CustodyEstablished,
+        [ValidateNotNullOrEmpty()][string]$Stage = 'ready_validation'
+    )
+
+    $message = ''
+    $exceptionType = ''
+    if ($null -ne $ErrorRecord) {
+        try { $message = [string]$ErrorRecord.Exception.Message } catch { }
+        try { $exceptionType = [string]$ErrorRecord.Exception.GetType().FullName } catch { }
+    }
+    $message = ($message -replace '\s+', ' ').Trim()
+
+    $class = 'unclassified'
+    $clauses = [Collections.Generic.List[object]]::new()
+
+    $target = $null
+    if ($null -ne $ErrorRecord) {
+        try { $target = $ErrorRecord.TargetObject } catch { $target = $null }
+    }
+    $targetSchema = ''
+    if ($null -ne $target -and $target -isnot [string]) {
+        try { $targetSchema = [string]$target.schema } catch { $targetSchema = '' }
+    }
+
+    if ($targetSchema -ceq $script:PassiveReadyMismatchSchema) {
+        $class = [string]$target.class
+        $clauses.Add([pscustomobject]@{
+            side     = 'custody'
+            field    = [string]$target.field
+            expected = [string]$target.expected
+            observed = [string]$target.observed
+        })
+    } elseif ($targetSchema -ceq $script:PassiveReadyAdmissionSchema) {
+        $class = [string]$target.class
+        foreach ($side in @('custody', 'grading')) {
+            $list = if ($side -ceq 'custody') {
+                @($target.custody_failures)
+            } else {
+                @($target.grading_failures)
+            }
+            foreach ($clause in $list) {
+                if ($null -eq $clause) { continue }
+                $parsed = ConvertFrom-PassiveAdmissionFailureClause -Clause ([string]$clause)
+                $clauses.Add([pscustomobject]@{
+                    side     = $side
+                    field    = $parsed.field
+                    expected = $parsed.expected
+                    observed = $parsed.observed
+                })
+            }
+        }
+    } else {
+        $clauses.Add([pscustomobject]@{
+            side     = 'custody'
+            field    = $(if ([string]::IsNullOrWhiteSpace($exceptionType)) {
+                'ready_validation'
+            } else {
+                $exceptionType
+            })
+            expected = 'READY validation completes and publishes an authority'
+            observed = $(if ([string]::IsNullOrWhiteSpace($message)) {
+                'the verifier failed without a message'
+            } else {
+                $message
+            })
+        })
+    }
+
+    # NOT 'hoi4-capture-refusal-v1': that is the ENVELOPE the harness writes,
+    # and this record is one element of its `capture_refusals` array. Two
+    # different shapes under one schema name is a reader's problem, not a
+    # writer's, and it costs nothing to keep them apart.
+    return [pscustomobject]@{
+        schema              = 'hoi4-capture-refusal-record-v1'
+        stage               = $Stage
+        class               = $class
+        custody_established = $CustodyEstablished
+        message             = $(if ([string]::IsNullOrWhiteSpace($message)) {
+            'READY validation failed without a message'
+        } else {
+            $message
+        })
+        clauses             = @($clauses.ToArray())
+    }
+}
+
 function ConvertTo-PassiveReceiptInteger {
     param(
         [AllowNull()][object]$Value,
@@ -536,7 +791,12 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
     $start = $PayloadSource.IndexOf('impl CollectorFeatureBits {')
     $end = $PayloadSource.IndexOf('pub struct CaptureReadyV2 {', [Math]::Max($start, 0))
     if ($start -lt 0 -or $end -le $start) {
-        throw 'Collector feature-bit authority boundary is unavailable.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'impl CollectorFeatureBits' `
+            -Expected 'the feature impl opens before the CaptureReadyV2 struct' `
+            -Observed "impl_at=$start struct_at=$end" `
+            -Message 'Collector feature-bit authority boundary is unavailable.')
     }
     $implSource = $PayloadSource.Substring($start, $end - $start)
 
@@ -547,15 +807,36 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
     )) {
         $shift = [int]$match.Groups[2].Value
         if ($shift -lt 0 -or $shift -gt 31) {
-            throw "Collector feature bit '$($match.Groups[1].Value)' is not a u32 bit."
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field $match.Groups[1].Value `
+                -Expected 'a shift in 0..31' `
+                -Observed "1 << $shift" `
+                -Message "Collector feature bit '$($match.Groups[1].Value)' is not a u32 bit.")
         }
         $bits[$match.Groups[1].Value] = [uint32](1 -shl $shift)
     }
     if ($bits.Count -eq 0) {
-        throw 'Collector feature-bit authority declares no bits.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'CollectorFeatureBits bit constants' `
+            -Expected 'at least one `pub const NAME: u32 = 1 << n;`' `
+            -Observed 'none' `
+            -Message 'Collector feature-bit authority declares no bits.')
     }
     if (-not $bits.Contains('DECLARED') -or [uint32]$bits['DECLARED'] -ne [uint32]1) {
-        throw 'Collector feature-bit authority does not put DECLARED in bit 0.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'DECLARED' `
+            -Expected '1' `
+            -Observed $(
+                if ($bits.Contains('DECLARED')) {
+                    [string][uint32]$bits['DECLARED']
+                } else {
+                    'not declared'
+                }
+            ) `
+            -Message 'Collector feature-bit authority does not put DECLARED in bit 0.')
     }
 
     function Get-PassiveCollectorFeatureMask {
@@ -571,18 +852,33 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
             [Text.RegularExpressions.RegexOptions]::Singleline
         )
         if (-not $maskMatch.Success) {
-            throw "Collector feature-bit authority does not declare $MaskName."
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field $MaskName `
+                -Expected "pub const ${MaskName}: u32 = ...;" `
+                -Observed 'not declared' `
+                -Message "Collector feature-bit authority does not declare $MaskName.")
         }
         $mask = [uint32]0
         $expression = $maskMatch.Groups[1].Value
         $members = [regex]::Matches($expression, 'Self::([A-Z0-9_]+)')
         if ($members.Count -eq 0) {
-            throw "Collector feature-bit authority declares an empty $MaskName."
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field $MaskName `
+                -Expected 'at least one Self::NAME member' `
+                -Observed $expression.Trim() `
+                -Message "Collector feature-bit authority declares an empty $MaskName.")
         }
         foreach ($member in $members) {
             $name = $member.Groups[1].Value
             if (-not $Bits.Contains($name)) {
-                throw "Collector feature mask $MaskName names unknown bit '$name'."
+                throw (New-PassiveReadyContractMismatch `
+                    -Class 'collector_feature_dialect' `
+                    -Field "$MaskName member $name" `
+                    -Expected 'a bit constant this verifier already parsed' `
+                    -Observed "known bits: $(@($Bits.Keys) -join ',')" `
+                    -Message "Collector feature mask $MaskName names unknown bit '$name'.")
             }
             $mask = [uint32]($mask -bor [uint32]$Bits[$name])
         }
@@ -597,10 +893,15 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
         $residue = ([regex]::Replace($expression, 'Self::[A-Z0-9_]+', '') `
             -replace '\|', '').Trim()
         if ($residue -ne '') {
-            throw (
-                "Collector feature mask $MaskName has terms this verifier " +
-                "cannot read: '$residue'."
-            )
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field $MaskName `
+                -Expected 'only Self::NAME members joined by |' `
+                -Observed $residue `
+                -Message (
+                    "Collector feature mask $MaskName has terms this verifier " +
+                    "cannot read: '$residue'."
+                ))
         }
         return $mask
     }
@@ -613,7 +914,12 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
     $namesStart = $implSource.IndexOf('pub const FEATURE_NAMES:')
     $namesEnd = $implSource.IndexOf('];', [Math]::Max($namesStart, 0))
     if ($namesStart -lt 0 -or $namesEnd -le $namesStart) {
-        throw 'Collector feature-bit authority does not declare FEATURE_NAMES.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'FEATURE_NAMES' `
+            -Expected 'pub const FEATURE_NAMES: [...] = [ .. ];' `
+            -Observed "declaration_at=$namesStart terminator_at=$namesEnd" `
+            -Message 'Collector feature-bit authority does not declare FEATURE_NAMES.')
     }
     $namesSource = $implSource.Substring($namesStart, $namesEnd - $namesStart)
     $featureNames = [Collections.Generic.List[object]]::new()
@@ -625,11 +931,21 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
     )) {
         $name = $match.Groups[1].Value
         if (-not $bits.Contains($name)) {
-            throw "Collector FEATURE_NAMES names unknown bit '$name'."
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field "FEATURE_NAMES entry $name" `
+                -Expected 'a bit constant this verifier already parsed' `
+                -Observed "known bits: $(@($bits.Keys) -join ',')" `
+                -Message "Collector FEATURE_NAMES names unknown bit '$name'.")
         }
         $bit = [uint32]$bits[$name]
         if (($namedMask -band $bit) -ne 0) {
-            throw "Collector FEATURE_NAMES names bit '$name' twice."
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field "FEATURE_NAMES entry $name" `
+                -Expected 'each bit named exactly once' `
+                -Observed 'named a second time' `
+                -Message "Collector FEATURE_NAMES names bit '$name' twice.")
         }
         $namedMask = [uint32]($namedMask -bor $bit)
         $featureNames.Add([pscustomobject]@{
@@ -638,7 +954,12 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
         })
     }
     if ($featureNames.Count -eq 0) {
-        throw 'Collector FEATURE_NAMES is empty.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'FEATURE_NAMES' `
+            -Expected 'at least one (Self::NAME, "cargo-name") entry' `
+            -Observed 'none' `
+            -Message 'Collector FEATURE_NAMES is empty.')
     }
     # EVERY ENTRY, OR NONE. The same failure as the mask residue above, one
     # level down: an entry whose bit is written as a literal rather than
@@ -648,11 +969,16 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
     # shows up as a mismatch.
     $quotedNames = [regex]::Matches($namesSource, '"[^"]*"').Count
     if ($quotedNames -ne $featureNames.Count) {
-        throw (
-            "Collector FEATURE_NAMES declares $quotedNames cargo names but " +
-            "$($featureNames.Count) of them are bound to a bit this verifier " +
-            'can read.'
-        )
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'FEATURE_NAMES' `
+            -Expected "$quotedNames entries bound to a readable bit" `
+            -Observed "$($featureNames.Count) bound" `
+            -Message (
+                "Collector FEATURE_NAMES declares $quotedNames cargo names but " +
+                "$($featureNames.Count) of them are bound to a bit this verifier " +
+                'can read.'
+            ))
     }
     # Every bit the contract DECLARES has to be inside KNOWN_MASK. Without
     # this, a bit constant left out of the mask expression is simply invisible
@@ -660,25 +986,50 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
     # resulting receipt as carrying an unknown bit.
     foreach ($entry in $bits.GetEnumerator()) {
         if (([uint32]$entry.Value -band $knownMask) -eq 0) {
-            throw (
-                "Collector feature bit '$($entry.Key)' is declared but is not " +
-                'in KNOWN_MASK.'
-            )
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field $entry.Key `
+                -Expected "inside KNOWN_MASK 0x$($knownMask.ToString('x8'))" `
+                -Observed "0x$(([uint32]$entry.Value).ToString('x8'))" `
+                -Message (
+                    "Collector feature bit '$($entry.Key)' is declared but is not " +
+                    'in KNOWN_MASK.'
+                ))
         }
     }
     # DECLARED is not a cargo feature and must not be spelled as one; every
     # other known bit must be, or a set bit would have no name to report.
     if (($namedMask -band [uint32]$bits['DECLARED']) -ne 0) {
-        throw 'Collector FEATURE_NAMES spells DECLARED as a cargo feature.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'FEATURE_NAMES/DECLARED' `
+            -Expected 'DECLARED absent from FEATURE_NAMES' `
+            -Observed 'DECLARED spelled as a cargo feature' `
+            -Message 'Collector FEATURE_NAMES spells DECLARED as a cargo feature.')
     }
     if ([uint32]($namedMask -bor [uint32]$bits['DECLARED']) -ne $knownMask) {
-        throw 'Collector FEATURE_NAMES does not cover every known feature bit.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'FEATURE_NAMES coverage' `
+            -Expected "0x$($knownMask.ToString('x8'))" `
+            -Observed "0x$(([uint32]($namedMask -bor [uint32]$bits['DECLARED'])).ToString('x8'))" `
+            -Message 'Collector FEATURE_NAMES does not cover every known feature bit.')
     }
     if (($diagnosticMask -band [uint32]$bits['DECLARED']) -ne 0) {
-        throw 'Collector DIAGNOSTIC_MASK includes DECLARED.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'DIAGNOSTIC_MASK' `
+            -Expected 'DECLARED excluded' `
+            -Observed "0x$($diagnosticMask.ToString('x8'))" `
+            -Message 'Collector DIAGNOSTIC_MASK includes DECLARED.')
     }
     if (($diagnosticMask -band (-bnot $knownMask)) -ne 0) {
-        throw 'Collector DIAGNOSTIC_MASK is not a subset of KNOWN_MASK.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'DIAGNOSTIC_MASK' `
+            -Expected "a subset of KNOWN_MASK 0x$($knownMask.ToString('x8'))" `
+            -Observed "0x$($diagnosticMask.ToString('x8'))" `
+            -Message 'Collector DIAGNOSTIC_MASK is not a subset of KNOWN_MASK.')
     }
     $ordered = @(
         $featureNames | Sort-Object -Property { [uint32]$_.Bit }
@@ -696,7 +1047,12 @@ function Get-PassiveControlTransportPayloadSource {
     $payloadPath = Join-Path `
         $nativeRoot 'compact_contract\src\control_transport\payloads.rs'
     if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
-        throw 'Passive READY canonical Rust producer sources are unavailable.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'producer_sources' `
+            -Field 'control_transport/payloads.rs' `
+            -Expected 'readable at the canonical path' `
+            -Observed "missing: $payloadPath" `
+            -Message 'Passive READY canonical Rust producer sources are unavailable.')
     }
     return (Get-Content -LiteralPath $payloadPath -Raw)
 }
@@ -911,11 +1267,17 @@ function Assert-PassiveReadySourceContractParity {
     $payloadPath = Join-Path `
         $nativeRoot 'compact_contract\src\control_transport\payloads.rs'
     $hostPath = Join-Path $nativeRoot 'recorder_host\src\main.rs'
-    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $profilePath -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $payloadPath -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $hostPath -PathType Leaf)) {
-        throw 'Passive READY canonical Rust producer sources are unavailable.'
+    $missingSources = @(
+        @($contractPath, $profilePath, $payloadPath, $hostPath) |
+            Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
+    )
+    if ($missingSources.Count -gt 0) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'producer_sources' `
+            -Field 'compact_contract/recorder_host sources' `
+            -Expected 'all four canonical producer sources readable' `
+            -Observed "missing: $($missingSources -join '; ')" `
+            -Message 'Passive READY canonical Rust producer sources are unavailable.')
     }
     $contract = Get-Content -LiteralPath $contractPath -Raw
     $profile = Get-Content -LiteralPath $profilePath -Raw
@@ -937,16 +1299,55 @@ function Assert-PassiveReadySourceContractParity {
         'b"battle-plan.capture_ready.zero_mutation_policy.v1"'
     )
     foreach ($fragment in $requiredContractFragments) {
-        if (-not $contract.Contains($fragment)) {
-            throw "Passive READY verifier/producer source parity failed: missing '$fragment'."
-        }
+        Assert-PassiveProducerFragment `
+            -Source $contract `
+            -Fragment $fragment `
+            -Class 'contract_fragment' `
+            -Message "Passive READY verifier/producer source parity failed: missing '$fragment'."
     }
-    $hookAuthority = Get-PassivePinnedHookAllowlistAuthorityFromSource `
-        $contract
+    # The roster parse is the same DIALECT question one level down -- can this
+    # verifier still re-derive the allowlist digest from the contract's own
+    # roster -- so a failure in it has to arrive at the harness classified, not
+    # as an anonymous sentence. Its own checks name their subject in prose and
+    # are left as they are; this gives the whole family a class and a field
+    # without restating twenty individual comparisons. An already-structured
+    # mismatch passes straight through so the more specific class wins.
+    try {
+        $hookAuthority = Get-PassivePinnedHookAllowlistAuthorityFromSource `
+            $contract
+    } catch {
+        if ($null -ne (Get-PassiveReadyContractMismatch -ErrorRecord $_)) { throw }
+        $rosterReason = ''
+        try { $rosterReason = ([string]$_.Exception.Message -replace '\s+', ' ').Trim() } catch { }
+        if ([string]::IsNullOrWhiteSpace($rosterReason)) {
+            $rosterReason = 'the roster parse failed without a message'
+        }
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'hook_roster_dialect' `
+            -Field 'PINNED_PRODUCTION_HOOK_SPECS_V1' `
+            -Expected 'a roster this verifier can re-derive the allowlist digest from' `
+            -Observed $rosterReason `
+            -Message $rosterReason)
+    }
     $profileFragment = 'pub const COLLECTOR_PROFILE_ID: &str = "' +
         $CollectorBuildProfileId + '";'
     if (-not $profile.Contains($profileFragment)) {
-        throw 'Passive READY verifier build-profile input differs from compact_contract.'
+        $declaredProfile = [regex]::Match(
+            $profile,
+            'pub const COLLECTOR_PROFILE_ID: &str = "([^"]*)";'
+        )
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'build_profile' `
+            -Field 'COLLECTOR_PROFILE_ID' `
+            -Expected $CollectorBuildProfileId `
+            -Observed $(
+                if ($declaredProfile.Success) {
+                    $declaredProfile.Groups[1].Value
+                } else {
+                    'not declared by compact_contract'
+                }
+            ) `
+            -Message 'Passive READY verifier build-profile input differs from compact_contract.')
     }
     foreach ($fragment in @(
         'pub const CAPTURE_READY_MAGIC: &[u8; 4] = b"H4RD";',
@@ -963,9 +1364,11 @@ function Assert-PassiveReadySourceContractParity {
         'if read_u16(bytes, 50) != 0 {',
         'if read_u32(bytes, 20) != 0 {'
     )) {
-        if (-not $payload.Contains($fragment)) {
-            throw "Passive READY wire verifier/producer parity failed: missing '$fragment'."
-        }
+        Assert-PassiveProducerFragment `
+            -Source $payload `
+            -Fragment $fragment `
+            -Class 'wire_fragment' `
+            -Message "Passive READY wire verifier/producer parity failed: missing '$fragment'."
     }
     # Parsed here so a contract this file cannot read is a source-parity
     # failure, reported before a capture opens a graded window, rather than a
@@ -977,13 +1380,24 @@ function Assert-PassiveReadySourceContractParity {
         $readyEncoderStart
     )
     if ($readyEncoderStart -lt 0 -or $readyEncoderEnd -le $readyEncoderStart) {
-        throw 'Passive READY producer encoder boundary is unavailable.'
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'encoder_boundary' `
+            -Field 'impl CaptureReadyV2 { .. pub struct CaptureReadyAckFlags' `
+            -Expected 'the encoder impl opens before the ACK-flags struct' `
+            -Observed "impl_at=$readyEncoderStart ack_flags_at=$readyEncoderEnd" `
+            -Message 'Passive READY producer encoder boundary is unavailable.')
     }
     $readyEncoder = $payload.Substring(
         $readyEncoderStart,
         $readyEncoderEnd - $readyEncoderStart
     )
     $previousOffset = -1
+    # The fragment admitted immediately before this one, so a refusal can say
+    # what the producer was expected to append AFTER. t36's refusal named only
+    # the fragment that was missing (`&0u32` at offset 20), which reads as "this
+    # line is gone" when the truth was "the contract moved and this mirror did
+    # not" -- two different repairs.
+    $previousFragment = '(start of the CaptureReadyV2 encoder)'
     foreach ($fragment in @(
         'out.extend_from_slice(CAPTURE_READY_MAGIC);',
         'out.extend_from_slice(&CAPTURE_READY_VERSION.to_le_bytes());',
@@ -1023,15 +1437,27 @@ function Assert-PassiveReadySourceContractParity {
     )) {
         $offset = $readyEncoder.IndexOf($fragment, $previousOffset + 1)
         if ($offset -le $previousOffset) {
-            throw "Passive READY wire field order differs at '$fragment'."
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'wire_field_order' `
+                -Field $fragment `
+                -Expected "appended after '$previousFragment'" `
+                -Observed $(
+                    if ($readyEncoder.IndexOf($fragment) -lt 0) {
+                        'the encoder no longer appends this field at all'
+                    } else {
+                        'the encoder appends it earlier than the mirror expects'
+                    }
+                ) `
+                -Message "Passive READY wire field order differs at '$fragment'.")
         }
         $previousOffset = $offset
+        $previousFragment = $fragment
     }
-    if (-not $hostSource.Contains(
-        '"clock_observation_ordinal": ready.clock_observation_ordinal'
-    )) {
-        throw 'Passive READY receipt producer no longer emits clock_observation_ordinal.'
-    }
+    Assert-PassiveProducerFragment `
+        -Source $hostSource `
+        -Fragment '"clock_observation_ordinal": ready.clock_observation_ordinal' `
+        -Class 'host_receipt_field' `
+        -Message 'Passive READY receipt producer no longer emits clock_observation_ordinal.'
     return $hookAuthority
 }
 
@@ -1718,12 +2144,19 @@ function Test-PassiveCaptureReadyReceipt {
         } else {
             'READY custody is NOT established'
         }
-        throw (
+        # Structured, so the harness's refusal receipt can name each clause and
+        # the side it fell on without re-parsing this sentence. The sentence
+        # itself is unchanged: it is what every existing caller prints.
+        $refusalMessage = (
             "CaptureReadyV2 failed passive admission on " +
             "$($admissionFailures.Count) clause(s): " +
             ($admissionFailures -join '; ') +
             ". $custodyNote."
         )
+        throw (New-PassiveReadyAdmissionRefusal `
+            -Message $refusalMessage `
+            -CustodyFailures $custodyFailures `
+            -GradingFailures $gradingFailures)
     }
 
     return $authority

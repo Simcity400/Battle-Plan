@@ -109,7 +109,8 @@ $underTest = @(
     'Format-Hoi4AffinityMask',
     'Get-Hoi4CpuAffinityPlan',
     'Set-Hoi4ProcessAffinity',
-    'New-RecorderArgumentPlan'
+    'New-RecorderArgumentPlan',
+    'Invoke-CaptureSupervisionStep'
 )
 $missing = @($underTest | Where-Object { -not $harnessFunctions.ContainsKey($_) })
 if ($missing.Count -gt 0) {
@@ -1233,6 +1234,303 @@ $pinnedDigests = @(
         ForEach-Object { [string]$_.expected_ready_payload_sha256 })
 if ($pinnedDigests.Count -lt 3) {
     throw "the receipt-dialect fixture pins $($pinnedDigests.Count) rebuilt payload digests, not three."
+}
+
+# --- post-launch supervision containment ---------------------------------------
+#
+# WHAT BROKE. Run t38 threw a parameter-binding error inside the capture phase,
+# in the block that pins collector_record's CPU affinity. The throw abandoned
+# the capture-phase try block: the witness stopped after ONE sample, the graded
+# window never closed, the harness exited 2, and both the game and collector_record
+# were left running. The recorder then ran to completion by itself, folded, and
+# published an authenticated teardown receipt four minutes later -- which is the
+# proof that "leave it alone and keep waiting" was available the whole time and
+# that collapsing was the harness's choice, not the situation's.
+#
+# `Invoke-CaptureSupervisionStep` is the containment. Every case below asks the
+# same question: what harness change would make it fail?
+#   * deleting the try/catch -> the throw escapes and case 2/3/5 go red;
+#   * recording nothing -> case 2's accumulator is empty;
+#   * dropping the exception-type fallback -> case 4 records a bare 'step: ';
+#   * returning $true unconditionally -> cases 2..5 go red;
+#   * swallowing without accumulating (a warning instead of a failure) ->
+#     case 2 and case 6 go red, and with them the exit-3 refusal path, because
+#     the harness decides that code from this list being non-empty.
+
+$supervisionProbe = [System.Collections.Generic.List[string]]::new()
+$supervisionSideEffect = [System.Collections.Generic.List[string]]::new()
+
+# 1. A step that succeeds returns $true, records nothing, and actually ran.
+$supervisionOk = Invoke-CaptureSupervisionStep `
+    -Step 'probe_ok' `
+    -Failures $supervisionProbe `
+    -Action { $supervisionSideEffect.Add('ran') }
+Assert-True -Condition ([bool]$supervisionOk) `
+    -Message 'Invoke-CaptureSupervisionStep did not report a successful step as successful'
+Assert-Equal -Expected 0 -Actual $supervisionProbe.Count `
+    -Message 'a successful supervision step recorded a failure'
+Assert-SequenceEqual -Expected @('ran') -Actual ([string[]]$supervisionSideEffect.ToArray()) `
+    -Message 'the supervision step body did not run'
+
+# 1b. THE CONTAINED BODY STILL SEES THE SCRIPT IT CAME FROM.
+#
+#     `& $Action` runs the scriptblock in a CHILD scope, and the real contained
+#     body -- the CPU-affinity pin -- reads a dozen script-scope variables
+#     ($cpuAffinityPlan, $recorderProcess, $OutDir) and calls two script-scope
+#     functions (Set-Hoi4ProcessAffinity, Format-Hoi4AffinityMask). If any of
+#     that stopped resolving, the block would fail on EVERY run and the failure
+#     would be contained -- a silent, permanent supervision failure on a
+#     mechanism that used to work, reported as if the mask had been refused.
+#     Nothing else in this suite executes the real block, so the mechanism it
+#     depends on is proved here directly.
+$supervisionScopeProbeValue = 'visible-from-parent-scope'
+function Get-SupervisionScopeProbe { return 'callable-from-parent-scope' }
+$supervisionScopeSeen = [System.Collections.Generic.List[string]]::new()
+[void](Invoke-CaptureSupervisionStep `
+    -Step 'probe_scope' `
+    -Failures $supervisionProbe `
+    -Action {
+        $supervisionScopeSeen.Add($supervisionScopeProbeValue)
+        $supervisionScopeSeen.Add((Get-SupervisionScopeProbe))
+    })
+Assert-SequenceEqual `
+    -Expected @('visible-from-parent-scope', 'callable-from-parent-scope') `
+    -Actual ([string[]]$supervisionScopeSeen.ToArray()) `
+    -Message ('a contained supervision step cannot read its script scope or call its ' +
+        "script's functions; the real affinity block would fail on every run and the " +
+        'failure would be swallowed as a contained refusal')
+Assert-Equal -Expected 0 -Actual $supervisionProbe.Count `
+    -Message 'the scope probe recorded a failure, so the lookup above did not actually resolve'
+
+# 2. A throwing step is CONTAINED: control returns, $false comes back, and the
+#    accumulator names both the step and the reason. The accumulator is what the
+#    harness's refusal code and refusal receipt are computed from, so an empty
+#    one is a silent success on a failed capture.
+$supervisionFailed = Invoke-CaptureSupervisionStep `
+    -Step 'probe_throws' `
+    -Failures $supervisionProbe `
+    -Action { throw 'the affinity mask could not be applied' }
+Assert-True -Condition (-not [bool]$supervisionFailed) `
+    -Message 'Invoke-CaptureSupervisionStep reported a throwing step as successful'
+Assert-Equal -Expected 1 -Actual $supervisionProbe.Count `
+    -Message 'a throwing supervision step did not record exactly one failure'
+# Read through a helper rather than by index: a containment that recorded
+# NOTHING would otherwise make this suite die on an out-of-range read instead of
+# reporting which case failed, and a suite that crashes says less than one that
+# names the defect.
+function Get-SupervisionEntry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$Failures,
+        [Parameter(Mandatory = $true)][int]$Index
+    )
+    if ($Index -ge $Failures.Count) { return '<nothing was recorded>' }
+    return $Failures[$Index]
+}
+$supervisionThrowEntry = Get-SupervisionEntry -Failures $supervisionProbe -Index 0
+Assert-True `
+    -Condition ($supervisionThrowEntry -clike 'probe_throws: *' -and
+        $supervisionThrowEntry -clike '*the affinity mask could not be applied*') `
+    -Message "the contained failure does not name its step and reason: '$supervisionThrowEntry'"
+
+# 3. The exact t38 shape, reproduced: a PARAMETER-BINDING failure, which is a
+#    different exception class from a `throw` and is what actually killed the
+#    capture. A containment that only catches RuntimeException would pass case 2
+#    and still lose this one.
+$supervisionBindingFailed = Invoke-CaptureSupervisionStep `
+    -Step 'probe_binding' `
+    -Failures $supervisionProbe `
+    -Action {
+        # [ref] refuses a literal $null in Windows PowerShell 5.1 no matter what
+        # [AllowNull()] says -- the t38 defect itself, kept here as the probe.
+        function Test-BindingProbe {
+            param([Parameter(Mandatory = $true)][ref]$Cell)
+            return $Cell
+        }
+        Test-BindingProbe -Cell $null
+    }
+Assert-True -Condition (-not [bool]$supervisionBindingFailed) `
+    -Message 'a parameter-binding failure escaped the supervision containment'
+Assert-Equal -Expected 2 -Actual $supervisionProbe.Count `
+    -Message 'a contained parameter-binding failure was not recorded'
+$supervisionBindingEntry = Get-SupervisionEntry -Failures $supervisionProbe -Index 1
+Assert-True -Condition ($supervisionBindingEntry -clike 'probe_binding: *') `
+    -Message "the contained binding failure does not name its step: '$supervisionBindingEntry'"
+
+# 4. An exception carrying NO message still yields a named reason. Without the
+#    type fallback this records 'probe_silent: ' -- a refusal receipt with a
+#    blank cause, which is the unnamed strand this lane exists to remove, just
+#    one layer in.
+$supervisionSilent = [System.Collections.Generic.List[string]]::new()
+[void](Invoke-CaptureSupervisionStep `
+    -Step 'probe_silent' `
+    -Failures $supervisionSilent `
+    -Action { throw [System.InvalidOperationException]::new('') })
+Assert-Equal -Expected 1 -Actual $supervisionSilent.Count `
+    -Message 'a supervision step that threw an empty-message exception recorded nothing'
+$supervisionSilentEntry = Get-SupervisionEntry -Failures $supervisionSilent -Index 0
+Assert-True `
+    -Condition ($supervisionSilentEntry -cne 'probe_silent: ' -and
+        $supervisionSilentEntry.Length -gt 'probe_silent: '.Length) `
+    -Message "a message-less exception produced a blank reason: '$supervisionSilentEntry'"
+
+# 5. A NON-TERMINATING cmdlet error inside the action is contained too. The
+#    harness runs under $ErrorActionPreference = 'Stop', which promotes these to
+#    terminating; a containment that assumed only explicit throws arrive would
+#    let one of these abandon the attempt exactly as t38's did.
+$supervisionCmdlet = [System.Collections.Generic.List[string]]::new()
+[void](Invoke-CaptureSupervisionStep `
+    -Step 'probe_cmdlet' `
+    -Failures $supervisionCmdlet `
+    -Action { Get-Item -LiteralPath 'Q:\no\such\path\for\a\supervision\probe' })
+Assert-Equal -Expected 1 -Actual $supervisionCmdlet.Count `
+    -Message 'a terminating cmdlet error inside a supervision step was not contained and recorded'
+
+# 6. Failures ACCUMULATE in order. The refusal receipt lists every step that
+#    failed, so a containment that overwrote or deduplicated would report one
+#    cause for a run that had several.
+Assert-SequenceEqual `
+    -Expected @('probe_throws', 'probe_binding') `
+    -Actual ([string[]]@($supervisionProbe | ForEach-Object { ($_ -split ':')[0] })) `
+    -Message 'contained supervision failures do not accumulate in the order they happened'
+
+# --- the harness applies containment ONLY where it is allowed to ---------------
+#
+# The dangerous half of this change is not the containment, it is the
+# containment being wrapped around something that must abort. A custody
+# decision turned into a recorded warning is strictly worse than the crash it
+# replaced. So the set of contained steps is CLOSED and named here: adding a
+# call to `Invoke-CaptureSupervisionStep` in the harness fails this suite until
+# somebody writes the step name down next to a reason it is safe.
+function Get-CommandArgumentText {
+    param(
+        [Parameter(Mandatory = $true)]$Command,
+        [Parameter(Mandatory = $true)][string]$ParameterName
+    )
+    for ($i = 0; $i -lt $Command.CommandElements.Count - 1; $i++) {
+        $element = $Command.CommandElements[$i]
+        if ($element -is [System.Management.Automation.Language.CommandParameterAst] -and
+            $element.ParameterName -ceq $ParameterName) {
+            return ([string]$Command.CommandElements[$i + 1].Extent.Text).Trim()
+        }
+    }
+    return ''
+}
+
+$supervisionCalls = @(
+    $harnessAst.FindAll(
+        {
+            param($n)
+            $n -is [System.Management.Automation.Language.CommandAst] -and
+            $n.GetCommandName() -ceq 'Invoke-CaptureSupervisionStep'
+        }, $true))
+Assert-SequenceEqual `
+    -Expected @('recorder_cpu_affinity') `
+    -Actual ([string[]]@(
+        $supervisionCalls |
+            ForEach-Object { (Get-CommandArgumentText -Command $_ -ParameterName 'Step').Trim("'", '"') } |
+            Sort-Object)) `
+    -Message ('the set of contained supervision steps changed. Containment must never ' +
+        'wrap a custody decision -- READY admission, teardown authentication, the ' +
+        'witness verdict, or the client-driving opt-in -- because a contained custody ' +
+        'violation is a warning where a refusal belongs')
+
+# THE ACCUMULATOR IT WRITES INTO IS THE POINT OF THE CALL, so the argument is
+# checked, not just the step name. Binding a fresh throwaway list -- `-Failures
+# ([Collections.Generic.List[string]]::new())` -- contains the failure into
+# nothing: $supervisionFailures stays empty, the refusal arbitration never sees
+# it, and a capture whose affinity mask silently did not take returns 0 and
+# reads as a good floor measurement. That mutation passes every other case in
+# this suite and the policy gate. (Codex review 019fde5c-e4dd-7563-ad73-ba3548b40eb1,
+# finding 2.)
+foreach ($supervisionCall in $supervisionCalls) {
+    $stepName = (Get-CommandArgumentText -Command $supervisionCall -ParameterName 'Step').Trim("'", '"')
+    Assert-Equal `
+        -Expected '$supervisionFailures' `
+        -Actual (Get-CommandArgumentText -Command $supervisionCall -ParameterName 'Failures') `
+        -Message ("the contained step '$stepName' does not accumulate into " +
+            '$supervisionFailures, so its failure is recorded nowhere the refusal ' +
+            'code can read')
+}
+
+# AND THE ACTION HAS TO BE THE WORK. A non-empty -Action proves nothing: a
+# `return` inserted at the top of the block, or a harmless placeholder with the
+# real body moved out after it, leaves every case above green while the affinity
+# pin either never runs or runs UNCONTAINED -- which is the t38 failure path
+# restored intact. The action's scriptblock is therefore required to contain the
+# affinity call and the receipt write, and to start with the plan guard rather
+# than with a control-flow statement that skips them.
+# (Codex review 019fdeb2-3e3d-79f2-a8b1-a86a8c8e26c1, finding 5.)
+$affinityCall = @(
+    $supervisionCalls | Where-Object {
+        (Get-CommandArgumentText -Command $_ -ParameterName 'Step').Trim("'", '"') -ceq 'recorder_cpu_affinity'
+    })
+Assert-Equal -Expected 1 -Actual $affinityCall.Count `
+    -Message 'the recorder CPU-affinity pin is no longer a contained supervision step'
+if ($affinityCall.Count -eq 1) {
+    $affinityActionAst = $null
+    for ($i = 0; $i -lt $affinityCall[0].CommandElements.Count - 1; $i++) {
+        $element = $affinityCall[0].CommandElements[$i]
+        if ($element -is [System.Management.Automation.Language.CommandParameterAst] -and
+            $element.ParameterName -ceq 'Action') {
+            $affinityActionAst = $affinityCall[0].CommandElements[$i + 1]
+        }
+    }
+    Assert-True `
+        -Condition ($affinityActionAst -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) `
+        -Message 'the contained affinity step is not passed a scriptblock to contain'
+    if ($affinityActionAst -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) {
+        $affinityBody = $affinityActionAst.ScriptBlock
+        foreach ($mustContain in @(
+            @{ Name = 'Set-Hoi4ProcessAffinity'
+               Why  = 'the mask is applied nowhere else, so a body without it contains nothing' },
+            @{ Name = 'ConvertTo-Json'
+               Why  = 'the applied-affinity receipt is written inside the contained block' }
+        )) {
+            $found = @(
+                $affinityBody.FindAll(
+                    {
+                        param($n)
+                        $n -is [System.Management.Automation.Language.CommandAst] -and
+                        $n.GetCommandName() -ceq $mustContain.Name
+                    }, $true))
+            Assert-True -Condition ($found.Count -ge 1) `
+                -Message ("the contained affinity action no longer calls $($mustContain.Name): " +
+                    $mustContain.Why)
+        }
+        # The FIRST statement, so a `return` (or any other early exit) cannot sit
+        # above the work and silence it while every other assertion still holds.
+        $firstStatement = ''
+        if (@($affinityBody.EndBlock.Statements).Count -gt 0) {
+            $firstStatement = ([string]@($affinityBody.EndBlock.Statements)[0].Extent.Text).Trim()
+        }
+        Assert-True `
+            -Condition ($firstStatement -clike 'if ($null -ne $cpuAffinityPlan)*') `
+            -Message ('the contained affinity action does not START with the plan guard; ' +
+                "its first statement is '$(($firstStatement -split "`n")[0])'. Anything " +
+                'ahead of that guard can skip the work while leaving this suite green, ' +
+                'which restores the uncontained t38 path with the containment still ' +
+                'nominally in place')
+        # ...and no early exit ANYWHERE inside it. Keeping the guard first is
+        # not enough: a `return` as the guard's own first statement leaves the
+        # outer shape intact and the affinity/JSON commands still present in the
+        # AST, while at runtime the action does nothing, reports success, and
+        # records no supervision failure -- a mask that silently never applied.
+        # `return` has no legitimate use in this block; it runs for effect.
+        # (Codex review 019fde81-5d2b-73e1-8541-ef0492f5f62a, finding 5.)
+        $affinityReturns = @(
+            $affinityBody.FindAll(
+                {
+                    param($n)
+                    $n -is [System.Management.Automation.Language.ReturnStatementAst]
+                }, $true))
+        Assert-Equal -Expected 0 -Actual $affinityReturns.Count `
+            -Message ('the contained affinity action contains a `return`. It runs for ' +
+                'effect and has nothing to return, so an early exit there can only ' +
+                'skip the mask, the receipt, or both -- while every other assertion ' +
+                'here stays green and the step reports success')
+    }
 }
 
 # --- verdict ------------------------------------------------------------------

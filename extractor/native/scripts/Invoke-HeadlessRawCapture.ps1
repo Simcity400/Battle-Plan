@@ -16,6 +16,38 @@ artifact are identical either way.
 
 Deliberately NOT included: the debug capture profile, sidecar logs, per-read
 RC counters. The point of this loop is a plain stream plus a plain manifest.
+
+EXIT CODES
+
+  0  The recorder exited 0, the game survived, and nothing was refused.
+  1  An ordinary failure. Reported in prose; no caller keys on it.
+  2  The compact-status verdict. Either the raw-capture report found status
+     bits no contract defines, or -- the fail-closed half -- the run never
+     reached a report that could answer, so the question stands unanswered.
+     This code has ABSOLUTE precedence: it is the only machine-readable
+     verdict that is gone forever if any other code is returned first, and
+     every co-occurring failure is still printed beside it.
+  3  A NAMED REFUSAL, and nothing outranks it. The attempt reached the end of
+     its accounting with no other failure pending: the recorder exited 0 and
+     authenticated its own teardown, the graded window closed, the cleanup
+     prefix completed, nothing is unwinding, the report answered, and
+     CAPTURE_REFUSAL_V1.json names what was refused. A refusal is not a crash --
+     everything downstream of it still ran, which is exactly why it needs a code
+     of its own: without one the attempt would return the recorder's 0 and read
+     as a good capture.
+
+     3 is the LAST code considered, never the first. An `exit` in a `finally`
+     beats a pending exception, so a refusal is capable of suppressing every
+     other failure here; each one is therefore checked ahead of it, including
+     a still-unwinding abort and a terminating error in the cleanup prefix.
+     A refused READY normally leaves through 2, because it aborts before the
+     report can answer -- its refusal is still fully named, just not with 3.
+
+Every refusal also prints machine-readable phase lines (`phase=capture_refused`,
+`phase=capture_refused_clause`, `phase=supervision_contained`,
+`phase=supervision_failed`, `phase=capture_refusals`), so a caller that reads the
+transcript rather than the exit code sees the same thing. There is no route out
+of this script that strands a run without one of these.
 #>
 [CmdletBinding()]
 param(
@@ -1246,6 +1278,107 @@ $passiveClockIntervalsPath = Join-Path $OutDir 'PASSIVE_CLOCK_INTERVALS_V2.json'
 $passiveWitnessSampleCount = 0
 $passiveWitnessLastPhase = 'none'
 $harnessAbortReason = $null
+# The FACT of an abort, distinct from its text. See the outer catch: a
+# message-less exception leaves the reason string empty, and the refusal
+# arbitration must not read that as "nothing went wrong".
+$harnessAborted = $false
+
+# --- named refusals ----------------------------------------------------------
+#
+# TWO DIFFERENT THINGS, KEPT APART, because they call for opposite handling.
+#
+# $captureRefusals holds refusals of the CAPTURE: a READY receipt the shared
+# verifier would not admit. The capture is over; the recorder is not, and the
+# whole point of naming the refusal rather than dying of it is that cleanup
+# still waits the recorder out and still authenticates its teardown.
+#
+# $supervisionFailures holds failures of the HARNESS's own bookkeeping AFTER
+# the recorder was launched -- the CPU-affinity pin, the receipt writes beside
+# it. Run t38 is what this list exists for: a parameter-binding error in the
+# affinity path threw out of the capture phase, and because the recorder budget
+# had not been computed yet, cleanup's wait loop found a null deadline, skipped
+# itself entirely, and abandoned a recorder that then ran to completion, sealed
+# a 36 MB replay and published its own teardown receipt with nobody watching.
+# The right answer was never "collapse": it was "name it, leave the recorder
+# alone, and keep waiting for its receipts".
+#
+# NEITHER list makes an attempt succeed. A capture whose mask did not take is
+# not a floor measurement, and a refused READY is a refused READY. They make it
+# FAIL BY NAME, at the end of its normal accounting, at exit code 3.
+$captureRefusals = [Collections.Generic.List[object]]::new()
+$supervisionFailures = [Collections.Generic.List[string]]::new()
+$captureRefusalReceiptPath = Join-Path $OutDir 'CAPTURE_REFUSAL_V1.json'
+# Set by the LAST statement of the cleanup prefix, and read only by the refusal
+# arbitration. There is no way to ask PowerShell "is an exception in flight?"
+# from inside a `finally`, and the refusal code must never be the thing that
+# suppresses one: $ErrorActionPreference is 'Stop', so any failing cmdlet in the
+# cleanup prefix is terminating, and an `exit` in the enclosing `finally` would
+# swallow it and report a refusal instead of the failure.
+$cleanupPrefixCompleted = $false
+
+# Runs one piece of post-launch supervision and REFUSES TO LET IT ABANDON THE
+# ATTEMPT.
+#
+# Scope is deliberately narrow and is enforced by the caller, not by this
+# function: it is only ever wrapped around bookkeeping whose failure is not a
+# verdict about the client or about hook custody. Anything that decides whether
+# the game may be touched, whether the graded window may close, or whether a
+# receipt may be believed must keep throwing -- containment there would convert
+# a custody violation into a warning, which is the failure this whole file is
+# built to prevent.
+function Invoke-CaptureSupervisionStep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Step,
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [Collections.Generic.List[string]]$Failures
+    )
+
+    try {
+        [void](& $Action)
+        return $true
+    } catch {
+        # Message first, type as the fallback: an exception with an empty
+        # message would otherwise record a step that failed for no stated
+        # reason, which is the unnamed strand in miniature.
+        $reason = ''
+        try { $reason = ([string]$_.Exception.Message -replace '\s+', ' ').Trim() } catch { }
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = 'no message'
+            try { $reason = [string]$_.Exception.GetType().FullName } catch { }
+        }
+        $Failures.Add("${Step}: $reason")
+        # NOT Write-Error: $ErrorActionPreference is 'Stop' for this script, so
+        # Write-Error is terminating and would re-throw the very failure this
+        # function just contained.
+        Write-Host "phase=supervision_contained step=$Step reason=$reason"
+        return $false
+    }
+}
+
+# The refusal receipt, rewritten in full every time a refusal is added.
+#
+# Non-throwing on purpose and for the same reason as everything else in the
+# cleanup path: a run that cannot write its refusal receipt still has to finish
+# its accounting and still has to return the refusal code. The receipt is the
+# durable copy of what the transcript already said, not the only copy.
+function Write-CaptureRefusalReceipt {
+    try {
+        if (-not (Test-Path -LiteralPath $OutDir -PathType Container)) { return }
+        ([ordered]@{
+            schema               = 'hoi4-capture-refusal-v1'
+            out_dir              = $OutDir
+            session_id           = $sessionId
+            written_at_utc       = [DateTime]::UtcNow.ToString('o')
+            capture_refusals     = @($captureRefusals.ToArray())
+            supervision_failures = [string[]]$supervisionFailures.ToArray()
+        } | ConvertTo-Json -Depth 8) |
+            Set-Content -LiteralPath $captureRefusalReceiptPath -Encoding UTF8
+    } catch {
+        Write-Host "phase=capture_refusal_receipt_failed reason=$(($_.Exception.Message -replace '\s+', ' ').Trim())"
+    }
+}
 
 function Write-PassiveWitnessSample {
     param(
@@ -2758,6 +2891,25 @@ $collectorInjectionStarted = $true
 $undefinedStatusBitFailure =
     'the capture started but never reached the raw-capture report, so whether it ' +
     'published an undefined status bit was never asked.'
+# THE WAIT THAT CLEANUP PERFORMS IS BOUNDED FROM HERE, not from READY.
+#
+# These three used to be computed further down -- after the handle grab and
+# after the whole CPU-affinity block. Cleanup's finalize wait is guarded by
+# `$null -ne $recorderDeadline`, and `Update-RecorderFinalizeDeadline` returns
+# immediately on a null ceiling, so a throw anywhere in between left BOTH null
+# and the wait silently skipped itself. That is not a wait that gave up early;
+# it is a wait that never ran. Run t38 threw in the affinity block and exited
+# with the game and collector_record both still live, while the recorder went on to
+# finish, fold, seal and publish an authenticated teardown receipt four minutes
+# later with nobody left to read it.
+#
+# The budget is re-anchored at READY below and only ever EXTENDS, so anchoring
+# it here costs nothing and buys the invariant: from the instant a recorder
+# exists, there is a bound on how long this script will wait for it, and the
+# bound is never null.
+$recorderBudgetSeconds = $DurationSeconds + $RecorderOverheadSeconds
+$recorderDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
+$recorderFinalizeCeiling = [DateTime]::UtcNow.AddSeconds($FinalizeCeilingSeconds)
 # Take a real handle on the child NOW, while it is alive.
 #
 # `Start-Process -PassThru` under Windows PowerShell 5.1 hands back a Process
@@ -2793,11 +2945,28 @@ try {
 # which is what it did on this line until lane EQ noticed the red)
 # deliberately. Everything between Start-Process and that assignment must be
 # incapable of throwing, or a failure there leaves a live recorder that cleanup
-# does not know exists. A throw from here is ordinary: the graded window is open
-# with injection started, and cleanup already handles exactly that -- it waits
-# for the recorder's own cooperative stop and its teardown receipt rather than
-# terminating it. Failing is the right outcome; a capture whose mask did not
-# take is not a floor measurement, it is an unlabelled ordinary run.
+# does not know exists.
+#
+# CONTAINED, NOT FATAL, and t38 is why. The reasoning used to be "failing is the
+# right outcome; a capture whose mask did not take is not a floor measurement",
+# and the first half of that is still true -- it just does not follow that the
+# attempt should be abandoned. This block pins a mask and writes a receipt about
+# it. It decides nothing about the client, nothing about hook custody, and
+# nothing about whether a receipt may be believed, so its failure is a fact to
+# RECORD, not a reason to walk away from a healthy recorder mid-capture. t38's
+# throw here killed the witness, left the graded window open, exited 2, and left
+# the game and collector_record running; the recorder then finished, tore down and
+# sealed entirely on its own, which is the proof that waiting was available the
+# whole time.
+#
+# The refusal is not softened: `$supervisionFailures` is non-empty afterwards,
+# the attempt returns the refusal code, and CAPTURE_REFUSAL_V1.json names the
+# step. What changes is that it gets there through the normal end-of-run
+# accounting instead of through an abandoned try block.
+[void](Invoke-CaptureSupervisionStep `
+    -Step 'recorder_cpu_affinity' `
+    -Failures $supervisionFailures `
+    -Action {
 if ($null -ne $cpuAffinityPlan) {
     $recorderCreationFiletimeUtc = $null
     try {
@@ -2876,9 +3045,8 @@ if ($null -ne $cpuAffinityPlan) {
             -LiteralPath (Join-Path $OutDir 'HARNESS_CPU_AFFINITY_V1.json') `
             -Encoding UTF8
 }
+})
 
-$recorderBudgetSeconds = $DurationSeconds + $RecorderOverheadSeconds
-$recorderDeadline = [DateTime]::UtcNow.AddSeconds($recorderBudgetSeconds)
 [void](Write-PassiveWitnessSample `
     -Phase 'attach_started' `
     -TargetProcessId $gamePid `
@@ -2945,7 +3113,9 @@ if ($recorderReadyDeadline -gt $recorderDeadline) {
     $recorderDeadline = $recorderReadyDeadline
 }
 # The progress bound never runs past this, so a recorder that keeps reporting
-# work forever is still bounded. Anchored at READY like the budget above.
+# work forever is still bounded. Anchored at READY like the budget above, and
+# like the budget it replaces a launch-time value rather than a null: READY is
+# always later than Start-Process, so this only ever moves the ceiling out.
 $recorderFinalizeCeiling = [DateTime]::UtcNow.AddSeconds($FinalizeCeilingSeconds)
 Write-Host "phase=recorder_budget_anchored_at_ready budget_s=$recorderBudgetSeconds duration_s=$DurationSeconds overhead_s=$RecorderOverheadSeconds deadline_utc=$($recorderDeadline.ToString('o')) finalize_no_progress_s=$FinalizeNoProgressSeconds finalize_ceiling_utc=$($recorderFinalizeCeiling.ToString('o'))"
 
@@ -2956,7 +3126,29 @@ $expectedDurationMilliseconds = [uint32](
     ) * 1000
 )
 $collectorControlPath = Join-Path $releaseRoot 'collector_control.json'
-$sharedReadyAuthority = Test-PassiveCaptureReadyReceipt `
+# EVERY WAY THIS CAN FAIL IS NAMED BEFORE IT PROPAGATES.
+#
+# The verifier refuses a receipt in two very different ways and, until this
+# `catch`, the harness could tell them apart only by reading prose. The clause
+# accumulator produces a refusal that already knows which field disagreed and
+# whether the disagreement costs custody. The checks that run BEFORE it -- the
+# mirror against the collector's own producer source, the receipt's shape, the
+# control file -- throw before either authority is published, so the run loses
+# custody as well as the capture. That second shape is issue #151 and it is what
+# ended t36: the mirror had drifted one field at offset 20, the throw arrived
+# here with nothing structured attached, and the attempt stopped with the game
+# pinned, the settings guard applied, the graded window open, and no
+# machine-readable statement of the mismatch anywhere on disk.
+#
+# The DECISION is unchanged -- a refused READY still stops the capture, and the
+# bare `throw` re-raises the original error untouched so the outer handler still
+# records `$harnessAbortReason` and `Confirm-CollectorTeardownReceipt` still
+# quotes it. What is added is the naming: the class, the field, and both sides
+# of the comparison, on stdout and in CAPTURE_REFUSAL_V1.json, before anything
+# unwinds. Cleanup then handles the game under the custody rules it already
+# has, and now it can say why.
+try {
+    $sharedReadyAuthority = Test-PassiveCaptureReadyReceipt `
     -RunDir $OutDir `
     -TargetPid ([uint32]$gamePid) `
     -TargetCreationFiletimeUtc $gameCreationFiletimeUtc `
@@ -2971,6 +3163,30 @@ $sharedReadyAuthority = Test-PassiveCaptureReadyReceipt `
     -SchedulerWorkerCount ([uint32]$ReaderConcurrency) `
     -CollectorControlPath $collectorControlPath `
     -CustodyAuthorityOut ([ref]$sharedReadyCustodyAuthority)
+} catch {
+    $readyRefusal = New-PassiveReadyRefusalRecord `
+        -ErrorRecord $_ `
+        -CustodyEstablished ($null -ne $sharedReadyCustodyAuthority) `
+        -Stage 'ready_validation'
+    [void]$captureRefusals.Add($readyRefusal)
+    Write-Host (
+        "phase=capture_refused stage=$($readyRefusal.stage) " +
+        "class=$($readyRefusal.class) clauses=$(@($readyRefusal.clauses).Count) " +
+        "custody_established=$($readyRefusal.custody_established)"
+    )
+    foreach ($clause in @($readyRefusal.clauses)) {
+        Write-Host (
+            "phase=capture_refused_clause side=$($clause.side) " +
+            "field=$($clause.field) expected=$($clause.expected) " +
+            "observed=$($clause.observed)"
+        )
+    }
+    Write-CaptureRefusalReceipt
+    # Unchanged decision, unchanged exception. `throw` with no argument inside a
+    # `catch` re-raises the current error exactly as it arrived, so the outer
+    # recorder keeps the message it has always had.
+    throw
+}
 $readyReceiptSha256 = [string]$sharedReadyAuthority.ReceiptSha256
 $readyPayloadSha256 = [string]$sharedReadyAuthority.ReadyPayloadSha256
 $readyPublicReceiptCoreSha256 = [string]$sharedReadyAuthority.PublicReceiptCoreSha256
@@ -3291,6 +3507,23 @@ $scriptExitCode = [int]$recorderExit
     # instrument failure. A bare `throw` inside `catch` rethrows the current
     # exception, so every route out of this script is exactly what it was.
     $harnessAbortReason = ($_.Exception.Message -replace '\s+', ' ').Trim()
+    # THE FACT, KEPT SEPARATELY FROM THE TEXT. The refusal arbitration has to
+    # know that an abort is unwinding so it does not return a code and suppress
+    # it, and it was asking the REASON STRING -- which is empty whenever the
+    # exception carries no message. `throw [InvalidOperationException]::new('')`
+    # is enough: the reason trims to '', the arbitration reads "no abort", and
+    # `exit 3` overwrites a pending exception. A boolean cannot be emptied by a
+    # silent exception.
+    $harnessAborted = $true
+    # Best effort at saying something useful even so. An abort reported as a
+    # blank is the unnamed strand this lane exists to remove, one layer up.
+    if ([string]::IsNullOrWhiteSpace($harnessAbortReason)) {
+        $harnessAbortReason = 'the attempt aborted without a message'
+        try {
+            $harnessAbortReason =
+                "the attempt aborted with a message-less $($_.Exception.GetType().FullName)"
+        } catch { }
+    }
     throw
 } finally {
     $cleanupFatalMessage = $null
@@ -3614,6 +3847,31 @@ $scriptExitCode = [int]$recorderExit
             Write-SettingsGuardNonThrowingWarning -Message "Settings guard restored IsReadOnly=$settingsGuardPriorReadOnly on '$settingsPath', but could not remove sentinel '$settingsGuardSentinel'. Remove it manually after verifying the attribute. Error: $($_.Exception.Message)"
         }
     }
+
+    # --- what this attempt refused, on EVERY route out -------------------------
+    #
+    # Last in the cleanup prefix so it reports what the whole prefix ended up
+    # doing, and so a supervision failure raised anywhere above is still counted.
+    # The receipt is rewritten here rather than only at the moment of refusal,
+    # because a refusal recorded during the capture phase and a run that then
+    # went on to seal normally must leave ONE file describing both.
+    if ($captureRefusals.Count -gt 0 -or $supervisionFailures.Count -gt 0) {
+        Write-Host (
+            "phase=capture_refusals capture=$($captureRefusals.Count) " +
+            "supervision=$($supervisionFailures.Count) " +
+            "receipt=$captureRefusalReceiptPath"
+        )
+        foreach ($supervisionFailure in $supervisionFailures) {
+            Write-Host "phase=supervision_failed detail=$supervisionFailure"
+        }
+        Write-CaptureRefusalReceipt
+    }
+
+    # THE LAST STATEMENT OF THE CLEANUP PREFIX, and it must stay last. Reaching
+    # it is the only evidence available inside the arbitration below that the
+    # prefix did not end on a terminating error, and the refusal code declines
+    # to fire without it rather than swallow whatever is unwinding.
+    $cleanupPrefixCompleted = $true
     } finally {
     # --- the single compact-status arbitration point -------------------------
     #
@@ -3663,11 +3921,133 @@ $scriptExitCode = [int]$recorderExit
                 [Console]::Error.WriteLine(
                     'Capture ended without closing the passive graded window.')
             }
+            # Named refusals are PRINTED here even though 2 is what gets
+            # returned. A run that both refused something and never reached a
+            # report has two things wrong with it, and the one that keeps its
+            # numeric code must not be the only one an operator can see.
+            foreach ($refusal in $captureRefusals) {
+                [Console]::Error.WriteLine(
+                    "capture refused: stage=$($refusal.stage) class=$($refusal.class) $($refusal.message)")
+            }
+            foreach ($supervisionFailure in $supervisionFailures) {
+                [Console]::Error.WriteLine("supervision failure: $supervisionFailure")
+            }
             [Console]::Error.WriteLine("compact status verdict: $undefinedStatusBitFailure")
             [Console]::Error.WriteLine(
                 'Exit code 2 reports the compact status verdict. Any failure printed above still needs an operator.')
         } finally {
             exit 2
+        }
+    }
+
+    # --- the named-refusal code, strictly below the arbitration above ----------
+    #
+    # Reached only when the compact-status question was ANSWERED, which is what
+    # makes 3 a code rather than dead weight: `$undefinedStatusBitFailure` is set
+    # the instant a recorder exists and is retired only by a report verdict, so
+    # anything that stops before the report already leaves through 2. What is
+    # left for 3 is exactly the shape this lane was built for -- a supervision
+    # step failed, the recorder was nonetheless left alone, it finished, its
+    # teardown authenticated, the report ran and answered clean -- and without
+    # this the attempt would return the recorder's own 0 and be read as a good
+    # capture. It was not: something was refused, and CAPTURE_REFUSAL_V1.json
+    # says what.
+    #
+    # 3 IS THE LAST CODE CONSIDERED, NEVER THE FIRST. An `exit` inside a
+    # `finally` beats a pending exception, so this block is capable of
+    # suppressing every other failure in the script, and each one it could
+    # suppress is checked before it. That includes the two it cannot see
+    # directly: an exception still unwinding from the try body, which the outer
+    # `catch` records as $harnessAbortReason before re-raising, and a
+    # terminating error in the cleanup prefix, whose absence is what
+    # $cleanupPrefixCompleted attests. When either is true this block PRINTS the
+    # refusal and declines to return a code, leaving the real failure to decide.
+    #
+    # A refused READY therefore normally leaves through 2, not 3: it aborts
+    # before the report runs, so the compact-status question stands unanswered.
+    # Its refusal is still named on stdout, on stderr, and in
+    # CAPTURE_REFUSAL_V1.json. 3 is the code for a run that finished its
+    # accounting and still refused something.
+    if ($captureRefusals.Count -gt 0 -or $supervisionFailures.Count -gt 0) {
+        # DECIDE FIRST, REPORT SECOND, and never the other way round.
+        #
+        # The earlier shape interleaved them -- write a line, then `exit`, in a
+        # `finally`. Every one of those writes can throw (a closed or failing
+        # stderr is enough), and under $ErrorActionPreference = 'Stop' a throw
+        # abandons the rest of the block: the branch that was going to fall
+        # through to `exit $scriptExitCode` never got there and PowerShell
+        # returned a bare 1, so a refusal alongside recorder exit 5 reported 1.
+        # Measured on 5.1, not assumed.
+        #
+        # So the outcome is computed with nothing but variable reads -- none of
+        # which can fail -- and only then is anything printed. The reporting is
+        # wrapped and non-throwing, because by that point it cannot change what
+        # this attempt returns, and it must not be able to.
+        $refusalExitCode = $null
+        $refusalNote = $null
+        # Everything that outranks a refusal, in the order it outranks it. The
+        # first three would otherwise be SWALLOWED by `exit 3`, because this
+        # block runs before the routes that normally raise them: a cleanup
+        # failure is thrown after the inner `finally` returns, and the two
+        # custody guards sit after the outer one. A refusal must never be the
+        # reason a custody problem or a failed cleanup went unreported.
+        if (-not [string]::IsNullOrWhiteSpace($cleanupFatalMessage)) {
+            $refusalExitCode = 1
+            $refusalNote = "cleanup failure: $cleanupFatalMessage"
+        } elseif ($collectorInjectionStarted -and -not $collectorTeardownAuthenticated) {
+            $refusalExitCode = 1
+            $refusalNote = 'Capture ended without an authenticated collector teardown receipt.'
+        } elseif ($gradedWindowStarted) {
+            $refusalExitCode = 1
+            $refusalNote = 'Capture ended without closing the passive graded window.'
+        } elseif (-not $cleanupPrefixCompleted) {
+            # The two failures this block cannot see from here. Returning any
+            # code at all would suppress them, so it returns none: the refusal
+            # is already printed and receipted, and whatever is unwinding gets
+            # to finish and report itself.
+            $refusalNote =
+                'The cleanup prefix ended on a terminating error. That failure ' +
+                'outranks the refusal printed above and is left to report itself.'
+        } elseif ($harnessAborted) {
+            $refusalNote =
+                "The attempt also aborted: $harnessAbortReason. That failure " +
+                'outranks the refusal printed above and is left to report itself.'
+        } elseif ($scriptExitCode -ne 0) {
+            # THE RECORDER'S OWN VERDICT OUTRANKS THE REFUSAL. By here the try
+            # body ran to completion, so $scriptExitCode holds collector_record's
+            # exit status -- and returning 3 over a nonzero one would report
+            # "the harness refused something" for a run whose RECORDER failed,
+            # losing the code that says which. 3 means "everything ran and the
+            # harness still refused"; it cannot also mean "and the recorder fell
+            # over".
+            $refusalNote =
+                "collector_record exited $scriptExitCode. That failure outranks " +
+                'the refusal printed above and is what this attempt returns.'
+        } else {
+            $refusalExitCode = 3
+        }
+        try {
+            foreach ($refusal in $captureRefusals) {
+                [Console]::Error.WriteLine(
+                    "capture refused: stage=$($refusal.stage) class=$($refusal.class) $($refusal.message)")
+            }
+            foreach ($supervisionFailure in $supervisionFailures) {
+                [Console]::Error.WriteLine("supervision failure: $supervisionFailure")
+            }
+            # Names the receipt, NOT the exit code: on four of the branches
+            # above the answer is not 3, and announcing it here read as a
+            # promise this block does not always keep.
+            [Console]::Error.WriteLine(
+                "The refusal above is recorded in $captureRefusalReceiptPath.")
+            if (-not [string]::IsNullOrWhiteSpace($refusalNote)) {
+                [Console]::Error.WriteLine($refusalNote)
+            }
+        } catch {
+            # A refusal that could not be printed is still a refusal. The code
+            # below is the part that must survive.
+        }
+        if ($null -ne $refusalExitCode) {
+            exit $refusalExitCode
         }
     }
     }
