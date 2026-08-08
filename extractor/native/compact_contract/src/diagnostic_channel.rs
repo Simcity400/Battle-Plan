@@ -2241,6 +2241,35 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
     // Added by lane EJ the same day this table was written, so no retained
     // capture carries the summed spelling.
     ("domain47_prewarm_shadow_walk_state", Accumulation::LastValue),
+    // --- what the `sweep_only` residual WAS (lane FC) ----------------------
+    // `Domain47ShadowWalkRecheckOutcome`: 0 NotChecked, 1 WalkHit (reached now
+    // and identity-compatible — consistent with insertion-timing skew, not
+    // proof of it), 2 Refused, 3 WalkMissed, 4 OwnerNotCensused.
+    //
+    // A PER-PREWARM LOCATOR, not the promotion signal. It says what the worst
+    // element of ONE prewarm's residual was, so that a capture carrying a
+    // structural candidate names it; the whole-capture question is answered by
+    // the three tallies below, whose rule is stated there. Summing this code
+    // instead would produce a number whose every value is reachable by adding
+    // up benign frames, which is why it is `LastValue`.
+    (
+        "domain47_prewarm_shadow_walk_recheck_outcome",
+        Accumulation::LastValue,
+    ),
+    // The element that code describes: the engine `char_id` and the map it
+    // belongs to (`Domain47ShadowWalkMapAxis`: 1 leader map, 2 advisor map,
+    // 0 no element). `_char_id` would reach `LastValue` through the `_id`
+    // suffix and `_map` would reach `BitwiseOr` through the mask suffixes —
+    // an axis code ORed across frames is a number naming no map — so both are
+    // stated here, ahead of every suffix rule.
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_char_id",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_sweep_only_map",
+        Accumulation::LastValue,
+    ),
     // --- raw codes and identifiers, unchanged ------------------------------
     // These four already resolved to `LastValue` through `RAW_WORD_SUFFIXES`
     // (`_reason`, `_kind`, `_id`, `_ordinal`) and are restated here because
@@ -2355,6 +2384,35 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
     ),
     (
         "domain47_prewarm_shadow_walk_refused_count",
+        Accumulation::PerFrame,
+    ),
+    // The re-check tally (lane FC). Per-element verdicts, one per sweep-only
+    // element this prewarm classified, so the capture-wide figure a reader
+    // wants is exactly their sum: "how many residual events across the whole
+    // run were reached on re-check, and how many were candidate structural
+    // gaps".
+    //
+    // `miss == 0` IS NOT THE PROMOTION SIGNAL, and reading it as one is the
+    // trap this note exists to close: it also holds when every re-check
+    // REFUSED, and when the per-prewarm cap of 16 left residual elements
+    // unclassified. The figure to read is `hit == sweep_only` over the capture
+    // — every residual element classified AND every one of them reached — with
+    // `miss` and `refused` both zero. A nonzero `miss` is the sweep's reprieve;
+    // a nonzero `refused`, or a `hit + miss + refused` short of `sweep_only`,
+    // is a capture that did not answer the question. And a run that clears all
+    // of it is EVIDENCE across captures, never proof on one frame: see
+    // `Domain47ShadowWalkRecheckOutcome::WalkHit` for the ABA residual no
+    // re-check can exclude.
+    (
+        "domain47_prewarm_shadow_walk_recheck_hit_count",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_recheck_miss_count",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_shadow_walk_recheck_refused_count",
         Accumulation::PerFrame,
     ),
     // --- the seven read back out of the RETAINED cache ---------------------
@@ -3634,6 +3692,93 @@ mod tests {
         let state = unit_accumulation("domain47_prewarm_shadow_walk_state");
         assert_eq!(state, Accumulation::LastValue);
         assert_eq!(state.fold(Some(2), 2), 2);
+    }
+
+    /// The sweep-only classification's six units (lane FC): three raw words
+    /// naming ONE element and three per-element tallies.
+    ///
+    /// Each half is here because the suffix rules would get it WRONG on its own,
+    /// which is the whole reason `DOMAIN47_PREWARM_UNITS` runs first:
+    ///
+    ///  * `_map` ends in a [`BITMASK_SUFFIXES`] spelling, so without its entry
+    ///    the axis code would be OR-ed across frames — a leader-map frame (1)
+    ///    and an advisor-map frame (2) would publish 3, which names no map.
+    ///  * `_outcome` is in NO suffix list, so it would land on the summed
+    ///    default: four `WalkHit` frames would publish 4, indistinguishable from
+    ///    one `OwnerNotCensused`, and 4 is the code that keeps the sweep.
+    ///  * the three counts ARE per-element quantities and their sum over a
+    ///    capture is the figure the promotion gate reads, so they must NOT be
+    ///    dragged to `LastValue` beside their neighbours.
+    ///
+    /// MUTATION: delete any of the six entries and this fails on that unit.
+    /// The class assertions alone would NOT catch deleting
+    /// `..._sweep_only_char_id`, whose `_id` suffix independently resolves to
+    /// `LastValue` (Codex 019fde9b, finding 4) — so membership in the table is
+    /// asserted directly for all six, which is the property this family's rule
+    /// actually demands.
+    #[test]
+    fn the_d47_sweep_only_classification_units_carry_their_own_kinds() {
+        for name in [
+            "domain47_prewarm_shadow_walk_recheck_outcome",
+            "domain47_prewarm_shadow_walk_sweep_only_char_id",
+            "domain47_prewarm_shadow_walk_sweep_only_map",
+            "domain47_prewarm_shadow_walk_recheck_hit_count",
+            "domain47_prewarm_shadow_walk_recheck_miss_count",
+            "domain47_prewarm_shadow_walk_recheck_refused_count",
+        ] {
+            assert!(
+                DOMAIN47_PREWARM_UNITS
+                    .iter()
+                    .any(|(unit, _)| *unit == name),
+                "{name} must be declared IN the table; a class it happens to \
+                 reach through a suffix rule is the accident this family's \
+                 table exists to end"
+            );
+        }
+        let outcome = unit_accumulation("domain47_prewarm_shadow_walk_recheck_outcome");
+        assert_eq!(outcome, Accumulation::LastValue);
+        let mut summed: Option<u64> = None;
+        for _ in 0..4 {
+            summed = Some(Accumulation::PerFrame.fold(summed, 1));
+        }
+        assert_eq!(
+            summed,
+            Some(4),
+            "the default would publish four reached-on-recheck frames as the \
+             code for an uncensused owner"
+        );
+
+        let axis = unit_accumulation("domain47_prewarm_shadow_walk_sweep_only_map");
+        assert_eq!(axis, Accumulation::LastValue);
+        assert_eq!(
+            Accumulation::BitwiseOr.fold(Some(1), 2),
+            3,
+            "the `_map` suffix would OR the two axis codes into a third that \
+             names neither map"
+        );
+
+        assert_eq!(
+            unit_accumulation("domain47_prewarm_shadow_walk_sweep_only_char_id"),
+            Accumulation::LastValue
+        );
+
+        for count in [
+            "domain47_prewarm_shadow_walk_recheck_hit_count",
+            "domain47_prewarm_shadow_walk_recheck_miss_count",
+            "domain47_prewarm_shadow_walk_recheck_refused_count",
+        ] {
+            assert_eq!(
+                unit_accumulation(count),
+                Accumulation::PerFrame,
+                "{count} counts elements, and the capture-wide question is how \
+                 many residual events of each kind the run produced"
+            );
+        }
+        assert_eq!(
+            Accumulation::PerFrame.fold(Some(2), 3),
+            5,
+            "which is the arithmetic that answers it"
+        );
     }
 
     /// Every unit in [`DOMAIN47_PREWARM_UNITS`] resolves to the class the table

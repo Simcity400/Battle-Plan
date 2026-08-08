@@ -5155,3 +5155,601 @@ fn d47_cost_shadow_walk() {
         EJ_ADVISOR_ENTRIES,
     );
 }
+
+// === CLASSIFYING A sweep_only RESIDUAL (lane FC, 2026-08-08) ==============
+//
+// The counter says a live object was reachable to the sweep and not to the
+// walk; `domain47_shadow_walk_recheck` says which of the two worlds that came
+// from. Every arm below is a different answer to the promotion question, so the
+// tests are written to fail if any two of them are collapsed into one.
+
+/// Characters laid out one per stride, each with both role maps, plus the
+/// roster the re-check searches — the same `(addr, CharacterRawFields)` shape
+/// `Domain47ManagerRosterSnapshot::characters` carries.
+struct FcRecheckWorld {
+    arena: BenchArena,
+    roster: Vec<(usize, domain47::extractor::CharacterRawFields)>,
+}
+
+/// Room for both map heads, both node arrays and the entry values of one
+/// character, with the next character's body a long way clear of them.
+const FC_CHARACTER_STRIDE: usize = 0x1_0000;
+
+/// The country every body carries unless a test says otherwise.
+const FC_COUNTRY: u32 = 1;
+
+impl FcRecheckWorld {
+    /// One body per `(char_id, leader values, advisor values)` triple. The same
+    /// `char_id` may appear more than once: the heap really does carry
+    /// duplicate `CCharacter` objects for one logical character, and which of
+    /// them holds the role is exactly what a re-check may not assume.
+    fn new(bodies: &[(u32, Vec<u64>, Vec<u64>)]) -> FcRecheckWorld {
+        FcRecheckWorld::with_countries(
+            &bodies
+                .iter()
+                .map(|(char_id, leaders, advisors)| {
+                    (FC_COUNTRY, *char_id, leaders.clone(), advisors.clone())
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The same, with each body's country stated: `char_id` is not an identity
+    /// in this world, and the tests that turn on the country say so.
+    fn with_countries(bodies: &[(u32, u32, Vec<u64>, Vec<u64>)]) -> FcRecheckWorld {
+        let arena = BenchArena::in_heap_window(FC_CHARACTER_STRIDE * (bodies.len() + 1));
+        let mut roster = Vec::new();
+        for (ordinal, (country_tag_db_id, char_id, leaders, advisors)) in
+            bodies.iter().enumerate()
+        {
+            let character = arena.base + ordinal * FC_CHARACTER_STRIDE;
+            let leader_head = character + 0x1000;
+            let advisor_head = character + 0x1080;
+            let leader_nodes = character + 0x2000;
+            let advisor_nodes = character + 0x6000;
+            ej_put_tree(
+                &arena,
+                leader_head,
+                &|index| leader_nodes + index * EJ_NODE_STRIDE,
+                DOMAIN47_LEADER_NODE_VALUE_OFF,
+                leaders,
+            );
+            ej_put_tree(
+                &arena,
+                advisor_head,
+                &|index| advisor_nodes + index * EJ_NODE_STRIDE,
+                DOMAIN47_ADVISOR_NODE_VALUE_OFF,
+                advisors,
+            );
+            arena.put_u64(character + DOMAIN47_LEADER_MAP_HEAD_OFF, leader_head as u64);
+            arena.put_u64(character + DOMAIN47_LEADER_MAP_SIZE_OFF, leaders.len() as u64);
+            arena.put_u64(character + DOMAIN47_ADVISOR_MAP_HEAD_OFF, advisor_head as u64);
+            arena.put_u64(
+                character + DOMAIN47_ADVISOR_MAP_SIZE_OFF,
+                advisors.len() as u64,
+            );
+            roster.push((
+                character,
+                domain47::extractor::CharacterRawFields {
+                    character_addr: character as u64,
+                    country_tag_db_id: *country_tag_db_id,
+                    char_id: *char_id,
+                    unit_leader_ptr: 0,
+                },
+            ));
+        }
+        FcRecheckWorld { arena, roster }
+    }
+
+    /// A role-object address held by no map — distinct, 8-aligned and inside
+    /// the heap window, so the walk's own pointer gate admits it.
+    fn role(&self, ordinal: usize) -> u64 {
+        (self.arena.base + FC_CHARACTER_STRIDE * self.roster.len() + 0x40 * (ordinal + 1)) as u64
+    }
+
+    fn recheck(
+        &self,
+        target: u64,
+        char_id: u32,
+        axis: Domain47ShadowWalkMapAxis,
+        identity_unchanged: bool,
+    ) -> Domain47ShadowWalkRecheckOutcome {
+        self.recheck_owned(
+            target,
+            Domain47RoleOwner {
+                country_tag_db_id: FC_COUNTRY,
+                char_id,
+            },
+            axis,
+            identity_unchanged,
+        )
+    }
+
+    /// The same, recording what the ABA guard was handed. The guard's argument
+    /// is the property `d47_shadow_walk_recheck_hands_the_guard_the_whole_owner`
+    /// pins, so it is captured rather than asserted inline.
+    fn recheck_seen(
+        &self,
+        target: u64,
+        owner: Domain47RoleOwner,
+        axis: Domain47ShadowWalkMapAxis,
+    ) -> (
+        Domain47ShadowWalkRecheckOutcome,
+        Option<(u64, Domain47RoleOwner)>,
+    ) {
+        let mut stack = Vec::new();
+        let mut scratch = Vec::new();
+        let mut found = BTreeSet::new();
+        let mut seen = None;
+        page_cache_new_frame();
+        let outcome = domain47_shadow_walk_recheck(
+            target,
+            owner,
+            axis,
+            &self.roster,
+            &mut stack,
+            &mut scratch,
+            &mut found,
+            |addr, handed| {
+                seen = Some((addr, handed));
+                true
+            },
+        );
+        (outcome, seen)
+    }
+
+    fn recheck_owned(
+        &self,
+        target: u64,
+        owner: Domain47RoleOwner,
+        axis: Domain47ShadowWalkMapAxis,
+        identity_unchanged: bool,
+    ) -> Domain47ShadowWalkRecheckOutcome {
+        let mut stack = Vec::new();
+        let mut scratch = Vec::new();
+        let mut found = BTreeSet::new();
+        page_cache_new_frame();
+        domain47_shadow_walk_recheck(
+            target,
+            owner,
+            axis,
+            &self.roster,
+            &mut stack,
+            &mut scratch,
+            &mut found,
+            |addr, handed| {
+                assert_eq!(addr, target, "the ABA guard must re-read the TARGET");
+                assert_eq!(handed, owner, "and must be told the WHOLE owner");
+                identity_unchanged
+            },
+        )
+    }
+}
+
+/// THE REACHED-ON-RECHECK ARM. The owning character's map holds the entry now
+/// and the object there is identity-compatible, which is CONSISTENT WITH the
+/// gap between the walk's instant and the sweep's rather than proof of it — and
+/// the same target checked against the OTHER axis must not come back as a hit.
+///
+/// MUTATION: make `domain47_shadow_walk_recheck` walk both axes instead of the
+/// one it was given (the obvious "be thorough" change) and the advisor
+/// assertion fails with `WalkHit` — a leader-map entry would be reported as
+/// proof that the advisor map is complete.
+#[test]
+fn d47_shadow_walk_recheck_hit_is_the_reached_on_recheck_arm() {
+    let world = FcRecheckWorld::new(&[(7, vec![0], Vec::new())]);
+    let target = world.role(0);
+    world.arena.put_u64(
+        world.roster[0].0 + 0x2000 + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        target,
+    );
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::WalkHit,
+        "the walk reaches it now and the object is identity-compatible, which \
+         is consistent with insertion timing rather than a blind spot"
+    );
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Advisor, true),
+        Domain47ShadowWalkRecheckOutcome::WalkMissed,
+        "the advisor map does not hold it, and the axis the sweep named is the \
+         only one that answers for it"
+    );
+}
+
+/// THE STRUCTURAL ARM. The owning character was found and its map walked
+/// cleanly, and the entry is not in it.
+///
+/// MUTATION: return `WalkHit` whenever a body walks cleanly (i.e. drop the
+/// `found.contains(&target)` test) and this fails — the instrument would then
+/// call every residual benign, which is the answer that unblocks a deletion
+/// that must stay blocked.
+#[test]
+fn d47_shadow_walk_recheck_miss_is_the_candidate_structural_gap() {
+    let world = FcRecheckWorld::new(&[(7, vec![0], vec![0])]);
+    let target = world.role(0);
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::WalkMissed
+    );
+}
+
+/// A character the census never saw is its OWN outcome, not a plain miss.
+///
+/// Both are candidate structural gaps, and they are different faults: one says
+/// the map does not hold the object, the other says the walk never visits the
+/// character at all — which is the shape a re-check that followed the role
+/// object's own `CCharacter*` would have reported as a HIT.
+///
+/// MUTATION: collapse the `(0, _)` arm into `WalkMissed` and this fails; the
+/// roster-side gap would then be invisible on the wire.
+#[test]
+fn d47_shadow_walk_recheck_reports_an_uncensused_owner_on_its_own_code() {
+    let world = FcRecheckWorld::new(&[(7, vec![0], Vec::new())]);
+    let target = world.role(0);
+    assert_eq!(
+        world.recheck(target, 999, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::OwnerNotCensused
+    );
+    assert!(
+        Domain47ShadowWalkRecheckOutcome::OwnerNotCensused
+            > Domain47ShadowWalkRecheckOutcome::WalkHit,
+        "a structural candidate must outrank a reached-on-recheck element, or \
+         a prewarm holding both would publish the benign one"
+    );
+}
+
+/// THE ABA GUARD. A container hit whose object no longer carries the `char_id`
+/// the sweep attributed to it is an address the allocator reused, and it is
+/// reported as unclassified rather than as proof of skew.
+///
+/// MUTATION: drop the `identity_unchanged` call and return `WalkHit`
+/// unconditionally — this fails with `WalkHit`, i.e. a structural gap whose
+/// address was recycled into a live entry would be published as benign.
+#[test]
+fn d47_shadow_walk_recheck_refuses_a_hit_whose_object_identity_moved() {
+    let world = FcRecheckWorld::new(&[(7, vec![0], Vec::new())]);
+    let target = world.role(0);
+    world.arena.put_u64(
+        world.roster[0].0 + 0x2000 + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        target,
+    );
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, false),
+        Domain47ShadowWalkRecheckOutcome::Refused
+    );
+}
+
+/// A body whose map REFUSES under the walk's own guards proves nothing, and
+/// must not be published as a miss.
+///
+/// MUTATION: treat a refused body as a clean walk (set `walked_clean` before
+/// the refusal test) and this fails with `WalkMissed` — an unreadable map would
+/// then manufacture the exact structural-gap evidence that keeps the sweep.
+#[test]
+fn d47_shadow_walk_recheck_refuses_when_the_only_owner_map_cannot_be_walked() {
+    let world = FcRecheckWorld::new(&[(7, vec![0, 0], Vec::new())]);
+    // `_Mysize` one ahead of what is reachable: the tear check refuses.
+    world
+        .arena
+        .put_u64(world.roster[0].0 + DOMAIN47_LEADER_MAP_SIZE_OFF, 3);
+    let target = world.role(0);
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::Refused
+    );
+}
+
+/// ONE REFUSED BODY POISONS THE VERDICT (Codex 019fde9b, finding 2).
+///
+/// The heap carries duplicate `CCharacter` bodies for one logical character and
+/// the role object may hang off ANY of them, so a body whose map could not be
+/// read is a body that might have held it. A clean walk of a DIFFERENT body
+/// therefore does not license `WalkMissed`: the honest verdict is `Refused`.
+///
+/// MUTATION: drop the `any_refused` term from the final match (return
+/// `WalkMissed` whenever any body walked cleanly) and this fails — an
+/// unreadable duplicate would manufacture structural-gap evidence out of a
+/// body nobody could look at.
+#[test]
+fn d47_shadow_walk_recheck_refuses_when_a_candidate_body_could_not_be_walked() {
+    let world = FcRecheckWorld::new(&[(7, vec![0, 0], Vec::new()), (7, vec![0], Vec::new())]);
+    world
+        .arena
+        .put_u64(world.roster[0].0 + DOMAIN47_LEADER_MAP_SIZE_OFF, 3);
+    let target = world.role(0);
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::Refused
+    );
+}
+
+/// The multi-body path still CONCLUDES when nothing refused: two duplicate
+/// bodies, both walked cleanly, neither holding the entry, is a miss.
+///
+/// Without this the fix above could be satisfied by a re-check that answers
+/// `Refused` for every world with more than one body.
+#[test]
+fn d47_shadow_walk_recheck_misses_across_two_clean_duplicate_bodies() {
+    let world = FcRecheckWorld::new(&[(7, vec![0], Vec::new()), (7, vec![0], Vec::new())]);
+    let target = world.role(0);
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::WalkMissed
+    );
+}
+
+/// A duplicate body that is NOT the first one may hold the entry, and finding
+/// it there is still a hit.
+#[test]
+fn d47_shadow_walk_recheck_finds_the_entry_on_a_later_duplicate_body() {
+    let world = FcRecheckWorld::new(&[(7, vec![0], Vec::new()), (7, vec![0], Vec::new())]);
+    let target = world.role(0);
+    world.arena.put_u64(
+        world.roster[1].0 + 0x2000 + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        target,
+    );
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::WalkHit
+    );
+}
+
+/// THE OWNER IS A PAIR (Codex 019fde9b, finding 1).
+///
+/// `char_id` is not an identity in this world — `domain47_read_exact_manager_roster`
+/// states that union-wide uniqueness is unproven, and the dedup quarantines
+/// duplicates that carry one id under two countries. The ABA guard must
+/// therefore be handed the COUNTRY as well, or an address recycled into another
+/// country's role object would be published as proof of a benign skew.
+///
+/// MUTATION: narrow the guard's argument back to a bare `char_id` (or have the
+/// call site close over it and compare only the number) and this fails to
+/// compile or fails the `country_tag_db_id` assertion.
+///
+/// WHAT IT DOES NOT PROVE: that PRODUCTION's guard uses both halves. This test
+/// supplies its own closure, so removing a `country_tag_db_id` comparison from
+/// the real predicate would leave it green (Codex 019fdead, finding 2). That
+/// property belongs to `domain47_leader_identity_matches_owner` /
+/// `domain47_advisor_probe_matches_owner`, which the two tests below exercise
+/// directly — the pair is what makes the guarantee whole.
+#[test]
+fn d47_shadow_walk_recheck_hands_the_guard_the_whole_owner() {
+    let world = FcRecheckWorld::new(&[(7, vec![0], Vec::new())]);
+    let target = world.role(0);
+    world.arena.put_u64(
+        world.roster[0].0 + 0x2000 + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        target,
+    );
+    let owner = Domain47RoleOwner {
+        country_tag_db_id: FC_COUNTRY,
+        char_id: 7,
+    };
+    let (outcome, seen) = world.recheck_seen(target, owner, Domain47ShadowWalkMapAxis::Leader);
+    assert_eq!(outcome, Domain47ShadowWalkRecheckOutcome::WalkHit);
+    assert_eq!(
+        seen,
+        Some((target, owner)),
+        "the guard must receive the address AND the whole owner it has to \
+         re-prove, country included"
+    );
+}
+
+/// CANDIDATE BODIES ARE FOUND BY `char_id`, NOT BY THE PAIR — deliberately.
+///
+/// The production walk visits every roster body whatever country it claims, so
+/// a body holding the entry under a DIFFERENT country still proves the walk
+/// reaches it. Narrowing the roster lookup to the exact pair would report this
+/// world as a structural gap, which is the opposite error to the one finding 1
+/// is about; both directions are wrong and this pins the one the fix could
+/// easily have introduced.
+#[test]
+fn d47_shadow_walk_recheck_examines_every_body_carrying_the_id() {
+    let world = FcRecheckWorld::with_countries(&[
+        (FC_COUNTRY, 7, vec![0], Vec::new()),
+        (FC_COUNTRY + 1, 7, vec![0], Vec::new()),
+    ]);
+    let target = world.role(0);
+    // The entry hangs off the body whose COUNTRY differs from the owner's.
+    world.arena.put_u64(
+        world.roster[1].0 + 0x2000 + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        target,
+    );
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::WalkHit,
+        "the walk visits that body, so the re-check must too"
+    );
+}
+
+/// THE BOUND. A `char_id` resolving to more bodies than the re-check will walk
+/// stops it, and stopping early is reported as unclassified — never as "the
+/// walk cannot reach it", which is a claim about bodies it did not look at.
+///
+/// MUTATION: delete the `DOMAIN47_SHADOW_WALK_RECHECK_BODY_MAX` test and this
+/// fails with `WalkHit`, which is the honest answer for this fixture and a
+/// promise the bounded walk cannot keep on a torn roster.
+#[test]
+fn d47_shadow_walk_recheck_refuses_rather_than_outrunning_its_body_bound() {
+    let bodies: Vec<(u32, Vec<u64>, Vec<u64>)> = (0..=DOMAIN47_SHADOW_WALK_RECHECK_BODY_MAX)
+        .map(|_| (7u32, vec![0u64], Vec::new()))
+        .collect();
+    let world = FcRecheckWorld::new(&bodies);
+    let target = world.role(0);
+    // The entry sits in the body just PAST the bound.
+    let last = world.roster[DOMAIN47_SHADOW_WALK_RECHECK_BODY_MAX as usize].0;
+    world
+        .arena
+        .put_u64(last + 0x2000 + DOMAIN47_LEADER_NODE_VALUE_OFF, target);
+    assert_eq!(
+        world.recheck(target, 7, Domain47ShadowWalkMapAxis::Leader, true),
+        Domain47ShadowWalkRecheckOutcome::Refused,
+        "the re-check stopped before that body and must say so"
+    );
+}
+
+/// The prewarm's three describing words name the FIRST element at the HIGHEST
+/// outcome the prewarm reached, and the tally counts every element.
+///
+/// MUTATION 1: fold with `>=` instead of `>` and the "first at the top
+/// severity" assertion fails — the LAST structural candidate would be reported
+/// instead of the first.
+/// MUTATION 2: drop the severity ordering (record every outcome
+/// unconditionally) and the words describe the trailing skew, which is how a
+/// structural gap in the same prewarm goes unpublished.
+#[test]
+fn d47_shadow_walk_recheck_summary_keeps_the_first_worst_element() {
+    let mut summary = Domain47ShadowWalkRecheckSummary::default();
+    summary.observe(
+        Domain47ShadowWalkRecheckOutcome::WalkHit,
+        11,
+        Domain47ShadowWalkMapAxis::Leader,
+    );
+    summary.observe(
+        Domain47ShadowWalkRecheckOutcome::WalkMissed,
+        22,
+        Domain47ShadowWalkMapAxis::Advisor,
+    );
+    summary.observe(
+        Domain47ShadowWalkRecheckOutcome::WalkMissed,
+        33,
+        Domain47ShadowWalkMapAxis::Leader,
+    );
+    summary.observe(
+        Domain47ShadowWalkRecheckOutcome::WalkHit,
+        44,
+        Domain47ShadowWalkMapAxis::Leader,
+    );
+    summary.observe(
+        Domain47ShadowWalkRecheckOutcome::Refused,
+        55,
+        Domain47ShadowWalkMapAxis::Leader,
+    );
+    assert_eq!(summary.outcome, Domain47ShadowWalkRecheckOutcome::WalkMissed);
+    assert_eq!(summary.char_id, 22, "the FIRST element at the top severity");
+    assert_eq!(summary.axis, Domain47ShadowWalkMapAxis::Advisor as u32);
+    assert_eq!((summary.hits, summary.misses, summary.refused), (2, 2, 1));
+    assert_eq!(
+        summary.performed(),
+        5,
+        "every re-checked element lands in exactly one of the three counters, \
+         so their sum is what was examined"
+    );
+    // A prewarm with nothing to classify describes no element at all.
+    let untouched = Domain47ShadowWalkRecheckSummary::default();
+    assert_eq!(
+        untouched.outcome,
+        Domain47ShadowWalkRecheckOutcome::NotChecked
+    );
+    assert_eq!(untouched.performed(), 0);
+}
+
+/// THE PRODUCTION LEADER GUARD compares BOTH halves of the owner.
+///
+/// This is the predicate the re-check's ABA guard actually calls, so it is
+/// where the country comparison has to be pinned.
+///
+/// MUTATION: delete the `country_tag_db_id` term from
+/// `domain47_leader_identity_matches_owner` and the different-country case
+/// returns true — an address recycled into ANOTHER country's leader object
+/// would be published as a benign, reached-on-recheck residual.
+#[test]
+fn d47_leader_owner_guard_refuses_a_same_id_different_country_object() {
+    let owner = Domain47RoleOwner {
+        country_tag_db_id: 11,
+        char_id: 7,
+    };
+    assert!(domain47_leader_identity_matches_owner(&Ok((11, 7)), owner));
+    assert!(
+        !domain47_leader_identity_matches_owner(&Ok((12, 7)), owner),
+        "same char_id under a different country is a DIFFERENT character; this \
+         world does not prove char_id unique"
+    );
+    assert!(!domain47_leader_identity_matches_owner(&Ok((11, 8)), owner));
+    assert!(
+        !domain47_leader_identity_matches_owner(
+            &Err(domain47::extractor::ExtractError::NullPointer(
+                "CCountryLeader.character"
+            )),
+            owner
+        ),
+        "an identity that cannot be re-read is not a match"
+    );
+}
+
+/// THE PRODUCTION ADVISOR GUARD, same property, plus the classification it
+/// must not skip: an object that has stopped being `Appointed` is no longer
+/// the thing the sweep's live set admitted.
+///
+/// MUTATION 1: delete the `country_tag_db_id` term and the different-country
+/// case returns true.
+/// MUTATION 2: drop the `Appointed` test and the token-less probe returns
+/// true — a dead advisor would count as reached.
+#[test]
+fn d47_advisor_owner_guard_refuses_a_different_country_and_an_unappointed_object() {
+    let owner = Domain47RoleOwner {
+        country_tag_db_id: 11,
+        char_id: 7,
+    };
+    let probe = |country_tag_db_id: u32, char_id: u32, idea_token: Option<&str>| {
+        Domain47AdvisorProbe {
+            character: Ok(domain47::extractor::AdvisorRawFields {
+                advisor_addr: 0x1000,
+                character_addr: 0x2000,
+                country_tag_db_id,
+                char_id,
+            }),
+            token_header: None,
+            idea_token: idea_token.map(str::to_owned),
+            slot: None,
+        }
+    };
+    assert!(domain47_advisor_probe_matches_owner(
+        &probe(11, 7, Some("advisor_token")),
+        owner
+    ));
+    assert!(
+        !domain47_advisor_probe_matches_owner(&probe(12, 7, Some("advisor_token")), owner),
+        "same char_id under a different country is a different character"
+    );
+    assert!(!domain47_advisor_probe_matches_owner(
+        &probe(11, 8, Some("advisor_token")),
+        owner
+    ));
+    assert!(
+        !domain47_advisor_probe_matches_owner(&probe(11, 7, None), owner),
+        "a token-less object classifies Dead and is no longer the advisor the \
+         sweep's live set admitted"
+    );
+    assert!(
+        !domain47_advisor_probe_matches_owner(
+            &Domain47AdvisorProbe {
+                character: Err(domain47::extractor::ExtractError::NullPointer(
+                    "CAdvisor.character"
+                )),
+                token_header: None,
+                idea_token: Some("advisor_token".to_owned()),
+                slot: None,
+            },
+            owner
+        ),
+        "a broken character chain is not a match"
+    );
+}
+
+/// `NotChecked` is the absence of a re-check and may not be counted as one:
+/// folding it into any counter would make `performed()` claim work that never
+/// happened.
+///
+/// MUTATION: route the `NotChecked` arm into `refused` (the natural catch-all)
+/// and this fails.
+#[test]
+fn d47_shadow_walk_recheck_summary_never_counts_a_check_that_did_not_run() {
+    let mut summary = Domain47ShadowWalkRecheckSummary::default();
+    summary.observe(
+        Domain47ShadowWalkRecheckOutcome::NotChecked,
+        77,
+        Domain47ShadowWalkMapAxis::Leader,
+    );
+    assert_eq!(summary, Domain47ShadowWalkRecheckSummary::default());
+}
