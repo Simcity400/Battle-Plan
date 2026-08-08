@@ -1623,6 +1623,81 @@ mod tests {
         assert!(!result.stats.has_rejections());
     }
 
+    /// The role row does not depend on WHICH `CCountryLeader` object carries
+    /// the role — only on the character behind its `+0x08`.
+    ///
+    /// This is the half of the lane FT verdict that belongs in a test. The
+    /// prewarm's heap sweep and the character-down container walk disagree,
+    /// every capture, about one or two `CCountryLeader` addresses: the sweep's
+    /// snapshot carries an object no character map holds, whose own `+0x08`
+    /// names a character the census DID visit and whose map holds a DIFFERENT
+    /// object. Whether that disagreement can reach the wire depends on whether
+    /// the row says anything about the OBJECT. It does not —
+    /// `read_country_leader_role` reads the character behind `+0x08` and emits
+    /// `(country, char_id)` from there, while `name` and `token` come from the
+    /// root, which the prewarm sets to `None` for this family.
+    ///
+    /// The two bodies are filled with DIFFERENT bytes everywhere except the
+    /// vtable and the character pointer, across the object's whole 0x150
+    /// extent, so this is not merely asserting that the current fields agree —
+    /// it fails as soon as the row derives anything at all from the role body.
+    ///
+    /// MUTATION: add any field to `CountryLeaderRoleRecord` read out of
+    /// `root.country_leader_addr` — an ideology key, a trait, an election date
+    /// — and the two rows stop matching. (Verified by mutating `name` to
+    /// `format!("{:x}", root.country_leader_addr)`, which fails with `3000`
+    /// against `8000`.)
+    ///
+    /// WHAT THIS DOES NOT PIN, because the earlier name of this test claimed it
+    /// and two inputs of one root each cannot show it: that the two objects
+    /// collapse to ONE row. That collapse is the census's
+    /// `seen_role_identities` dedup over `(country_tag_db_id, char_id)`, it
+    /// lives in the collector's prewarm rather than in this adapter, and
+    /// deleting it would leave this test green. The adapter emits one row per
+    /// root it is handed, by design. (Codex 019fe04f, finding 4.)
+    #[test]
+    fn a_country_leader_row_is_insensitive_to_which_object_carries_it() {
+        const CCOUNTRY_LEADER_BODY_LEN: u64 = 0x150;
+
+        let build = |country_leader: u64, fill: u8| {
+            let mut mem = FakeMemory::default();
+            let character = 0x1000;
+            write_character(&mut mem, character, 100, 2);
+            // Everything the object could possibly contribute, made to
+            // disagree between the two bodies.
+            let mut offset = 0u64;
+            while offset < CCOUNTRY_LEADER_BODY_LEN {
+                mem.write_u8(country_leader + offset, fill);
+                offset += 1;
+            }
+            mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+            mem.write_u64(country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF, character);
+
+            let input = AdapterInput {
+                country_leader_roles: vec![CountryLeaderRoleRoot {
+                    country_leader_addr: country_leader,
+                    char_id: 100,
+                    name: None,
+                    token: None,
+                }],
+                ..AdapterInput::default()
+            };
+            build_lane_frame_from_adapter_input(&mem, &roots(), &input)
+        };
+
+        let held_by_the_map = build(0x3000, 0x5A);
+        let seen_only_by_the_sweep = build(0x8000, 0xA5);
+
+        assert_eq!(held_by_the_map.stats.country_leader_role_rows, 1);
+        assert_eq!(seen_only_by_the_sweep.stats.country_leader_role_rows, 1);
+        assert_eq!(
+            held_by_the_map.frame.country_leader_roles,
+            seen_only_by_the_sweep.frame.country_leader_roles
+        );
+        assert!(!held_by_the_map.stats.has_rejections());
+        assert!(!seen_only_by_the_sweep.stats.has_rejections());
+    }
+
     #[test]
     fn appointed_intersection_is_country_scoped() {
         let roster = vec![AdvisorRecord {
