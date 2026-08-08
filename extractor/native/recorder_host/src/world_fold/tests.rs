@@ -27708,19 +27708,24 @@ fn a_forbidden_d31_resync_is_refused_even_on_the_paths_that_exit_early() {
 ///   `baseline_clear_requested`, which refuses any domain not on
 ///   `COMPACT_BASELINE_CLEAR_ADMISSIONS`. There is exactly ONE such call site.
 ///   No unadmitted domain can discard anything, whatever a record claims.
-/// * **Strict REFUSAL is partial.** A fold that does not reach
-///   `refuse_inadmissible_baseline_clear` IGNORES the bit and folds the record
-///   normally: the producer's request is silently dropped rather than honoured
-///   or refused. That is a deviation from `DELTA_WIRE_DESIGN.md` §8.2 rule 4,
-///   which says such a record must be REFUSED, and it is recorded there as
-///   found-not-fixed with the remedy rather than papered over here.
+/// * **Strict REFUSAL used to be partial, and no longer is.** A fold that does
+///   not reach `refuse_inadmissible_baseline_clear` IGNORES the bit and folds
+///   the record normally: the producer's request is silently dropped rather than
+///   honoured or refused, which `DELTA_WIRE_DESIGN.md` §10.2 rule 4 says must be
+///   a hard rejection. Seventeen folds were in that state and are now converted;
+///   `UNREFUSING_FOLDS` is asserted EMPTY.
+/// * **The walk counts a GLOBAL status word, not the substring.** D45's
+///   `depth_status_flags` is a different word in a different namespace and is
+///   excluded by `reads_a_global_status_word`; the assertion below keeps that
+///   exclusion honest.
 ///
 /// `UNREFUSING_FOLDS` is therefore "the folds that ignore the bit", asserted by
-/// EQUALITY. A fold that gains the call must be removed from the list, and one
-/// that loses it must be added — either way the list is edited deliberately.
+/// EQUALITY against the empty slice. A fold that loses its refusal, or one added
+/// later that never had it, appears here by name.
 ///
 /// What production change makes this fail: any change to which folds refuse the
-/// bit, or a second `baseline_clear_requested` call site.
+/// bit, a second `baseline_clear_requested` call site, or D45 acquiring a global
+/// status word.
 #[test]
 fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
     // Comments and string literals are blanked first. A raw substring search
@@ -27741,54 +27746,15 @@ fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
         "fold_domain_fresh_this_hour",
     ];
 
-    // Every declaration spelling, not just `    fn fold_`. A fold that arrives
-    // as `pub(crate) fn`, `async fn`, `unsafe fn` or `const fn` must not slip
-    // past the walk.
-    let declaration_at = |from: usize| -> Option<(usize, usize)> {
-        let mut cursor = from;
-        while let Some(at) = source[cursor..].find("fn fold_") {
-            let at = cursor + at;
-            let line_start = source[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
-            let prefix = &source[line_start..at];
-            // Only a method declaration: the text before `fn` on its line is
-            // indentation plus optional qualifiers, nothing else.
-            let qualifiers_only = prefix.trim_start().split_whitespace().all(|word| {
-                matches!(word, "pub" | "async" | "unsafe" | "const" | "extern")
-                    || word.starts_with("pub(")
-            });
-            if qualifiers_only && prefix.starts_with("    ") {
-                return Some((line_start, at));
-            }
-            cursor = at + "fn fold_".len();
-        }
-        None
-    };
-
     let mut unrefusing: Vec<String> = Vec::new();
-    let mut declared: Vec<(String, usize, usize)> = Vec::new();
-    let mut cursor = 0usize;
-    while let Some((line_start, fn_at)) = declaration_at(cursor) {
-        let name_start = fn_at + "fn ".len();
-        let name_end = name_start
-            + source[name_start..]
-                .find(['(', '<'])
-                .expect("a function name is followed by its parameter list");
-        let name = source[name_start..name_end].to_string();
-        cursor = name_end;
-        declared.push((name, line_start, name_end));
-    }
-    // Each body runs to the next declaration at the same nesting, which is the
-    // next entry's start.
-    for (index, (name, _, name_end)) in declared.iter().enumerate() {
-        let end = declared
-            .get(index + 1)
-            .map(|(_, next_start, _)| *next_start)
-            .unwrap_or(source.len());
-        let body = &source[*name_end..end];
+    for (name, body) in method_bodies(&source) {
+        if !name.starts_with("fold_") {
+            continue;
+        }
         if NO_PAYLOAD_STATUS.contains(&name.as_str()) {
             continue;
         }
-        if !body.contains("status_flags") {
+        if !reads_a_global_status_word(body) {
             continue;
         }
         let refuses = body.contains("handle_compact_failure(")
@@ -27800,46 +27766,59 @@ fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
     unrefusing.sort();
     unrefusing.dedup();
 
-    // The EXACT set of folds that read a payload status word and do not refuse
-    // an inadmissible resync. None of them can CLEAR anything -- that is the
-    // assertion below -- but each of them silently ignores the bit instead of
-    // refusing it. See `DELTA_WIRE_DESIGN.md` §8.2, "found, not fixed".
-    const UNREFUSING_FOLDS: &[&str] = &[
-        "fold_capitulation_war_state",
-        // fold_characters_leaders_cabinet_live LEFT this set when lane DI gave
-        // d47 per-family partial admission: it classifies through
-        // `handle_compact_failure` and calls `refuse_inadmissible_baseline_clear`
-        // outright, so an inadmissible resync is refused rather than ignored.
-        "fold_country_identity",
-        "fold_diplomacy",
-        "fold_diplomacy_intel_operatives",
-        "fold_divisions",
-        "fold_dynamic_collection_trace",
-        "fold_focus_research_decisions_depth",
-        // fold_fuel ENTERED this set when lane BY made it read the bundle's
-        // shared status word: it now qualifies as a fold that can apply rows,
-        // and like its siblings it ignores bit 15 rather than refusing it.
-        // Nothing lost a refusal; the silence became measurable. The per-fold
-        // remedy is the recorded follow-up for this whole list.
-        "fold_fuel",
-        "fold_land_combat_detail_events",
-        "fold_land_combats",
-        "fold_map_control",
-        "fold_map_detail",
-        "fold_market_trade",
-        "fold_occupation_resistance_compliance",
-        "fold_scripted_state",
-        "fold_session_multiplayer_metadata",
-        "fold_supply_logistics_attrition",
-    ];
+    // THE SET IS NOW EMPTY. Every fold that reads a GLOBAL compact status word
+    // refuses an inadmissible resync; §10.2's "found, not fixed" is closed.
+    //
+    // It stays asserted by EQUALITY against the empty slice rather than deleted,
+    // because the value of this walk was never the seventeen names -- it is that
+    // a fold cannot join the set silently. A fold added later that reads a
+    // status word and writes its own failure handling lands here, by name.
+    const UNREFUSING_FOLDS: &[&str] = &[];
 
     let expected: Vec<String> = UNREFUSING_FOLDS.iter().map(|s| s.to_string()).collect();
     assert_eq!(
         unrefusing, expected,
-        "the set of folds that ignore `COMPACT_STATUS_BASELINE_CLEAR` instead of refusing it has \
-         changed. A fold that gained the refusal must be REMOVED from UNREFUSING_FOLDS; one that \
-         lost it must be ADDED, and adding one is a regression against \
-         `DELTA_WIRE_DESIGN.md` §8.2 rule 4."
+        "a fold reads a GLOBAL compact status word and does not refuse an inadmissible resync. \
+         Every such fold must ask `refuse_inadmissible_baseline_clear` (directly, or through \
+         `handle_compact_failure`) before its FIRST state mutation, and return through the \
+         per-hour unknown body it already uses for a failure status. Ignoring the bit folds the \
+         record exactly as if it were not set, which is the producer/consumer disagreement \
+         `DELTA_WIRE_DESIGN.md` §10.2 rule 4 exists to prevent."
+    );
+
+    // D45 IS THE ONE FOLD THAT READS A STATUS WORD AND MUST NOT ASK.
+    //
+    // `fold_focus_research_decisions_depth` reads `depth_status_flags`, which is
+    // a SEPARATE `COMPACT_FRD_STATUS_*` namespace and not the global compact
+    // status word: bit 6 is `DIRECT_HOOK_SOURCE_VALIDATED` and bit 7 is the
+    // D45-local direct-history reset badge, where the global vocabulary has
+    // `WORKER_PANIC` and `BRIDGE_UNAVAILABLE`. D45 is deliberately absent from
+    // `compact_contract::lane_local_status_mask` for that reason, so handing
+    // this word to the global predicate would read a D45-local bit as a resync
+    // nobody requested -- the exact failure §10.2's globalisation rule names.
+    //
+    // The substring walk above cannot see that distinction (`depth_status_flags`
+    // contains `status_flags`), so it counted D45 as an ignoring fold for as long
+    // as the list existed. It is excluded by `reads_a_global_status_word`, and
+    // this is the assertion that keeps the exclusion honest: if D45 ever gains a
+    // genuine global status word, the name stops matching the local-only shape
+    // and it must be wired like every other fold.
+    let bodies = method_bodies(&source);
+    let d45_body = bodies
+        .iter()
+        .find(|(name, _)| name == "fold_focus_research_decisions_depth")
+        .map(|(_, body)| *body)
+        .expect("fold_focus_research_decisions_depth is declared");
+    assert!(
+        d45_body.contains("depth_status_flags"),
+        "d45 reads its own status word by that name; if it were renamed this exclusion would \
+         stop being checkable"
+    );
+    assert!(
+        !reads_a_global_status_word(d45_body),
+        "`fold_focus_research_decisions_depth` now reads a GLOBAL status word as well as its \
+         D45-local `depth_status_flags`. It must then refuse an inadmissible resync like every \
+         other fold, and this exclusion must be deleted rather than widened."
     );
 
     // THE SAFETY PROPERTY, asserted DIRECTLY rather than inferred from a call
@@ -27897,7 +27876,7 @@ fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
     //    `& (1 << 15)` in a fold has the same question this comment does.
     //
     // Closing the gap mechanically needs AST-level analysis of the fold, which is
-    // recorded as the follow-up in `DELTA_WIRE_DESIGN.md` §8.2 rather than
+    // recorded as the follow-up in `DELTA_WIRE_DESIGN.md` §10.2 rather than
     // approximated by a longer list of string literals.
     let normalised = normalise_integer_literals(&source);
     // Every radix: hex, binary, OCTAL and decimal, plus the shift form.
@@ -27950,12 +27929,11 @@ fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
             "ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID",
         ),
     ] {
-        let at = source
-            .find(&format!("\n    fn {fold}("))
+        let body = bodies
+            .iter()
+            .find(|(name, _)| name == fold)
+            .map(|(_, body)| *body)
             .unwrap_or_else(|| panic!("{fold} is declared"));
-        let rest = &source[at + 1..];
-        let end = rest.find("\n    fn ").map(|e| at + 1 + e).unwrap_or(source.len());
-        let body = &source[at..end];
         assert!(
             body.contains("refuse_inadmissible_baseline_clear("),
             "{fold} reaches row application without `handle_compact_failure` (it uses its own \
@@ -27966,6 +27944,170 @@ fn every_fold_that_can_apply_rows_refuses_an_inadmissible_resync() {
             "{fold} must ask the admission for its OWN domain id"
         );
     }
+}
+
+/// Every four-space method in `world_fold.rs`, paired with its body.
+///
+/// **THE TABLE COVERS METHODS OF EVERY NAME, and that is the point.** Both
+/// censuses used to collect only `fold_*` declarations and then end each body at
+/// the next COLLECTED entry — so every non-`fold_` method in between was
+/// swallowed into the preceding fold and lent it whatever calls it contained.
+/// That is exactly how the accessor `fold_domain_fresh_this_hour` came to
+/// "contain" `handle_compact_failure`'s call to the admission. Ending a body at
+/// the next method of ANY name is what makes the boundary real. (Codex review
+/// rounds 1 and 2, finding 5.)
+///
+/// Declarations are matched with their qualifiers, so `pub fn`, `pub(crate) fn`,
+/// `async fn`, `unsafe fn`, `const fn` and `extern "C" fn` are all seen. The
+/// input must already be comment- and string-stripped.
+///
+/// The indent must be EXACTLY four spaces. A nested `fn` inside a method body is
+/// indented deeper and is part of the body it sits in, not a sibling; accepting
+/// it would split one method into two and hand the second half's calls to a name
+/// that does not own them. (Codex review round 3.)
+fn method_bodies(source: &str) -> Vec<(String, &str)> {
+    let mut declared: Vec<(String, usize, usize)> = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(offset) = source[cursor..].find("fn ") {
+        let at = cursor + offset;
+        let line_start = source[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        let prefix = &source[line_start..at];
+        // A method declaration is: four-space indent, then only qualifiers.
+        let qualifiers_only = prefix.trim_start().split_whitespace().all(|word| {
+            matches!(word, "pub" | "async" | "unsafe" | "const" | "extern")
+                || word.starts_with("pub(")
+                || word.starts_with('"')
+        });
+        let name_start = at + "fn ".len();
+        let Some(name_len) = source[name_start..].find(['(', '<']) else {
+            break;
+        };
+        let name_end = name_start + name_len;
+        let name = &source[name_start..name_end];
+        let is_identifier = !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+        let indented_exactly_four = prefix.starts_with("    ") && !prefix.starts_with("     ");
+        if qualifiers_only && indented_exactly_four && is_identifier {
+            declared.push((name.to_string(), line_start, name_end));
+        }
+        cursor = name_end;
+    }
+    declared
+        .iter()
+        .enumerate()
+        .map(|(index, (name, _, name_end))| {
+            let end = declared
+                .get(index + 1)
+                .map(|(_, next_start, _)| *next_start)
+                .unwrap_or(source.len());
+            (name.clone(), &source[*name_end..end])
+        })
+        .collect()
+}
+
+/// **A QUALIFIED METHOD BETWEEN TWO FOLDS ENDS THE FIRST FOLD'S BODY.**
+///
+/// This is the parser bug both censuses had, in miniature: `alpha` must NOT be
+/// credited with the `refuse_inadmissible_baseline_clear(` call that belongs to
+/// the `pub(crate) fn` helper following it, and `beta` must still be found even
+/// though a qualified declaration sits between them.
+///
+/// What production change makes this fail: ending a body at the next `fold_`
+/// declaration instead of the next method of any name, or matching only the
+/// unqualified `    fn ` spelling.
+#[test]
+fn the_method_walk_ends_a_body_at_a_qualified_helper_rather_than_swallowing_it() {
+    let source = "\
+impl WorldFold {
+    fn fold_alpha(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub(crate) fn a_qualified_helper(&mut self) {
+        self.refuse_inadmissible_baseline_clear(1, \"x\", 0);
+    }
+
+    async fn fold_beta(&mut self) {
+        fn nested_helper() {
+            let _ = 1;
+        }
+        nested_helper();
+        self.refuse_inadmissible_baseline_clear(2, \"y\", 0);
+    }
+}
+";
+    let bodies = method_bodies(source);
+    let names: Vec<&str> = bodies.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["fold_alpha", "a_qualified_helper", "fold_beta"],
+        "every four-space method, qualified or not, is its own entry -- and a NESTED fn is not \
+         one: it is indented deeper, it belongs to the body it sits in, and admitting it would \
+         split that method in two"
+    );
+
+    let body_of = |wanted: &str| -> &str {
+        bodies
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, body)| *body)
+            .expect("declared")
+    };
+    assert!(
+        !body_of("fold_alpha").contains("refuse_inadmissible_baseline_clear("),
+        "fold_alpha's body must END at the qualified helper, not swallow it and inherit its call"
+    );
+    assert!(
+        body_of("a_qualified_helper").contains("refuse_inadmissible_baseline_clear("),
+        "the call belongs to the helper that makes it"
+    );
+    assert!(
+        body_of("fold_beta").contains("refuse_inadmissible_baseline_clear("),
+        "and an `async fn` fold after a qualified helper is still found, with its own call — \
+         including the part of its body that follows a NESTED fn, which must not have ended it"
+    );
+}
+
+/// Does this fold body read the GLOBAL compact status word?
+///
+/// A plain `contains("status_flags")` cannot answer that, and the difference is
+/// load-bearing rather than pedantic: `depth_status_flags` is D45's own
+/// `COMPACT_FRD_STATUS_*` namespace, whose bit 7 is a D45-local badge where the
+/// global vocabulary has `BRIDGE_UNAVAILABLE`. Passing it to
+/// `compact_baseline_clear_requested` would read a local bit as a global resync.
+///
+/// The exclusion is therefore ONE NAMED IDENTIFIER, `depth_status_flags`, and
+/// not "anything with a prefix": excluding every prefixed spelling would silently
+/// swallow a future `global_status_flags` or `record_status_flags` and classify
+/// its fold as D45. (Codex review round 1, finding 5.) Every other occurrence
+/// counts, including `decoded.status_flags` and a bare `status_flags` binding.
+fn reads_a_global_status_word(body: &str) -> bool {
+    /// The one identifier that is a DIFFERENT status word, not the global one.
+    const D45_LOCAL_WORD: &str = "depth_status_flags";
+
+    let mut from = 0usize;
+    while let Some(at) = body[from..].find("status_flags") {
+        let at = from + at;
+        // Walk back to the start of the identifier this occurrence belongs to.
+        let start = body[..at]
+            .rfind(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .map(|boundary| boundary + 1)
+            .unwrap_or(0);
+        let end = at + "status_flags".len();
+        // And forward, so `status_flags_or` is its own identifier rather than a
+        // bare `status_flags` with a suffix.
+        let end = end
+            + body[end..]
+                .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                .unwrap_or(body.len() - end);
+        if &body[start..end] != D45_LOCAL_WORD {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 /// Collapse the spellings of an integer literal that mean the same bit.
@@ -28247,6 +28389,992 @@ fn an_inadmissible_resync_on_d26s_tolerated_partial_path_is_refused() {
             .any(|entry| entry.amount_raw == 990_000),
         "and none of its rows may reach the accumulator: the resync was refused, so the record \
          is not folded at all"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The sixteen folds that used to IGNORE `COMPACT_STATUS_BASELINE_CLEAR`.
+//
+// `DELTA_WIRE_DESIGN.md` §10.2 carried them as "found, not fixed": each read a
+// global compact status word, wrote its own failure handling, never reached
+// `refuse_inadmissible_baseline_clear`, and therefore folded a record asking
+// for a resync EXACTLY AS IF THE BIT WERE NOT SET. Rule 4 says such a record is
+// a hard rejection. These are the conversions.
+// ---------------------------------------------------------------------------
+
+/// OR `extra_status` into a raw compact payload's status word at `offset`.
+///
+/// For the fixtures whose builders hard-code a clean status word. Lane-encoded
+/// domains take the bit through their encoder instead, so nothing here has to
+/// know whether a payload is checksummed.
+fn with_extra_status_at(mut payload: Vec<u8>, offset: usize, extra_status: u32) -> Vec<u8> {
+    let word = u32::from_le_bytes(
+        payload[offset..offset + 4]
+            .try_into()
+            .expect("four status bytes"),
+    ) | extra_status;
+    payload[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+    payload
+}
+
+/// D53's ENCODER refuses bit 15 outright — `compact::KNOWN_STATUS_FLAGS` is a
+/// hand-rolled list, not `COMPACT_STATUS_V1_KNOWN_MASK`, and does not contain
+/// it — so the bit is written into the encoded header at +16 instead. A record
+/// no honest producer can emit is exactly the record a consumer must still
+/// refuse.
+fn domain53_payload_with_status(extra_status_flags: u32) -> Vec<u8> {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+    with_extra_status_at(report.payload, 16, extra_status_flags)
+}
+
+/// D55's decoder requires `DELTA_DATA` on every detail record ("detail status
+/// lacks canonical DELTA_DATA"), so the resync arm of this fixture is a
+/// `BASELINE_CLEAR | DELTA_DATA` record — a patch that is also a replacement.
+/// The contract refuses it on rule 1 rather than rule 4, through the SAME
+/// predicate and the same `baseline_clear_inadmissible` outcome, which is the
+/// only shape of resync D55 can ever be asked to fold.
+fn domain55_detail_events_payload(status_flags: u32) -> Vec<u8> {
+    land_detail55::encode_detail_events_payload(
+        1,
+        COMPACT_STATUS_DELTA_DATA | status_flags,
+        &[land_detail55::DetailEventRow {
+            combat_id: 42,
+            generation: 7,
+            event_kind: land_detail55::EVENT_PHASE_UPDATED,
+            side: None,
+            division_id: None,
+            location: Some(1000),
+            day: Some(3),
+            duration: Some(4),
+            old_side_count: 0,
+            new_side_count: 2,
+            flags: land_detail55::FLAG_FROM_VALIDATED_DOMAIN21_ROOT
+                | land_detail55::FLAG_LOCATION_PRESENT
+                | land_detail55::FLAG_DAY_PRESENT
+                | land_detail55::FLAG_DURATION_PRESENT,
+        }],
+    )
+}
+
+fn domain71_trace_payload(status_flags: u32) -> Vec<u8> {
+    dct71_lane::encode_payload(&dct71_lane::TraceFrame {
+        elapsed_wall_ms: 3,
+        status_flags,
+        frame_hour: 16_959_360,
+        collections: Vec::new(),
+    })
+    .expect("measured DCT1 frame")
+}
+
+fn domain51_scripted_payload(status_flags: u32) -> Vec<u8> {
+    chunk3_scripted_payload(
+        status_flags,
+        &[Chunk3ScriptedRow {
+            scope_kind: SCRIPTED_STATE_SCOPE_COUNTRY,
+            owner_id: 47,
+            value_kind: SCRIPTED_STATE_VALUE_FLAG_NAMED,
+            key: Some("country_flag"),
+            token_id: None,
+            value_raw: Some(1),
+            date_hour_raw: Some(123),
+            deleted: false,
+        }],
+    )
+}
+
+/// A COL1 collaboration trailer whose presence sets
+/// `collaboration_extension_present_this_hour` — the marker that discriminates
+/// "the refusal ran before the trailer decode" from "it ran after".
+fn push_d52_collaboration(payload: &mut Vec<u8>, rows: &[(u32, u32, i64)]) {
+    payload.extend_from_slice(b"COL1");
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&32u16.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes()); // COMPLETE
+    payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().max(1) as u32).to_le_bytes()); // observed rows
+    payload.extend_from_slice(&0u32.to_le_bytes()); // anomaly rows
+    payload.extend_from_slice(&100_000u32.to_le_bytes()); // divisor
+    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    for &(owner, target, progress_raw) in rows {
+        payload.extend_from_slice(&owner.to_le_bytes());
+        payload.extend_from_slice(&target.to_le_bytes());
+        payload.extend_from_slice(&progress_raw.to_le_bytes());
+    }
+}
+
+fn domain52_occupation_payload(status_flags: u32) -> Vec<u8> {
+    let flags = OCC_ROW_FLAG_RESISTANCE | OCC_ROW_FLAG_COMPLIANCE;
+    d52_payload(status_flags, |rows| {
+        push_d52_row(rows, 5, 0, 0, 0, 100_000, 200_000, flags);
+        1
+    })
+}
+
+fn domain57_session_payload(status_flags: u32) -> Vec<u8> {
+    domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY | DOMAIN57_ROOT_PAUSE_CLOCK,
+        vec![domain57_player_row("IRE", 29)],
+        vec![domain57_event_row(
+            session57_lane::SessionEventKind::Pause,
+            1,
+        )],
+        status_flags,
+    )
+}
+
+fn domain60_capwar_payload(status_flags: u32) -> Vec<u8> {
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.status_flags |= status_flags;
+    capwar_payload(&snapshot)
+}
+
+/// WHICH LAYER ACTUALLY REFUSES A BIT-15 RECORD OF THIS DOMAIN.
+///
+/// Rule 4 is satisfied either way — the record is hard-rejected and the
+/// domain-hour is unknown — but the two layers name different causes, and a test
+/// that pretended they were the same would be asserting something false about
+/// D53 and D60.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bit15RefusedBy {
+    /// The fold's own `refuse_inadmissible_baseline_clear`, which records the
+    /// `baseline_clear_inadmissible` problem by that name.
+    Fold,
+    /// The domain's LANE DECODER, which narrows the global v1 status vocabulary
+    /// to a hand-rolled list that omits bit 15 and rejects the payload before
+    /// the fold classifies anything.
+    ///
+    /// The fold's refusal is still wired for these two, and deliberately: the
+    /// moment a lane widens its mask to `COMPACT_STATUS_V1_KNOWN_MASK` — which
+    /// d55 and d57 already use — the bit reaches the fold, and without the call
+    /// that widening would silently re-open the defect. The mask assertion in
+    /// the test body is what says the coupling is real rather than assumed.
+    LaneDecoder,
+}
+
+/// One converted fold, and the record shape that exercises it.
+struct Bit15Case {
+    domain_id: u16,
+    fold: &'static str,
+    /// A record of this domain whose status word carries `extra_status` and
+    /// nothing else different. `extra_status == 0` is the CONTROL.
+    ///
+    /// The test folds it through `fold_domain_data`, the production dispatch,
+    /// rather than by calling the fold method: a lane decoder that rejects the
+    /// payload returns `Err` from the fold WITHOUT typing the domain-hour
+    /// itself, and the dispatch's `Err` arm is what does that. Calling the
+    /// method directly would measure half the production path.
+    payload: fn(u32) -> Vec<u8>,
+    /// Does this fold's own per-hour unknown body return `Err` rather than the
+    /// shared fail-closed `Ok(())`? D53 and D60 reject every other way through
+    /// an `Err`, and a refusal has to take the same exit or it would be a new
+    /// outcome invented for this bit.
+    refusal_is_err: bool,
+    refused_by: Bit15RefusedBy,
+}
+
+fn bit15_converted_folds() -> Vec<Bit15Case> {
+    vec![
+        Bit15Case {
+            domain_id: FUEL_DOMAIN_ID,
+            fold: "fold_fuel",
+            payload: |extra| d10_apply_payload(3, extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: DIPLOMACY_DOMAIN_ID,
+            fold: "fold_diplomacy",
+            payload: |extra| d17_apply_payload(5, extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: COUNTRY_IDENTITY_DOMAIN_ID,
+            fold: "fold_country_identity",
+            payload: |extra| {
+                with_extra_status_at(country_identity_payload(&[(1, "GER")]), 16, extra)
+            },
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: DIVISIONS_DOMAIN_ID,
+            fold: "fold_divisions",
+            payload: |extra| {
+                with_extra_status_at(chunk3_division_payload(&[(7, 1, 1)]), 16, extra)
+            },
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: LAND_COMBATS_DOMAIN_ID,
+            fold: "fold_land_combats",
+            payload: |extra| {
+                land_combats_payload_with_status(
+                    &[TestLandCombat {
+                        combat_id: 42,
+                        generation: 7,
+                        location: 1000,
+                        attackers: vec![101],
+                        defenders: vec![201],
+                    }],
+                    extra,
+                )
+            },
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: MAP_CONTROL_DOMAIN_ID,
+            fold: "fold_map_control",
+            payload: |extra| with_extra_status_at(d22_state5_payload(47, 48), 16, extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: MAP_DETAIL_DOMAIN_ID,
+            fold: "fold_map_detail",
+            payload: |extra| d23_baseline_payload(extra, 12),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: MARKET_TRADE_DOMAIN_ID,
+            fold: "fold_market_trade",
+            payload: |extra| d43_payload(extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: SUPPLY_LOGISTICS_ATTRITION_DOMAIN_ID,
+            fold: "fold_supply_logistics_attrition",
+            payload: |extra| d44_payload(extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: SCRIPTED_STATE_DOMAIN_ID,
+            fold: "fold_scripted_state",
+            payload: |extra| domain51_scripted_payload(extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: OCCUPATION_RESISTANCE_COMPLIANCE_DOMAIN_ID,
+            fold: "fold_occupation_resistance_compliance",
+            payload: |extra| domain52_occupation_payload(extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+            fold: "fold_diplomacy_intel_operatives",
+            payload: |extra| domain53_payload_with_status(extra),
+            refusal_is_err: true,
+            refused_by: Bit15RefusedBy::LaneDecoder,
+        },
+        Bit15Case {
+            domain_id: LAND_COMBAT_DETAIL_EVENTS_DOMAIN_ID,
+            fold: "fold_land_combat_detail_events",
+            payload: |extra| domain55_detail_events_payload(extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+            fold: "fold_session_multiplayer_metadata",
+            payload: |extra| domain57_session_payload(extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+        Bit15Case {
+            domain_id: CAPITULATION_WAR_STATE_DOMAIN_ID,
+            fold: "fold_capitulation_war_state",
+            payload: |extra| domain60_capwar_payload(extra),
+            refusal_is_err: true,
+            refused_by: Bit15RefusedBy::LaneDecoder,
+        },
+        Bit15Case {
+            domain_id: DYNAMIC_COLLECTION_TRACE_DOMAIN_ID,
+            fold: "fold_dynamic_collection_trace",
+            payload: |extra| domain71_trace_payload(extra),
+            refusal_is_err: false,
+            refused_by: Bit15RefusedBy::Fold,
+        },
+    ]
+}
+
+/// Fold one DOMAIN_DATA record through the production dispatch.
+///
+/// `fold_domain_data` returns `None` only for a domain it does not decode, which
+/// would silently turn every assertion below into a statement about nothing.
+fn fold_one_domain_record(
+    fold: &mut WorldFold,
+    domain_id: u16,
+    payload: Vec<u8>,
+) -> Result<(), String> {
+    fold.fold_domain_data(domain_id, &payload, 0, None)
+        .unwrap_or_else(|| panic!("domain {domain_id} has no fold dispatch"))
+}
+
+/// The per-hour "this domain's rows are authoritative" flag owned by a
+/// `Bit15RefusedBy::LaneDecoder` domain.
+///
+/// Only the two domains classified that way have an entry; anything else is a
+/// misclassification and panics rather than silently answering `true`.
+fn lane_decoder_case_known_this_hour(fold: &WorldFold, domain_id: u16) -> bool {
+    match domain_id {
+        DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID => fold.domain53_known_this_hour,
+        CAPITULATION_WAR_STATE_DOMAIN_ID => fold.capitulation_war_state_known_this_hour,
+        other => panic!(
+            "domain {other} is classified `Bit15RefusedBy::LaneDecoder` but has no per-hour \
+             known flag registered here"
+        ),
+    }
+}
+
+fn has_baseline_clear_problem(fold: &WorldFold, domain_id: u16) -> bool {
+    fold.domain_problems_this_hour
+        .iter()
+        .any(|problem| {
+            problem.domain_id == domain_id && problem.problem == "baseline_clear_inadmissible"
+        })
+}
+
+/// **EVERY CONVERTED FOLD REFUSES AN INADMISSIBLE RESYNC — AND THE SAME RECORD
+/// WITHOUT THE BIT IS UNCHANGED.**
+///
+/// The control arm is not decoration. Bit 15 is the ONLY difference between the
+/// two records in each case, so without it the assertion could pass on a fold
+/// that had simply stopped working: "the domain-hour is unknown" is what a
+/// broken fixture produces too. Every case therefore asserts that the clean
+/// record folds, is NOT typed unknown, and carries no `baseline_clear_inadmissible`
+/// problem — and only then that the bit flips all three.
+///
+/// None of these domains is on `COMPACT_BASELINE_CLEAR_ADMISSIONS`, so
+/// `compact_baseline_clear_requested` refuses on rule 4 for every one of them.
+///
+/// **TWO DOMAINS ARE REFUSED ONE LAYER EARLIER, and the test says so rather than
+/// pretending otherwise.** D53 and D60 narrow the global v1 status vocabulary to
+/// a hand-rolled `KNOWN_STATUS_FLAGS` list that omits bit 15, so their LANE
+/// DECODERS reject the payload before the fold classifies anything. Rule 4 is
+/// satisfied — the record is hard-rejected and the domain-hour is unknown — but
+/// the cause it names is a decode failure, not `baseline_clear_inadmissible`.
+/// Their fold-level refusals stay wired because a lane that later widens its
+/// mask to `COMPACT_STATUS_V1_KNOWN_MASK` (as d55 and d57 already have) would
+/// otherwise silently re-open the defect.
+///
+/// What production change makes this fail: deleting the
+/// `refuse_inadmissible_baseline_clear` call from any `Fold`-refused case, or
+/// moving it below an early return that would swallow the refusal.
+#[test]
+fn every_converted_fold_refuses_an_inadmissible_resync() {
+    use compact_contract::{COMPACT_STATUS_BASELINE_CLEAR, COMPACT_STATUS_PARTIAL_DATA};
+
+    // The two lane masks the `LaneDecoder` classification rests on. If either
+    // gains bit 15, its fold's own refusal becomes the live one and that case
+    // moves to `Bit15RefusedBy::Fold`.
+    assert_eq!(
+        diplomacy53::compact::KNOWN_STATUS_FLAGS & COMPACT_STATUS_BASELINE_CLEAR,
+        0,
+        "D53's lane decoder is classified as the refusing layer because its status vocabulary \
+         omits bit 15; if that changed, the fold's own refusal is what fires"
+    );
+    assert_eq!(
+        capwar60::compact::KNOWN_STATUS_FLAGS & COMPACT_STATUS_BASELINE_CLEAR,
+        0,
+        "D60's lane decoder is classified as the refusing layer for the same reason"
+    );
+
+    for case in bit15_converted_folds() {
+        let mut control = WorldFold::new("bit15_control");
+        let outcome = fold_one_domain_record(&mut control, case.domain_id, (case.payload)(0));
+        assert!(
+            outcome.is_ok(),
+            "{}: the CONTROL record must fold, or this case proves nothing about bit 15: {:?}",
+            case.fold,
+            outcome.err()
+        );
+        assert!(
+            !control.fold_domain_unknown(case.domain_id),
+            "{}: the control record must leave the domain-hour KNOWN, or 'unknown' cannot \
+             discriminate the refusal",
+            case.fold
+        );
+        assert!(
+            !has_baseline_clear_problem(&control, case.domain_id),
+            "{}: the control record must not record `baseline_clear_inadmissible`",
+            case.fold
+        );
+        if case.refused_by == Bit15RefusedBy::LaneDecoder {
+            // The lane-decoder cases are discriminated by the domain's OWN
+            // per-hour known flag rather than by `fold_domain_unknown` (see
+            // below), and that flag starts `false`, so "it is false after the
+            // resync" proves nothing unless the control turns it true.
+            assert!(
+                lane_decoder_case_known_this_hour(&control, case.domain_id),
+                "{}: the control record must set this domain's own per-hour known flag, or the \
+                 refusal assertion below is vacuous",
+                case.fold
+            );
+        }
+
+        let mut resync = WorldFold::new("bit15_resync");
+        let outcome = fold_one_domain_record(
+            &mut resync,
+            case.domain_id,
+            (case.payload)(COMPACT_STATUS_BASELINE_CLEAR),
+        );
+        assert_eq!(
+            outcome.is_err(),
+            case.refusal_is_err,
+            "{}: a refused resync must take this fold's OWN rejection exit ({}), not a new one \
+             invented for this bit; got {outcome:?}",
+            case.fold,
+            if case.refusal_is_err { "Err" } else { "Ok" }
+        );
+        assert!(
+            resync.fold_domain_unknown(case.domain_id),
+            "{}: a record carrying `COMPACT_STATUS_BASELINE_CLEAR` from a domain that is not on \
+             `COMPACT_BASELINE_CLEAR_ADMISSIONS` must make the domain-hour UNKNOWN. Folding it \
+             as if the bit were not set is the silence `DELTA_WIRE_DESIGN.md` §10.2 rule 4 \
+             refuses.",
+            case.fold
+        );
+        match case.refused_by {
+            Bit15RefusedBy::Fold => {
+                assert!(
+                    has_baseline_clear_problem(&resync, case.domain_id),
+                    "{}: the fold's own refusal must name itself on the problem ledger, so a \
+                     capture can tell a refused resync from any other unknown hour (a degraded \
+                     outcome names its cause)",
+                    case.fold
+                );
+            }
+            Bit15RefusedBy::LaneDecoder => {
+                assert!(
+                    !has_baseline_clear_problem(&resync, case.domain_id),
+                    "{}: this case claims the LANE DECODER refuses first, so the fold's own \
+                     refusal cannot have run. If it did, the lane widened its status mask and \
+                     this case belongs in `Bit15RefusedBy::Fold`.",
+                    case.fold
+                );
+                // The lane decoder rejects the payload with `?` at the top of
+                // the fold, so neither the fold's own unknown body nor the
+                // dispatch's typed `Err` arms run — the dispatch falls through
+                // to the catch-all `note`. What must still hold is the thing
+                // rule 4 is FOR: nothing of the record was applied, and the
+                // domain's own per-hour known flag says the hour is not
+                // authoritative.
+                assert!(
+                    !lane_decoder_case_known_this_hour(&resync, case.domain_id),
+                    "{}: the lane decoder refused the record, so this domain's own per-hour \
+                     known flag must be false — a refused resync must not leave the hour \
+                     projectable",
+                    case.fold
+                );
+            }
+        }
+
+        // **THE FAILURE-CLASS RESYNC, which is the one an early exit swallows.**
+        //
+        // Rule 3 refuses `BASELINE_CLEAR` on a failure-class record: a read that
+        // did not complete cannot describe the whole extent it asks the consumer
+        // to discard. Every fold's own failure branch returns `Ok(())`, so a
+        // refusal asked BELOW it never sees this record — d18, d21 and d23 were
+        // in exactly that state until this arm was added, and their refusals had
+        // to move back above their failure exits. (Codex review round 2,
+        // finding 1.)
+        if case.refused_by == Bit15RefusedBy::Fold {
+            let mut failing = WorldFold::new("bit15_failure_class_resync");
+            let _ = fold_one_domain_record(
+                &mut failing,
+                case.domain_id,
+                (case.payload)(COMPACT_STATUS_BASELINE_CLEAR | COMPACT_STATUS_PARTIAL_DATA),
+            );
+            assert!(
+                has_baseline_clear_problem(&failing, case.domain_id),
+                "{}: `BASELINE_CLEAR | PARTIAL_DATA` must be REFUSED by rule 3, not swallowed by \
+                 this fold's failure exit. The admission has to be asked ABOVE that exit, which \
+                 is the ordering `fold_air_region_activity` settled on.",
+                case.fold
+            );
+            assert!(
+                failing.fold_domain_unknown(case.domain_id),
+                "{}: and the domain-hour must be unknown",
+                case.fold
+            );
+        }
+    }
+}
+
+/// **THE CENSUS AND THE CASE TABLE ARE THE SAME SET.**
+///
+/// The table above is hand-written, so it can drift from the folds that actually
+/// call `refuse_inadmissible_baseline_clear` directly. This walks the production
+/// source and asserts the two agree: every fold with an explicit direct call is
+/// either covered by a case here or is one of the four that earlier lanes wired
+/// and pinned separately.
+///
+/// What production change makes this fail: adding a direct
+/// `refuse_inadmissible_baseline_clear` call to a fold and not adding its case.
+#[test]
+fn the_bit15_case_table_covers_every_fold_that_asks_the_admission_directly() {
+    let source =
+        strip_rust_comments_and_strings(&include_str!("../world_fold.rs").replace("\r\n", "\n"));
+
+    // Wired by earlier lanes, each with its own dedicated test.
+    const PREVIOUSLY_WIRED: &[&str] = &[
+        "fold_division_equipment",
+        "fold_construction_buildings_state_damage",
+        "fold_army_battleplans_depth",
+        "fold_characters_leaders_cabinet_live",
+    ];
+
+    // The SAME method table the census above uses, so the two cannot disagree
+    // about what a fold's body is. (Codex review rounds 1 and 2, finding 5.)
+    let mut direct: Vec<String> = method_bodies(&source)
+        .into_iter()
+        .filter(|(name, body)| {
+            name.starts_with("fold_") && body.contains("refuse_inadmissible_baseline_clear(")
+        })
+        .map(|(name, _)| name)
+        .collect();
+    direct.sort();
+    direct.dedup();
+
+    let mut expected: Vec<String> = bit15_converted_folds()
+        .into_iter()
+        .map(|case| case.fold.to_string())
+        .chain(PREVIOUSLY_WIRED.iter().map(|name| name.to_string()))
+        .collect();
+    expected.sort();
+    expected.dedup();
+
+    assert_eq!(
+        direct, expected,
+        "the folds that ask `refuse_inadmissible_baseline_clear` directly and the bit-15 case \
+         table have diverged. A fold that gains the call needs a case in \
+         `bit15_converted_folds`, or the refusal it added is untested."
+    );
+}
+
+/// **D52's REFUSAL LANDS ABOVE THE TRAILER COMMIT, NOT NEXT TO THE FAILURE CHECK.**
+///
+/// D52 decodes and COMMITS `occupation_garrison_alert_this_hour` — and the
+/// collaboration extension — before it classifies its status word. The insertion
+/// point that is right for most folds is therefore wrong here: a refusal placed
+/// beside the `compact_status_is_failure` check would return only after the
+/// record had already changed state, so a record the fold refused would still
+/// have published this hour's garrison alert.
+///
+/// The control carries the SAME trailers with no bit 15, and proves the fixture
+/// actually exercises the trailer path.
+///
+/// **THE DISCRIMINATOR IS `collaboration_extension_present_this_hour`, NOT the
+/// garrison alert.** An earlier version of this test asserted only that the
+/// alert was `Some(Null)` — which the refusal body SETS, so moving the refusal
+/// below the trailer commit still passed: the commit happened and was then
+/// overwritten. The presence marker is set only by the trailer decode and is
+/// never written by the refusal body, so it is `false` exactly when the refusal
+/// ran first. (Codex review round 1, finding 3.)
+///
+/// What production change makes this fail: moving
+/// `refuse_inadmissible_baseline_clear` in `fold_occupation_resistance_compliance`
+/// below the `payload.len() > base_len` trailer branch.
+#[test]
+fn a_refused_d52_resync_never_commits_the_garrison_alert_trailer() {
+    use compact_contract::COMPACT_STATUS_BASELINE_CLEAR;
+
+    let with_trailer = |status_flags: u32| {
+        let flags = OCC_ROW_FLAG_RESISTANCE | OCC_ROW_FLAG_COMPLIANCE;
+        let mut payload = d52_payload(status_flags, |rows| {
+            push_d52_row(rows, 5, 0, 0, 0, 100_000, 200_000, flags);
+            1
+        });
+        push_d52_garrison_alert(&mut payload, false, 4_200, &[(12, 125)]);
+        push_d52_collaboration(&mut payload, &[(47, 3, 25_000)]);
+        payload
+    };
+
+    // CONTROL: the same record without the bit commits both trailers.
+    let mut control = WorldFold::new("d52_trailer_control");
+    control
+        .fold_occupation_resistance_compliance(&with_trailer(0))
+        .expect("the trailered record folds");
+    let committed = control
+        .occupation_garrison_alert_this_hour
+        .clone()
+        .expect("the control must commit a garrison alert, or this fixture proves nothing");
+    assert!(
+        !committed.is_null(),
+        "the control's garrison alert must be a real value, not the failure branch's null: \
+         {committed:?}"
+    );
+    assert!(
+        control.collaboration_extension_present_this_hour,
+        "the control must set the collaboration presence marker, or the discriminator below is \
+         vacuous"
+    );
+    assert!(
+        control.collaboration_relations_this_hour.is_some(),
+        "and it must carry the decoded relations"
+    );
+
+    // The refusal must not leave either trailer behind.
+    let mut refused = WorldFold::new("d52_trailer_resync");
+    refused
+        .fold_occupation_resistance_compliance(&with_trailer(COMPACT_STATUS_BASELINE_CLEAR))
+        .expect("the refusal is fail-closed, not a stream abort");
+    assert!(
+        refused.occupation_unknown_this_hour,
+        "a refused D52 resync must type this hour's occupation fields unknown"
+    );
+    assert_eq!(
+        refused.occupation_garrison_alert_this_hour,
+        Some(Value::Null),
+        "the refusal must take D52's own unknown body — a NULL garrison alert — and never the \
+         trailer the refused record carried"
+    );
+    assert!(
+        !refused.collaboration_extension_present_this_hour,
+        "THE ORDERING ASSERTION: the presence marker is set by the trailer decode and never by \
+         the refusal body, so a refusal that ran BELOW the trailer branch would leave it true. \
+         The refused record must not have been decoded that far."
+    );
+}
+
+/// **D43's REFUSAL LANDS ABOVE THE CLASSIC-TRAILER COMMIT.**
+///
+/// D43 deliberately commits the X15 classic resource-trade families BEFORE it
+/// gates the equipment-market core, so an unavailable purchase-contract sweep
+/// cannot suppress a measured classic family. That ordering is right for a
+/// failure bit, which is a statement about ONE read. A refused resync is a
+/// rejection of the RECORD: the producer asked for the whole domain to be
+/// replaced, the fold may not honour that, and admitting the trailers anyway
+/// would be the "downgrade to ordinary record" §10.2 refuses.
+///
+/// What production change makes this fail: moving
+/// `refuse_inadmissible_baseline_clear` in `fold_market_trade` below the
+/// `parse_market_trade_trailers` commit.
+#[test]
+fn a_refused_d43_resync_never_commits_the_classic_trade_trailers() {
+    use compact_contract::COMPACT_STATUS_BASELINE_CLEAR;
+
+    let with_trailers = |status_flags: u32| {
+        let mut payload = d43_payload(status_flags);
+        append_d43_mts1_stockpiles(&mut payload, &[(34, &[(11, 7_000_000)])]);
+        payload
+    };
+
+    // CONTROL: without the bit the stockpile trailer reaches the fold.
+    let mut control = WorldFold::new("d43_trailer_control");
+    control
+        .fold_market_trade(&with_trailers(0))
+        .expect("the trailered record folds");
+    assert!(
+        !control.market_trade_stockpiles.is_empty(),
+        "the control must commit the MTS1 stockpiles, or this fixture does not exercise the \
+         trailer commit that runs ahead of the core gate"
+    );
+
+    let mut refused = WorldFold::new("d43_trailer_resync");
+    refused
+        .fold_market_trade(&with_trailers(COMPACT_STATUS_BASELINE_CLEAR))
+        .expect("the refusal is fail-closed, not a stream abort");
+    assert!(
+        refused.market_trade_unknown_this_hour,
+        "a refused D43 resync must type this hour's market-trade fields unknown"
+    );
+    assert!(
+        refused.market_trade_stockpiles.is_empty(),
+        "the refusal must return BEFORE the classic trailers are committed: the record asked for \
+         a replacement the fold may not honour, so none of it is admitted"
+    );
+}
+
+/// **D55's REFUSAL LANDS ABOVE ITS OWN REBASELINE BADGE.**
+///
+/// `fold_land_combat_detail_events` clears this hour's detail events the moment
+/// it sees `COMPACT_STATUS_TRANSITION_BASELINE_RESET` — before any status
+/// classification runs. That badge (bit 11) and the global resync bit (bit 15)
+/// are different claims that do not share a bit, so honouring one says nothing
+/// about the other, and a refusal asked after the clear would return from a fold
+/// that had already emptied the hour.
+///
+/// **THE DISCRIMINATOR IS THE REBASELINE NOTE, NOT THE EMPTIED MAP.** An earlier
+/// version of this test carried only bit 15 and asserted the hour's events were
+/// gone — which both orderings satisfy, because the refusal body clears the same
+/// accumulator the reset branch does. The record here therefore carries BOTH the
+/// resync bit and `TRANSITION_BASELINE_RESET`, and the assertion is that the
+/// reset branch's note was never written: it is produced only by the branch, and
+/// never by the refusal. (Codex review round 1, finding 3.)
+///
+/// What production change makes this fail: moving
+/// `refuse_inadmissible_baseline_clear` in `fold_land_combat_detail_events`
+/// below the `baseline_reset` branch.
+#[test]
+fn a_refused_d55_resync_does_not_reach_the_rebaseline_branch() {
+    use compact_contract::{
+        COMPACT_STATUS_BASELINE_CLEAR, COMPACT_STATUS_PARTIAL_DATA,
+        COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+    };
+
+    const RESET_NOTE: &str = "transition baseline reset";
+    // D55's decoder requires the rebaseline badge to travel with `PARTIAL_DATA`
+    // ("transition baseline reset is not badged PARTIAL_DATA"), which is also
+    // the one failure spelling `compact_delta_pin_may_advance` still applies.
+    const REBASELINE: u32 = COMPACT_STATUS_TRANSITION_BASELINE_RESET | COMPACT_STATUS_PARTIAL_DATA;
+
+    // CONTROL: the reset badge WITHOUT the resync bit reaches the branch and
+    // writes its note. Without this the assertion below could pass on a fold
+    // that had stopped producing the note at all.
+    let mut control = WorldFold::new("d55_reset_control");
+    control
+        .fold_land_combat_detail_events(&domain55_detail_events_payload(REBASELINE))
+        .expect("a rebaseline record folds");
+    assert!(
+        control
+            .notes_this_hour
+            .iter()
+            .any(|note| note.contains(RESET_NOTE)),
+        "the reset branch must write its note on the control, or the discriminator is vacuous: \
+         {:?}",
+        control.notes_this_hour
+    );
+
+    // An earlier record this hour puts real detail events in the accumulator, so
+    // "the map is empty" is a state the refusal has to produce rather than one
+    // it inherits.
+    let mut fold = WorldFold::new("d55_resync");
+    fold.fold_land_combat_detail_events(&domain55_detail_events_payload(0))
+        .expect("the first detail record folds");
+    assert!(
+        !fold.combat_detail_events_this_hour.is_empty(),
+        "the first record must land real detail events, or the arm below proves nothing"
+    );
+
+    fold.fold_land_combat_detail_events(&domain55_detail_events_payload(
+        COMPACT_STATUS_BASELINE_CLEAR | REBASELINE,
+    ))
+    .expect("the refusal is fail-closed, not a stream abort");
+    assert!(
+        fold.fold_domain_unknown(LAND_COMBAT_DETAIL_EVENTS_DOMAIN_ID),
+        "a refused D55 resync must type the domain-hour unknown"
+    );
+    assert!(
+        fold.combat_detail_events_this_hour.is_empty(),
+        "D55's refusal takes its own unknown body, which drops this hour's detail enrichment \
+         rather than publishing it beside a record the fold refused"
+    );
+    assert!(
+        !fold
+            .notes_this_hour
+            .iter()
+            .any(|note| note.contains(RESET_NOTE)),
+        "THE ORDERING ASSERTION: the rebaseline branch writes that note and the refusal never \
+         does, so a refusal placed BELOW the branch would leave it behind. The refused record \
+         must not have reached the branch at all: {:?}",
+        fold.notes_this_hour
+    );
+}
+
+/// **A HONOURED RESYNC APPLIES WHOLE OR NOT AT ALL.**
+///
+/// D31 is the ONE domain on `COMPACT_BASELINE_CLEAR_ADMISSIONS`, so it is the
+/// one fold that ever executes "clear this domain, then apply this payload as
+/// its whole baseline". That made it the one place where a partly-applied
+/// record costs the most: the clear used to run BEFORE the row loop, and the row
+/// loop returns `Err` on a malformed row, so a resync record whose later rows
+/// were bad emptied d31 and destroyed the baseline it claimed to replace. The
+/// record was refused and applied at the same time.
+///
+/// The malformed row here is the SECOND one, so the first row's application is
+/// what the old ordering would have left behind alongside the wipe.
+///
+/// What production change makes this fail: moving
+/// `self.air_region_activity.clear()` back above the decode loop in
+/// `fold_air_region_activity`, i.e. applying rows as they are validated instead
+/// of staging them.
+#[test]
+fn a_resync_whose_rows_are_malformed_leaves_the_previous_baseline_intact() {
+    use compact_contract::COMPACT_STATUS_BASELINE_CLEAR;
+
+    /// A d31 payload whose row at `bad_index` carries an unknown row flag.
+    fn torn_d31_payload(rows: &[(u32, u32, u32, u32)], status_flags: u32, bad_index: usize) -> Vec<u8> {
+        let mut payload = d31_air_region_activity_payload(rows, status_flags);
+        // Header 36, row 32; row flags live at +12, and bit 4 is not a known
+        // row flag.
+        let base = 36 + bad_index * 32;
+        payload[base + 12..base + 16].copy_from_slice(&(1u32 << 4).to_le_bytes());
+        payload
+    }
+
+    let mut fold = WorldFold::new("d31_resync_atomicity");
+    fold.fold_air_region_activity(&d31_air_region_activity_payload(
+        &[(88, 1, 7, 100), (89, 1, 7, 200)],
+        0,
+    ))
+    .expect("the baseline record folds");
+    assert_eq!(
+        fold.air_region_activity.len(),
+        2,
+        "the baseline must hold both buckets, or the wipe below is unobservable"
+    );
+
+    // A RESYNC — the admitted, state-clearing path — whose second row is torn.
+    let err = fold
+        .fold_air_region_activity(&torn_d31_payload(
+            &[(88, 1, 7, 999), (89, 1, 7, 888)],
+            COMPACT_STATUS_BASELINE_CLEAR,
+            1,
+        ))
+        .expect_err("a malformed row is a hard decode error");
+    assert!(
+        err.contains("unknown flags"),
+        "the error must be the row rejection, not something incidental: {err}"
+    );
+
+    assert_eq!(
+        fold.air_region_activity.len(),
+        2,
+        "the refused record must leave the PREVIOUS baseline whole: a resync that could not be \
+         decoded has not replaced anything, and clearing on the strength of a record that then \
+         failed destroys state no later record restores"
+    );
+    assert!(
+        fold.air_region_activity
+            .values()
+            .all(|state| state.plane_count == 100 || state.plane_count == 200),
+        "and none of the torn record's rows may have landed: {:?}",
+        fold.air_region_activity
+            .values()
+            .map(|state| state.plane_count)
+            .collect::<Vec<_>>()
+    );
+
+    // CONTROL: the same rows without the torn flag DO replace the baseline, so
+    // the assertion above is the tear's doing and not a fold that stopped
+    // applying resyncs at all.
+    fold.fold_air_region_activity(&d31_air_region_activity_payload(
+        &[(88, 1, 7, 999)],
+        COMPACT_STATUS_BASELINE_CLEAR,
+    ))
+    .expect("a well-formed resync folds");
+    assert_eq!(
+        fold.air_region_activity.len(),
+        1,
+        "a well-formed resync REPLACES the folded state, so the fixture does exercise the \
+         clearing path"
+    );
+}
+
+/// **A REFUSED D60 RECORD INVALIDATES AN EARLIER GOOD RECORD FROM THE SAME HOUR.**
+///
+/// D60's status vocabulary is a hand-rolled `KNOWN_STATUS_FLAGS` list that omits
+/// bit 15, so its LANE DECODER rejects a resync record — and it rejects at the
+/// top of the fold, above the two lines that type the hour unknown. With a bare
+/// `?` there, the rejection returned `Err` and changed nothing, so a CLEAN d60
+/// record folded earlier in the same hour stayed projectable: the hour published
+/// wars and capitulations that a later, refused record was contradicting. A
+/// domain may publish more than one record per hour, so a fresh `WorldFold` — in
+/// which the known flag is already `false` — cannot see this. (Codex review
+/// round 1, finding 1.)
+///
+/// What production change makes this fail: restoring the bare `?` on
+/// `decode_snapshot_payload` in `fold_capitulation_war_state`.
+#[test]
+fn a_refused_d60_resync_invalidates_an_earlier_good_record_in_the_same_hour() {
+    use compact_contract::COMPACT_STATUS_BASELINE_CLEAR;
+
+    let mut fold = WorldFold::new("d60_same_hour_resync");
+    fold.fold_capitulation_war_state(&domain60_capwar_payload(0))
+        .expect("the clean record folds");
+    assert!(
+        fold.capitulation_war_state_known_this_hour,
+        "the clean record must make the hour authoritative, or the arm below proves nothing"
+    );
+    assert!(
+        !fold.war_state_wars_this_hour.is_empty(),
+        "and it must have published wars, which is what must not survive the refusal"
+    );
+    let capitulations_before = fold.capitulation_by_db_id.len();
+    assert!(
+        capitulations_before > 0,
+        "the clean record must have proven a capitulation map, so 'retained' is observable"
+    );
+
+    fold.fold_capitulation_war_state(&domain60_capwar_payload(COMPACT_STATUS_BASELINE_CLEAR))
+        .expect_err("a record carrying a bit D60's vocabulary does not assign is rejected");
+
+    assert!(
+        !fold.capitulation_war_state_known_this_hour,
+        "the refused record must take the hour OUT of authority: leaving the earlier record \
+         projectable publishes state the stream has since contradicted"
+    );
+    assert!(
+        fold.war_state_wars_this_hour.is_empty(),
+        "and the earlier record's wars must not survive into the snapshot"
+    );
+    assert!(
+        fold.fold_domain_unknown(CAPITULATION_WAR_STATE_DOMAIN_ID),
+        "the domain-hour is unknown, and says so on the ledger"
+    );
+    assert_eq!(
+        fold.capitulation_by_db_id.len(),
+        capitulations_before,
+        "the PERSISTENT capitulation map is RETAINED, exactly as on a non-clean status: a read \
+         that did not complete is not evidence anybody un-capitulated"
+    );
+}
+
+/// **D45 IS NOT A CONVERTED FOLD, AND MUST NOT BECOME ONE BY ACCIDENT.**
+///
+/// `fold_focus_research_decisions_depth` reads `depth_status_flags`, a separate
+/// `COMPACT_FRD_STATUS_*` namespace whose bit 7 is the D45-local direct-history
+/// reset badge — where the GLOBAL vocabulary has `BRIDGE_UNAVAILABLE`. D45 is
+/// deliberately absent from `compact_contract::lane_local_status_mask` for
+/// exactly that reason (`domain_data_authority.rs`, `COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET`),
+/// so the two words are not the same word and never overlap.
+///
+/// Setting bit 15 of `depth_status_flags` is therefore NOT a resync request; it
+/// is an unassigned bit of D45's own namespace, and D45's own admitted-mask gate
+/// is what refuses it. The fold must not hand that word to
+/// `compact_baseline_clear_requested`, which would read a D45-local bit as an
+/// instruction nobody sent.
+///
+/// What production change makes this fail: wiring
+/// `refuse_inadmissible_baseline_clear(FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID, .., depth_status_flags)`
+/// into D45 "for consistency" with its sixteen siblings.
+#[test]
+fn d45s_local_status_word_is_not_read_as_the_global_resync_bit() {
+    use compact_contract::COMPACT_STATUS_BASELINE_CLEAR;
+
+    assert_eq!(
+        COMPACT_STATUS_BASELINE_CLEAR & crate::domain_data_authority::COMPACT_FRD_STATUS_V5_KNOWN_MASK,
+        0,
+        "bit 15 is not assigned in D45's own status namespace, so a D45 record cannot be \
+         REQUESTING a resync with it"
+    );
+    assert_eq!(
+        compact_contract::lane_local_status_mask(FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID),
+        0,
+        "D45 declares no lane-local GLOBAL badges: `depth_status_flags` is a separate word, not \
+         an overlay on the compact status word, and that is why the global bit may not be read \
+         from it"
+    );
+    assert_ne!(
+        crate::domain_data_authority::COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET,
+        COMPACT_STATUS_BASELINE_CLEAR,
+        "D45's reset badge and the global resync bit are different claims at different bit \
+         positions in different words"
     );
 }
 
