@@ -2454,6 +2454,45 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
         "domain47_prewarm_portrait_cp1252_count",
         Accumulation::PerFrame,
     ),
+    // WHAT A REFUSED ROLE CONTAINER COST (lane FU, 2026-08-08).
+    //
+    // `_gap_reason` and `_refused_map` are CODES (a `Domain47FamilyGapReason`
+    // and a `Domain47ShadowWalkMapAxis`) and `_refused_body` is an ADDRESS;
+    // summing any of the three produces a number with no referent, which is
+    // exactly what this table exists to stop. `LastValue` keeps the most recent
+    // frame's answer, the same class `domain47_prewarm_clock_verdict` and the
+    // `shadow_walk` locator words take.
+    //
+    // The two per-axis COUNTS are counts and are summed. THE CAPTURE-WIDE FIGURE
+    // IS "how many role containers this run could not read THAT COST A FAMILY",
+    // and the qualifier is not pedantry: a prewarm whose adoption was blocked
+    // zeroes these two with every other family word, because it published no
+    // families to lose. `domain47_prewarm_shadow_walk_refused_count` is the raw
+    // walk counter and records every refusal, blocked or not, so the two agree
+    // on an adopting run and diverge by exactly the blocked frames' refusals.
+    // Reading either as the other undercounts or over-attributes (Codex
+    // 019fe24e). A nonzero `_gap_reason` says which families the counted ones
+    // cost.
+    (
+        "domain47_prewarm_role_walk_gap_reason",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_role_walk_refused_leader",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_role_walk_refused_advisor",
+        Accumulation::PerFrame,
+    ),
+    (
+        "domain47_prewarm_role_walk_refused_map",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_role_walk_refused_body",
+        Accumulation::LastValue,
+    ),
     // The shadow walk's six counters. Per-walk observations, summed the way
     // the adapter row counters are, and meaningless without
     // `domain47_prewarm_shadow_walk_state` above.
@@ -2464,6 +2503,55 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
     (
         "domain47_prewarm_shadow_walk_advisor_count",
         Accumulation::PerFrame,
+    ),
+    // THE POPULATION A/B (lane FU, 2026-08-08): what the container walk adopted
+    // and what the heap sweep WOULD have adopted, on one prewarm.
+    //
+    // FOUR WORDS, ONE EVENT, ONE CLASS. `LastValue`, because these are gauges
+    // over a root cache and not per-frame events — summing one side of a
+    // comparison and gauging the other makes two IDENTICAL prewarms of ten
+    // advisor roots publish 20 against 10 (Codex 019fe214, finding 1). And all
+    // four together, in one conditional arm, because folding a `LastValue`
+    // production half published every frame against a shadow half published only
+    // on compared frames lets a run describe two different prewarms and report a
+    // difference that never existed (Codex 019fe238, finding 1).
+    //
+    // The `_walk_` pair deliberately duplicates
+    // `domain47_prewarm_country_leader_role_count` /
+    // `_advisor_root_count`, which stay as ordinary every-frame gauges. Two
+    // words for one number is the price of the pairing being atomic.
+    (
+        "domain47_prewarm_population_ab_walk_leader_roots",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_population_ab_walk_advisor_roots",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_population_ab_sweep_leader_roots",
+        Accumulation::LastValue,
+    ),
+    (
+        "domain47_prewarm_population_ab_sweep_advisor_roots",
+        Accumulation::LastValue,
+    ),
+    // Sweep hits the shadow's double read found torn. A COUNT and not a gauge,
+    // so it is summed: this one is not half of a pair, and the capture-wide
+    // figure a reader wants is "how many hits the comparison never saw across
+    // the run". A nonzero total disqualifies a zero `sweep_only` read off it.
+    (
+        "domain47_prewarm_sweep_shadow_torn_hits",
+        Accumulation::PerFrame,
+    ),
+    // The production country-leader root count, the counterpart of
+    // `_sweep_shadow_leader_roots`. A gauge over the adopted root cache,
+    // exactly like `domain47_prewarm_advisor_root_count` beside it — the two
+    // halves of a comparison must accumulate the same way or the comparison is
+    // between two different quantities.
+    (
+        "domain47_prewarm_country_leader_role_count",
+        Accumulation::LastValue,
     ),
     (
         "domain47_prewarm_shadow_walk_matched_count",
@@ -3932,6 +4020,57 @@ mod tests {
             1,
             "which is why the class is LastValue"
         );
+    }
+
+    /// THE TWO HALVES OF A COMPARISON ACCUMULATE THE SAME WAY.
+    ///
+    /// d47's sweep shadow publishes what the heap sweep WOULD have adopted
+    /// beside what the container walk DID, so a transition capture can compare
+    /// populations directly. That comparison is only meaningful if both sides
+    /// are the same kind of quantity across a run: summing one and gauging the
+    /// other makes two identical prewarms of ten advisor roots publish 20
+    /// against 10, and the manifest reports a population change that never
+    /// happened (Codex 019fe214, finding 1).
+    ///
+    /// MUTATION: set either `_sweep_shadow_*_roots` entry to `PerFrame`, or
+    /// either production counterpart, and this fails.
+    #[test]
+    fn the_d47_population_comparison_pairs_share_an_accumulation_class() {
+        for (shadow, production) in [
+            (
+                "domain47_prewarm_population_ab_sweep_leader_roots",
+                "domain47_prewarm_population_ab_walk_leader_roots",
+            ),
+            (
+                "domain47_prewarm_population_ab_sweep_advisor_roots",
+                "domain47_prewarm_population_ab_walk_advisor_roots",
+            ),
+            // The every-frame gauges the `_walk_` pair duplicates are the same
+            // class too, so a reader who compares against them instead is not
+            // comparing a sum with a gauge.
+            (
+                "domain47_prewarm_population_ab_walk_leader_roots",
+                "domain47_prewarm_country_leader_role_count",
+            ),
+            (
+                "domain47_prewarm_population_ab_walk_advisor_roots",
+                "domain47_prewarm_advisor_root_count",
+            ),
+        ] {
+            let shadow_class = declared_unit_accumulation(shadow);
+            assert_eq!(
+                shadow_class,
+                declared_unit_accumulation(production),
+                "{shadow} and {production} are the two halves of one population \
+                 comparison and must accumulate identically"
+            );
+            assert_eq!(
+                shadow_class,
+                Some(Accumulation::LastValue),
+                "{shadow} is a GAUGE over a retained root cache, not a per-frame \
+                 event count"
+            );
+        }
     }
 
     /// Every unit in [`DOMAIN47_PREWARM_UNITS`] resolves to the class the table

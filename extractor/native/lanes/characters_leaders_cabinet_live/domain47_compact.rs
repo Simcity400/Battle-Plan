@@ -114,7 +114,33 @@ pub const FAMILY_HEAP_SWEEP_DERIVED: u32 = FAMILY_UNIT_LEADER_TRAIT
 
 /// What a prewarm that censused the character manager but found the heap sweep
 /// cold can honestly claim to have observed.
+///
+/// HISTORICAL SINCE LANE FU (2026-08-08): the collector no longer produces this
+/// mask. Three of the four families above are discovered by the character-down
+/// container walk now and are observed whenever the census is, so a cold sweep
+/// costs [`FAMILY_UNIT_LEADER_TRAIT`] alone — see
+/// [`FAMILY_WALK_WITHOUT_TRAITS`]. The constant stays because it names a shape
+/// the fold and replay still have to decode: every capture up to t43 emitted it.
 pub const FAMILY_CENSUS_ONLY: u32 = FAMILY_ALL & !FAMILY_HEAP_SWEEP_DERIVED;
+
+/// The families that still depend on the shared heap sweep (lane FU).
+///
+/// One, and it is not a role: `CUnitLeaderTrait` is a definition DATABASE
+/// loaded from installed content. It hangs off no character — `CUnitLeader+0x2A8`
+/// holds a vector of pointers INTO it — so a character-down walk cannot reach
+/// the definitions, only the subset some leader happens to reference, and the
+/// adapter needs the whole table to resolve any of them. The owning container
+/// has not been found; until it is, this is what a cold sweep costs.
+pub const FAMILY_TRAIT_SWEEP_DERIVED: u32 = FAMILY_UNIT_LEADER_TRAIT;
+
+/// What a prewarm that censused the character manager and walked its role
+/// containers observed while the heap sweep was still cold.
+///
+/// This is the mask the collector emits in the cold window since lane FU, and
+/// the ~12.2 s of every capture that used to publish [`FAMILY_CENSUS_ONLY`]
+/// now publish this instead: seven families of eight, missing only the trait
+/// definitions.
+pub const FAMILY_WALK_WITHOUT_TRAITS: u32 = FAMILY_ALL & !FAMILY_TRAIT_SWEEP_DERIVED;
 
 /// The wire name of each family bit, ascending. Used by the fold and by replay
 /// to spell a gap in the snapshot rather than as a number nobody can read.

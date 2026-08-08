@@ -6273,3 +6273,1918 @@ fn d47_owner_guards_ignore_the_body_locator() {
     assert!(domain47_advisor_probe_matches_owner(&advisor(0xA000), owner));
     assert!(domain47_advisor_probe_matches_owner(&advisor(0x9000), owner));
 }
+
+// === THE ACCEPTANCE A/B (lane FU, 2026-08-08) =============================
+//
+// WHAT THIS ANSWERS. Lane FT established from the engine that `CCountryLeader`
+// has exactly ONE owning container -- the `_Tree` at `CCharacter+0x98` -- and
+// that the heap sweep's extra population is stale-but-alive objects. That is an
+// OWNERSHIP fact. It is not by itself a promotion proof, because d47 does not
+// publish objects, it publishes ROWS: the same object list run through the
+// acceptance rules, the tag-validity test, and a per-identity dedup that keeps
+// ONE root per (country, char_id). Two enumerations can differ in objects and
+// still agree on rows, or agree on objects and disagree on rows.
+//
+// So the promotion proof is a POPULATION comparison, and this is it, offline:
+// stage one world, enumerate it BOTH ways, run the SAME two admission functions
+// production runs over each enumeration, and compare what they admit.
+//
+// THE FIVE CLASSES the fixture stages, and what each is for
+// (`FuRoleClass`, and the table the first test prints):
+//
+//   MapHeldLive    -- a role object a censused character's map holds, whose
+//                     identity read validates. Both paths must admit it.
+//   StaleDuplicate -- a live-looking object NO map holds, whose character is the
+//                     SAME (country, char_id) as a MapHeldLive object, placed at
+//                     a LOWER address so it wins the sweep's per-identity dedup.
+//                     This is FT's "can LOSE a published row": the sweep keeps
+//                     the stale address and discards the map-held one, and the
+//                     frame walk then refuses the root it kept.
+//   StaleOrphan    -- a live-looking object no map holds, whose character holds
+//                     no current role at all. FT's "can INVENT one": the sweep
+//                     publishes a row for a role that is no longer held.
+//   MapHeldRefused -- a role object a map DOES hold whose identity read fails.
+//                     The walk reaches it; the sweep's live set does not carry
+//                     it; NEITHER admits it. This is the fixture's model of the
+//                     ~997 walk-only objects per prewarm t37..t43 observed, and
+//                     it is why `walk_only` being nonzero is not a defect.
+//   Detached       -- a dead object no map holds and no identity read accepts.
+//                     Neither path admits it; it exists so "the sweep sees more
+//                     objects" is represented honestly.
+//
+// WHAT THE TESTS BELOW PIN, in order of what would be worst to get wrong:
+//
+//  1. every identity the WALK admits is one the SWEEP admits (no invention);
+//  2. every identity the SWEEP admits and the walk does not is stale-derived
+//     (no silent loss);
+//  3. the sweep really does lose and invent rows here, so (1) and (2) are not
+//     passing on an empty difference;
+//  4. every walk-only OBJECT is refused by the same rules, so the walk's wider
+//     object reach costs no row.
+
+/// What one staged role object is, for the A/B table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum FuRoleClass {
+    MapHeldLive,
+    MapHeldRefused,
+    StaleDuplicate,
+    StaleOrphan,
+    Detached,
+}
+
+impl FuRoleClass {
+    fn name(self) -> &'static str {
+        match self {
+            FuRoleClass::MapHeldLive => "map-held live",
+            FuRoleClass::MapHeldRefused => "map-held, identity refused",
+            FuRoleClass::StaleDuplicate => "stale duplicate (identity also map-held)",
+            FuRoleClass::StaleOrphan => "stale orphan (identity holds no role)",
+            FuRoleClass::Detached => "detached / dead",
+        }
+    }
+}
+
+/// Characters the A/B world censuses. Small on purpose: this fixture is a
+/// POPULATION proof, not a cost measurement, and every object in it has to be
+/// individually accounted for in the table the test prints.
+const FU_CHARACTERS: usize = 24;
+const FU_CHARACTER_STRIDE: usize = 0x400;
+const FU_ROLE_STRIDE: usize = 0x200;
+const FU_NODE_STRIDE: usize = 0x80;
+/// The first character whose leader map is EMPTY, so a `StaleOrphan` leader can
+/// name a character that holds no current role.
+const FU_EMPTY_LEADER_CHARACTER: usize = 20;
+const FU_EMPTY_ADVISOR_CHARACTER: usize = 21;
+
+/// One world, staged twice over: as role maps hanging off censused characters
+/// (what the walk sees) and as a flat ascending address list (what the sweep
+/// publishes).
+struct FuAcceptanceWorld {
+    _arena: BenchArena,
+    roots: ResolvedTypeRoots,
+    /// The census's visiting order, the shape
+    /// `Domain47ManagerRosterSnapshot::characters` carries.
+    roster: Vec<usize>,
+    /// EVERY `CCountryLeader` / `CAdvisor` in the arena, ASCENDING by address --
+    /// the order `heap_sweep` publishes hits in. Nothing here is filtered: the
+    /// sweep sees the stale and the detached objects too, which is the whole
+    /// difference the A/B is about.
+    sweep_leader_hits: Vec<usize>,
+    sweep_advisor_hits: Vec<usize>,
+    leader_classes: BTreeMap<usize, FuRoleClass>,
+    advisor_classes: BTreeMap<usize, FuRoleClass>,
+}
+
+/// A staged role object, before it is placed.
+struct FuPlannedRole {
+    class: FuRoleClass,
+    /// Which censused character this object's back-pointer names.
+    owner: usize,
+    /// Which character's MAP holds it, if any.
+    holder: Option<usize>,
+    /// Advisors only: the idea token, or `None` for an unappointed object.
+    token: Option<String>,
+    /// Point the back-pointer at something that is not a `CCharacter`.
+    break_chain: bool,
+}
+
+fn fu_character_id(index: usize) -> u32 {
+    1_000 + index as u32
+}
+
+fn fu_country_tag(index: usize) -> u32 {
+    1 + (index % 7) as u32
+}
+
+fn fu_acceptance_world() -> FuAcceptanceWorld {
+    // Leaders and advisors are planned first so the STALE objects can be given
+    // LOWER addresses than the map-held object they duplicate. That ordering is
+    // not decoration: `heap_sweep` publishes ascending addresses and
+    // `domain47_admit_country_leader_roles` keeps the FIRST root it sees for an
+    // identity, so a stale object at a higher address would simply be deduped
+    // away and the row loss FT described would never reproduce.
+    let mut leaders: Vec<FuPlannedRole> = Vec::new();
+    let mut advisors: Vec<FuPlannedRole> = Vec::new();
+
+    // --- stale first (lowest addresses) ---
+    leaders.push(FuPlannedRole {
+        class: FuRoleClass::StaleDuplicate,
+        owner: 0,
+        holder: None,
+        token: None,
+        break_chain: false,
+    });
+    leaders.push(FuPlannedRole {
+        class: FuRoleClass::StaleOrphan,
+        owner: FU_EMPTY_LEADER_CHARACTER,
+        holder: None,
+        token: None,
+        break_chain: false,
+    });
+    advisors.push(FuPlannedRole {
+        class: FuRoleClass::StaleDuplicate,
+        owner: 1,
+        holder: None,
+        token: Some("eco_advisor".to_string()),
+        break_chain: false,
+    });
+    advisors.push(FuPlannedRole {
+        class: FuRoleClass::StaleOrphan,
+        owner: FU_EMPTY_ADVISOR_CHARACTER,
+        holder: None,
+        token: Some("orphan_advisor".to_string()),
+        break_chain: false,
+    });
+
+    // --- the live world ---
+    for index in 0..8usize {
+        leaders.push(FuPlannedRole {
+            class: FuRoleClass::MapHeldLive,
+            owner: index,
+            holder: Some(index),
+            token: None,
+            break_chain: false,
+        });
+    }
+    // Two roles on ONE character (the per-ideology case): a second object whose
+    // identity is already published, so both paths must dedup it to one row.
+    leaders.push(FuPlannedRole {
+        class: FuRoleClass::MapHeldLive,
+        owner: 3,
+        holder: Some(3),
+        token: None,
+        break_chain: false,
+    });
+    // A role held by a character the census visits, whose identity read fails:
+    // the walk reaches it, the sweep's live set does not carry it.
+    for index in 8..10usize {
+        leaders.push(FuPlannedRole {
+            class: FuRoleClass::MapHeldRefused,
+            owner: index,
+            holder: Some(index),
+            token: None,
+            break_chain: true,
+        });
+    }
+    for index in 0..6usize {
+        advisors.push(FuPlannedRole {
+            class: FuRoleClass::MapHeldLive,
+            owner: index,
+            holder: Some(index),
+            token: Some(if index == 1 {
+                // The identity the stale duplicate above also claims.
+                "eco_advisor".to_string()
+            } else {
+                format!("advisor_token_{index}")
+            }),
+            break_chain: false,
+        });
+    }
+    // Appointed-but-tokenless: the oracle-validated `Dead` class, held by a map.
+    advisors.push(FuPlannedRole {
+        class: FuRoleClass::MapHeldRefused,
+        owner: 12,
+        holder: Some(12),
+        token: None,
+        break_chain: false,
+    });
+
+    // --- the detached tail ---
+    for index in 0..3usize {
+        leaders.push(FuPlannedRole {
+            class: FuRoleClass::Detached,
+            owner: index,
+            holder: None,
+            token: None,
+            break_chain: true,
+        });
+        advisors.push(FuPlannedRole {
+            class: FuRoleClass::Detached,
+            owner: index,
+            holder: None,
+            token: None,
+            break_chain: true,
+        });
+    }
+
+    let node_slots = leaders.len() + advisors.len() + 2 * FU_CHARACTERS;
+    let size = FU_CHARACTERS * FU_CHARACTER_STRIDE
+        + (leaders.len() + advisors.len()) * FU_ROLE_STRIDE
+        + (node_slots + 1) * FU_NODE_STRIDE
+        + 0x4000;
+    let arena = BenchArena::in_heap_window(size);
+    let char_base = arena.base;
+    let leader_base = char_base + FU_CHARACTERS * FU_CHARACTER_STRIDE;
+    let advisor_base = leader_base + leaders.len() * FU_ROLE_STRIDE;
+    let node_base = advisor_base + advisors.len() * FU_ROLE_STRIDE;
+
+    let roots = ResolvedTypeRoots {
+        ccharacter_vtable: BENCH_CCHARACTER_VTABLE,
+        carmy_leader_vtable: BENCH_CARMY_LEADER_VTABLE,
+        cnavy_leader_vtable: BENCH_CNAVY_LEADER_VTABLE,
+        ccountry_leader_vtable: BENCH_CCOUNTRY_LEADER_VTABLE,
+        cadvisor_vtable: BENCH_CADVISOR_VTABLE,
+        cunit_leader_trait_vtable: BENCH_CUNIT_LEADER_TRAIT_VTABLE,
+    };
+
+    let character_at = |index: usize| char_base + index * FU_CHARACTER_STRIDE;
+    for index in 0..FU_CHARACTERS {
+        let addr = character_at(index);
+        arena.put_u64(addr, BENCH_CCHARACTER_VTABLE);
+        arena.put_u32(addr + CCHARACTER_TYPE_OFF as usize, CCHARACTER_TYPE_ID);
+        arena.put_u32(addr + CCHARACTER_ID_OFF as usize, fu_character_id(index));
+        arena.put_u32(
+            addr + CCHARACTER_COUNTRY_TAG_DB_ID_OFF as usize,
+            fu_country_tag(index),
+        );
+        arena.put_u64(addr + CCHARACTER_UNIT_LEADER_PTR_OFF as usize, 0);
+    }
+
+    // Place the role objects, then build each holder's `_Tree` over the ones it
+    // holds.
+    let mut leader_classes = BTreeMap::new();
+    let mut advisor_classes = BTreeMap::new();
+    let mut leader_entries: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+    let mut advisor_entries: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+    let mut sweep_leader_hits = Vec::new();
+    let mut sweep_advisor_hits = Vec::new();
+    // A non-`CCharacter` body a broken chain can point at: readable, in window,
+    // and carrying the wrong vtable, which is what the identity read refuses on.
+    let decoy = node_base + node_slots * FU_NODE_STRIDE;
+    arena.put_u64(decoy, BENCH_CUNIT_LEADER_TRAIT_VTABLE);
+
+    for (ordinal, plan) in leaders.iter().enumerate() {
+        let addr = leader_base + ordinal * FU_ROLE_STRIDE;
+        arena.put_u64(addr, BENCH_CCOUNTRY_LEADER_VTABLE);
+        let character = if plan.break_chain {
+            decoy
+        } else {
+            character_at(plan.owner)
+        };
+        arena.put_u64(
+            addr + CCOUNTRY_LEADER_CHARACTER_PTR_OFF as usize,
+            character as u64,
+        );
+        leader_classes.insert(addr, plan.class);
+        sweep_leader_hits.push(addr);
+        if let Some(holder) = plan.holder {
+            leader_entries.entry(holder).or_default().push(addr as u64);
+        }
+    }
+    for (ordinal, plan) in advisors.iter().enumerate() {
+        let addr = advisor_base + ordinal * FU_ROLE_STRIDE;
+        arena.put_u64(addr, BENCH_CADVISOR_VTABLE);
+        let character = if plan.break_chain {
+            decoy
+        } else {
+            character_at(plan.owner)
+        };
+        arena.put_u64(addr + CADVISOR_CHARACTER_PTR_OFF as usize, character as u64);
+        if let Some(token) = plan.token.as_ref() {
+            arena.put_msvc_string(
+                addr + domain47::extractor::CADVISOR_IDEA_TOKEN_OFF as usize,
+                addr + 0x100,
+                token,
+            );
+        }
+        advisor_classes.insert(addr, plan.class);
+        sweep_advisor_hits.push(addr);
+        if let Some(holder) = plan.holder {
+            advisor_entries.entry(holder).or_default().push(addr as u64);
+        }
+    }
+
+    let mut node_slot = 0usize;
+    let mut take_slot = |count: usize| {
+        let head = node_base + node_slot * FU_NODE_STRIDE;
+        node_slot += 1;
+        let nodes: Vec<usize> = (0..count)
+            .map(|_| {
+                let at = node_base + node_slot * FU_NODE_STRIDE;
+                node_slot += 1;
+                at
+            })
+            .collect();
+        (head, nodes)
+    };
+    for index in 0..FU_CHARACTERS {
+        let addr = character_at(index);
+        for (head_off, size_off, value_off, entries) in [
+            (
+                DOMAIN47_LEADER_MAP_HEAD_OFF,
+                DOMAIN47_LEADER_MAP_SIZE_OFF,
+                DOMAIN47_LEADER_NODE_VALUE_OFF,
+                leader_entries.remove(&index).unwrap_or_default(),
+            ),
+            (
+                DOMAIN47_ADVISOR_MAP_HEAD_OFF,
+                DOMAIN47_ADVISOR_MAP_SIZE_OFF,
+                DOMAIN47_ADVISOR_NODE_VALUE_OFF,
+                advisor_entries.remove(&index).unwrap_or_default(),
+            ),
+        ] {
+            arena.put_u64(addr + size_off, entries.len() as u64);
+            if entries.is_empty() {
+                // A live empty map still HAS a sentinel; the walk short-circuits
+                // on `_Mysize == 0` before reading it.
+                arena.put_u64(addr + head_off, (addr + 0x200) as u64);
+                continue;
+            }
+            let (head, nodes) = take_slot(entries.len());
+            ej_put_tree(&arena, head, &|slot| nodes[slot], value_off, &entries);
+            arena.put_u64(addr + head_off, head as u64);
+        }
+    }
+
+    sweep_leader_hits.sort_unstable();
+    sweep_advisor_hits.sort_unstable();
+    FuAcceptanceWorld {
+        _arena: arena,
+        roots,
+        roster: (0..FU_CHARACTERS).map(character_at).collect(),
+        sweep_leader_hits,
+        sweep_advisor_hits,
+        leader_classes,
+        advisor_classes,
+    }
+}
+
+/// What ONE discovery path admitted.
+#[derive(Default)]
+struct FuAdmitted {
+    leader_roots: Vec<CountryLeaderRoleRoot>,
+    advisor_roots: Vec<AdvisorRoot>,
+    /// Distinct role-object pointers the path enumerated (the walk's sets; for
+    /// the sweep, its whole hit list).
+    leader_objects: BTreeSet<u64>,
+    advisor_objects: BTreeSet<u64>,
+    /// The sweep's LIVE set, for the walk-only classification.
+    leader_live: Domain47RoleLiveSet,
+    advisor_live: Domain47RoleLiveSet,
+    skipped_root_rows: u32,
+    excluded_scan_hits: u32,
+}
+
+impl FuAdmitted {
+    /// The published ROW identities, which is what the two paths are compared
+    /// on: `(country_tag_db_id, char_id)` for a leader row -- exactly what
+    /// `seen_role_identities` dedups on -- and that pair plus the idea token for
+    /// an advisor row, which is `advisor_root_by_identity`'s key.
+    ///
+    /// THE WHOLE KEY, NOT THE CONVENIENT HALF (Codex 019fe1e5, finding 4).
+    /// Comparing `char_id` alone would let a role attributed to the WRONG
+    /// COUNTRY pass as population equality, which is the one mistake d47's
+    /// dedup carries a country in its key to prevent: this world does not
+    /// guarantee `char_id` uniqueness across the two manager vectors, and
+    /// `Domain47CharacterAdmit::Ambiguous` exists for the duplicates that carry
+    /// one `char_id` under two countries.
+    ///
+    /// The country is READ BACK off the object rather than taken from the root,
+    /// because `CountryLeaderRoleRoot` deliberately no longer carries one (the
+    /// row's country comes from the frame walk). Reading it here is the same
+    /// identity read the admission used to accept the object.
+    fn leader_identities(&self, world: &FuAcceptanceWorld) -> BTreeSet<(u32, u32)> {
+        let mem = Domain47InProcessMemory;
+        page_cache_new_frame();
+        self.leader_roots
+            .iter()
+            .map(|root| {
+                let (country, char_id, _) =
+                    domain47_country_leader_identity(&mem, &world.roots, root.country_leader_addr)
+                        .expect("an admitted leader root resolves");
+                assert_eq!(char_id, root.char_id, "the root's identity half must agree");
+                (country, char_id)
+            })
+            .collect()
+    }
+
+    fn advisor_identities(&self, world: &FuAcceptanceWorld) -> BTreeSet<(u32, u32, String)> {
+        let mem = Domain47InProcessMemory;
+        page_cache_new_frame();
+        self.advisor_roots
+            .iter()
+            .map(|root| {
+                let raw = domain47::extractor::read_advisor_raw_fields(
+                    &mem,
+                    &world.roots,
+                    root.advisor_addr,
+                )
+                .expect("an admitted advisor root resolves");
+                (raw.country_tag_db_id, raw.char_id, root.idea_token.clone())
+            })
+            .collect()
+    }
+}
+
+/// PRODUCTION's discovery, reproduced call for call: per roster character, walk
+/// the two role containers, then admit what that character's maps just
+/// contributed.
+///
+/// The three calls and their ORDER are the same three
+/// `prewarm_compact_characters_leaders_cabinet_roots` makes inside its census
+/// loop; `d47_the_prewarm_admits_roles_from_the_walk_inside_the_census_loop`
+/// is what keeps this reproduction honest if that loop is ever rewritten.
+fn fu_admit_by_walk(world: &FuAcceptanceWorld) -> FuAdmitted {
+    let mem = Domain47InProcessMemory;
+    let mut out = FuAdmitted::default();
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut by_identity = BTreeMap::new();
+    page_cache_new_frame();
+    for addr in world.roster.iter().copied() {
+        domain47_shadow_walk_character(addr, &mut walk, &mut stack, &mut scratch);
+        domain47_admit_country_leader_roles(
+            &mem,
+            &world.roots,
+            &walk.fresh_leaders,
+            None,
+            &mut seen,
+            &mut out.leader_roots,
+            &mut out.skipped_root_rows,
+            &mut out.excluded_scan_hits,
+        );
+        domain47_admit_advisor_roots(
+            &mem,
+            &world.roots,
+            &walk.fresh_advisors,
+            None,
+            &mut by_identity,
+            &mut out.advisor_roots,
+            &mut out.skipped_root_rows,
+            &mut out.excluded_scan_hits,
+        );
+    }
+    assert_eq!(walk.refused, 0, "the A/B fixture must refuse no map");
+    out.leader_objects = walk.leaders;
+    out.advisor_objects = walk.advisors;
+    out
+}
+
+/// THE OLD discovery: the sweep's whole hit list through the same two functions.
+fn fu_admit_by_sweep(world: &FuAcceptanceWorld) -> FuAdmitted {
+    let mem = Domain47InProcessMemory;
+    let mut out = FuAdmitted::default();
+    let mut seen = BTreeSet::new();
+    let mut by_identity = BTreeMap::new();
+    page_cache_new_frame();
+    domain47_admit_country_leader_roles(
+        &mem,
+        &world.roots,
+        &world.sweep_leader_hits,
+        Some(&mut out.leader_live),
+        &mut seen,
+        &mut out.leader_roots,
+        &mut out.skipped_root_rows,
+        &mut out.excluded_scan_hits,
+    );
+    domain47_admit_advisor_roots(
+        &mem,
+        &world.roots,
+        &world.sweep_advisor_hits,
+        Some(&mut out.advisor_live),
+        &mut by_identity,
+        &mut out.advisor_roots,
+        &mut out.skipped_root_rows,
+        &mut out.excluded_scan_hits,
+    );
+    out.leader_objects = world.sweep_leader_hits.iter().map(|a| *a as u64).collect();
+    out.advisor_objects = world.sweep_advisor_hits.iter().map(|a| *a as u64).collect();
+    out
+}
+
+/// THE A/B TABLE. Printed rather than only asserted, because the promotion
+/// argument is a population comparison and a reader of this lane's report needs
+/// the numbers, not a green tick.
+#[test]
+fn d47_walk_and_sweep_admit_the_same_population() {
+    let world = fu_acceptance_world();
+    let walk = fu_admit_by_walk(&world);
+    let sweep = fu_admit_by_sweep(&world);
+
+    let mut counts: BTreeMap<(&'static str, FuRoleClass), usize> = BTreeMap::new();
+    for class in world.leader_classes.values() {
+        *counts.entry(("leader", *class)).or_default() += 1;
+    }
+    for class in world.advisor_classes.values() {
+        *counts.entry(("advisor", *class)).or_default() += 1;
+    }
+    println!("d47 acceptance A/B -- staged population");
+    for ((family, class), count) in &counts {
+        println!("  {family:8} {:40} {count}", class.name());
+    }
+    println!(
+        "  objects enumerated: walk leaders {} advisors {} | sweep leaders {} advisors {}",
+        walk.leader_objects.len(),
+        walk.advisor_objects.len(),
+        sweep.leader_objects.len(),
+        sweep.advisor_objects.len(),
+    );
+    println!(
+        "  ROOTS ADMITTED:     walk leaders {} advisors {} | sweep leaders {} advisors {}",
+        walk.leader_roots.len(),
+        walk.advisor_roots.len(),
+        sweep.leader_roots.len(),
+        sweep.advisor_roots.len(),
+    );
+    println!(
+        "  excluded_scan_hits: walk {} | sweep {}   skipped_root_rows: walk {} | sweep {}",
+        walk.excluded_scan_hits,
+        sweep.excluded_scan_hits,
+        walk.skipped_root_rows,
+        sweep.skipped_root_rows,
+    );
+
+    // (1) THE WALK INVENTS NOTHING. Every row identity it publishes is one the
+    // sweep publishes too.
+    let walk_leader_ids = walk.leader_identities(&world);
+    let sweep_leader_ids = sweep.leader_identities(&world);
+    assert!(
+        walk_leader_ids.is_subset(&sweep_leader_ids),
+        "walk-only leader identities {:?}",
+        walk_leader_ids
+            .difference(&sweep_leader_ids)
+            .collect::<Vec<_>>(),
+    );
+    let walk_advisor_ids = walk.advisor_identities(&world);
+    let sweep_advisor_ids = sweep.advisor_identities(&world);
+    assert!(
+        walk_advisor_ids.is_subset(&sweep_advisor_ids),
+        "walk-only advisor identities {:?}",
+        walk_advisor_ids
+            .difference(&sweep_advisor_ids)
+            .collect::<Vec<_>>(),
+    );
+
+    // (2) EVERY IDENTITY THE WALK DROPS IS STALE-DERIVED. This is the whole
+    // promotion claim: the sweep's surplus rows are the stale objects FT named
+    // and nothing else.
+    let dropped_leaders: Vec<(u32, u32)> = sweep_leader_ids
+        .difference(&walk_leader_ids)
+        .copied()
+        .collect();
+    assert_eq!(
+        dropped_leaders,
+        vec![(
+            fu_country_tag(FU_EMPTY_LEADER_CHARACTER),
+            fu_character_id(FU_EMPTY_LEADER_CHARACTER)
+        )],
+        "the only leader row the walk does not publish must be the stale orphan's"
+    );
+    let dropped_advisors: Vec<(u32, u32, String)> = sweep_advisor_ids
+        .difference(&walk_advisor_ids)
+        .cloned()
+        .collect();
+    assert_eq!(
+        dropped_advisors,
+        vec![(
+            fu_country_tag(FU_EMPTY_ADVISOR_CHARACTER),
+            fu_character_id(FU_EMPTY_ADVISOR_CHARACTER),
+            "orphan_advisor".to_string()
+        )],
+        "the only advisor row the walk does not publish must be the stale orphan's"
+    );
+
+    // (3) THE DIFFERENCE IS REAL IN BOTH DIRECTIONS, so (1) and (2) are not
+    // passing on an empty comparison.
+    //
+    // INVENTED: the sweep publishes a country-leader row for a character whose
+    // map holds no role at all.
+    assert!(
+        sweep_leader_ids.contains(&(
+            fu_country_tag(FU_EMPTY_LEADER_CHARACTER),
+            fu_character_id(FU_EMPTY_LEADER_CHARACTER)
+        )),
+        "the fixture must actually stage the invented row"
+    );
+    // LOST: the sweep's row for character 0 is rooted at the STALE address, and
+    // the map-held object it beat was discarded. That root is the one the frame
+    // walk would later refuse -- the row is gone, and nothing on the wire says
+    // so. The walk's root for the same identity is the map-held object.
+    let stale_leader = *world
+        .leader_classes
+        .iter()
+        .find(|(_, class)| **class == FuRoleClass::StaleDuplicate)
+        .expect("the fixture stages a stale duplicate")
+        .0 as u64;
+    let sweep_root_for_zero = sweep
+        .leader_roots
+        .iter()
+        .find(|root| root.char_id == fu_character_id(0))
+        .expect("the sweep publishes character 0's role");
+    assert_eq!(
+        sweep_root_for_zero.country_leader_addr, stale_leader,
+        "the stale duplicate must win the sweep's dedup, which is the row loss"
+    );
+    let walk_root_for_zero = walk
+        .leader_roots
+        .iter()
+        .find(|root| root.char_id == fu_character_id(0))
+        .expect("the walk publishes character 0's role");
+    assert_ne!(
+        walk_root_for_zero.country_leader_addr, stale_leader,
+        "the walk must root the row at the object a map actually holds"
+    );
+    assert_eq!(
+        world.leader_classes[&(walk_root_for_zero.country_leader_addr as usize)],
+        FuRoleClass::MapHeldLive,
+    );
+
+    // (4) THE WALK'S WIDER OBJECT REACH COSTS NO ROW. Every object the walk
+    // enumerated that the sweep's LIVE set does not carry is one the shared
+    // acceptance rules refuse -- which is what the ~997 `walk_only` objects
+    // t37..t43 published are, and why that direction never blocked promotion.
+    let mut walk_only_leaders = 0usize;
+    for addr in walk.leader_objects.iter() {
+        if sweep.leader_live.contains_key(addr) {
+            continue;
+        }
+        walk_only_leaders += 1;
+        assert_eq!(
+            world.leader_classes[&(*addr as usize)],
+            FuRoleClass::MapHeldRefused,
+            "walk-only leader object {addr:#x} must be one the rules refuse"
+        );
+        assert!(
+            !walk
+                .leader_roots
+                .iter()
+                .any(|root| root.country_leader_addr == *addr),
+            "a refused object must not become a root"
+        );
+    }
+    let mut walk_only_advisors = 0usize;
+    for addr in walk.advisor_objects.iter() {
+        if sweep.advisor_live.contains_key(addr) {
+            continue;
+        }
+        walk_only_advisors += 1;
+        assert_eq!(
+            world.advisor_classes[&(*addr as usize)],
+            FuRoleClass::MapHeldRefused,
+            "walk-only advisor object {addr:#x} must be one the rules refuse"
+        );
+    }
+    println!("  walk_only objects:  leaders {walk_only_leaders} advisors {walk_only_advisors}");
+    assert!(
+        walk_only_leaders > 0 && walk_only_advisors > 0,
+        "the fixture must stage the walk-only direction, or (4) proves nothing"
+    );
+}
+
+/// A ROLE ON A DUPLICATE BODY IS ADMITTED ONCE.
+///
+/// The walk runs over EVERY roster body, including the duplicates the character
+/// dedup merges away, because the sweep admitted their roles too. What stops
+/// that from double-publishing is the distinct-pointer set behind the
+/// per-character hand-off, and this is what pins it.
+#[test]
+fn d47_walk_admits_a_role_once_across_duplicate_bodies() {
+    let world = fu_acceptance_world();
+    let mem = Domain47InProcessMemory;
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut roots = Vec::new();
+    let mut skipped = 0u32;
+    let mut excluded = 0u32;
+    page_cache_new_frame();
+    // Character 3 holds TWO role objects; visiting its body twice models a
+    // duplicate `CCharacter` the heap carries for one logical character.
+    let body = world.roster[3];
+    let mut admitted_per_visit = Vec::new();
+    for _ in 0..2 {
+        domain47_shadow_walk_character(body, &mut walk, &mut stack, &mut scratch);
+        let before = roots.len();
+        domain47_admit_country_leader_roles(
+            &mem,
+            &world.roots,
+            &walk.fresh_leaders,
+            None,
+            &mut seen,
+            &mut roots,
+            &mut skipped,
+            &mut excluded,
+        );
+        admitted_per_visit.push((walk.fresh_leaders.len(), roots.len() - before));
+    }
+    assert_eq!(
+        admitted_per_visit[0].0, 2,
+        "the first visit contributes both of this character's role objects"
+    );
+    assert_eq!(
+        admitted_per_visit[0].1, 1,
+        "and they dedup to ONE row: same (country, char_id)"
+    );
+    assert_eq!(
+        admitted_per_visit[1],
+        (0, 0),
+        "the second visit contributes NOTHING: the distinct-pointer set already \
+         holds both objects, so a duplicate body cannot double-publish"
+    );
+}
+
+/// The walk's per-character hand-off is CLEARED on a body it could not read.
+///
+/// Without the clear, a character whose body is unreadable would leave the
+/// previous character's pointers in `fresh_*` and the caller would re-run the
+/// full double identity read on every one of them -- for every unreadable body
+/// in the roster. The mutation that reintroduces it is deleting two `clear()`
+/// lines from `domain47_shadow_walk_character`.
+#[test]
+fn d47_walk_clears_its_hand_off_on_an_unreadable_body() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character(world.character, &mut walk, &mut stack, &mut scratch);
+    assert_eq!(walk.fresh_leaders.len(), 3);
+    assert_eq!(walk.fresh_advisors.len(), 2);
+    domain47_shadow_walk_character(HEAP_HI - 0x1000, &mut walk, &mut stack, &mut scratch);
+    assert!(
+        walk.fresh_leaders.is_empty() && walk.fresh_advisors.is_empty(),
+        "an unreadable body contributes nothing, and must not re-offer the \
+         previous body's pointers"
+    );
+    assert_eq!(walk.refused, 2);
+}
+
+/// A REFUSED map contributes nothing to the hand-off either, for the same
+/// reason it contributes nothing to the distinct-pointer set: a partially
+/// walked container is not an enumeration, and admitting off it would publish
+/// roots the walk never proved the character held.
+#[test]
+fn d47_walk_hands_off_nothing_from_a_refused_map() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    world.arena.put_u64(
+        world.character + DOMAIN47_LEADER_MAP_SIZE_OFF,
+        world.leaders.len() as u64 + 1,
+    );
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character(world.character, &mut walk, &mut stack, &mut scratch);
+    assert_eq!(walk.refused, 1);
+    assert!(
+        walk.fresh_leaders.is_empty(),
+        "a refused map must offer no roots"
+    );
+    assert_eq!(
+        walk.fresh_advisors.len(),
+        2,
+        "the other map on the same character is unaffected"
+    );
+}
+
+/// THE SHADOW'S COUNTERS MOVE, which is why the prewarm gives it its own.
+///
+/// `skipped_root_rows` feeds `domain47_prewarm_adoption_blocked`, so a shadow
+/// sharing production's counters could BLOCK an adoption on the strength of
+/// objects production never enumerated. This pins that the sweep's hit list
+/// really does drive those counters -- the claim "the shadow's counters are its
+/// own" is only worth making about counters that move.
+#[test]
+fn d47_sweep_shadow_counters_are_its_own() {
+    let world = fu_acceptance_world();
+    let mem = Domain47InProcessMemory;
+    let mut live = Domain47RoleLiveSet::new();
+    let mut seen = BTreeSet::new();
+    let mut roots = Vec::new();
+    let mut skipped = 0u32;
+    let mut excluded = 0u32;
+    page_cache_new_frame();
+    domain47_admit_country_leader_roles(
+        &mem,
+        &world.roots,
+        &world.sweep_leader_hits,
+        Some(&mut live),
+        &mut seen,
+        &mut roots,
+        &mut skipped,
+        &mut excluded,
+    );
+    assert!(
+        excluded > 0,
+        "the sweep's hit list must exclude the detached objects"
+    );
+    assert!(!live.is_empty(), "and must still admit the live ones");
+    assert!(
+        live.len() > roots.len(),
+        "the live set is taken BEFORE the per-identity dedup, or the residual \
+         would report d47's row policy as a reachability fact"
+    );
+}
+
+/// THE PREWARM ADMITS ROLES FROM THE WALK, INSIDE ITS CENSUS LOOP.
+///
+/// `fu_admit_by_walk` reproduces production's three calls; this is what says the
+/// reproduction still describes production. Source text and not behaviour,
+/// because the branch is otherwise reachable only through live process memory
+/// and a running sweep service -- the same reason
+/// `domain47_prewarm_holds_instead_of_recensusing` is a function.
+///
+/// It fails if the walk stops feeding the admission, if the admission moves out
+/// of the census loop (losing the hot-body property the conversion exists for),
+/// or if either sweep-hit loop comes back.
+#[test]
+fn d47_the_prewarm_admits_roles_from_the_walk_inside_the_census_loop() {
+    let source = super::tests::collector_source_lf();
+    let loop_head = source
+        .find("for (ordinal, (addr, raw)) in manager_roster.characters.iter().enumerate() {")
+        .expect("the census loop");
+    let loop_tail = source[loop_head..]
+        .find("\n    // Drop every root belonging to a quarantined identity")
+        .expect("the end of the census loop")
+        + loop_head;
+    let body = &source[loop_head..loop_tail];
+    assert!(
+        body.contains("domain47_shadow_walk_character(\n            *addr,"),
+        "the census loop must walk THIS iteration's body"
+    );
+    // WHAT FEEDS EACH ADMISSION, not merely that both are called (Codex
+    // 019fe227, finding 4). `fresh_leaders` and `fresh_advisors` are the same
+    // type, so swapping them -- or passing an empty slice, or a stale list --
+    // compiles, silently misroutes or drops every role root, and satisfies a
+    // call-presence assertion. Each call name is matched together with the
+    // hand-off it must be given.
+    for (call, feed) in [
+        (
+            "domain47_admit_country_leader_roles(",
+            "&shadow_walk.fresh_leaders,",
+        ),
+        ("domain47_admit_advisor_roots(", "&shadow_walk.fresh_advisors,"),
+    ] {
+        let paired = format!("{call}\n            &mem,\n            &roots,\n            {feed}");
+        assert!(
+            body.contains(&paired),
+            "the census loop must admit from the walk's own per-character \
+             hand-off; expected\n{paired}"
+        );
+    }
+    assert!(
+        body.find("domain47_shadow_walk_character(").unwrap()
+            < body.find("domain47_admit_country_leader_roles(").unwrap(),
+        "the walk must run before the admission it feeds"
+    );
+    // AND BOTH ADMISSIONS PRECEDE THE CHARACTER DEDUP (Codex 019fe238,
+    // finding 2). All three of `dedup.admit_character`'s arms `continue` on the
+    // bodies the census does not keep — a merged duplicate and a quarantined
+    // identity — and a role object hangs off ONE body, which may be exactly one
+    // of those. The sweep admitted such an object; a walk that ran after the
+    // dedup would silently drop its row. Ordering, not presence, is what makes
+    // the population equal.
+    let dedup_at = body
+        .find("match dedup.admit_character(")
+        .expect("the census loop's character dedup");
+    for call in [
+        "domain47_admit_country_leader_roles(",
+        "domain47_admit_advisor_roots(",
+    ] {
+        assert!(
+            body.find(call).unwrap() < dedup_at,
+            "{call} must run BEFORE dedup.admit_character, whose every arm \
+             `continue`s past the bodies a role may still hang off"
+        );
+    }
+    // The sweep's own enumeration may appear ONLY inside the shadow block.
+    let shadow = source
+        .find("// THE SWEEP SHADOW (lane FU) - observe-only, OFF by default.")
+        .expect("the shadow block");
+    assert!(
+        shadow > loop_tail,
+        "the shadow runs after the census loop, not inside it"
+    );
+    assert!(
+        !source[..shadow].contains("country_leader_hits"),
+        "no country-leader sweep-hit consumption may survive outside the shadow"
+    );
+    assert!(
+        !source[..shadow].contains("advisor_hits"),
+        "no advisor sweep-hit consumption may survive outside the shadow"
+    );
+}
+
+// === WHAT THE CONVERSION COSTS, AND SAVES (lane FU) ========================
+//
+// The A/B above proves the two enumerations admit the same population. This
+// measures what swapping them costs, on a world at the live per-prewarm widths
+// this file already records:
+//
+//  * 13_403 censused characters (`T32_CENSUS_CHARACTERS`);
+//  * 1_964 `CCountryLeader` objects over 1_879 characters (`EJ_*`);
+//  * 6_407 `CAdvisor` objects, one per character over the first 6_407;
+//  * plus the DEAD population the sweep additionally enumerates and the walk
+//    never touches: D04 observed ~1_005 dead-pointer `CAdvisor` objects and
+//    t32 published `domain47_prewarm_excluded_scan_hits` at 1_393 per prewarm
+//    across all families.
+//
+// THE TWO ARMS, and the difference between them is the whole change:
+//
+//  * SWEEP -- the admission loops run once, over a hit list in ASCENDING
+//    ADDRESS order, after the census loop has finished. Each identity read
+//    chases the role object's back-pointer into a `CCharacter` body chosen by
+//    the heap's layout rather than by anything this loop just touched, and the
+//    dead objects are probed exactly as hard as the live ones before being
+//    excluded.
+//  * WALK -- the admission runs inside the census loop, on the pointers the
+//    character's own maps just yielded, so the body the back-pointer chases
+//    into is the one this iteration prefetched and read; and the dead objects
+//    are never enumerated at all.
+//
+// AN INSTRUMENT, NOT A GATE, like every other cost arm in this file: it prints
+// the delta and asserts only that both arms did their job. A wall-time
+// assertion on a machine that is usually also building something is a flaky
+// gate rather than a measurement.
+
+/// Dead `CAdvisor` objects the heap carries beside the live ones (D04).
+const FU_DEAD_ADVISORS: usize = 1_005;
+/// Dead / stale `CCountryLeader` objects, sized from t32's per-prewarm
+/// `excluded_scan_hits` (1_393 across all families) net of the advisor share.
+const FU_DEAD_LEADERS: usize = 388;
+
+/// A census-width world whose role maps hold REAL role objects.
+///
+/// `ej_shadow_world` gives its map entries dummy in-window values, which is all
+/// the walk itself needs; the admission functions dereference them, so this
+/// fixture writes a whole `CCountryLeader` / `CAdvisor` behind every entry, on
+/// its own page, in a shuffled order — the same one-object-per-page discipline
+/// `scattered_census_world` uses and for the same reason.
+struct FuCostWorld {
+    _arena: BenchArena,
+    roots: ResolvedTypeRoots,
+    census_characters: Vec<usize>,
+    /// Ascending by address: what the sweep publishes, live and dead together.
+    sweep_leader_hits: Vec<usize>,
+    sweep_advisor_hits: Vec<usize>,
+}
+
+fn fu_cost_world() -> FuCostWorld {
+    let count = T32_CENSUS_CHARACTERS;
+    let leader_objects = EJ_LEADER_ENTRIES + FU_DEAD_LEADERS;
+    let advisor_objects = EJ_ADVISOR_ENTRIES + FU_DEAD_ADVISORS;
+    let role_objects = leader_objects + advisor_objects;
+    let node_slots = EJ_LEADER_ENTRIES + EJ_ADVISOR_ENTRIES + EJ_LEADER_CHARACTERS
+        + EJ_ADVISOR_ENTRIES;
+    let arena = BenchArena::in_heap_window(
+        (count + role_objects) * SCATTER_PAGE + node_slots * EJ_NODE_STRIDE + 4 * SCATTER_PAGE,
+    );
+    let role_base = arena.base + count * SCATTER_PAGE;
+    let node_base = role_base + role_objects * SCATTER_PAGE + SCATTER_PAGE;
+    let decoy = node_base + node_slots * EJ_NODE_STRIDE;
+    arena.put_u64(decoy, BENCH_CUNIT_LEADER_TRAIT_VTABLE);
+
+    let shuffled = |seed: u64, len: usize| {
+        let mut order: Vec<usize> = (0..len).collect();
+        let mut state = seed;
+        for idx in (1..len).rev() {
+            let swap = (scatter_rng(&mut state) % (idx as u64 + 1)) as usize;
+            order.swap(idx, swap);
+        }
+        order
+    };
+    let body_pages = shuffled(0x5eed_d47f_0001_u64, count);
+    let role_pages = shuffled(0x5eed_d47f_0002_u64, role_objects);
+    let node_order = shuffled(0x5eed_d47f_0003_u64, node_slots);
+
+    let roots = ResolvedTypeRoots {
+        ccharacter_vtable: BENCH_CCHARACTER_VTABLE,
+        carmy_leader_vtable: BENCH_CARMY_LEADER_VTABLE,
+        cnavy_leader_vtable: BENCH_CNAVY_LEADER_VTABLE,
+        ccountry_leader_vtable: BENCH_CCOUNTRY_LEADER_VTABLE,
+        cadvisor_vtable: BENCH_CADVISOR_VTABLE,
+        cunit_leader_trait_vtable: BENCH_CUNIT_LEADER_TRAIT_VTABLE,
+    };
+
+    let character_at = |index: usize| arena.base + body_pages[index] * SCATTER_PAGE;
+    for index in 0..count {
+        let addr = character_at(index);
+        arena.put_u64(addr, BENCH_CCHARACTER_VTABLE);
+        arena.put_u32(addr + CCHARACTER_TYPE_OFF as usize, CCHARACTER_TYPE_ID);
+        arena.put_u32(addr + CCHARACTER_ID_OFF as usize, index as u32);
+        arena.put_u32(
+            addr + CCHARACTER_COUNTRY_TAG_DB_ID_OFF as usize,
+            1 + (index % 200) as u32,
+        );
+        arena.put_u64(addr + CCHARACTER_UNIT_LEADER_PTR_OFF as usize, 0);
+    }
+
+    let mut taken_role = 0usize;
+    let mut role_slot = || {
+        let at = role_base + role_pages[taken_role] * SCATTER_PAGE;
+        taken_role += 1;
+        at
+    };
+    let mut sweep_leader_hits = Vec::with_capacity(leader_objects);
+    let mut sweep_advisor_hits = Vec::with_capacity(advisor_objects);
+    let mut leader_entries: Vec<Vec<u64>> = vec![Vec::new(); count];
+    let mut advisor_entries: Vec<Vec<u64>> = vec![Vec::new(); count];
+
+    for index in 0..EJ_LEADER_ENTRIES {
+        // The surplus over `EJ_LEADER_CHARACTERS` models D04's several-roles-
+        // per-character, exactly as `ej_shadow_world` spreads it.
+        let holder = index % EJ_LEADER_CHARACTERS;
+        let addr = role_slot();
+        arena.put_u64(addr, BENCH_CCOUNTRY_LEADER_VTABLE);
+        arena.put_u64(
+            addr + CCOUNTRY_LEADER_CHARACTER_PTR_OFF as usize,
+            character_at(holder) as u64,
+        );
+        sweep_leader_hits.push(addr);
+        leader_entries[holder].push(addr as u64);
+    }
+    for _ in 0..FU_DEAD_LEADERS {
+        let addr = role_slot();
+        arena.put_u64(addr, BENCH_CCOUNTRY_LEADER_VTABLE);
+        arena.put_u64(addr + CCOUNTRY_LEADER_CHARACTER_PTR_OFF as usize, decoy as u64);
+        sweep_leader_hits.push(addr);
+    }
+    for index in 0..EJ_ADVISOR_ENTRIES {
+        let addr = role_slot();
+        arena.put_u64(addr, BENCH_CADVISOR_VTABLE);
+        arena.put_u64(
+            addr + CADVISOR_CHARACTER_PTR_OFF as usize,
+            character_at(index) as u64,
+        );
+        arena.put_msvc_string(
+            addr + domain47::extractor::CADVISOR_IDEA_TOKEN_OFF as usize,
+            addr + 0x400,
+            &format!("advisor_idea_token_{index}"),
+        );
+        sweep_advisor_hits.push(addr);
+        advisor_entries[index].push(addr as u64);
+    }
+    for _ in 0..FU_DEAD_ADVISORS {
+        // The oracle's dead-pointer shape: a `CAdvisor` whose character chain
+        // does not resolve. It costs the sweep a full probe pair before it is
+        // excluded, and the walk never sees it.
+        let addr = role_slot();
+        arena.put_u64(addr, BENCH_CADVISOR_VTABLE);
+        arena.put_u64(addr + CADVISOR_CHARACTER_PTR_OFF as usize, decoy as u64);
+        sweep_advisor_hits.push(addr);
+    }
+
+    let mut taken_node = 0usize;
+    let mut node_slot = || {
+        let at = node_base + node_order[taken_node] * EJ_NODE_STRIDE;
+        taken_node += 1;
+        at
+    };
+    for index in 0..count {
+        let addr = character_at(index);
+        for (head_off, size_off, value_off, entries) in [
+            (
+                DOMAIN47_LEADER_MAP_HEAD_OFF,
+                DOMAIN47_LEADER_MAP_SIZE_OFF,
+                DOMAIN47_LEADER_NODE_VALUE_OFF,
+                std::mem::take(&mut leader_entries[index]),
+            ),
+            (
+                DOMAIN47_ADVISOR_MAP_HEAD_OFF,
+                DOMAIN47_ADVISOR_MAP_SIZE_OFF,
+                DOMAIN47_ADVISOR_NODE_VALUE_OFF,
+                std::mem::take(&mut advisor_entries[index]),
+            ),
+        ] {
+            arena.put_u64(addr + size_off, entries.len() as u64);
+            if entries.is_empty() {
+                arena.put_u64(addr + head_off, (addr + 0x800) as u64);
+                continue;
+            }
+            let head = node_slot();
+            let nodes: Vec<usize> = (0..entries.len()).map(|_| node_slot()).collect();
+            ej_put_tree(&arena, head, &|slot| nodes[slot], value_off, &entries);
+            arena.put_u64(addr + head_off, head as u64);
+        }
+    }
+
+    sweep_leader_hits.sort_unstable();
+    sweep_advisor_hits.sort_unstable();
+    let census_characters: Vec<usize> = (0..count).map(character_at).collect();
+    FuCostWorld {
+        _arena: arena,
+        roots,
+        census_characters,
+        sweep_leader_hits,
+        sweep_advisor_hits,
+    }
+}
+
+/// The census loop, with role discovery and admission done the WALK way.
+///
+/// Returns the two root counts SEPARATELY, and refuses nothing (Codex
+/// 019fe1fa, finding 5). A single total would let a lost leader root cancel
+/// against a gained advisor root, or against a refusal counted into the same
+/// sum -- which is precisely the population difference the equality test below
+/// exists to detect.
+fn fu_cost_walk_arm(world: &FuCostWorld) -> (usize, usize) {
+    let mem = Domain47InProcessMemory;
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut by_identity = BTreeMap::new();
+    let mut leader_roots = Vec::new();
+    let mut advisor_roots = Vec::new();
+    let mut skipped = 0u32;
+    let mut excluded = 0u32;
+    for (ordinal, addr) in world.census_characters.iter().copied().enumerate() {
+        if let Some(ahead) = world
+            .census_characters
+            .get(ordinal.wrapping_add(DOMAIN47_PREFETCH_DISTANCE))
+        {
+            domain47_prefetch_object(*ahead, domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN);
+        }
+        domain47_shadow_walk_character(addr, &mut walk, &mut stack, &mut scratch);
+        domain47_admit_country_leader_roles(
+            &mem,
+            &world.roots,
+            &walk.fresh_leaders,
+            None,
+            &mut seen,
+            &mut leader_roots,
+            &mut skipped,
+            &mut excluded,
+        );
+        domain47_admit_advisor_roots(
+            &mem,
+            &world.roots,
+            &walk.fresh_advisors,
+            None,
+            &mut by_identity,
+            &mut advisor_roots,
+            &mut skipped,
+            &mut excluded,
+        );
+    }
+    assert_eq!(walk.refused, 0, "the cost fixture must refuse no map");
+    (leader_roots.len(), advisor_roots.len())
+}
+
+/// The census loop, with the sweep's hit lists admitted after it. Returns the
+/// two root counts separately, for the reason  gives.
+///
+/// `shadow_walk` is what separates the two things this arm has to be:
+///
+///  * `true` — THE SHIPPED BASELINE at this lane's base commit. Lane EJ's walk
+///    is production-ON there (`domain47_shadow_walk` defaults true), so every
+///    capture up to t43 paid for the container walk AND the sweep's hit loops.
+///    Against `fu_cost_walk_arm` this is the delta the conversion actually
+///    produces.
+///  * `false` — the counterfactual: what d47 would cost if the walk had never
+///    been added. Against `fu_cost_walk_arm` this is what the container walk
+///    costs as a MECHANISM, which is a different and more pessimistic question
+///    and is reported separately rather than quietly conflated with the first.
+fn fu_cost_sweep_arm(world: &FuCostWorld, shadow_walk: bool) -> (usize, usize) {
+    let mem = Domain47InProcessMemory;
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut by_identity = BTreeMap::new();
+    let mut leader_roots = Vec::new();
+    let mut advisor_roots = Vec::new();
+    let mut skipped = 0u32;
+    let mut excluded = 0u32;
+    for (ordinal, addr) in world.census_characters.iter().copied().enumerate() {
+        if let Some(ahead) = world
+            .census_characters
+            .get(ordinal.wrapping_add(DOMAIN47_PREFETCH_DISTANCE))
+        {
+            domain47_prefetch_object(*ahead, domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN);
+        }
+        // The census pass still touches every body; only the role discovery
+        // differs between the arms.
+        domain47_prefetch_object(addr, domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN);
+        if shadow_walk {
+            domain47_shadow_walk_character(addr, &mut walk, &mut stack, &mut scratch);
+        }
+    }
+    domain47_admit_country_leader_roles(
+        &mem,
+        &world.roots,
+        &world.sweep_leader_hits,
+        None,
+        &mut seen,
+        &mut leader_roots,
+        &mut skipped,
+        &mut excluded,
+    );
+    domain47_admit_advisor_roots(
+        &mem,
+        &world.roots,
+        &world.sweep_advisor_hits,
+        None,
+        &mut by_identity,
+        &mut advisor_roots,
+        &mut skipped,
+        &mut excluded,
+    );
+    assert_eq!(
+        walk.refused, 0,
+        "the shadow arm's instrument must refuse no map either"
+    );
+    (leader_roots.len(), advisor_roots.len())
+}
+
+/// BOTH ARMS ADMIT THE SAME ROWS AT LIVE WIDTH, which is what makes the timing
+/// below a comparison of two ways to do one job rather than of two jobs.
+///
+/// This is the A/B above re-run at census scale, with no stale objects staged:
+/// the only difference between the arms is the dead population the sweep
+/// additionally enumerates, and it must cost rows on neither side.
+#[test]
+fn d47_walk_and_sweep_admit_the_same_rows_at_census_width() {
+    let world = fu_cost_world();
+    page_cache_new_frame();
+    let walk = fu_cost_walk_arm(&world);
+    page_cache_new_frame();
+    let sweep = fu_cost_sweep_arm(&world, false);
+    // FAMILY BY FAMILY, not on a total: a lost leader root and a gained advisor
+    // root sum to the same number, and so does a lost root beside a refusal.
+    assert_eq!(
+        walk.0, sweep.0,
+        "the two discovery paths must publish the same COUNTRY-LEADER roots"
+    );
+    assert_eq!(
+        walk.1, sweep.1,
+        "and the same ADVISOR roots"
+    );
+    assert_eq!(
+        sweep,
+        (EJ_LEADER_CHARACTERS, EJ_ADVISOR_ENTRIES),
+        "and both must be the live width, not a truncated walk"
+    );
+}
+
+/// WHAT THE CONVERSION COSTS, per prewarm, on the census-width world.
+///
+/// TWO COMPARISONS, because there are two honest questions and answering only
+/// the flattering one would be the measurement equivalent of a vacuous test:
+///
+///  1. AGAINST THE SHIPPED BASELINE (walk + sweep loops), which is what every
+///     capture through t43 actually ran. This is the delta the transition
+///     produces.
+///  2. AGAINST A SWEEP-ONLY d47 (no walk at all), which is what the container
+///     walk costs as a mechanism. Expect this one to be a REGRESSION: the walk
+///     traverses ~8_300 `_Tree` nodes it does not otherwise have to touch, and
+///     that is more work than the back-chase locality and the ~1_400 skipped
+///     dead-object probes give back.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_walk_vs_sweep_discovery() {
+    let world = fu_cost_world();
+    page_cache_new_frame();
+    // The timed closures return a scalar sink, which is all a wall-clock arm
+    // needs; the ROW equality the two arms must satisfy is asserted family by
+    // family in the test above, not inferred from a total here.
+    let walk_arm = || {
+        let (leaders, advisors) = fu_cost_walk_arm(&world);
+        leaders + advisors
+    };
+    let sweep_arm = |shadow: bool| {
+        let (leaders, advisors) = fu_cost_sweep_arm(&world, shadow);
+        leaders + advisors
+    };
+    assert!(walk_arm() > 0);
+    assert!(sweep_arm(true) > 0);
+    let (shipped, walk) = time_us_median_ab_n(
+        7,
+        3,
+        || sweep_arm(true),
+        walk_arm,
+    );
+    let (sweep_only, walk_again) = time_us_median_ab_n(
+        7,
+        3,
+        || sweep_arm(false),
+        walk_arm,
+    );
+    let pct = |before: f64, after: f64| (after - before) / before * 100.0;
+    println!(
+        "d47_cost role discovery over {} characters, {} live + {} dead leader objects, \
+         {} live + {} dead advisor objects:\n  \
+         vs SHIPPED (walk instrument + sweep loops): {shipped:.1} us -> {walk:.1} us \
+         ({:+.1} us, {:+.1}%)\n  \
+         vs SWEEP-ONLY (no walk at all):            {sweep_only:.1} us -> {walk_again:.1} us \
+         ({:+.1} us, {:+.1}%)",
+        T32_CENSUS_CHARACTERS,
+        EJ_LEADER_ENTRIES,
+        FU_DEAD_LEADERS,
+        EJ_ADVISOR_ENTRIES,
+        FU_DEAD_ADVISORS,
+        walk - shipped,
+        pct(shipped, walk),
+        walk_again - sweep_only,
+        pct(sweep_only, walk_again),
+    );
+}
+
+// === WHAT A REFUSED CONTAINER COSTS (lane FU round 2, Codex 019fe1c9) ======
+//
+// While the walk was observe-only a refusal cost a counter. It is production
+// discovery now, so a container the walk could not read is role rows this frame
+// does not have -- and the frame must say so on the wire rather than publish the
+// rest under a family it declares observed. These pin the three halves of that:
+// which families a refusal costs, that the refusal is DETECTED in the two shapes
+// the count check alone would miss, and that the prewarm acts on it.
+
+/// A LEADER-map refusal costs the country-leader family and NOTHING else.
+///
+/// MUTATION: collapse `refused_leader` / `refused_advisor` back into the single
+/// `refused` counter and make `unobserved_families` test it, and this fails --
+/// one unreadable leader map would take the advisor roster with it, which is a
+/// whole family of rows lost to a gap that never touched it.
+#[test]
+fn d47_a_refused_leader_map_costs_only_the_leader_family() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    // A concurrent erase leaves `_Mysize` one ahead of what is reachable.
+    world.arena.put_u64(
+        world.character + DOMAIN47_LEADER_MAP_SIZE_OFF,
+        world.leaders.len() as u64 + 1,
+    );
+    let walk = world.walk();
+    assert_eq!(walk.refused_leader, 1);
+    assert_eq!(walk.refused_advisor, 0);
+    assert_eq!(
+        walk.unobserved_families(),
+        domain47::FAMILY_COUNTRY_LEADER_ROLE
+    );
+    assert_eq!(
+        walk.refused_first_map_axis(),
+        Some(Domain47ShadowWalkMapAxis::Leader),
+        "the locator must name the axis that refused"
+    );
+    assert_eq!(walk.refused_first_body, world.character as u64);
+}
+
+/// An ADVISOR-map refusal costs the roster AND the appointment.
+///
+/// The appointed-advisor family is declared by `domain47_compact` to be the
+/// exact intersection of the roster with each country's active ideas, so a
+/// roster with a hole cannot support an appointment claim: an advisor missing
+/// from the roster reads as "not appointed", which is a wrong answer every
+/// downstream check would pass.
+#[test]
+fn d47_a_refused_advisor_map_costs_the_roster_and_the_appointment() {
+    let world = EjSingleCharacterWorld::new(2, 3);
+    world.arena.put_u64(
+        world.character + DOMAIN47_ADVISOR_MAP_SIZE_OFF,
+        DOMAIN47_SHADOW_WALK_MAX_NODES + 1,
+    );
+    let walk = world.walk();
+    assert_eq!(walk.refused_advisor, 1);
+    assert_eq!(walk.refused_leader, 0);
+    assert_eq!(
+        walk.unobserved_families(),
+        domain47::FAMILY_ADVISOR_ROSTER | domain47::FAMILY_APPOINTED_ADVISOR
+    );
+}
+
+/// A clean walk costs no family, or every capture would declare these three
+/// absent forever and the assertions above would be true for free.
+#[test]
+fn d47_a_clean_role_walk_costs_no_family() {
+    let world = EjSingleCharacterWorld::new(3, 4);
+    let walk = world.walk();
+    assert_eq!(walk.refused, 0);
+    assert_eq!(walk.unobserved_families(), 0);
+    assert_eq!(walk.refused_first_map_axis(), None);
+    assert_eq!(walk.refused_first_body, 0);
+}
+
+/// TWO NODES YIELDING ONE POINTER REFUSES THE MAP.
+///
+/// The shape a rebalance takes when it moves a subtree under a walk in
+/// progress: one node is visited twice and another is never reached, and the
+/// count check cannot see it because the total is preserved. Neither container
+/// can legally hold one pointer twice -- the engine's teardown destroys
+/// `node->value` once per node, so a duplicate would be a double free -- which
+/// is what makes refusing safe.
+///
+/// MUTATION: delete the `staged.windows(2)` check and this fails. Before it
+/// existed, the walk published two entries where the world has three and called
+/// the map clean.
+#[test]
+fn d47_walk_refuses_a_map_that_yields_one_pointer_twice() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    // Node 1 now carries node 0's value: three nodes, three pops, two distinct
+    // pointers. `visited == size` still holds.
+    world.arena.put_u64(
+        world.leader_nodes + EJ_NODE_STRIDE + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        world.leaders[0],
+    );
+    let walk = world.walk();
+    assert_eq!(
+        walk.refused_leader, 1,
+        "a value reached twice inside ONE map is a walk that did not enumerate it"
+    );
+    assert!(walk.leaders.is_empty(), "and it contributes nothing");
+    assert_eq!(
+        walk.advisors.len(),
+        2,
+        "the other map on the same character is unaffected"
+    );
+}
+
+/// THE SAME NODE REACHED TWICE REFUSES, EVEN WITH A NULL VALUE.
+///
+/// The duplicate check that matters is on the NODE, not on the value. A node
+/// whose value is null contributes nothing to the value list at all, so a
+/// rebalance that re-reaches a null node and misses a real one preserves
+/// `visited == size`, leaves both headers untouched, produces no duplicate
+/// VALUE — and would publish the map one role pointer short while calling it
+/// clean. (Codex 019fe1fa, finding 2.)
+///
+/// MUTATION: delete the `visited_nodes` check and keep only the value check,
+/// and this fails while `d47_walk_refuses_a_map_that_yields_one_pointer_twice`
+/// still passes. That is the exact gap the value check alone left.
+#[test]
+fn d47_walk_refuses_a_map_that_reaches_one_null_node_twice() {
+    let world = EjSingleCharacterWorld::new(3, 0);
+    let node = |index: usize| world.leader_nodes + index * EJ_NODE_STRIDE;
+    // BOTH of the root's children now point at node 2. Node 1 becomes
+    // unreachable and node 2 is reached twice, so the walk still pops exactly
+    // three nodes and `visited == size` holds -- the count check is blind to
+    // it, which is what makes this the interesting topology.
+    world
+        .arena
+        .put_u64(node(0) + DOMAIN47_TREE_NODE_LEFT_OFF, node(2) as u64);
+    world
+        .arena
+        .put_u64(node(0) + DOMAIN47_TREE_NODE_RIGHT_OFF, node(2) as u64);
+    // Node 2 carries NO object -- a map entry with no leader, which the walk
+    // tolerates by design and which therefore contributes nothing to the value
+    // list. Without the node check, the duplicate is invisible on every axis:
+    // the count adds up, the headers never moved, and no value repeats.
+    world
+        .arena
+        .put_u64(node(2) + DOMAIN47_LEADER_NODE_VALUE_OFF, 0);
+    let walk = world.walk();
+    assert_eq!(
+        walk.refused_leader, 1,
+        "a node reached twice is a walk that missed another node, whatever its \
+         value was"
+    );
+    assert!(walk.leaders.is_empty());
+    assert_eq!(
+        walk.unobserved_families(),
+        domain47::FAMILY_COUNTRY_LEADER_ROLE
+    );
+}
+
+/// A LEGAL MAP WITH A NULL ENTRY IS STILL ACCEPTED.
+///
+/// The node check must not turn "this entry holds no object" into a refusal:
+/// that is an observation the walk has always tolerated, and refusing it would
+/// cost the family on a world nothing is wrong with.
+#[test]
+fn d47_walk_accepts_a_map_entry_with_no_object() {
+    let world = EjSingleCharacterWorld::new(3, 0);
+    world.arena.put_u64(
+        world.leader_nodes + 2 * EJ_NODE_STRIDE + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        0,
+    );
+    let walk = world.walk();
+    assert_eq!(walk.refused, 0, "a null entry is observed, not refused");
+    assert_eq!(
+        walk.fresh_leaders.len(),
+        2,
+        "and it contributes no pointer, while the other two do"
+    );
+    assert_eq!(walk.unobserved_families(), 0);
+}
+
+/// TWO null entries in one map are legal too, which is why the check is on the
+/// node and could not have been on the value.
+#[test]
+fn d47_walk_accepts_two_map_entries_with_no_object() {
+    let world = EjSingleCharacterWorld::new(3, 0);
+    for index in [1usize, 2] {
+        world.arena.put_u64(
+            world.leader_nodes + index * EJ_NODE_STRIDE + DOMAIN47_LEADER_NODE_VALUE_OFF,
+            0,
+        );
+    }
+    let walk = world.walk();
+    assert_eq!(
+        walk.refused, 0,
+        "two entries with no object are two observations, not a duplicate"
+    );
+    assert_eq!(walk.fresh_leaders.len(), 1);
+}
+
+/// A POINTER TWO DIFFERENT CHARACTERS HOLD IS STILL LEGAL.
+///
+/// The duplicate check above is PER MAP. Duplicate `CCharacter` bodies for one
+/// logical character really do exist in this heap and really can hold the same
+/// role object, and refusing that would cost a family on every prewarm.
+#[test]
+fn d47_walk_accepts_one_pointer_held_by_two_characters() {
+    let first = EjSingleCharacterWorld::new(2, 0);
+    let second = EjSingleCharacterWorld::new(2, 0);
+    // Point the second character's first entry at the first character's object.
+    second.arena.put_u64(
+        second.leader_nodes + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        first.leaders[0],
+    );
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character(first.character, &mut walk, &mut stack, &mut scratch);
+    assert_eq!(walk.fresh_leaders.len(), 2);
+    domain47_shadow_walk_character(second.character, &mut walk, &mut stack, &mut scratch);
+    assert_eq!(walk.refused, 0, "two characters may hold one role object");
+    assert_eq!(
+        walk.fresh_leaders.len(),
+        1,
+        "and it is offered for admission ONCE: the shared pointer is already in \
+         the distinct set"
+    );
+    assert_eq!(walk.leaders.len(), 3);
+}
+
+/// A MAP HEADER THAT MOVED UNDER THE WALK REFUSES BOTH AXES.
+///
+/// The count check sees an insert or erase; it cannot see a container that was
+/// relocated, nor a body being written while the first half of the header was
+/// read. The closing read is what does, and this is the only thing that
+/// exercises it -- both header reads live inside one call, so the mutation has
+/// to arrive through the test seam.
+///
+/// MUTATION: delete the closing read (make `closed` unconditionally true) and
+/// this fails. Before it existed, a relocated container's stale enumeration was
+/// adopted as complete.
+#[test]
+fn d47_walk_refuses_a_character_whose_map_header_moved_under_it() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character_with_between(
+        world.character,
+        &mut walk,
+        &mut stack,
+        &mut scratch,
+        || {
+            // The engine reallocates the leader map: `_Myhead` now names a
+            // different sentinel. Both axes were walked cleanly before this.
+            world.arena.put_u64(
+                world.character + DOMAIN47_LEADER_MAP_HEAD_OFF,
+                (world.arena.base + 0x3000) as u64,
+            );
+        },
+    );
+    assert_eq!(
+        walk.refused_leader, 1,
+        "the container whose header moved was not enumerated"
+    );
+    assert_eq!(
+        walk.refused_advisor, 0,
+        "and the OTHER container keeps its family: its own header did not move \
+         and its walk agreed with it, so refusing it would declare an advisor \
+         roster unobserved over a container this frame read perfectly"
+    );
+    assert!(walk.leaders.is_empty());
+    assert!(walk.fresh_leaders.is_empty());
+    assert_eq!(walk.fresh_advisors.len(), 2);
+    assert_eq!(
+        walk.unobserved_families(),
+        domain47::FAMILY_COUNTRY_LEADER_ROLE
+    );
+}
+
+/// A UNIT-LEADER ASSIGNMENT UNDER THE WALK IS NOT A ROLE-CONTAINER TEAR.
+///
+/// `CCHARACTER_UNIT_LEADER_PTR_OFF` is `+0xA8` — inside the 40-byte header
+/// snapshot, between the leader map's `_Mysize` at `+0xA0` and the advisor
+/// map's `_Myhead` at `+0xB0`. A byte-for-byte closing comparison reads a
+/// character being given or losing a unit leader (an ordinary, frequent event)
+/// as both role containers having moved, and costs the frame three families
+/// while both maps sat perfectly still.
+///
+/// MUTATION: compare `closing.buf == headers.buf` instead of the four header
+/// words and this fails. That is what the first version of the bracket did.
+/// (Codex 019fe1e5, finding 1.)
+#[test]
+fn d47_walk_accepts_a_unit_leader_assigned_under_it() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character_with_between(
+        world.character,
+        &mut walk,
+        &mut stack,
+        &mut scratch,
+        || {
+            // The engine appoints a unit leader. Neither `_Myhead` nor
+            // `_Mysize` of either map is touched.
+            world.arena.put_u64(
+                world.character + CCHARACTER_UNIT_LEADER_PTR_OFF as usize,
+                (world.arena.base + 0x5000) as u64,
+            );
+        },
+    );
+    assert_eq!(
+        walk.refused, 0,
+        "a field between the two map headers is not a map header"
+    );
+    assert_eq!(walk.fresh_leaders.len(), 3);
+    assert_eq!(walk.fresh_advisors.len(), 2);
+    assert_eq!(walk.unobserved_families(), 0);
+}
+
+/// And the ADVISOR map's own header still closes the bracket, so the narrowing
+/// did not simply stop looking at the second half of the snapshot.
+#[test]
+fn d47_walk_refuses_a_character_whose_advisor_header_moved_under_it() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character_with_between(
+        world.character,
+        &mut walk,
+        &mut stack,
+        &mut scratch,
+        || {
+            world
+                .arena
+                .put_u64(world.character + DOMAIN47_ADVISOR_MAP_SIZE_OFF, 9);
+        },
+    );
+    assert_eq!(
+        walk.refused_advisor, 1,
+        "the advisor half of the closing read is live, so narrowing the \
+         comparison to two words did not simply stop looking at it"
+    );
+    assert_eq!(walk.refused_leader, 0);
+    assert!(walk.advisors.is_empty());
+    assert_eq!(walk.fresh_leaders.len(), 3);
+    assert_eq!(
+        walk.unobserved_families(),
+        domain47::FAMILY_ADVISOR_ROSTER | domain47::FAMILY_APPOINTED_ADVISOR
+    );
+}
+
+/// A closing read that FAILED ENTIRELY refuses both axes, which the per-axis
+/// narrowing must not have weakened.
+///
+/// The narrowing is about what a SUCCESSFUL closing read is evidence for; a
+/// body that cannot be re-read is evidence for neither container. That case is
+/// already pinned by `d47_shadow_walk_refuses_both_maps_when_the_body_is_unreadable`
+/// — the opening read fails there, and both reads go through
+/// `domain47_shadow_walk_headers`, so one unreadable body exercises the same
+/// fail-closed answer. This note exists so a reader looking for the arm finds
+/// where it is covered rather than assuming it is not.
+
+/// The same seam with NO mutation: the bracket must not refuse a quiet world.
+#[test]
+fn d47_walk_accepts_a_character_whose_header_did_not_move() {
+    let world = EjSingleCharacterWorld::new(3, 2);
+    let mut walk = Domain47ShadowWalk::default();
+    let mut stack = Vec::new();
+    let mut scratch = Vec::new();
+    page_cache_new_frame();
+    domain47_shadow_walk_character_with_between(
+        world.character,
+        &mut walk,
+        &mut stack,
+        &mut scratch,
+        || {},
+    );
+    assert_eq!(walk.refused, 0);
+    assert_eq!(walk.fresh_leaders.len(), 3);
+    assert_eq!(walk.fresh_advisors.len(), 2);
+}
+
+/// THE PREWARM ACTS ON A REFUSAL: it clears the family bit AND the rows.
+///
+/// Source text, because the branch runs only against live process memory. The
+/// pairing is the property -- a declared-absent family carrying rows is the
+/// contradiction `domain47_compact`'s "did not observe" parse error exists to
+/// catch, and a cleared row list under a family still declared present is the
+/// silent deletion the whole rule exists to prevent.
+#[test]
+fn d47_the_prewarm_drops_the_rows_of_a_family_the_walk_refused() {
+    let source = super::tests::collector_source_lf();
+    let at = source
+        .find("let role_walk_unobserved = shadow_walk.unobserved_families();")
+        .expect("the prewarm consumes the walk's refusal mask");
+    let block = &source[at..at + 900];
+    // THE PAIRINGS, not the presence of the strings (Codex 019fe1e5, finding
+    // 4). Both `clear()` calls and the mask update appearing near each other
+    // is satisfied by a version that clears the ADVISOR rows on a LEADER
+    // refusal — which publishes a leader family declared present with its rows
+    // gone (a false deletion) beside an advisor family declared absent while
+    // carrying rows (the decoder's "did not observe" parse error). Each
+    // condition is therefore matched together with the statement it guards.
+    for (condition, statement) in [
+        (
+            "if role_walk_unobserved & domain47::FAMILY_COUNTRY_LEADER_ROLE != 0 {",
+            "next.country_leader_roles.clear();",
+        ),
+        (
+            "if role_walk_unobserved & domain47::FAMILY_ADVISOR_ROSTER != 0 {",
+            "next.advisors.clear();",
+        ),
+    ] {
+        let paired = format!("{condition}\n        {statement}");
+        assert!(
+            block.contains(&paired),
+            "the prewarm must clear exactly the rows of the family it declares \
+             unobserved; expected\n{paired}"
+        );
+    }
+    for required in [
+        "next.known_families &= !role_walk_unobserved;",
+        "Domain47FamilyGapReason::RoleContainerWalkRefused",
+    ] {
+        assert!(
+            block.contains(required),
+            "the prewarm must {required} when the walk refused a container"
+        );
+    }
+}
+
+/// THE SWEEP SHADOW'S COUNTERS ARE ITS OWN, at the production call site.
+///
+/// The unit test below proves the sweep's hit list really does drive
+/// `skipped_root_rows` and `excluded_scan_hits`; this proves the shadow block
+/// does not hand it PRODUCTION's. `skipped_root_rows != 0` feeds
+/// `domain47_prewarm_adoption_blocked`, so a torn object only the sweep
+/// enumerated could otherwise block an adoption the walk had every right to
+/// make -- and rowless-PARTIAL the whole domain on the strength of a
+/// measurement. (Codex 019fe1c9, finding 4.)
+#[test]
+fn d47_the_sweep_shadow_block_passes_its_own_counters() {
+    let source = super::tests::collector_source_lf();
+    let at = source
+        .find("// THE SWEEP SHADOW (lane FU) - observe-only, OFF by default.")
+        .expect("the shadow block");
+    let end = source[at..]
+        .find("\n    // Wave-3 870ebf unblock: CUnitLeaderTrait")
+        .expect("the end of the shadow block")
+        + at;
+    let block = &source[at..end];
+    assert!(
+        block.contains("let mut shadow_skipped = 0u32;")
+            && block.contains("let mut shadow_excluded = 0u32;"),
+        "the shadow must own its refusal counters"
+    );
+    // THE NAMES DO NOT APPEAR IN THE CODE AT ALL, which is stronger than
+    // excluding the two `&mut` spellings (Codex 019fe1e5, finding 4): `let
+    // alias = &mut skipped_root_rows;`, `skipped_root_rows += shadow_skipped;`
+    // and every other route into production's counters is a USE of the
+    // identifier, and a block that never names them cannot reach them.
+    //
+    // Comment lines are stripped first, because the block's own prose explains
+    // WHY it must not touch those two counters and naming them there is the
+    // point.
+    let code: String = block
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for forbidden in ["skipped_root_rows", "excluded_scan_hits"] {
+        assert!(
+            !code.contains(forbidden),
+            "the shadow block's CODE must not mention production's {forbidden}: \
+             it blocks adoption, and an observe-only measurement may not"
+        );
+    }
+    assert!(
+        !block.contains("next.country_leader_roles") && !block.contains("next.advisors"),
+        "and it must not be handed production's root lists either"
+    );
+    // What the shadow's own counters DO feed: the two population words and the
+    // torn-hit word, which are diagnostics. Pinned positively, because "goes
+    // nowhere" was the previous claim and it is no longer true.
+    assert!(
+        block.contains("shadow_sweep_torn_hits = shadow_skipped;"),
+        "the shadow's torn-read count must reach the wire, or a zero residual \
+         taken off a prewarm that lost hits reads as a clear"
+    );
+}
+
+/// THE STALE ROOT THE SWEEP KEEPS IS THE ONE THAT STOPS RESOLVING.
+///
+/// The population A/B shows WHICH ADDRESS wins the sweep's per-identity dedup.
+/// That alone is not the row loss lane FT described (Codex 019fe1c9, finding 3):
+/// under static staged memory the stale object still reads cleanly, so the frame
+/// walk would happily build a row from it. What makes it a LOSS is that the
+/// object is stale -- the engine has finished with it -- so by the time the
+/// frame walk re-reads the root, the address no longer describes the role.
+///
+/// This stages exactly that, in two steps a static fixture can perform:
+///
+///   1. admit both ways, and confirm the sweep rooted the row at the stale
+///      object while the walk rooted it at the map-held one;
+///   2. RECYCLE the stale object -- the allocator hands its storage to
+///      something else -- and re-read BOTH roots through the same identity
+///      reader the frame walk's own root check uses.
+///
+/// The sweep's root stops resolving; the walk's does not. The sweep's row is
+/// gone, and the map-held object that would have carried it was discarded by
+/// the dedup, so nothing recovers it.
+#[test]
+fn d47_a_recycled_stale_root_loses_the_row_the_sweep_published() {
+    let world = fu_acceptance_world();
+    let mem = Domain47InProcessMemory;
+    let walk = fu_admit_by_walk(&world);
+    let sweep = fu_admit_by_sweep(&world);
+
+    let stale = *world
+        .leader_classes
+        .iter()
+        .find(|(_, class)| **class == FuRoleClass::StaleDuplicate)
+        .expect("the fixture stages a stale duplicate")
+        .0;
+    let sweep_root = sweep
+        .leader_roots
+        .iter()
+        .find(|root| root.char_id == fu_character_id(0))
+        .expect("the sweep publishes character 0's role")
+        .country_leader_addr;
+    let walk_root = walk
+        .leader_roots
+        .iter()
+        .find(|root| root.char_id == fu_character_id(0))
+        .expect("the walk publishes character 0's role")
+        .country_leader_addr;
+    assert_eq!(sweep_root, stale as u64);
+    assert_ne!(walk_root, stale as u64);
+    assert!(
+        !walk.leader_objects.contains(&(stale as u64)),
+        "the stale object is in NO character's map, which is what makes it stale"
+    );
+
+    // Both roots resolve while the world is quiet: the loss is not staged yet.
+    page_cache_new_frame();
+    assert!(domain47_country_leader_identity(&mem, &world.roots, sweep_root).is_ok());
+    assert!(domain47_country_leader_identity(&mem, &world.roots, walk_root).is_ok());
+
+    // The allocator reuses the finished object's storage.
+    world._arena.put_u64(stale, BENCH_CUNIT_LEADER_TRAIT_VTABLE);
+    world
+        ._arena
+        .put_u64(stale + CCOUNTRY_LEADER_CHARACTER_PTR_OFF as usize, 0);
+    page_cache_new_frame();
+    assert!(
+        domain47_country_leader_identity(&mem, &world.roots, sweep_root).is_err(),
+        "the sweep's root no longer describes a country-leader role, and the \
+         map-held object it beat in the dedup was discarded"
+    );
+    assert!(
+        domain47_country_leader_identity(&mem, &world.roots, walk_root).is_ok(),
+        "the walk's root is the object a character map holds, and it is unaffected"
+    );
+}

@@ -749,34 +749,45 @@ fn an_unscheduled_prewarm_is_not_a_clock_failure() {
     );
 }
 
-/// The cold-window policy, as a unit: a COMPLETE retained cache is held, and
-/// anything less is re-censused.
+/// The cold-window policy, as a unit: NOTHING is held through a cold sweep any
+/// more (lane FU, task #125).
 ///
 /// The production branch this decides is reachable only through live process
 /// memory and a running heap-sweep service, so the policy is tested here and
 /// the branch simply calls it — the arrangement
 /// `domain47_prewarm_adoption_blocked` already uses, and for the same reason.
 ///
-/// MUTATION: drop the `retained_families` term (hold whenever roots exist) and
-/// the third case below fails. That mutation is the whole cold window: the
-/// first frame adopts a census-only cache, `had_stable_roots` becomes true, and
-/// every frame after it holds — publishing the rowless record this change
-/// exists to eliminate, under hours it never observed.
+/// WHY EVEN THE COMPLETE-CACHE CASE IS NOW FALSE. It was true when a cold sweep
+/// cost FOUR families: retaining eight beat degrading to four. Since d47's
+/// country-leader and advisor discovery moved to the character-down container
+/// walk, a cold sweep costs the trait DEFINITION family alone, so the fresh side
+/// is seven families of eight. And the retained side is worth nothing on the
+/// wire: `domain47_prewarm_hold` calls `domain47_note_refresh_hold`, which
+/// poisons the retained roots — the hour-attribution rule — and the scheduled
+/// reader turns that poison into a ROWLESS PARTIAL. Holding trades seven live
+/// families for zero rows to protect one that is unknown either way.
+///
+/// MUTATION: restore `had_stable_roots && retained_families == FAMILY_ALL` and
+/// the second case fails. That mutation costs every capture its whole d47
+/// output on any frame where the shared sweep degrades after warming.
 #[test]
-fn only_a_complete_retained_cache_is_held_through_a_cold_sweep() {
+fn nothing_is_held_through_a_cold_sweep() {
     // Nothing adopted yet: the ordinary start of a capture.
     assert!(!domain47_prewarm_holds_instead_of_recensusing(
         false,
         domain47::FAMILY_ALL
     ));
-    // A complete world already in hand: retaining all eight families beats
-    // degrading them to the census.
-    assert!(domain47_prewarm_holds_instead_of_recensusing(
+    // A COMPLETE world already in hand. This is the case that changed.
+    assert!(!domain47_prewarm_holds_instead_of_recensusing(
         true,
         domain47::FAMILY_ALL
     ));
-    // A census-only cache: re-census instead. Holding would republish the
-    // adopting hour's character text under this one.
+    // A walk-without-traits cache — what the cold window now adopts.
+    assert!(!domain47_prewarm_holds_instead_of_recensusing(
+        true,
+        domain47::FAMILY_WALK_WITHOUT_TRAITS
+    ));
+    // And the historical census-only shape, for the same answer.
     assert!(!domain47_prewarm_holds_instead_of_recensusing(
         true,
         domain47::FAMILY_CENSUS_ONLY
