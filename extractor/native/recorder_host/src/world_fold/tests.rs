@@ -1565,6 +1565,77 @@ fn push_div_row_with_max_organisation(
     assert_eq!(p.len() - start, DIV_ROW_EXTENDED_LEN);
 }
 
+/// Every extended-row word, chosen per row rather than defaulted.
+///
+/// The other `push_div_row_*` helpers each pin one field family and zero the
+/// rest, which is why no test ever asserted a whole division object. This one
+/// exists so a test can.
+#[derive(Default)]
+struct DivRowWords {
+    flags: u32,
+    location: u32,
+    move_target: u32,
+    movement_progress: u32,
+    organisation_raw: u32,
+    strength_raw: u32,
+    template_id: u32,
+    owner: u32,
+    army_id: u32,
+    experience_raw: u32,
+    max_supply_raw: u32,
+    current_supply_raw: u32,
+    supply_gain_raw: u32,
+    fuel_raw: u32,
+    order_instance_id: u32,
+    disrupted_supply_raw: u32,
+    strategic_redeployment_raw: u32,
+    current_manpower: u32,
+    cumulative_losses: u32,
+    max_organisation_raw: u32,
+    counter_supply_status_raw: u32,
+    dig_in_raw: u32,
+    dig_in_cap_raw: u32,
+}
+
+fn push_div_row_words(p: &mut Vec<u8>, div_id: u32, w: &DivRowWords) {
+    let start = p.len();
+    for word in [
+        div_id,
+        DIV_TYPE,
+        w.flags,
+        w.location,
+        w.move_target,
+        0, // move_source
+        w.movement_progress,
+        0, // progress_bucket
+        w.organisation_raw,
+        0, // organisation_bucket
+        w.strength_raw,
+        0, // strength_bucket
+        0, // combat_ref_count
+        w.template_id,
+        w.owner,
+        w.army_id,
+        w.experience_raw,
+        w.max_supply_raw,
+        w.current_supply_raw,
+        w.supply_gain_raw,
+        w.fuel_raw,
+        w.order_instance_id,
+        w.disrupted_supply_raw,
+        w.strategic_redeployment_raw,
+        w.current_manpower,
+        w.cumulative_losses,
+        w.max_organisation_raw,
+        w.counter_supply_status_raw,
+        w.dig_in_raw,
+        w.dig_in_cap_raw,
+    ] {
+        p.extend_from_slice(&word.to_le_bytes());
+    }
+    assert_eq!(p.len() - start, DIV_ROW_EXTENDED_LEN);
+}
+
 fn divisions_header(p: &mut Vec<u8>, row_count: u32, status: u32) {
     p.extend_from_slice(&0u64.to_le_bytes()); // wall
     p.extend_from_slice(&row_count.to_le_bytes()); // row_count
@@ -8124,6 +8195,631 @@ fn domain47_a_complete_hour_after_a_gap_clears_the_declaration() {
         second["countries"]["POR"]["commanders"]["counts"],
         json!({"admirals": 0, "advisors": 1, "roster_size": 1}),
         "the derived joins are this record's to rebuild again"
+    );
+}
+
+/// One appointed advisor, then the country leaves the character census.
+///
+/// `clear_domain47_country_fields` retires `commanders.*` and the whole R2
+/// sidecar for EVERY country, but the canonical `politics.appointed_advisors` /
+/// `politics.appointed_advisor_details` pair is written only inside the
+/// write-back loop, which walks `roster_size` — this hour's census. A country
+/// that drops out of the census therefore had every other d47 field retired and
+/// these two left behind, so its advisors survived the removal indefinitely.
+///
+/// The production change that makes this fail again is deleting the
+/// appointed-subject retirement from `clear_domain47_country_fields`: without
+/// it POR still publishes `["POR_salazar_advisor"]` in the second hour.
+#[test]
+fn domain47_appointed_advisors_are_retired_when_the_country_leaves_the_census() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let appointed = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+        domain47_lane::CharacterLaneRow::AppointedAdvisor(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+    ];
+    // POR is gone from the census; FRA is the only country this hour observed.
+    // A rowless payload is refused as `empty_implausible`, so the removal has to
+    // be expressed the way the game expresses it: somebody else's rows.
+    let without_por = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 48,
+            char_id: 2001,
+            name: Some("Philippe Petain"),
+            token: Some("FRA_petain"),
+        },
+    )];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR"), (48, "FRA")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &appointed),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &without_por),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_appointed_retired");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+
+    let first = parse(&snaps[0].2);
+    assert_eq!(
+        first["countries"]["POR"]["politics"]["appointed_advisors"],
+        json!(["POR_salazar_advisor"]),
+        "the appointment hour publishes it"
+    );
+
+    let second = parse(&snaps[1].2);
+    let por = &second["countries"]["POR"];
+    // The rest of d47's POR state is already gone, which is what makes the two
+    // canonical fields surviving a defect rather than a retention policy.
+    assert!(
+        por["commanders"].is_null(),
+        "the clear pass already retires commanders for a country out of the census: {por:?}"
+    );
+    assert!(
+        por["extra"]["_r2_characters_leaders_cabinet_live"].is_null(),
+        "the clear pass already retires the sidecar: {por:?}"
+    );
+    assert!(
+        por["politics"]["appointed_advisors"].is_null(),
+        "POR left the census, so its appointed advisors are not this hour's fact: {por:?}"
+    );
+    assert!(
+        por["politics"]["appointed_advisor_details"].is_null(),
+        "the detail array is retired with the token array: {por:?}"
+    );
+    // The country the record DID observe is unaffected.
+    assert_eq!(
+        second["countries"]["FRA"]["politics"]["appointed_advisors"],
+        json!([]),
+        "FRA is in the census with no appointments: measured-empty, not absent"
+    );
+}
+
+/// The same removal, with the country still in the census: today's write-back
+/// already replaces the array, and this pins that it keeps doing so once the
+/// retirement above exists — a retirement that ran for every country every hour
+/// would leave a measured-empty `[]` here as `null`.
+#[test]
+fn domain47_appointed_advisors_are_replaced_when_the_country_stays_in_the_census() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let appointed = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+        domain47_lane::CharacterLaneRow::AppointedAdvisor(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+    ];
+    let dismissed = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+    ];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &appointed),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &dismissed),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_appointed_replaced");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let por = &parse(&snaps[1].2)["countries"]["POR"];
+    assert_eq!(
+        por["politics"]["appointed_advisors"],
+        json!([]),
+        "the advisor is still on the roster but no longer appointed: measured-empty"
+    );
+    assert_eq!(por["politics"]["appointed_advisor_details"], json!([]));
+    assert_eq!(
+        por["extra"]["_r2_characters_leaders_cabinet_live"]["advisor_roster"][0]["idea_token"],
+        json!("POR_salazar_advisor"),
+        "the roster family still observed him"
+    );
+}
+
+/// The retirement must not eat a CURRENT observation.
+///
+/// `politics.appointed_advisors` has three producers: d14, d15 and d47. In the
+/// capture stream d14 and d15 apply before d47 within the same hour, so by the
+/// time d47 retires a departed subject those two have already written this
+/// hour's value. Retiring blindly would delete it.
+///
+/// The production change that makes this fail is exactly the simpler design:
+/// clearing both canonical keys for every prior subject instead of consulting
+/// the per-key refresh sets. POR would then publish neither field despite d14
+/// and d15 having measured it this very hour.
+#[test]
+fn domain47_appointed_advisors_fall_back_to_the_politics_producers_that_did_refresh() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let por_appointed = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_d47_advisor",
+        }),
+        domain47_lane::CharacterLaneRow::AppointedAdvisor(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_d47_advisor",
+        }),
+    ];
+    let fra_only = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 48,
+            char_id: 2001,
+            name: Some("Philippe Petain"),
+            token: Some("FRA_petain"),
+        },
+    )];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR"), (48, "FRA")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &por_appointed),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    // Hour B, in the order the capture emits them: d14, then d15, then d47.
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        14,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &politics_payload(
+            47,
+            D14_FLAG_ADVISOR_IDEAS,
+            &[],
+            &[],
+            &[("political_advisor", "POR_d14_advisor")],
+            &[],
+        ),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        15,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &politics_residuals_payload_with_details(
+            &[(47, D15_FLAG_ADVISOR_DETAILS, 0, "")],
+            &[(
+                47,
+                "POR_d15_advisor",
+                "political_advisor",
+                "political",
+                "POR_salazar",
+            )],
+        ),
+    );
+    push_record(
+        &mut stream,
+        6,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &fra_only),
+    );
+    push_record(
+        &mut stream,
+        7,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_appointed_fallback");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    assert_eq!(
+        parse(&snaps[0].2)["countries"]["POR"]["politics"]["appointed_advisors"],
+        json!(["POR_d47_advisor"]),
+        "hour A: d47 is the last writer and wins"
+    );
+
+    let por = &parse(&snaps[1].2)["countries"]["POR"]["politics"];
+    assert_eq!(
+        por["appointed_advisors"],
+        json!(["POR_d14_advisor"]),
+        "d14 measured POR this hour; d47's retirement must leave that alone"
+    );
+    assert_eq!(
+        por["appointed_advisor_details"][0]["idea_token"],
+        json!("POR_d15_advisor"),
+        "and so must d15's"
+    );
+}
+
+/// Per key, not per country: d14 and d15 have separate payloads, so one can
+/// refresh a country the other does not.
+///
+/// The production change that makes this fail is retiring both keys together on
+/// a single "was this country refreshed at all" predicate. d14 refreshed the
+/// token array here and d15 was silent, so a union predicate keeps BOTH and the
+/// hour publishes d14's fresh tokens beside d47's stale detail objects — the
+/// mixed vintage the domain's own comments say a join must never publish.
+#[test]
+fn domain47_retires_only_the_appointed_key_whose_producer_stayed_silent() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let por_appointed = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_d47_advisor",
+        }),
+        domain47_lane::CharacterLaneRow::AppointedAdvisor(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_d47_advisor",
+        }),
+    ];
+    let fra_only = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 48,
+            char_id: 2001,
+            name: Some("Philippe Petain"),
+            token: Some("FRA_petain"),
+        },
+    )];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR"), (48, "FRA")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &por_appointed),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    // Hour B carries d14 but NO d15 record at all.
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        14,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &politics_payload(
+            47,
+            D14_FLAG_ADVISOR_IDEAS,
+            &[],
+            &[],
+            &[("political_advisor", "POR_d14_advisor")],
+            &[],
+        ),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &fra_only),
+    );
+    push_record(
+        &mut stream,
+        6,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_appointed_per_key");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    let por = &parse(&snaps[1].2)["countries"]["POR"]["politics"];
+    assert_eq!(
+        por["appointed_advisors"],
+        json!(["POR_d14_advisor"]),
+        "d14 refreshed the token array, so it is this hour's"
+    );
+    assert!(
+        por["appointed_advisor_details"].is_null(),
+        "nothing refreshed the detail array, so d47's stale one is retired: {por:?}"
+    );
+}
+
+/// Retiring the last field of a country must not leave the country behind.
+///
+/// `evict_departed_roster_domain_fields` drops a departed country only when its
+/// field map is empty AT THE MOMENT D18 replaces the roster, and D18 applies
+/// before d47 in the hour. So when d47's retirement then removes the country's
+/// last remaining field, the eviction has already run and the empty husk
+/// survives — and `build_snapshot` publishes it under the numeric fallback key,
+/// because the departed tag no longer resolves.
+///
+/// The production change that makes this fail is dropping the emptiness prune at
+/// the end of `retire_departed_domain47_appointed_subjects`: hour 2 then carries
+/// `countries["47"] == {}`.
+#[test]
+fn domain47_appointed_retirement_does_not_leave_a_departed_country_husk() {
+    let raw_a = raw_for(16_959_360);
+    let raw_b = raw_for(16_959_361);
+    let por_appointed = vec![
+        domain47_lane::CharacterLaneRow::Character(domain47_lane::CharacterRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            name: Some("Antonio de Oliveira Salazar"),
+            token: Some("POR_salazar"),
+        }),
+        domain47_lane::CharacterLaneRow::AdvisorRoster(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+        domain47_lane::CharacterLaneRow::AppointedAdvisor(domain47_lane::AdvisorRow {
+            country_tag_db_id: 47,
+            char_id: 1001,
+            slot: Some("political_advisor"),
+            ledger: Some("political_advisor"),
+            idea_token: "POR_salazar_advisor",
+        }),
+    ];
+    let fra_only = vec![domain47_lane::CharacterLaneRow::Character(
+        domain47_lane::CharacterRow {
+            country_tag_db_id: 48,
+            char_id: 2001,
+            name: Some("Philippe Petain"),
+            token: Some("FRA_petain"),
+        },
+    )];
+
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        1,
+        raw_a,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "POR"), (48, "FRA")]),
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw_a,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &por_appointed),
+    );
+    push_record(
+        &mut stream,
+        3,
+        raw_a,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    // Hour B: POR has DEPARTED the D18 roster, and d47 no longer sees it either.
+    push_record(
+        &mut stream,
+        4,
+        raw_b,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(48, "FRA")]),
+    );
+    push_record(
+        &mut stream,
+        5,
+        raw_b,
+        47,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &domain47_payload(0, &fra_only),
+    );
+    push_record(
+        &mut stream,
+        6,
+        raw_b,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("domain47_appointed_husk");
+    fold.ingest_stream(&stream);
+    let snaps = fold.finish();
+    assert_eq!(snaps.len(), 2);
+    assert_eq!(
+        parse(&snaps[0].2)["countries"]["POR"]["politics"]["appointed_advisors"],
+        json!(["POR_salazar_advisor"]),
+        "hour A published the appointment"
+    );
+
+    let hour2 = parse(&snaps[1].2);
+    let countries = hour2["countries"].as_object().expect("hour2 countries map");
+    assert!(
+        !countries.contains_key("47"),
+        "the departed country came back as an empty numeric husk: {:?}",
+        hour2["countries"]["47"]
+    );
+    assert!(
+        !countries.contains_key("POR"),
+        "the departed tag was published: {:?}",
+        hour2["countries"]["POR"]
+    );
+    assert!(
+        countries.contains_key("FRA"),
+        "the surviving country is unaffected: {countries:?}"
     );
 }
 
@@ -16581,6 +17277,245 @@ fn chunk2_d20_e4_fields_fold_with_presence() {
     assert_eq!(c["strategic_redeployment"], Value::Null);
     assert_eq!(c["current_manpower"], Value::Null);
     assert_eq!(c["cumulative_losses"], Value::Null);
+}
+
+/// The whole d20 division object, key for key, in three shapes.
+///
+/// The d20 render moved out of `fold_divisions` into
+/// `WorldFold::fold_division_document`, so it is now a function that can be
+/// changed on its own. The existing d20 tests each assert one field family and
+/// between them leave branches nobody checks: mutation-testing the renderer
+/// against the whole suite showed that re-gating `move_progress` on `has_target`
+/// instead of `moving`, and collapsing the capped `counter_dig_in_frame` from 2
+/// to 1, both pass every other test in the crate.
+///
+/// So this asserts the COMPLETE object -- all 31 keys -- for a fully observed
+/// row, and pins the two tri-state/predicate branches with the rows that
+/// distinguish them:
+///   A: everything present, moving, dig-in UI visible AND capped  -> frame 2
+///   B: NOT moving but a move target present                      -> progress null
+///      dig-in UI visible, not capped                             -> frame 1
+///   C: nothing observed, dig-in UI evaluated but not visible     -> frame 0
+#[test]
+fn d20_division_document_renders_every_key_including_the_tri_states() {
+    const MOVING: u32 = 1;
+    const HAS_TARGET: u32 = 1 << 2;
+    const IN_COMBAT: u32 = 1 << 4;
+    const HAS_OWNER: u32 = 1 << 5;
+    const HAS_ARMY: u32 = 1 << 6;
+    const HAS_EXPERIENCE: u32 = 1 << 7;
+    const HAS_MAX_SUPPLY: u32 = 1 << 8;
+    const HAS_CURRENT_SUPPLY: u32 = 1 << 9;
+    const HAS_SUPPLY_GAIN: u32 = 1 << 10;
+    const HAS_FUEL: u32 = 1 << 11;
+    const ORDER_ARMY: u32 = 1 << 14;
+    const ORDER_ARMY_GROUP: u32 = 1 << 15;
+    const HAS_DISRUPTED_SUPPLY: u32 = 1 << 17;
+    const HAS_COUNTER_SUPPLY_STATUS: u32 = 1 << 22;
+    const HAS_DIG_IN: u32 = 1 << 23;
+    const HAS_DIG_IN_CAP: u32 = 1 << 24;
+    const TRAINING_OBSERVED: u32 = 1 << 25;
+    const TRAINING_VISIBLE: u32 = 1 << 26;
+    const DIG_IN_UI_OBSERVED: u32 = 1 << 27;
+    const DIG_IN_UI_VISIBLE: u32 = 1 << 28;
+    const DIG_IN_UI_CAPPED: u32 = 1 << 29;
+    const INVALID_ORDERS_OBSERVED: u32 = 1 << 30;
+    const INVALID_ORDERS_VISIBLE: u32 = 1 << 31;
+
+    let mut divs = Vec::new();
+    divisions_header(&mut divs, 3, 0);
+    push_div_row_words(
+        &mut divs,
+        11,
+        &DivRowWords {
+            flags: MOVING
+                | HAS_TARGET
+                | IN_COMBAT
+                | HAS_OWNER
+                | HAS_ARMY
+                | HAS_EXPERIENCE
+                | HAS_MAX_SUPPLY
+                | HAS_CURRENT_SUPPLY
+                | HAS_SUPPLY_GAIN
+                | HAS_FUEL
+                | DIV_FLAG_TEMPLATE
+                | ORDER_ARMY
+                | HAS_DISRUPTED_SUPPLY
+                | DIV_FLAG_STRATEGIC_REDEPLOYMENT
+                | DIV_FLAG_CURRENT_MANPOWER
+                | DIV_FLAG_CUMULATIVE_LOSSES
+                | DIV_FLAG_MAX_ORGANISATION
+                | HAS_COUNTER_SUPPLY_STATUS
+                | HAS_DIG_IN
+                | HAS_DIG_IN_CAP
+                | TRAINING_OBSERVED
+                | TRAINING_VISIBLE
+                | DIG_IN_UI_OBSERVED
+                | DIG_IN_UI_VISIBLE
+                | DIG_IN_UI_CAPPED
+                | INVALID_ORDERS_OBSERVED
+                | INVALID_ORDERS_VISIBLE,
+            location: 118,
+            move_target: 119,
+            movement_progress: 4242,
+            organisation_raw: 3_000_000,
+            strength_raw: 9_500_000,
+            template_id: 77,
+            owner: 1,
+            army_id: 5,
+            experience_raw: 250_000,
+            max_supply_raw: 800_000,
+            current_supply_raw: 400_000,
+            supply_gain_raw: 150_000,
+            fuel_raw: 600_000,
+            order_instance_id: 909,
+            disrupted_supply_raw: 50_000,
+            strategic_redeployment_raw: 1,
+            current_manpower: 8777,
+            cumulative_losses: 1234,
+            max_organisation_raw: 6_000_000,
+            // Its own bound is 100_000, unlike the other fixed-point fields.
+            counter_supply_status_raw: 90_000,
+            dig_in_raw: 300_000,
+            dig_in_cap_raw: 700_000,
+        },
+    );
+    push_div_row_words(
+        &mut divs,
+        12,
+        &DivRowWords {
+            // A move TARGET without MOVING. `move_progress` keys off `moving`.
+            flags: HAS_TARGET
+                | ORDER_ARMY_GROUP
+                | TRAINING_OBSERVED
+                | DIG_IN_UI_OBSERVED
+                | DIG_IN_UI_VISIBLE,
+            location: 200,
+            move_target: 201,
+            movement_progress: 5555,
+            organisation_raw: 1_000_000,
+            strength_raw: 2_000_000,
+            ..DivRowWords::default()
+        },
+    );
+    push_div_row_words(
+        &mut divs,
+        13,
+        &DivRowWords {
+            flags: DIG_IN_UI_OBSERVED,
+            location: 300,
+            ..DivRowWords::default()
+        },
+    );
+
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (20, divs),
+    ]);
+    let list = snap["divisions"].as_array().expect("divisions array");
+    let by_id = |id: u32| {
+        list.iter()
+            .find(|d| d["div_id"] == json!(id))
+            .unwrap_or_else(|| panic!("div {id} missing"))
+    };
+
+    // The whole object. Every key the fold publishes is named here, so a key
+    // that disappears or gains a sibling fails this rather than going unnoticed.
+    assert_eq!(
+        *by_id(11),
+        json!({
+            "div_uid": "11:4713",
+            "div_id": 11,
+            "div_type": 4713,
+            "owner": "GER",
+            "location_province": 118,
+            "template_id": 77,
+            "organisation": 30.0,
+            "max_organisation": 60.0,
+            "strength": 95.0,
+            "moving": true,
+            "move_target_province": 119,
+            "move_progress": 4242,
+            "in_combat": true,
+            "experience": 2.5,
+            "current_supply": 4.0,
+            "max_supply": 8.0,
+            "counter_supply_status": 0.9,
+            "supply_gain": 1.5,
+            "disrupted_supply": 0.5,
+            "dig_in": 3.0,
+            "dig_in_cap": 7.0,
+            "counter_training_visible": true,
+            "counter_dig_in_frame": 2,
+            "counter_invalid_orders_visible": true,
+            "strategic_redeployment": true,
+            "current_manpower": 8777,
+            "cumulative_losses": 1234,
+            "fuel": 6.0,
+            "army_id": 5,
+            "order_instance_id": 909,
+            "order_link": "army",
+            // No `equipment`: that key is added later, by `build_divisions`,
+            // and only when a d26 record was seen or equipment is retained.
+            // This stream carries neither, so the 31 keys above are the whole
+            // published object.
+        }),
+        "the fully observed division, key for key"
+    );
+
+    let b = by_id(12);
+    assert_eq!(
+        b["move_progress"],
+        Value::Null,
+        "a division with a move target but not moving has no progress"
+    );
+    assert_eq!(b["move_target_province"], json!(201));
+    assert_eq!(b["moving"], json!(false));
+    assert_eq!(b["counter_dig_in_frame"], json!(1), "visible, not capped");
+    assert_eq!(
+        b["counter_training_visible"],
+        json!(false),
+        "evaluated and not visible is a measured false, not null"
+    );
+    assert_eq!(b["order_link"], json!("army_group"));
+    assert_eq!(b["order_instance_id"], Value::Null);
+    assert_eq!(b["owner"], Value::Null);
+
+    let c = by_id(13);
+    assert_eq!(c["counter_dig_in_frame"], json!(0), "evaluated, not visible");
+    assert_eq!(
+        c["counter_training_visible"],
+        Value::Null,
+        "never evaluated is null, distinct from the measured false above"
+    );
+    assert_eq!(c["counter_invalid_orders_visible"], Value::Null);
+    assert_eq!(c["order_link"], Value::Null);
+    for key in [
+        "template_id",
+        "max_organisation",
+        "move_target_province",
+        "move_progress",
+        "experience",
+        "current_supply",
+        "max_supply",
+        "counter_supply_status",
+        "supply_gain",
+        "disrupted_supply",
+        "dig_in",
+        "dig_in_cap",
+        "strategic_redeployment",
+        "current_manpower",
+        "cumulative_losses",
+        "fuel",
+        "army_id",
+        "order_instance_id",
+    ] {
+        assert_eq!(c[key], Value::Null, "{key} was never observed");
+    }
+    assert_eq!(c["organisation"], json!(0.0), "always published");
+    assert_eq!(c["strength"], json!(0.0), "always published");
+    assert_eq!(c["in_combat"], json!(false));
+    assert_eq!(c["location_province"], json!(300));
 }
 
 #[test]
