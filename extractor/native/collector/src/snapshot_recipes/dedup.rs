@@ -323,8 +323,29 @@ impl Links {
     /// Whether `consumer` may see `want` through `record`. Depending on the
     /// interval is not enough — the bytes must be inside what it reached for.
     pub fn reaches(&self, record: &IntervalRecord, consumer: ConsumerId, want: &Span) -> bool {
+        self.reach_of(record, consumer)
+            .is_some_and(|reach| reach.contains_span(want))
+    }
+
+    /// The whole span `consumer` reached in `record`, or `None` when it does
+    /// not depend on the interval at all.
+    ///
+    /// # One node per consumer, which is what makes this a span and not a set
+    ///
+    /// [`OwnershipMap::add_dependent`] walks the chain and HULLS into the node
+    /// it finds for the consumer rather than pushing a second one, so a
+    /// consumer has at most one reach in any interval. [`Self::reaches`] is
+    /// spelled through this rather than beside it, so the two cannot drift into
+    /// disagreeing about what "reached" means.
+    ///
+    /// Callers may CACHE the answer: a reach only ever widens (a hull of two
+    /// sub-spans contains both) and an interval's id is never reused inside an
+    /// observation, so a remembered reach is a subset of the current one and a
+    /// read it admits is a read the fresh answer admits too.
+    pub fn reach_of(&self, record: &IntervalRecord, consumer: ConsumerId) -> Option<Span> {
         self.dependents(record)
-            .any(|dependent| dependent.consumer == consumer && dependent.reach.contains_span(want))
+            .find(|dependent| dependent.consumer == consumer)
+            .map(|dependent| dependent.reach)
     }
 
     pub fn consumers(&self, record: &IntervalRecord) -> impl Iterator<Item = ConsumerId> + '_ {
@@ -982,6 +1003,35 @@ impl OwnershipMap {
         }
         self.records[parent.0 as usize].len_and_flags |= EDGES_SPILLED;
         Ok(())
+    }
+
+    /// The interval containing `addr`, trying `hint` before the index.
+    ///
+    /// # Why a hint answers most of the questions the decode phase asks
+    ///
+    /// A decode branch reads field after field out of ONE copied object: a
+    /// guard word, then the pointer the guard admitted, then the next op's
+    /// field. Every one of those is a bisect over the whole index — sixteen
+    /// dependent loads into a table that is larger than L2 at the shapes the
+    /// substrate is priced at — for an answer the previous read already had.
+    ///
+    /// The hint is an ordinary [`IntervalId`], checked against the record it
+    /// names, so a stale or invalid one costs two comparisons and falls
+    /// through to [`Self::find`]. Owned intervals are disjoint, so an interval
+    /// that contains `addr` IS the interval `find` would have returned; the
+    /// hint can therefore change what this costs and not what it answers.
+    #[inline]
+    pub fn find_hinted(&self, addr: u64, hint: IntervalId) -> Option<IntervalId> {
+        if let Some(record) = self.records.get(hint.0 as usize) {
+            // `addr - start < len` rather than `addr < start + len`: an
+            // interval at the top of the address space cannot overflow the
+            // subtraction, and an empty interval — which is never indexed, so
+            // `find` never answers one — fails it for every address.
+            if record.start() <= addr && addr - record.start() < record.len() {
+                return Some(hint);
+            }
+        }
+        self.find(addr)
     }
 
     /// The interval containing `addr`, if any.

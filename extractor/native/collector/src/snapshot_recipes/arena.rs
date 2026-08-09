@@ -383,6 +383,33 @@ impl Arena {
 
     /// Reserve `len` zeroed bytes and return their offset.
     ///
+    /// # The fast path is SPLIT OUT, not tuned
+    ///
+    /// A copy transaction that fits capacity the ledger has already charged for
+    /// has nothing to decide: it bumps the length and returns. Every judgement
+    /// this method makes — the room arithmetic, the doubling, the ledger round
+    /// trip, the allocator — belongs to the growth, which at the shapes this
+    /// substrate is priced at happens a couple of dozen times against tens of
+    /// thousands of allocations. It is all in
+    /// [`Self::alloc_zeroed_growing`], which is where its documentation is
+    /// too; nothing about WHEN the arena grows, by how much, or what is charged
+    /// changed when it moved.
+    #[inline]
+    pub fn alloc_zeroed(&mut self, len: u64) -> Result<usize, CustodyRefusal> {
+        let filled = self.bytes.len();
+        if let Ok(additional) = usize::try_from(len) {
+            if let Some(needed) = filled.checked_add(additional) {
+                if needed <= self.bytes.capacity() {
+                    self.bytes.resize(needed, 0);
+                    return Ok(filled);
+                }
+            }
+        }
+        self.alloc_zeroed_growing(len)
+    }
+
+    /// [`Self::alloc_zeroed`] for a request the current capacity cannot hold.
+    ///
     /// # The arena's growth is this method's decision, not the `Vec`'s
     ///
     /// Charging the arena by its LENGTH under-reports it: `Vec`'s amortised
@@ -396,7 +423,8 @@ impl Arena {
     /// Every check is in `u128` or on `usize`-checked arithmetic, so an
     /// observation that asks for a span near `u64::MAX` is refused on the
     /// budget rather than wrapping into a small request.
-    pub fn alloc_zeroed(&mut self, len: u64) -> Result<usize, CustodyRefusal> {
+    #[cold]
+    fn alloc_zeroed_growing(&mut self, len: u64) -> Result<usize, CustodyRefusal> {
         // NOT admitted here. `held` already contains the whole capacity, so
         // admitting `len` on top of it charges bytes that are already paid
         // for, and a request that fits inside the capacity the arena is

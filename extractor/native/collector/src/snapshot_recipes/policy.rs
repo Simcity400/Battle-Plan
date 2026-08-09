@@ -403,6 +403,24 @@ pub(super) fn plan_copies_into(requests: &[CopyRequest], policy: &GapPolicy, pla
         plan.order.push(index);
     }
     if !ascending {
+        // NOT MATERIALISED, and that is a deliberate refusal rather than an
+        // oversight. This closure is called once per COMPARISON, so at a wave
+        // of tens of thousands of requests it is a million dependent loads into
+        // an array wider than L2, and sorting materialised keys instead measured
+        // as worth a low single-digit percent of a whole observation.
+        //
+        // It is not taken because `(start, len)` is not a TOTAL order over the
+        // requests: two tasks can produce the identical span, and which of them
+        // ends up last among the equal keys decides the `op` and `stage` a
+        // coalesced copy is attributed to (`Observation::copy_attributes`), and
+        // therefore what a refusal witness names. `sort_unstable` leaves that
+        // permutation unspecified, so ANY re-spelling of this sort — including
+        // one that only changes the element type it sorts — can change an
+        // observable field for an input with equal spans. Making the order
+        // total (by request index, say) would fix the attribution and would
+        // also CHANGE it. That is a ruling about what the substrate promises,
+        // not an optimisation, and it belongs to whoever owns the witness
+        // contract.
         plan.order.sort_unstable_by_key(|&i| {
             (requests[i as usize].span.start, requests[i as usize].span.len)
         });

@@ -2506,3 +2506,244 @@ fn an_unmasked_contributor_makes_the_whole_interval_consumed_again() {
     assert!(consumption.full);
     assert!(consumption.spans.is_empty() && consumption.strided.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Residual 5. A recipe decodes only out of bytes its own consumer asked for
+// ---------------------------------------------------------------------------
+
+/// SENTINEL for the ownership check on `read_uint`.
+///
+/// The arena is one buffer and the interval map is observation-wide, so
+/// `read_uint` used to resolve any address ANY recipe in the observation had
+/// copied. Recipe A could therefore decode a pointer, a count or a probe out
+/// of recipe B's bytes and report `Captured` over a value it never asked to
+/// see — and then build a discovery edge across that custody boundary.
+///
+/// The fixture is the smallest shape that exhibits it, and the ORDER of the two
+/// recipes is what makes it a test of REACH rather than of interval membership.
+/// B runs first and copies the whole thirty-two bytes, so there is exactly ONE
+/// interval; A deduplicates into it and is recorded as a dependent whose reach
+/// is the eight bytes it asked for. Both arms therefore resolve the SAME
+/// interval, and the only thing that differs is how far inside it A reached.
+///
+/// Run A first instead and A owns `[ROOT, ROOT+8)` while B owns the hole after
+/// it — two intervals — and the test would pass against a check that only asked
+/// whether the consumer depends on the interval at all. That is the weaker
+/// predicate this must not accept, so it is deliberately not the shape used.
+///
+/// THE CONTROL ARM IS THE HALF THAT MAKES THIS A TEST OF OWNERSHIP. Widen A's
+/// header to sixteen bytes — same interval, wider reach — and the SAME read at
+/// the SAME address succeeds and the target is copied. So the refusal below is
+/// about how far A asked, not about whether the bytes are there.
+///
+/// MUTATION: drop the `reach_of` consultation from `Observation::read_uint`
+/// (serve the read whenever an interval contains it) and the first arm's
+/// assertion fails — recipe 1 reports `Captured` and copies `TARGET` out of a
+/// pointer it does not own.
+#[test]
+fn a_recipe_cannot_decode_out_of_another_recipes_copy() {
+    const ROOT: u64 = 0x10_0000;
+    const TARGET: u64 = 0x30_0000;
+
+    let build = |a_header: u32| {
+        let mut memory = SyntheticMemory::new();
+        memory.map_zeroed(ROOT, 0x20);
+        memory.map_zeroed(TARGET, 0x10);
+        memory.write_u64(ROOT + 8, TARGET);
+        let reader = Recipe::new(
+            RecipeId(1),
+            ConsumerId(1),
+            vec![
+                RecipeOp::CopyHeader {
+                    size: a_header,
+                    next: vec![1],
+                },
+                RecipeOp::DecodePointer {
+                    offset: 8,
+                    guard: None,
+                    next: 2,
+                },
+                RecipeOp::CopyHeader {
+                    size: 0x10,
+                    next: vec![3],
+                },
+                RecipeOp::Freeze,
+            ],
+            vec![Root { op: 0, addr: ROOT }],
+        );
+        let neighbour = Recipe::new(
+            RecipeId(2),
+            ConsumerId(2),
+            vec![
+                RecipeOp::CopyHeader {
+                    size: 0x20,
+                    next: vec![1],
+                },
+                RecipeOp::Freeze,
+            ],
+            vec![Root { op: 0, addr: ROOT }],
+        );
+        // B FIRST. See the header: it is what makes both arms resolve one
+        // interval, so the check under test is the reach and not the
+        // membership.
+        observe(&[neighbour, reader], &memory, config()).expect("custody")
+    };
+
+    // A asked for eight bytes and reads at offset eight.
+    let refused = build(8);
+    assert_eq!(
+        refusal_of(&refused, 1).map(|record| record.refusal),
+        Some(Refusal::FieldNotCaptured {
+            recipe: RecipeId(1),
+            span: Span::new(ROOT + 8, 8),
+        }),
+        "recipe 1 decoded a pointer out of bytes only recipe 2 asked for",
+    );
+    assert_eq!(
+        refused.report_for(RecipeId(2)).expect("reported").outcome,
+        RecipeOutcome::Captured,
+        "and the recipe that DID own the bytes keeps its hour",
+    );
+    assert!(
+        refused.snapshot.view_for(ConsumerId(1), HOUR).is_err(),
+        "a refused recipe gaps its consumer",
+    );
+    assert!(
+        refused
+            .snapshot
+            .view_for(ConsumerId(2), HOUR)
+            .expect("consumer 2 is not gapped")
+            .bytes(ROOT + 8, 8)
+            .is_ok(),
+        "the bytes are in the arena and owned — the refusal is about custody",
+    );
+
+    // The control arm: the same read, by a recipe that asked for it.
+    let allowed = build(0x10);
+    assert_eq!(
+        allowed.report_for(RecipeId(1)).expect("reported").outcome,
+        RecipeOutcome::Captured,
+    );
+    assert!(
+        allowed
+            .snapshot
+            .view_for(ConsumerId(1), HOUR)
+            .expect("not gapped")
+            .bytes(TARGET, 0x10)
+            .is_ok(),
+        "and the pointer it owns is followed",
+    );
+}
+
+/// SENTINEL, and the reason it is a second test rather than another arm of the
+/// one above.
+///
+/// `Probe::SamplesAgree` is the ONE decode path that does not go through
+/// `read_uint`: it compares two arena images rather than decoding a value, so
+/// it resolves the interval itself and the ownership check has to be spelled at
+/// it separately. Without that, a recipe cannot read a neighbour's bytes but
+/// CAN ask whether they were stable, and pick a branch on the answer.
+///
+/// Same shape as above, and the same ordering argument: recipe 2 runs first and
+/// copies and samples the whole sixteen bytes, so there is ONE interval with
+/// one pair of images. Recipe 1 deduplicates into it with a reach of eight
+/// bytes and probes at offset eight. Both arms resolve the same interval and
+/// the same images; only the reach differs, so a check that merely asked
+/// whether recipe 1 depends on the interval would not pass this.
+///
+/// MUTATION: drop the `reaches` consultation from `Probe::SamplesAgree` in
+/// `evaluate_probe` and the first arm reports `Captured` — recipe 1 selects its
+/// `then` arm out of recipe 2's images.
+#[test]
+fn a_sample_probe_cannot_read_another_recipes_images() {
+    const OBJECT: u64 = 0x10_0000;
+
+    let build = |a_header: u32| {
+        let mut memory = SyntheticMemory::new();
+        memory.map_zeroed(OBJECT, 0x40);
+        memory.write_u64(OBJECT + 8, 0x1234);
+        let sampled = OpMod {
+            samples: SampleSpec {
+                count: 2,
+                on_disagree: DisagreeAction::Record,
+            },
+            ..OpMod::default()
+        };
+        let prober = Recipe::new(
+            RecipeId(1),
+            ConsumerId(1),
+            vec![
+                RecipeOp::CopyHeader {
+                    size: a_header,
+                    next: vec![1],
+                },
+                RecipeOp::SelectByValue {
+                    probe: Probe::SamplesAgree { offset: 8, len: 8 },
+                    then: 2,
+                    otherwise: Some(3),
+                },
+                RecipeOp::CopyRanges {
+                    windows: vec![RelWindow::new(0x20, 8)],
+                    next: vec![4],
+                },
+                RecipeOp::CopyRanges {
+                    windows: vec![RelWindow::new(0x30, 8)],
+                    next: vec![4],
+                },
+                RecipeOp::Freeze,
+            ],
+            vec![Root {
+                op: 0,
+                addr: OBJECT,
+            }],
+        )
+        .with_mods(mods(5, &[(0, sampled.clone())]));
+        let owner = Recipe::new(
+            RecipeId(2),
+            ConsumerId(2),
+            vec![
+                RecipeOp::CopyHeader {
+                    size: 0x10,
+                    next: vec![1],
+                },
+                RecipeOp::Freeze,
+            ],
+            vec![Root {
+                op: 0,
+                addr: OBJECT,
+            }],
+        )
+        .with_mods(mods(2, &[(0, sampled)]));
+        observe(&[owner, prober], &memory, config()).expect("custody")
+    };
+
+    let refused = build(8);
+    assert_eq!(
+        refusal_of(&refused, 1).map(|record| record.refusal),
+        Some(Refusal::ConditionalUnresolved {
+            recipe: RecipeId(1),
+            op: 1,
+        }),
+        "recipe 1 probed the stability of bytes only recipe 2 asked for",
+    );
+    assert_eq!(
+        refused.report_for(RecipeId(2)).expect("reported").outcome,
+        RecipeOutcome::Captured,
+    );
+
+    // The control arm: the same probe, over an interval this recipe owns and
+    // sampled itself. The images agree, so the `then` arm runs.
+    let allowed = build(0x10);
+    assert_eq!(
+        allowed.report_for(RecipeId(1)).expect("reported").outcome,
+        RecipeOutcome::Captured,
+    );
+    let view = allowed
+        .snapshot
+        .view_for(ConsumerId(1), HOUR)
+        .expect("not gapped");
+    assert!(
+        view.bytes(OBJECT + 0x20, 8).is_ok() && view.bytes(OBJECT + 0x30, 8).is_err(),
+        "the agreeing arm ran and the fallback did not",
+    );
+}

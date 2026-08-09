@@ -836,6 +836,29 @@ impl Recipe {
     pub(super) fn needs_annotations(&self) -> bool {
         self.closing.is_some() || self.mods.iter().any(|op| !op.is_default())
     }
+
+    /// True when any op of this recipe can READ a field out of copied bytes.
+    ///
+    /// Four ops read one by construction, and any op at all reads one when a
+    /// modifier sources the branch's carried scalar from a field. A recipe
+    /// with none of those — a plain `CopyHeader` walk ending in `Freeze` — runs
+    /// [`Observation::read_uint`] zero times, so the per-task hint
+    /// [`Observation::copy_wave`] takes for the decode phase would be a table
+    /// nothing ever reads. Computed once per observation, not per task.
+    pub(super) fn reads_fields(&self) -> bool {
+        self.ops.iter().any(|op| {
+            matches!(
+                op,
+                RecipeOp::DecodePointer { .. }
+                    | RecipeOp::DecodeExtent { .. }
+                    | RecipeOp::JoinBounded { .. }
+                    | RecipeOp::SelectByValue { .. }
+            )
+        }) || self
+            .mods
+            .iter()
+            .any(|modifier| matches!(modifier.carry, Some(CarrySource::Field { .. })))
+    }
 }
 
 /// Structural check. Runs before any memory is touched.
@@ -1497,6 +1520,79 @@ struct DecodeSite {
     index: u32,
 }
 
+/// What the last decode read resolved to: the interval, the consumer whose
+/// reach was checked, and the whole span that consumer holds in it.
+///
+/// This is one memo serving two jobs that ask the same question. A branch's
+/// decode sites read field after field out of one copied object, so both the
+/// interval lookup and the ownership check below are almost always the answer
+/// the previous read already computed.
+///
+/// # Why remembering it is sound
+///
+/// A reach only WIDENS — [`OwnershipMap::add_dependent`] hulls into the node it
+/// finds rather than replacing it — and an interval's id is never reused inside
+/// an observation. So a remembered reach is a subset of the current one: a read
+/// this admits is a read the freshly-walked chain admits too, and a read it
+/// does not admit falls through to the walk rather than being refused.
+#[derive(Clone, Copy, Debug)]
+struct DecodeHint {
+    /// `NO_HINT` before the first read of the observation.
+    interval: u32,
+    consumer: ConsumerId,
+    reach: Span,
+    /// The interval's own start and arena offset, so a hit needs no access to
+    /// the record table at all. At the shapes this substrate is priced at that
+    /// table is over a megabyte and every entry into it is a cache miss, which
+    /// made "the interval we already know" cost as much as finding it.
+    start: u64,
+    opening_offset: u32,
+}
+
+/// An interval id no record can have. `IntervalId` is the record table's index
+/// and the table is bounded by custody long before this.
+const NO_HINT: u32 = u32::MAX;
+
+impl Default for DecodeHint {
+    fn default() -> Self {
+        Self {
+            interval: NO_HINT,
+            consumer: ConsumerId(0),
+            reach: Span::new(0, 0),
+            start: 0,
+            opening_offset: 0,
+        }
+    }
+}
+
+/// One pruned task's request, keyed for the linkage sweep.
+///
+/// Field ORDER is the sort order and is load-bearing: address first, because
+/// the sweep needs ascending starts; then the three things
+/// [`Self::same_ask`] compares, so identical asks land adjacent; then the
+/// request index, which makes the key total and the unstable sort
+/// deterministic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PrunedKey {
+    start: u64,
+    len: u64,
+    recipe: u32,
+    /// `NO_HINT` for a root, which has no parent interval.
+    parent: u32,
+    request: u32,
+}
+
+impl PrunedKey {
+    /// Whether two keys ask the ownership map for exactly the same thing.
+    #[inline]
+    fn same_ask(&self, other: &PrunedKey) -> bool {
+        self.start == other.start
+            && self.len == other.len
+            && self.recipe == other.recipe
+            && self.parent == other.parent
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RecipeState {
     copy_tasks: u32,
@@ -1550,6 +1646,18 @@ struct Observation<'a, M: SnapshotMemory> {
     /// Tasks pruned as duplicates. Their dependency edges are still real, so
     /// they are replayed for linkage only once every interval exists.
     pruned: Vec<CopyTask>,
+    /// Address order over the pruned tasks' requests. See
+    /// [`Observation::link_pruned`]: it is what turns fifty thousand index
+    /// bisects into one sweep.
+    pruned_order: Vec<PrunedKey>,
+    /// For each task of the wave being run, the resolved [`DecodeHint`] for the
+    /// interval its copy landed in.
+    ///
+    /// Filled by [`Observation::copy_wave`]'s attach pass — which has the
+    /// record and the consumer's dependent node in L1 at the moment it writes
+    /// them — and handed to [`Observation::decode_wave`], where the same two
+    /// lookups would be cold. See [`DecodeHint`].
+    task_hint: Vec<DecodeHint>,
     waves: Vec<Vec<CopyTask>>,
     forward_waves_run: u32,
     // Scratch, owned by the observation and reused across waves. A fresh
@@ -1566,6 +1674,13 @@ struct Observation<'a, M: SnapshotMemory> {
     /// Bytes of the executor's own tables already charged to the ledger. See
     /// [`Observation::charge_own_tables`].
     own_tables_charged: u64,
+    /// Whether any recipe in this observation can read a field. When none can,
+    /// `task_hint` is never built and the decode phase never consults it.
+    hints_wanted: bool,
+    /// The interval and reach the last decode read resolved. See [`DecodeHint`]
+    /// and [`Observation::read_uint`]. A `Cell` because `read_uint` takes
+    /// `&self`: it is a memo of an answer the map already holds, not state.
+    decode_hint: std::cell::Cell<DecodeHint>,
 }
 
 impl<'a, M: SnapshotMemory> Observation<'a, M> {
@@ -1614,6 +1729,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             rejections: Vec::new(),
             visited,
             pruned: Vec::new(),
+            pruned_order: Vec::new(),
+            task_hint: Vec::new(),
             waves: (0..FORWARD_WAVES + 1).map(|_| Vec::new()).collect(),
             forward_waves_run: 0,
             by_recipe: Vec::new(),
@@ -1623,6 +1740,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             owned: Vec::new(),
             sites: Vec::new(),
             own_tables_charged,
+            hints_wanted: recipes.iter().any(Recipe::reads_fields),
+            decode_hint: std::cell::Cell::new(DecodeHint::default()),
         })
     }
 
@@ -1712,6 +1831,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         let mut bytes = self.tables.len() as u64 * TABLE_BINDING_BYTES
             + in_flight
             + super::arena::vec_bytes(&self.pruned)
+            + super::arena::vec_bytes(&self.pruned_order)
+            + super::arena::vec_bytes(&self.task_hint)
             + super::arena::vec_bytes(&self.waves)
             + super::arena::vec_bytes(&self.by_recipe)
             + super::arena::vec_bytes(&self.requests)
@@ -2146,6 +2267,15 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         let mut planned = std::mem::take(&mut self.plan);
         let mut acquisition = std::mem::take(&mut self.acquisition);
         let mut owned = std::mem::take(&mut self.owned);
+        // Cleared and resized rather than reallocated: one entry per task of
+        // the wave, beside wave queues that are already wider. Its growth is
+        // reconciled with the rest of the executor's tables. Not built at all
+        // when no recipe in the observation reads a field — see
+        // [`Recipe::reads_fields`].
+        self.task_hint.clear();
+        if self.hints_wanted {
+            self.task_hint.resize(tasks.len(), DecodeHint::default());
+        }
 
         let mut result = Ok(());
         for (recipe, indices) in by_recipe.iter().enumerate() {
@@ -2384,10 +2514,40 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     self.annotate(recipe, &tasks[request.task as usize], request.span, &owned);
                     self.reconcile_samples(recipe, &tasks[request.task as usize], &owned);
                 }
+                let mut first_owned = true;
                 for id in owned.iter() {
                     custody = self.owners.add_dependent(*id, consumer, request.span);
                     if custody.is_err() {
                         break 'attach;
+                    }
+                    // THE DECODE PHASE'S HINT, taken here because here it is
+                    // free. `decode_wave` would otherwise open each task's
+                    // first read by bisecting the address index, loading the
+                    // record, and walking that interval's dependent chain —
+                    // three cold accesses for facts this line already has in
+                    // L1, one instruction after `add_dependent` wrote them.
+                    //
+                    // It is only ever a HINT. A stale or wrong one costs the
+                    // comparisons that reject it and falls through to the
+                    // index; a reach only widens, so a remembered one admits a
+                    // subset of what the fresh answer admits.
+                    if first_owned && self.hints_wanted {
+                        first_owned = false;
+                        let slot = &mut self.task_hint[request.task as usize];
+                        if slot.interval == NO_HINT {
+                            let record = self.owners.record(*id);
+                            *slot = DecodeHint {
+                                interval: id.0,
+                                consumer,
+                                reach: self
+                                    .owners
+                                    .links()
+                                    .reach_of(record, consumer)
+                                    .unwrap_or(Span::new(0, 0)),
+                                start: record.start(),
+                                opening_offset: record.opening_offset() as u32,
+                            };
+                        }
                     }
                     if let Some(parent) = parent {
                         custody = self.owners.add_edge(parent, *id, consumer);
@@ -2831,10 +2991,21 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // borrow would allocate its `next` vector once per decode site.
         let recipes = self.recipes;
         let mut stack = std::mem::take(&mut self.sites);
-        for task in tasks {
+        for (position, task) in tasks.iter().enumerate() {
             if self.refused(task.recipe) {
                 continue;
             }
+            // Start this task's reads at the interval its own copy landed in.
+            // Every site below reads a field of THAT object, so the first read
+            // resolves from the id instead of descending the address index, and
+            // the rest resolve off the memo the first one leaves. See
+            // [`DecodeHint`].
+            self.decode_hint.set(
+                self.task_hint
+                    .get(position)
+                    .copied()
+                    .unwrap_or_else(DecodeHint::default),
+            );
             stack.clear();
             match &task.body {
                 TaskBody::Op { op, addr, .. } => {
@@ -2982,7 +3153,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     Some(addr) => addr,
                     None => return self.refuse_unrepresentable(recipe, site.base, i64::from(offset)),
                 };
-                let (value, holder) = match self.read_uint(addr, 8) {
+                let (value, holder) = match self.read_uint(recipe, addr, 8) {
                     Some(read) => read,
                     None => {
                         let witness = RefusalWitness {
@@ -3131,7 +3302,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                                 )
                             }
                         };
-                        match self.read_uint(count_addr, count_width as usize) {
+                        match self.read_uint(recipe, count_addr, count_width as usize) {
                             Some((value, _)) => value,
                             None => {
                                 let witness = RefusalWitness {
@@ -3152,7 +3323,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         }
                     }
                 };
-                let (base, base_holder) = match self.read_uint(ptr_addr, 8) {
+                let (base, base_holder) = match self.read_uint(recipe, ptr_addr, 8) {
                     Some(read) => read,
                     None => {
                         let witness = RefusalWitness {
@@ -3340,7 +3511,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                                 .refuse_unrepresentable(recipe, site.base, i64::from(key_offset))
                         }
                     };
-                    match self.read_uint(key_addr, key_width as usize) {
+                    match self.read_uint(recipe, key_addr, key_width as usize) {
                         Some(read) => read,
                         None => {
                             let witness = RefusalWitness {
@@ -3499,7 +3670,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         return Err(());
                     }
                 };
-                match self.read_uint(addr, width as usize) {
+                match self.read_uint(recipe, addr, width as usize) {
                     Some((value, _)) => Ok(Some(value)),
                     None => {
                         let id = self.recipes[recipe].id;
@@ -3620,7 +3791,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     return Err(());
                 }
             };
-            let value = match self.read_uint(addr, term.width as usize) {
+            let value = match self.read_uint(recipe, addr, term.width as usize) {
                 Some((value, _)) => value,
                 None => {
                     let witness = RefusalWitness {
@@ -3659,7 +3830,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 value,
             } => {
                 let addr = site.base.checked_add(u64::from(offset))?;
-                let (read, _) = self.read_uint(addr, width as usize)?;
+                let (read, _) = self.read_uint(recipe, addr, width as usize)?;
                 Some(read == value)
             }
             Probe::FieldInRange {
@@ -3669,15 +3840,36 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 high,
             } => {
                 let addr = site.base.checked_add(u64::from(offset))?;
-                let (read, _) = self.read_uint(addr, width as usize)?;
+                let (read, _) = self.read_uint(recipe, addr, width as usize)?;
                 Some(read >= low && read <= high)
             }
             Probe::SamplesAgree { offset, len } => {
                 let addr = site.base.checked_add(u64::from(offset))?;
-                let interval = self.owners.find(addr)?;
+                let interval = self
+                    .owners
+                    .find_hinted(addr, IntervalId(self.decode_hint.get().interval))?;
                 let record = *self.owners.record(interval);
                 let want = Span::new(addr, u64::from(len));
                 if !record.span().contains_span(&want) {
+                    return None;
+                }
+                // THE SAME OWNERSHIP LAW `read_uint` ENFORCES, and it has to be
+                // spelled again here because this arm does not go through it:
+                // it compares two arena images rather than decoding a value, so
+                // it resolves the interval itself. Without this, a recipe could
+                // ask whether ANOTHER recipe's adjacent samples agreed and pick
+                // a branch on the answer — a smaller leak than reading the
+                // bytes, and the same custody boundary.
+                //
+                // `None`, not `Some(false)`: an unanswerable probe is a refusal
+                // at the caller. A recipe reaching for a neighbour's images has
+                // under-declared its own copy, and quietly taking the fallback
+                // arm would hide that behind a `Captured` outcome.
+                if !self
+                    .owners
+                    .links()
+                    .reaches(&record, self.recipes[recipe].consumer, &want)
+                {
                     return None;
                 }
                 let images = self.annot.samples(interval)?;
@@ -3726,7 +3918,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 return false;
             }
         };
-        match self.read_uint(addr, guard.width as usize) {
+        match self.read_uint(recipe, addr, guard.width as usize) {
             Some((value, _)) => guard.admits(value),
             None => {
                 self.refuse(
@@ -3742,61 +3934,227 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     }
 
     /// Read an unsigned little-endian integer out of the arena, with the
-    /// interval that held it.
+    /// interval that held it — and only out of bytes THIS recipe's consumer
+    /// asked for.
     ///
     /// The holder comes back with the value because every caller needs both
     /// and looking it up twice is one ordered lookup per decode site: the
     /// interval a field was read out of IS the discovery edge's parent.
-    fn read_uint(&self, addr: u64, width: usize) -> Option<(u64, IntervalId)> {
-        let (bytes, holder) = self.owners.read_at(&self.arena, addr, width)?;
+    ///
+    /// # The ownership check, and why it is not optional
+    ///
+    /// The arena is one buffer and the ownership map is observation-wide, so
+    /// without a check a recipe's decode resolves any address any recipe in the
+    /// same observation copied. Recipe A could decode a pointer, a count or a
+    /// probe out of bytes recipe B took — reporting `Captured` over a value it
+    /// never asked to see, and building a discovery edge across a custody
+    /// boundary. `links.reaches` is the same predicate [`super::view::
+    /// SnapshotView`] enforces on every post-bracket read; this is the bracket
+    /// half of it, so a field is decodable in-bracket exactly when it is
+    /// readable afterwards.
+    ///
+    /// A field this recipe did not ask for now reads as `None`, which is the
+    /// same answer an uncopied field gives, so every caller's existing
+    /// `FieldNotCaptured` refusal covers it. That is deliberate: the two are
+    /// one fact — the recipe does not hold these bytes — and a recipe that
+    /// reaches for a neighbour's copy is a recipe that under-declared its own.
+    ///
+    /// # What it costs
+    ///
+    /// Nothing per read, in the ordinary case. Both halves of the work — which
+    /// interval holds `addr`, and how far this consumer reached inside it —
+    /// are memoised on [`DecodeHint`], and a branch reads field after field out
+    /// of one object, so the hit path is a span comparison and no chain walk at
+    /// all. On a miss it is one bisect (hinted, see
+    /// [`OwnershipMap::find_hinted`]) and one walk of that interval's dependent
+    /// chain, which holds one node per consumer.
+    fn read_uint(&self, recipe: usize, addr: u64, width: usize) -> Option<(u64, IntervalId)> {
+        let consumer = self.recipes[recipe].consumer;
+        let want = Span::new(addr, width as u64);
+        let hint = self.decode_hint.get();
+        let resolved = if hint.interval != NO_HINT
+            && hint.consumer == consumer
+            && hint.reach.contains_span(&want)
+        {
+            // The memo already proves everything: `reach` is a sub-span of the
+            // interval it was taken from, so a `want` inside it is inside that
+            // interval too, and the arena offset came off the same record.
+            hint
+        } else {
+            let id = self.owners.find_hinted(addr, IntervalId(hint.interval))?;
+            let record = self.owners.record(id);
+            if !record.span().contains_span(&want) {
+                return None;
+            }
+            let reach = self.owners.links().reach_of(record, consumer)?;
+            if !reach.contains_span(&want) {
+                return None;
+            }
+            let resolved = DecodeHint {
+                interval: id.0,
+                consumer,
+                reach,
+                start: record.start(),
+                opening_offset: record.opening_offset() as u32,
+            };
+            self.decode_hint.set(resolved);
+            resolved
+        };
+        let skew = (addr - resolved.start) as usize;
+        let bytes = self
+            .arena
+            .slice(resolved.opening_offset as usize + skew, width);
         let mut raw = [0u8; 8];
         raw[..width].copy_from_slice(bytes);
-        Some((u64::from_le_bytes(raw), holder))
+        Some((u64::from_le_bytes(raw), IntervalId(resolved.interval)))
     }
 
     /// Attach the dependency edges of tasks that deduplication pruned.
+    ///
+    /// # One sweep, not one bisect per task
+    ///
+    /// This used to run a task at a time: resolve its requests, then ask the
+    /// ownership index which intervals each one covers with a fresh bisect. On
+    /// a pointer forest the pruned list is LARGER than the accepted one —
+    /// d47's plan prunes 49,971 tasks against 44,838 kept — so that was fifty
+    /// thousand independent descents of an index the copy phase had just walked
+    /// in one pass, and it measured as a sixth of the whole observation.
+    ///
+    /// Every request is materialised first, ordered by address, and walked
+    /// behind one [`super::dedup::Cursor`], exactly as `copy_wave`'s attach
+    /// pass does. A cursor only requires ASCENDING starts, not disjoint spans,
+    /// which is what makes a global order over several recipes' pruned tasks
+    /// legal here.
+    ///
+    /// # The adjacent-duplicate skip is not an optimisation of the answer
+    ///
+    /// Two pruned tasks with the same recipe, the same parent and the same
+    /// span ask for exactly the same two things: `add_dependent` hulls a span
+    /// into a reach that already contains it, and `add_edge` finds the edge
+    /// already recorded and returns. The order below puts them next to each
+    /// other, so skipping the second is dropping a call whose whole body is a
+    /// no-op — not a decision about which edges are real.
     fn link_pruned(&mut self) -> Result<(), CustodyRefusal> {
         let pruned = std::mem::take(&mut self.pruned);
         let mut requests = std::mem::take(&mut self.requests);
+        let mut order = std::mem::take(&mut self.pruned_order);
         let mut owned = std::mem::take(&mut self.owned);
-        let mut custody = Ok(());
-        for task in pruned {
-            if custody.is_err() {
-                break;
-            }
+        requests.clear();
+        order.clear();
+        let result = self.link_pruned_into(&pruned, &mut requests, &mut order, &mut owned);
+        self.pruned = pruned;
+        self.pruned.clear();
+        self.requests = requests;
+        self.pruned_order = order;
+        self.owned = owned;
+        result
+    }
+
+    fn link_pruned_into(
+        &mut self,
+        pruned: &[CopyTask],
+        requests: &mut Vec<CopyRequest>,
+        order: &mut Vec<PrunedKey>,
+        owned: &mut Vec<IntervalId>,
+    ) -> Result<(), CustodyRefusal> {
+        // Every pruned task of a LIVE recipe produces at least one request, so
+        // that count is the floor on what this buffer is about to hold.
+        // Charged before it is taken, like every other work-scaled table the
+        // executor owns.
+        //
+        // COUNTED, not taken as `pruned.len()`. A recipe refused earlier in the
+        // observation contributes nothing here — the loop below skips its tasks
+        // — and reserving for them would let an observation with little
+        // headroom left take a GLOBAL custody refusal where the old
+        // task-at-a-time loop grew nothing at all and every live recipe kept
+        // its hour.
+        //
+        // WHAT IS STILL WIDER THAN THE LOOP IT REPLACES, stated rather than
+        // left to be discovered: that loop cleared `requests` per task, so it
+        // never held more than ONE task's requests, where this holds every live
+        // task's at once. The buffer is shared with `copy_wave`, which has
+        // already reserved a wave's worth, so in practice the charge is taken
+        // there and this is a no-op — but an observation whose pruned list is
+        // larger than its widest wave can now reach the ceiling here. That is
+        // the same trade `copy_wave`'s own reservation documents: the batch
+        // must be materialised to be swept, and a sweep is what replaced fifty
+        // thousand index descents.
+        let live = pruned
+            .iter()
+            .filter(|task| !self.refused(task.recipe))
+            .count();
+        Self::reserve_own(
+            requests,
+            self.arena.ledger_ref(),
+            &mut self.own_tables_charged,
+            live,
+        )?;
+        for (index, task) in pruned.iter().enumerate() {
             if self.refused(task.recipe) {
                 continue;
             }
-            let consumer = self.recipes[task.recipe].consumer;
-            requests.clear();
             // A pruned duplicate has the same op and address as the task that
             // was expanded, so an unrepresentable address here would already
             // have refused the recipe. Handled rather than ignored so that
             // stays true if either ever stops holding.
-            if let Err((base, offset)) = self.requests_of(&task, 0, &mut requests) {
+            let before = requests.len();
+            if let Err((base, offset)) = self.requests_of(task, index as u32, requests) {
+                requests.truncate(before);
                 self.refuse_unrepresentable(task.recipe, base, offset);
+            }
+        }
+        // NOTHING IS FILTERED HERE, and that is the equivalence. The loop above
+        // is the only thing in this phase that can refuse a recipe, and it
+        // skips a task whose recipe is already refused — so a recipe refused
+        // part-way keeps the requests it produced BEFORE the refusal and
+        // produces none after it, which is exactly what the task-at-a-time
+        // version did with its attach interleaved.
+        Self::reserve_own(
+            order,
+            self.arena.ledger_ref(),
+            &mut self.own_tables_charged,
+            requests.len(),
+        )?;
+        // The keys are MATERIALISED, not derived inside the comparator.
+        // `sort_unstable_by_key` calls its key function once per comparison, so
+        // a key reaching through the request into its task is two dependent
+        // random loads times `n log n` — at fifty thousand pruned requests that
+        // is over a million pointer chases to save 1.6 MiB of scratch.
+        for (index, request) in requests.iter().enumerate() {
+            let task = &pruned[request.task as usize];
+            order.push(PrunedKey {
+                start: request.span.start,
+                len: request.span.len,
+                recipe: task.recipe as u32,
+                parent: task.parent.map_or(NO_HINT, |parent| parent.0),
+                request: index as u32,
+            });
+        }
+        // Address first, so one cursor serves the walk; then the fields the
+        // duplicate skip below compares, so equal triples land adjacent. The
+        // key is TOTAL — the request index breaks every remaining tie — so an
+        // unstable sort is deterministic.
+        order.sort_unstable();
+        let mut cursor = self.owners.sweep();
+        let mut previous: Option<PrunedKey> = None;
+        for key in order.iter() {
+            if previous.is_some_and(|held| held.same_ask(key)) {
                 continue;
             }
-            'attach: for index in 0..requests.len() {
-                let span = requests[index].span;
-                self.owners.overlapping_into(span, &mut owned);
-                for id in owned.iter() {
-                    custody = self.owners.add_dependent(*id, consumer, span);
-                    if custody.is_err() {
-                        break 'attach;
-                    }
-                    if let Some(parent) = task.parent {
-                        custody = self.owners.add_edge(parent, *id, consumer);
-                        if custody.is_err() {
-                            break 'attach;
-                        }
-                    }
+            previous = Some(*key);
+            let request = requests[key.request as usize];
+            let consumer = self.recipes[key.recipe as usize].consumer;
+            let parent = (key.parent != NO_HINT).then(|| IntervalId(key.parent));
+            self.owners
+                .sweep_overlapping(&mut cursor, request.span, owned);
+            for id in owned.iter() {
+                self.owners.add_dependent(*id, consumer, request.span)?;
+                if let Some(parent) = parent {
+                    self.owners.add_edge(parent, *id, consumer)?;
                 }
             }
         }
-        self.requests = requests;
-        self.owned = owned;
-        custody
+        Ok(())
     }
 
     /// An interval is witnessed when any consumer depending on it asked for a
