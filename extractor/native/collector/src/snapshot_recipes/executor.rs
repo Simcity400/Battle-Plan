@@ -19,16 +19,17 @@
 //! # The waves
 //!
 //! Roots are at depth 0. Wave `d` is: submit every depth-`d` copy op as one
-//! batch, then run every depth-`d` decode op, which fills wave `d + 1`. t35
-//! measured a maximum discovery depth of 12, so there are
-//! [`FORWARD_WAVES`](super::FORWARD_WAVES) = 13 forward waves and one closing
-//! witness wave: [`TOTAL_PHASES`](super::TOTAL_PHASES) = 14 copy-submission
-//! phases, not 24 and not 12 × 68.
+//! batch, then run every depth-`d` decode op, which fills wave `d + 1`. There
+//! are [`FORWARD_WAVES`](super::FORWARD_WAVES) forward waves and one closing
+//! witness wave: [`TOTAL_PHASES`](super::TOTAL_PHASES) copy-submission phases,
+//! not one per object and not depth × recipe count.
 //!
-//! A raw 12-hop dependent chain is 1–2 µs of DRAM latency. The cost is the 13
-//! synchronisation rounds and the BREADTH of each one, which is why everything
-//! ready at a depth is batched across every recipe before anything at the next
-//! depth is looked at.
+//! A raw dependent chain of that length is single-digit microseconds of DRAM
+//! latency. The cost is the SYNCHRONISATION ROUNDS and the BREADTH of each one,
+//! which is why everything ready at a depth is batched across every recipe
+//! before anything at the next depth is looked at — and why an observation runs
+//! only as many waves as its deepest chain, an empty wave costing an `is_empty`
+//! test.
 //!
 //! # Refusals
 //!
@@ -48,7 +49,7 @@ use super::view::Snapshot;
 use super::{
     ConsumerId, CustodyRefusal, FxSet, GapReason, HourStamp, IntervalId, Limits, MalformedReason,
     RecipeId, Refusal, SnapshotMemory, Span, TableId, DEFAULT_CUSTODY_BUDGET_BYTES, FORWARD_WAVES,
-    MEASURED_MAX_DISCOVERY_DEPTH,
+    MAX_RECIPE_DEPTH,
 };
 
 /// Recipes an observation may hold, so that [`visit_tag`]'s packing is a
@@ -156,6 +157,65 @@ impl VisitedSet {
     }
 }
 
+/// The condition under which a decode op dereferences.
+///
+/// Read at `offset` from the decode site's base, `width` bytes wide, unsigned
+/// little-endian — the same shape as the count field beside it. The dereference
+/// happens when the value is INSIDE `[min, max]` and the branch ends cleanly
+/// when it is outside.
+///
+/// A guard word the recipe never copied is a recipe defect and refuses with
+/// [`Refusal::FieldNotCaptured`], exactly as an uncaptured count or pointer
+/// field does. "Could not read the guard" is not "the guard said no".
+///
+/// # The two shapes it exists for, and both are unions
+///
+///  * [`ExtentGuard::at_least`] — an MSVC `std::basic_string`'s capacity word.
+///    Below 16 the characters are the header's own first sixteen bytes; at 16
+///    and above those bytes are a heap pointer.
+///  * [`ExtentGuard::exactly`] — an MSVC `_Tree` node's `_Isnil` byte. The
+///    single `_Myhead` sentinel every nil link points at is allocated but its
+///    value slot is never constructed, so the eight bytes a real node holds its
+///    `CCountryLeader*` / `CAdvisor*` in are, on the sentinel, whatever the
+///    allocator last left there. Chasing them is a whole-recipe
+///    `MemoryUnreadable` on a plausible-looking word and a copy of an unrelated
+///    object on an implausible one. Today's walk avoids the sentinel by
+///    comparing each child against the head address; a recipe has no equality
+///    op, so `_Isnil` is the discriminator, and it is the same byte the walk
+///    already refuses a non-sentinel node for setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtentGuard {
+    pub offset: u32,
+    pub width: u8,
+    pub min: u64,
+    pub max: u64,
+}
+
+impl ExtentGuard {
+    pub const fn new(offset: u32, width: u8, min: u64, max: u64) -> Self {
+        Self {
+            offset,
+            width,
+            min,
+            max,
+        }
+    }
+
+    /// Dereference when the word is at or above `min`.
+    pub const fn at_least(offset: u32, width: u8, min: u64) -> Self {
+        Self::new(offset, width, min, u64::MAX)
+    }
+
+    /// Dereference only when the word is exactly `value`.
+    pub const fn exactly(offset: u32, width: u8, value: u64) -> Self {
+        Self::new(offset, width, value, value)
+    }
+
+    fn admits(&self, value: u64) -> bool {
+        value >= self.min && value <= self.max
+    }
+}
+
 /// A window relative to the address a copy op acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RelWindow {
@@ -196,7 +256,16 @@ pub enum RecipeOp {
     /// DECODE. Read a pointer at `offset` from already-copied bytes and
     /// continue at its VALUE, one wave deeper. A null pointer ends the branch
     /// without refusing: absent is not broken.
-    DecodePointer { offset: u32, next: u16 },
+    ///
+    /// `guard`, when present, is the same conditional [`RecipeOp::DecodeExtent`]
+    /// carries and for the same reason: a field that is only a pointer in one
+    /// arm of a union. Outside the guard's band the branch ends cleanly, exactly
+    /// as a null value ends it.
+    DecodePointer {
+        offset: u32,
+        guard: Option<ExtentGuard>,
+        next: u16,
+    },
     /// DECODE. Read an element count and a base pointer out of already-copied
     /// bytes and copy the whole element array as ONE transaction — the
     /// "extent batches replace indivisible domain jobs" requirement.
@@ -210,10 +279,58 @@ pub enum RecipeOp {
         stride: u32,
         max_count: u32,
         max_bytes: u64,
+        /// Elements copied PAST the decoded count. Zero for a plain array.
+        ///
+        /// This exists for containers whose in-memory image is longer than
+        /// their declared element count by a fixed amount, and the case that
+        /// forced it is the only one in the tree: an MSVC `std::string` stores
+        /// `_Mysize` characters and a NUL, and the reader that decodes it
+        /// REFUSES a buffer whose byte at `[size]` is not zero
+        /// (`read_msvc_string_with_snapshot_with_policy`). A recipe that copied
+        /// `size` bytes would leave that check reading bytes the observation
+        /// never took, so the post-bracket decode would refuse every string —
+        /// the terminator has to be inside the copy for the copied path to
+        /// reach the same verdict as the live one.
+        ///
+        /// It is added BEFORE the count and byte limits are applied, so the
+        /// bound is on what is actually copied rather than on what the
+        /// container declared.
+        trailer_elements: u32,
+        /// When present, the dereference happens ONLY if the guard word is at
+        /// or above [`ExtentGuard::min`]. Below it the branch ends without
+        /// refusing, exactly as a null pointer does in `DecodePointer`: absent
+        /// is not broken.
+        ///
+        /// This is the language's one conditional, and it is here because
+        /// without it a whole class of container cannot be copied at all. An
+        /// MSVC `std::basic_string` is a union: at capacity 15 or below the
+        /// characters ARE the first sixteen bytes of the header, and at 16 or
+        /// above those same bytes are a heap pointer. An unguarded
+        /// `DecodeExtent` over that field dereferences the ASCII text of every
+        /// short string, which is `Refusal::MemoryUnreadable` on the first one.
+        ///
+        /// It is a DECODE and not the in-bracket parsing the architecture
+        /// forbids, on exactly the same footing as `DecodePointer`'s null test
+        /// and `DecodeExtent`'s own count read: one already-copied word is read
+        /// to decide what to copy next. Nothing is interpreted, classified or
+        /// admitted; the comparison's only output is whether one more copy is
+        /// submitted.
+        guard: Option<ExtentGuard>,
         /// Register the resulting array so `JoinBounded` can index it.
         register: Option<TableId>,
         /// Decode ops to run against EACH element. They run in the same wave
         /// the array lands in: an element is not one more dereference away.
+        ///
+        /// EMPTY IS LEGAL and means the array is the END of this branch: the
+        /// bytes are captured and nothing is derived from them in-bracket. It
+        /// is accounted as one frozen branch, so the "every branch reaches a
+        /// freeze" property still holds over `RecipeReport::frozen_branches`.
+        ///
+        /// The alternative — `element: [Freeze]` — is not equivalent in cost.
+        /// The element loop pushes one `DecodeSite` per element per op, so a
+        /// byte-strided extent would push and pop one 24-byte site per BYTE of
+        /// every string in the observation. At d47's shape that is over half a
+        /// million sites per hour to reach a counter.
         element: Vec<u16>,
     },
     /// DECODE. Read a key and index a registered table by it. Bounded by
@@ -298,8 +415,8 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
     if recipe.roots.is_empty() {
         return Err(bad(MalformedReason::NoRoots));
     }
-    if recipe.limits.max_depth > MEASURED_MAX_DISCOVERY_DEPTH {
-        return Err(bad(MalformedReason::DepthLimitAboveMeasuredMaximum {
+    if recipe.limits.max_depth > MAX_RECIPE_DEPTH {
+        return Err(bad(MalformedReason::DepthLimitAboveCeiling {
             limit: recipe.limits.max_depth,
         }));
     }
@@ -366,13 +483,24 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
                     expect(target, OpKind::Decode)?;
                 }
             }
-            RecipeOp::DecodePointer { next, .. } => expect(*next, OpKind::Copy)?,
+            RecipeOp::DecodePointer { guard, next, .. } => {
+                if let Some(guard) = guard {
+                    if !matches!(guard.width, 1 | 2 | 4 | 8) {
+                        return Err(bad(MalformedReason::BadWidth {
+                            op: here,
+                            width: guard.width,
+                        }));
+                    }
+                }
+                expect(*next, OpKind::Copy)?
+            }
             RecipeOp::DecodeExtent {
                 count_width,
                 stride,
                 element,
                 max_count,
                 max_bytes,
+                guard,
                 ..
             } => {
                 if !matches!(count_width, 1 | 2 | 4 | 8) {
@@ -380,6 +508,14 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
                         op: here,
                         width: *count_width,
                     }));
+                }
+                if let Some(guard) = guard {
+                    if !matches!(guard.width, 1 | 2 | 4 | 8) {
+                        return Err(bad(MalformedReason::BadWidth {
+                            op: here,
+                            width: guard.width,
+                        }));
+                    }
                 }
                 if *stride == 0 {
                     return Err(bad(MalformedReason::ZeroStride { op: here }));
@@ -394,9 +530,9 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
                         limit: "DecodeExtent::max_bytes",
                     }));
                 }
-                if element.is_empty() {
-                    return Err(bad(MalformedReason::DanglingBranch { op: here }));
-                }
+                // An EMPTY element list is legal here and nowhere else: the
+                // array itself is the end of the branch. See the field's own
+                // documentation for why, and for what it is accounted as.
                 for &target in element {
                     expect(target, OpKind::Decode)?;
                 }
@@ -1544,6 +1680,17 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         } => (*stride, element.as_slice()),
                         _ => continue,
                     };
+                    // A TERMINAL extent: the bytes are captured and nothing is
+                    // derived from them in-bracket. Accounted as one frozen
+                    // branch so `frozen_branches` still counts every branch
+                    // that ended cleanly, and skipped WITHOUT walking the
+                    // elements — the whole point of allowing the empty list is
+                    // not to push a site per byte of every string.
+                    if element.is_empty() {
+                        self.states[task.recipe].frozen_branches =
+                            self.states[task.recipe].frozen_branches.saturating_add(1);
+                        continue;
+                    }
                     let region = Proof::Extent {
                         base: span.start,
                         len: span.len,
@@ -1617,8 +1764,15 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // Borrowed, not cloned: see `decode_wave`.
         let recipes = self.recipes;
         match &recipes[recipe].ops[site.op as usize] {
-            RecipeOp::DecodePointer { offset, next } => {
-                let (offset, next) = (*offset, *next);
+            RecipeOp::DecodePointer {
+                offset,
+                guard,
+                next,
+            } => {
+                let (offset, guard, next) = (*offset, *guard, *next);
+                if !self.guard_admits(recipe, id, site.base, guard) {
+                    return;
+                }
                 let addr = match site.base.checked_add(u64::from(offset)) {
                     Some(addr) => addr,
                     None => return self.refuse_unrepresentable(recipe, site.base, i64::from(offset)),
@@ -1659,6 +1813,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 stride,
                 max_count,
                 max_bytes,
+                trailer_elements,
+                guard,
                 register,
                 ..
             } => {
@@ -1671,6 +1827,16 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     *max_bytes,
                     *register,
                 );
+                let (trailer_elements, guard) = (*trailer_elements, *guard);
+                // THE GUARD FIRST, and before any other field is even
+                // addressed. Outside its band this op takes no extent at all,
+                // so reading the count and the pointer would be reading fields
+                // that, in the guarded-out shape, are not a count and a pointer
+                // — for the case this exists for they are the characters of a
+                // short string.
+                if !self.guard_admits(recipe, id, site.base, guard) {
+                    return;
+                }
                 let count_addr = match site.base.checked_add(u64::from(count_offset)) {
                     Some(addr) => addr,
                     None => {
@@ -1711,7 +1877,12 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         return;
                     }
                 };
-                if raw_count > u64::from(max_count) {
+                // The TRAILER is part of the request, so it is part of what the
+                // limits bound. Adding it after the check would let a recipe
+                // copy `max_count + trailer` elements out of a limit that says
+                // `max_count`.
+                let wanted_count = raw_count.saturating_add(u64::from(trailer_elements));
+                if wanted_count > u64::from(max_count) {
                     self.refuse(
                         recipe,
                         Refusal::ExtentCountExceeded {
@@ -1720,12 +1891,12 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             // Saturating only for a count so absurd it is
                             // already far past any limit worth reporting
                             // exactly.
-                            decoded: u32::try_from(raw_count).unwrap_or(u32::MAX),
+                            decoded: u32::try_from(wanted_count).unwrap_or(u32::MAX),
                         },
                     );
                     return;
                 }
-                let count = raw_count as u32;
+                let count = wanted_count as u32;
                 let bytes = u64::from(count) * u64::from(stride);
                 if bytes > max_bytes {
                     self.refuse(
@@ -1752,9 +1923,22 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     return;
                 }
                 let span = Span::new(base, bytes);
+                // THE TRAILER IS COPIED AND IT IS NOT AN ELEMENT. It widens
+                // the span — which is the whole point, the terminator has to be
+                // inside the copy — and it is excluded from both the registered
+                // element count and the per-element decode loop. A join that
+                // could index it, or an element op that could run against it,
+                // would be reaching past the container's own declared end.
+                let elements = (count - trailer_elements) as u32;
                 if let Some(table) = register {
-                    self.tables
-                        .insert((recipe, table), TableBinding { span, count, stride });
+                    self.tables.insert(
+                        (recipe, table),
+                        TableBinding {
+                            span,
+                            count: elements,
+                            stride,
+                        },
+                    );
                 }
                 let task = CopyTask {
                     recipe,
@@ -1763,7 +1947,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     body: TaskBody::Extent {
                         op: site.op,
                         span,
-                        count,
+                        count: elements,
                     },
                 };
                 self.enqueue(task);
@@ -1874,6 +2058,47 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             RecipeOp::CopyHeader { .. } | RecipeOp::CopyRanges { .. } => {
                 // Unreachable: validation rejects a copy op in a decode slot.
                 debug_assert!(false, "copy op reached in a decode slot");
+            }
+        }
+    }
+
+    /// Evaluate a decode op's guard. `false` means the branch ends here — either
+    /// because the guard said so (cleanly) or because the recipe has been
+    /// refused for not capturing the guard word.
+    ///
+    /// One spelling for both guarded ops. Two would be how the string guard and
+    /// the tree-sentinel guard drift into different refusal behaviour, and the
+    /// refusal behaviour is the load-bearing half: an uncaptured guard word must
+    /// never read as "the guard said no", because that silently drops every
+    /// payload behind it while reporting `Captured`.
+    fn guard_admits(
+        &mut self,
+        recipe: usize,
+        id: RecipeId,
+        base: u64,
+        guard: Option<ExtentGuard>,
+    ) -> bool {
+        let Some(guard) = guard else {
+            return true;
+        };
+        let addr = match base.checked_add(u64::from(guard.offset)) {
+            Some(addr) => addr,
+            None => {
+                self.refuse_unrepresentable(recipe, base, i64::from(guard.offset));
+                return false;
+            }
+        };
+        match self.read_uint(addr, guard.width as usize) {
+            Some((value, _)) => guard.admits(value),
+            None => {
+                self.refuse(
+                    recipe,
+                    Refusal::FieldNotCaptured {
+                        recipe: id,
+                        span: Span::new(addr, u64::from(guard.width)),
+                    },
+                );
+                false
             }
         }
     }

@@ -22,12 +22,17 @@
 //!    naming the limit and the value that broke it. There is no path that
 //!    trims a result to fit and reports success. See [`executor`].
 //!
-//! 2. **Breadth-first by discovery depth.** t35 measured a maximum discovery
-//!    depth of 12, so the engine runs [`FORWARD_WAVES`] = 13 forward copy
-//!    waves (depths 0..=12) plus one closing-witness wave, i.e.
-//!    [`TOTAL_PHASES`] = 14 copy-submission phases. Within a wave every ready
-//!    dereference is batched; between waves only address and length decoding
-//!    happens. See [`executor::Observation`].
+//! 2. **Breadth-first by discovery depth.** The engine runs [`FORWARD_WAVES`]
+//!    forward copy waves (depths `0..=`[`MAX_RECIPE_DEPTH`]) plus one
+//!    closing-witness wave, i.e. [`TOTAL_PHASES`] copy-submission phases.
+//!    Within a wave every ready dereference is batched; between waves only
+//!    address and length decoding happens. A wave with no tasks costs an
+//!    `is_empty` test, so an observation runs as many waves as its deepest
+//!    chain and no more. See [`executor::Observation`].
+//!
+//!    The ceiling is [`MAX_RECIPE_DEPTH`] and not t35's measured
+//!    [`MEASURED_MAX_DISCOVERY_DEPTH`]; that constant's docs say why the two
+//!    are different questions.
 //!
 //! 3. **Gap coalescing is data, not code.** [`policy::GapPolicy`] is a
 //!    per-recipe value: 32 B generically, 64 B inside a proven
@@ -77,10 +82,56 @@ mod tests;
 /// Deepest pointer-derivation chain t35 measured, at derivation span 0x10000.
 pub const MEASURED_MAX_DISCOVERY_DEPTH: u32 = 12;
 
-/// Forward breadth-first copy waves: depths 0 through
-/// [`MEASURED_MAX_DISCOVERY_DEPTH`] inclusive. Roots sit at depth zero, so a
-/// depth-12 chain needs thirteen waves, not twelve.
-pub const FORWARD_WAVES: u32 = MEASURED_MAX_DISCOVERY_DEPTH + 1;
+/// Deepest discovery wave a [`executor::Recipe`] may declare.
+///
+/// # Why this is not [`MEASURED_MAX_DISCOVERY_DEPTH`]
+///
+/// It was, and that was a category error rather than a conservative choice.
+/// t35's 12 is a measurement of the CHAINS THE CENSUS FOLLOWED — root, vector,
+/// object, field, one hop at a time. A recipe that copies a SELF-BALANCING TREE
+/// pays its height on top of the chain that reached it, and that height is a
+/// property of the container the engine built, not of anything t35 walked.
+///
+/// The first conversion (d47, characters/leaders/cabinet) is exactly that shape
+/// and it does not fit under 12. Its chain is manager (0) -> the manager's
+/// pointer vector (1) -> `CCharacter` body (2) -> the map's `_Myhead` sentinel
+/// (3) -> the tree root through `_Myhead->_Parent` (4); then the tree's height
+/// `h`; then the role object at `5 + h`, and its `CCharacter` back-pointer or
+/// its heap string payload at `6 + h`. A red-black tree of `n` nodes has height
+/// at most `2*log2(n + 1)`, so:
+///
+///  * at the widths a live game holds — single-digit entries per character, one
+///    country-leader role per ideology — `h <= 6` and the deepest branch lands
+///    on 12 EXACTLY, with no margin. One character holding ten roles refuses
+///    the whole recipe.
+///  * the reader's accepted contract is `_Mysize <= 4096`
+///    (`DOMAIN47_SHADOW_WALK_MAX_NODES`), where `h <= 24` and the deepest
+///    branch is 30.
+///
+/// A ceiling that a legal container can cross is not a bound on the recipe, it
+/// is a bound on the WORLD, and this substrate refuses rather than truncates
+/// (`Refusal::DepthExceeded`) — so leaving it at 12 would convert an unusual
+/// but legal game state into a lost domain-hour.
+///
+/// # What raising it costs
+///
+/// One `Vec` per declared depth in [`executor::Observation`], and one
+/// `is_empty` test per unused wave in the wave loop. Both are per OBSERVATION,
+/// not per task: an observation whose deepest chain is 6 runs six waves and
+/// skips the rest. Nothing here is a per-byte or per-object cost, which is why
+/// the ceiling can be set from the deepest container the readers accept rather
+/// than from the deepest one they usually meet.
+///
+/// It does NOT weaken any limit that bounds work. `max_copy_tasks`,
+/// `max_ranges`, `max_bytes` and `max_single_range_bytes` are unchanged, and a
+/// recipe still declares its own `max_depth` — this is the ceiling on what it
+/// may declare, not a depth anything runs to.
+pub const MAX_RECIPE_DEPTH: u32 = 30;
+
+/// Forward breadth-first copy waves: depths 0 through [`MAX_RECIPE_DEPTH`]
+/// inclusive. Roots sit at depth zero, so a depth-30 chain needs thirty-one
+/// waves, not thirty.
+pub const FORWARD_WAVES: u32 = MAX_RECIPE_DEPTH + 1;
 
 /// Copy-submission phases per observation: [`FORWARD_WAVES`] plus the single
 /// closing-witness wave that re-copies the opening addresses.
@@ -283,7 +334,7 @@ impl Span {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Deepest discovery wave this recipe may reach. Must not exceed
-    /// [`MEASURED_MAX_DISCOVERY_DEPTH`].
+    /// [`MAX_RECIPE_DEPTH`].
     pub max_depth: u32,
     /// Copy tasks this recipe may expand, over the whole observation. This is
     /// the discovery-node cap: it bounds fan-out and terminates a pointer
@@ -324,7 +375,7 @@ pub enum MalformedReason {
     ZeroSizedCopy { op: u16 },
     ZeroStride { op: u16 },
     BadWidth { op: u16, width: u8 },
-    DepthLimitAboveMeasuredMaximum { limit: u32 },
+    DepthLimitAboveCeiling { limit: u32 },
     ZeroLimit { limit: &'static str },
 }
 

@@ -12,8 +12,8 @@
 use super::arena::{Arena, ArenaAllocator};
 use super::dedup::OwnershipMap;
 use super::executor::{
-    observe, observe_in, validate, ObservationConfig, Recipe, RecipeOp, RecipeOutcome, RecipeReport,
-    RelWindow, Root, SnapshotBuild,
+    observe, observe_in, validate, ExtentGuard, ObservationConfig, Recipe, RecipeOp, RecipeOutcome,
+    RecipeReport, RelWindow, Root, SnapshotBuild,
 };
 use super::policy::{
     merge_allowance, plan_copies, AnchorKind, CopyRequest, GapPolicy, PolicyRefusal, Proof,
@@ -64,7 +64,7 @@ fn chain_recipe(id: u32, consumer: u16) -> Recipe {
                 size: 16,
                 next: vec![1, 2],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 0 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 0 },
             RecipeOp::Freeze,
         ],
         vec![Root {
@@ -356,8 +356,11 @@ fn a_depth_twelve_chain_takes_thirteen_forward_waves() {
     let memory = chain_memory(13, 0);
     let build = observe(&[chain_recipe(1, 1)], &memory, config()).expect("custody");
     assert_eq!(outcome(&build, 1), RecipeOutcome::Captured);
-    assert_eq!(build.forward_waves_run, FORWARD_WAVES);
+    // WAVES RUN, not waves available. `FORWARD_WAVES` is the ceiling; an
+    // observation runs one wave per depth that actually had a task, which is
+    // what makes raising the ceiling free for a shallow recipe.
     assert_eq!(build.forward_waves_run, 13);
+    assert!(build.forward_waves_run < FORWARD_WAVES);
     assert_eq!(
         build.report_for(RecipeId(1)).unwrap().copy_tasks,
         13,
@@ -503,7 +506,7 @@ fn coalescing_reduces_the_charged_range_count() {
                 size: 8,
                 next: vec![1],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 2 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 2 },
             RecipeOp::CopyRanges {
                 windows: vec![
                     RelWindow::new(0, 8),
@@ -604,10 +607,12 @@ fn extent_recipe(max_count: u32, max_bytes: u64) -> Recipe {
                 stride: 8,
                 max_count,
                 max_bytes,
+                trailer_elements: 0,
+                guard: None,
                 register: Some(TableId(1)),
                 element: vec![2],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 3 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 3 },
             RecipeOp::CopyHeader {
                 size: 8,
                 next: vec![4],
@@ -696,6 +701,8 @@ fn join_fixture(key: u32) -> (SyntheticMemory, Recipe) {
                 stride: 16,
                 max_count: 16,
                 max_bytes: 4096,
+                trailer_elements: 0,
+                guard: None,
                 register: Some(TableId(7)),
                 element: vec![4],
             },
@@ -780,6 +787,404 @@ fn a_join_against_an_unregistered_table_refuses() {
 }
 
 // ---------------------------------------------------------------------------
+// The guarded extent: MSVC-string-shaped containers
+// ---------------------------------------------------------------------------
+
+/// The address of the union-shaped object these fixtures lay out.
+const STR_OBJ: u64 = 0x20_0000;
+/// Where a heap payload is mapped in these fixtures.
+const STR_HEAP: u64 = 0x30_0000;
+
+/// One 0x20-byte MSVC `std::basic_string` at [`STR_OBJ`], plus a heap region.
+///
+/// `heap` chooses the arm: `Some(text)` writes a capacity at or above 16 and a
+/// pointer at `+0x00`; `None` writes the characters INLINE and a capacity of 15
+/// — the shape whose first eight bytes are ASCII, not an address.
+fn msvc_string_memory(heap: Option<&[u8]>) -> SyntheticMemory {
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(STR_OBJ, 0x20);
+    memory.map_zeroed(STR_HEAP, 0x100);
+    match heap {
+        Some(text) => {
+            memory.write_u64(STR_OBJ, STR_HEAP);
+            memory.write_u64(STR_OBJ + 0x10, text.len() as u64);
+            memory.write_u64(STR_OBJ + 0x18, 31);
+            memory.write(STR_HEAP, text);
+        }
+        None => {
+            let inline = b"short";
+            memory.write(STR_OBJ, inline);
+            memory.write_u64(STR_OBJ + 0x10, inline.len() as u64);
+            memory.write_u64(STR_OBJ + 0x18, 15);
+        }
+    }
+    memory
+}
+
+/// `CopyHeader(0x20)` then a guarded, byte-strided, NUL-trailing extent.
+fn msvc_string_recipe(guard: Option<ExtentGuard>, trailer: u32) -> Recipe {
+    Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: vec![1],
+            },
+            RecipeOp::DecodeExtent {
+                count_offset: 0x10,
+                count_width: 8,
+                ptr_offset: 0x00,
+                stride: 1,
+                max_count: 1 << 20,
+                max_bytes: 1 << 20,
+                trailer_elements: trailer,
+                guard,
+                register: None,
+                element: Vec::new(),
+            },
+        ],
+        vec![Root {
+            op: 0,
+            addr: STR_OBJ,
+        }],
+    )
+}
+
+fn capacity_guard() -> Option<ExtentGuard> {
+    Some(ExtentGuard::at_least(0x18, 8, 16))
+}
+
+/// SENTINEL. This is the whole reason [`ExtentGuard`] exists.
+///
+/// An MSVC `std::basic_string` at capacity 15 keeps its characters in the first
+/// sixteen bytes of its own header. An UNGUARDED extent reads those characters
+/// as a pointer and tries to copy at `0x0000_0074_726F_6873` ("short" little
+/// endian), which is a whole-recipe `MemoryUnreadable`. Deleting the guard
+/// check from `run_site`'s `DecodeExtent` arm makes the first half of this
+/// fail; deleting the `value < guard.min` early return makes the second.
+#[test]
+fn a_short_string_is_captured_without_dereferencing_its_characters() {
+    let memory = msvc_string_memory(None);
+
+    let unguarded = observe(&[msvc_string_recipe(None, 1)], &memory, config()).expect("custody");
+    assert!(
+        matches!(refusal(&unguarded, 1), Refusal::MemoryUnreadable { .. }),
+        "an unguarded extent must dereference the characters and refuse, or this \
+         test is not watching the failure the guard prevents: got {:?}",
+        outcome(&unguarded, 1)
+    );
+
+    let guarded = observe(
+        &[msvc_string_recipe(capacity_guard(), 1)],
+        &memory,
+        config(),
+    )
+    .expect("custody");
+    assert_eq!(outcome(&guarded, 1), RecipeOutcome::Captured);
+    // The branch ended CLEANLY: one frozen branch for the header's own chain
+    // is not claimed, because the guard returned before the extent existed.
+    let view = guarded
+        .snapshot
+        .view_for(ConsumerId(1), HOUR)
+        .expect("a captured consumer has a view");
+    // The characters are inside the header the recipe already copied, which is
+    // exactly why not dereferencing loses nothing.
+    assert_eq!(view.bytes(STR_OBJ, 5).expect("inline characters"), b"short");
+    // And nothing at all was copied at the ASCII-as-address.
+    assert!(matches!(
+        view.bytes(0x0000_0074_726F_6873, 1),
+        Err(ViewRefusal::NotCaptured { .. })
+    ));
+}
+
+/// The other arm: capacity at or above the threshold DOES dereference, and the
+/// payload lands in the snapshot.
+#[test]
+fn a_long_string_is_dereferenced_and_its_payload_is_captured() {
+    let text = b"a rather longer string than sixteen bytes";
+    let memory = msvc_string_memory(Some(text));
+    let build = observe(
+        &[msvc_string_recipe(capacity_guard(), 1)],
+        &memory,
+        config(),
+    )
+    .expect("custody");
+    assert_eq!(outcome(&build, 1), RecipeOutcome::Captured);
+    let view = build.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
+    assert_eq!(view.bytes(STR_HEAP, text.len()).expect("payload"), text);
+}
+
+/// SENTINEL. `trailer_elements` is why the copied path can reach the same
+/// verdict as the live one.
+///
+/// The string decoder refuses a buffer whose byte at `[size]` is not NUL, so
+/// the terminator has to be INSIDE the copy. With `trailer_elements: 0` the
+/// byte at `size` was never copied and the post-bracket decode has nothing to
+/// test; with 1 it is there. Setting the field back to zero, or adding it after
+/// the limit check so it is not counted, makes this fail.
+#[test]
+fn the_trailer_puts_the_terminator_inside_the_copy() {
+    let text = b"a rather longer string than sixteen bytes";
+    let memory = msvc_string_memory(Some(text));
+
+    let without = observe(
+        &[msvc_string_recipe(capacity_guard(), 0)],
+        &memory,
+        config(),
+    )
+    .expect("custody");
+    let view = without.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
+    assert!(matches!(
+        view.bytes(STR_HEAP + text.len() as u64, 1),
+        Err(ViewRefusal::NotCaptured { .. })
+    ));
+
+    let with = observe(
+        &[msvc_string_recipe(capacity_guard(), 1)],
+        &memory,
+        config(),
+    )
+    .expect("custody");
+    let view = with.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
+    assert_eq!(
+        view.bytes(STR_HEAP + text.len() as u64, 1).expect("NUL"),
+        &[0u8]
+    );
+}
+
+/// SENTINEL. The trailer is bounded like everything else.
+///
+/// A count of `max_count` with a one-element trailer asks for `max_count + 1`
+/// and must refuse by name. Moving the addition after the check turns a hard
+/// limit into a limit plus a trailer.
+#[test]
+fn the_trailer_is_inside_the_element_limit() {
+    let text = b"0123456789abcdef";
+    let memory = msvc_string_memory(Some(text));
+    let mut recipe = msvc_string_recipe(capacity_guard(), 1);
+    recipe.ops[1] = match recipe.ops[1].clone() {
+        RecipeOp::DecodeExtent {
+            count_offset,
+            count_width,
+            ptr_offset,
+            stride,
+            max_bytes,
+            trailer_elements,
+            guard,
+            register,
+            element,
+            ..
+        } => RecipeOp::DecodeExtent {
+            count_offset,
+            count_width,
+            ptr_offset,
+            stride,
+            // Exactly the declared size: the trailer is the byte that breaks it.
+            max_count: text.len() as u32,
+            max_bytes,
+            trailer_elements,
+            guard,
+            register,
+            element,
+        },
+        other => other,
+    };
+    let build = observe(&[recipe], &memory, config()).expect("custody");
+    assert_eq!(
+        refusal(&build, 1),
+        Refusal::ExtentCountExceeded {
+            recipe: RecipeId(1),
+            limit: text.len() as u32,
+            decoded: text.len() as u32 + 1,
+        }
+    );
+}
+
+/// SENTINEL. A guard word the recipe never copied is a RECIPE defect, and it
+/// must refuse rather than read as "the guard said no".
+///
+/// Treating an uncaptured guard as below the threshold would silently drop
+/// every heap payload in the observation while reporting `Captured`.
+#[test]
+fn an_uncaptured_guard_word_refuses_rather_than_skipping() {
+    let text = b"a rather longer string than sixteen bytes";
+    let memory = msvc_string_memory(Some(text));
+    let mut recipe = msvc_string_recipe(capacity_guard(), 1);
+    // Copy only as far as the size field: the capacity at +0x18 is outside.
+    recipe.ops[0] = RecipeOp::CopyHeader {
+        size: 0x18,
+        next: vec![1],
+    };
+    let build = observe(&[recipe], &memory, config()).expect("custody");
+    assert_eq!(
+        refusal(&build, 1),
+        Refusal::FieldNotCaptured {
+            recipe: RecipeId(1),
+            span: Span::new(STR_OBJ + 0x18, 8),
+        }
+    );
+}
+
+/// A terminal extent — no per-element decode ops — captures its bytes, counts
+/// one frozen branch and pushes no per-element site.
+///
+/// The alternative spelling, `element: vec![freeze]`, is not equivalent: it
+/// would count one frozen branch PER BYTE. That difference is what this pins.
+#[test]
+fn a_terminal_extent_freezes_once_and_not_once_per_element() {
+    let text = b"a rather longer string than sixteen bytes";
+    let memory = msvc_string_memory(Some(text));
+
+    let terminal = observe(
+        &[msvc_string_recipe(capacity_guard(), 1)],
+        &memory,
+        config(),
+    )
+    .expect("custody");
+    assert_eq!(
+        terminal.report_for(RecipeId(1)).unwrap().frozen_branches,
+        1
+    );
+
+    let mut spelled = msvc_string_recipe(capacity_guard(), 1);
+    spelled.ops.push(RecipeOp::Freeze);
+    spelled.ops[1] = match spelled.ops[1].clone() {
+        RecipeOp::DecodeExtent {
+            count_offset,
+            count_width,
+            ptr_offset,
+            stride,
+            max_count,
+            max_bytes,
+            trailer_elements,
+            guard,
+            register,
+            ..
+        } => RecipeOp::DecodeExtent {
+            count_offset,
+            count_width,
+            ptr_offset,
+            stride,
+            max_count,
+            max_bytes,
+            trailer_elements,
+            guard,
+            register,
+            element: vec![2],
+        },
+        other => other,
+    };
+    let per_element = observe(&[spelled], &memory, config()).expect("custody");
+    assert_eq!(
+        per_element.report_for(RecipeId(1)).unwrap().frozen_branches,
+        // The container's DECLARED elements, and not the trailer: the extra
+        // byte is copied and is not an element, so nothing runs against it.
+        text.len() as u32,
+        "the per-element spelling runs the element ops once per byte, which is \
+         the cost the empty list exists to avoid",
+    );
+}
+
+/// SENTINEL. The guarded POINTER chase, and the container it exists for.
+///
+/// An MSVC `_Tree` sentinel is a node whose value slot was never constructed.
+/// Chasing it copies whatever the allocator left there — here, an address in no
+/// mapped region, which is a whole-recipe `MemoryUnreadable`. A guard on
+/// `_Isnil` chases the value on real nodes and not on the sentinel.
+///
+/// Removing `guard` from the `DecodePointer` arm of `run_site`, or widening
+/// `ExtentGuard::exactly` into an at-least, makes the first half fail.
+#[test]
+fn a_tree_sentinels_unconstructed_value_is_not_dereferenced() {
+    const HEAD: u64 = 0x40_0000;
+    const NODE: u64 = 0x40_1000;
+    const ROLE: u64 = 0x40_2000;
+    const ISNIL: u32 = 0x19;
+    const VALUE: u32 = 0x28;
+
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(HEAD, 0x30);
+    memory.map_zeroed(NODE, 0x30);
+    memory.map_zeroed(ROLE, 0x10);
+    // The sentinel: `_Isnil` set, both children pointing at the one real node,
+    // and a value slot holding a plausible-looking address that is mapped
+    // nowhere.
+    memory.write(HEAD + u64::from(ISNIL), &[1u8]);
+    memory.write_u64(HEAD, NODE);
+    memory.write_u64(HEAD + 0x10, NODE);
+    memory.write_u64(HEAD + u64::from(VALUE), 0x7F_0000_0000);
+    // The real node: nil children point back at the sentinel, value is a role.
+    memory.write_u64(NODE, HEAD);
+    memory.write_u64(NODE + 0x10, HEAD);
+    memory.write_u64(NODE + u64::from(VALUE), ROLE);
+
+    let node_ops = |guard: Option<ExtentGuard>| {
+        vec![
+            RecipeOp::CopyHeader {
+                size: 0x30,
+                next: vec![1, 2, 3],
+            },
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 0,
+            },
+            RecipeOp::DecodePointer {
+                offset: 0x10,
+                guard: None,
+                next: 0,
+            },
+            RecipeOp::DecodePointer {
+                offset: VALUE,
+                guard,
+                next: 4,
+            },
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![5],
+            },
+            RecipeOp::Freeze,
+        ]
+    };
+    let recipe = |guard| {
+        Recipe::new(
+            RecipeId(1),
+            ConsumerId(1),
+            node_ops(guard),
+            vec![Root { op: 0, addr: HEAD }],
+        )
+    };
+
+    let unguarded = observe(&[recipe(None)], &memory, config()).expect("custody");
+    assert!(
+        matches!(refusal(&unguarded, 1), Refusal::MemoryUnreadable { .. }),
+        "an unguarded value chase must reach the sentinel's slot, or this test \
+         is not watching the failure the guard prevents: got {:?}",
+        outcome(&unguarded, 1)
+    );
+
+    let guarded = observe(
+        &[recipe(Some(ExtentGuard::exactly(ISNIL, 1, 0)))],
+        &memory,
+        config(),
+    )
+    .expect("custody");
+    assert_eq!(outcome(&guarded, 1), RecipeOutcome::Captured);
+    let view = guarded.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
+    // The real node's role IS copied ...
+    assert!(view.bytes(ROLE, 0x10).is_ok());
+    // ... the sentinel itself is copied, because a post-bracket walk has to be
+    // able to see `_Isnil` for itself ...
+    assert!(view.bytes(HEAD, 0x30).is_ok());
+    // ... and nothing was taken at the address its dead value slot named.
+    assert!(matches!(
+        view.bytes(0x7F_0000_0000, 1),
+        Err(ViewRefusal::NotCaptured { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
 // Memory and field refusals
 // ---------------------------------------------------------------------------
 
@@ -801,6 +1206,7 @@ fn decoding_a_field_outside_the_copied_object_refuses() {
             // The pointer lives at +16, outside the 8 bytes that were copied.
             RecipeOp::DecodePointer {
                 offset: 16,
+                guard: None,
                 next: 2,
             },
             RecipeOp::CopyHeader {
@@ -1185,7 +1591,7 @@ fn custody_accounts_the_closing_image_too() {
                 size: 16,
                 next: vec![1, 2],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 0 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 0 },
             RecipeOp::WitnessClose { next: vec![3] },
             RecipeOp::Freeze,
         ],
@@ -1216,7 +1622,7 @@ fn witness_recipe(id: u32, consumer: u16, root: u64) -> Recipe {
                 size: 16,
                 next: vec![1, 2],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 3 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 3 },
             RecipeOp::WitnessClose { next: vec![4] },
             RecipeOp::CopyHeader {
                 size: 16,
@@ -1692,7 +2098,7 @@ fn validation_rejects_structural_defects() {
             size: 8,
             next: vec![1],
         },
-        RecipeOp::DecodePointer { offset: 0, next: 2 },
+        RecipeOp::DecodePointer { offset: 0, guard: None, next: 2 },
         RecipeOp::Freeze,
     ];
     assert_eq!(
@@ -1714,14 +2120,23 @@ fn validation_rejects_structural_defects() {
     };
     assert_eq!(malformed(zero_size), MalformedReason::ZeroSizedCopy { op: 0 });
 
+    // The ceiling is MAX_RECIPE_DEPTH. A recipe that declares more than the
+    // substrate can run is refused before any memory is touched, exactly as it
+    // was when the ceiling was t35's measured number.
     let mut deep = base();
-    deep.limits.max_depth = MEASURED_MAX_DISCOVERY_DEPTH + 1;
+    deep.limits.max_depth = MAX_RECIPE_DEPTH + 1;
     assert_eq!(
         malformed(deep),
-        MalformedReason::DepthLimitAboveMeasuredMaximum {
-            limit: MEASURED_MAX_DISCOVERY_DEPTH + 1
+        MalformedReason::DepthLimitAboveCeiling {
+            limit: MAX_RECIPE_DEPTH + 1
         }
     );
+    // And the measured depth is INSIDE the ceiling, not equal to it: a recipe
+    // walking a container deeper than t35's census chains is legal now, which
+    // is the whole reason the two constants are different.
+    let mut past_the_measurement = base();
+    past_the_measurement.limits.max_depth = MEASURED_MAX_DISCOVERY_DEPTH + 1;
+    assert!(validate(&past_the_measurement).is_ok());
 
     let mut zero_limit = base();
     zero_limit.limits.max_ranges = 0;
@@ -1745,6 +2160,8 @@ fn validation_rejects_structural_defects() {
             stride: 8,
             max_count: 4,
             max_bytes: 64,
+            trailer_elements: 0,
+            guard: None,
             register: None,
             element: vec![2],
         },
@@ -1768,6 +2185,8 @@ fn validation_rejects_structural_defects() {
             stride: 0,
             max_count: 4,
             max_bytes: 64,
+            trailer_elements: 0,
+            guard: None,
             register: None,
             element: vec![2],
         },
@@ -1920,6 +2339,7 @@ fn an_unrepresentable_field_address_refuses() {
             },
             RecipeOp::DecodePointer {
                 offset: 32,
+                guard: None,
                 next: 2,
             },
             RecipeOp::CopyHeader {
@@ -1983,10 +2403,12 @@ fn two_extents_at_one_base_with_different_counts_are_both_expanded() {
                 stride: 8,
                 max_count: 8,
                 max_bytes: 4096,
+                trailer_elements: 0,
+                guard: None,
                 register: None,
                 element: vec![2],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 3 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 3 },
             RecipeOp::CopyHeader {
                 size: 8,
                 next: vec![4],
@@ -2138,10 +2560,22 @@ fn the_custody_ceiling_cannot_be_raised() {
 }
 
 #[test]
-fn the_phase_count_is_fourteen() {
+fn the_wave_ceiling_covers_the_deepest_container_a_reader_accepts() {
+    // t35's measurement is unchanged: this is a fact about the census chains
+    // and nothing in this lane re-measured it.
     assert_eq!(MEASURED_MAX_DISCOVERY_DEPTH, 12);
-    assert_eq!(FORWARD_WAVES, 13);
-    assert_eq!(TOTAL_PHASES, 14);
+    // The RECIPE ceiling is the deepest chain a legal container can force. See
+    // `MAX_RECIPE_DEPTH`: d47's `_Tree` walk is 6 waves of chain plus the
+    // tree's height, and its accepted contract is 4,096 nodes, whose red-black
+    // height bound `2*log2(n + 1)` is 24.
+    assert_eq!(MAX_RECIPE_DEPTH, 30);
+    assert_eq!(FORWARD_WAVES, 31);
+    assert_eq!(TOTAL_PHASES, 32);
+    assert!(MAX_RECIPE_DEPTH >= 6 + 24);
+    assert!(MAX_RECIPE_DEPTH > MEASURED_MAX_DISCOVERY_DEPTH);
+    // The DEFAULT is still the measured number: raising the ceiling opts
+    // nobody in, it only lets a recipe that needs the depth ask for it.
+    assert_eq!(Limits::default().max_depth, MEASURED_MAX_DISCOVERY_DEPTH);
 }
 
 // ---------------------------------------------------------------------------
@@ -2861,7 +3295,7 @@ fn windowed_report(through_pointer: bool, gap: u64) -> RecipeReport {
                     size: 16,
                     next: vec![1],
                 },
-                RecipeOp::DecodePointer { offset: 0, next: 2 },
+                RecipeOp::DecodePointer { offset: 0, guard: None, next: 2 },
                 RecipeOp::CopyRanges {
                     windows,
                     next: vec![3],
@@ -2984,7 +3418,7 @@ fn two_window_tasks_under_different_pointers_do_not_share_an_anchor() {
                 size: 16,
                 next: vec![1],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 2 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 2 },
             RecipeOp::CopyRanges {
                 windows: vec![RelWindow::new(0, 8)],
                 next: vec![3],
@@ -3197,6 +3631,8 @@ fn a_bounded_joins_task_anchors_on_the_element_address_it_computed() {
                 stride: STRIDE as u32,
                 max_count: 16,
                 max_bytes: 4096,
+                trailer_elements: 0,
+                guard: None,
                 register: Some(TableId(7)),
                 element: vec![4],
             },
@@ -3547,7 +3983,7 @@ fn discovery_past_depth_zero_runs_on_queues_that_were_not_reserved() {
                 size: 16,
                 next: vec![1, 2],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 0 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 0 },
             RecipeOp::Freeze,
         ],
         vec![

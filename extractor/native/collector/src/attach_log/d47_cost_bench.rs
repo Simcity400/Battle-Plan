@@ -8188,3 +8188,459 @@ fn d47_a_recycled_stale_root_loses_the_row_the_sweep_published() {
         "the walk's root is the object a character map holds, and it is unaffected"
     );
 }
+
+// === S4: THE COPY-ONLY BRACKET (lane FW) ==================================
+//
+// `d47_copy_bracket` expresses the walk above as a snapshot recipe: bulk copies
+// only, every decision after. These are the A/B that says the two mechanisms
+// enumerate the same population, the A/B that says the decode reads the same
+// values off the copy as off the engine, and the price of the copy half against
+// the live one. The fixtures are lane FU's, unchanged, because the population
+// claim is only worth anything against the same staged tears, duplicates and
+// dead objects the walk/sweep A/B already runs on.
+
+use crate::attach_log::d47_copy_bracket::{
+    domain47_copy_plan, Domain47PlanRoots, Domain47SnapshotMemory, Domain47ViewMemory,
+    ADVISOR_BODY_SPAN, COUNTRY_LEADER_BODY_SPAN, D47_CONSUMER, D47_RECIPE,
+};
+use crate::snapshot_recipes::executor::{observe, ObservationConfig, RecipeOutcome, SnapshotBuild};
+use crate::snapshot_recipes::{HourStamp, Refusal};
+
+const FW_HOUR: HourStamp = HourStamp(19_360_301);
+
+/// Run the copy plan over a staged roster.
+fn fw_observe(roster: &[usize]) -> SnapshotBuild {
+    let plan = domain47_copy_plan(&Domain47PlanRoots::Characters(
+        roster.iter().map(|addr| *addr as u64).collect(),
+    ));
+    page_cache_new_frame();
+    observe(
+        &[plan],
+        &Domain47SnapshotMemory,
+        ObservationConfig::new(FW_HOUR),
+    )
+    .expect("the fixture is far inside the custody ceiling")
+}
+
+fn fw_outcome(build: &SnapshotBuild) -> RecipeOutcome {
+    build.report_for(D47_RECIPE).expect("the plan reported").outcome
+}
+
+/// Which of `candidates` the observation actually copied `span` bytes of.
+///
+/// This is how the copy plan's DISCOVERY is read back: the recipe reaches a
+/// role object exactly when it copies its body, so the set of candidate
+/// addresses the view holds IS the set the plan enumerated. Nothing here
+/// inspects the recipe — only what it took.
+fn fw_reached(build: &SnapshotBuild, candidates: &[usize], span: u32) -> BTreeSet<u64> {
+    let view = build
+        .snapshot
+        .view_for(D47_CONSUMER, FW_HOUR)
+        .expect("a captured consumer has a view");
+    let memory = Domain47ViewMemory::new(view);
+    candidates
+        .iter()
+        .copied()
+        .filter(|addr| memory.covers(*addr as u64, span as usize).is_ok())
+        .map(|addr| addr as u64)
+        .collect()
+}
+
+/// THE POPULATION A/B. The copy plan must reach exactly the role objects the
+/// live container walk reaches — no fewer (a lost row) and no more (a row the
+/// walk's ownership argument does not cover).
+///
+/// MUTATION: drop the `_Parent` chase from `tree_ops` and this fails on every
+/// tree taller than one node — `_Myhead`'s `_Left` and `_Right` are the extreme
+/// nodes and neither reaches the root. Drop the `_Isnil` guard on the value
+/// chase and the plan reaches the sentinel's unconstructed value slot.
+#[test]
+fn d47_the_copy_plan_reaches_the_walks_role_population() {
+    let world = fu_acceptance_world();
+    let walk = fu_admit_by_walk(&world);
+    let build = fw_observe(&world.roster);
+    assert_eq!(
+        fw_outcome(&build),
+        RecipeOutcome::Captured,
+        "the acceptance world must be captured whole, or the population \
+         comparison below is comparing against a refusal",
+    );
+
+    let leader_candidates: Vec<usize> = world.leader_classes.keys().copied().collect();
+    let advisor_candidates: Vec<usize> = world.advisor_classes.keys().copied().collect();
+    let copied_leaders = fw_reached(&build, &leader_candidates, COUNTRY_LEADER_BODY_SPAN);
+    let copied_advisors = fw_reached(&build, &advisor_candidates, ADVISOR_BODY_SPAN);
+    let sweep = fu_admit_by_sweep(&world);
+
+    println!(
+        "d47 copy plan vs container walk, {} staged characters:\n  \
+         country-leader objects: walk {} / plan {} / sweep {} (of {} in the arena)\n  \
+         advisor objects:        walk {} / plan {} / sweep {} (of {} in the arena)\n  \
+         plan copied {} B over {} intervals, custody held {} B, {} forward waves",
+        world.roster.len(),
+        walk.leader_objects.len(),
+        copied_leaders.len(),
+        sweep.leader_objects.len(),
+        leader_candidates.len(),
+        walk.advisor_objects.len(),
+        copied_advisors.len(),
+        sweep.advisor_objects.len(),
+        advisor_candidates.len(),
+        build.snapshot.custody_bytes(),
+        build.snapshot.interval_count(),
+        build.custody_held,
+        build.forward_waves_run,
+    );
+
+    assert_eq!(
+        copied_leaders, walk.leader_objects,
+        "the copy plan and the live walk must enumerate the same \
+         CCountryLeader population",
+    );
+    assert_eq!(
+        copied_advisors, walk.advisor_objects,
+        "the copy plan and the live walk must enumerate the same CAdvisor \
+         population",
+    );
+    // And the STALE objects only the sweep reaches are in neither. The plan
+    // inherits the walk's ownership argument because it walks the same
+    // containers, which is the whole reason it is allowed to replace it.
+    assert!(
+        sweep.leader_objects.len() > copied_leaders.len()
+            && sweep.advisor_objects.len() > copied_advisors.len(),
+        "the fixture must stage objects only the sweep reaches, or the \
+         equality above proves nothing",
+    );
+}
+
+/// `domain47_country_leader_identity` against any `LaneMemory`.
+///
+/// The production spelling takes `&Domain47InProcessMemory` by concrete type,
+/// which is the one thing standing between that decode and the copy. This is
+/// the same three statements, generic, and
+/// `d47_the_generic_identity_read_is_the_production_one` pins that it stays the
+/// same three.
+fn domain47_country_leader_identity_with<M: domain47::extractor::LaneMemory>(
+    mem: &M,
+    roots: &ResolvedTypeRoots,
+    addr: u64,
+) -> Result<(u32, u32, u64), domain47::extractor::ExtractError> {
+    let character_addr = domain47_read_nonzero_u64(mem, addr, CCOUNTRY_LEADER_CHARACTER_PTR_OFF)
+        .map_err(|()| domain47::extractor::ExtractError::NullPointer("CCountryLeader.character"))?;
+    let raw = domain47::extractor::read_character_raw_fields(mem, roots, character_addr)?;
+    Ok((raw.country_tag_db_id, raw.char_id, raw.character_addr))
+}
+
+/// The generic identity read must agree with production on the LIVE memory, or
+/// the A/B below is comparing the copy against a second implementation rather
+/// than against the shipped one.
+#[test]
+fn d47_the_generic_identity_read_is_the_production_one() {
+    let world = fu_acceptance_world();
+    let live = Domain47InProcessMemory;
+    for addr in world.leader_classes.keys().copied() {
+        page_cache_new_frame();
+        let production = domain47_country_leader_identity(&live, &world.roots, addr as u64);
+        let generic = domain47_country_leader_identity_with(&live, &world.roots, addr as u64);
+        assert_eq!(format!("{production:?}"), format!("{generic:?}"));
+    }
+}
+
+/// THE DECODE A/B, for the reads that are already memory-parameterised.
+///
+/// `read_character_raw_fields` and `read_advisor_raw_fields` are the identity
+/// reads every admission decision in `domain47_admit_*` rests on, and both are
+/// generic over `LaneMemory`. Run over `Domain47ViewMemory` they see the frozen
+/// copy; run over `Domain47InProcessMemory` they see the game. Same code, same
+/// offsets, same verdicts — including the ERRORS, because a dead-pointer object
+/// has to classify dead on the copy exactly as it does live.
+#[test]
+fn d47_the_identity_reads_agree_on_the_copy_and_on_the_engine() {
+    let world = fu_acceptance_world();
+    let build = fw_observe(&world.roster);
+    let view = build.snapshot.view_for(D47_CONSUMER, FW_HOUR).expect("view");
+    let copied = Domain47ViewMemory::new(view);
+    let live = Domain47InProcessMemory;
+
+    let mut leaders = 0usize;
+    let mut leader_refusals = 0usize;
+    for addr in world.leader_classes.keys().copied() {
+        if copied
+            .covers(addr as u64, COUNTRY_LEADER_BODY_SPAN as usize)
+            .is_err()
+        {
+            // Not in the plan's population; the test above is what pins which
+            // objects those are and why.
+            continue;
+        }
+        page_cache_new_frame();
+        let live_id = domain47_country_leader_identity(&live, &world.roots, addr as u64);
+        let copied_id = domain47_country_leader_identity_with(&copied, &world.roots, addr as u64);
+        if live_id.is_err() {
+            leader_refusals += 1;
+        }
+        assert_eq!(
+            format!("{live_id:?}"),
+            format!("{copied_id:?}"),
+            "leader identity at {addr:#x} must read the same on the copy",
+        );
+        leaders += 1;
+    }
+
+    let mut advisors = 0usize;
+    let mut advisor_refusals = 0usize;
+    for addr in world.advisor_classes.keys().copied() {
+        if copied.covers(addr as u64, ADVISOR_BODY_SPAN as usize).is_err() {
+            continue;
+        }
+        page_cache_new_frame();
+        let live_raw =
+            domain47::extractor::read_advisor_raw_fields(&live, &world.roots, addr as u64);
+        let copied_raw =
+            domain47::extractor::read_advisor_raw_fields(&copied, &world.roots, addr as u64);
+        if live_raw.is_err() {
+            advisor_refusals += 1;
+        }
+        assert_eq!(
+            format!("{live_raw:?}"),
+            format!("{copied_raw:?}"),
+            "advisor identity at {addr:#x} must read the same on the copy",
+        );
+        advisors += 1;
+    }
+
+    println!(
+        "d47 identity reads, copy vs engine: {leaders} country-leader objects \
+         ({leader_refusals} refusing identically), {advisors} advisor objects \
+         ({advisor_refusals} refusing identically)",
+    );
+    assert!(leaders > 0 && advisors > 0);
+    assert!(
+        leader_refusals > 0 || advisor_refusals > 0,
+        "the fixture must stage broken-chain objects, or agreement on \
+         REFUSALS is untested",
+    );
+}
+
+/// SENTINEL. A character body the plan could not read refuses BY NAME, and the
+/// consumer then has no view at all — a gapped hour is not a partial one.
+///
+/// MUTATION: make `acquire` skip a hole it cannot copy and this fails; the
+/// observation would report `Captured` over a snapshot with a character-shaped
+/// hole in it, and every post-bracket reader would see that hole as "this field
+/// could not be read" on a frame that claimed to be complete.
+#[test]
+fn d47_the_copy_plan_refuses_an_unreadable_body_by_name() {
+    let world = fu_acceptance_world();
+    // RESERVED AND NOT COMMITTED, and HELD for the length of the test.
+    //
+    // Not an arbitrary offset from a live address: the bench arenas are
+    // `VirtualAlloc`ed across one process and the suite runs in parallel, so
+    // "some address a long way from this one" is readable whenever a
+    // neighbouring fixture happens to have been placed there — which is a test
+    // that passes alone and fails under `cargo test`. Holding the reservation
+    // is what makes the address unreadable by construction and keeps any other
+    // fixture from committing it while this runs.
+    let reserved = unsafe {
+        VirtualAlloc(
+            std::ptr::null_mut(),
+            0x1000,
+            BENCH_MEM_RESERVE,
+            BENCH_PAGE_READWRITE,
+        )
+    };
+    assert!(!reserved.is_null(), "could not reserve an uncommitted page");
+    let mut roster = world.roster.clone();
+    roster.push(reserved as usize);
+    let build = fw_observe(&roster);
+    unsafe { VirtualFree(reserved, 0, BENCH_MEM_RELEASE) };
+    match fw_outcome(&build) {
+        RecipeOutcome::Refused(Refusal::MemoryUnreadable { .. }) => {}
+        other => panic!("expected a named memory refusal, got {other:?}"),
+    }
+    assert!(build.snapshot.view_for(D47_CONSUMER, FW_HOUR).is_err());
+}
+
+/// THE PRICE. In-bracket wall time of the copy plan against the live prewarm's
+/// role-discovery arm, at t32's census width.
+///
+/// Both arms are the WHOLE of their side. The copy arm is `observe`, and every
+/// part of it — the copies, the coalescing, the deduplication, the ownership
+/// index and the freeze — is inside the bracket. The live arm is the container
+/// walk plus the two admissions, which is what the bracket replaces. Interleaved
+/// runs, because this machine drifts more between runs than the effect is wide.
+#[test]
+#[ignore = "measurement instrument; run explicitly with --ignored"]
+fn d47_cost_copy_plan_vs_live_discovery() {
+    let world = fu_cost_world();
+    page_cache_new_frame();
+
+    let plan = domain47_copy_plan(&Domain47PlanRoots::Characters(
+        world.census_characters.iter().map(|a| *a as u64).collect(),
+    ));
+    let observe_once = || {
+        observe(
+            &[plan.clone()],
+            &Domain47SnapshotMemory,
+            ObservationConfig::new(FW_HOUR),
+        )
+        .expect("custody")
+    };
+
+    // One priced run first, so the SHAPE is reported even when the timing is
+    // noisy: a reader of this lane needs the bytes and the transaction count,
+    // not only a microsecond figure.
+    let build = observe_once();
+    let report = *build.report_for(D47_RECIPE).expect("reported");
+    assert_eq!(report.outcome, RecipeOutcome::Captured);
+
+    let copy_arm = || observe_once().snapshot.interval_count();
+    let discovery_arm = || {
+        let (leaders, advisors) = fu_cost_walk_arm(&world);
+        leaders + advisors
+    };
+    // THE COMPARABLE ARM. `fu_cost_walk_arm` is DISCOVERY only: it reads each
+    // character's 40-byte map header twice and skips almost everything else on
+    // a character holding no role. The copy plan copies the whole
+    // `CCHARACTER_RAW_FIELDS_SPAN` body of every character on the roster,
+    // because the census does — that body is where `char_id`, the country and
+    // the unit-leader pointer live, and the prewarm reads all three per
+    // character. Comparing the plan against discovery alone charges it for work
+    // the other arm never does, so the census body read is added here through
+    // the same `read_into` primitive the substrate copies with.
+    let census_arm = || {
+        let mut body = [0u8; domain47::extractor::CCHARACTER_RAW_FIELDS_SPAN];
+        let mut read = 0usize;
+        for addr in world.census_characters.iter().copied() {
+            if read_into(addr, &mut body) {
+                read += 1;
+            }
+        }
+        let (leaders, advisors) = fu_cost_walk_arm(&world);
+        read + leaders + advisors
+    };
+
+    let (discovery_us, copy_us) = time_us_median_ab_n(7, 3, discovery_arm, copy_arm);
+    let (census_us, copy_again_us) = time_us_median_ab_n(7, 3, census_arm, copy_arm);
+    let pct = |before: f64, after: f64| (after - before) / before * 100.0;
+    println!(
+        "d47 S4 price over {} characters, {} live + {} dead leader objects, \
+         {} live + {} dead advisor objects:\n  \
+         live discovery only (walk + two admissions):   {discovery_us:.1} us\n  \
+         live census + discovery (the comparable arm):  {census_us:.1} us\n  \
+         copy plan, vs discovery only:                  {copy_us:.1} us ({:+.1} us, {:+.1}%)\n  \
+         copy plan, vs census + discovery:              {copy_again_us:.1} us ({:+.1} us, {:+.1}%)\n  \
+         copy plan shape: {} copy tasks, {} planned ranges, {} planned bytes, \
+         {} intervals, {} B arena, {} B custody held, {} forward waves\n  \
+         per transaction: {:.0} ns (the substrate's own bench measures {} ns/txn of \
+         bookkeeping on a CONTIGUOUS fixture; the rest is this fixture's \
+         one-object-per-page scatter and the guarded-read gate)",
+        T32_CENSUS_CHARACTERS,
+        EJ_LEADER_ENTRIES,
+        FU_DEAD_LEADERS,
+        EJ_ADVISOR_ENTRIES,
+        FU_DEAD_ADVISORS,
+        copy_us - discovery_us,
+        pct(discovery_us, copy_us),
+        copy_again_us - census_us,
+        pct(census_us, copy_again_us),
+        report.copy_tasks,
+        report.planned_ranges,
+        report.planned_bytes,
+        build.snapshot.interval_count(),
+        build.snapshot.custody_bytes(),
+        build.custody_held,
+        build.forward_waves_run,
+        copy_us * 1000.0 / f64::from(report.planned_ranges),
+        177,
+    );
+}
+
+/// SENTINEL, and the reason it exists as its own fixture.
+///
+/// `d47_the_copy_plan_reaches_the_walks_role_population` names two mutations
+/// and catches NEITHER on the acceptance world, because that world cannot
+/// express them (Codex 019fe3eb, finding 2):
+///
+///  * its widest map holds two nodes, and with two nodes `_Myhead->_Left` and
+///    `_Myhead->_Right` already ARE both of them, so dropping the `_Parent`
+///    chase loses nothing. Three nodes is the smallest shape where the root is
+///    reachable only through `_Parent`: heap order makes node 0 the root, and
+///    the sentinel's descended extrema are nodes 1 and 2, whose own children
+///    are the sentinel.
+///  * `ej_put_tree` leaves the sentinel's value slot zero, so deleting the
+///    `_Isnil` guard takes `DecodePointer`'s null exit rather than chasing
+///    anything. A real sentinel's value slot is allocated and never
+///    constructed — whatever the allocator last left there — so the fixture has
+///    to poison it for the guard to be doing any work.
+///
+/// Both are staged here. This test fails if either mutation is applied.
+#[test]
+fn d47_the_copy_plan_walks_past_the_sentinel_and_not_through_it() {
+    let world = EjSingleCharacterWorld::new(3, 3);
+    // A held, uncommitted page: the sentinel's dead value slot, as the
+    // allocator would leave it. Held for the length of the test so no
+    // concurrent fixture can make the address readable — see
+    // `d47_the_copy_plan_refuses_an_unreadable_body_by_name`.
+    let poison = unsafe {
+        VirtualAlloc(
+            std::ptr::null_mut(),
+            0x1000,
+            BENCH_MEM_RESERVE,
+            BENCH_PAGE_READWRITE,
+        )
+    };
+    assert!(!poison.is_null(), "could not reserve an uncommitted page");
+    let advisor_head = world.character + DOMAIN47_ADVISOR_MAP_HEAD_OFF;
+    let advisor_head = read_u64(advisor_head).expect("the fixture wrote it") as usize;
+    world.arena.put_u64(
+        world.leader_head + DOMAIN47_LEADER_NODE_VALUE_OFF,
+        poison as u64,
+    );
+    world
+        .arena
+        .put_u64(advisor_head + DOMAIN47_ADVISOR_NODE_VALUE_OFF, poison as u64);
+
+    let build = fw_observe(&[world.character]);
+    unsafe { VirtualFree(poison, 0, BENCH_MEM_RELEASE) };
+
+    // THE `_Isnil` GUARD. Without it the sentinel's poisoned slot is chased and
+    // the whole recipe takes `MemoryUnreadable`.
+    assert_eq!(
+        fw_outcome(&build),
+        RecipeOutcome::Captured,
+        "the sentinel's dead value slot must not be dereferenced",
+    );
+    let view = build.snapshot.view_for(D47_CONSUMER, FW_HOUR).expect("view");
+    let memory = Domain47ViewMemory::new(view);
+    assert!(
+        memory.covers(poison as u64, 1).is_err(),
+        "nothing may be copied at the address the sentinel's dead slot named",
+    );
+
+    // THE `_Parent` CHASE. Node 0 is the root and the only node NOT reachable
+    // from the sentinel's `_Left` / `_Right`, so its value is copied only if
+    // `_Parent` is followed.
+    let walk = world.walk();
+    assert_eq!(walk.refused, 0, "the fixture's maps must walk cleanly");
+    for (label, values, span) in [
+        ("leader", &world.leaders, COUNTRY_LEADER_BODY_SPAN),
+        ("advisor", &world.advisors, ADVISOR_BODY_SPAN),
+    ] {
+        assert_eq!(values.len(), 3, "three nodes is the shape this test needs");
+        for (index, value) in values.iter().enumerate() {
+            assert!(
+                memory.covers(*value, span as usize).is_ok(),
+                "{label} node {index}'s value object must be copied; node 0 is \
+                 the root and is reachable only through `_Myhead->_Parent`",
+            );
+        }
+    }
+    // And the plan's population is the walk's on this fixture too.
+    let reached_leaders = fw_reached(
+        &build,
+        &world.leaders.iter().map(|v| *v as usize).collect::<Vec<_>>(),
+        COUNTRY_LEADER_BODY_SPAN,
+    );
+    assert_eq!(reached_leaders, walk.leaders);
+}

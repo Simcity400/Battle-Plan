@@ -960,7 +960,7 @@ fn bench_decode_dispatch_with_discovery() {
                 size: NODE as u32,
                 next: vec![1],
             },
-            RecipeOp::DecodePointer { offset: 0, next: 0 },
+            RecipeOp::DecodePointer { offset: 0, guard: None, next: 0 },
             RecipeOp::Freeze,
         ],
         (0..roots)
@@ -1057,7 +1057,7 @@ fn bench_observation_over_many_waves_and_recipes() {
                             size: NODE as u32,
                             next: vec![1, 2],
                         },
-                        RecipeOp::DecodePointer { offset: 0, next: 0 },
+                        RecipeOp::DecodePointer { offset: 0, guard: None, next: 0 },
                         RecipeOp::Freeze,
                     ],
                     (0..roots)
