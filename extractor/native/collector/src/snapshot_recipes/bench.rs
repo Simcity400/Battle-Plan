@@ -575,6 +575,9 @@ fn bench_component_attribution() {
         records,
         links,
         BTreeMap::new(),
+        super::annot::Annotations::new(),
+        Vec::new(),
+        Vec::new(),
         &ledger,
     )
     .expect("custody budget");

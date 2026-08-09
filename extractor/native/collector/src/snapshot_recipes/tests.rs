@@ -83,7 +83,7 @@ fn outcome(build: &SnapshotBuild, id: u32) -> RecipeOutcome {
 
 fn refusal(build: &SnapshotBuild, id: u32) -> Refusal {
     match outcome(build, id) {
-        RecipeOutcome::Refused(refusal) => refusal,
+        RecipeOutcome::Refused(record) => record.refusal,
         RecipeOutcome::Captured => panic!("recipe {id} was captured, expected a refusal"),
     }
 }
@@ -385,7 +385,7 @@ fn depth_past_the_limit_refuses_and_does_not_truncate() {
     assert_eq!(refusal(&build, 1), expected);
     assert_eq!(
         build.snapshot.gap_reason(ConsumerId(1)),
-        Some(GapReason::Refused(expected)),
+        Some(GapReason::Refused(RefusalRecord::bare(expected))),
         "a refused recipe gaps its consumer, it does not deliver 13 of 14 nodes"
     );
 }
@@ -3772,7 +3772,10 @@ fn the_root_reservation_is_bounded_by_what_a_recipe_may_enqueue() {
     assert!(
         matches!(
             report.outcome,
-            RecipeOutcome::Refused(Refusal::CopyTaskLimitExceeded { limit: TASKS, .. })
+            RecipeOutcome::Refused(RefusalRecord {
+                refusal: Refusal::CopyTaskLimitExceeded { limit: TASKS, .. },
+                ..
+            })
         ),
         "the declared roots are refused by the recipe's own task limit, not by custody: {:?}",
         report.outcome,
@@ -3858,7 +3861,10 @@ fn a_recipe_that_fails_validation_does_not_size_the_root_reservation() {
     assert!(
         matches!(
             outcome(&build, 1),
-            RecipeOutcome::Refused(Refusal::Malformed { .. })
+            RecipeOutcome::Refused(RefusalRecord {
+                refusal: Refusal::Malformed { .. },
+                ..
+            })
         ),
         "the malformed recipe refuses on its own account: {:?}",
         outcome(&build, 1),

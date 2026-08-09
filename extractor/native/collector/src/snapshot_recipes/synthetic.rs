@@ -28,7 +28,11 @@ struct Region {
 }
 
 /// A fake address space.
-#[derive(Debug, Default)]
+///
+/// `Clone` so a test can run the SAME staged world through two observations —
+/// a quiet one and a mutated one — and compare them. A rebuilt world is not the
+/// same world: the two would differ in whatever the builder does not pin.
+#[derive(Clone, Debug, Default)]
 pub struct SyntheticMemory {
     regions: Vec<Region>,
     copies: Cell<u64>,

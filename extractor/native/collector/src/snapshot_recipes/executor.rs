@@ -48,8 +48,8 @@ use super::policy::{AnchorKind, CopyRequest, GapPolicy, Proof, Provenance};
 use super::view::Snapshot;
 use super::{
     ConsumerId, CustodyRefusal, FxSet, GapReason, HourStamp, IntervalId, Limits, MalformedReason,
-    RecipeId, Refusal, SnapshotMemory, Span, TableId, DEFAULT_CUSTODY_BUDGET_BYTES, FORWARD_WAVES,
-    MAX_RECIPE_DEPTH,
+    RecipeId, Refusal, RefusalRecord, RefusalWitness, SnapshotMemory, Span, TableId,
+    DEFAULT_CUSTODY_BUDGET_BYTES, FORWARD_WAVES, MAX_RECIPE_DEPTH,
 };
 
 /// Recipes an observation may hold, so that [`visit_tag`]'s packing is a
@@ -238,6 +238,360 @@ impl RelWindow {
     }
 }
 
+/// One term of a [`CountExpr`]: an unsigned field of already-copied bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CountTerm {
+    pub offset: u32,
+    pub width: u8,
+}
+
+/// An element count derived from a BOUNDED SUM of copied header fields.
+///
+/// # Why this is still address-and-length decoding
+///
+/// d81's hash tables size themselves `mask + max_probe + 2` — the engine's own
+/// formula, already in production in `d81_hash_table_rows` — because
+/// `select_secondary` starts at the masked slot, advances without wrapping, and
+/// reads the terminating marker one slot past its last admitted step. A recipe
+/// that could only name ONE count field could not copy that table without
+/// copying short of it.
+///
+/// The expression is a sum of at most [`super::MAX_COUNT_EXPR_TERMS`] fields
+/// and a constant. There is no multiplication, no field-to-field reference, no
+/// branching and no iteration: it computes a LENGTH, which is precisely what
+/// guarantee 2 permits between waves. Arithmetic is checked in `u128` and a sum
+/// past the op's `max_count` is [`Refusal::ExtentCountExceeded`], never a
+/// truncated table.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CountExpr {
+    pub terms: Vec<CountTerm>,
+    pub constant: u32,
+}
+
+/// What a rejected pointer does to the branch that decoded it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RejectAction {
+    /// Stop the branch and RECORD the rejection with its witness. The recipe
+    /// keeps its other branches and its consumer keeps its hour. This is d81's
+    /// shape: it rejects a pointer, reports its own typed `InvalidPointer` with
+    /// stage and subject, and walks on.
+    StopBranch,
+    /// Refuse the recipe with [`Refusal::PointerNotAdmissible`].
+    RefuseRecipe,
+}
+
+/// The predicate a decoded pointer must satisfy before it is followed.
+///
+/// d81 admits a pointer on a heap range plus 8-byte alignment, and the
+/// selector-owner route additionally admits one exact static address. Without
+/// this the substrate follows pointers the reader would have rejected: if the
+/// address happens to be readable it copies a wrong object, and if it does not
+/// it turns a typed `InvalidPointer` into a generic memory refusal that gaps
+/// the whole recipe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Admissibility {
+    /// Inclusive low bound.
+    pub low: u64,
+    /// EXCLUSIVE high bound.
+    pub high: u64,
+    /// Required alignment, a power of two. 0 or 1 means none.
+    pub align: u32,
+    /// Exact addresses admitted regardless of the window. Zero entries are
+    /// unused; a null pointer never reaches the predicate, so 0 cannot be a
+    /// meaningful singleton.
+    pub singletons: [u64; 2],
+    pub on_reject: RejectAction,
+}
+
+impl Admissibility {
+    pub fn admits(&self, addr: u64) -> bool {
+        if self.singletons.contains(&addr) && addr != 0 {
+            return true;
+        }
+        if addr < self.low || addr >= self.high {
+            return false;
+        }
+        if self.align > 1 && addr % u64::from(self.align) != 0 {
+            return false;
+        }
+        true
+    }
+
+    fn well_formed(&self) -> bool {
+        self.high > self.low && (self.align <= 1 || self.align.is_power_of_two())
+    }
+}
+
+/// Where a branch's carried scalar comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarrySource {
+    /// Read it out of already-copied bytes at the decode site.
+    Field { offset: u32, width: u8 },
+    /// A literal.
+    Constant(u64),
+    /// The site's index within the decoded extent it is an element of.
+    ///
+    /// d81's whole province walk is keyed on this and on nothing else: the rail
+    /// table is indexed BY province id, so a slot's id is its position and is
+    /// not written anywhere in the slot. A carry that could only read fields
+    /// therefore could not express the walk at all. Zero at any site that is
+    /// not an extent element, which is what `index` already means there.
+    ElementIndex,
+}
+
+/// ONE scalar travels with a discovery branch, and it is one on purpose.
+///
+/// d81 needs a topology province id to select a rail slot, then — after
+/// following the rail-info pointer, a wave later — the SAME id to select an
+/// active entry and a map-province slot; and in the hub an outer POV id selects
+/// a foreign row and later a relation-table entry. Every carrying requirement
+/// the census found reuses a single identity, so the context is a single `u64`
+/// rather than a register file. That keeps [`CopyTask`] and [`DecodeSite`] —
+/// the two types the hottest loops in the substrate copy — eight bytes wider
+/// instead of thirty-two.
+pub type Carry = Option<u64>;
+
+/// A [`Carry`] as it is STORED on a task and a decode site.
+///
+/// `Option<u64>` has no niche, so it is sixteen bytes; a `u64` and a flag is
+/// nine, and the flag packs into padding both [`CopyTask`] and [`DecodeSite`]
+/// already had. That is not a micro-optimisation on this path: those two types
+/// are memcpy'd into and out of the wave queue and the site stack once per task
+/// and once per decode site, which is the hottest loop the substrate has, and
+/// the `Option` spelling measured at +23% on `dispatch: construct + queue push`
+/// and +81% on `dispatch: decode_wave` in the substrate's own bench.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct CarrySlot {
+    value: u64,
+    set: bool,
+}
+
+impl CarrySlot {
+    #[inline]
+    fn get(self) -> Carry {
+        if self.set {
+            Some(self.value)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn from(carry: Carry) -> Self {
+        match carry {
+            Some(value) => Self { value, set: true },
+            None => Self {
+                value: 0,
+                set: false,
+            },
+        }
+    }
+}
+
+/// What a disagreement between back-to-back images does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisagreeAction {
+    /// Gap the consumers of the interval. The copier knows the image is torn,
+    /// so it never issues it.
+    Gap,
+    /// Record it and issue the image anyway. For a reader that resolves a
+    /// disagreement itself — d81's active-window sampler takes up to three
+    /// samples and stops when two agree.
+    Record,
+}
+
+/// How many back-to-back images one copy takes.
+///
+/// # This is the only instrument that can see a torn read
+///
+/// Every `read_*_stable` in d81 is two adjacent guarded reads compared against
+/// each other, and `d81_read_stable_bytes` does the same to a whole hash table.
+/// The substrate could not express it at all: duplicate copy tasks are pruned,
+/// acquisition copies only holes it does not already own, and the closing slot
+/// is populated only after every forward wave — nanoseconds is not a gap the
+/// opening/closing pair can measure.
+///
+/// WHAT IT DOES NOT FIX, stated because no API can: the sampling INTERVAL. A
+/// pair taken over a 400 KB table is not the same instrument as a pair taken
+/// over an 8-byte slot; the window a concurrent writer has to be caught in
+/// widens with the range. That is inherent to copy-only brackets and its cost
+/// can only be measured from a capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleSpec {
+    /// 1..=[`super::MAX_ADJACENT_SAMPLES`].
+    pub count: u8,
+    pub on_disagree: DisagreeAction,
+}
+
+impl Default for SampleSpec {
+    fn default() -> Self {
+        Self {
+            count: 1,
+            on_disagree: DisagreeAction::Gap,
+        }
+    }
+}
+
+/// What an unreadable span inside this op's copy costs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tolerance {
+    /// The recipe refuses: [`Refusal::MemoryUnreadable`]. The default, and the
+    /// only setting under which guarantee 1 is unqualified.
+    #[default]
+    Required,
+    /// RULING A. The unreadable span is recorded as a [`super::Void`] and the
+    /// rest of the copy lands. Only a read that touches the void refuses, so a
+    /// row whose consumed bytes never reach it publishes.
+    ///
+    /// It is called SCOPED and not "speculative" because it does two jobs and
+    /// only one of them is speculation:
+    ///
+    ///  * the bytes a copy plan takes because it must take supersets — the
+    ///    buckets, nodes, anchors and table tails a selective reader would never
+    ///    have touched. No consumer reaches these, so nothing refuses;
+    ///  * the bytes ONE ROW consumes out of a shared engine table. The row
+    ///    whose slot is in the void refuses, at its own read, and every other
+    ///    row of the same table publishes.
+    ///
+    /// The second is the case ruling A is actually about, and it is why
+    /// declaring `Scoped` is not a way of making a failure disappear: it moves
+    /// the refusal from the RECIPE to the READ, which is the finest granularity
+    /// consumed bytes have. A row that needs the bytes still fails, by name,
+    /// with [`super::view::ViewRefusal::Unreadable`].
+    Scoped,
+}
+
+/// The bytes a reader CONSUMES out of the object an op copies.
+///
+/// Empty means all of them, which is what every op meant before ruling B.
+/// Windows are relative to the op's own address, exactly like
+/// [`RecipeOp::CopyRanges`]'s.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompareMask {
+    pub windows: Vec<RelWindow>,
+}
+
+/// One stage of a recipe's closing program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloseStage {
+    /// The stage tag its ops carry.
+    pub stage: u16,
+    /// Close nothing for this stage where a LATER stage covers the same
+    /// interval; that stage's close reports in this one's clothes.
+    ///
+    /// d81 does exactly this: when the selector slot and the source slot
+    /// coincide, the earlier selector close is elided in favour of the later
+    /// source-position read, and selector failure attribution is retained.
+    pub elide_into: Option<u16>,
+}
+
+/// RULING B. The order a recipe closes its witnesses in.
+///
+/// Stages close in the order they are listed; intervals carrying no listed
+/// stage close last, in interval-id order, which is exactly the single generic
+/// wave the substrate had before. Elision is per stage and it keeps the elided
+/// stage's attribution.
+///
+/// WHAT THIS DOES NOT DO: run a close mid-walk. d81 closes its rail header
+/// inside each province's iteration; reproducing that requires closing copies
+/// interleaved with discovery, which is a different executor topology from
+/// "every forward wave, then closes". Ordering and elision are expressible;
+/// mid-walk scheduling is recorded as a residual rather than pretended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClosingProgram {
+    pub stages: Vec<CloseStage>,
+}
+
+/// Opt-in qualifications on a single op.
+///
+/// # Why a side table and not more fields on [`RecipeOp`]
+///
+/// Nine of these ten knobs are unused by nine ops out of ten. Putting them in
+/// the enum widens every op in every recipe — the enum is matched once per
+/// decode site — to carry defaults. A modifier table is either EMPTY, in which
+/// case the whole vocabulary costs one branch per site and the executor behaves
+/// exactly as it did, or it is one entry per op and the lookup is an array
+/// index. `validate` rejects anything in between, because a partial table would
+/// silently apply an op's qualifications to its neighbour.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OpMod {
+    /// `DecodeExtent` only: derive the count instead of reading one field.
+    pub count: Option<CountExpr>,
+    /// `DecodePointer`/`DecodeExtent` only: admit the decoded pointer first.
+    pub admit: Option<Admissibility>,
+    /// Any decode op: set the branch's carried scalar for everything below.
+    pub carry: Option<CarrySource>,
+    /// `JoinBounded` only: index by the carried scalar rather than a field.
+    pub key_from_carry: bool,
+    /// `DecodeExtent`/`JoinBounded` only: scope the table binding to the
+    /// carried scalar, so one logical table has independent per-instance
+    /// bindings.
+    pub instance_from_carry: bool,
+    /// Copy ops only.
+    pub samples: SampleSpec,
+    /// Copy ops only.
+    pub tolerance: Tolerance,
+    /// Copy ops only.
+    pub compare: CompareMask,
+    /// Any op: the stage tag its intervals and its refusals carry.
+    pub stage: u16,
+}
+
+/// The answer for every op of every recipe that declares no modifier table.
+///
+/// A `static` rather than a `OnceLock` or a per-call temporary: `Vec::new` is a
+/// const fn, so the whole value is built at compile time and reading it is a
+/// static address. See [`Recipe::op_mod`] for why that matters.
+static UNQUALIFIED: OpMod = OpMod {
+    count: None,
+    admit: None,
+    carry: None,
+    key_from_carry: false,
+    instance_from_carry: false,
+    samples: SampleSpec {
+        count: 1,
+        on_disagree: DisagreeAction::Gap,
+    },
+    tolerance: Tolerance::Required,
+    compare: CompareMask {
+        windows: Vec::new(),
+    },
+    stage: 0,
+};
+
+impl OpMod {
+    fn is_default(&self) -> bool {
+        self.count.is_none()
+            && self.admit.is_none()
+            && self.carry.is_none()
+            && !self.key_from_carry
+            && !self.instance_from_carry
+            && self.samples == SampleSpec::default()
+            && self.tolerance == Tolerance::default()
+            && self.compare.windows.is_empty()
+            && self.stage == 0
+    }
+}
+
+/// The predicate a [`RecipeOp::SelectByValue`] evaluates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Probe {
+    /// An unsigned field of already-copied bytes equals a literal.
+    FieldEquals { offset: u32, width: u8, value: u64 },
+    /// An unsigned field lies in `[low, high]`, inclusive.
+    FieldInRange {
+        offset: u32,
+        width: u8,
+        low: u64,
+        high: u64,
+    },
+    /// The first two back-to-back images of the bytes at this window agree.
+    /// Requires the copy that produced them to have declared a sample count
+    /// above one; an interval with no second image never agrees, which is the
+    /// conservative answer.
+    SamplesAgree { offset: u32, len: u32 },
+}
+
 /// One instruction of a recipe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecipeOp {
@@ -345,6 +699,44 @@ pub enum RecipeOp {
         key_width: u8,
         next: u16,
     },
+    /// DECODE. RULING C (2026-08-09). Evaluate a BOUNDED predicate over
+    /// already-copied bytes and choose which copy op runs next.
+    ///
+    /// # The structural/semantic line, at the op that walks it
+    ///
+    /// STRUCTURAL discovery — permitted here — decides WHAT TO COPY. Which of
+    /// two layouts an object has; whether a wide window's two images agree so
+    /// the wide copy stands, or disagree so the three narrow copies are taken
+    /// instead; which of an anchor triplet's members the next hop is keyed on.
+    /// The op's whole output is an edge in the copy graph.
+    ///
+    /// SEMANTIC evaluation — still forbidden — computes a RESULT. Filtering
+    /// rows, comparing a field against a threshold that decides what the reader
+    /// will report, accumulating, or letting a value out of the bracket in any
+    /// form other than the copied bytes themselves.
+    ///
+    /// The bound is what keeps the two apart, and it is in the type rather than
+    /// in a comment: the probe reads one field of at most eight bytes, or
+    /// compares at most [`super::MAX_PROBE_COMPARE_BYTES`] bytes of two images
+    /// that are ALREADY in the arena; there is exactly one taken arm; the arms
+    /// are copy ops, so the only thing an arm can do is copy; and nothing the
+    /// probe read is retained, passed on, or readable by the consumer. A
+    /// program cannot chain these to compute: the op has no output to chain.
+    ///
+    /// The chosen arm copies at the SITE'S OWN ADDRESS, one wave deeper. The
+    /// extra wave is the honest cost of deciding from copied bytes: the bytes
+    /// have to have landed before the decision, and the next copy has to be
+    /// submitted after it.
+    SelectByValue {
+        probe: Probe,
+        /// Copy op to run when the predicate holds.
+        then: u16,
+        /// Copy op to run when it does not. `None` ends the branch, which is
+        /// a refusal ([`Refusal::ConditionalUnresolved`]) rather than a silent
+        /// stop: a conditional that quietly does nothing is a short result
+        /// reported as success.
+        otherwise: Option<u16>,
+    },
     /// DECODE. Declare that this recipe's result is only valid if a closing
     /// witness certifies the bytes it read. Enrols every interval this
     /// recipe's consumer depends on in the closing wave.
@@ -388,10 +780,16 @@ pub struct Recipe {
     pub policy: GapPolicy,
     pub ops: Vec<RecipeOp>,
     pub roots: Vec<Root>,
+    /// Per-op qualifications. EMPTY or exactly `ops.len()` long; see [`OpMod`].
+    pub mods: Vec<OpMod>,
+    /// RULING B. Closure order and elision. `None` is the single generic
+    /// closing wave.
+    pub closing: Option<ClosingProgram>,
 }
 
 impl Recipe {
-    /// A recipe with default limits and the default policy.
+    /// A recipe with default limits, the default policy, no per-op
+    /// qualifications and the generic closing wave.
     pub fn new(id: RecipeId, consumer: ConsumerId, ops: Vec<RecipeOp>, roots: Vec<Root>) -> Self {
         Self {
             id,
@@ -400,7 +798,43 @@ impl Recipe {
             policy: GapPolicy::default(),
             ops,
             roots,
+            mods: Vec::new(),
+            closing: None,
         }
+    }
+
+    /// Attach a full modifier table. Length is checked by [`validate`].
+    pub fn with_mods(mut self, mods: Vec<OpMod>) -> Self {
+        self.mods = mods;
+        self
+    }
+
+    pub fn with_closing(mut self, closing: ClosingProgram) -> Self {
+        self.closing = Some(closing);
+        self
+    }
+
+    /// The qualifications of one op.
+    ///
+    /// A recipe with no modifier table answers [`UNQUALIFIED`], so the caller
+    /// pays one `is_empty` test — no allocation, no lock, no atomic. This is on
+    /// the hottest path the substrate has (once per decode site), and lane FW's
+    /// measurement is why it is spelled this way: the substrate already charges
+    /// 618–672 ns per transaction against 7.6 ns of actual copying, so a
+    /// vocabulary that added even an atomic load per site would be paying for
+    /// expressiveness out of the same budget the conversion is trying to win.
+    #[inline]
+    pub(super) fn op_mod(&self, op: u16) -> &OpMod {
+        if self.mods.is_empty() {
+            return &UNQUALIFIED;
+        }
+        &self.mods[op as usize]
+    }
+
+    /// True when anything in this recipe needs the per-interval annotation
+    /// tables. Computed once per observation, not per site.
+    pub(super) fn needs_annotations(&self) -> bool {
+        self.closing.is_some() || self.mods.iter().any(|op| !op.is_default())
     }
 }
 
@@ -436,6 +870,17 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
 
     let count = recipe.ops.len();
     let in_range = |op: u16| (op as usize) < count;
+
+    // The modifier table is all or nothing. A short table would leave the tail
+    // of the program unqualified; a long one would carry qualifications for ops
+    // that do not exist, and neither is distinguishable from a table whose
+    // entries have simply been misaligned by an edit.
+    if !recipe.mods.is_empty() && recipe.mods.len() != count {
+        return Err(bad(MalformedReason::ModsLengthMismatch {
+            ops: count as u32,
+            mods: recipe.mods.len() as u32,
+        }));
+    }
 
     for root in &recipe.roots {
         if !in_range(root.op) {
@@ -548,6 +993,36 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
                 }
                 expect(*next, OpKind::Copy)?;
             }
+            RecipeOp::SelectByValue {
+                probe,
+                then,
+                otherwise,
+            } => {
+                match probe {
+                    Probe::FieldEquals { width, .. } | Probe::FieldInRange { width, .. } => {
+                        if !matches!(width, 1 | 2 | 4 | 8) {
+                            return Err(bad(MalformedReason::BadWidth {
+                                op: here,
+                                width: *width,
+                            }));
+                        }
+                    }
+                    Probe::SamplesAgree { len, .. } => {
+                        if *len == 0 || *len > super::MAX_PROBE_COMPARE_BYTES {
+                            return Err(bad(MalformedReason::ProbeTooWide {
+                                op: here,
+                                len: *len,
+                            }));
+                        }
+                    }
+                }
+                // Both arms are COPY ops. That is the bound in the type: the
+                // only thing a conditional can do is choose what to copy.
+                expect(*then, OpKind::Copy)?;
+                if let Some(target) = otherwise {
+                    expect(*target, OpKind::Copy)?;
+                }
+            }
             RecipeOp::WitnessClose { next } => {
                 if next.is_empty() {
                     return Err(bad(MalformedReason::DanglingBranch { op: here }));
@@ -558,6 +1033,180 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
             }
             RecipeOp::Freeze => {}
         }
+        validate_mod(recipe, here, op).map_err(bad)?;
+    }
+    validate_closing(recipe).map_err(bad)?;
+    Ok(())
+}
+
+/// A modifier may only qualify an op that can honour it.
+///
+/// This is not tidiness. A count expression on a `DecodePointer` or a
+/// comparison mask on a `Freeze` would be silently ignored, and a recipe author
+/// would then believe a bound was in force that nothing applies — which is the
+/// shape of every unbounded-copy defect this vocabulary exists to prevent.
+fn validate_mod(recipe: &Recipe, here: u16, op: &RecipeOp) -> Result<(), MalformedReason> {
+    if recipe.mods.is_empty() {
+        return Ok(());
+    }
+    let modifier = &recipe.mods[here as usize];
+    // A `DecodeExtent` is a decode op that nevertheless CAUSES a copy — the
+    // whole element array, as one transaction — so it is the one decode op that
+    // may carry a copy's qualifications.
+    let copies = op.kind() == OpKind::Copy || matches!(op, RecipeOp::DecodeExtent { .. });
+    let is_copy = op.kind() == OpKind::Copy;
+    let wrong = MalformedReason::ModOnWrongOp { op: here };
+
+    if modifier.count.is_some() && !matches!(op, RecipeOp::DecodeExtent { .. }) {
+        return Err(wrong);
+    }
+    if modifier.admit.is_some()
+        && !matches!(
+            op,
+            RecipeOp::DecodePointer { .. } | RecipeOp::DecodeExtent { .. }
+        )
+    {
+        return Err(wrong);
+    }
+    if modifier.carry.is_some() && is_copy {
+        return Err(wrong);
+    }
+    if modifier.key_from_carry && !matches!(op, RecipeOp::JoinBounded { .. }) {
+        return Err(wrong);
+    }
+    if modifier.instance_from_carry
+        && !matches!(
+            op,
+            RecipeOp::DecodeExtent { .. } | RecipeOp::JoinBounded { .. }
+        )
+    {
+        return Err(wrong);
+    }
+    if !copies
+        && (modifier.samples != SampleSpec::default()
+            || modifier.tolerance != Tolerance::default()
+            || !modifier.compare.windows.is_empty())
+    {
+        return Err(wrong);
+    }
+
+    if let Some(expression) = &modifier.count {
+        if expression.terms.len() > super::MAX_COUNT_EXPR_TERMS {
+            return Err(MalformedReason::CountExpressionTooManyTerms {
+                op: here,
+                terms: expression.terms.len() as u32,
+            });
+        }
+        if expression.terms.is_empty() && expression.constant == 0 {
+            return Err(MalformedReason::CountExpressionEmpty { op: here });
+        }
+        for term in &expression.terms {
+            if !matches!(term.width, 1 | 2 | 4 | 8) {
+                return Err(MalformedReason::BadWidth {
+                    op: here,
+                    width: term.width,
+                });
+            }
+        }
+    }
+    if let Some(window) = &modifier.admit {
+        if !window.well_formed() {
+            return Err(MalformedReason::BadAdmissibilityWindow { op: here });
+        }
+    }
+    if let Some(CarrySource::Field { width, .. }) = modifier.carry {
+        if !matches!(width, 1 | 2 | 4 | 8) {
+            return Err(MalformedReason::BadWidth { op: here, width });
+        }
+    }
+    if modifier.samples.count == 0 || modifier.samples.count > super::MAX_ADJACENT_SAMPLES {
+        return Err(MalformedReason::SampleCountOutOfRange {
+            op: here,
+            count: modifier.samples.count,
+        });
+    }
+    if !modifier.compare.windows.is_empty() {
+        if modifier.compare.windows.len() > super::MAX_COMPARE_WINDOWS {
+            return Err(MalformedReason::BadCompareMask { op: here });
+        }
+        // A mask window must lie inside the object its op copies. One that
+        // reached outside would narrow the closing comparison to bytes the
+        // interval does not hold — i.e. compare nothing and certify anyway.
+        let inside = match op {
+            RecipeOp::CopyHeader { size, .. } => modifier.compare.windows.iter().all(|window| {
+                window.offset >= 0
+                    && window.len > 0
+                    && (window.offset as u64)
+                        .checked_add(u64::from(window.len))
+                        .map(|end| end <= u64::from(*size))
+                        .unwrap_or(false)
+            }),
+            RecipeOp::CopyRanges { windows, .. } => {
+                modifier.compare.windows.iter().all(|mask| {
+                    mask.len > 0
+                        && windows.iter().any(|window| {
+                            mask.offset >= window.offset
+                                && i128::from(mask.offset) + i128::from(mask.len)
+                                    <= i128::from(window.offset) + i128::from(window.len)
+                        })
+                })
+            }
+            // An extent's mask is per ELEMENT, so its windows are measured
+            // against the stride rather than against the whole array.
+            RecipeOp::DecodeExtent { stride, .. } => {
+                modifier.compare.windows.iter().all(|mask| {
+                    mask.offset >= 0
+                        && mask.len > 0
+                        && (mask.offset as u64 + u64::from(mask.len)) <= u64::from(*stride)
+                })
+            }
+            _ => false,
+        };
+        if !inside {
+            return Err(MalformedReason::BadCompareMask { op: here });
+        }
+    }
+    Ok(())
+}
+
+/// A closing program may only order stages its own ops carry, and it may only
+/// elide FORWARDS.
+///
+/// Backwards elision is rejected rather than normalised: "close this stage
+/// where a later one covers it" is a claim about which read happens LAST, and a
+/// program that could elide into an earlier stage would be claiming a witness
+/// taken before the bytes it certifies.
+fn validate_closing(recipe: &Recipe) -> Result<(), MalformedReason> {
+    let Some(program) = &recipe.closing else {
+        return Ok(());
+    };
+    if program.stages.len() > super::MAX_CLOSING_STAGES {
+        return Err(MalformedReason::BadClosingProgram {
+            stage: program.stages.len() as u16,
+        });
+    }
+    for (position, stage) in program.stages.iter().enumerate() {
+        if stage.stage == 0 {
+            // Stage 0 is "unstaged", which is the implicit last group.
+            return Err(MalformedReason::BadClosingProgram { stage: 0 });
+        }
+        if program.stages[..position]
+            .iter()
+            .any(|earlier| earlier.stage == stage.stage)
+        {
+            return Err(MalformedReason::BadClosingProgram { stage: stage.stage });
+        }
+        if !recipe.mods.iter().any(|op| op.stage == stage.stage) {
+            return Err(MalformedReason::BadClosingProgram { stage: stage.stage });
+        }
+        if let Some(target) = stage.elide_into {
+            let later = program.stages[position + 1..]
+                .iter()
+                .any(|candidate| candidate.stage == target);
+            if !later {
+                return Err(MalformedReason::BadClosingProgram { stage: stage.stage });
+            }
+        }
     }
     Ok(())
 }
@@ -567,8 +1216,9 @@ pub fn validate(recipe: &Recipe) -> Result<(), Refusal> {
 pub enum RecipeOutcome {
     /// Every branch reached a `Freeze` within every limit.
     Captured,
-    /// A named constraint stopped it. The consumer is gapped with this reason.
-    Refused(Refusal),
+    /// A named constraint stopped it. The consumer is gapped with this reason,
+    /// and the record carries the witness the refusal happened under.
+    Refused(RefusalRecord),
 }
 
 /// Per-recipe accounting for one observation.
@@ -586,6 +1236,15 @@ pub struct RecipeReport {
     /// Branches that reached `Freeze`.
     pub frozen_branches: u32,
     pub witness_required: bool,
+    /// RULING A. Spans a `Tolerance::Scoped` copy could not read. The
+    /// recipe still captured; these bytes are absent and named, and only a read
+    /// that touches one refuses. A non-zero count here is a DEGRADED capture
+    /// that publishes, which is the whole point of the ruling — so it is on the
+    /// report rather than only in the void list.
+    pub scoped_voids: u32,
+    /// Pointers this recipe decoded, rejected on admissibility, and did not
+    /// follow. Branch outcomes, not recipe outcomes.
+    pub pointers_rejected: u32,
 }
 
 /// What one observation produced, before the post-bracket witness comparison.
@@ -616,6 +1275,32 @@ pub struct SnapshotBuild {
     /// Intervals whose closing copy could not be taken. Treated as changed by
     /// the comparison: an uncertifiable witness is a failed one.
     pub(super) unreadable_closes: Vec<IntervalId>,
+    /// The order the closing wave actually ran in, when a recipe DECLARED one.
+    /// RULING B makes closure order a property a recipe states, so it is
+    /// reported rather than implied: a program whose stages ran out of order is
+    /// a defect nothing else would show.
+    ///
+    /// EMPTY when no recipe declared a closing program, which means enrolment
+    /// order — interval-id order, the single generic wave. It is empty rather
+    /// than filled with that default because the default is already knowable
+    /// from the witnessed set, and materialising it would be a work-scaled
+    /// allocation for every observation that did not ask a question.
+    pub closing_order: Vec<IntervalId>,
+    /// Closes skipped because a later stage covered the same interval, with the
+    /// attribution the elided stage keeps.
+    pub elisions: Vec<Elision>,
+}
+
+/// One close that did not happen because a later stage covers the same bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Elision {
+    pub interval: IntervalId,
+    /// The stage whose close was skipped. A failure of the covering close is
+    /// reported against this stage as well — that is what "reports in the
+    /// elided site's clothes" means.
+    pub elided: u16,
+    /// The stage that covers it.
+    pub into: u16,
 }
 
 impl SnapshotBuild {
@@ -698,6 +1383,36 @@ struct TableBinding {
     stride: u32,
 }
 
+/// The joined qualifications of one planned copy. See
+/// [`Observation::copy_attributes`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CopyAttributes {
+    samples: SampleSpec,
+    tolerance: Tolerance,
+    stage: u16,
+    op: u16,
+}
+
+impl Default for CopyAttributes {
+    fn default() -> Self {
+        Self {
+            samples: SampleSpec::default(),
+            tolerance: Tolerance::Required,
+            stage: 0,
+            op: 0,
+        }
+    }
+}
+
+/// Where a comparison mask's windows are measured from.
+#[derive(Clone, Copy, Debug)]
+enum MaskSource {
+    /// An op acting at one address: windows are relative to it.
+    At(u64),
+    /// A decoded extent: windows are relative to EACH element.
+    Strided(u64, u32, u32),
+}
+
 /// Which anchor a task's copy requests rest on.
 ///
 /// # Why this is a tag and not an [`AnchorKind`]
@@ -755,6 +1470,8 @@ pub(super) struct CopyTask {
     depth: u32,
     /// The interval whose bytes produced this task's address.
     parent: Option<IntervalId>,
+    /// The branch's carried scalar. See [`Carry`] for why there is one.
+    carry: CarrySlot,
     body: TaskBody,
 }
 
@@ -771,6 +1488,13 @@ struct DecodeSite {
     base: u64,
     /// The proven region `base` sits in.
     region: Proof,
+    /// The branch's carried scalar, propagated from the task that produced the
+    /// site and possibly reset by a `carry` modifier at the site itself.
+    carry: CarrySlot,
+    /// Element index, when the site is one element of a decoded extent. Carried
+    /// for the witness: d81's first failure names the index it failed at, and
+    /// an extent's elements are otherwise indistinguishable in a refusal.
+    index: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -780,7 +1504,9 @@ struct RecipeState {
     planned_bytes: u64,
     frozen_branches: u32,
     witness_required: bool,
-    refusal: Option<Refusal>,
+    scoped_voids: u32,
+    pointers_rejected: u32,
+    refusal: Option<RefusalRecord>,
 }
 
 impl RecipeState {
@@ -791,6 +1517,8 @@ impl RecipeState {
             planned_bytes: 0,
             frozen_branches: 0,
             witness_required: false,
+            scoped_voids: 0,
+            pointers_rejected: 0,
             refusal: None,
         }
     }
@@ -803,7 +1531,20 @@ struct Observation<'a, M: SnapshotMemory> {
     arena: Arena,
     owners: OwnershipMap,
     states: Vec<RecipeState>,
-    tables: BTreeMap<(usize, TableId), TableBinding>,
+    /// Registered join tables, keyed by `(recipe, table, INSTANCE)`. The
+    /// instance is the branch's carried scalar where the registering op asked
+    /// for it and zero otherwise, so repeated per-country or per-province
+    /// instances of one logical table stay independently addressable instead of
+    /// overwriting each other.
+    tables: BTreeMap<(usize, TableId, u64), TableBinding>,
+    /// Per-interval consumption, samples and stage tags. Untouched, and never
+    /// allocated into, by an observation whose recipes declare no
+    /// qualifications.
+    annot: super::annot::Annotations,
+    /// RULING A. Spans a speculative copy could not read.
+    voids: Vec<super::Void>,
+    /// Pointers decoded, rejected on admissibility, and not followed.
+    rejections: Vec<super::PointerRejection>,
     /// (recipe, op, address, extent length) already expanded.
     visited: VisitedSet,
     /// Tasks pruned as duplicates. Their dependency edges are still real, so
@@ -862,6 +1603,15 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             owners,
             states: recipes.iter().map(|_| RecipeState::new()).collect(),
             tables: BTreeMap::new(),
+            annot: {
+                let mut annot = super::annot::Annotations::new();
+                if recipes.iter().any(Recipe::needs_annotations) {
+                    annot.arm();
+                }
+                annot
+            },
+            voids: Vec::new(),
+            rejections: Vec::new(),
             visited,
             pruned: Vec::new(),
             waves: (0..FORWARD_WAVES + 1).map(|_| Vec::new()).collect(),
@@ -893,12 +1643,17 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// bounded by that wave's task count, which `max_copy_tasks` already
     /// bounds per recipe.
     ///
-    /// Two structures are deliberately not in the sum. `tables` and
-    /// `tables` is a `BTreeMap` whose node allocation is not observable from
-    /// outside, and it is bounded by the registered join tables of the recipes
-    /// in the observation, which does not scale with the work. `by_recipe`
-    /// holds one group per recipe and its groups' capacities are counted
-    /// below.
+    /// `by_recipe` holds one group per recipe and its groups' capacities are
+    /// counted below.
+    ///
+    /// `tables` USED to be excluded on the grounds that it is bounded by the
+    /// registered join tables of the recipes in the observation and so does not
+    /// scale with the work. That stopped being true when table bindings became
+    /// instance-scoped: the key is `(recipe, table, instance)` and the instance
+    /// is a decoded scalar, so a recipe that registers one table per province
+    /// has one entry per province. It is modelled below rather than measured,
+    /// for the reason [`super::annot::Annotations::capacity_bytes`] gives: a
+    /// `BTreeMap`'s allocation is not observable from outside it.
     ///
     /// # `in_flight`, and the hole it closes
     ///
@@ -914,6 +1669,17 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// whole footprint whether the tasks are in `self.waves` or in a local.
     /// Callers that hold no wave pass zero.
     fn charge_own_tables(&mut self, in_flight: u64) -> Result<(), CustodyRefusal> {
+        // The annotation tables reconcile on the SAME schedule and for the same
+        // reason: they grow one insert deep inside the dependency attach, once
+        // per (request, interval), so they cannot admit their own growth. Doing
+        // it here rather than once at the end is what keeps them inside the
+        // ceiling — a recipe that masks a hundred thousand intervals would
+        // otherwise hold work-scaled memory the ledger had never seen until the
+        // observation was already over.
+        if self.annot.armed() {
+            let ledger = self.arena.ledger();
+            self.annot.reconcile(&ledger)?;
+        }
         let bytes = self.own_tables_bytes(in_flight);
         if bytes <= self.own_tables_charged {
             return Ok(());
@@ -939,7 +1705,12 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// time a table was added, and would then agree with the production code
     /// about a footprint neither of them measured.
     fn own_tables_bytes(&self, in_flight: u64) -> u64 {
-        let mut bytes = in_flight
+        // One modelled node per binding: the key is three words and the value
+        // four, plus a `BTreeMap`'s own per-entry overhead. Deliberately
+        // generous — an under-model here is custody the ledger never sees.
+        const TABLE_BINDING_BYTES: u64 = 96;
+        let mut bytes = self.tables.len() as u64 * TABLE_BINDING_BYTES
+            + in_flight
             + super::arena::vec_bytes(&self.pruned)
             + super::arena::vec_bytes(&self.waves)
             + super::arena::vec_bytes(&self.by_recipe)
@@ -958,9 +1729,31 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         bytes
     }
 
-    fn refuse(&mut self, recipe: usize, refusal: Refusal) {
+    /// Refuse with whatever witness the site could give. The FIRST refusal
+    /// wins, as it always has: a recipe's outcome is the constraint that
+    /// stopped it, not the last one it noticed.
+    fn refuse_witnessed(&mut self, recipe: usize, refusal: Refusal, witness: RefusalWitness) {
         if self.states[recipe].refusal.is_none() {
-            self.states[recipe].refusal = Some(refusal);
+            self.states[recipe].refusal = Some(RefusalRecord::new(refusal, witness));
+        }
+    }
+
+    /// Refuse from a place that knows only the reason. Kept distinct from
+    /// [`Self::refuse_witnessed`] so an empty witness is a deliberate statement
+    /// at the call site rather than a default someone forgot to fill.
+    fn refuse(&mut self, recipe: usize, refusal: Refusal) {
+        self.refuse_witnessed(recipe, refusal, RefusalWitness::default());
+    }
+
+    /// The witness a decode site can always produce.
+    fn witness_at(&self, recipe: usize, site: &DecodeSite) -> RefusalWitness {
+        RefusalWitness {
+            stage: self.recipes[recipe].op_mod(site.op).stage,
+            op: site.op,
+            subject: site.base,
+            related: site.region.region().map(|span| span.start).unwrap_or(0),
+            index: site.index,
+            ..RefusalWitness::default()
         }
     }
 
@@ -1075,7 +1868,9 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // knows which of them can enqueue anything.
         for (index, recipe) in self.recipes.iter().enumerate() {
             if let Err(refusal) = validate(recipe) {
-                self.states[index].refusal = Some(refusal);
+                // Structural, and found before any memory is touched, so there
+                // is nothing to witness beyond the reason itself.
+                self.states[index].refusal = Some(RefusalRecord::bare(refusal));
             }
         }
         self.reserve_root_queue()?;
@@ -1089,6 +1884,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     recipe: index,
                     depth: 0,
                     parent: None,
+                    carry: CarrySlot::default(),
                     body: TaskBody::Op {
                         op: root.op,
                         addr: root.addr,
@@ -1133,15 +1929,16 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         self.link_pruned()?;
         self.charge_own_tables(0)?;
         self.enrol_witnesses()?;
-        let (witnessed, unreadable_closes) = self.closing_wave()?;
+        let closing = self.closing_wave()?;
+        let (witnessed, unreadable_closes, closing_order, elisions) = closing;
 
         let phases_run = self.forward_waves_run + u32::from(witnessed > 0);
         let reports = self.build_reports();
         let gapped = reports
             .iter()
             .filter_map(|report| match report.outcome {
-                RecipeOutcome::Refused(refusal) => {
-                    Some((report.consumer, GapReason::Refused(refusal)))
+                RecipeOutcome::Refused(record) => {
+                    Some((report.consumer, GapReason::Refused(record)))
                 }
                 RecipeOutcome::Captured => None,
             })
@@ -1150,6 +1947,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // The ledger outlives the arena: `into_bytes` consumes the arena, and
         // the page index the freeze builds still has to be charged.
         let ledger = self.arena.ledger();
+        self.annot.reconcile(&ledger)?;
         let (records, links) = self.owners.into_frozen()?;
         let snapshot = Snapshot::freeze(
             self.config.hour,
@@ -1157,6 +1955,9 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             records,
             links,
             gapped,
+            self.annot,
+            self.voids,
+            self.rejections,
             &ledger,
         )?;
         let custody_held = ledger.held();
@@ -1173,6 +1974,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             custody_table_bytes,
             custody_arena_bytes,
             unreadable_closes,
+            closing_order,
+            elisions,
         })
     }
 
@@ -1534,7 +2337,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             let mut cursor = self.owners.sweep();
             for index in 0..planned.copies.len() {
                 let span = planned.copies[index].span;
-                match self.acquire(&mut cursor, span, &mut acquisition) {
+                let attributes = self.copy_attributes(recipe, &planned, index, tasks);
+                match self.acquire(&mut cursor, span, &mut acquisition, recipe, attributes) {
                     Ok(Ok(())) => {}
                     Ok(Err(hole)) => {
                         unreadable = Some(hole);
@@ -1572,6 +2376,14 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 let parent = tasks[request.task as usize].parent;
                 self.owners
                     .sweep_overlapping(&mut cursor, request.span, &mut owned);
+                // The annotations hang off the intervals a request covers, so
+                // this is the one pass that already knows both. Skipped whole
+                // when no recipe in the observation declares any: the branch is
+                // one predictable test per request.
+                if self.annot.armed() {
+                    self.annotate(recipe, &tasks[request.task as usize], request.span, &owned);
+                    self.reconcile_samples(recipe, &tasks[request.task as usize], &owned);
+                }
                 for id in owned.iter() {
                     custody = self.owners.add_dependent(*id, consumer, request.span);
                     if custody.is_err() {
@@ -1602,42 +2414,414 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         result
     }
 
+    /// What the ops behind one planned copy asked of it.
+    ///
+    /// A coalesced transaction can serve requests from several ops, so the
+    /// attributes are JOINED, and every join is towards the stricter side:
+    /// `Required` beats `Scoped` (one op that needs the bytes makes the
+    /// whole transaction's failure fatal), `Gap` beats `Record`, and the sample
+    /// count is the maximum anyone asked for. A merge can therefore make a copy
+    /// stricter than one of its contributors asked, never looser.
+    #[inline]
+    fn copy_attributes(
+        &self,
+        recipe: usize,
+        planned: &super::policy::CopyPlan,
+        index: usize,
+        tasks: &[CopyTask],
+    ) -> CopyAttributes {
+        let mut attributes = CopyAttributes::default();
+        if self.recipes[recipe].mods.is_empty() {
+            return attributes;
+        }
+        attributes.tolerance = Tolerance::Scoped;
+        // A JOIN NEEDS THE RIGHT IDENTITY, and this one is `Record`. The join
+        // below only ever moves the policy towards `Gap`, so starting from
+        // `SampleSpec::default()` — which is `Gap` — made every copy's policy
+        // `Gap` whatever its ops declared, and a recipe that elected to resolve
+        // a disagreement itself was gapped by one anyway.
+        attributes.samples.on_disagree = DisagreeAction::Record;
+        let copy = planned.copies[index];
+        for &task in planned.sources_of(&copy) {
+            let op = match tasks[task as usize].body {
+                TaskBody::Op { op, .. } | TaskBody::Extent { op, .. } => op,
+            };
+            let modifier = self.recipes[recipe].op_mod(op);
+            attributes.samples.count = attributes.samples.count.max(modifier.samples.count);
+            if modifier.samples.on_disagree == DisagreeAction::Gap {
+                attributes.samples.on_disagree = DisagreeAction::Gap;
+            }
+            if modifier.tolerance == Tolerance::Required {
+                attributes.tolerance = Tolerance::Required;
+            }
+            attributes.op = op;
+            attributes.stage = modifier.stage;
+        }
+        attributes
+    }
+
     /// Copy `span`, skipping whatever is already owned.
     ///
     /// `Ok(Err(hole))` is a memory refusal at that sub-span; `Err(_)` is a
     /// custody refusal, which is not attributable to one recipe.
+    ///
+    /// # Two amendments live here
+    ///
+    /// RULING A: a hole a `Tolerance::Scoped` copy cannot read is recorded
+    /// as a [`super::Void`] and the loop moves on to the next hole, so the rest
+    /// of an over-read copy still lands. Nothing about the readable bytes is
+    /// changed by the void; what changes is that the recipe is not refused for
+    /// bytes no consumer may ever reach.
+    ///
+    /// The A/B PAIR: a hole whose op asked for more than one sample is copied
+    /// again immediately, into its own arena slot, before the next hole is even
+    /// planned. That adjacency is the whole instrument — a second image taken a
+    /// wave later measures a different thing — so the extra copies are here and
+    /// not anywhere that could be reordered away from them.
     fn acquire(
         &mut self,
         cursor: &mut super::dedup::Cursor,
         span: Span,
         plan: &mut super::dedup::AcquisitionPlan,
+        recipe: usize,
+        attributes: CopyAttributes,
     ) -> Result<Result<(), Span>, CustodyRefusal> {
         self.owners.sweep_plan(cursor, span, plan);
+        // `plan` is a buffer the OBSERVATION owns and the caller has already
+        // taken out of `self`, so iterating it while `self` is mutated is not a
+        // conflicting borrow — and it must stay that way. Copying the holes out
+        // to satisfy a borrow that is not there costs a heap allocation PER COPY
+        // TRANSACTION, which measured as 17% on the substrate's own 100k-range
+        // bench: the whole vocabulary's per-transaction budget, spent on nothing.
+        // Nothing below re-enters this function, so nothing rewrites `plan`.
         for hole in plan.holes.iter().copied() {
-            let len = match usize::try_from(hole.len) {
-                Ok(len) => len,
-                Err(_) => {
-                    return Err(CustodyRefusal::AllocationFailed {
-                        held: self.arena.held(),
-                        requested: hole.len,
-                    })
+            match self.take_hole(hole, recipe, attributes)? {
+                Some(()) => {}
+                None => {
+                    if attributes.tolerance == Tolerance::Required {
+                        return Ok(Err(hole));
+                    }
+                    self.narrow_and_void(hole, span, recipe, attributes)?;
                 }
+            }
+        }
+        Ok(Ok(()))
+    }
+
+    /// One bulk copy: allocate, copy, own it, and take its adjacent samples.
+    /// `None` means the engine refused the span.
+    #[inline]
+    fn take_hole(
+        &mut self,
+        hole: Span,
+        recipe: usize,
+        attributes: CopyAttributes,
+    ) -> Result<Option<()>, CustodyRefusal> {
+        let len = match usize::try_from(hole.len) {
+            Ok(len) => len,
+            Err(_) => {
+                return Err(CustodyRefusal::AllocationFailed {
+                    held: self.arena.held(),
+                    requested: hole.len,
+                })
+            }
+        };
+        let offset = self.arena.alloc_zeroed(hole.len)?;
+        let memory = self.memory;
+        if memory
+            .copy_into(hole.start, self.arena.slice_mut(offset, len))
+            .is_err()
+        {
+            // The arena bytes stay allocated and stay accounted. Custody is
+            // what the observation HELD, not what it ended up using; pretending
+            // a failed copy costs nothing would let a recipe that refuses on
+            // every span run past the budget.
+            return Ok(None);
+        }
+        let id = self.owners.insert(hole, offset)?;
+        if attributes.samples.count > 1 {
+            self.take_adjacent_samples(id, hole, len, attributes)?;
+        }
+        Ok(Some(()))
+    }
+
+    /// RULING A, and the part of it no flag alone can deliver: find out WHICH
+    /// bytes of a refused scoped copy are unreadable.
+    ///
+    /// [`super::SnapshotMemory`] is all-or-nothing by design — a partial copy is
+    /// not expressible, which is the copy-only architecture in the type system —
+    /// so a 400 KB table with one bad page comes back as one refusal covering
+    /// the whole table. Voiding all of it would gap every row of the table, and
+    /// "refuses only rows whose consumed bytes intersect it" would be a
+    /// statement about a set that is always everything.
+    ///
+    /// So a refused scoped span is BISECTED and retried. Each half that copies
+    /// is owned normally; each half that refuses is bisected again, down to
+    /// [`super::SCOPED_VOID_GRANULARITY_BYTES`], at which point it becomes a
+    /// void. The split point is page-aligned where it can be, so the descent
+    /// converges on the unreadable page rather than on an arbitrary midpoint.
+    ///
+    /// WHAT IT COSTS, stated rather than hidden. Zero on the readable path: a
+    /// copy that succeeds is never bisected, and the overwhelming majority of
+    /// copies succeed. On the failure path it is `O(k · log(n / granularity))`
+    /// extra transactions for `k` unreadable regions — about fourteen for one
+    /// bad page in a 64 MiB extent — paid once, on a frame that was going to be
+    /// degraded either way.
+    fn narrow_and_void(
+        &mut self,
+        hole: Span,
+        request: Span,
+        recipe: usize,
+        attributes: CopyAttributes,
+    ) -> Result<(), CustodyRefusal> {
+        if hole.len <= super::SCOPED_VOID_GRANULARITY_BYTES {
+            let witness = RefusalWitness {
+                stage: attributes.stage,
+                op: attributes.op,
+                subject: hole.start,
+                related: request.start,
+                raw: hole.len,
+                read_addr: hole.start,
+                attempt: 1,
+                ..RefusalWitness::default()
             };
+            super::arena::charged_push(
+                &mut self.voids,
+                self.arena.ledger_ref(),
+                super::Void {
+                    span: hole,
+                    recipe: self.recipes[recipe].id,
+                    witness,
+                },
+            )?;
+            self.states[recipe].scoped_voids = self.states[recipe].scoped_voids.saturating_add(1);
+            return Ok(());
+        }
+        let granularity = super::SCOPED_VOID_GRANULARITY_BYTES;
+        // CHECKED, and in `u128`. A span whose exclusive end is past the top of
+        // the address space is representable as a `Span` — `end_excl` is a
+        // `u128` for exactly that reason — but its midpoint is not a `u64` sum.
+        // Wrapping it splits `[2^64 - 0x1000, +0x2000)` into a tail page and a
+        // page at address ZERO, and the second half then copies and OWNS
+        // unrelated bytes at the bottom of the address space. There is no
+        // partial-result path here: an unrepresentable request refuses.
+        let end = hole.end_excl();
+        let midpoint = u128::from(hole.start) + u128::from(hole.len) / 2;
+        let aligned = midpoint - (midpoint % u128::from(granularity));
+        let split = if aligned > u128::from(hole.start) && aligned < end {
+            aligned
+        } else {
+            midpoint
+        };
+        let (Ok(split), Ok(_end)) = (u64::try_from(split), u64::try_from(end)) else {
+            self.refuse_unrepresentable(recipe, hole.start, hole.len as i64);
+            return Ok(());
+        };
+        for part in [
+            Span::new(hole.start, split - hole.start),
+            Span::new(split, (end - u128::from(split)) as u64),
+        ] {
+            if part.is_empty() {
+                continue;
+            }
+            if self.take_hole(part, recipe, attributes)?.is_none() {
+                self.narrow_and_void(part, request, recipe, attributes)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Copy `hole` again, back to back, once per extra sample.
+    fn take_adjacent_samples(
+        &mut self,
+        id: IntervalId,
+        hole: Span,
+        len: usize,
+        attributes: CopyAttributes,
+    ) -> Result<(), CustodyRefusal> {
+        // NO ASK IS RECORDED HERE, and that is the point. `attributes` is a
+        // JOIN over every op whose request this coalesced copy serves — the
+        // maximum count and the strictest policy — which is exactly right for
+        // deciding HOW MANY IMAGES TO TAKE and exactly wrong as a request.
+        // Recording it as one would invent a request nobody made: a recipe
+        // whose two ops ask for `(2, Gap)` and `(3, Record)` would be credited
+        // with `(3, Gap)` and gapped for a third image only the non-gapping op
+        // ever wanted.
+        //
+        // The asks are recorded per REQUEST, from each op's own declared spec,
+        // by `reconcile_samples` in the dependency attach — which runs for the
+        // request that created this interval too.
+        let mut images = super::annot::SampleImages {
+            extra: Vec::new(),
+            success_mask: 1,
+            asks: Vec::new(),
+        };
+        for sample in 1..attributes.samples.count {
             let offset = self.arena.alloc_zeroed(hole.len)?;
             let memory = self.memory;
             if memory
                 .copy_into(hole.start, self.arena.slice_mut(offset, len))
                 .is_err()
             {
-                // The arena bytes stay allocated and stay accounted. Custody
-                // is what the observation HELD, not what it ended up using;
-                // pretending a failed copy costs nothing would let a recipe
-                // that refuses on every span run past the budget.
-                return Ok(Err(hole));
+                // A sample that could not be taken is a FAILED sample, not an
+                // absent one: it certifies nothing, and the comparison must not
+                // read it as agreement.
+                // The images this interval HOLDS is `1 + extra.len()`, so a
+                // sample that could not be taken simply is not there — and
+                // every consumer that asked for more than were taken is short,
+                // which is what `SampleImages::unmet` reads. There is no
+                // interval-wide "incomplete" flag any more: shortness is a
+                // question about one consumer's request, not about the
+                // interval.
+                break;
             }
-            self.owners.insert(hole, offset)?;
+            images.success_mask |= 1 << sample;
+            images.extra.push(
+                u32::try_from(offset).expect("an arena offset fits a u32 under the custody ceiling"),
+            );
         }
-        Ok(Ok(()))
+        self.annot.set_samples(id, images);
+        Ok(())
+    }
+
+    /// Make sure an interval a request reaches actually HAS the images that
+    /// request asked for — and say so when it cannot.
+    ///
+    /// # The hole this closes
+    ///
+    /// Adjacent samples are taken while a HOLE is being filled. Deduplication
+    /// means a recipe can reach an interval another recipe already owns, in
+    /// which case there is no hole and no second copy is taken. If that second
+    /// recipe asked for an A/B pair, it would get one image, no
+    /// [`super::annot::SampleImages`] record at all, and therefore no
+    /// disagreement — a consumer that asked for torn detection being told the
+    /// bytes are clean because nobody looked.
+    ///
+    /// The moment for an adjacent sample has passed by the time this runs — a
+    /// pair taken now would be a pair across the wave, which is a different
+    /// instrument — so the honest outcome is not to take one. It is to record
+    /// the sampling as INCOMPLETE, which the closing comparison treats as a
+    /// failed pair and which gaps the consumer that asked. Fail closed.
+    ///
+    /// It also upgrades `gap_on_disagree`: if the first contributor was content
+    /// to resolve a disagreement itself and a later one is not, the stricter
+    /// side wins, exactly as [`Self::copy_attributes`] joins them.
+    fn reconcile_samples(&mut self, recipe: usize, task: &CopyTask, owned: &[IntervalId]) {
+        let op = match &task.body {
+            TaskBody::Op { op, .. } | TaskBody::Extent { op, .. } => *op,
+        };
+        let spec = self.recipes[recipe].op_mod(op).samples;
+        if spec.count <= 1 {
+            return;
+        }
+        let wants_gap = spec.on_disagree == DisagreeAction::Gap;
+        let consumer = self.recipes[recipe].consumer;
+        // The request is RECORDED, and nothing about the interval's own state
+        // is touched. Whether it was met is then a question about this
+        // consumer's request against the images that exist, asked at closure —
+        // which is the only place both facts are known, and the only spelling
+        // under which one recipe's stricter requirement cannot leak onto its
+        // neighbour's hour.
+        for &id in owned {
+            let mut images = match self.annot.samples(id) {
+                Some(existing) => existing.clone(),
+                // No record means no ADJACENT sample was ever taken — but the
+                // opening image exists, or the interval would not. Its bit is
+                // set, so `held()` is one and not zero.
+                None => super::annot::SampleImages {
+                    extra: Vec::new(),
+                    success_mask: 1,
+                    asks: Vec::new(),
+                },
+            };
+            images.ask(consumer, spec.count, wants_gap);
+            self.annot.set_samples(id, images);
+        }
+    }
+
+    /// Record one request's consumption and stage against the intervals it
+    /// covers.
+    fn annotate(&mut self, recipe: usize, task: &CopyTask, span: Span, owned: &[IntervalId]) {
+        let (op, mask_source) = match &task.body {
+            TaskBody::Op { op, addr, .. } => (*op, MaskSource::At(*addr)),
+            TaskBody::Extent { op, span, count } => {
+                let stride = match &self.recipes[recipe].ops[*op as usize] {
+                    RecipeOp::DecodeExtent { stride, .. } => *stride,
+                    _ => 0,
+                };
+                (*op, MaskSource::Strided(span.start, stride, *count))
+            }
+        };
+        let modifier = self.recipes[recipe].op_mod(op);
+        let stage = modifier.stage;
+        let windows = modifier.compare.windows.clone();
+        for &id in owned {
+            if stage != 0 {
+                self.annot.tag_stage(id, stage);
+            }
+            if windows.is_empty() {
+                // No mask means "this contributor reads all of it", and that is
+                // final: see the module header on monotonicity.
+                self.annot.consume_all(id);
+                continue;
+            }
+            match mask_source {
+                MaskSource::At(base) => {
+                    let mut spans: Vec<Span> = Vec::with_capacity(windows.len());
+                    for window in &windows {
+                        if let Some(resolved) = window.resolve(base) {
+                            if resolved.overlaps(&span) {
+                                spans.push(resolved);
+                            }
+                        }
+                    }
+                    if spans.is_empty() {
+                        // A mask that resolved to nothing INSIDE this request is
+                        // not a narrower statement, it is no statement at all —
+                        // and recording it would leave the interval with an
+                        // empty consumed set, which the closing comparison would
+                        // read as "nothing to compare, therefore unchanged".
+                        // That is a witness certifying an object it never
+                        // looked at. Fall back to the whole request.
+                        self.annot.consume_all(id);
+                    } else {
+                        self.annot.consume_spans(id, &spans);
+                    }
+                }
+                MaskSource::Strided(base, stride, count) => {
+                    if stride == 0 || count == 0 {
+                        self.annot.consume_all(id);
+                        continue;
+                    }
+                    let element_windows: Vec<(u32, u32)> = windows
+                        .iter()
+                        .filter(|window| {
+                            window.offset >= 0
+                                && (window.offset as u64 + u64::from(window.len))
+                                    <= u64::from(stride)
+                        })
+                        .map(|window| (window.offset as u32, window.len))
+                        .collect();
+                    if element_windows.len() != windows.len() {
+                        // A window that does not fit inside one element is not
+                        // a per-element mask. Rather than guess what it meant,
+                        // the interval goes back to fully consumed — the safe
+                        // direction.
+                        self.annot.consume_all(id);
+                        continue;
+                    }
+                    self.annot.consume_strided(
+                        id,
+                        super::annot::StridedMask {
+                            base,
+                            stride,
+                            count,
+                            windows: element_windows,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// Phase two of a wave: run every decode op against bytes that have landed.
@@ -1670,6 +2854,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             op: *op,
                             base: *addr,
                             region,
+                            carry: task.carry,
+                            index: 0,
                         });
                     }
                 }
@@ -1715,7 +2901,13 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             }
                         };
                         for op in element.iter().rev() {
-                            stack.push(DecodeSite { op: *op, base, region });
+                            stack.push(DecodeSite {
+                                op: *op,
+                                base,
+                                region,
+                                carry: task.carry,
+                                index,
+                            });
                         }
                     }
                     if overflowed {
@@ -1763,6 +2955,19 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         let id = self.recipes[recipe].id;
         // Borrowed, not cloned: see `decode_wave`.
         let recipes = self.recipes;
+        // The carried scalar is resolved LAZILY, inside each arm that enqueues
+        // work, and not once at the top. `Freeze` and the copy arms need no
+        // carry at all and they are most of the sites an observation runs: the
+        // eager version cost 83% on `dispatch: decode_wave (Freeze only)` in
+        // the substrate's own bench, for a value that arm discards.
+        macro_rules! carry {
+            () => {
+                match self.resolve_carry(recipe, site) {
+                    Ok(carry) => carry,
+                    Err(()) => return,
+                }
+            };
+        }
         match &recipes[recipe].ops[site.op as usize] {
             RecipeOp::DecodePointer {
                 offset,
@@ -1780,12 +2985,18 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 let (value, holder) = match self.read_uint(addr, 8) {
                     Some(read) => read,
                     None => {
-                        self.refuse(
+                        let witness = RefusalWitness {
+                            read_addr: addr,
+                            read_width: 8,
+                            ..self.witness_at(recipe, site)
+                        };
+                        self.refuse_witnessed(
                             recipe,
                             Refusal::FieldNotCaptured {
                                 recipe: id,
                                 span: Span::new(addr, 8),
                             },
+                            witness,
                         );
                         return;
                     }
@@ -1793,15 +3004,72 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 if value == 0 {
                     return;
                 }
+                if !self.admit_pointer(recipe, site, value, addr, 8) {
+                    return;
+                }
                 let task = CopyTask {
                     recipe,
                     depth: depth + 1,
                     parent: Some(holder),
+                    carry: CarrySlot::from(carry!()),
                     body: TaskBody::Op {
                         op: next,
                         addr: value,
                         anchor: TaskAnchor::Pointer,
                         inherited: Proof::None,
+                    },
+                };
+                self.enqueue(task);
+            }
+            RecipeOp::SelectByValue {
+                probe,
+                then,
+                otherwise,
+            } => {
+                let (probe, then, otherwise) = (*probe, *then, *otherwise);
+                let taken = match self.evaluate_probe(recipe, site, &probe) {
+                    Some(true) => Some(then),
+                    Some(false) => otherwise,
+                    None => {
+                        let witness = self.witness_at(recipe, site);
+                        self.refuse_witnessed(
+                            recipe,
+                            Refusal::ConditionalUnresolved {
+                                recipe: id,
+                                op: site.op,
+                            },
+                            witness,
+                        );
+                        return;
+                    }
+                };
+                let Some(next) = taken else {
+                    let witness = self.witness_at(recipe, site);
+                    self.refuse_witnessed(
+                        recipe,
+                        Refusal::ConditionalUnresolved {
+                            recipe: id,
+                            op: site.op,
+                        },
+                        witness,
+                    );
+                    return;
+                };
+                let parent = self.owners.find(site.base);
+                let task = CopyTask {
+                    recipe,
+                    depth: depth + 1,
+                    parent,
+                    carry: CarrySlot::from(carry!()),
+                    body: TaskBody::Op {
+                        op: next,
+                        addr: site.base,
+                        // The selected copy stands where the probed object
+                        // stands, so it inherits that object's proof and its
+                        // anchor. It is not a new dereference and must not be
+                        // priced as one.
+                        anchor: TaskAnchor::Pointer,
+                        inherited: site.region,
                     },
                 };
                 self.enqueue(task);
@@ -1837,13 +3105,6 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 if !self.guard_admits(recipe, id, site.base, guard) {
                     return;
                 }
-                let count_addr = match site.base.checked_add(u64::from(count_offset)) {
-                    Some(addr) => addr,
-                    None => {
-                        return self
-                            .refuse_unrepresentable(recipe, site.base, i64::from(count_offset))
-                    }
-                };
                 let ptr_addr = match site.base.checked_add(u64::from(ptr_offset)) {
                     Some(addr) => addr,
                     None => {
@@ -1851,39 +3112,80 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             .refuse_unrepresentable(recipe, site.base, i64::from(ptr_offset))
                     }
                 };
-                let raw_count = match self.read_uint(count_addr, count_width as usize) {
-                    Some((value, _)) => value,
+                // M1. A derived count reads several header fields and adds a
+                // constant; the ordinary form reads one. Both are length
+                // decoding out of bytes the recipe has already copied.
+                let raw_count = match self.recipes[recipe].op_mod(site.op).count.clone() {
+                    Some(expression) => match self.evaluate_count(recipe, site, &expression) {
+                        Ok(count) => count,
+                        Err(()) => return,
+                    },
                     None => {
-                        self.refuse(
-                            recipe,
-                            Refusal::FieldNotCaptured {
-                                recipe: id,
-                                span: Span::new(count_addr, u64::from(count_width)),
-                            },
-                        );
-                        return;
+                        let count_addr = match site.base.checked_add(u64::from(count_offset)) {
+                            Some(addr) => addr,
+                            None => {
+                                return self.refuse_unrepresentable(
+                                    recipe,
+                                    site.base,
+                                    i64::from(count_offset),
+                                )
+                            }
+                        };
+                        match self.read_uint(count_addr, count_width as usize) {
+                            Some((value, _)) => value,
+                            None => {
+                                let witness = RefusalWitness {
+                                    read_addr: count_addr,
+                                    read_width: count_width,
+                                    ..self.witness_at(recipe, site)
+                                };
+                                self.refuse_witnessed(
+                                    recipe,
+                                    Refusal::FieldNotCaptured {
+                                        recipe: id,
+                                        span: Span::new(count_addr, u64::from(count_width)),
+                                    },
+                                    witness,
+                                );
+                                return;
+                            }
+                        }
                     }
                 };
                 let (base, base_holder) = match self.read_uint(ptr_addr, 8) {
                     Some(read) => read,
                     None => {
-                        self.refuse(
+                        let witness = RefusalWitness {
+                            read_addr: ptr_addr,
+                            read_width: 8,
+                            ..self.witness_at(recipe, site)
+                        };
+                        self.refuse_witnessed(
                             recipe,
                             Refusal::FieldNotCaptured {
                                 recipe: id,
                                 span: Span::new(ptr_addr, 8),
                             },
+                            witness,
                         );
                         return;
                     }
                 };
+                if base != 0 && !self.admit_pointer(recipe, site, base, ptr_addr, 8) {
+                    return;
+                }
                 // The TRAILER is part of the request, so it is part of what the
                 // limits bound. Adding it after the check would let a recipe
                 // copy `max_count + trailer` elements out of a limit that says
                 // `max_count`.
                 let wanted_count = raw_count.saturating_add(u64::from(trailer_elements));
                 if wanted_count > u64::from(max_count) {
-                    self.refuse(
+                    let witness = RefusalWitness {
+                        raw: wanted_count,
+                        related: base,
+                        ..self.witness_at(recipe, site)
+                    };
+                    self.refuse_witnessed(
                         recipe,
                         Refusal::ExtentCountExceeded {
                             recipe: id,
@@ -1893,6 +3195,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             // exactly.
                             decoded: u32::try_from(wanted_count).unwrap_or(u32::MAX),
                         },
+                        witness,
                     );
                     return;
                 }
@@ -1909,10 +3212,34 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     );
                     return;
                 }
+                // M2. A table registered under the branch's carried scalar is a
+                // per-instance binding: the same logical table decoded once per
+                // country or per province stays independently addressable
+                // instead of the second registration overwriting the first.
+                let carry = carry!();
+                let instance = if self.recipes[recipe].op_mod(site.op).instance_from_carry {
+                    match carry {
+                        Some(value) => value,
+                        None => {
+                            let witness = self.witness_at(recipe, site);
+                            self.refuse_witnessed(
+                                recipe,
+                                Refusal::CarryNotSet {
+                                    recipe: id,
+                                    op: site.op,
+                                },
+                                witness,
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    0
+                };
                 if base == 0 || count == 0 {
                     if let Some(table) = register {
                         self.tables.insert(
-                            (recipe, table),
+                            (recipe, table, instance),
                             TableBinding {
                                 span: Span::new(base, 0),
                                 count: 0,
@@ -1932,7 +3259,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 let elements = (count - trailer_elements) as u32;
                 if let Some(table) = register {
                     self.tables.insert(
-                        (recipe, table),
+                        (recipe, table, instance),
                         TableBinding {
                             span,
                             count: elements,
@@ -1944,6 +3271,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     recipe,
                     depth: depth + 1,
                     parent: Some(base_holder),
+                    carry: CarrySlot::from(carry),
                     body: TaskBody::Extent {
                         op: site.op,
                         span,
@@ -1960,35 +3288,119 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             } => {
                 let (table, key_offset, key_width, next) =
                     (*table, *key_offset, *key_width, *next);
-                let key_addr = match site.base.checked_add(u64::from(key_offset)) {
-                    Some(addr) => addr,
-                    None => {
-                        return self
-                            .refuse_unrepresentable(recipe, site.base, i64::from(key_offset))
+                let modifier = self.recipes[recipe].op_mod(site.op);
+                let (key_from_carry, instance_from_carry) =
+                    (modifier.key_from_carry, modifier.instance_from_carry);
+                // M2. The key may be the scalar the branch is carrying rather
+                // than a field of the object under the site. A province id
+                // decoded at the topology can therefore select into a table two
+                // waves later, which is the case `JoinBounded` could not
+                // express at all.
+                let carry = carry!();
+                let (key, key_holder) = if key_from_carry {
+                    let Some(value) = carry else {
+                        let witness = self.witness_at(recipe, site);
+                        self.refuse_witnessed(
+                            recipe,
+                            Refusal::CarryNotSet {
+                                recipe: id,
+                                op: site.op,
+                            },
+                            witness,
+                        );
+                        return;
+                    };
+                    // The carried scalar was decoded from bytes some interval
+                    // holds, but not necessarily one under this site, so the
+                    // dependency edge is anchored on the site's own interval.
+                    match self.owners.find(site.base) {
+                        Some(holder) => (value, holder),
+                        None => {
+                            let witness = RefusalWitness {
+                                raw: value,
+                                read_addr: site.base,
+                                ..self.witness_at(recipe, site)
+                            };
+                            self.refuse_witnessed(
+                                recipe,
+                                Refusal::FieldNotCaptured {
+                                    recipe: id,
+                                    span: Span::new(site.base, 1),
+                                },
+                                witness,
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    let key_addr = match site.base.checked_add(u64::from(key_offset)) {
+                        Some(addr) => addr,
+                        None => {
+                            return self
+                                .refuse_unrepresentable(recipe, site.base, i64::from(key_offset))
+                        }
+                    };
+                    match self.read_uint(key_addr, key_width as usize) {
+                        Some(read) => read,
+                        None => {
+                            let witness = RefusalWitness {
+                                read_addr: key_addr,
+                                read_width: key_width,
+                                ..self.witness_at(recipe, site)
+                            };
+                            self.refuse_witnessed(
+                                recipe,
+                                Refusal::FieldNotCaptured {
+                                    recipe: id,
+                                    span: Span::new(key_addr, u64::from(key_width)),
+                                },
+                                witness,
+                            );
+                            return;
+                        }
                     }
                 };
-                let (key, key_holder) = match self.read_uint(key_addr, key_width as usize) {
-                    Some(read) => read,
+                let instance = if instance_from_carry {
+                    match carry {
+                        Some(value) => value,
+                        None => {
+                            let witness = self.witness_at(recipe, site);
+                            self.refuse_witnessed(
+                                recipe,
+                                Refusal::CarryNotSet {
+                                    recipe: id,
+                                    op: site.op,
+                                },
+                                witness,
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    0
+                };
+                let binding = match self.tables.get(&(recipe, table, instance)) {
+                    Some(binding) => *binding,
                     None => {
-                        self.refuse(
+                        let witness = RefusalWitness {
+                            raw: instance,
+                            ..self.witness_at(recipe, site)
+                        };
+                        self.refuse_witnessed(
                             recipe,
-                            Refusal::FieldNotCaptured {
-                                recipe: id,
-                                span: Span::new(key_addr, u64::from(key_width)),
-                            },
+                            Refusal::JoinTableMissing { recipe: id, table },
+                            witness,
                         );
                         return;
                     }
                 };
-                let binding = match self.tables.get(&(recipe, table)) {
-                    Some(binding) => *binding,
-                    None => {
-                        self.refuse(recipe, Refusal::JoinTableMissing { recipe: id, table });
-                        return;
-                    }
-                };
                 if key >= u64::from(binding.count) {
-                    self.refuse(
+                    let witness = RefusalWitness {
+                        raw: key,
+                        related: binding.span.start,
+                        ..self.witness_at(recipe, site)
+                    };
+                    self.refuse_witnessed(
                         recipe,
                         Refusal::JoinOutOfRange {
                             recipe: id,
@@ -1996,6 +3408,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             key,
                             count: binding.count,
                         },
+                        witness,
                     );
                     return;
                 }
@@ -2025,6 +3438,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     recipe,
                     depth: depth + 1,
                     parent: Some(key_holder),
+                    carry: CarrySlot::from(carry),
                     body: TaskBody::Op {
                         op: next,
                         addr,
@@ -2048,6 +3462,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         op: *op,
                         base: site.base,
                         region: site.region,
+                        carry: CarrySlot::from(carry!()),
+                        index: site.index,
                     });
                 }
             }
@@ -2058,6 +3474,228 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             RecipeOp::CopyHeader { .. } | RecipeOp::CopyRanges { .. } => {
                 // Unreachable: validation rejects a copy op in a decode slot.
                 debug_assert!(false, "copy op reached in a decode slot");
+            }
+        }
+    }
+
+    /// The carried scalar in force at a site.
+    ///
+    /// `Err(())` means the recipe has been refused and the caller must stop;
+    /// `Ok(None)` means nothing on this branch has set one, which is legal
+    /// until something asks for it.
+    #[inline]
+    fn resolve_carry(&mut self, recipe: usize, site: &DecodeSite) -> Result<Carry, ()> {
+        let Some(source) = self.recipes[recipe].op_mod(site.op).carry else {
+            return Ok(site.carry.get());
+        };
+        match source {
+            CarrySource::Constant(value) => Ok(Some(value)),
+            CarrySource::ElementIndex => Ok(Some(u64::from(site.index))),
+            CarrySource::Field { offset, width } => {
+                let addr = match site.base.checked_add(u64::from(offset)) {
+                    Some(addr) => addr,
+                    None => {
+                        self.refuse_unrepresentable(recipe, site.base, i64::from(offset));
+                        return Err(());
+                    }
+                };
+                match self.read_uint(addr, width as usize) {
+                    Some((value, _)) => Ok(Some(value)),
+                    None => {
+                        let id = self.recipes[recipe].id;
+                        let witness = RefusalWitness {
+                            read_addr: addr,
+                            read_width: width,
+                            ..self.witness_at(recipe, site)
+                        };
+                        self.refuse_witnessed(
+                            recipe,
+                            Refusal::FieldNotCaptured {
+                                recipe: id,
+                                span: Span::new(addr, u64::from(width)),
+                            },
+                            witness,
+                        );
+                        Err(())
+                    }
+                }
+            }
+        }
+    }
+
+    /// M3. Check a decoded pointer against its op's admissibility window.
+    ///
+    /// Returns false when the branch must stop. A rejection that is recorded
+    /// rather than fatal is NOT a refusal: the recipe keeps its other branches
+    /// and its consumer keeps its hour, and the rejection travels to the
+    /// consumer with its witness so the reader can raise its own typed failure.
+    fn admit_pointer(
+        &mut self,
+        recipe: usize,
+        site: &DecodeSite,
+        value: u64,
+        read_addr: u64,
+        read_width: u8,
+    ) -> bool {
+        let Some(window) = self.recipes[recipe].op_mod(site.op).admit else {
+            return true;
+        };
+        if window.admits(value) {
+            return true;
+        }
+        let id = self.recipes[recipe].id;
+        let witness = RefusalWitness {
+            raw: value,
+            read_addr,
+            read_width,
+            ..self.witness_at(recipe, site)
+        };
+        match window.on_reject {
+            RejectAction::RefuseRecipe => {
+                self.refuse_witnessed(
+                    recipe,
+                    Refusal::PointerNotAdmissible {
+                        recipe: id,
+                        addr: value,
+                        low: window.low,
+                        high: window.high,
+                    },
+                    witness,
+                );
+            }
+            RejectAction::StopBranch => {
+                self.states[recipe].pointers_rejected =
+                    self.states[recipe].pointers_rejected.saturating_add(1);
+                let consumer = self.recipes[recipe].consumer;
+                // Unbounded growth is not possible: one rejection per decoded
+                // pointer, and copy tasks are already capped per recipe. It is
+                // still charged, because it is work-scaled and it survives into
+                // the snapshot.
+                if super::arena::charged_push(
+                    &mut self.rejections,
+                    self.arena.ledger_ref(),
+                    super::PointerRejection {
+                        recipe: id,
+                        consumer,
+                        addr: value,
+                        witness,
+                    },
+                )
+                .is_err()
+                {
+                    // Custody is the one global refusal and it is not
+                    // attributable to this recipe, so it cannot be reported
+                    // here. Refusing the recipe is the conservative
+                    // alternative to dropping the record silently.
+                    self.refuse_witnessed(
+                        recipe,
+                        Refusal::PointerNotAdmissible {
+                            recipe: id,
+                            addr: value,
+                            low: window.low,
+                            high: window.high,
+                        },
+                        witness,
+                    );
+                }
+            }
+        }
+        false
+    }
+
+    /// M1. Sum a count expression's terms out of already-copied bytes.
+    fn evaluate_count(
+        &mut self,
+        recipe: usize,
+        site: &DecodeSite,
+        expression: &CountExpr,
+    ) -> Result<u64, ()> {
+        let id = self.recipes[recipe].id;
+        let mut total = u128::from(expression.constant);
+        for term in &expression.terms {
+            let addr = match site.base.checked_add(u64::from(term.offset)) {
+                Some(addr) => addr,
+                None => {
+                    self.refuse_unrepresentable(recipe, site.base, i64::from(term.offset));
+                    return Err(());
+                }
+            };
+            let value = match self.read_uint(addr, term.width as usize) {
+                Some((value, _)) => value,
+                None => {
+                    let witness = RefusalWitness {
+                        read_addr: addr,
+                        read_width: term.width,
+                        ..self.witness_at(recipe, site)
+                    };
+                    self.refuse_witnessed(
+                        recipe,
+                        Refusal::FieldNotCaptured {
+                            recipe: id,
+                            span: Span::new(addr, u64::from(term.width)),
+                        },
+                        witness,
+                    );
+                    return Err(());
+                }
+            };
+            total += u128::from(value);
+        }
+        // Summed in `u128` so a header full of `u64::MAX` cannot wrap into a
+        // small, admissible count. Anything past `u64` is reported at the cap,
+        // where the op's own `max_count` check refuses it.
+        Ok(u64::try_from(total).unwrap_or(u64::MAX))
+    }
+
+    /// RULING C. Evaluate a bounded probe over already-copied bytes.
+    ///
+    /// `None` means the probe could not be answered — its bytes are not in the
+    /// arena — which is a refusal at the caller rather than a silent `false`.
+    fn evaluate_probe(&self, recipe: usize, site: &DecodeSite, probe: &Probe) -> Option<bool> {
+        match *probe {
+            Probe::FieldEquals {
+                offset,
+                width,
+                value,
+            } => {
+                let addr = site.base.checked_add(u64::from(offset))?;
+                let (read, _) = self.read_uint(addr, width as usize)?;
+                Some(read == value)
+            }
+            Probe::FieldInRange {
+                offset,
+                width,
+                low,
+                high,
+            } => {
+                let addr = site.base.checked_add(u64::from(offset))?;
+                let (read, _) = self.read_uint(addr, width as usize)?;
+                Some(read >= low && read <= high)
+            }
+            Probe::SamplesAgree { offset, len } => {
+                let addr = site.base.checked_add(u64::from(offset))?;
+                let interval = self.owners.find(addr)?;
+                let record = *self.owners.record(interval);
+                let want = Span::new(addr, u64::from(len));
+                if !record.span().contains_span(&want) {
+                    return None;
+                }
+                let images = self.annot.samples(interval)?;
+                let Some(&second) = images.extra.first() else {
+                    // No second image was taken, so nothing agrees. Reported as
+                    // "false" rather than "unanswerable": a probe on samples a
+                    // recipe never asked for is a recipe defect, but the
+                    // conservative branch — the fallback shape — is the right
+                    // answer for an image that cannot be certified.
+                    return Some(false);
+                };
+                let skew = (addr - record.start()) as usize;
+                let width = len as usize;
+                let opening = record.opening_offset() + skew;
+                let closing = second as usize + skew;
+                Some(
+                    self.arena.slice(opening, width) == self.arena.slice(closing, width),
+                )
             }
         }
     }
@@ -2200,20 +3838,161 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// opening wave already found; a parent that changed invalidates its
     /// dependent subtree afterwards, which is cheaper than a reverse chase and
     /// strictly more conservative.
-    fn closing_wave(&mut self) -> Result<(u32, Vec<IntervalId>), CustodyRefusal> {
+    /// RULING B. The order the closing wave runs in, and the closes it skips.
+    ///
+    /// `None` — no recipe declared a closing program — is enrolment order,
+    /// which is interval-id order: exactly the single generic wave, and no work
+    /// is done to produce it.
+    ///
+    /// With a program, an interval's position is the position of the EARLIEST
+    /// of its stages that the program lists; an interval carrying no listed
+    /// stage sorts last. Ordering by the earliest stage rather than the latest
+    /// is what makes elision meaningful: a stage that elides into a later one
+    /// hands its interval to that later position, and everything else keeps the
+    /// place its own stage declares.
+    fn closing_schedule(
+        &mut self,
+    ) -> Result<(Option<Vec<IntervalId>>, Vec<Elision>), CustodyRefusal> {
+        let mut elisions: Vec<Elision> = Vec::new();
+        if self.recipes.iter().all(|recipe| recipe.closing.is_none()) {
+            // NO program, no permutation, and no copy of the witness list. The
+            // list is one entry per witnessed interval and it is built at the
+            // moment custody is fullest; duplicating it to hand back an order
+            // identical to the one already in hand would be work-scaled memory
+            // for nothing.
+            return Ok((None, elisions));
+        }
+        // The programs are ITERATED, not collected. One `&ClosingProgram` per
+        // recipe is work-scaled — an observation may hold any number of recipes
+        // — so a `Vec` of them is memory the ledger would have to be told about,
+        // at the fullest moment of the observation, to answer a question two
+        // closures can answer by walking the recipes they already have.
+        //
+        // One program per observation is not a restriction worth adding: each
+        // interval's stages come from the recipes that reached it, and two
+        // recipes' programs order disjoint stage sets. So the rank of a stage is
+        // looked up across every program, and the first match wins.
+        let recipes = self.recipes;
+        let rank_of = |stage: u16| -> Option<usize> {
+            recipes
+                .iter()
+                .filter_map(|recipe| recipe.closing.as_ref())
+                .find_map(|program| program.stages.iter().position(|s| s.stage == stage))
+        };
+        let elide_target = |stage: u16| -> Option<u16> {
+            recipes
+                .iter()
+                .filter_map(|recipe| recipe.closing.as_ref())
+                .find_map(|program| {
+                    program
+                        .stages
+                        .iter()
+                        .find(|s| s.stage == stage)
+                        .map(|entry| entry.elide_into)
+                })
+                .flatten()
+        };
+        // CHARGED BEFORE TAKEN, and through the fallible path. `to_vec` would
+        // be an infallible allocation of one entry per witnessed interval at the
+        // fullest moment of the observation: at the ceiling that aborts the
+        // process where it should return a `CustodyRefusal`.
+        let ledger = self.arena.ledger();
+        let mut order: Vec<IntervalId> = Vec::new();
+        super::arena::charged_reserve(&mut order, &ledger, self.owners.witnessed_ids().len())?;
+        order.extend_from_slice(self.owners.witnessed_ids());
+
+        // The elisions are recorded in ONE pass, and the order is then decided
+        // by sorting `order` in place. The `keyed` vector this replaces was a
+        // second work-scaled allocation whose charge was never released when it
+        // was dropped, so an observation carried a phantom charge for scratch it
+        // no longer held. Recomputing a rank per comparison is a walk over one
+        // interval's stage list — single digits — against an allocation the
+        // ceiling has to be told about.
+        let annot = &self.annot;
+        let effective_rank = |id: IntervalId| -> usize {
+            let stages = annot.stages_of(id);
+            let mut best = usize::MAX;
+            for &stage in stages {
+                let effective = match elide_target(stage) {
+                    Some(target) if stages.contains(&target) => target,
+                    _ => stage,
+                };
+                if let Some(rank) = rank_of(effective) {
+                    best = best.min(rank);
+                }
+            }
+            best
+        };
+        for &id in &order {
+            let stages = annot.stages_of(id);
+            for &stage in stages {
+                // An elided stage does not get to claim its own position: its
+                // close happens where the covering stage's does, and the fact
+                // that it did is what carries the attribution.
+                if let Some(target) = elide_target(stage) {
+                    if stages.contains(&target)
+                        && !elisions
+                            .iter()
+                            .any(|e| e.interval == id && e.elided == stage)
+                    {
+                        // Charged where it grows: bounded by the witnessed count
+                        // times the stage count, which is not small enough to
+                        // leave unadmitted at the ceiling.
+                        super::arena::charged_push(
+                            &mut elisions,
+                            &ledger,
+                            Elision {
+                                interval: id,
+                                elided: stage,
+                                into: target,
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
+        // UNSTABLE, with the id in the key. `sort_by_key` is stable and Rust's
+        // stable sort allocates auxiliary storage proportional to the slice —
+        // work-scaled scratch the ledger was never told about, taken at the
+        // fullest moment of the observation. `sort_unstable_by_key` sorts in
+        // place, and putting the interval id in the key makes the order TOTAL,
+        // so equal ranks still come out in enrolment order. The tie-break is
+        // now a property of the key rather than of the algorithm, which is the
+        // stronger statement of the two.
+        order.sort_unstable_by_key(|id| (effective_rank(*id), id.0));
+        Ok((Some(order), elisions))
+    }
+
+    /// The closing phase: re-copy the opening addresses.
+    ///
+    /// This does NOT re-run discovery. A closing witness re-copies what the
+    /// opening wave already found; a parent that changed invalidates its
+    /// dependent subtree afterwards, which is cheaper than a reverse chase and
+    /// strictly more conservative.
+    fn closing_wave(
+        &mut self,
+    ) -> Result<(u32, Vec<IntervalId>, Vec<IntervalId>, Vec<Elision>), CustodyRefusal> {
         // Enrolment order, which `enrol_witnesses` produces by walking the
         // records in id order: the same order a scan of every record produced,
-        // without the scan.
+        // without the scan. A closing program permutes it; see
+        // `closing_schedule`.
         //
         // Walked BY POSITION rather than through a clone of the enrolment
         // list. The clone was there only to release the borrow before
         // `record_mut`, and it was a second `Vec<IntervalId>` as long as the
         // witness list — work-scaled memory the ledger never saw, taken at the
         // exact moment custody is fullest.
-        let witnessed = self.owners.witnessed_ids().len();
+        let (schedule, elisions) = self.closing_schedule()?;
+        let witnessed = match &schedule {
+            Some(order) => order.len(),
+            None => self.owners.witnessed_ids().len(),
+        };
         let mut unreadable = Vec::new();
         for position in 0..witnessed {
-            let id = self.owners.witnessed_ids()[position];
+            let id = match &schedule {
+                Some(order) => order[position],
+                None => self.owners.witnessed_ids()[position],
+            };
             let id = &id;
             let span = self.owners.record(*id).span();
             let len = match usize::try_from(span.len) {
@@ -2241,7 +4020,16 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             }
             self.owners.record_mut(*id).set_closing_offset(offset);
         }
-        Ok((witnessed as u32, unreadable))
+        // EMPTY means enrolment order — see `SnapshotBuild::closing_order`. A
+        // caller that wants to check a declared order is a caller that declared
+        // one, and materialising the default order for everybody else would be
+        // a work-scaled allocation at the moment custody is fullest.
+        Ok((
+            witnessed as u32,
+            unreadable,
+            schedule.unwrap_or_default(),
+            elisions,
+        ))
     }
 
     fn build_reports(&self) -> Vec<RecipeReport> {
@@ -2252,7 +4040,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 recipe: recipe.id,
                 consumer: recipe.consumer,
                 outcome: match state.refusal {
-                    Some(refusal) => RecipeOutcome::Refused(refusal),
+                    Some(record) => RecipeOutcome::Refused(record),
                     None => RecipeOutcome::Captured,
                 },
                 copy_tasks: state.copy_tasks,
@@ -2260,6 +4048,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 planned_bytes: state.planned_bytes,
                 frozen_branches: state.frozen_branches,
                 witness_required: state.witness_required,
+                scoped_voids: state.scoped_voids,
+                pointers_rejected: state.pointers_rejected,
             })
             .collect()
     }
@@ -2399,6 +4189,7 @@ impl<'a, M: SnapshotMemory> DispatchProbe<'a, M> {
                     recipe: index,
                     depth: 0,
                     parent: None,
+                    carry: CarrySlot::default(),
                     body: TaskBody::Op {
                         op: root.op,
                         addr: root.addr,
@@ -2424,6 +4215,7 @@ impl<'a, M: SnapshotMemory> DispatchProbe<'a, M> {
                     recipe: index,
                     depth: 0,
                     parent: None,
+                    carry: CarrySlot::default(),
                     body: TaskBody::Op {
                         op: root.op,
                         addr: root.addr,
@@ -2456,7 +4248,7 @@ impl<'a, M: SnapshotMemory> DispatchProbe<'a, M> {
     pub(super) fn validate_recipes(&mut self) {
         for (index, recipe) in self.observation.recipes.iter().enumerate() {
             if let Err(refusal) = validate(recipe) {
-                self.observation.states[index].refusal = Some(refusal);
+                self.observation.states[index].refusal = Some(RefusalRecord::bare(refusal));
             }
         }
     }

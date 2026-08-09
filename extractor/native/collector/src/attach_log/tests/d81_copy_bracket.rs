@@ -94,15 +94,15 @@ use std::time::Instant;
 // ---------------------------------------------------------------------------
 
 /// d81's per-frame shape, from the capture wire.
-mod shape {
+pub(crate) mod shape {
     /// `d81_phase_provinces_visited`, t31. Every province the topology names;
     /// each one costs at least the rail-table slot read.
-    pub(super) const PROVINCES: usize = 13_413;
+    pub(crate) const PROVINCES: usize = 13_413;
 
     /// `d81_phase_provinces_railed`, t26 ("t26's 3510 railed provinces", cited
     /// at `attach_log.rs` in the rail-header coalescing comment). Everything
     /// after the `rail_info == 0` continue is paid once per RAILED province.
-    pub(super) const RAILED: usize = 3_510;
+    pub(crate) const RAILED: usize = 3_510;
 
     /// ASSUMPTION, not a measurement. `observed_neighbors` is on the wire but
     /// no run's value is on disk in this tree, so the pair blob is priced at
@@ -111,7 +111,7 @@ mod shape {
     /// call count — which is what dominates — does not depend on it at all.
     /// The engine's own ceiling is
     /// `compact_contract::rail_replay::MAX_NEIGHBORS_PER_PROVINCE` = 64.
-    pub(super) const NEIGHBORS_PER_RAILED: usize = 4;
+    pub(crate) const NEIGHBORS_PER_RAILED: usize = 4;
 
     /// ASSUMPTION, not a measurement. The anchor-selector map's mask is read
     /// from the engine at `selector_map + 0x34` and is not recoverable
@@ -120,10 +120,10 @@ mod shape {
     /// copy plan's single table copy WIDER (more bytes) without changing its
     /// call count, so this assumption is the one that flatters the plan and
     /// the bench reports a doubled variant beside it.
-    pub(super) const SELECTOR_ENTRIES: usize = 16_384;
+    pub(crate) const SELECTOR_ENTRIES: usize = 16_384;
 
     /// `select_secondary`'s entry stride, from the reader.
-    pub(super) const SELECTOR_STRIDE: usize = 0x18;
+    pub(crate) const SELECTOR_STRIDE: usize = 0x18;
 
     /// ASSUMPTION, and the one that a real conversion must NOT inherit.
     ///
@@ -145,7 +145,7 @@ mod shape {
     /// its bytes stay representative; a plan sized at the true ceiling would
     /// move four times the table bytes for the same call count, which is the
     /// direction this understates.
-    pub(super) const TABLE_SLOTS: usize = 16_384;
+    pub(crate) const TABLE_SLOTS: usize = 16_384;
 
     /// Entries of probe tail the anchor-selector copy must carry beyond the
     /// masked table, because `select_secondary` advances without wrapping and
@@ -156,7 +156,7 @@ mod shape {
     /// u8 read from `selector_map + 0x38`. 258 is used rather than 256 purely
     /// so the fixture keeps two entries of margin and can never be short; the
     /// two spare entries are 48 bytes and buy nothing else.
-    pub(super) const PROBE_SLACK_ENTRIES: usize = 258;
+    pub(crate) const PROBE_SLACK_ENTRIES: usize = 258;
 
     /// ASSUMPTION, not a measurement. The number of railed provinces whose
     /// engine selector key is NOT their own id.
@@ -170,19 +170,19 @@ mod shape {
     /// at zero (the fully-elided case) and named here rather than buried: it is
     /// the one row of the census that is a LOWER bound on the live arm, and it
     /// understates the live side by four calls per affected province.
-    pub(super) const NON_SELF_KEYED_RAILED: usize = 0;
+    pub(crate) const NON_SELF_KEYED_RAILED: usize = 0;
 
     /// ASSUMPTION, not a measurement. Linear-probe steps per lookup at the
     /// load factor above. Each step is a `read_u8_stable` + a
     /// `read_u32_stable` = four guarded calls, so this is the single largest
     /// lever on the live arm's call count and the bench reports its
     /// sensitivity.
-    pub(super) const PROBE_STEPS: usize = 2;
+    pub(crate) const PROBE_STEPS: usize = 2;
 
     /// Table strides, from the reader.
-    pub(super) const RAIL_SLOT: usize = 8;
-    pub(super) const ACTIVE_STRIDE: usize = 0x20;
-    pub(super) const POINTER: usize = 8;
+    pub(crate) const RAIL_SLOT: usize = 8;
+    pub(crate) const ACTIVE_STRIDE: usize = 0x20;
+    pub(crate) const POINTER: usize = 8;
 }
 
 /// One family of guarded reads d81 issues inside its bracket.

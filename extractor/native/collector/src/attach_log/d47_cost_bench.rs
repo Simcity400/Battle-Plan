@@ -8455,7 +8455,8 @@ fn d47_the_copy_plan_refuses_an_unreadable_body_by_name() {
     let build = fw_observe(&roster);
     unsafe { VirtualFree(reserved, 0, BENCH_MEM_RELEASE) };
     match fw_outcome(&build) {
-        RecipeOutcome::Refused(Refusal::MemoryUnreadable { .. }) => {}
+        RecipeOutcome::Refused(record)
+            if matches!(record.refusal, Refusal::MemoryUnreadable { .. }) => {}
         other => panic!("expected a named memory refusal, got {other:?}"),
     }
     assert!(build.snapshot.view_for(D47_CONSUMER, FW_HOUR).is_err());

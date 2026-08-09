@@ -341,11 +341,10 @@ impl CopyPlan {
 
     /// The request indices `copy` serves.
     ///
-    /// Not on the executor's path — it attaches dependents per request rather
-    /// than per transaction — but it is the only thing that makes the
-    /// sources run addressable, so it is the accessor a consumer of a plan
-    /// needs.
-    #[cfg(test)]
+    /// The executor's dependency attach walks requests rather than
+    /// transactions, but the per-op qualifications a merged transaction has to
+    /// honour — its tolerance, its sample count, its stage — are a join over
+    /// exactly this run, so it is on the executor's path as well now.
     pub fn sources_of(&self, copy: &PlannedCopy) -> &[u32] {
         let start = copy.sources_start as usize;
         &self.sources[start..start + copy.sources_len as usize]

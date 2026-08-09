@@ -141,6 +141,14 @@ pub struct Snapshot {
     links: Links,
     index: PageIndex,
     gapped: BTreeMap<ConsumerId, GapReason>,
+    /// Per-interval consumption, samples and stage tags.
+    annot: super::annot::Annotations,
+    /// RULING A. Spans a speculative copy could not read. Empty on every
+    /// observation whose recipes all declare `Tolerance::Required`, which is
+    /// what makes the void check on the read path a single predictable branch.
+    voids: Vec<super::Void>,
+    /// Pointers decoded, rejected on admissibility, and not followed.
+    rejections: Vec<super::PointerRejection>,
 }
 
 impl Snapshot {
@@ -157,12 +165,16 @@ impl Snapshot {
     /// A record's position in the frozen table is therefore NOT its
     /// [`IntervalId`]; the id stays in the record, which is what the witness
     /// comparison keys its edges on.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn freeze(
         hour: HourStamp,
         bytes: Vec<u8>,
         records: Vec<IntervalRecord>,
         links: Links,
         gapped: BTreeMap<ConsumerId, GapReason>,
+        annot: super::annot::Annotations,
+        voids: Vec<super::Void>,
+        rejections: Vec<super::PointerRejection>,
         ledger: &super::arena::CustodyLedger,
     ) -> Result<Self, super::CustodyRefusal> {
         debug_assert!(
@@ -177,6 +189,9 @@ impl Snapshot {
             links,
             index,
             gapped,
+            annot,
+            voids,
+            rejections,
         })
     }
 
@@ -211,6 +226,45 @@ impl Snapshot {
 
     pub fn gap_reason(&self, consumer: ConsumerId) -> Option<GapReason> {
         self.gapped.get(&consumer).copied()
+    }
+
+    /// RULING A. The spans a speculative copy could not read.
+    pub fn voids(&self) -> &[super::Void] {
+        &self.voids
+    }
+
+    /// Pointers a recipe decoded, rejected on admissibility, and did not
+    /// follow. Each carries the witness a converted reader needs to raise its
+    /// own typed failure.
+    pub fn pointer_rejections(&self) -> &[super::PointerRejection] {
+        &self.rejections
+    }
+
+    /// Rejections belonging to one consumer.
+    pub fn rejections_for(
+        &self,
+        consumer: ConsumerId,
+    ) -> impl Iterator<Item = &super::PointerRejection> {
+        self.rejections
+            .iter()
+            .filter(move |rejection| rejection.consumer == consumer)
+    }
+
+    pub fn annotations(&self) -> &super::annot::Annotations {
+        &self.annot
+    }
+
+    /// The first void `want` intersects, if any.
+    ///
+    /// The empty case is the overwhelming majority and it is one `is_empty`
+    /// test. A non-empty list is short by construction: it holds one entry per
+    /// unreadable hole of a speculative copy, and an observation with many of
+    /// those is an observation reading a region that has gone away.
+    fn void_at(&self, want: &Span) -> Option<&super::Void> {
+        if self.voids.is_empty() {
+            return None;
+        }
+        self.voids.iter().find(|void| void.span.overlaps(want))
     }
 
     pub(super) fn gap_consumer(&mut self, consumer: ConsumerId, reason: GapReason) {
@@ -306,6 +360,16 @@ pub enum ViewRefusal {
     /// its own recipe asked for: sharing an extent is an implementation
     /// detail of the copier, never a widening of what a reader may look at.
     NotOwned { span: Span },
+    /// RULING A. The observation asked for these bytes as part of a
+    /// speculative copy and the engine could not read them.
+    ///
+    /// Distinct from [`ViewRefusal::NotCaptured`] on purpose, and the
+    /// distinction is the whole ruling: `NotCaptured` is a recipe that
+    /// under-asked, which is our defect, while this is a span the recipe DID
+    /// ask for and the engine refused. Only the reads that reach it fail; every
+    /// other byte of the same copy is served normally, so a row whose consumed
+    /// bytes never touch the void publishes.
+    Unreadable { span: Span, void: Span },
 }
 
 /// A reader's handle on the frozen arena. Immutable, hour-locked, own-hour
@@ -331,6 +395,15 @@ impl<'a> SnapshotView<'a> {
     /// address in the observed process and cannot be turned back into one.
     pub fn translate(&self, addr: u64) -> Result<usize, ViewRefusal> {
         let want = Span::new(addr, 1);
+        // Same order as `bytes`: a void has no interval behind it, so without
+        // this the reader would be told its recipe under-asked for a byte its
+        // recipe did ask for.
+        if let Some(void) = self.snapshot.void_at(&want) {
+            return Err(ViewRefusal::Unreadable {
+                span: want,
+                void: void.span,
+            });
+        }
         let position = self
             .snapshot
             .locate(addr)
@@ -345,6 +418,15 @@ impl<'a> SnapshotView<'a> {
     /// Borrow `len` bytes at `addr` without copying.
     pub fn bytes(&self, addr: u64, len: usize) -> Result<&'a [u8], ViewRefusal> {
         let want = Span::new(addr, len as u64);
+        // The void check comes FIRST, because a void is exactly a span with no
+        // interval behind it: without this the reader would be told its recipe
+        // under-asked for bytes its recipe did ask for.
+        if let Some(void) = self.snapshot.void_at(&want) {
+            return Err(ViewRefusal::Unreadable {
+                span: want,
+                void: void.span,
+            });
+        }
         let position = self
             .snapshot
             .locate(addr)
@@ -379,6 +461,12 @@ impl<'a> SnapshotView<'a> {
         let want = Span::new(addr, out.len() as u64);
         if out.is_empty() {
             return Ok(());
+        }
+        if let Some(void) = self.snapshot.void_at(&want) {
+            return Err(ViewRefusal::Unreadable {
+                span: want,
+                void: void.span,
+            });
         }
         let mut cursor = addr;
         let mut written = 0usize;
@@ -416,6 +504,100 @@ impl<'a> SnapshotView<'a> {
             };
         }
         Ok(())
+    }
+
+    /// Borrow `len` bytes at `addr` from one of the images the copier took.
+    ///
+    /// `image` 0 is the opening copy — the same bytes [`Self::bytes`] returns.
+    /// Image `k` for `k >= 1` is the `k`-th ADJACENT sample, taken back to back
+    /// with the opening one; [`Self::closing_bytes`] is the separate closing
+    /// image. This is what lets a converted reader run its own A/B comparison
+    /// instead of taking the substrate's byte-wise verdict.
+    pub fn sample_bytes(
+        &self,
+        addr: u64,
+        len: usize,
+        image: usize,
+    ) -> Result<&'a [u8], ViewRefusal> {
+        if image == 0 {
+            return self.bytes(addr, len);
+        }
+        let want = Span::new(addr, len as u64);
+        let (record, skew) = self.owned_record(want)?;
+        let images = self
+            .snapshot
+            .annot
+            .samples(record.id())
+            .ok_or(ViewRefusal::NotCaptured { span: want })?;
+        let offset = *images
+            .extra
+            .get(image - 1)
+            .ok_or(ViewRefusal::NotCaptured { span: want })? as usize
+            + skew;
+        Ok(&self.snapshot.bytes[offset..offset + len])
+    }
+
+    /// How many images of the bytes at `addr` the copier holds, the closing one
+    /// excluded.
+    pub fn sample_count(&self, addr: u64) -> usize {
+        match self.snapshot.locate(addr) {
+            Some(position) => {
+                let record = &self.snapshot.intervals[position];
+                1 + self
+                    .snapshot
+                    .annot
+                    .samples(record.id())
+                    .map(|images| images.extra.len())
+                    .unwrap_or(0)
+            }
+            None => 0,
+        }
+    }
+
+    /// Borrow `len` bytes at `addr` from the CLOSING image.
+    ///
+    /// RULING B leaves the substrate's own comparison in place — it is what
+    /// gaps a consumer whose consumed bytes moved — and adds this so a reader
+    /// that compares DECODED FIELDS can do so itself. Refuses
+    /// [`ViewRefusal::NotCaptured`] when no closing copy was taken, because an
+    /// absent closing image certifies nothing and must never read as one that
+    /// happens to be equal.
+    pub fn closing_bytes(&self, addr: u64, len: usize) -> Result<&'a [u8], ViewRefusal> {
+        let want = Span::new(addr, len as u64);
+        let (record, skew) = self.owned_record(want)?;
+        let closing = record
+            .closing_offset()
+            .ok_or(ViewRefusal::NotCaptured { span: want })?;
+        let offset = closing + skew;
+        Ok(&self.snapshot.bytes[offset..offset + len])
+    }
+
+    /// The interval that wholly holds `want` and this consumer may read, with
+    /// the offset of `want` inside it. Shared by the image accessors, which all
+    /// need the same three checks in the same order.
+    fn owned_record(&self, want: Span) -> Result<(&'a IntervalRecord, usize), ViewRefusal> {
+        if let Some(void) = self.snapshot.void_at(&want) {
+            return Err(ViewRefusal::Unreadable {
+                span: want,
+                void: void.span,
+            });
+        }
+        let position = self
+            .snapshot
+            .locate(want.start)
+            .ok_or(ViewRefusal::NotCaptured { span: want })?;
+        let record = &self.snapshot.intervals[position];
+        if !record.span().contains_span(&want) {
+            return Err(if self.covered(want) {
+                ViewRefusal::NotContiguous { span: want }
+            } else {
+                ViewRefusal::NotCaptured { span: want }
+            });
+        }
+        if !self.snapshot.links.reaches(record, self.consumer, &want) {
+            return Err(ViewRefusal::NotOwned { span: want });
+        }
+        Ok((record, (want.start - record.start()) as usize))
     }
 
     pub fn u8_at(&self, addr: u64) -> Result<u8, ViewRefusal> {

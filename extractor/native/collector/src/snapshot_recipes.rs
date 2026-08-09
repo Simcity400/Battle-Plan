@@ -64,6 +64,54 @@
 //! It does not know about domains, hours beyond an opaque stamp, brackets, the
 //! scheduler, or the wire. It compiles, tests and benches standalone.
 
+//! # The 2026-08-09 vocabulary amendment
+//!
+//! Lane FX proved nine things d81's observation phase needs and this substrate
+//! could not say (`runs/fx_d81_copy_bracket/substrate_expressibility_reply.txt`).
+//! Five were pure mechanism; four amended the guarantees above, under owner
+//! rulings taken the same day. What changed, and where each lives:
+//!
+//!  * **Derived extents.** [`executor::CountExpr`] lets a `DecodeExtent` size
+//!    itself from a bounded sum of copied header fields (d81's
+//!    `mask + max_probe + 2`). Still address-and-length decoding: guarantee 2
+//!    is untouched.
+//!  * **Carried context.** One scalar travels with a discovery branch
+//!    ([`executor::CarrySource`]), so a key decoded at one site can select into
+//!    a table a wave later, and one logical table can have per-instance
+//!    bindings.
+//!  * **Pointer admissibility.** [`executor::Admissibility`] rejects a decoded
+//!    pointer before it is followed, as a NAMED outcome — either a typed
+//!    refusal or a recorded rejection with its witness.
+//!  * **Adjacent samples.** [`executor::SampleSpec`] takes a copy two or three
+//!    times back to back, which is the torn-detection instrument
+//!    `d81_read_stable_bytes` already runs in production.
+//!  * **Rich refusals.** Every refusal now travels as a [`RefusalRecord`]:
+//!    the reason plus a [`RefusalWitness`] carrying stage, subject, related
+//!    identity, index, raw value, read address/width/attempt/success mask and
+//!    both samples.
+//!  * **RULING A — over-read gaps only what is consumed.** A copy op may
+//!    declare [`executor::Tolerance::Scoped`]; an unreadable span inside
+//!    one is recorded as a VOID rather than refusing the recipe, and only a
+//!    read that actually touches the void refuses. This is a deliberate
+//!    narrowing of "no partial result is reported as success": the partial is
+//!    named, per byte, and a consumer that reaches it is refused with
+//!    [`view::ViewRefusal::Unreadable`]. Guarantee 1 still holds for every
+//!    `Tolerance::Required` op, which is the default.
+//!  * **RULING B — per-recipe closing programs.** A recipe may declare
+//!    comparison masks (compare only the bytes it consumes, so engine padding
+//!    cannot manufacture a torn gap), a closure ORDER over stages, and
+//!    elision-to-a-later-stage with attribution retained. The single generic
+//!    closing wave is now the default shape rather than the only one.
+//!  * **RULING C — value-conditional copy selection.** [`executor::RecipeOp::SelectByValue`]
+//!    lets a bounded read of already-copied bytes decide WHAT to copy next.
+//!    It cannot compute a result: the op has no output, its probe is capped at
+//!    [`MAX_PROBE_COMPARE_BYTES`], and its arms are copy ops. See the op for
+//!    the structural-versus-semantic line.
+//!
+//! NO BACKWARDS COMPATIBILITY. Per the 2026-08-09 ruling, existing captures are
+//! disposable test data; where a shape had to change it changed cleanly.
+
+pub mod annot;
 pub mod arena;
 pub mod dedup;
 pub mod executor;
@@ -78,6 +126,8 @@ pub mod synthetic;
 mod bench;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vocab_tests;
 
 /// Deepest pointer-derivation chain t35 measured, at derivation span 0x10000.
 pub const MEASURED_MAX_DISCOVERY_DEPTH: u32 = 12;
@@ -159,6 +209,41 @@ pub const DEFAULT_PROVEN_EXTENT_GAP_BYTES: u32 = 128;
 /// "128–4,096-byte windows only for a family whose allocation and maximum
 /// extent are proven"; nothing may be configured past the top of that band.
 pub const MAX_PROVEN_WINDOW_GAP_BYTES: u32 = 4096;
+
+/// Terms a [`executor::CountExpr`] may sum. d81's derived extent is
+/// `mask + max_probe + 2`, i.e. two terms and a constant; the cap is four so a
+/// count expression stays a fixed-cost read of header fields the recipe has
+/// already copied and can never become a loop.
+pub const MAX_COUNT_EXPR_TERMS: usize = 4;
+
+/// Back-to-back images one copy op may take. Two is the A/B pair
+/// `d81_read_stable_bytes` runs; three is the active-window sampler's ceiling
+/// (`D81_ACTIVE_COHERENCE_READS`). Nothing may ask for more, because every
+/// retained image is charged to the same custody ceiling as the first.
+pub const MAX_ADJACENT_SAMPLES: u8 = 3;
+
+/// Bytes a [`executor::RecipeOp::SelectByValue`] probe may look at. This is the
+/// explicit bound ruling C requires: a conditional op reads at most this much
+/// of ALREADY-COPIED memory, and 64 bytes is the widest structural discriminant
+/// d81 has (its 16-byte rail header pair and its 12-byte anchor triplet both
+/// fit with room over).
+pub const MAX_PROBE_COMPARE_BYTES: u32 = 64;
+
+/// Windows a comparison mask may name. A mask is the set of bytes a reader
+/// CONSUMES out of a copied object; a family that consumes more than eight
+/// disjoint windows of one object is describing a different object.
+pub const MAX_COMPARE_WINDOWS: usize = 8;
+
+/// Stages a closing program may order.
+pub const MAX_CLOSING_STAGES: usize = 32;
+
+/// The finest a [`executor::Tolerance::Scoped`] copy's failure is narrowed to.
+///
+/// A page, because a page is the granularity the address space is actually
+/// managed at: memory becomes unreadable a page at a time, so bisecting below
+/// one buys no precision and costs a transaction per attempt. It is also the
+/// granularity [`view::PAGE_SHIFT`] indexes at.
+pub const SCOPED_VOID_GRANULARITY_BYTES: u64 = 4096;
 
 /// Hasher for the substrate's two membership sets: the discovery visited set
 /// and the spilled discovery-edge set.
@@ -377,6 +462,34 @@ pub enum MalformedReason {
     BadWidth { op: u16, width: u8 },
     DepthLimitAboveCeiling { limit: u32 },
     ZeroLimit { limit: &'static str },
+    /// [`executor::Recipe::mods`] is neither empty nor one entry per op. A
+    /// partial modifier table would silently apply an op's qualifications to
+    /// its neighbour.
+    ModsLengthMismatch { ops: u32, mods: u32 },
+    /// A modifier names a qualification its op cannot honour — a count
+    /// expression on a `DecodePointer`, a join key from carry on a
+    /// `CopyHeader`, a comparison mask on a decode op.
+    ModOnWrongOp { op: u16 },
+    /// A count expression with no terms and no constant decodes nothing.
+    CountExpressionEmpty { op: u16 },
+    /// Past [`MAX_COUNT_EXPR_TERMS`].
+    CountExpressionTooManyTerms { op: u16, terms: u32 },
+    /// A sample count of zero, or past [`MAX_ADJACENT_SAMPLES`].
+    SampleCountOutOfRange { op: u16, count: u8 },
+    /// A comparison mask window lies outside the object its op copies, or the
+    /// mask names more than [`MAX_COMPARE_WINDOWS`] windows. A mask that
+    /// reaches outside the copy would narrow the comparison to bytes the
+    /// interval does not hold.
+    BadCompareMask { op: u16 },
+    /// An admissibility window whose high bound is at or below its low one
+    /// admits nothing, or whose alignment is not a power of two.
+    BadAdmissibilityWindow { op: u16 },
+    /// A `SelectByValue` probe wider than [`MAX_PROBE_COMPARE_BYTES`].
+    ProbeTooWide { op: u16, len: u32 },
+    /// A closing program named a stage no op carries, ordered more than
+    /// [`MAX_CLOSING_STAGES`], repeated a stage, or elided into a stage that is
+    /// not later in the order (which would be a cycle or a backwards close).
+    BadClosingProgram { stage: u16 },
 }
 
 /// Every way a recipe can fail to produce a complete result. A refusal always
@@ -448,11 +561,128 @@ pub enum Refusal {
         base: u64,
         offset: i64,
     },
+    /// A decoded pointer failed its op's admissibility window and the op
+    /// declared the failure fatal. The window is carried so the consumer can
+    /// reconstruct the predicate it failed.
+    PointerNotAdmissible {
+        recipe: RecipeId,
+        addr: u64,
+        low: u64,
+        high: u64,
+    },
+    /// A `JoinBounded` or a table registration asked for the branch's carried
+    /// scalar and nothing on the branch had set one. A recipe defect: reading
+    /// a key that was never carried is a silently-zero key, which is the join
+    /// equivalent of truncation-as-success.
+    CarryNotSet { recipe: RecipeId, op: u16 },
+    /// A `SelectByValue` could not resolve: its probe bytes were not captured,
+    /// or its predicate was false and it declared no `otherwise` arm.
+    ConditionalUnresolved { recipe: RecipeId, op: u16 },
     /// Structural defect, found before execution.
     Malformed {
         recipe: RecipeId,
         reason: MalformedReason,
     },
+}
+
+/// Everything the substrate knew when a refusal or a rejection was raised.
+///
+/// # Why a refusal is not just a reason and a span
+///
+/// d81's first failure carries stage, reason, subject, related identity, index,
+/// raw value, anchor provenance, read address/width/attempt/success mask and
+/// both sampled values (`attach_log.rs`'s `D81FirstFailure`). A substrate that
+/// reports only `(recipe, span)` cannot reproduce it, so a converted reader
+/// would lose the discriminating half of its own degraded outcome — which the
+/// "degraded outcomes name their cause" law does not permit.
+///
+/// Every field is filled where the executor knows it and left at zero where it
+/// does not; zero is not a claim. [`RefusalWitness::stage`] is the op's
+/// declared stage tag, which is what ties a refusal back to a named point in
+/// the reader's own walk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RefusalWitness {
+    /// The op's declared stage tag (0 when the op declares none).
+    pub stage: u16,
+    /// The op index that raised it.
+    pub op: u16,
+    /// The address the op was acting on: a decode site's base, or a copy's
+    /// start.
+    pub subject: u64,
+    /// The identity the subject was reached through: a table base, an extent
+    /// base, or the pointer value that produced it.
+    pub related: u64,
+    /// Element index within an extent, where the op ran per element.
+    pub index: u32,
+    /// The value that caused it — a decoded count, key, or pointer.
+    pub raw: u64,
+    /// The address the failing read was taken at.
+    pub read_addr: u64,
+    /// Its width in bytes.
+    pub read_width: u8,
+    /// Which sample (1-based) of an adjacent-sample copy.
+    pub attempt: u8,
+    /// Bit `k` set when sample `k` succeeded.
+    pub success_mask: u8,
+    /// The two sampled values, where a comparison produced the failure.
+    pub sample_a: u64,
+    pub sample_b: u64,
+}
+
+/// A refusal and the witness it happened under. This is what a consumer gets;
+/// [`Refusal`] alone is never handed out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefusalRecord {
+    pub refusal: Refusal,
+    pub witness: RefusalWitness,
+}
+
+impl RefusalRecord {
+    pub fn new(refusal: Refusal, witness: RefusalWitness) -> Self {
+        Self { refusal, witness }
+    }
+
+    /// A refusal raised where the executor had nothing but the reason. Used by
+    /// the structural checks that run before any memory is touched.
+    pub fn bare(refusal: Refusal) -> Self {
+        Self {
+            refusal,
+            witness: RefusalWitness::default(),
+        }
+    }
+
+    pub fn recipe(&self) -> RecipeId {
+        self.refusal.recipe()
+    }
+}
+
+/// A decoded pointer that failed its admissibility window and was NOT followed.
+///
+/// Recorded rather than fatal when the op declares
+/// [`executor::RejectAction::StopBranch`]: d81 rejects a pointer and reports
+/// its own typed `InvalidPointer` with stage and subject, and it keeps going.
+/// The recipe's other branches are unaffected, so this is a branch outcome and
+/// not a recipe outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PointerRejection {
+    pub recipe: RecipeId,
+    pub consumer: ConsumerId,
+    /// The value that failed the predicate.
+    pub addr: u64,
+    pub witness: RefusalWitness,
+}
+
+/// A span a [`executor::Tolerance::Scoped`] copy could not read.
+///
+/// The bytes are not in the arena and never will be. Ruling A: this refuses
+/// only the reads that actually touch it — [`view::SnapshotView`] answers
+/// [`view::ViewRefusal::Unreadable`] for a request intersecting a void and
+/// serves every other byte of the same copy normally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Void {
+    pub span: Span,
+    pub recipe: RecipeId,
+    pub witness: RefusalWitness,
 }
 
 impl Refusal {
@@ -470,6 +700,9 @@ impl Refusal {
             | Refusal::FieldNotCaptured { recipe, .. }
             | Refusal::MemoryUnreadable { recipe, .. }
             | Refusal::AddressNotRepresentable { recipe, .. }
+            | Refusal::PointerNotAdmissible { recipe, .. }
+            | Refusal::CarryNotSet { recipe, .. }
+            | Refusal::ConditionalUnresolved { recipe, .. }
             | Refusal::Malformed { recipe, .. } => recipe,
         }
     }
@@ -514,10 +747,17 @@ impl<T: SnapshotMemory + ?Sized> SnapshotMemory for &T {
 }
 
 /// Why a consumer's hour is gapped.
+///
+/// [`GapReason::Refused`] carries a whole [`RefusalRecord`] rather than a bare
+/// [`Refusal`]: a gapped consumer is exactly the party that needs the witness,
+/// and making it fetch one separately is how a degraded outcome loses its
+/// cause. The type is correspondingly wider than it was; it lives one per
+/// GAPPED CONSUMER in a `BTreeMap`, never one per interval or per copy, so the
+/// width is bounded by the observation's consumer count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GapReason {
     /// Its recipe refused during the observation.
-    Refused(Refusal),
+    Refused(RefusalRecord),
     /// Bytes it read changed between the opening and closing witness copies.
     WitnessChanged { interval: IntervalId },
     /// A parent of bytes it read changed, so the pointer chain that reached
@@ -526,4 +766,9 @@ pub enum GapReason {
         interval: IntervalId,
         changed_parent: IntervalId,
     },
+    /// Two back-to-back images of the same bytes disagreed, so the copy caught
+    /// a writer mid-update. This is the torn-detection instrument
+    /// `d81_read_stable_bytes` runs in production, expressed as a gap: the
+    /// consumer never sees an image the copier knows is torn.
+    SamplesDisagreed { interval: IntervalId },
 }
