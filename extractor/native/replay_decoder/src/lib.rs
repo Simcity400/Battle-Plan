@@ -102,6 +102,19 @@ use snapshot::sha256::{to_hex, Sha256};
 /// stream length (mirrors the production streaming fold's chunk size).
 const CHUNK: usize = 8 * 1024 * 1024;
 
+/// Round a byte count up to a whole [`CHUNK`], saturating.
+///
+/// The framing buffer grows in whole chunks rather than by `Vec`'s doubling.
+/// Doubling is the right default when the final size is unknown; here it is
+/// known within one chunk, and doubling is what put a 32 MiB allocation behind a
+/// 24 MiB need and made `decoder_framing` a 40 MiB component.
+const fn round_up_to_chunk(bytes: usize) -> usize {
+    match bytes.checked_add(CHUNK - 1) {
+        Some(raised) => (raised / CHUNK) * CHUNK,
+        None => usize::MAX,
+    }
+}
+
 /// ZIP local-file header magic (`PK\x03\x04`) — a `.battleplan` container.
 const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 
@@ -2433,11 +2446,12 @@ pub struct HourCursor {
     campaign_identity: Option<ValidatedCid1>,
     /// Buffered, not-yet-consumed bytes. `carry[pos..]` is unframed; `carry[..pos]`
     /// is framed-but-not-yet-drained (drained lazily before each read). Bounded by
-    /// ~`2 * CHUNK + largest record`, independent of stream length.
+    /// ~`CHUNK + largest record`, rounded up to a chunk, independent of stream
+    /// length. Each read lands directly in this buffer's tail; there is no
+    /// second staging buffer.
     carry: Vec<u8>,
     /// Framing cursor within `carry`.
     pos: usize,
-    chunk: Vec<u8>,
     /// Absolute decoded-stream offset of `carry[0]` (bytes already drained).
     processed: u64,
     /// Total decoded bytes pulled from the reader (needed when zstd hides length).
@@ -2561,12 +2575,12 @@ impl HourCursor {
         identity_mode: StreamIdentityMode,
         index_source: Option<IndexSourceDescriptor>,
     ) -> HourCursor {
-        // Charged before the buffers exist, per the accounting rule. Kept up to
+        // Charged before the buffer exists, per the accounting rule. Kept up to
         // date in `pump`, because `carry` can outgrow its initial reservation
         // when one record spans chunks.
         let framing_charge = recorder_host::mem_account::Charge::new(
             recorder_host::mem_account::Component::DecoderFraming,
-            (CHUNK * 3) as u64,
+            (CHUNK * 2) as u64,
         );
         let hour_index_charge = recorder_host::mem_account::Charge::new(
             recorder_host::mem_account::Component::DecoderHourIndex,
@@ -2580,7 +2594,6 @@ impl HourCursor {
             campaign_identity: None,
             carry: Vec::with_capacity(CHUNK * 2),
             pos: 0,
-            chunk: vec![0u8; CHUNK],
             processed: 0,
             decoded_read: 0,
             total_len,
@@ -2935,37 +2948,64 @@ impl HourCursor {
             }
 
             // Front of carry has no complete record: drop the framed prefix and
-            // read the next chunk.
+            // read the next chunk STRAIGHT INTO `carry`'s tail.
+            //
+            // There used to be a second 8 MiB staging buffer here — read into
+            // `chunk`, then `extend_from_slice` into `carry` — and it bought
+            // nothing: every byte was copied twice and the 8 MiB was resident
+            // for the whole decode. Reading into the tail costs the same
+            // `resize` memset the copy cost, and the buffer is gone.
             self.compact_carry();
-            let n = self.reader.read(&mut self.chunk).map_err(DecodeError::Io)?;
+            let framed = self.carry.len();
+            // Grown deliberately rather than by `Vec`'s own doubling, which is
+            // what put a 32 MiB allocation behind a 24 MiB need and made this
+            // component 40 MiB.
+            //
+            // The reservation this replaces guarded a real worst case and still
+            // does: `carry` has to hold one INCOMPLETE RECORD plus the next
+            // chunk, and the record header permits a payload far larger than a
+            // chunk, so the buffer is not capped at `2 * CHUNK` — it grows and
+            // the charge follows it.
+            //
+            // GEOMETRIC, at 1.5x rather than 2x. Exact-fit growth in whole
+            // chunks was the first version of this and it is quadratic: a record
+            // at the protocol's 256 MiB payload bound spans 32 chunks, so the
+            // buffer would relocate 32 times and copy ~4.2 GB before the record
+            // could be framed. 1.5x bounds the relocations at ~7 for the same
+            // record while still landing on 24 MiB — not 32 — for the ordinary
+            // one-chunk overrun that this component's 40 MiB came from.
+            let needed = framed.saturating_add(CHUNK);
+            if self.carry.capacity() < needed {
+                let capacity = self.carry.capacity();
+                let geometric = capacity.saturating_add(capacity / 2);
+                let wanted = round_up_to_chunk(needed.max(geometric));
+                self.carry.reserve_exact(wanted - framed);
+            }
+            // Charged BEFORE the bytes become resident, per the accounting rule.
+            self.framing_charge.set(self.carry.capacity() as u64);
+            self.carry.resize(framed + CHUNK, 0);
+            // The zero padding `resize` wrote is NOT stream content, so the
+            // buffer is cut back to what was actually read on every exit from
+            // here — including the error one. Returning `?` straight from the
+            // read would leave a chunk of zeroes framed into `carry`, and the
+            // next thing to look at `carry.len()` (the terminal-boundary check)
+            // would be reading bytes the stream never carried.
+            let read = self.reader.read(&mut self.carry[framed..]);
+            let n = match read {
+                Ok(n) => n,
+                Err(error) => {
+                    self.carry.truncate(framed);
+                    return Err(DecodeError::Io(error));
+                }
+            };
+            self.carry.truncate(framed + n);
             if n == 0 {
                 self.finalize_done();
                 return Ok(());
             }
             self.decoded_read = self.decoded_read.saturating_add(n as u64);
-            self.source_hasher.update(&self.chunk[..n]);
-            // Charged BEFORE the append that may reallocate. `carry` starts at
-            // `2 * CHUNK` but is NOT capped there: it has to hold one whole
-            // incomplete record plus the next chunk, and the record header
-            // permits a payload far larger than a chunk. A charge fixed at
-            // construction would report 24 MiB while the buffer held hundreds.
-            //
-            // The pre-charge is `Vec`'s own worst case, `max(2 * cap, cap + n)`,
-            // not `cap + n`: amortized growth DOUBLES, so a buffer that needed
-            // four more MiB can take sixteen, and a pre-charge of the requested
-            // size would miss the peak it exists to catch. Over-charging for
-            // the length of one append is the safe direction; the second `set`
-            // brings it back to what was really reserved.
-            let carry_capacity = self.carry.capacity();
-            self.framing_charge.set(
-                (carry_capacity
-                    .saturating_mul(2)
-                    .max(carry_capacity.saturating_add(n))
-                    + self.chunk.capacity()) as u64,
-            );
-            self.carry.extend_from_slice(&self.chunk[..n]);
-            self.framing_charge
-                .set((self.carry.capacity() + self.chunk.capacity()) as u64);
+            self.source_hasher.update(&self.carry[framed..]);
+            self.framing_charge.set(self.carry.capacity() as u64);
         }
     }
 

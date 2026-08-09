@@ -218,6 +218,46 @@ function Get-ProductionPromotionRequiredString {
     return $value
 }
 
+function Assert-ProductionPromotionJsonIntegerToken {
+    <#
+    .SYNOPSIS
+    Refuse a field whose JSON token was a FLOAT, even a whole-valued one.
+
+    .DESCRIPTION
+    `Get-ProductionPromotionRequiredInteger` accepts a whole-valued [double] and
+    converts it, which is right for a figure `ConvertFrom-Json` may have widened.
+    It is wrong for a field whose producer writes a literal integer and whose
+    every other reader refuses the float form: the gap ledger's `version` and its
+    `row_count` are written by the recorder as `2` and as a count, and Rust,
+    Python and the PowerShell expander all reject `2.0`. A gate that admits what
+    its own producer cannot emit has a second, undocumented format.
+
+    Use this BESIDE the required-integer read, not instead of it: this narrows
+    the accepted token, that one still owns absence, null and range.
+    #>
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    # Read WITHOUT enumeration: `Get-ProductionPromotionProperty` returns through
+    # the pipeline, and a one-element array comes back as its element -- so
+    # `"row_count": [0]` read as scalar zero and promoted.
+    $value = $null
+    if ($null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name]) {
+        $value = $Object.PSObject.Properties[$Name].Value
+    }
+    if ($value -is [double] -or $value -is [single] -or $value -is [System.Array]) {
+        throw "$Context publishes '$Name' as $($value.GetType().Name); it must be an integer token"
+    }
+    # A `Decimal` is how ConvertFrom-Json carries a plain integer too large for
+    # Int64, so refusing it outright would reject a legitimately widened token.
+    # `.NET Decimal` preserves SCALE, so the float spelling still shows its point.
+    if ($value -is [decimal] -and ([string]$value -like '*.*')) {
+        throw "$Context publishes '$Name' in float form; it must be an integer token"
+    }
+}
+
 function Get-ProductionPromotionRequiredArray {
     <#
     .SYNOPSIS
@@ -703,8 +743,54 @@ function Get-ProductionCapturePromotionEvidence {
 
     $compact = Get-ProductionPromotionProperty $manifest 'compact_stream'
     $frameCount = Get-ProductionPromotionProperty $compact 'frame_end_record_count'
-    $gapRows = Get-ProductionPromotionRequiredArray `
-        $compact 'domain_gap_outcomes' 'capture manifest compact_stream'
+    # The gap ledger is RUN ENCODED (`recorder_host::gap_ledger`): the flat
+    # `domain_gap_outcomes` array cost 33.5 KB of manifest per game hour. This
+    # gate never walked the rows -- it required the list to be PUBLISHED and to
+    # be EMPTY -- so it reads the ledger's own declared count, which keeps both
+    # halves: a missing count throws, and a nonzero one fails the zero-loss
+    # clause below exactly as a nonempty array did.
+    #
+    # The count is not taken on trust. Two independent full expansions check it
+    # against the classes they actually expand: the validator
+    # (`Expand-CaptureGapOutcomes`) and the sink verifier
+    # (`verify_sink_reconciliation.py`), and this gate refuses to promote without
+    # both of their reports.
+    # Read WITHOUT enumeration, and refuse an array: `Get-ProductionPromotionProperty`
+    # returns through the pipeline, so a one-element array comes back as its
+    # element and `"gap_ledger": [{...}]` promoted as the object inside it.
+    $gapLedger = $null
+    if ($null -ne $compact -and $null -ne $compact.PSObject.Properties['gap_ledger']) {
+        $gapLedger = $compact.PSObject.Properties['gap_ledger'].Value
+    }
+    if ($null -eq $gapLedger -or $gapLedger -is [System.Array]) {
+        throw 'capture manifest compact_stream does not publish a gap_ledger object'
+    }
+    # The version is required as a NUMBER, and as an INTEGER-TYPED one.
+    # `Get-ProductionPromotionRequiredInteger` deliberately accepts a whole-valued
+    # [double] -- right for figures ConvertFrom-Json may widen, wrong here: the
+    # recorder writes `2`, never `2.0`, and Rust, Python and the PowerShell
+    # expander all refuse the float form. A gate that admits what its own
+    # producer cannot emit, and what every reader of the document rejects, has a
+    # second undocumented format.
+    Assert-ProductionPromotionJsonIntegerToken `
+        $gapLedger 'version' 'capture manifest gap_ledger'
+    $gapLedgerVersion = Get-ProductionPromotionRequiredInteger `
+        $gapLedger 'version' 'capture manifest gap_ledger'
+    if ([string](Get-ProductionPromotionProperty $gapLedger 'schema') -cne 'hoi4-gap-ledger-v2' -or
+        $gapLedgerVersion -ne 2) {
+        throw 'capture manifest publishes an unrecognised gap_ledger schema or version'
+    }
+    $gapOutcomeTable = $null
+    if ($null -ne $gapLedger.PSObject.Properties['domain_gap_outcomes']) {
+        $gapOutcomeTable = $gapLedger.PSObject.Properties['domain_gap_outcomes'].Value
+    }
+    if ($null -eq $gapOutcomeTable -or $gapOutcomeTable -is [System.Array]) {
+        throw 'capture manifest gap_ledger does not publish a domain_gap_outcomes object'
+    }
+    Assert-ProductionPromotionJsonIntegerToken `
+        $gapOutcomeTable 'row_count' 'capture manifest gap_ledger domain_gap_outcomes'
+    $gapRowCount = Get-ProductionPromotionRequiredInteger `
+        $gapOutcomeTable 'row_count' 'capture manifest gap_ledger domain_gap_outcomes'
     if ($frameCount -isnot [int] -and $frameCount -isnot [long]) {
         throw 'capture frame count is not an integer'
     }
@@ -727,7 +813,7 @@ function Get-ProductionCapturePromotionEvidence {
         $manifestSkippedGameHours -ne 0 -or
         $manifestUniqueGameHours -ne $frameCount -or
         $compactGapRecordCount -ne 0 -or
-        $gapRows.Count -ne 0 -or
+        $gapRowCount -ne 0 -or
         ($compactFailureFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
         ($compactFailureFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0 -or
         $compactFailureSeen) {
@@ -1159,7 +1245,7 @@ function Get-ProductionCapturePromotionEvidence {
         zero_loss = (
             $manifestSkippedGameHours -eq 0 -and
             $compactGapRecordCount -eq 0 -and
-            $gapRows.Count -eq 0
+            $gapRowCount -eq 0
         )
         speed5_evidence = [ordered]@{
             speed5_proof_sha256 = Get-ProductionPromotionSha256 -Path $speedPath

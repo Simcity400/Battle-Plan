@@ -15,10 +15,15 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import struct
+import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gap_ledger  # noqa: E402  (path is set immediately above)
 
 
 HEX64 = set("0123456789abcdef")
@@ -966,10 +971,20 @@ def grade_passive_domain_outcomes(
     if not is_int(frame_count) or frame_count <= 0:
         return
 
-    gaps = compact.get("domain_gap_outcomes")
-    require(isinstance(gaps, list), "domain_gap_outcomes_missing", problems)
-    if not isinstance(gaps, list):
+    # The sealed manifest carries a RUN-ENCODED gap ledger, expanded here into
+    # exactly the rows the flat `domain_gap_outcomes` array used to hold, so the
+    # per-row grading below is unchanged. A manifest sealed with the flat array
+    # expands through the same call, which is why archived captures still grade.
+    #
+    # A ledger this build cannot read is a MISSING ledger, not an empty one: the
+    # rows below would otherwise all pass vacuously on a manifest nobody read.
+    try:
+        gaps = gap_ledger.expand_domain_gap_outcomes(compact)
+        readable = True
+    except gap_ledger.GapLedgerError:
         gaps = []
+        readable = False
+    require(readable, "domain_gap_outcomes_missing", problems)
     require(
         compact.get("domain_gap_record_count") == len(gaps),
         "domain_gap_record_count_mismatch",

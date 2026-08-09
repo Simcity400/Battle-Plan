@@ -18,7 +18,9 @@ use crate::record_semantics::{
     DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+// `Ord` so the compacted manifest gap ledger can key its class map on a reason.
+// The order is the wire-code order and carries no meaning beyond being total.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u16)]
 pub enum DomainGapReason {
     Torn = DOMAIN_GAP_REASON_TORN,
@@ -127,6 +129,19 @@ impl DomainGapReason {
         }
     }
 
+    /// The inverse of [`DomainGapReason::wire_name`].
+    ///
+    /// Exists because the manifest gap ledger is now a COMPACTED encoding that a
+    /// reader has to expand back into rows: the reason leaves the process as a
+    /// name and has to come back as the enum, and a reader that re-transcribed
+    /// the eight names would be the second hand list lane FJ removed.
+    /// `wire_name_round_trips` pins the pair.
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.wire_name() == name)
+    }
+
     fn from_code(code: u16) -> Result<Self, DomainGapError> {
         match code {
             DOMAIN_GAP_REASON_TORN => Ok(Self::Torn),
@@ -207,7 +222,8 @@ impl DomainGapWitnessProvenance {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+// `Ord` for the same reason as [`DomainGapReason`].
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u16)]
 pub enum DomainGapPart {
     State = DOMAIN_GAP_PART_STATE,
@@ -216,8 +232,27 @@ pub enum DomainGapPart {
 }
 
 impl DomainGapPart {
+    /// Every part, for the same reason [`DomainGapReason::ALL`] exists.
+    pub const ALL: [DomainGapPart; 3] = [Self::State, Self::Event, Self::Both];
+
     pub const fn code(self) -> u16 {
         self as u16
+    }
+
+    /// The name the sealed manifest writes. Previously transcribed at the
+    /// manifest writer; it lives here so the writer and the ledger expander
+    /// read one authority rather than two matching lists.
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Event => "event",
+            Self::Both => "both",
+        }
+    }
+
+    /// The inverse of [`DomainGapPart::wire_name`].
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|part| part.wire_name() == name)
     }
 
     fn from_code(code: u16) -> Result<Self, DomainGapError> {

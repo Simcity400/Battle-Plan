@@ -12,6 +12,7 @@ pub mod early_render_host_channel;
 pub mod early_render_launch;
 pub mod emitted_token_inventory;
 pub mod finalize_progress;
+pub mod gap_ledger;
 /// Named resident-memory owners and the residual they do not explain. See the
 /// module header for why a process peak alone was not enough.
 pub mod mem_account;

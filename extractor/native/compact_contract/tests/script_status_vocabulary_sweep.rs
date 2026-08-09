@@ -2299,3 +2299,95 @@ fn the_verdict_value_classifier_proves_rather_than_guesses() {
         );
     }
 }
+
+// --- The gap ledger's offline expanders --------------------------------------
+//
+// `scripts/gap_ledger.py` is the OFFLINE reader for the sealed manifest's
+// run-encoded gap ledger; the capture scorecard and the sink verifier both read
+// captures through it. It has to refuse a name the recorder cannot write, for
+// the same reason the recorder's own reader does: a reason it admits and the
+// producer's decoder refuses is two readers of one document disagreeing about
+// what the document says.
+//
+// So it transcribes the vocabularies, and these rebuild each set from the
+// contract enum and require exact equality -- the same arrangement that already
+// holds `verify_sink_reconciliation.py`'s `ALLOWED_GAP_REASONS`.
+
+/// Read a `frozenset({...})` literal out of `gap_ledger.py`.
+///
+/// The marker carries its own leading newline where one set's name is a suffix
+/// of another's (`GAP_REASONS` inside `DOMAIN_GAP_REASONS`), because a marker
+/// that matched twice would compare against whichever the search found first.
+fn gap_ledger_python_set(marker: &str) -> BTreeSet<String> {
+    let code = read_code("gap_ledger.py");
+    let block = block_after(&code, marker);
+    top_level_elements(&block)
+        .into_iter()
+        .map(|element| {
+            let trimmed = element.trim().to_string();
+            trimmed
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+                .unwrap_or_else(|| {
+                    // FAIL CLOSED: an element this sweep cannot read is an
+                    // element it must not silently drop from the comparison.
+                    panic!("{marker} element is not a plain string literal: {trimmed:?}")
+                })
+                .to_string()
+        })
+        .collect()
+}
+
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: assigning a tenth `GapReason`, or
+/// renaming one, without widening the offline expander's set -- which would make
+/// the scorecard refuse a ledger the recorder had just written.
+#[test]
+fn gap_ledger_python_admits_exactly_the_contract_gap_reasons() {
+    use compact_contract::GapReason;
+    let declared = gap_ledger_python_set("
+GAP_REASONS = frozenset(");
+    let expected: BTreeSet<String> = GapReason::ALL
+        .iter()
+        .map(|reason| reason.wire_name().to_string())
+        .collect();
+    assert_eq!(expected.len(), GapReason::ALL.len(), "two reasons share a name");
+    assert_eq!(declared, expected, "gap_ledger.py's GAP_REASONS is stale");
+}
+
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: adding or renaming a `GapCounter`.
+#[test]
+fn gap_ledger_python_admits_exactly_the_contract_gap_counters() {
+    use compact_contract::GapCounter;
+    let declared = gap_ledger_python_set("GAP_COUNTERS = frozenset(");
+    let expected: BTreeSet<String> = GapCounter::ALL
+        .iter()
+        .map(|counter| counter.wire_name().to_string())
+        .collect();
+    assert_eq!(declared, expected, "gap_ledger.py's GAP_COUNTERS is stale");
+}
+
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: assigning a ninth `DomainGapReason`,
+/// which is exactly the drift lane FJ found in the sink verifier.
+#[test]
+fn gap_ledger_python_admits_exactly_the_contract_domain_gap_reasons() {
+    use compact_contract::DomainGapReason;
+    let declared = gap_ledger_python_set("DOMAIN_GAP_REASONS = frozenset(");
+    let expected: BTreeSet<String> = DomainGapReason::ALL
+        .iter()
+        .map(|reason| reason.wire_name().to_string())
+        .collect();
+    assert_eq!(declared, expected, "gap_ledger.py's DOMAIN_GAP_REASONS is stale");
+}
+
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: adding or renaming a
+/// `DomainGapPart`.
+#[test]
+fn gap_ledger_python_admits_exactly_the_contract_gap_parts() {
+    use compact_contract::DomainGapPart;
+    let declared = gap_ledger_python_set("DOMAIN_GAP_PARTS = frozenset(");
+    let expected: BTreeSet<String> = DomainGapPart::ALL
+        .iter()
+        .map(|part| part.wire_name().to_string())
+        .collect();
+    assert_eq!(declared, expected, "gap_ledger.py's DOMAIN_GAP_PARTS is stale");
+}

@@ -44,6 +44,52 @@ pub const GAP_REASON_CODE_COVERAGE_SHORTFALL: u8 = 8;
 pub const GAP_REASON_CODE_BACKPRESSURE: u8 = 9;
 
 impl GapReason {
+    /// Every reason, for consumers that must handle all of them but cannot be
+    /// forced to by a `match`: the manifest ledger's name table and its
+    /// expander, and the round-trip test that pins the two together.
+    ///
+    /// `gap_reason_all_covers_every_decodable_reason` rebuilds this set from
+    /// `gap_reason_from_code` over the whole `u8` code space, so a variant that
+    /// can arrive off the wire and is missing here fails the suite.
+    pub const ALL: [GapReason; 9] = [
+        Self::Coalesced,
+        Self::SkippedHour,
+        Self::SourceUnavailable,
+        Self::PartialData,
+        Self::BridgeUnavailable,
+        Self::WorkerPanic,
+        Self::TornSweep,
+        Self::CoverageShortfall,
+        Self::Backpressure,
+    ];
+
+    /// The reason's name in the sealed manifest.
+    ///
+    /// THIS USED TO BE A MATCH INSIDE THE MANIFEST WRITER. The compacted gap
+    /// ledger has to expand names back into reasons, which would have made two
+    /// transcriptions of the same nine strings -- exactly the drift lane FJ
+    /// removed for `DomainGapReason`. One authority, both directions.
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Coalesced => "coalesced",
+            Self::SkippedHour => "skipped_hour",
+            Self::SourceUnavailable => "source_unavailable",
+            Self::PartialData => "partial_data",
+            Self::BridgeUnavailable => "bridge_unavailable",
+            Self::WorkerPanic => "worker_panic",
+            Self::TornSweep => "torn_sweep",
+            Self::CoverageShortfall => "coverage_shortfall",
+            Self::Backpressure => "backpressure",
+        }
+    }
+
+    /// The inverse of [`GapReason::wire_name`].
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.wire_name() == name)
+    }
+
     pub const fn code(self) -> u8 {
         match self {
             Self::Coalesced => GAP_REASON_CODE_COALESCED,
@@ -91,12 +137,37 @@ pub const GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS: u8 = 2;
 pub const GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS: u8 = 3;
 
 impl GapCounter {
+    /// Every counter, for the manifest name table and its inverse.
+    pub const ALL: [GapCounter; 3] = [
+        Self::CoalescedHours,
+        Self::QueueOverrunHours,
+        Self::SinkBackpressureHours,
+    ];
+
     pub const fn code(self) -> u8 {
         match self {
             Self::CoalescedHours => GAP_COUNTER_CODE_COALESCED_HOURS,
             Self::QueueOverrunHours => GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS,
             Self::SinkBackpressureHours => GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS,
         }
+    }
+
+    /// The counter's name in the sealed manifest. Moved here from the manifest
+    /// writer for the same reason as [`GapReason::wire_name`]: the compacted
+    /// ledger has to read it back.
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::CoalescedHours => "coalesced_hours",
+            Self::QueueOverrunHours => "queue_overrun_hours",
+            Self::SinkBackpressureHours => "sink_backpressure_hours",
+        }
+    }
+
+    /// The inverse of [`GapCounter::wire_name`].
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|counter| counter.wire_name() == name)
     }
 }
 
@@ -747,6 +818,7 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn counter_and_backpressure_reason_codes_are_exact_and_round_trip() {
@@ -1168,5 +1240,46 @@ mod tests {
                 max: MAX_GAP_DOMAIN_COUNT,
             })
         );
+    }
+
+    /// `GapReason::ALL` must hold every reason a record can arrive carrying.
+    ///
+    /// Rebuilt from the wire decoder rather than from a second list: a variant
+    /// given the next free code and never added to `ALL` is invisible to any
+    /// test written against `ALL` itself, and the compacted manifest gap ledger
+    /// resolves names through `from_wire_name`, which walks `ALL`. A reason the
+    /// producer can emit but `ALL` omits would seal a manifest no expander can
+    /// read back.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: assigning a tenth gap reason code
+    /// without adding the variant to `ALL`.
+    #[test]
+    fn gap_reason_all_covers_every_decodable_reason() {
+        let decodable: BTreeSet<GapReason> = (0u8..=u8::MAX)
+            .filter_map(|code| gap_reason_from_code(code).ok())
+            .collect();
+        let enumerated: BTreeSet<GapReason> = GapReason::ALL.into_iter().collect();
+        assert_eq!(
+            enumerated, decodable,
+            "GapReason::ALL and the wire decoder disagree about the reason set"
+        );
+        assert_eq!(enumerated.len(), GapReason::ALL.len(), "ALL lists a duplicate");
+    }
+
+    /// Names are the manifest's only spelling of a reason, and the ledger
+    /// expander turns them back into reasons. A collision would make two
+    /// outcomes indistinguishable on the manifest; a broken inverse would make
+    /// an honest ledger unreadable.
+    ///
+    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: renaming one reason on only one
+    /// side of the pair, or giving two reasons the same name.
+    #[test]
+    fn gap_reason_wire_names_are_unique_and_round_trip() {
+        let names: BTreeSet<&str> = GapReason::ALL.iter().map(|r| r.wire_name()).collect();
+        assert_eq!(names.len(), GapReason::ALL.len(), "two reasons share a name");
+        for reason in GapReason::ALL {
+            assert_eq!(GapReason::from_wire_name(reason.wire_name()), Some(reason));
+        }
+        assert_eq!(GapReason::from_wire_name("not_a_reason"), None);
     }
 }

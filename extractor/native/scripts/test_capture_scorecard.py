@@ -15,9 +15,13 @@ domain-hours were lost; all 4202 have a DOMAIN_DATA record in the stream.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gap_ledger  # noqa: E402  (path is set immediately above)
 
 
 SCRIPT = Path(__file__).with_name("capture_scorecard.py")
@@ -41,12 +45,33 @@ def outcome(domain_id, start, end, reason):
 
 
 def derived(domains, start, end, reason, kind="status_bits"):
+    # The witness carries the fields its kind requires, because the ledger
+    # expander refuses a witness missing one -- a partial witness on the wire
+    # would be a gap whose evidence nobody can read. The values are not what any
+    # axis here asserts on; the KIND is.
+    witness = {"kind": kind}
+    if kind == "hour_discontinuity":
+        witness["previous_hour"] = start - 1
+        witness["next_hour"] = end + 1
+    elif kind == "torn_sweep":
+        witness["tick_start"] = start
+        witness["tick_end"] = end + 1
+    elif kind == "status_bits":
+        witness["status_bits"] = 256
+    elif kind == "counter":
+        witness["counter"] = "sink_backpressure_hours"
+        witness["observed"] = end - start + 1
+    elif kind in ("coverage", "coverage_and_status"):
+        witness.update(expected_perf_records=1, observed_perf_records=0,
+                       expected_data_records=1, observed_data_records=0)
+        if kind == "coverage_and_status":
+            witness["status_bits"] = 256
     return {
         "domains": list(domains),
         "hour_start": start,
         "hour_end": end,
         "reason": reason,
-        "witness": {"kind": kind},
+        "witness": witness,
     }
 
 
@@ -61,8 +86,10 @@ def manifest(outcomes, gaps, frames=4, domain_ids=(10, 11)):
                           "row_count_total": 1, "gap_record_count": None}
                 for i in domain_ids
             },
-            "domain_gap_outcomes": outcomes,
-            "gaps": gaps,
+            # The scorecard reads the RUN-ENCODED ledger. Fixtures still state
+            # the flat rows they want it to see; `pack_rows_for_tests` wraps them
+            # in the smallest valid ledger carrying exactly those rows.
+            "gap_ledger": gap_ledger.pack_rows_for_tests(gaps, outcomes),
             "frame_degraded_outcomes": [],
         },
         "hourly_requirement": {},
@@ -302,8 +329,7 @@ def covered(domain_ids, per_domain, frames=4, gaps=()):
             "frame_end_record_count": frames,
             "expected_domains": [f"d{i}" for i in domain_ids],
             "per_domain": per_domain,
-            "domain_gap_outcomes": list(gaps),
-            "gaps": [],
+            "gap_ledger": gap_ledger.pack_rows_for_tests([], list(gaps)),
             "frame_degraded_outcomes": [],
         },
         "hourly_requirement": {},

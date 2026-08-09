@@ -48,7 +48,10 @@ loaded regime. Both are needed — a loaded machine flatters completeness.
 
 Per-domain `hour_label_mismatch` domain-hours, from
 `compact_stream.domain_gap_outcomes` in each capture's
-`native_session_manifest.json`:
+`native_session_manifest.json`. (That flat array is now the run-encoded
+`compact_stream.gap_ledger`; expand it with `scripts/gap_ledger.py` for the same
+rows. t25 and t26 predate the change and carry the flat array, which nothing
+reads any more.)
 
 | domain | t25 | as % of its hours | as % of *boundary* frames | t26 | as % of its hours | as % of boundary frames |
 |---|---|---|---|---|---|---|

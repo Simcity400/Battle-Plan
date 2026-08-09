@@ -93,6 +93,12 @@ $worldFoldCitationVerifier = Join-Path $PSScriptRoot "verify_world_fold_citation
 $worldFoldCitationTests = Join-Path $PSScriptRoot "test_verify_world_fold_citations.py"
 $captureScorecardTests = Join-Path $PSScriptRoot "test_capture_scorecard.py"
 $clockBaselineSummaryTests = Join-Path $PSScriptRoot "test_clock_baseline_summary.py"
+# The sealed manifest's gap ledger is expanded by THREE implementations (Rust,
+# Python, PowerShell). Rust is held to `gap_ledger_conformance.json` by its own
+# suite; these two hold the other two to the same vector, so a shape change that
+# reaches only one of them fails here rather than on a promoted capture.
+$gapLedgerTests = Join-Path $PSScriptRoot "test_gap_ledger.py"
+$gapLedgerExpansionTests = Join-Path $PSScriptRoot "Test-GapLedgerExpansion.ps1"
 $c07TreeLibraryGenerator = Join-Path $repoRoot "replay_interface\re_evidence\rendering_laws\C07\build_c07_portable_tree_library.py"
 $c07TreeLibraryPinSource = Join-Path $repoRoot "portable_replay\native\render_stream\src\c07_tree_content_hashes.rs"
 $expectedRustVersion = "1.96.0"
@@ -769,6 +775,12 @@ try {
         Invoke-Checked -Program "python" -Arguments @($worldFoldCitationTests)
         Invoke-Checked -Program "python" -Arguments @($captureScorecardTests)
         Invoke-Checked -Program "python" -Arguments @($clockBaselineSummaryTests)
+        Invoke-Checked -Program "python" -Arguments @($gapLedgerTests)
+        Invoke-Checked -Program "powershell.exe" -Arguments @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $gapLedgerExpansionTests
+        )
         Invoke-Checked -Program "python" -Arguments @(
             $worldFoldCitationVerifier,
             "--repo-root",

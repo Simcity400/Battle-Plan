@@ -4257,7 +4257,24 @@ pub fn observer_only() {}
         compact_stream = [ordered]@{
             frame_end_record_count = 2
             domain_gap_record_count = 0
-            domain_gap_outcomes = @()
+            # The RUN-ENCODED ledger the recorder now seals in place of the flat
+            # `gaps` / `domain_gap_outcomes` arrays. The gate reads exactly three
+            # things out of it -- the schema literal, the version, and the
+            # outcome table's declared `row_count` -- and requires the count to
+            # be zero for a promotable capture, which is what an empty flat array
+            # used to say.
+            gap_ledger = [ordered]@{
+                schema = 'hoi4-gap-ledger-v2'
+                version = 2
+                gaps = [ordered]@{ row_count = 0; class_count = 0; classes = @() }
+                domain_gap_outcomes = [ordered]@{
+                    row_count = 0
+                    class_count = 0
+                    ordinal_encoding = 'lane_sequential'
+                    lane_ordinal_first = @()
+                    classes = @()
+                }
+            }
             failure_status_flags_or = 0
             failure_status_seen = $false
             # The promotion gate requires this block and reads exactly three

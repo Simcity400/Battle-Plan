@@ -1,0 +1,4911 @@
+{
+  "expected_domain_gap_outcomes": [
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 0,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 100,
+      "range_start_hour_raw": 100,
+      "reason": "backpressure",
+      "target_hour_raw": 100,
+      "tick_after": 101,
+      "tick_before": 100
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 1,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 101,
+      "range_start_hour_raw": 101,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 101,
+      "tick_after": 102,
+      "tick_before": 101
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 10,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 110,
+      "range_start_hour_raw": 110,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 110,
+      "tick_after": 111,
+      "tick_before": 110
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 11,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 111,
+      "range_start_hour_raw": 111,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 111,
+      "tick_after": 112,
+      "tick_before": 111
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 12,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 112,
+      "range_start_hour_raw": 112,
+      "reason": "backpressure",
+      "target_hour_raw": 112,
+      "tick_after": 113,
+      "tick_before": 112
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 13,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 113,
+      "range_start_hour_raw": 113,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 113,
+      "tick_after": 114,
+      "tick_before": 113
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 14,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 114,
+      "range_start_hour_raw": 114,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 114,
+      "tick_after": 115,
+      "tick_before": 114
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 15,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 115,
+      "range_start_hour_raw": 115,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 115,
+      "tick_after": 116,
+      "tick_before": 115
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 16,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 116,
+      "range_start_hour_raw": 116,
+      "reason": "backpressure",
+      "target_hour_raw": 116,
+      "tick_after": 117,
+      "tick_before": 116
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 17,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 117,
+      "range_start_hour_raw": 117,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 117,
+      "tick_after": 118,
+      "tick_before": 117
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 18,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 118,
+      "range_start_hour_raw": 118,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 118,
+      "tick_after": 119,
+      "tick_before": 118
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 19,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 119,
+      "range_start_hour_raw": 119,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 119,
+      "tick_after": 120,
+      "tick_before": 119
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 2,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 102,
+      "range_start_hour_raw": 102,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 102,
+      "tick_after": 103,
+      "tick_before": 102
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 20,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 120,
+      "range_start_hour_raw": 120,
+      "reason": "backpressure",
+      "target_hour_raw": 120,
+      "tick_after": 121,
+      "tick_before": 120
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 21,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 121,
+      "range_start_hour_raw": 121,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 121,
+      "tick_after": 122,
+      "tick_before": 121
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 22,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 122,
+      "range_start_hour_raw": 122,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 122,
+      "tick_after": 123,
+      "tick_before": 122
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 23,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 123,
+      "range_start_hour_raw": 123,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 123,
+      "tick_after": 124,
+      "tick_before": 123
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 24,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 124,
+      "range_start_hour_raw": 124,
+      "reason": "backpressure",
+      "target_hour_raw": 124,
+      "tick_after": 125,
+      "tick_before": 124
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 25,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 125,
+      "range_start_hour_raw": 125,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 125,
+      "tick_after": 126,
+      "tick_before": 125
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 26,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 126,
+      "range_start_hour_raw": 126,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 126,
+      "tick_after": 127,
+      "tick_before": 126
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 27,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 127,
+      "range_start_hour_raw": 127,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 127,
+      "tick_after": 128,
+      "tick_before": 127
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 28,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 128,
+      "range_start_hour_raw": 128,
+      "reason": "backpressure",
+      "target_hour_raw": 128,
+      "tick_after": 129,
+      "tick_before": 128
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 29,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 129,
+      "range_start_hour_raw": 129,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 129,
+      "tick_after": 130,
+      "tick_before": 129
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 3,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 103,
+      "range_start_hour_raw": 103,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 103,
+      "tick_after": 104,
+      "tick_before": 103
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 30,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 130,
+      "range_start_hour_raw": 130,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 130,
+      "tick_after": 131,
+      "tick_before": 130
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 31,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 131,
+      "range_start_hour_raw": 131,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 131,
+      "tick_after": 132,
+      "tick_before": 131
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 32,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 132,
+      "range_start_hour_raw": 132,
+      "reason": "backpressure",
+      "target_hour_raw": 132,
+      "tick_after": 133,
+      "tick_before": 132
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 33,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 133,
+      "range_start_hour_raw": 133,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 133,
+      "tick_after": 134,
+      "tick_before": 133
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 34,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 134,
+      "range_start_hour_raw": 134,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 134,
+      "tick_after": 135,
+      "tick_before": 134
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 35,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 135,
+      "range_start_hour_raw": 135,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 135,
+      "tick_after": 136,
+      "tick_before": 135
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 36,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 136,
+      "range_start_hour_raw": 136,
+      "reason": "backpressure",
+      "target_hour_raw": 136,
+      "tick_after": 137,
+      "tick_before": 136
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 37,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 137,
+      "range_start_hour_raw": 137,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 137,
+      "tick_after": 138,
+      "tick_before": 137
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 38,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 138,
+      "range_start_hour_raw": 138,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 138,
+      "tick_after": 139,
+      "tick_before": 138
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 39,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 139,
+      "range_start_hour_raw": 139,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 139,
+      "tick_after": 140,
+      "tick_before": 139
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 4,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 104,
+      "range_start_hour_raw": 104,
+      "reason": "backpressure",
+      "target_hour_raw": 104,
+      "tick_after": 105,
+      "tick_before": 104
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 40,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 140,
+      "range_start_hour_raw": 140,
+      "reason": "backpressure",
+      "target_hour_raw": 140,
+      "tick_after": 141,
+      "tick_before": 140
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 41,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 141,
+      "range_start_hour_raw": 141,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 141,
+      "tick_after": 142,
+      "tick_before": 141
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 42,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 142,
+      "range_start_hour_raw": 142,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 142,
+      "tick_after": 143,
+      "tick_before": 142
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 43,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 143,
+      "range_start_hour_raw": 143,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 143,
+      "tick_after": 144,
+      "tick_before": 143
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 44,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 144,
+      "range_start_hour_raw": 144,
+      "reason": "backpressure",
+      "target_hour_raw": 144,
+      "tick_after": 145,
+      "tick_before": 144
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 45,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 145,
+      "range_start_hour_raw": 145,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 145,
+      "tick_after": 146,
+      "tick_before": 145
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 46,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 146,
+      "range_start_hour_raw": 146,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 146,
+      "tick_after": 147,
+      "tick_before": 146
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 47,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 147,
+      "range_start_hour_raw": 147,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 147,
+      "tick_after": 148,
+      "tick_before": 147
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 48,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 148,
+      "range_start_hour_raw": 148,
+      "reason": "backpressure",
+      "target_hour_raw": 148,
+      "tick_after": 149,
+      "tick_before": 148
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 49,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 149,
+      "range_start_hour_raw": 149,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 149,
+      "tick_after": 150,
+      "tick_before": 149
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 5,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 105,
+      "range_start_hour_raw": 105,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 105,
+      "tick_after": 106,
+      "tick_before": 105
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 50,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 150,
+      "range_start_hour_raw": 150,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 150,
+      "tick_after": 151,
+      "tick_before": 150
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 51,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 151,
+      "range_start_hour_raw": 151,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 151,
+      "tick_after": 152,
+      "tick_before": 151
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 52,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 152,
+      "range_start_hour_raw": 152,
+      "reason": "backpressure",
+      "target_hour_raw": 152,
+      "tick_after": 153,
+      "tick_before": 152
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 53,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 153,
+      "range_start_hour_raw": 153,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 153,
+      "tick_after": 154,
+      "tick_before": 153
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 54,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 154,
+      "range_start_hour_raw": 154,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 154,
+      "tick_after": 155,
+      "tick_before": 154
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 55,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 155,
+      "range_start_hour_raw": 155,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 155,
+      "tick_after": 156,
+      "tick_before": 155
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 56,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 156,
+      "range_start_hour_raw": 156,
+      "reason": "backpressure",
+      "target_hour_raw": 156,
+      "tick_after": 157,
+      "tick_before": 156
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 57,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 157,
+      "range_start_hour_raw": 157,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 157,
+      "tick_after": 158,
+      "tick_before": 157
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 58,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 158,
+      "range_start_hour_raw": 158,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 158,
+      "tick_after": 159,
+      "tick_before": 158
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 59,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 159,
+      "range_start_hour_raw": 159,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 159,
+      "tick_after": 160,
+      "tick_before": 159
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 6,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 106,
+      "range_start_hour_raw": 106,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 106,
+      "tick_after": 107,
+      "tick_before": 106
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 7,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 107,
+      "range_start_hour_raw": 107,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 107,
+      "tick_after": 108,
+      "tick_before": 107
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 8,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 108,
+      "range_start_hour_raw": 108,
+      "reason": "backpressure",
+      "target_hour_raw": 108,
+      "tick_after": 109,
+      "tick_before": 108
+    },
+    {
+      "domain_id": 10,
+      "outcome_ordinal": 9,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 109,
+      "range_start_hour_raw": 109,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 109,
+      "tick_after": 110,
+      "tick_before": 109
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 0,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 100,
+      "range_start_hour_raw": 100,
+      "reason": "backpressure",
+      "target_hour_raw": 100,
+      "tick_after": 101,
+      "tick_before": 100
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 1,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 101,
+      "range_start_hour_raw": 101,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 101,
+      "tick_after": 102,
+      "tick_before": 101
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 10,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 110,
+      "range_start_hour_raw": 110,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 110,
+      "tick_after": 111,
+      "tick_before": 110
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 11,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 111,
+      "range_start_hour_raw": 111,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 111,
+      "tick_after": 112,
+      "tick_before": 111
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 12,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 112,
+      "range_start_hour_raw": 112,
+      "reason": "backpressure",
+      "target_hour_raw": 112,
+      "tick_after": 113,
+      "tick_before": 112
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 13,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 113,
+      "range_start_hour_raw": 113,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 113,
+      "tick_after": 114,
+      "tick_before": 113
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 14,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 114,
+      "range_start_hour_raw": 114,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 114,
+      "tick_after": 115,
+      "tick_before": 114
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 15,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 115,
+      "range_start_hour_raw": 115,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 115,
+      "tick_after": 116,
+      "tick_before": 115
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 16,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 116,
+      "range_start_hour_raw": 116,
+      "reason": "backpressure",
+      "target_hour_raw": 116,
+      "tick_after": 117,
+      "tick_before": 116
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 17,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 117,
+      "range_start_hour_raw": 117,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 117,
+      "tick_after": 118,
+      "tick_before": 117
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 18,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 118,
+      "range_start_hour_raw": 118,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 118,
+      "tick_after": 119,
+      "tick_before": 118
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 19,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 119,
+      "range_start_hour_raw": 119,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 119,
+      "tick_after": 120,
+      "tick_before": 119
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 2,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 102,
+      "range_start_hour_raw": 102,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 102,
+      "tick_after": 103,
+      "tick_before": 102
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 20,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 120,
+      "range_start_hour_raw": 120,
+      "reason": "backpressure",
+      "target_hour_raw": 120,
+      "tick_after": 121,
+      "tick_before": 120
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 21,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 121,
+      "range_start_hour_raw": 121,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 121,
+      "tick_after": 122,
+      "tick_before": 121
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 22,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 122,
+      "range_start_hour_raw": 122,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 122,
+      "tick_after": 123,
+      "tick_before": 122
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 23,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 123,
+      "range_start_hour_raw": 123,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 123,
+      "tick_after": 124,
+      "tick_before": 123
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 24,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 124,
+      "range_start_hour_raw": 124,
+      "reason": "backpressure",
+      "target_hour_raw": 124,
+      "tick_after": 125,
+      "tick_before": 124
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 25,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 125,
+      "range_start_hour_raw": 125,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 125,
+      "tick_after": 126,
+      "tick_before": 125
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 26,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 126,
+      "range_start_hour_raw": 126,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 126,
+      "tick_after": 127,
+      "tick_before": 126
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 27,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 127,
+      "range_start_hour_raw": 127,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 127,
+      "tick_after": 128,
+      "tick_before": 127
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 28,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 128,
+      "range_start_hour_raw": 128,
+      "reason": "backpressure",
+      "target_hour_raw": 128,
+      "tick_after": 129,
+      "tick_before": 128
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 29,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 129,
+      "range_start_hour_raw": 129,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 129,
+      "tick_after": 130,
+      "tick_before": 129
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 3,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 103,
+      "range_start_hour_raw": 103,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 103,
+      "tick_after": 104,
+      "tick_before": 103
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 30,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 130,
+      "range_start_hour_raw": 130,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 130,
+      "tick_after": 131,
+      "tick_before": 130
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 31,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 131,
+      "range_start_hour_raw": 131,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 131,
+      "tick_after": 132,
+      "tick_before": 131
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 32,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 132,
+      "range_start_hour_raw": 132,
+      "reason": "backpressure",
+      "target_hour_raw": 132,
+      "tick_after": 133,
+      "tick_before": 132
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 33,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 133,
+      "range_start_hour_raw": 133,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 133,
+      "tick_after": 134,
+      "tick_before": 133
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 34,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 134,
+      "range_start_hour_raw": 134,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 134,
+      "tick_after": 135,
+      "tick_before": 134
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 35,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 135,
+      "range_start_hour_raw": 135,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 135,
+      "tick_after": 136,
+      "tick_before": 135
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 36,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 136,
+      "range_start_hour_raw": 136,
+      "reason": "backpressure",
+      "target_hour_raw": 136,
+      "tick_after": 137,
+      "tick_before": 136
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 37,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 137,
+      "range_start_hour_raw": 137,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 137,
+      "tick_after": 138,
+      "tick_before": 137
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 38,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 138,
+      "range_start_hour_raw": 138,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 138,
+      "tick_after": 139,
+      "tick_before": 138
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 39,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 139,
+      "range_start_hour_raw": 139,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 139,
+      "tick_after": 140,
+      "tick_before": 139
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 4,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 104,
+      "range_start_hour_raw": 104,
+      "reason": "backpressure",
+      "target_hour_raw": 104,
+      "tick_after": 105,
+      "tick_before": 104
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 40,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 140,
+      "range_start_hour_raw": 140,
+      "reason": "backpressure",
+      "target_hour_raw": 140,
+      "tick_after": 141,
+      "tick_before": 140
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 41,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 141,
+      "range_start_hour_raw": 141,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 141,
+      "tick_after": 142,
+      "tick_before": 141
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 42,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 142,
+      "range_start_hour_raw": 142,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 142,
+      "tick_after": 143,
+      "tick_before": 142
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 43,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 143,
+      "range_start_hour_raw": 143,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 143,
+      "tick_after": 144,
+      "tick_before": 143
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 44,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 144,
+      "range_start_hour_raw": 144,
+      "reason": "backpressure",
+      "target_hour_raw": 144,
+      "tick_after": 145,
+      "tick_before": 144
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 45,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 145,
+      "range_start_hour_raw": 145,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 145,
+      "tick_after": 146,
+      "tick_before": 145
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 46,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 146,
+      "range_start_hour_raw": 146,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 146,
+      "tick_after": 147,
+      "tick_before": 146
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 47,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 147,
+      "range_start_hour_raw": 147,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 147,
+      "tick_after": 148,
+      "tick_before": 147
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 48,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 148,
+      "range_start_hour_raw": 148,
+      "reason": "backpressure",
+      "target_hour_raw": 148,
+      "tick_after": 149,
+      "tick_before": 148
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 49,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 149,
+      "range_start_hour_raw": 149,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 149,
+      "tick_after": 150,
+      "tick_before": 149
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 5,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 105,
+      "range_start_hour_raw": 105,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 105,
+      "tick_after": 106,
+      "tick_before": 105
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 50,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 150,
+      "range_start_hour_raw": 150,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 150,
+      "tick_after": 151,
+      "tick_before": 150
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 51,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 151,
+      "range_start_hour_raw": 151,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 151,
+      "tick_after": 152,
+      "tick_before": 151
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 52,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 152,
+      "range_start_hour_raw": 152,
+      "reason": "backpressure",
+      "target_hour_raw": 152,
+      "tick_after": 153,
+      "tick_before": 152
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 53,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 153,
+      "range_start_hour_raw": 153,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 153,
+      "tick_after": 154,
+      "tick_before": 153
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 54,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 154,
+      "range_start_hour_raw": 154,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 154,
+      "tick_after": 155,
+      "tick_before": 154
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 55,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 155,
+      "range_start_hour_raw": 155,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 155,
+      "tick_after": 156,
+      "tick_before": 155
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 56,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 156,
+      "range_start_hour_raw": 156,
+      "reason": "backpressure",
+      "target_hour_raw": 156,
+      "tick_after": 157,
+      "tick_before": 156
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 57,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 157,
+      "range_start_hour_raw": 157,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 157,
+      "tick_after": 158,
+      "tick_before": 157
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 58,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 158,
+      "range_start_hour_raw": 158,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 158,
+      "tick_after": 159,
+      "tick_before": 158
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 59,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 159,
+      "range_start_hour_raw": 159,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 159,
+      "tick_after": 160,
+      "tick_before": 159
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 6,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 106,
+      "range_start_hour_raw": 106,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 106,
+      "tick_after": 107,
+      "tick_before": 106
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 7,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 107,
+      "range_start_hour_raw": 107,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 107,
+      "tick_after": 108,
+      "tick_before": 107
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 8,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 108,
+      "range_start_hour_raw": 108,
+      "reason": "backpressure",
+      "target_hour_raw": 108,
+      "tick_after": 109,
+      "tick_before": 108
+    },
+    {
+      "domain_id": 11,
+      "outcome_ordinal": 9,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 109,
+      "range_start_hour_raw": 109,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 109,
+      "tick_after": 110,
+      "tick_before": 109
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 0,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 100,
+      "range_start_hour_raw": 100,
+      "reason": "backpressure",
+      "target_hour_raw": 100,
+      "tick_after": 101,
+      "tick_before": 100
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 1,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 101,
+      "range_start_hour_raw": 101,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 101,
+      "tick_after": 102,
+      "tick_before": 101
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 10,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 110,
+      "range_start_hour_raw": 110,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 110,
+      "tick_after": 111,
+      "tick_before": 110
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 11,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 111,
+      "range_start_hour_raw": 111,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 111,
+      "tick_after": 112,
+      "tick_before": 111
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 12,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 112,
+      "range_start_hour_raw": 112,
+      "reason": "backpressure",
+      "target_hour_raw": 112,
+      "tick_after": 113,
+      "tick_before": 112
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 13,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 113,
+      "range_start_hour_raw": 113,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 113,
+      "tick_after": 114,
+      "tick_before": 113
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 14,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 114,
+      "range_start_hour_raw": 114,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 114,
+      "tick_after": 115,
+      "tick_before": 114
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 15,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 115,
+      "range_start_hour_raw": 115,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 115,
+      "tick_after": 116,
+      "tick_before": 115
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 16,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 116,
+      "range_start_hour_raw": 116,
+      "reason": "backpressure",
+      "target_hour_raw": 116,
+      "tick_after": 117,
+      "tick_before": 116
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 17,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 117,
+      "range_start_hour_raw": 117,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 117,
+      "tick_after": 118,
+      "tick_before": 117
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 18,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 118,
+      "range_start_hour_raw": 118,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 118,
+      "tick_after": 119,
+      "tick_before": 118
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 19,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 119,
+      "range_start_hour_raw": 119,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 119,
+      "tick_after": 120,
+      "tick_before": 119
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 2,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 102,
+      "range_start_hour_raw": 102,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 102,
+      "tick_after": 103,
+      "tick_before": 102
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 20,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 120,
+      "range_start_hour_raw": 120,
+      "reason": "backpressure",
+      "target_hour_raw": 120,
+      "tick_after": 121,
+      "tick_before": 120
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 21,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 121,
+      "range_start_hour_raw": 121,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 121,
+      "tick_after": 122,
+      "tick_before": 121
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 22,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 122,
+      "range_start_hour_raw": 122,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 122,
+      "tick_after": 123,
+      "tick_before": 122
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 23,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 123,
+      "range_start_hour_raw": 123,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 123,
+      "tick_after": 124,
+      "tick_before": 123
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 24,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 124,
+      "range_start_hour_raw": 124,
+      "reason": "backpressure",
+      "target_hour_raw": 124,
+      "tick_after": 125,
+      "tick_before": 124
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 25,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 125,
+      "range_start_hour_raw": 125,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 125,
+      "tick_after": 126,
+      "tick_before": 125
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 26,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 126,
+      "range_start_hour_raw": 126,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 126,
+      "tick_after": 127,
+      "tick_before": 126
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 27,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 127,
+      "range_start_hour_raw": 127,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 127,
+      "tick_after": 128,
+      "tick_before": 127
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 28,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 128,
+      "range_start_hour_raw": 128,
+      "reason": "backpressure",
+      "target_hour_raw": 128,
+      "tick_after": 129,
+      "tick_before": 128
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 29,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 129,
+      "range_start_hour_raw": 129,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 129,
+      "tick_after": 130,
+      "tick_before": 129
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 3,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 103,
+      "range_start_hour_raw": 103,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 103,
+      "tick_after": 104,
+      "tick_before": 103
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 30,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 130,
+      "range_start_hour_raw": 130,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 130,
+      "tick_after": 131,
+      "tick_before": 130
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 31,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 131,
+      "range_start_hour_raw": 131,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 131,
+      "tick_after": 132,
+      "tick_before": 131
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 32,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 132,
+      "range_start_hour_raw": 132,
+      "reason": "backpressure",
+      "target_hour_raw": 132,
+      "tick_after": 133,
+      "tick_before": 132
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 33,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 133,
+      "range_start_hour_raw": 133,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 133,
+      "tick_after": 134,
+      "tick_before": 133
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 34,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 134,
+      "range_start_hour_raw": 134,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 134,
+      "tick_after": 135,
+      "tick_before": 134
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 35,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 135,
+      "range_start_hour_raw": 135,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 135,
+      "tick_after": 136,
+      "tick_before": 135
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 36,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 136,
+      "range_start_hour_raw": 136,
+      "reason": "backpressure",
+      "target_hour_raw": 136,
+      "tick_after": 137,
+      "tick_before": 136
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 37,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 137,
+      "range_start_hour_raw": 137,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 137,
+      "tick_after": 138,
+      "tick_before": 137
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 38,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 138,
+      "range_start_hour_raw": 138,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 138,
+      "tick_after": 139,
+      "tick_before": 138
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 39,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 139,
+      "range_start_hour_raw": 139,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 139,
+      "tick_after": 140,
+      "tick_before": 139
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 4,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 104,
+      "range_start_hour_raw": 104,
+      "reason": "backpressure",
+      "target_hour_raw": 104,
+      "tick_after": 105,
+      "tick_before": 104
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 40,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 140,
+      "range_start_hour_raw": 140,
+      "reason": "backpressure",
+      "target_hour_raw": 140,
+      "tick_after": 141,
+      "tick_before": 140
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 41,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 141,
+      "range_start_hour_raw": 141,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 141,
+      "tick_after": 142,
+      "tick_before": 141
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 42,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 142,
+      "range_start_hour_raw": 142,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 142,
+      "tick_after": 143,
+      "tick_before": 142
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 43,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 143,
+      "range_start_hour_raw": 143,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 143,
+      "tick_after": 144,
+      "tick_before": 143
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 44,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 144,
+      "range_start_hour_raw": 144,
+      "reason": "backpressure",
+      "target_hour_raw": 144,
+      "tick_after": 145,
+      "tick_before": 144
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 45,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 145,
+      "range_start_hour_raw": 145,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 145,
+      "tick_after": 146,
+      "tick_before": 145
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 46,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 146,
+      "range_start_hour_raw": 146,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 146,
+      "tick_after": 147,
+      "tick_before": 146
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 47,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 147,
+      "range_start_hour_raw": 147,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 147,
+      "tick_after": 148,
+      "tick_before": 147
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 48,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 148,
+      "range_start_hour_raw": 148,
+      "reason": "backpressure",
+      "target_hour_raw": 148,
+      "tick_after": 149,
+      "tick_before": 148
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 49,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 149,
+      "range_start_hour_raw": 149,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 149,
+      "tick_after": 150,
+      "tick_before": 149
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 5,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 105,
+      "range_start_hour_raw": 105,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 105,
+      "tick_after": 106,
+      "tick_before": 105
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 50,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 150,
+      "range_start_hour_raw": 150,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 150,
+      "tick_after": 151,
+      "tick_before": 150
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 51,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 151,
+      "range_start_hour_raw": 151,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 151,
+      "tick_after": 152,
+      "tick_before": 151
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 52,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 152,
+      "range_start_hour_raw": 152,
+      "reason": "backpressure",
+      "target_hour_raw": 152,
+      "tick_after": 153,
+      "tick_before": 152
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 53,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 153,
+      "range_start_hour_raw": 153,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 153,
+      "tick_after": 154,
+      "tick_before": 153
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 54,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 154,
+      "range_start_hour_raw": 154,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 154,
+      "tick_after": 155,
+      "tick_before": 154
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 55,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 155,
+      "range_start_hour_raw": 155,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 155,
+      "tick_after": 156,
+      "tick_before": 155
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 56,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 156,
+      "range_start_hour_raw": 156,
+      "reason": "backpressure",
+      "target_hour_raw": 156,
+      "tick_after": 157,
+      "tick_before": 156
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 57,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 157,
+      "range_start_hour_raw": 157,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 157,
+      "tick_after": 158,
+      "tick_before": 157
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 58,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 158,
+      "range_start_hour_raw": 158,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 158,
+      "tick_after": 159,
+      "tick_before": 158
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 59,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 159,
+      "range_start_hour_raw": 159,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 159,
+      "tick_after": 160,
+      "tick_before": 159
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 6,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 106,
+      "range_start_hour_raw": 106,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 106,
+      "tick_after": 107,
+      "tick_before": 106
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 7,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 107,
+      "range_start_hour_raw": 107,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 107,
+      "tick_after": 108,
+      "tick_before": 107
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 8,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 108,
+      "range_start_hour_raw": 108,
+      "reason": "backpressure",
+      "target_hour_raw": 108,
+      "tick_after": 109,
+      "tick_before": 108
+    },
+    {
+      "domain_id": 12,
+      "outcome_ordinal": 9,
+      "part": "both",
+      "queue_capacity": 1,
+      "queue_depth": 1,
+      "queue_dropped": 3,
+      "range_end_hour_raw": 109,
+      "range_start_hour_raw": 109,
+      "reason": "hour_label_mismatch",
+      "target_hour_raw": 109,
+      "tick_after": 110,
+      "tick_before": 109
+    }
+  ],
+  "expected_gaps": [
+    {
+      "domains": [
+        10
+      ],
+      "hour_end": 164,
+      "hour_start": 153,
+      "reason": "backpressure",
+      "witness": {
+        "counter": "sink_backpressure_hours",
+        "kind": "counter",
+        "observed": 12
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 100,
+      "hour_start": 100,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 101,
+      "hour_start": 101,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 102,
+      "hour_start": 102,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 103,
+      "hour_start": 103,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 104,
+      "hour_start": 104,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 105,
+      "hour_start": 105,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 106,
+      "hour_start": 106,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 107,
+      "hour_start": 107,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 108,
+      "hour_start": 108,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 109,
+      "hour_start": 109,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 110,
+      "hour_start": 110,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 111,
+      "hour_start": 111,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 112,
+      "hour_start": 112,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 113,
+      "hour_start": 113,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 114,
+      "hour_start": 114,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 115,
+      "hour_start": 115,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 116,
+      "hour_start": 116,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 117,
+      "hour_start": 117,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 118,
+      "hour_start": 118,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 119,
+      "hour_start": 119,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 120,
+      "hour_start": 120,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 121,
+      "hour_start": 121,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 122,
+      "hour_start": 122,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 123,
+      "hour_start": 123,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 124,
+      "hour_start": 124,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 125,
+      "hour_start": 125,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 126,
+      "hour_start": 126,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 127,
+      "hour_start": 127,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 128,
+      "hour_start": 128,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 129,
+      "hour_start": 129,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 130,
+      "hour_start": 130,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 131,
+      "hour_start": 131,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 132,
+      "hour_start": 132,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 133,
+      "hour_start": 133,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 134,
+      "hour_start": 134,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 135,
+      "hour_start": 135,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 136,
+      "hour_start": 136,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 137,
+      "hour_start": 137,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 138,
+      "hour_start": 138,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        11
+      ],
+      "hour_end": 139,
+      "hour_start": 139,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 102,
+      "hour_start": 102,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 105,
+      "hour_start": 105,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 108,
+      "hour_start": 108,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 111,
+      "hour_start": 111,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 114,
+      "hour_start": 114,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 117,
+      "hour_start": 117,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 120,
+      "hour_start": 120,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 123,
+      "hour_start": 123,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 126,
+      "hour_start": 126,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 129,
+      "hour_start": 129,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 132,
+      "hour_start": 132,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 135,
+      "hour_start": 135,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        21
+      ],
+      "hour_end": 138,
+      "hour_start": 138,
+      "reason": "worker_panic",
+      "witness": {
+        "kind": "status_bits",
+        "status_bits": 256
+      }
+    },
+    {
+      "domains": [
+        47
+      ],
+      "hour_end": 152,
+      "hour_start": 152,
+      "reason": "torn_sweep",
+      "witness": {
+        "kind": "torn_sweep",
+        "tick_end": 153,
+        "tick_start": 152
+      }
+    },
+    {
+      "domains": [
+        5,
+        6,
+        8
+      ],
+      "hour_end": 170,
+      "hour_start": 170,
+      "reason": "partial_data",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage_and_status",
+        "observed_data_records": 0,
+        "observed_perf_records": 0,
+        "status_bits": 512
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 100,
+      "hour_start": 100,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 101,
+      "hour_start": 101,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 102,
+      "hour_start": 102,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 103,
+      "hour_start": 103,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 104,
+      "hour_start": 104,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 105,
+      "hour_start": 105,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 106,
+      "hour_start": 106,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 107,
+      "hour_start": 107,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 108,
+      "hour_start": 108,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 109,
+      "hour_start": 109,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 110,
+      "hour_start": 110,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 111,
+      "hour_start": 111,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 112,
+      "hour_start": 112,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 113,
+      "hour_start": 113,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 114,
+      "hour_start": 114,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 115,
+      "hour_start": 115,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 116,
+      "hour_start": 116,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 117,
+      "hour_start": 117,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 118,
+      "hour_start": 118,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 119,
+      "hour_start": 119,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 120,
+      "hour_start": 120,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 121,
+      "hour_start": 121,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 122,
+      "hour_start": 122,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 123,
+      "hour_start": 123,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 124,
+      "hour_start": 124,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 125,
+      "hour_start": 125,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 126,
+      "hour_start": 126,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 127,
+      "hour_start": 127,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 128,
+      "hour_start": 128,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 129,
+      "hour_start": 129,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 130,
+      "hour_start": 130,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 131,
+      "hour_start": 131,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 132,
+      "hour_start": 132,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 133,
+      "hour_start": 133,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 134,
+      "hour_start": 134,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 135,
+      "hour_start": 135,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 136,
+      "hour_start": 136,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 137,
+      "hour_start": 137,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 138,
+      "hour_start": 138,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        7
+      ],
+      "hour_end": 139,
+      "hour_start": 139,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 100,
+      "hour_start": 100,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 101,
+      "hour_start": 101,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 102,
+      "hour_start": 102,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 103,
+      "hour_start": 103,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 104,
+      "hour_start": 104,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 105,
+      "hour_start": 105,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 106,
+      "hour_start": 106,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 107,
+      "hour_start": 107,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 108,
+      "hour_start": 108,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 109,
+      "hour_start": 109,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 110,
+      "hour_start": 110,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 111,
+      "hour_start": 111,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 112,
+      "hour_start": 112,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 113,
+      "hour_start": 113,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 114,
+      "hour_start": 114,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 115,
+      "hour_start": 115,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 116,
+      "hour_start": 116,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 117,
+      "hour_start": 117,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 118,
+      "hour_start": 118,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 119,
+      "hour_start": 119,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 120,
+      "hour_start": 120,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 121,
+      "hour_start": 121,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 122,
+      "hour_start": 122,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 123,
+      "hour_start": 123,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 124,
+      "hour_start": 124,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 125,
+      "hour_start": 125,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 126,
+      "hour_start": 126,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 127,
+      "hour_start": 127,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 128,
+      "hour_start": 128,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 129,
+      "hour_start": 129,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 130,
+      "hour_start": 130,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 131,
+      "hour_start": 131,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 132,
+      "hour_start": 132,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 133,
+      "hour_start": 133,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 134,
+      "hour_start": 134,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 135,
+      "hour_start": 135,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 136,
+      "hour_start": 136,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 137,
+      "hour_start": 137,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 138,
+      "hour_start": 138,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [
+        9
+      ],
+      "hour_end": 139,
+      "hour_start": 139,
+      "reason": "coverage_shortfall",
+      "witness": {
+        "expected_data_records": 1,
+        "expected_perf_records": 1,
+        "kind": "coverage",
+        "observed_data_records": 0,
+        "observed_perf_records": 0
+      }
+    },
+    {
+      "domains": [],
+      "hour_end": 149,
+      "hour_start": 141,
+      "reason": "skipped_hour",
+      "witness": {
+        "kind": "hour_discontinuity",
+        "next_hour": 150,
+        "previous_hour": 140
+      }
+    }
+  ],
+  "gap_ledger": {
+    "domain_gap_outcomes": {
+      "class_count": 2,
+      "classes": [
+        {
+          "domains": [
+            10,
+            11,
+            12
+          ],
+          "hour_runs": [
+            [
+              100,
+              1
+            ],
+            [
+              104,
+              1
+            ],
+            [
+              108,
+              1
+            ],
+            [
+              112,
+              1
+            ],
+            [
+              116,
+              1
+            ],
+            [
+              120,
+              1
+            ],
+            [
+              124,
+              1
+            ],
+            [
+              128,
+              1
+            ],
+            [
+              132,
+              1
+            ],
+            [
+              136,
+              1
+            ],
+            [
+              140,
+              1
+            ],
+            [
+              144,
+              1
+            ],
+            [
+              148,
+              1
+            ],
+            [
+              152,
+              1
+            ],
+            [
+              156,
+              1
+            ]
+          ],
+          "part": "both",
+          "queue_capacity": 1,
+          "queue_depth": 1,
+          "queue_dropped": 3,
+          "range_end_rel": 0,
+          "range_start_rel": 0,
+          "reason": "backpressure",
+          "tick_after": {
+            "rel": 1
+          },
+          "tick_before": {
+            "rel": 0
+          }
+        },
+        {
+          "domains": [
+            10,
+            11,
+            12
+          ],
+          "hour_runs": [
+            [
+              101,
+              3
+            ],
+            [
+              105,
+              3
+            ],
+            [
+              109,
+              3
+            ],
+            [
+              113,
+              3
+            ],
+            [
+              117,
+              3
+            ],
+            [
+              121,
+              3
+            ],
+            [
+              125,
+              3
+            ],
+            [
+              129,
+              3
+            ],
+            [
+              133,
+              3
+            ],
+            [
+              137,
+              3
+            ],
+            [
+              141,
+              3
+            ],
+            [
+              145,
+              3
+            ],
+            [
+              149,
+              3
+            ],
+            [
+              153,
+              3
+            ],
+            [
+              157,
+              3
+            ]
+          ],
+          "part": "both",
+          "queue_capacity": 1,
+          "queue_depth": 1,
+          "queue_dropped": 3,
+          "range_end_rel": 0,
+          "range_start_rel": 0,
+          "reason": "hour_label_mismatch",
+          "tick_after": {
+            "rel": 1
+          },
+          "tick_before": {
+            "rel": 0
+          }
+        }
+      ],
+      "lane_ordinal_first": [
+        {
+          "domain_id": 10,
+          "first": 0,
+          "part": "both"
+        },
+        {
+          "domain_id": 11,
+          "first": 0,
+          "part": "both"
+        },
+        {
+          "domain_id": 12,
+          "first": 0,
+          "part": "both"
+        }
+      ],
+      "ordinal_encoding": "lane_sequential",
+      "row_count": 180
+    },
+    "gaps": {
+      "class_count": 6,
+      "classes": [
+        {
+          "domains": [],
+          "grouping": "shared",
+          "hour_runs": [
+            [
+              141,
+              1
+            ]
+          ],
+          "reason": "skipped_hour",
+          "repeat": 1,
+          "span_hours": 9,
+          "witness": {
+            "kind": "hour_discontinuity",
+            "next_hour_rel": 9,
+            "previous_hour_rel": -1
+          }
+        },
+        {
+          "domains": [
+            5,
+            6,
+            8
+          ],
+          "grouping": "shared",
+          "hour_runs": [
+            [
+              170,
+              1
+            ]
+          ],
+          "reason": "partial_data",
+          "repeat": 1,
+          "span_hours": 1,
+          "witness": {
+            "expected_data_records": 1,
+            "expected_perf_records": 1,
+            "kind": "coverage_and_status",
+            "observed_data_records": 0,
+            "observed_perf_records": 0,
+            "status_bits": 512
+          }
+        },
+        {
+          "domains": [
+            21
+          ],
+          "grouping": "per_domain",
+          "hour_runs": [
+            [
+              102,
+              1
+            ],
+            [
+              105,
+              1
+            ],
+            [
+              108,
+              1
+            ],
+            [
+              111,
+              1
+            ],
+            [
+              114,
+              1
+            ],
+            [
+              117,
+              1
+            ],
+            [
+              120,
+              1
+            ],
+            [
+              123,
+              1
+            ],
+            [
+              126,
+              1
+            ],
+            [
+              129,
+              1
+            ],
+            [
+              132,
+              1
+            ],
+            [
+              135,
+              1
+            ],
+            [
+              138,
+              1
+            ]
+          ],
+          "reason": "worker_panic",
+          "span_hours": 1,
+          "witness": {
+            "kind": "status_bits",
+            "status_bits": 256
+          }
+        },
+        {
+          "domains": [
+            47
+          ],
+          "grouping": "per_domain",
+          "hour_runs": [
+            [
+              152,
+              1
+            ]
+          ],
+          "reason": "torn_sweep",
+          "span_hours": 1,
+          "witness": {
+            "kind": "torn_sweep",
+            "tick_end": {
+              "rel": 1
+            },
+            "tick_start": {
+              "rel": 0
+            }
+          }
+        },
+        {
+          "domains": [
+            7,
+            9,
+            11
+          ],
+          "grouping": "per_domain",
+          "hour_runs": [
+            [
+              100,
+              40
+            ]
+          ],
+          "reason": "coverage_shortfall",
+          "span_hours": 1,
+          "witness": {
+            "expected_data_records": 1,
+            "expected_perf_records": 1,
+            "kind": "coverage",
+            "observed_data_records": 0,
+            "observed_perf_records": 0
+          }
+        },
+        {
+          "domains": [
+            10
+          ],
+          "grouping": "per_domain",
+          "hour_runs": [
+            [
+              153,
+              1
+            ]
+          ],
+          "reason": "backpressure",
+          "span_hours": 12,
+          "witness": {
+            "counter": "sink_backpressure_hours",
+            "kind": "counter",
+            "observed": 12
+          }
+        }
+      ],
+      "row_count": 137
+    },
+    "note": "run-encoded gap ledger: one class per distinct (reason, domain set, witness) tuple, with the hours it occurred at. Replaces the flat `gaps` and `domain_gap_outcomes` arrays, which cost 33.5 KB of manifest JSON per game hour. Expand it with the recorder_host gap_ledger module or the gap_ledger.py helper.",
+    "schema": "hoi4-gap-ledger-v2",
+    "version": 2
+  },
+  "note": "one encoded gap ledger and the rows it must expand to. Produced and asserted by recorder_host::gap_ledger's tests, consumed by scripts/test_gap_ledger.py, so the Rust and Python expanders cannot drift apart. Rows are sorted by their own serialization; `h4gp_hex` is absent because the ledger does not carry it."
+}

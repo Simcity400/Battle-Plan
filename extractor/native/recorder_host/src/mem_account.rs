@@ -38,7 +38,17 @@
 //! component declared but never charged reads as "holds zero bytes", which is a
 //! stronger and falser claim than saying nothing. Three large owners are known
 //! and deliberately absent, because none of them can be priced without either
-//! walking a structure per hour or estimating:
+//! walking a structure per hour or estimating.
+//!
+//! One of the three has since been SPLIT. The manifest's recording-gap ledger
+//! was the session-length term inside that third bullet, and it is now
+//! [`Component::ManifestGapLedger`]: it is assembled while `compact_stream` is
+//! being built, which is before the report is taken, so its peak is real. What
+//! remains unnamed below is the rest of the manifest — the read buffer and the
+//! `serde_json::Value` trees of the pack-time rewrite, which genuinely cannot be
+//! counted into a report they precede.
+//!
+//! The three:
 //!
 //!   * the fold's retained world state — bounded, not measured, by the
 //!     live-heap difference across the `finalize.before_fold_release` /
@@ -116,6 +126,22 @@ pub enum Component {
     /// One cache index row per encoded hour (`ReplayCacheEncoder::entries`).
     /// A session-length scaler by construction.
     CacheHourEntries = 5,
+    /// The manifest's recording-gap ledger: the derived `GapRecord` rows and the
+    /// H4DG outcomes the manifest is built from, plus the JSON bytes they become.
+    ///
+    /// The JSON half is priced by SERIALIZING the ledger, which is exact rather
+    /// than estimated and is the number that matters — those bytes are what the
+    /// manifest carries and what pack time reads whole and re-parses. It is
+    /// cheap only because the ledger is now run encoded; pricing the flat shape
+    /// this way would have cost a second copy of it.
+    ///
+    /// This is the ONE manifest owner that can be charged honestly. The rest of
+    /// the manifest read-modify-write happens after [`report_json`] has been
+    /// taken for that same manifest, so a counter for it could only publish its
+    /// own previous value (see the module note). The ledger is different: it is
+    /// built while `compact_stream` is being assembled, which is BEFORE
+    /// `host_finalize` is written, so the peak this records is in the report.
+    ManifestGapLedger = 6,
 }
 
 impl Component {
@@ -127,6 +153,7 @@ impl Component {
         Component::InflightSnapshots,
         Component::CacheDeltaBase,
         Component::CacheHourEntries,
+        Component::ManifestGapLedger,
     ];
 
     /// The stable manifest key for this component. Changing one of these
@@ -139,6 +166,7 @@ impl Component {
             Component::InflightSnapshots => "inflight_snapshots",
             Component::CacheDeltaBase => "cache_delta_base",
             Component::CacheHourEntries => "cache_hour_entries",
+            Component::ManifestGapLedger => "manifest_gap_ledger",
         }
     }
 
@@ -157,6 +185,7 @@ impl Component {
             Component::InflightSnapshots => Scaling::GameSize,
             Component::CacheDeltaBase => Scaling::GameSize,
             Component::CacheHourEntries => Scaling::SessionLength,
+            Component::ManifestGapLedger => Scaling::SessionLength,
         }
     }
 }
@@ -184,7 +213,7 @@ impl Scaling {
     }
 }
 
-pub const COMPONENT_COUNT: usize = 6;
+pub const COMPONENT_COUNT: usize = 7;
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO: AtomicU64 = AtomicU64::new(0);

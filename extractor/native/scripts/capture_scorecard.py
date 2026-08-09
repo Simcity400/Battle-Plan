@@ -21,6 +21,9 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gap_ledger  # noqa: E402  (path is set immediately above)
+
 # Gap reasons that mean an hour was deliberately skipped rather than lost to a
 # reader. Kept separate because they reconcile against `skipped_game_hours`.
 SKIPPED_HOUR_REASONS = {"skipped_hour"}
@@ -149,6 +152,22 @@ def score(manifest):
     Returns a list of (key, count, detail) where a nonzero count is a miss.
     """
     stream = manifest.get("compact_stream", {}) or {}
+    # The gap ledger is RUN ENCODED in the sealed manifest -- the flat arrays
+    # this scorecard used to walk cost 33.5 KB of JSON per game hour. Expanded
+    # once, here, into exactly the rows the flat arrays held, so every axis below
+    # is unchanged.
+    #
+    # A ledger this scorecard cannot read is ITS OWN AXIS, not zero gaps. Every
+    # gap axis below counts rows, so an unreadable or absent ledger would
+    # otherwise score a capture perfectly clean on the strength of a document
+    # nobody could open -- the strongest false claim this tool can make.
+    ledger_fault = ""
+    try:
+        gap_rows = gap_ledger.expand_gaps(stream)
+        gap_outcome_rows = gap_ledger.expand_domain_gap_outcomes(stream)
+    except gap_ledger.GapLedgerError as error:
+        gap_rows, gap_outcome_rows = [], []
+        ledger_fault = str(error)
     per_domain = stream.get("per_domain", {}) or {}
     expected = list(stream.get("expected_domains", []) or [])
     frames = int(stream.get("frame_end_record_count", 0) or 0)
@@ -167,16 +186,16 @@ def score(manifest):
     # coalesced across several hours, so a record count understates the loss --
     # t17 carries 7238 records over 8054 domain-hours.
     gap_outcome_hours = collections.Counter()
-    for outcome in stream.get("domain_gap_outcomes", []) or []:
+    for outcome in gap_outcome_rows:
         gap_outcome_hours[outcome.get("reason", "?")] += _span(
             outcome, "range_start_hour_raw", "range_end_hour_raw")
 
-    gap_ledger = collections.Counter(
-        gap.get("reason", "?") for gap in stream.get("gaps", []) or []
+    gap_reason_counts = collections.Counter(
+        gap.get("reason", "?") for gap in gap_rows
     )
     gap_outcomes = collections.Counter(
         outcome.get("reason", "?")
-        for outcome in stream.get("domain_gap_outcomes", []) or []
+        for outcome in gap_outcome_rows
     )
 
     data_records = int(stream.get("domain_data_record_count", 0) or 0)
@@ -190,7 +209,7 @@ def score(manifest):
     # Reconcile per domain, not in aggregate: one domain silent for hundreds of
     # hours and another over-reporting would cancel out in a single subtraction.
     gaps_by_id = collections.Counter(
-        outcome.get("domain_id") for outcome in stream.get("domain_gap_outcomes", []) or []
+        outcome.get("domain_id") for outcome in gap_outcome_rows
     )
     unresolved_by_domain = {}
     for name, info in per_domain.items():
@@ -218,7 +237,7 @@ def score(manifest):
     span_hours = advanced + 1 if advanced or observed else 0
     hours_unobserved = span_hours - observed
     skipped_hours_covered = 0
-    for gap in stream.get("gaps", []) or []:
+    for gap in gap_rows:
         if gap.get("reason") not in SKIPPED_HOUR_REASONS:
             continue
         start = gap.get("hour_start")
@@ -234,7 +253,7 @@ def score(manifest):
     # the thing being accounted is a producer that returned nothing. Counted on
     # its own axis so it can never pass as an ordinary explained gap.
     reader_silent_by_domain = collections.Counter()
-    for outcome in stream.get("domain_gap_outcomes", []) or []:
+    for outcome in gap_outcome_rows:
         if outcome.get("reason") == "reader_silent":
             reader_silent_by_domain[outcome.get("domain_id")] += 1
 
@@ -425,7 +444,7 @@ def score(manifest):
     # host-derived. The recorder guarantees at most one outcome per domain-hour,
     # so the split is unambiguous.
     outcome_pairs = set()
-    for outcome in stream.get("domain_gap_outcomes", []) or []:
+    for outcome in gap_outcome_rows:
         domain_id = outcome.get("domain_id")
         start = outcome.get("range_start_hour_raw")
         end = outcome.get("range_end_hour_raw")
@@ -452,7 +471,7 @@ def score(manifest):
     flagged_by_reason = collections.Counter()
     host_absent_pairs = set()
     host_absent_by_reason = collections.Counter()
-    for record in stream.get("gaps", []) or []:
+    for record in gap_rows:
         start, end = record.get("hour_start"), record.get("hour_end")
         domains = record.get("domains") or []
         if start is None or end is None or end < start:
@@ -575,12 +594,16 @@ def score(manifest):
             + ", ".join(f"{e[0]} (d{e[1]})" for e in sorted(empty_but_clean)))
 
     axes = [
+        # FIRST, because every gap axis below is read through the ledger: if this
+        # is nonzero, their zeros mean "not read", not "nothing there".
+        ("the gap ledger could not be read", 1 if ledger_fault else 0,
+         ledger_fault or "read"),
         ("hours the clock advanced but no frame observed", hours_unobserved,
          f"{observed} observed of {span_hours} in span "
          f"(game_hours_advanced={advanced} is a delta, so the span is +1)"),
         ("...of those, hours no skipped-hour gap explains", hours_unaccounted,
          f"manifest declares skipped_game_hours={skipped_declared}, "
-         f"ledger carries {gap_ledger.get('skipped_hour', 0)} skipped_hour "
+         f"ledger carries {gap_reason_counts.get('skipped_hour', 0)} skipped_hour "
          f"records covering {skipped_hours_covered} hours"),
         ("domain-hours with a gap instead of data", outcome_hours,
          (", ".join(f"{r}={n}" for r, n in sorted(gap_outcome_hours.items())) or "none")

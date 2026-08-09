@@ -122,6 +122,755 @@ function Get-ObjectProperty {
     return $property.Value
 }
 
+$script:GapLedgerSchema = 'hoi4-gap-ledger-v2'
+$script:GapLedgerVersion = 2
+# The wire vocabularies. The per-row walk below already rejects a part or reason
+# outside these sets with its own problem code; refusing them at expansion keeps
+# this reader's ACCEPTED set identical to the recorder's, so the two never
+# disagree about whether a document is readable at all.
+$script:GapLedgerParts = @('state', 'event', 'both')
+# The EXACT field set an outcome class may carry. A closed set is the structural
+# close on the whole "ignored field" family: a document carrying something no
+# reader uses expands to what the document without it does, and -- worse -- an
+# unread field still counts toward a class's IDENTITY, so adding one splits an
+# aggregation key and walks through the same-hour check.
+$script:GapLedgerOutcomeFields = @(
+    'reason', 'part', 'domains', 'queue_capacity', 'queue_depth', 'queue_dropped',
+    'range_start_rel', 'range_end_rel', 'tick_before', 'tick_after', 'hour_runs',
+    'ordinals'
+)
+$script:GapLedgerLaneFields = @('domain_id', 'part', 'first')
+$script:GapLedgerDomainReasons = @(
+    'torn', 'overrun', 'backpressure', 'clock_unreadable', 'worker_panic',
+    'source_unavailable', 'reader_silent', 'hour_label_mismatch'
+)
+
+function ConvertTo-GapLedgerCanonicalText {
+    <#
+    .SYNOPSIS
+    A value's canonical text, with object members ordered ALL THE WAY DOWN.
+
+    .DESCRIPTION
+    Two classes are the same class when they carry the same fields, whatever
+    order the document happened to write them in. Sorting only the top level left
+    a nested object's two spellings with different texts, so two classes that
+    Rust and Python call duplicates slipped past the check here. A canonical form
+    that is not canonical all the way down is not one.
+
+    `Drop` names the top-level members to leave out -- the ones that carry a
+    class's hours rather than its identity.
+    #>
+    param($Value, [string[]]$Drop = @())
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [string]) { return '"' + $Value + '"' }
+    if ($Value -is [System.Array]) {
+        $parts = New-Object System.Collections.ArrayList
+        foreach ($item in $Value) {
+            [void]$parts.Add((ConvertTo-GapLedgerCanonicalText $item))
+        }
+        return '[' + (@($parts) -join ',') + ']'
+    }
+    if ($Value -is [ValueType]) { return [string]$Value }
+    if ($null -ne $Value.PSObject -and @($Value.PSObject.Properties).Count -gt 0) {
+        $parts = New-Object System.Collections.ArrayList
+        foreach ($member in @($Value.PSObject.Properties) | Sort-Object -Property Name) {
+            if ($Drop -ccontains $member.Name) { continue }
+            [void]$parts.Add(
+                ('"' + $member.Name + '":' + (ConvertTo-GapLedgerCanonicalText $member.Value)))
+        }
+        return '{' + (@($parts) -join ',') + '}'
+    }
+    return [string]$Value
+}
+
+function Expand-CaptureGapOutcomes {
+    <#
+    .SYNOPSIS
+    The rows the flat `compact_stream.domain_gap_outcomes` array used to carry.
+
+    .DESCRIPTION
+    The sealed manifest now carries a RUN-ENCODED `gap_ledger` instead: the flat
+    arrays cost 33.5 KB of JSON per game hour, ~3.4 GB over a full campaign, and
+    were read whole and re-parsed at pack time. This expands the ledger back into
+    exactly the rows the walk below grades, so the grading is unchanged.
+
+    ONE FORMAT: there is no fallback to the flat array this replaced (owner
+    ruling 2026-08-09). A missing ledger, or one whose schema/version is not the
+    one implemented here, is REFUSED -- reported as a problem rather than read as
+    an empty ledger, because "this reader could not read the ledger" and "the
+    capture had no gaps" are opposite facts and only one of them promotes.
+
+    Returns a hashtable: Ok (bool), Rows (array), Problem (string or $null).
+    #>
+    param($Compact)
+    # NOTHING IN HERE MAY TERMINATE THE VALIDATOR. A cast that overflows, a
+    # property that is not the type it looks like, a run pair with the wrong
+    # arity -- every one of those is a PowerShell terminating error, and a
+    # validator that dies mid-manifest publishes no verdict at all. A capture
+    # with odd data must still be graded and still be sealable, so the whole
+    # expansion is bounded here and any failure becomes a named problem.
+    try {
+        return Expand-CaptureGapOutcomesCore $Compact
+    }
+    catch {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_unreadable' }
+    }
+}
+
+function Expand-CaptureGapOutcomesCore {
+    param($Compact)
+    $ledger = $null
+    if ($null -ne $Compact -and $null -ne $Compact.PSObject.Properties['gap_ledger']) {
+        $ledger = $Compact.PSObject.Properties['gap_ledger'].Value
+    }
+    if ($null -eq $ledger -or $ledger -is [System.Array]) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_missing' }
+    }
+    # THE LEDGER ITSELF IS THE LAST CONTAINER, and it was the last one open.
+    # Closing the classes and then their tables still left this escape one level
+    # farther out. `compact_stream` above it is not this format's to close.
+    foreach ($member in @($ledger.PSObject.Properties)) {
+        if (@('schema', 'version', 'note', 'gaps',
+              'domain_gap_outcomes') -cnotcontains $member.Name) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_unknown_field' }
+        }
+    }
+    # AND `note` IS TYPED, not merely named: allowlisting the name left an
+    # OBJECT-SHAPED HOLE, because a name allowlist says nothing about the value.
+    $noteMember = $ledger.PSObject.Properties['note']
+    if ($null -ne $noteMember -and $noteMember.Value -isnot [string]) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_note_not_a_string' }
+    }
+    # BOTH exact, and the version read as a NUMBER: `[string]` comparison would
+    # admit the string "2", which the recorder cannot write, and a reader that
+    # accepts what the writer cannot produce has a second undocumented format.
+    $ledgerVersion = $null
+    $ledgerSchema = $null
+    if ($null -ne $ledger.PSObject.Properties['version']) {
+        $ledgerVersion = $ledger.PSObject.Properties['version'].Value
+    }
+    if ($null -ne $ledger.PSObject.Properties['schema']) {
+        $ledgerSchema = $ledger.PSObject.Properties['schema'].Value
+    }
+    if ($ledgerSchema -isnot [string] -or $ledgerSchema -cne $script:GapLedgerSchema -or
+        -not (Test-GapLedgerIntegerToken $ledgerVersion) -or
+        [bigint]$ledgerVersion -ne [bigint]$script:GapLedgerVersion) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_version_unreadable' }
+    }
+    $table = $null
+    if ($null -ne $ledger.PSObject.Properties['domain_gap_outcomes']) {
+        $table = $ledger.PSObject.Properties['domain_gap_outcomes'].Value
+    }
+    if ($null -eq $table -or $table -is [System.Array]) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_outcomes_missing' }
+    }
+    $encoding = $null
+    if ($null -ne $table.PSObject.Properties['ordinal_encoding']) {
+        $encoding = $table.PSObject.Properties['ordinal_encoding'].Value
+    }
+    if ($encoding -isnot [string] -or
+        ($encoding -cne 'lane_sequential' -and $encoding -cne 'explicit')) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_ordinal_encoding_unknown' }
+    }
+    $explicit = $encoding -ceq 'explicit'
+    # The two branches must not carry each other's fields: a `lane_sequential`
+    # table ignores a class's `ordinals` and an `explicit` one ignores
+    # `lane_ordinal_first`, so a document carrying the ignored field means what
+    # the document without it means -- two documents, one expansion.
+    if ($explicit -and $null -ne $table.PSObject.Properties['lane_ordinal_first']) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_table_ignored' }
+    }
+    # CASE-SENSITIVE, ordinal. PowerShell's default hashtable matches keys
+    # case-insensitively, so an uppercase lane entry matched a lowercase class
+    # lane and the two disagreed with Rust and Python about which lane is which.
+    $laneFirst = New-Object 'System.Collections.Hashtable' ([StringComparer]::Ordinal)
+    if (-not $explicit) {
+        # Required, as the recorder's own reader requires it. Absence already
+        # ended in an error one step later (every lane reporting no base), but
+        # not the SAME error, and a reader that fails differently from the
+        # producer's is a reader nobody can reason about.
+        if ($null -eq $table.PSObject.Properties['lane_ordinal_first']) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_table_missing' }
+        }
+        $laneValue = $table.PSObject.Properties['lane_ordinal_first'].Value
+        if ($null -eq $laneValue -or -not ($laneValue -is [System.Array])) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_table_not_an_array' }
+        }
+        foreach ($entry in $laneValue) {
+            # A null entry is REFUSED, not skipped: skipping it drops a lane's
+            # base silently, and the other two readers reject it.
+            if ($null -eq $entry) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_entry_null' }
+            }
+            # `first` is REQUIRED. `[bigint]$null` is 0, so an absent base would
+            # quietly number the whole lane from zero -- an ordinal nobody wrote,
+            # attached to rows that did happen. A missing `domain_id` or `part`
+            # cannot hide the same way: they only build a key that matches no
+            # row's lane, and the lane then reports `gap_ledger_lane_first_missing`.
+            $laneDomain = [int64](Get-GapLedgerInteger $entry 'domain_id')
+            if ($laneDomain -lt 0 -or $laneDomain -gt 65535) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_domain_invalid' }
+            }
+            foreach ($member in @($entry.PSObject.Properties)) {
+                if ($script:GapLedgerLaneFields -cnotcontains $member.Name) {
+                    return @{ Ok = $false; Rows = @()
+                              Problem = 'gap_ledger_lane_unknown_field' }
+                }
+            }
+            $lanePart = Get-GapLedgerName $entry 'part'
+            if ($script:GapLedgerParts -cnotcontains $lanePart) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_part_unknown' }
+            }
+            $key = "${laneDomain}:${lanePart}"
+            # A DUPLICATE entry silently overwrote its predecessor, so two
+            # different tables expanded identically.
+            if ($laneFirst.ContainsKey($key)) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_duplicate' }
+            }
+            $laneBase = [bigint](Get-GapLedgerWideInteger $entry 'first')
+            if ($laneBase -gt [bigint]::Parse('18446744073709551615')) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_first_out_of_range' }
+            }
+            $laneFirst[$key] = $laneBase
+        }
+    }
+    # `classes` must BE PUBLISHED. `@($null)` is an empty array, so a table with
+    # no `classes` at all graded as a capture with no gaps -- and the recorder's
+    # own reader refuses it. Two readers of one document disagreeing about
+    # whether it says anything.
+    #
+    # Tested for PRESENCE, not for array-ness: `Get-ObjectProperty` hands back a
+    # one-element JSON array as the bare element, so an `-is [Array]` test would
+    # reject the single-class table the recorder legitimately writes.
+    # Read through `.PSObject.Properties[...].Value`, NOT `Get-ObjectProperty`:
+    # the latter unrolls a one-element JSON array to the bare element, which is
+    # why an earlier version of this check could not tell "one class" from "a
+    # scalar where a list belongs". The property value keeps its `Object[]` type,
+    # so the array shape can be required -- and it must be, or a scalar class
+    # expands here while Rust and Python refuse it.
+    if ($null -eq $table.PSObject.Properties['classes']) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_classes_missing' }
+    }
+    $classValue = $table.PSObject.Properties['classes'].Value
+    if ($null -eq $classValue -or -not ($classValue -is [System.Array])) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_classes_not_an_array' }
+    }
+    # `class_count` is published beside the list and must agree with it: a count
+    # that disagrees is a second claim about the same list, and the reader that
+    # ignores it lets two documents differ in a field neither reads.
+    $declaredClasses = $null
+    if ($null -ne $table.PSObject.Properties['class_count']) {
+        $declaredClasses = $table.PSObject.Properties['class_count'].Value
+    }
+    if (-not (Test-GapLedgerIntegerToken $declaredClasses) -or
+        [int64]$declaredClasses -ne $classValue.Count) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_class_count_mismatch' }
+    }
+    # Read BEFORE the class loop: it is the bound on how much work any one class
+    # may ask for, and the check against the expansion still runs at the end.
+    $declaredRowCount = $null
+    if ($null -ne $table.PSObject.Properties['row_count']) {
+        $declaredRowCount = $table.PSObject.Properties['row_count'].Value
+    }
+    if (-not (Test-GapLedgerIntegerToken $declaredRowCount) -or [int64]$declaredRowCount -lt 0) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_row_count_invalid' }
+    }
+    # THE TABLE IS CLOSED TOO: closing the classes but not their container left
+    # the same escape one level up.
+    foreach ($member in @($table.PSObject.Properties)) {
+        if (@('row_count', 'class_count', 'classes', 'ordinal_encoding',
+              'lane_ordinal_first') -cnotcontains $member.Name) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_table_unknown_field' }
+        }
+    }
+    $rows = New-Object System.Collections.ArrayList
+    # TWO CLASSES WITH ONE IDENTITY WOULD HAVE BEEN ONE CLASS. Splitting a run
+    # across two otherwise identical classes expands to exactly what the merged
+    # class does, which the within-class maximal-run rule alone does not close.
+    $seenIdentities = New-Object 'System.Collections.Hashtable' ([StringComparer]::Ordinal)
+    $claimedHours = New-Object 'System.Collections.Hashtable' ([StringComparer]::Ordinal)
+    foreach ($class in $classValue) {
+        # A null class is REFUSED, not skipped, for the same reason.
+        if ($null -eq $class) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_class_null' }
+        }
+        # Read as a PROPERTY VALUE and required to BE an array: `@(...)`
+        # normalizes a scalar into a one-element list, so `"domains": 4` expanded
+        # here while Rust and Python refuse it. A class must also name at least
+        # one domain, or it expands to nothing and any number of such classes
+        # mean what the empty table means.
+        $domainValue = $null
+        if ($null -ne $class.PSObject.Properties['domains']) {
+            $domainValue = $class.PSObject.Properties['domains'].Value
+        }
+        if ($null -eq $domainValue -or -not ($domainValue -is [System.Array]) -or
+            $domainValue.Count -eq 0) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_domains_invalid' }
+        }
+        # NON-DECREASING, as the encoder writes it: `[4,5]` and `[5,4]` expand to
+        # the same rows after the reader's own sort. Not STRICTLY increasing -- a
+        # repeated domain is legal and carries multiplicity.
+        for ($d = 1; $d -lt $domainValue.Count; $d++) {
+            if ([int64]$domainValue[$d - 1] -gt [int64]$domainValue[$d]) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_domains_unordered' }
+            }
+        }
+        $domains = $domainValue
+        # TYPE-CHECKED, not cast. `[int]4.5` is 4 in PowerShell, so a
+        # fractional domain id expanded silently onto a DIFFERENT domain than
+        # the one written, while Rust and Python refuse it.
+        foreach ($domain in $domains) {
+            if (-not (Test-GapLedgerIntegerToken $domain) -or
+                [bigint]$domain -lt [bigint]0 -or [bigint]$domain -gt [bigint]65535) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_domain_invalid' }
+            }
+        }
+        # RECURSIVELY canonical. Sorting only the top-level members left
+        # `tick_before:{"rel":0,"x":1}` and `{"x":1,"rel":0}` with different
+        # identities, so two classes that Rust and Python call duplicates slipped
+        # past here. A canonical form that is not canonical all the way down is
+        # not one.
+        $identity = ConvertTo-GapLedgerCanonicalText $class @('hour_runs', 'ordinals')
+        if ($seenIdentities.ContainsKey($identity)) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_duplicate_class_identity' }
+        }
+        $seenIdentities[$identity] = $true
+        # Keyed WITHOUT the domains as well: the encoder aggregates every domain
+        # affected at one hour into ONE class, so two classes differing only in
+        # their domain list may not both name the same hour. The identity above
+        # cannot see that, because the domain list is part of it.
+        $aggregationKey =
+            ConvertTo-GapLedgerCanonicalText $class @('hour_runs', 'ordinals', 'domains')
+        if (-not $claimedHours.ContainsKey($aggregationKey)) {
+            $claimedHours[$aggregationKey] =
+                New-Object 'System.Collections.Hashtable' ([StringComparer]::Ordinal)
+        }
+        $hoursClaimed = $claimedHours[$aggregationKey]
+        foreach ($member in @($class.PSObject.Properties)) {
+            if ($script:GapLedgerOutcomeFields -cnotcontains $member.Name) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_class_unknown_field' }
+            }
+        }
+        $classPart = Get-GapLedgerName $class 'part'
+        $classReason = Get-GapLedgerName $class 'reason'
+        if ($script:GapLedgerParts -cnotcontains $classPart) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_part_unknown' }
+        }
+        if ($script:GapLedgerDomainReasons -cnotcontains $classReason) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_reason_unknown' }
+        }
+        if (-not $explicit -and $null -ne $class.PSObject.Properties['ordinals']) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_ordinals_ignored' }
+        }
+        $ordinals = @()
+        if ($explicit) {
+            # Required to BE an array, for the same reason as `domains`.
+            $ordinalValue = $null
+            if ($null -ne $class.PSObject.Properties['ordinals']) {
+                $ordinalValue = $class.PSObject.Properties['ordinals'].Value
+            }
+            if ($null -eq $ordinalValue -or -not ($ordinalValue -is [System.Array])) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_ordinals_invalid' }
+            }
+            $ordinals = $ordinalValue
+        }
+        # A class that names NO hour expands to nothing, so a table could carry
+        # any number of them and still mean exactly what the empty table means.
+        # The encoder never writes one, and admitting it makes the format
+        # non-injective.
+        # Assigned in two statements. `$x = if (...) { <one-element array> }`
+        # UNWRAPS to the element, and `hour_runs` with a single run is exactly a
+        # one-element array of arrays -- so the `if` form handed back the inner
+        # `[first, count]` pair and every single-run class read as malformed.
+        # This is the third distinct place PowerShell's unwrap bit this file.
+        $runValue = $null
+        if ($null -ne $class.PSObject.Properties['hour_runs']) {
+            $runValue = $class.PSObject.Properties['hour_runs'].Value
+        }
+        if ($null -eq $runValue -or -not ($runValue -is [System.Array]) -or
+            $runValue.Count -eq 0) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_hour_runs_empty' }
+        }
+        $position = 0
+        $previousRunEnd = $null
+        $classHours = [int64]0
+        foreach ($run in $runValue) {
+            if ($null -eq $run -or @($run).Count -ne 2) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_hour_run_malformed' }
+            }
+            # TYPE-CHECKED BEFORE THE CAST. `[int64]1.5` is 2 in PowerShell, so
+            # a float run element expanded silently at a DIFFERENT hour than the
+            # one written, while Rust and Python refuse the same input.
+            if (-not (Test-GapLedgerIntegerToken $run[0]) -or
+                -not (Test-GapLedgerIntegerToken $run[1])) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_hour_run_not_integral' }
+            }
+            $first = [int64]$run[0]
+            $count = [int64]$run[1]
+            # BOUNDED TO `u32`, as the recorder's own reader narrows it. Without
+            # the bound, a count of 4294967296 is refused there and looped over
+            # here -- a hang rather than a verdict.
+            if ($count -lt 1 -or $count -gt 4294967295) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_hour_run_empty' }
+            }
+            # And bounded by the WORK the table admits to, BEFORE the walk:
+            # 4294967295 is inside the `u32` and still 4.29 billion iterations.
+            # `row_count` is itself checked against the expansion, so this bounds
+            # the work by a number the document has to be honest about.
+            # Counted in ROWS, not hours: an outcome class emits one row per
+            # listed domain per hour, so an hour bound alone is the wrong bound.
+            $classHours = $classHours + ($count * [int64][Math]::Max($domains.Count, 1))
+            if ($classHours -gt [int64]$declaredRowCount) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_class_exceeds_row_count' }
+            }
+            # Hours are `i32` on the wire and in the recorder's own reader. A run
+            # that walks outside that range names an hour which cannot exist and
+            # which the producer's decoder refuses -- two readers of one document
+            # disagreeing about which hour a gap belongs to.
+            if ($first -lt -2147483648 -or ($first + $count - 1) -gt 2147483647) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_hour_out_of_range' }
+            }
+            # CANONICAL AND MAXIMAL. `[[101,1],[102,2]]` expands to exactly what
+            # `[[101,3]]` does, so admitting both lets two documents mean one
+            # thing. The encoder never splits a run or emits them out of order.
+            # `-le $previousRunEnd + 1` catches both overlap AND adjacency: two
+            # runs that touch would have been one run, so the split spelling is
+            # the non-canonical one.
+            if ($null -ne $previousRunEnd -and $first -le ($previousRunEnd + 1)) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_hour_runs_not_canonical' }
+            }
+            $previousRunEnd = $first + $count - 1
+            for ($step = 0; $step -lt $count; $step++) {
+                $target = $first + $step
+                if ($hoursClaimed.ContainsKey([string]$target)) {
+                    return @{ Ok = $false; Rows = @()
+                              Problem = 'gap_ledger_hour_domains_not_aggregated' }
+                }
+                $hoursClaimed[[string]$target] = $true
+                foreach ($domain in $domains) {
+                    $tickBeforeField = $null
+                    $tickAfterField = $null
+                    if ($null -ne $class.PSObject.Properties['tick_before']) {
+                        $tickBeforeField = $class.PSObject.Properties['tick_before'].Value
+                    }
+                    if ($null -ne $class.PSObject.Properties['tick_after']) {
+                        $tickAfterField = $class.PSObject.Properties['tick_after'].Value
+                    }
+                    $tickBefore = Resolve-GapLedgerAnchor $tickBeforeField $target
+                    $tickAfter = Resolve-GapLedgerAnchor $tickAfterField $target
+                    if ($null -eq $tickBefore -or $null -eq $tickAfter) {
+                        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_tick_anchor_ambiguous' }
+                    }
+                    $ordinal = if ($explicit) {
+                        if ($position -ge $ordinals.Count) {
+                            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_ordinals_short' }
+                        }
+                        # `Test-IsJsonInteger` caps at Int64 because its other
+                        # callers cast through `[int64]`; an ordinal is a `u64`,
+                        # and capping here refused exact `[decimal]` ordinals
+                        # that Rust and Python accept.
+                        $rawOrdinal = $ordinals[$position]
+                        if (-not (Test-GapLedgerIntegerToken $rawOrdinal)) {
+                            throw 'gap ledger explicit ordinal is not an integer'
+                        }
+                        if ([bigint]$rawOrdinal -lt [bigint]0 -or
+                            [bigint]$rawOrdinal -gt [bigint]::Parse('18446744073709551615')) {
+                            throw 'gap ledger explicit ordinal is outside the u64 range'
+                        }
+                        [bigint]$rawOrdinal
+                    } else { [bigint]0 }
+                    [void]$rows.Add([pscustomobject]@{
+                        domain_id            = [int]$domain
+                        part                 = $classPart
+                        reason               = $classReason
+                        target_hour_raw      = $target
+                        range_start_hour_raw = Assert-GapLedgerHour (
+                            $target + [int64](Get-GapLedgerInteger $class 'range_start_rel'))
+                        range_end_hour_raw   = Assert-GapLedgerHour (
+                            $target + [int64](Get-GapLedgerInteger $class 'range_end_rel'))
+                        tick_before          = $tickBefore
+                        tick_after           = $tickAfter
+                        queue_capacity       = Assert-GapLedgerU32 (
+                            [int64](Get-GapLedgerInteger $class 'queue_capacity'))
+                        queue_depth          = Assert-GapLedgerU32 (
+                            [int64](Get-GapLedgerInteger $class 'queue_depth'))
+                        queue_dropped        = [bigint](Get-GapLedgerWideInteger $class 'queue_dropped')
+                        outcome_ordinal      = $ordinal
+                    })
+                    $position++
+                }
+            }
+        }
+        if ($explicit -and $ordinals.Count -ne $position) {
+            return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_ordinals_length_mismatch' }
+        }
+    }
+    if (-not $explicit) {
+        # One pass per (domain, part) lane in hour order, mirroring the check the
+        # encoder ran before it chose this encoding. Two rows of one lane at one
+        # hour makes the derivation ambiguous, and the encoder refuses to pick
+        # `lane_sequential` then -- so a ledger claiming it here is one this
+        # reader must not interpret.
+        $lanes = New-Object 'System.Collections.Hashtable' ([StringComparer]::Ordinal)
+        foreach ($row in $rows) {
+            $key = "$($row.domain_id):$($row.part)"
+            if (-not $lanes.ContainsKey($key)) { $lanes[$key] = New-Object System.Collections.ArrayList }
+            [void]$lanes[$key].Add($row)
+        }
+        # An UNUSED lane entry changes nothing about the expansion, so a table
+        # carrying one means what the table without it means.
+        foreach ($declared in @($laneFirst.Keys)) {
+            if (-not $lanes.ContainsKey($declared)) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_unused' }
+            }
+        }
+        foreach ($key in @($lanes.Keys)) {
+            $laneRows = @($lanes[$key] | Sort-Object -Property target_hour_raw)
+            $distinct = @($laneRows | Select-Object -ExpandProperty target_hour_raw -Unique)
+            if ($distinct.Count -ne $laneRows.Count) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_hour_ambiguous' }
+            }
+            if (-not $laneFirst.ContainsKey($key)) {
+                return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_lane_first_missing' }
+            }
+            for ($i = 0; $i -lt $laneRows.Count; $i++) {
+                $derived = [bigint]$laneFirst[$key] + [bigint]$i
+                # The ordinal is a `u64`, and the recorder's own reader adds with
+                # `checked_add`. An unbounded sum would publish an ordinal no
+                # producer could have written.
+                if ($derived -gt [bigint]::Parse('18446744073709551615')) {
+                    return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_ordinal_overflow' }
+                }
+                $laneRows[$i].outcome_ordinal = $derived
+            }
+        }
+    }
+    # REQUIRED and checked. The count is the only thing that can catch a
+    # truncated class list, and a check that skips itself when the field is
+    # absent or a string is the check not running.
+    $declared = $null
+    if ($null -ne $table.PSObject.Properties['row_count']) {
+        $declared = $table.PSObject.Properties['row_count'].Value
+    }
+    if (-not (Test-GapLedgerIntegerToken $declared)) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_row_count_invalid' }
+    }
+    if ([int64]$declared -ne $rows.Count) {
+        return @{ Ok = $false; Rows = @(); Problem = 'gap_ledger_row_count_mismatch' }
+    }
+    $ordered = @($rows | Sort-Object -Property target_hour_raw, domain_id)
+    return @{ Ok = $true; Rows = $ordered; Problem = $null }
+}
+
+function Test-GapLedgerIntegerToken {
+    <#
+    .SYNOPSIS
+    Whether a decoded JSON value was written as an INTEGER TOKEN.
+
+    .DESCRIPTION
+    Windows PowerShell 5.1 parses `2` as `Int32`/`Int64` and `2.0` as `Decimal`,
+    and it uses `Decimal` again for a plain integer too large for `Int64`. So a
+    `Decimal` is a legitimate integer token ONLY when its value exceeds the
+    `Int64` range -- below that, a `Decimal` means the document wrote a float,
+    which the recorder never does and which Rust and Python refuse.
+
+    A `Double`/`Single` is refused outright: it was rounded at parse time, so the
+    digits are gone before this can look at them.
+    #>
+    param($Value)
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -is [string] -or
+        $Value -is [double] -or $Value -is [single] -or $Value -is [System.Array]) {
+        return $false
+    }
+    if ($Value -is [decimal]) {
+        $decimal = [decimal]$Value
+        if ([math]::Truncate($decimal) -ne $decimal) { return $false }
+        # `.NET Decimal` PRESERVES SCALE, so `9223372036854775808.0` still
+        # stringifies with its point even though both spellings parse to Decimal.
+        # That is the only surviving way to tell a wide integer token from a wide
+        # float, and Rust and Python refuse the float.
+        if ([string]$decimal -like '*.*') { return $false }
+        return ($decimal -gt [decimal][int64]::MaxValue -or
+                $decimal -lt [decimal][int64]::MinValue)
+    }
+    return ($Value -is [int] -or $Value -is [long] -or $Value -is [int64] -or
+            $Value -is [int16] -or $Value -is [sbyte] -or $Value -is [uint16] -or
+            $Value -is [uint32] -or $Value -is [uint64] -or $Value -is [byte])
+}
+
+function Get-GapLedgerInteger {
+    <#
+    .SYNOPSIS
+    A gap-ledger field that MUST be present and MUST be an integer.
+
+    .DESCRIPTION
+    `Get-ObjectProperty` returns $null for an absent field and PowerShell reads
+    `[int64]$null` as 0 -- so a class missing `range_start_rel` expanded quietly
+    into rows whose range started at the target hour. That is worse than a crash:
+    it is the ledger attributing a gap to hours nobody recorded, which is the one
+    outcome it exists to prevent. Throws; `Expand-CaptureGapOutcomes` bounds the
+    throw and reports it.
+    #>
+    param($Object, [Parameter(Mandatory = $true)][string]$Name)
+    $value = $null
+    $gapLedgerProperty = if ($null -ne $Object) { $Object.PSObject.Properties[$Name] } else { $null }
+    if ($null -ne $gapLedgerProperty) { $value = $gapLedgerProperty.Value }
+    if (-not (Test-GapLedgerIntegerToken $value) -or
+        [bigint]$value -gt [bigint][int64]::MaxValue -or
+        [bigint]$value -lt [bigint][int64]::MinValue) {
+        throw "gap ledger class field '$Name' is missing or not an integer"
+    }
+    return $value
+}
+
+function Assert-GapLedgerU32 {
+    <#
+    .SYNOPSIS
+    A queue witness, refused when it falls outside the `u32` domain.
+
+    .DESCRIPTION
+    The contract's fields are unsigned. A negative queue depth is a figure the
+    producer could not have written and its own decoder refuses.
+    #>
+    param([Parameter(Mandatory = $true)][int64]$Value)
+    if ($Value -lt 0 -or $Value -gt 4294967295) {
+        throw "gap ledger queue witness $Value is outside the u32 range"
+    }
+    return $Value
+}
+
+function Assert-GapLedgerHour {
+    <#
+    .SYNOPSIS
+    A resolved game hour, refused when it falls outside the `i32` domain.
+
+    .DESCRIPTION
+    A run may sit at the top of the hour space while a class states a positive
+    range offset, and `target + rel` then names an hour that cannot exist. Rust
+    and Python refuse it; admitting it here would be two readers of one document
+    disagreeing about which hour a gap belongs to.
+    #>
+    param([Parameter(Mandatory = $true)][int64]$Hour)
+    if ($Hour -lt -2147483648 -or $Hour -gt 2147483647) {
+        throw "gap ledger resolves an hour to $Hour, outside the i32 hour range"
+    }
+    return $Hour
+}
+
+function Get-GapLedgerWideInteger {
+    <#
+    .SYNOPSIS
+    A gap-ledger field that MUST be present and integral, WITHOUT an Int64 bound.
+
+    .DESCRIPTION
+    `Test-IsJsonInteger` caps at Int64 on purpose: every one of its callers casts
+    through `[int64]`, and a wider value would throw at the cast. `queue_dropped`
+    is a `u64` on the wire and is carried here as a `[bigint]`, so that cap would
+    reject a legal ledger. Integrality is still required, and a `[double]` is
+    still refused -- it was rounded at parse time, so the digits are already gone.
+    #>
+    param($Object, [Parameter(Mandatory = $true)][string]$Name)
+    $value = $null
+    $gapLedgerProperty = if ($null -ne $Object) { $Object.PSObject.Properties[$Name] } else { $null }
+    if ($null -ne $gapLedgerProperty) { $value = $gapLedgerProperty.Value }
+    if (-not (Test-GapLedgerIntegerToken $value)) {
+        throw "gap ledger class field '$Name' is missing or not an integer"
+    }
+    # UNSIGNED and BOUNDED. The contract's field is a `u64`: a reader that admits
+    # a negative, or one above the type, hands its caller a figure the producer
+    # could not have written and its own decoder refuses.
+    if ([bigint]$value -lt [bigint]0 -or
+        [bigint]$value -gt [bigint]::Parse('18446744073709551615')) {
+        throw "gap ledger class field '$Name' is outside the u64 range"
+    }
+    return $value
+}
+
+function Get-GapLedgerSignedInteger {
+    <#
+    .SYNOPSIS
+    A gap-ledger OFFSET: present, integral, and allowed to be negative.
+
+    .DESCRIPTION
+    `Get-GapLedgerWideInteger` refuses a negative, which is right for a tick and
+    wrong for the offset that produces one: the recorder writes `{"rel": -1}`
+    wherever a torn sweep's tick precedes its hour. Integrality is still
+    required, and a `[double]` is still refused -- it was rounded at parse time.
+    #>
+    param($Object, [Parameter(Mandatory = $true)][string]$Name)
+    $value = $null
+    $gapLedgerProperty = if ($null -ne $Object) { $Object.PSObject.Properties[$Name] } else { $null }
+    if ($null -ne $gapLedgerProperty) { $value = $gapLedgerProperty.Value }
+    if (-not (Test-GapLedgerIntegerToken $value)) {
+        throw "gap ledger class field '$Name' is missing or not an integer"
+    }
+    return $value
+}
+
+function Get-GapLedgerName {
+    <#
+    .SYNOPSIS
+    A gap-ledger field that MUST be a non-empty string.
+    #>
+    param($Object, [Parameter(Mandatory = $true)][string]$Name)
+    $value = $null
+    $gapLedgerProperty = if ($null -ne $Object) { $Object.PSObject.Properties[$Name] } else { $null }
+    if ($null -ne $gapLedgerProperty) { $value = $gapLedgerProperty.Value }
+    if ($value -isnot [string] -or [string]::IsNullOrEmpty($value)) {
+        throw "gap ledger class field '$Name' is missing or not a name"
+    }
+    return $value
+}
+
+function Resolve-GapLedgerAnchor {
+    <#
+    .SYNOPSIS
+    A tick stated either relative to its hour or absolutely; $null when neither
+    or both, which has no single meaning.
+    #>
+    param($Field, [int64]$Anchor)
+    # An ARRAY is not the object PowerShell would unwrap it into.
+    if ($null -eq $Field -or $Field -is [System.Array]) { return $null }
+    # CLOSED, as Rust and Python close it. Without this an extra nested field
+    # reached the class's identity and its aggregation key -- two classes at one
+    # hour differing only by a field nothing reads passed the same-hour rule.
+    foreach ($member in @($Field.PSObject.Properties)) {
+        if ($member.Name -cne 'rel' -and $member.Name -cne 'abs') { return $null }
+    }
+    $hasRel = $null -ne $Field.PSObject.Properties['rel']
+    $hasAbs = $null -ne $Field.PSObject.Properties['abs']
+    if ($hasRel -eq $hasAbs) { return $null }
+    # `[bigint]`, not `[int64]`: a tick is a `u64` on the wire and `u64::MAX`
+    # overflows `Int64`, which in PowerShell is a TERMINATING cast error -- the
+    # validator would die on a legal ledger instead of grading it.
+    #
+    # And TYPE-CHECKED before the cast, because `[bigint]1.5` is 2: a fractional
+    # offset resolved silently to a different tick than the one written, while
+    # Rust and Python refuse it.
+    #
+    # `abs` is UNSIGNED (a `u64` tick) and `rel` is SIGNED (an `i64` offset) --
+    # conflating them refused `{"rel": -1}`, which the recorder writes for every
+    # torn sweep whose tick precedes its hour. The RESOLVED value is the tick and
+    # is bounded to `u64` in either spelling.
+    if ($hasAbs) {
+        $abs = [bigint](Get-GapLedgerWideInteger $Field 'abs')
+        if ($abs -gt [bigint]::Parse('18446744073709551615')) {
+            throw 'gap ledger tick is outside the u64 range'
+        }
+        return $abs
+    }
+    $rel = [bigint](Get-GapLedgerSignedInteger $Field 'rel')
+    if ($rel -lt [bigint]::Parse('-9223372036854775808') -or
+        $rel -gt [bigint]::Parse('9223372036854775807')) {
+        throw 'gap ledger tick offset is outside the i64 range'
+    }
+    $resolved = [bigint]$Anchor + $rel
+    if ($resolved -lt [bigint]0 -or $resolved -gt [bigint]::Parse('18446744073709551615')) {
+        throw 'gap ledger tick resolves outside the u64 range'
+    }
+    return $resolved
+}
+
 function Get-RegistryCaptureDomains {
     param([Parameter(Mandatory = $true)][string]$RegistryPath)
     if (-not (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
@@ -391,7 +1140,14 @@ function Test-ProductionCaptureArtifacts {
             else { $seenById[$id] = $row }
         }
     }
-    $gapRows = @(Get-ObjectProperty $compact "domain_gap_outcomes")
+    $gapExpansion = Expand-CaptureGapOutcomes $compact
+    if (-not $gapExpansion.Ok) {
+        # A ledger this validator cannot read is NOT a capture with no gaps.
+        # Recorded as its own problem so the walk below cannot pass vacuously on
+        # a manifest nobody managed to open.
+        Add-CaptureProblem $problems $gapExpansion.Problem
+    }
+    $gapRows = @($gapExpansion.Rows)
     $declaredGapCount = Get-ObjectProperty $compact "domain_gap_record_count"
     if (-not (Test-IsJsonInteger $declaredGapCount) -or [int64]$declaredGapCount -lt 0) {
         Add-CaptureProblem $problems "domain_gap_record_count_invalid"
