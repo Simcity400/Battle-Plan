@@ -9,6 +9,15 @@
 //! hypothetical: commit aa0f0f05 inserted 25 net lines and left 32 of the 45 dNN
 //! markers pointing at the wrong range.
 //!
+//! The marker also pins the cited functions' CALLEE CLOSURE — themselves plus
+//! every function in `world_fold.rs` they can reach — because an envelope digest
+//! covers a function where it stands and nothing else.  Lifting a helper out of
+//! a cited fold narrowed the authority to the residual and the gate went on
+//! saying PASS while the moved rendering could be changed freely; d20's document
+//! build is where that happened.  The count reported below is how many functions
+//! are inside some domain's closure, and this test demands the clause so the
+//! coverage cannot be dropped from the report without failing here.
+//!
 //! The same script also carries the free-text line-number ratchet: outside the
 //! one gated `lines=`/sha256 range, a dNN module may not cite `world_fold.rs:N`
 //! at all unless that exact reference is already grandfathered in
@@ -129,12 +138,14 @@ fn world_fold_citations_match_the_shipping_fold() {
         !reported.contains('\n')
             && reported.starts_with(&expected_prefix)
             && reported.contains(" lane authorities, ")
+            && reported.contains(" items inside an authority closure, ")
             && reported.contains(" grandfathered prose line references, ")
             && reported.ends_with(" grandfathered document line references)"),
         "the verifier exited zero but did not report checking the {modules} dNN \
          modules under {}. Expected a single line `{expected_prefix}<n> lane \
-         authorities, <n> grandfathered prose line references, <n> grandfathered \
-         document line references)`, got: {reported:?}",
+         authorities, <n> items inside an authority closure, <n> \
+         grandfathered prose line references, <n> grandfathered document line \
+         references)`, got: {reported:?}",
         wire_src.display()
     );
 }
