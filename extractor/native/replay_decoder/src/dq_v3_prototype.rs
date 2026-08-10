@@ -101,10 +101,32 @@ use recorder_host::world_fold::foldprof;
 /// what tranche 1 found and is why the extrapolation these replace was
 /// pessimistic rather than optimistic about them.
 ///
-/// `strategic_air` and `naval_air` are still absent by owner ruling and are the
-/// whole of what remains uncovered: 0.80% of t30's member bytes and 6.00% of
-/// t31's.
-pub const COVERED_SECTIONS: [(&str, &str); 39] = [
+/// # Tranche 6: the two sections the default depth killed
+///
+/// `strategic_air` and `naval_air` were the whole of what remained uncovered --
+/// 0.80% of t30's member bytes and 6.00% of t31's -- and they were removed from
+/// this list on 2026-08-07 for costing 33k four-byte grains an hour at the
+/// DEFAULT grain depth, which is the depth they were measured at. Two things
+/// changed since, and both are the reason they are back:
+///
+/// * a grain depth is a per-section optimum, and these two never got one. Both
+///   are objects whose members are arrays of small objects, so depth 3 lands on
+///   an element's individual FIELDS -- `{"region_id":42}` is a four-byte grain
+///   with a forty-byte address. The census in `runs/ge_v3_stage3/` prices every
+///   depth on both captures and the coarse depth below is its argmin. This is
+///   the "coarse-grain design for tiny-value sections" the removal ruling named
+///   as the condition for revisiting them, and it needed no design: the knob
+///   every other tranche used was simply never turned for these two.
+/// * the per-mutation constant fell from 8.6 us to 1.64 us (lanes FB and FL),
+///   so the same mutation count costs a fifth of what it did when the ruling
+///   was made.
+///
+/// They are re-added at the END of the const, after the tranches whose bands are
+/// already published, so no earlier section's schedule moves. What keeps this
+/// from being a silent reversal is that it is measured: `runs/ge_v3_stage3/`
+/// carries the interleaved A/B of the 39-section baseline against each of them
+/// separately, against the kill-switch the conversion was funded under.
+pub const COVERED_SECTIONS: [(&str, &str); 41] = [
     ("special_projects", "object"),
     ("countries", "object"),
     ("map", "object"),
@@ -117,10 +139,10 @@ pub const COVERED_SECTIONS: [(&str, &str); 39] = [
     // converted, measured, and REMOVED from the default: 33k four-byte
     // grains/hour put them past the per-mutation constant's worst case
     // (0.157 s/h on t31 alone, journals 1.34-1.42x LARGER than the v2
-    // patches they replace). They stay v2-covered in the hybrid. Removing
-    // them from this list is what makes them unconvertible, and it also
-    // makes them unselectable -- the section filter validates against this
-    // const -- so re-measuring them means re-adding them deliberately.
+    // patches they replace). Absence from this const is what made them
+    // unconvertible AND unselectable -- the section filter validates
+    // against it -- so re-measuring them took a deliberate re-add, which
+    // is tranche 6 at the end of this list.
     ("order_of_battle", "object"),
     // -- tranche 2: the top of the tail by density and by bytes -------------
     // 2.79 MB of t30's 3.14 MB non-air uncovered remainder (89%), and the
@@ -178,6 +200,13 @@ pub const COVERED_SECTIONS: [(&str, &str); 39] = [
     ("_r2_delayed_event_lifecycle_live", "object"),
     ("_r2_market_trade_activation_live", "object"),
     ("_r2_selected_designer_identity_live", "object"),
+    // -- tranche 6: the two the default depth killed ------------------------
+    // Both are objects of arrays of small objects, and both are re-added at a
+    // COARSE depth. They are last in the const because every section before
+    // them has a published band measured with itself at that position, and the
+    // order is the run order.
+    ("strategic_air", "object"),
+    ("naval_air", "object"),
 ];
 
 /// The grain depth each section was MEASURED to be cheapest at, as a spec string
@@ -205,7 +234,7 @@ pub const MEASURED_GRAIN_DEPTHS: &str = "3,supply=2,divisions=2,\
      tag_db_id_index=1,diplomacy_world=1,session_header=1,events=1,game_id=1,\
      save_version=1,schema_version=1,strategic_operatives=1,\
      _r2_delayed_event_lifecycle_live=1,_r2_market_trade_activation_live=1,\
-     _r2_selected_designer_identity_live=1";
+     _r2_selected_designer_identity_live=1,strategic_air=2,naval_air=2";
 
 /// What one grain costs in resident state BEYOND its own payload.
 ///
@@ -270,6 +299,10 @@ struct SectionReport {
     v2_patch_bytes: u64,
     v3_delta_bytes: u64,
     v3_mutations: u64,
+    /// Mutations the `DQ_DROP_MUTATION` negative control actually skipped. Zero
+    /// on every ordinary run, and the difference between a control that proved
+    /// the oracle and a control that did nothing.
+    mutations_dropped: u64,
     v3_calls: u64,
     v3_no_ops: u64,
     v3_root_changes: u64,
@@ -383,7 +416,11 @@ fn price_v3(
     // Which grains actually moved. A candidate's digest is compared against the
     // one the state already holds; a reducer knows this from the record it is
     // applying, so it is charged to the adapter and not to the API.
-    let mut changed: Vec<(Path, &CanonValue)> = Vec::new();
+    // The third element says whether the address ALREADY STANDS in the state --
+    // a value moving at an address that exists, as opposed to an address
+    // arriving. Only the negative control reads it; see where `drop_one` is
+    // applied for why the distinction is load-bearing.
+    let mut changed: Vec<(Path, &CanonValue, bool)> = Vec::new();
     let mut present: BTreeMap<Path, ()> = BTreeMap::new();
     for (path, value) in &incoming {
         present.insert(path.clone(), ());
@@ -397,7 +434,7 @@ fn price_v3(
             // change at all.
             Some((stored, grain))
                 if grain.digest() == &digest && fold_v3::same_spelling(stored, path) => {}
-            _ => changed.push((path.clone(), *value)),
+            standing => changed.push((path.clone(), *value, standing.is_some())),
         }
     }
     let removed: Vec<Path> = run
@@ -421,6 +458,17 @@ fn price_v3(
     // the equivalence oracle exists to catch. If a run with this set still
     // reports zero divergences, the oracle is vacuous and no number from it means
     // anything.
+    //
+    // The skip is COUNTED, and the count is published as
+    // `mutations_dropped_by_negative_control`. It only ever skips one upsert an
+    // hour, after the section's first hour, at an address that already stands,
+    // so a section that is absent, that never changes, or that changes only by
+    // arrivals and removals would run the control without dropping anything --
+    // and a control that dropped nothing reports no divergence for the same
+    // reason a correct build does. The two readings are indistinguishable in
+    // the verdict and were indistinguishable in the report; the counter is what
+    // separates "the oracle caught it" from "there was nothing to catch", and
+    // the run is refused outright when the count comes out zero.
     let drop_one = std::env::var("DQ_DROP_MUTATION")
         .map(|name| name == run.name)
         .unwrap_or(false)
@@ -445,13 +493,29 @@ fn price_v3(
         txn.set_root_kind(target_kind)
             .map_err(|e| format!("section {}: {e}", run.name))?;
     }
-    for (index, (path, value)) in changed.into_iter().enumerate() {
-        if drop_one && index == 0 {
+    let mut dropped = 0u64;
+    for (path, value, standing) in changed.into_iter() {
+        // Drop the first upsert of the hour that lands on an address ALREADY
+        // STANDING, not simply the first upsert.
+        //
+        // The difference is what the control ends up testing. On an
+        // ordinal-addressed section, dropping an ARRIVING address can leave the
+        // hour's delta installing ordinal 1 with no ordinal 0, which the
+        // replica's decoder refuses outright: the run dies with an error and
+        // writes no report, so the control proves the decoder rejects a
+        // malformed delta -- which it already has tests for -- and proves
+        // nothing about the equivalence oracle. Dropping a value at an address
+        // that stands leaves every structural invariant intact and leaves
+        // exactly one grain holding last hour's bytes, which is the defect the
+        // oracle exists to catch, on any section shape.
+        if drop_one && dropped == 0 && standing {
+            dropped += 1;
             continue;
         }
         txn.upsert(path, value)
             .map_err(|e| format!("section {}: {e}", run.name))?;
     }
+    run.report.mutations_dropped += dropped;
     let delta = txn.commit();
     // The bytes a v3 writer would hash on their way to the file.
     let delta_digest = Sha256::digest(&delta.bytes);
@@ -564,13 +628,13 @@ fn section_index(name: &str) -> Option<usize> {
 ///   `strategic_air` under-charged; only their SUM is a build term, and the
 ///   upper bound is a sum.
 ///
-///   Neither is in [`COVERED_SECTIONS`] any more, so on every run this lane
-///   makes the slot is claimed by nobody and `naval_combats` -- which DOES
-///   accumulate into it -- carries no build term. That is left alone rather
-///   than re-pointed at `naval_combats`: the slot also carries the two air
-///   sections' construction, which v3 does not convert, so charging the whole
-///   of it to an 11 kB member would be an over-charge of a different section's
-///   work rather than a measurement of that member's.
+///   With tranche 6 both air sections are converted again, so the slot is
+///   claimed by `naval_air` once more and that is the arrangement described
+///   above: `naval_air` carries all three builds, `strategic_air` and
+///   `naval_combats` carry none, and only the sum of the three is a build
+///   term. It matters less than it reads: the build span enters the UPPER
+///   bound only, and the kill-switch this lane converts against is read on the
+///   API lane, which no build span touches.
 /// * `combats` brackets `build_combats`, which returns `combats` AND
 ///   `ended_combats` from one call. The span is charged to `combats`, the
 ///   member that is three orders of magnitude the larger of the two, and
@@ -1026,6 +1090,8 @@ pub fn run(
              \"v2_patch_bytes_per_hour\":{:.1},\"v3_delta_bytes_per_hour\":{:.1},\
              \"delta_byte_ratio\":{:.4},\"worst_hour_delta_byte_ratio\":{:.4},\
              \"worst_hour\":{},\"mutations_per_hour\":{:.1},\
+             \"mutations_total\":{},\
+             \"mutations_dropped_by_negative_control\":{},\
              \"api_calls_per_hour\":{:.1},\"no_ops_per_hour\":{:.1},\
              \"root_changes\":{},\"grain_bytes_written_per_hour\":{:.1}}}",
             json_string(&run.name),
@@ -1055,11 +1121,43 @@ pub fn run(
             run.report.worst_amplification,
             run.report.worst_amplification_hour,
             run.report.v3_mutations as f64 / section_hours,
+            run.report.v3_mutations,
+            run.report.mutations_dropped,
             run.report.v3_calls as f64 / section_hours,
             run.report.v3_no_ops as f64 / section_hours,
             run.report.v3_root_changes,
             run.report.v3_grain_bytes_written as f64 / section_hours,
         ));
+    }
+
+    // A negative control that dropped nothing is not a negative control, and it
+    // reports exactly what a passing build reports: no divergence. Refusing the
+    // run is the only way that distinction survives into a file somebody reads
+    // later.
+    //
+    // Two ways it can drop nothing, and both are refused here: the named
+    // section is not in the active set (a typo, or a filter that excluded it),
+    // or it is active but never presented a changed upsert after its first hour
+    // (absent, unchanging, or changing only by removal).
+    let dropped_total: u64 = runs.iter().map(|run| run.report.mutations_dropped).sum();
+    if let Ok(name) = std::env::var("DQ_DROP_MUTATION") {
+        if !name.is_empty() {
+            if !runs.iter().any(|run| run.name == name) {
+                return Err(format!(
+                    "DQ_DROP_MUTATION={name} names a section this run does not convert, so \
+                     the negative control dropped nothing and its zero divergences mean \
+                     nothing"
+                ));
+            }
+            if dropped_total == 0 {
+                return Err(format!(
+                    "DQ_DROP_MUTATION={name} dropped no mutation in {measured_hours} measured \
+                     hours -- after its first commit the section never presented an upsert at \
+                     an address that already stood, so there was nothing to make stale -- and \
+                     the control therefore proves nothing about the oracle"
+                ));
+            }
+        }
     }
 
     let v2_covered = secs(
@@ -1227,6 +1325,7 @@ pub fn run(
          \"peak_private_bytes\":{peak_private},\"peak_working_set_bytes\":{peak_ws},\
          \"v2_patch_bytes_per_hour\":{:.1},\"v3_delta_bytes_per_hour\":{:.1},\
          \"oracle_section_hours_equal\":{oracle_section_hours},\
+         \"mutations_dropped_by_negative_control\":{dropped_total},\
          \"divergences\":[{}],\"sections_missing_from_document\":[{}],\
          \"unpriced_v3_obligations\":\"checkpoint framing, H4IX index, whole-cache \
          SHA-256, verify_every_hour, container write\",\
@@ -1385,19 +1484,70 @@ mod tests {
         );
     }
 
-    /// The two sections the owner ruled OUT on 2026-08-07 stay out.
+    /// The two sections removed on 2026-08-07 are back, and they are back at a
+    /// COARSE grain depth.
     ///
-    /// Absence from this const is the whole of the mechanism: it is what stops
-    /// them being converted by default AND what stops the section filter from
-    /// naming them, so a re-add is the only way back and has to be deliberate.
+    /// The removal was not about the sections; it was about the depth they were
+    /// cut at. At the default depth 3 both decompose to an array element's
+    /// individual FIELDS -- a four-byte value under a forty-byte address --
+    /// which is what produced 33k mutations an hour between them. Re-adding
+    /// them WITHOUT the depth override would silently rebuild exactly the
+    /// configuration that was ruled out, and every band in `runs/ge_v3_stage3/`
+    /// would be filed against a configuration nobody measured.
+    ///
+    /// Depth 2 is the census argmin on both captures and it is checked here
+    /// rather than trusted, because the override is a string in another
+    /// constant and nothing else connects the two.
+    ///
+    /// The SHAPE is pinned for a harder reason. Both members are JSON objects,
+    /// and a section spelled `"array"` here would not fail: `price_v3` routes a
+    /// value that does not match its configured shape to a SCALAR root holding
+    /// the whole member at the empty path, which projects the same bytes,
+    /// agrees with its replica, holds an agreeing state root and presents no
+    /// ordinals for the density scan to complain about. Every check in the
+    /// oracle would pass while the run measured one whole-section grain an hour
+    /// instead of the 715-3,675 element grains it is supposed to. Nothing else
+    /// in the file distinguishes those two runs.
     #[test]
-    fn the_two_ruled_out_air_sections_are_absent() {
+    fn the_readded_air_sections_are_cut_coarse() {
+        let (_, overrides) = parse_grain_depths(MEASURED_GRAIN_DEPTHS)
+            .unwrap_or_else(|e| panic!("MEASURED_GRAIN_DEPTHS does not parse: {e}"));
         for name in ["strategic_air", "naval_air"] {
-            assert!(
-                !COVERED_SECTIONS.iter().any(|(covered, _)| *covered == name),
-                "{name} was ruled out of the default on 2026-08-07 and is back in it"
+            let spelling = COVERED_SECTIONS
+                .iter()
+                .find(|(covered, _)| *covered == name)
+                .map(|(_, spelling)| *spelling)
+                .unwrap_or_else(|| {
+                    panic!("{name} is not converted, so the section census is not full")
+                });
+            assert_eq!(
+                shape_for(spelling).unwrap_or_else(|e| panic!("{name}: {e}")),
+                Shape::Object,
+                "{name} is not cut as the object it is, so its whole section is one grain"
+            );
+            assert_eq!(
+                overrides.get(name),
+                Some(&2),
+                "{name} is converted at a depth other than the one it was measured at"
             );
         }
+    }
+
+    /// Tranche 6 sits at the END of the const, after every section whose band
+    /// is already published.
+    ///
+    /// The const's order is the run order, and the run order decides which
+    /// section's build span is harvested first and which lane runs first on a
+    /// given hour. Inserting the two anywhere but the end would re-schedule
+    /// every section after them.
+    #[test]
+    fn the_readded_air_sections_are_last() {
+        let tail: Vec<&str> = COVERED_SECTIONS
+            .iter()
+            .skip(COVERED_SECTIONS.len() - 2)
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(tail, ["strategic_air", "naval_air"]);
     }
 
     /// [`MEASURED_GRAIN_DEPTHS`] must parse, and the base configuration's three

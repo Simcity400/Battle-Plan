@@ -1213,8 +1213,6 @@ fn drain_after_framing_stop_propagates_the_storage_root_error() {
 /// forever. A regression to charge-then-drop makes `held` jump here.
 #[test]
 fn taking_the_hour_index_charge_transfers_it_instead_of_doubling_it() {
-    use recorder_host::mem_account::{held, Component};
-
     let mut cursor = HourCursor::from_reader_compressed(
         Box::new(io::Cursor::new(Vec::new())),
         0,
@@ -1225,21 +1223,34 @@ fn taking_the_hour_index_charge_transfers_it_instead_of_doubling_it() {
     // A cursor that has published hours has a non-zero charge; drive it far
     // enough to have one by charging through the cursor's own accessor.
     cursor.hour_index_charge.set(4096);
-    let before = held(Component::DecoderHourIndex);
 
     let handed_on = cursor.take_index_rows_charge();
-    assert_eq!(
-        held(Component::DecoderHourIndex),
-        before,
-        "the transfer must move the charge, not add a second one"
-    );
-    assert_eq!(handed_on.bytes(), 4096);
 
-    // The cursor now accounts for nothing, because it owns nothing.
+    // Read the two CHARGES, not the process-wide registry.
+    //
+    // `held(Component::DecoderHourIndex)` is a global that every `HourCursor`
+    // in the process moves, and `cargo test` runs this file's tests in
+    // parallel: an absolute before/after comparison against it is a race, and
+    // it failed here as one -- 4960 against an expected 5056, a 96-byte
+    // excursion from another test's cursor, on a run where nothing in this
+    // test's own behaviour had changed.
+    //
+    // The per-object reading is not a weaker check, it is the exact one. The
+    // bug this test exists for made a fresh full-size guard while the cursor
+    // still held its own; a cursor that has handed its charge on holds zero,
+    // and a cursor holding zero cannot double-count whatever else the registry
+    // is doing.
+    assert_eq!(
+        cursor.hour_index_charge.bytes(),
+        0,
+        "the transfer must move the charge out of the cursor, not copy it"
+    );
+    assert_eq!(handed_on.bytes(), 4096, "the whole charge must arrive");
+
+    // Dropping a cursor that owns nothing releases nothing, and the charge it
+    // handed on is still exactly one guard.
     drop(cursor);
-    assert_eq!(held(Component::DecoderHourIndex), before);
-    drop(handed_on);
-    assert_eq!(held(Component::DecoderHourIndex), before - 4096);
+    assert_eq!(handed_on.bytes(), 4096);
 }
 
 // Intact storage after a framing stop on a compressed source: the stop itself
