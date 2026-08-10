@@ -304,7 +304,25 @@ pub(super) struct CopyPlan {
     /// executor's dependency attach needs exactly the same ordering the
     /// coalescer already paid for.
     order: Vec<u32>,
+    /// MATERIALISED sort keys, reused across waves like every other buffer on
+    /// this type.
+    ///
+    /// Only filled on the sorting path — the ascending fast path never touches
+    /// it — and its capacity is inside [`CopyPlan::capacity_bytes`], so the
+    /// per-wave reconciliation the executor already runs sees it. See
+    /// [`plan_copies_into`] for why the sort is on materialised keys and what
+    /// the third component is.
+    keys: Vec<SortKey>,
 }
+
+/// `(start, len, !request_index)`: the coalescer's TOTAL order over requests.
+///
+/// The first two components are the address order the coalescer needs. The
+/// third is the tie-break, and it is the COMPLEMENT of the request index so an
+/// ascending sort puts the LOWEST-indexed of a set of identical spans LAST —
+/// which is the position `Observation::copy_attributes` attributes the merged
+/// copy to. See [`plan_copies_into`].
+type SortKey = (u64, u64, u32);
 
 impl CopyPlan {
     pub fn new() -> Self {
@@ -322,6 +340,7 @@ impl CopyPlan {
         super::arena::vec_bytes(&self.copies)
             + super::arena::vec_bytes(&self.sources)
             + super::arena::vec_bytes(&self.order)
+            + super::arena::vec_bytes(&self.keys)
     }
 
     /// The indices of the requests this plan was built from, in ascending
@@ -332,6 +351,20 @@ impl CopyPlan {
     /// this rather than sorting again.
     pub fn order(&self) -> &[u32] {
         &self.order
+    }
+
+    /// The sort-key buffer, so the executor can reserve it through the custody
+    /// ledger before [`plan_copies_into`] fills it.
+    ///
+    /// `plan_copies_into` has no ledger — it is a pure function of requests and
+    /// a policy — so the charge-before-allocate law is honoured by the caller
+    /// reserving the room, exactly as it already does for the request buffer.
+    /// A short reservation is not a correctness problem, only a charge taken
+    /// one wave late; a reservation the ceiling refuses is a typed
+    /// `CustodyRefusal` where an unadmitted `push` would have been an allocator
+    /// failure (Codex 019fe942, finding E2).
+    pub fn keys_mut(&mut self) -> &mut Vec<SortKey> {
+        &mut self.keys
     }
 
     #[cfg(test)]
@@ -388,6 +421,17 @@ pub(super) fn plan_copies_into(requests: &[CopyRequest], policy: &GapPolicy, pla
     // a fixed window list). Establishing that costs one sequential pass over
     // the requests; sorting when it is already true costs a comparison sort
     // whose every comparison is two random loads into the request array.
+    //
+    // `<=`, NOT `<`, AND THAT IS THE WHOLE TIE-BREAK (HOST #172).
+    //
+    // A run of requests carrying the IDENTICAL span is "ascending" by any
+    // reasonable reading, and the fast path would emit it in the order the ops
+    // asked. The sort below emits it in the reverse of that order, on purpose
+    // (see the key). Two paths that disagree about the order of equal spans
+    // disagree about which op a merged copy is attributed to, so the fast path
+    // is declined the moment two consecutive keys are equal and there is
+    // exactly ONE order in the substrate. Non-adjacent duplicates already
+    // failed the old `<` test, because something larger sat between them.
     let mut ascending = true;
     let mut previous = (0u64, 0u64);
     for index in 0..requests.len() as u32 {
@@ -396,34 +440,43 @@ pub(super) fn plan_copies_into(requests: &[CopyRequest], policy: &GapPolicy, pla
             continue;
         }
         let key = (span.start, span.len);
-        if !plan.order.is_empty() && key < previous {
+        if !plan.order.is_empty() && key <= previous {
             ascending = false;
         }
         previous = key;
         plan.order.push(index);
     }
     if !ascending {
-        // NOT MATERIALISED, and that is a deliberate refusal rather than an
-        // oversight. This closure is called once per COMPARISON, so at a wave
-        // of tens of thousands of requests it is a million dependent loads into
-        // an array wider than L2, and sorting materialised keys instead measured
-        // as worth a low single-digit percent of a whole observation.
+        // MATERIALISED, and the key is TOTAL. Both halves of that sentence are
+        // HOST #172 and neither is available without the other.
         //
-        // It is not taken because `(start, len)` is not a TOTAL order over the
-        // requests: two tasks can produce the identical span, and which of them
-        // ends up last among the equal keys decides the `op` and `stage` a
-        // coalesced copy is attributed to (`Observation::copy_attributes`), and
-        // therefore what a refusal witness names. `sort_unstable` leaves that
-        // permutation unspecified, so ANY re-spelling of this sort — including
-        // one that only changes the element type it sorts — can change an
-        // observable field for an input with equal spans. Making the order
-        // total (by request index, say) would fix the attribution and would
-        // also CHANGE it. That is a ruling about what the substrate promises,
-        // not an optimisation, and it belongs to whoever owns the witness
-        // contract.
-        plan.order.sort_unstable_by_key(|&i| {
-            (requests[i as usize].span.start, requests[i as usize].span.len)
-        });
+        // TOTAL. `(start, len)` is not a total order over requests: two tasks
+        // can produce the identical span, and which of them ends up LAST among
+        // the equal keys decides the `op` and `stage` a coalesced copy is
+        // attributed to (`Observation::copy_attributes`), hence what a refusal
+        // witness names. `sort_unstable` leaves that permutation unspecified,
+        // so any re-spelling of this sort could change an observable field.
+        // The third component closes it, and the owner's ruling is that the
+        // LOWEST-indexed contributor — the one the recipe's ops asked for
+        // first — is the one the witness names. `copy_attributes` joins
+        // last-wins over the run, so the lowest index has to arrive LAST, which
+        // is why the component is `!index` and not `index`.
+        //
+        // MATERIALISED. The closure form is called once per COMPARISON, so at
+        // a wave of tens of thousands of requests it is a million dependent
+        // loads into an array wider than L2; sorting a flat key array instead
+        // is worth a low single-digit percent of a whole observation (lane GA
+        // measured ~3%, and reverted it because the key it used was not total).
+        // The buffer is reused across waves and is inside `capacity_bytes`.
+        plan.keys.clear();
+        for &index in &plan.order {
+            let span = requests[index as usize].span;
+            plan.keys.push((span.start, span.len, !index));
+        }
+        plan.keys.sort_unstable();
+        plan.order.clear();
+        plan.order
+            .extend(plan.keys.iter().map(|&(_, _, complement)| !complement));
     }
 
     let order = std::mem::take(&mut plan.order);

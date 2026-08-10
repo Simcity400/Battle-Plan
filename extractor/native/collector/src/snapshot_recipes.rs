@@ -578,6 +578,23 @@ pub enum Refusal {
     /// A `SelectByValue` could not resolve: its probe bytes were not captured,
     /// or its predicate was false and it declared no `otherwise` arm.
     ConditionalUnresolved { recipe: RecipeId, op: u16 },
+    /// A wave AFTER the one a stage declared reached an interval that stage had
+    /// already closed.
+    ///
+    /// MID-WALK CLOSURE'S FAIL-CLOSED EDGE. A closing image witnesses the bytes
+    /// the observation had asked for when it was taken. A later wave that
+    /// copies into the same interval, tags it, masks it or samples it moves
+    /// what the view will serve out from under a witness already in hand — and
+    /// nothing downstream can tell that happened, because the witness compares
+    /// equal and says so. So the recipe whose `CloseWhen::AfterWave` was too
+    /// early refuses here, naming the interval and the wave that reached it,
+    /// instead of publishing rows a witness never covered.
+    ClosedIntervalReopened {
+        recipe: RecipeId,
+        span: Span,
+        closed_after_wave: u32,
+        reopened_in_wave: u32,
+    },
     /// Structural defect, found before execution.
     Malformed {
         recipe: RecipeId,
@@ -703,6 +720,7 @@ impl Refusal {
             | Refusal::PointerNotAdmissible { recipe, .. }
             | Refusal::CarryNotSet { recipe, .. }
             | Refusal::ConditionalUnresolved { recipe, .. }
+            | Refusal::ClosedIntervalReopened { recipe, .. }
             | Refusal::Malformed { recipe, .. } => recipe,
         }
     }

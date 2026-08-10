@@ -471,6 +471,54 @@ pub struct CompareMask {
     pub windows: Vec<RelWindow>,
 }
 
+/// WHEN a stage's intervals are closed.
+///
+/// # The topology this exists to change (lane GC, FY residual 1)
+///
+/// The substrate ran one shape: every forward wave, then ONE closing wave. That
+/// makes the A/B window of every witness the whole observation, and it is not
+/// what the readers being converted do. d81 closes its rail header INSIDE each
+/// province's iteration — the window between its two images is the handful of
+/// reads that province makes, not the 13,413 provinces after it — so a
+/// conversion that closed at the end would report a torn header for every write
+/// the engine made to a province the walk had already passed.
+///
+/// So a stage may declare the wave it closes at. `AfterWave(n)` closes at the
+/// end of forward wave `n`: after that wave's discovery has run, and before
+/// wave `n + 1` copies a byte.
+///
+/// # What makes an early close SOUND rather than merely early
+///
+/// A closing image is only a witness for the bytes the observation had already
+/// asked for. An interval closed at wave `n` that a later wave copies into,
+/// tags, masks or takes a sample of would carry a witness that certified a
+/// smaller consumption than the one the view serves. That is not detectable
+/// after the fact, so it is refused as it happens:
+/// [`Refusal::ClosedIntervalReopened`] names the interval and the wave. A
+/// recipe whose `AfterWave` is too early therefore REFUSES; it does not
+/// silently publish a witness for the wrong window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CloseWhen {
+    /// The final closing wave, after every forward wave. The substrate's
+    /// original single-wave shape and the default: a program that declares no
+    /// `when` runs exactly the topology it ran before.
+    #[default]
+    Final,
+    /// The end of forward wave `n`.
+    AfterWave(u32),
+}
+
+impl CloseWhen {
+    /// Program order across the two variants: every `AfterWave` precedes
+    /// `Final`, and `AfterWave`s are in wave order.
+    fn rank(self) -> u64 {
+        match self {
+            CloseWhen::AfterWave(wave) => u64::from(wave),
+            CloseWhen::Final => u64::MAX,
+        }
+    }
+}
+
 /// One stage of a recipe's closing program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CloseStage {
@@ -482,7 +530,25 @@ pub struct CloseStage {
     /// d81 does exactly this: when the selector slot and the source slot
     /// coincide, the earlier selector close is elided in favour of the later
     /// source-position read, and selector failure attribution is retained.
+    ///
+    /// An elided stage takes the covering stage's POSITION, and that now
+    /// includes its [`CloseWhen`]: the elided close does not happen at all, so
+    /// there is nothing of it left to schedule separately.
     pub elide_into: Option<u16>,
+    /// When this stage's intervals close. See [`CloseWhen`].
+    pub when: CloseWhen,
+}
+
+impl CloseStage {
+    /// A stage that closes in the final wave — the shape every program had
+    /// before mid-walk closure existed.
+    pub const fn at_end(stage: u16, elide_into: Option<u16>) -> Self {
+        Self {
+            stage,
+            elide_into,
+            when: CloseWhen::Final,
+        }
+    }
 }
 
 /// RULING B. The order a recipe closes its witnesses in.
@@ -492,11 +558,12 @@ pub struct CloseStage {
 /// wave the substrate had before. Elision is per stage and it keeps the elided
 /// stage's attribution.
 ///
-/// WHAT THIS DOES NOT DO: run a close mid-walk. d81 closes its rail header
-/// inside each province's iteration; reproducing that requires closing copies
-/// interleaved with discovery, which is a different executor topology from
-/// "every forward wave, then closes". Ordering and elision are expressible;
-/// mid-walk scheduling is recorded as a residual rather than pretended.
+/// MID-WALK CLOSURE (lane GC, closing FY residual 1). A stage may also declare
+/// WHEN it closes — see [`CloseWhen`] — so a program can interleave closes with
+/// discovery instead of taking them all at the end. `validate` requires the
+/// declared `when`s to be non-decreasing down the stage list, so "the listed
+/// order is the order that ran" stays true across the two mechanisms rather
+/// than becoming two orders that have to be reconciled by a reader.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClosingProgram {
     pub stages: Vec<CloseStage>,
@@ -1230,6 +1297,28 @@ fn validate_closing(recipe: &Recipe) -> Result<(), MalformedReason> {
                 return Err(MalformedReason::BadClosingProgram { stage: stage.stage });
             }
         }
+        // MID-WALK CLOSURE, and the one thing that keeps it one order rather
+        // than two. The list is the declared closing SEQUENCE; a stage that
+        // closes at wave 2 listed after one that closes at wave 5 would make
+        // the sequence a claim about nothing, because the wave numbers decide
+        // what actually runs first. Non-decreasing is required, equal is fine
+        // (several stages may close at the same wave, and the list then orders
+        // them among themselves exactly as it always has).
+        if position > 0 {
+            let previous = program.stages[position - 1].when;
+            if stage.when.rank() < previous.rank() {
+                return Err(MalformedReason::BadClosingProgram { stage: stage.stage });
+            }
+        }
+        if let CloseWhen::AfterWave(wave) = stage.when {
+            // A wave past the executor's own ceiling would declare a close that
+            // can never run, and the stage's intervals would then fall into the
+            // final wave as if no `when` had been declared — a silently
+            // different topology from the one the program asked for.
+            if wave >= FORWARD_WAVES {
+                return Err(MalformedReason::BadClosingProgram { stage: stage.stage });
+            }
+        }
     }
     Ok(())
 }
@@ -1620,6 +1709,29 @@ impl RecipeState {
     }
 }
 
+/// The closing-program entry for `stage`, across every program in the
+/// observation.
+///
+/// The programs are WALKED, not collected: one `&ClosingProgram` per recipe is
+/// work-scaled memory the ledger would have to be told about, to answer a
+/// question a walk over the recipes already in hand answers. Each interval's
+/// stages come from the recipes that reached it and two recipes' programs order
+/// disjoint stage sets, so the first program listing the stage wins.
+fn stage_entry(recipes: &[Recipe], stage: u16) -> Option<&CloseStage> {
+    recipes
+        .iter()
+        .filter_map(|recipe| recipe.closing.as_ref())
+        .find_map(|program| program.stages.iter().find(|entry| entry.stage == stage))
+}
+
+/// `stage`'s position in the declared closing sequence.
+fn stage_rank(recipes: &[Recipe], stage: u16) -> Option<usize> {
+    recipes
+        .iter()
+        .filter_map(|recipe| recipe.closing.as_ref())
+        .find_map(|program| program.stages.iter().position(|entry| entry.stage == stage))
+}
+
 struct Observation<'a, M: SnapshotMemory> {
     recipes: &'a [Recipe],
     memory: &'a M,
@@ -1681,6 +1793,67 @@ struct Observation<'a, M: SnapshotMemory> {
     /// and [`Observation::read_uint`]. A `Cell` because `read_uint` takes
     /// `&self`: it is a memo of an answer the map already holds, not state.
     decode_hint: std::cell::Cell<DecodeHint>,
+    /// Whether ANY recipe in this observation declares a stage that closes
+    /// before the final wave.
+    ///
+    /// The whole of mid-walk closure hangs off this one bool: a `false`
+    /// observation never builds the candidate list, never runs the per-wave
+    /// close pass and never takes the reopen check, so it executes the topology
+    /// the substrate had before [`CloseWhen`] existed.
+    mid_walk: bool,
+    /// Intervals a stage that closes at the CURRENT wave has been annotated
+    /// onto. Filled by the attach pass, drained by
+    /// [`Observation::mid_walk_close`] at the end of the wave, and empty on
+    /// every observation that declares no mid-walk stage.
+    ///
+    /// Each entry carries the RECIPE POSITION that tagged the interval, which
+    /// is the only exact record of who declared a mid-walk stage on it: the
+    /// ownership links record a `ConsumerId`, and two recipes may legally share
+    /// one, so refusing "every consumer of this interval" would refuse a live
+    /// recipe that never declared the stage (Codex 019fe963, finding A1).
+    ///
+    /// Duplicates are not filtered on the way in — one interval is annotated
+    /// once per request that reaches it — because the drain skips anything
+    /// already closed, which is the same test it has to make anyway.
+    mid_walk_pending: Vec<(IntervalId, usize)>,
+    /// The intervals mid-walk closure has already closed, in the order it
+    /// closed them, and the wave each was closed after.
+    ///
+    /// The order half is prepended to the final wave's schedule so
+    /// [`SnapshotBuild::closing_order`] is the ONE sequence that ran. The wave
+    /// half is what [`Refusal::ClosedIntervalReopened`] reports.
+    mid_walk_closed: Vec<(IntervalId, u32)>,
+    /// Elisions recorded by either closing path. On the observation rather than
+    /// in `closing_wave`'s local because mid-walk closure records its
+    /// intervals' elisions at the wave that closes them, and the final schedule
+    /// never sees those intervals again.
+    elisions: Vec<Elision>,
+    /// Intervals whose closing re-copy the engine refused, from either path. A
+    /// FAILED witness, never an absent one — see `close_witnesses`.
+    unreadable_closes: Vec<IntervalId>,
+    /// For each entry of [`Self::voids`], WHO asked for those bytes and WHAT
+    /// they asked for: the recipe POSITION and the request span the void was
+    /// narrowed out of.
+    ///
+    /// Parallel to `voids` rather than fields on `Void`, because `Void` is what
+    /// the snapshot publishes and neither of these is a consumer's business.
+    /// Both are needed and neither is enough alone (Codex 019fe9b6, finding A):
+    /// `Void::recipe` is a `RecipeId`, which the substrate does not make unique
+    /// across an observation, so two recipes sharing an id would inherit each
+    /// other's voids; and a void is a PAGE of a larger request, so a decode
+    /// that merely overlaps one may be reading bytes nobody ever asked for.
+    void_context: Vec<(usize, Span)>,
+    /// Which intervals mid-walk closure has ATTEMPTED, indexed by interval id.
+    ///
+    /// Not `closing_offset`, and the difference is the whole reason this exists
+    /// (Codex 019fe942, finding B1). A close whose re-copy the engine REFUSED
+    /// sets no offset — that is how `close_witnesses` tells a failed witness
+    /// from an absent one — so an offset-only test reads a refused mid-walk
+    /// close as "not closed yet" and lets the final wave take a second, later
+    /// image of it, silently replacing the one the program asked for. The
+    /// attempt is what the topology promises, so the attempt is what is
+    /// recorded.
+    mid_walk_done: Vec<bool>,
 }
 
 impl<'a, M: SnapshotMemory> Observation<'a, M> {
@@ -1742,6 +1915,20 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             own_tables_charged,
             hints_wanted: recipes.iter().any(Recipe::reads_fields),
             decode_hint: std::cell::Cell::new(DecodeHint::default()),
+            mid_walk: recipes.iter().any(|recipe| {
+                recipe.closing.as_ref().is_some_and(|program| {
+                    program
+                        .stages
+                        .iter()
+                        .any(|stage| stage.when != CloseWhen::Final)
+                })
+            }),
+            mid_walk_pending: Vec::new(),
+            mid_walk_closed: Vec::new(),
+            elisions: Vec::new(),
+            unreadable_closes: Vec::new(),
+            void_context: Vec::new(),
+            mid_walk_done: Vec::new(),
         })
     }
 
@@ -1838,6 +2025,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             + super::arena::vec_bytes(&self.requests)
             + super::arena::vec_bytes(&self.owned)
             + super::arena::vec_bytes(&self.sites)
+            + super::arena::vec_bytes(&self.mid_walk_done)
             + self.visited.charged_bytes()
             + self.plan.capacity_bytes()
             + self.acquisition.capacity_bytes();
@@ -1857,6 +2045,55 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         if self.states[recipe].refusal.is_none() {
             self.states[recipe].refusal = Some(RefusalRecord::new(refusal, witness));
         }
+    }
+
+    /// A field the decode could not read, resolved into the right outcome.
+    ///
+    /// TWO CAUSES WEAR THE SAME `None`, and they are not the same defect.
+    ///
+    ///  * THE RECIPE NEVER ASKED for these bytes. That is a recipe defect and
+    ///    it is fatal: a silently-zero field is truncation reported as success,
+    ///    which is what [`Refusal::FieldNotCaptured`] exists to prevent.
+    ///
+    ///  * THE RECIPE ASKED, the copy was SPECULATIVE (`Tolerance::Scoped`), and
+    ///    the engine refused those pages. Ruling A's whole statement is that a
+    ///    void costs only the reads that touch it — so a branch that cannot
+    ///    continue past one STOPS THERE, and the [`super::Void`] already
+    ///    recorded is what names why. Refusing the recipe instead would hand
+    ///    the over-read exactly the fatality the ruling removed: one unreadable
+    ///    page inside a table nobody reads would gap the whole consumer.
+    ///
+    /// The two are told apart by asking whether this recipe's own void set
+    /// intersects the span. Scanning it is a failure-path cost only — the void
+    /// list is empty in every observation that copies cleanly.
+    fn field_not_captured(&mut self, recipe: usize, span: Span, witness: RefusalWitness) {
+        let id = self.recipes[recipe].id;
+        // TWO CONDITIONS, AND BOTH ARE LOAD-BEARING (Codex 019fe9b6, A).
+        //
+        //  * THIS RECIPE POSITION asked, not merely a recipe sharing its
+        //    `RecipeId` — the substrate does not make ids unique across an
+        //    observation, and inheriting a neighbour's void would suppress a
+        //    refusal for bytes this recipe never requested.
+        //  * THE WHOLE SPAN was inside the request the void was narrowed out
+        //    of. A void is a PAGE of a larger scoped request, so "overlaps a
+        //    void" admits a decode whose remaining bytes were never asked for
+        //    at all — which is the under-copy this refusal exists to catch,
+        //    let through because a neighbouring page happened to be bad.
+        let lost_to_own_void = self
+            .void_context
+            .iter()
+            .zip(self.voids.iter())
+            .any(|((owner, request), void)| {
+                *owner == recipe && request.contains_span(&span) && void.span.overlaps(&span)
+            });
+        if lost_to_own_void {
+            return;
+        }
+        self.refuse_witnessed(
+            recipe,
+            Refusal::FieldNotCaptured { recipe: id, span },
+            witness,
+        );
     }
 
     /// Refuse from a place that knows only the reason. Kept distinct from
@@ -2024,7 +2261,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 continue;
             }
             self.forward_waves_run += 1;
-            self.copy_wave(&tasks)?;
+            self.copy_wave(&tasks, depth)?;
             // Fold the wave's new intervals into the index body. Once per
             // wave, not once per transaction: that ratio is the whole point of
             // the sweep.
@@ -2039,6 +2276,19 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             // or the reconciliation measures a footprint smaller than the one
             // the observation has.
             self.charge_own_tables_holding(&tasks)?;
+            // MID-WALK CLOSURE, and it goes HERE rather than anywhere else in
+            // the wave for two reasons. After `decode_wave`, because a stage's
+            // last contributor may be an op this wave's decode enqueued into
+            // the NEXT wave — closing before the decode would close intervals
+            // whose stage set is not final. Before the next iteration, because
+            // "the window between the two images is this province's own reads"
+            // is the entire point: a close deferred one more wave is a wider
+            // window than the reader being converted has.
+            //
+            // One bool for every observation that declares no mid-walk stage.
+            if self.mid_walk {
+                self.mid_walk_close(depth)?;
+            }
         }
 
         // Anything still queued at depth FORWARD_WAVES was enqueued by the
@@ -2254,7 +2504,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// integer. Iterating the vector in position order visits the recipes in
     /// exactly the ascending order the map did, so the batch order, the
     /// `end_batch` folds and every refusal are unchanged.
-    fn copy_wave(&mut self, tasks: &[CopyTask]) -> Result<(), CustodyRefusal> {
+    fn copy_wave(&mut self, tasks: &[CopyTask], wave: u32) -> Result<(), CustodyRefusal> {
         let mut by_recipe = std::mem::take(&mut self.by_recipe);
         for group in by_recipe.iter_mut() {
             group.clear();
@@ -2395,6 +2645,26 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 );
                 continue;
             }
+            // The coalescer's sort keys, reserved through the ledger before
+            // `plan_copies_into` fills them — see `CopyPlan::keys_mut`. One key
+            // per non-empty request is the exact bound, and the buffer is
+            // reused for the whole observation, so this is a no-op after the
+            // first batch that needs the room.
+            // CLEARED FIRST.  reserves , and
+            //  does not clear the key buffer until it runs —
+            // so a previous batch of N keys followed by one of M would reserve
+            // N + M and could refuse an observation whose real need is M
+            // (Codex 019fe963, finding A3).
+            planned.keys_mut().clear();
+            if let Err(custody) = Self::reserve_own(
+                planned.keys_mut(),
+                self.arena.ledger_ref(),
+                &mut self.own_tables_charged,
+                requests.len(),
+            ) {
+                result = Err(custody);
+                break;
+            }
             super::policy::plan_copies_into(&requests, &policy, &mut planned);
 
             // Accounting is taken POST-coalescing and PRE-deduplication, on
@@ -2510,9 +2780,35 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 // this is the one pass that already knows both. Skipped whole
                 // when no recipe in the observation declares any: the branch is
                 // one predictable test per request.
+                // MID-WALK CLOSURE. One bool for every observation that
+                // declares no early-closing stage, and this pass is the only
+                // place a closed interval's served bytes can move.
+                //
+                // FIRST, and it gates the WHOLE request. `annotate` widens
+                // interval-global consumption and stage tags and
+                // `reconcile_samples` records a request against the interval,
+                // so a latecomer refused after them would leave both mutations
+                // where a live neighbour reads them.
+                if self.mid_walk
+                    && self.mid_walk_reopened(
+                        recipe,
+                        &tasks[request.task as usize],
+                        &owned,
+                        wave,
+                    )
+                {
+                    continue;
+                }
                 if self.annot.armed() {
                     self.annotate(recipe, &tasks[request.task as usize], request.span, &owned);
                     self.reconcile_samples(recipe, &tasks[request.task as usize], &owned);
+                    if self.mid_walk {
+                        custody =
+                            self.mid_walk_note(recipe, &tasks[request.task as usize], &owned);
+                        if custody.is_err() {
+                            break 'attach;
+                        }
+                    }
                 }
                 let mut first_owned = true;
                 for id in owned.iter() {
@@ -2582,6 +2878,24 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// whole transaction's failure fatal), `Gap` beats `Record`, and the sample
     /// count is the maximum anyone asked for. A merge can therefore make a copy
     /// stricter than one of its contributors asked, never looser.
+    ///
+    /// # THE WITNESS CONTRACT: which contributor `op` and `stage` name
+    ///
+    /// Those two are not joins — they are a CHOICE among the contributors, and
+    /// they are what a refusal witness, a void and a stage tag report. The rule,
+    /// owner-ruled as HOST #172 and pinned here because this is the site that
+    /// reads it:
+    ///
+    ///  * the copy is attributed to the contributor whose span starts LAST, and
+    ///  * among contributors carrying the IDENTICAL span, to the one with the
+    ///    LOWEST request index — the one the recipe's ops asked for first.
+    ///
+    /// The loop below is last-wins over `sources_of`, which the coalescer emits
+    /// in its own total order, so the second clause is delivered by that order
+    /// placing the lowest-indexed equal span last. Neither half is an accident
+    /// of a sort algorithm any more: see `policy::plan_copies_into`, whose key
+    /// is total and whose ascending fast path is declined exactly when equal
+    /// spans would make the two paths disagree.
     #[inline]
     fn copy_attributes(
         &self,
@@ -2745,15 +3059,20 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 attempt: 1,
                 ..RefusalWitness::default()
             };
-            super::arena::charged_push(
-                &mut self.voids,
-                self.arena.ledger_ref(),
-                super::Void {
-                    span: hole,
-                    recipe: self.recipes[recipe].id,
-                    witness,
-                },
-            )?;
+            // BOTH RESERVED BEFORE EITHER IS PUSHED. Two `charged_push`es in
+            // sequence leave the lists one apart when the SECOND refuses, and
+            // "the observation is dropped anyway" is an argument about today's
+            // caller rather than about the invariant this code asserts (Codex
+            // 019fe9de, finding A). Reserved first, pushed infallibly after.
+            let ledger = self.arena.ledger();
+            super::arena::charged_reserve(&mut self.voids, &ledger, 1)?;
+            super::arena::charged_reserve(&mut self.void_context, &ledger, 1)?;
+            self.voids.push(super::Void {
+                span: hole,
+                recipe: self.recipes[recipe].id,
+                witness,
+            });
+            self.void_context.push((recipe, request));
             self.states[recipe].scoped_voids = self.states[recipe].scoped_voids.saturating_add(1);
             return Ok(());
         }
@@ -3161,14 +3480,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             read_width: 8,
                             ..self.witness_at(recipe, site)
                         };
-                        self.refuse_witnessed(
-                            recipe,
-                            Refusal::FieldNotCaptured {
-                                recipe: id,
-                                span: Span::new(addr, 8),
-                            },
-                            witness,
-                        );
+                        self.field_not_captured(recipe, Span::new(addr, 8), witness);
                         return;
                     }
                 };
@@ -3310,14 +3622,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                                     read_width: count_width,
                                     ..self.witness_at(recipe, site)
                                 };
-                                self.refuse_witnessed(
-                                    recipe,
-                                    Refusal::FieldNotCaptured {
-                                        recipe: id,
-                                        span: Span::new(count_addr, u64::from(count_width)),
-                                    },
-                                    witness,
-                                );
+                                self.field_not_captured(recipe, Span::new(count_addr, u64::from(count_width)), witness);
                                 return;
                             }
                         }
@@ -3331,14 +3636,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             read_width: 8,
                             ..self.witness_at(recipe, site)
                         };
-                        self.refuse_witnessed(
-                            recipe,
-                            Refusal::FieldNotCaptured {
-                                recipe: id,
-                                span: Span::new(ptr_addr, 8),
-                            },
-                            witness,
-                        );
+                        self.field_not_captured(recipe, Span::new(ptr_addr, 8), witness);
                         return;
                     }
                 };
@@ -3492,14 +3790,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                                 read_addr: site.base,
                                 ..self.witness_at(recipe, site)
                             };
-                            self.refuse_witnessed(
-                                recipe,
-                                Refusal::FieldNotCaptured {
-                                    recipe: id,
-                                    span: Span::new(site.base, 1),
-                                },
-                                witness,
-                            );
+                            self.field_not_captured(recipe, Span::new(site.base, 1), witness);
                             return;
                         }
                     }
@@ -3519,14 +3810,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                                 read_width: key_width,
                                 ..self.witness_at(recipe, site)
                             };
-                            self.refuse_witnessed(
-                                recipe,
-                                Refusal::FieldNotCaptured {
-                                    recipe: id,
-                                    span: Span::new(key_addr, u64::from(key_width)),
-                                },
-                                witness,
-                            );
+                            self.field_not_captured(recipe, Span::new(key_addr, u64::from(key_width)), witness);
                             return;
                         }
                     }
@@ -3679,14 +3963,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                             read_width: width,
                             ..self.witness_at(recipe, site)
                         };
-                        self.refuse_witnessed(
-                            recipe,
-                            Refusal::FieldNotCaptured {
-                                recipe: id,
-                                span: Span::new(addr, u64::from(width)),
-                            },
-                            witness,
-                        );
+                        self.field_not_captured(recipe, Span::new(addr, u64::from(width)), witness);
                         Err(())
                     }
                 }
@@ -3799,14 +4076,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         read_width: term.width,
                         ..self.witness_at(recipe, site)
                     };
-                    self.refuse_witnessed(
-                        recipe,
-                        Refusal::FieldNotCaptured {
-                            recipe: id,
-                            span: Span::new(addr, u64::from(term.width)),
-                        },
-                        witness,
-                    );
+                    self.field_not_captured(recipe, Span::new(addr, u64::from(term.width)), witness);
                     return Err(());
                 }
             };
@@ -3921,12 +4191,13 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         match self.read_uint(recipe, addr, guard.width as usize) {
             Some((value, _)) => guard.admits(value),
             None => {
-                self.refuse(
+                // Same rule as every other decode read: a guard field lost
+                // to this recipe's own scoped void stops the branch, and one
+                // the recipe never asked for refuses it.
+                self.field_not_captured(
                     recipe,
-                    Refusal::FieldNotCaptured {
-                        recipe: id,
-                        span: Span::new(addr, u64::from(guard.width)),
-                    },
+                    Span::new(addr, u64::from(guard.width)),
+                    RefusalWitness::default(),
                 );
                 false
             }
@@ -4208,106 +4479,396 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     /// is what makes elision meaningful: a stage that elides into a later one
     /// hands its interval to that later position, and everything else keeps the
     /// place its own stage declares.
+    /// The stage that decides an interval's POSITION and its close time.
+    ///
+    /// The same predicate `closing_schedule` has always applied — the earliest
+    /// listed stage the interval carries, with an elided stage counting as the
+    /// stage it was elided into — returned as `(rank, stage)` rather than as a
+    /// rank alone, because mid-walk closure has to read the `when` off the
+    /// stage that won.
+    ///
+    /// `None` means the interval carries no stage any program lists; it closes
+    /// last, in the final wave, exactly as it did before.
+    fn effective_stage(&self, id: IntervalId) -> Option<(usize, u16)> {
+        let recipes = self.recipes;
+        let stages = self.annot.stages_of(id);
+        let mut best: Option<(usize, u16)> = None;
+        for &stage in stages {
+            let effective = match stage_entry(recipes, stage).and_then(|entry| entry.elide_into) {
+                Some(target) if stages.contains(&target) => target,
+                _ => stage,
+            };
+            if let Some(rank) = stage_rank(recipes, effective) {
+                if best.map_or(true, |(held, _)| rank < held) {
+                    best = Some((rank, effective));
+                }
+            }
+        }
+        best
+    }
+
+    /// When an interval closes, after elision has been applied.
+    fn close_when(&self, id: IntervalId) -> CloseWhen {
+        match self.effective_stage(id) {
+            Some((_, stage)) => stage_entry(self.recipes, stage)
+                .map(|entry| entry.when)
+                .unwrap_or(CloseWhen::Final),
+            None => CloseWhen::Final,
+        }
+    }
+
+    /// Whether mid-walk closure has ALREADY taken (or attempted) this
+    /// interval's closing image.
+    ///
+    /// `mid_walk_done` and not `closing_offset`: see the field's own doc.
+    #[inline]
+    fn mid_walk_closed_already(&self, id: IntervalId) -> bool {
+        self.mid_walk_done
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// THE REOPEN CHECK, and it runs BEFORE anything in the attach pass
+    /// mutates an interval.
+    ///
+    /// `true` means this request must be skipped whole — no annotation, no
+    /// sample request, no dependency edge — and the recipe is already refused.
+    ///
+    /// # Why it has to be before and not beside
+    ///
+    /// (Codex 019fe942, finding C.) `annotate` widens interval-GLOBAL
+    /// consumption and stage tags, and `reconcile_samples` records a sampling
+    /// request against the interval, not against the recipe. Refusing the
+    /// latecomer after those have run leaves both mutations in place, where
+    /// another live consumer sharing the interval reads them — most sharply
+    /// through the consumption mask `close_witnesses` compares over. So the
+    /// check is a gate on the whole request rather than a note taken beside it.
+    ///
+    /// # Why here and nowhere else
+    ///
+    /// Everything that can move what a closed interval will serve happens in
+    /// this one pass: `annotate`, `reconcile_samples`, `add_dependent` and
+    /// `add_edge`. `link_pruned` also calls `add_dependent` after every wave,
+    /// but a pruned task is a duplicate of an expanded one under the same
+    /// `(recipe, op, address)` key, so it produces the identical spans and hulls
+    /// a reach that consumer already has — it cannot widen anything, and a check
+    /// there could never fire. `acquire`/`take_hole` only create intervals, and
+    /// `end_wave` only folds the index.
+    fn mid_walk_reopened(
+        &mut self,
+        recipe: usize,
+        task: &CopyTask,
+        owned: &[IntervalId],
+        wave: u32,
+    ) -> bool {
+        let op = match &task.body {
+            TaskBody::Op { op, .. } | TaskBody::Extent { op, .. } => *op,
+        };
+        let stage = self.recipes[recipe].op_mod(op).stage;
+        let mut reopened = false;
+        for &id in owned {
+            if !self.mid_walk_closed_already(id) {
+                continue;
+            }
+            // GC-M4: the fail-closed edge. A witness already in hand cannot
+            // cover bytes asked for after it was taken.
+            let closed_after = self
+                .mid_walk_closed
+                .iter()
+                .find(|(closed, _)| *closed == id)
+                .map(|(_, at)| *at)
+                .unwrap_or(wave);
+            let span = self.owners.record(id).span();
+            let refusal = Refusal::ClosedIntervalReopened {
+                recipe: self.recipes[recipe].id,
+                span,
+                closed_after_wave: closed_after,
+                reopened_in_wave: wave,
+            };
+            let witness = RefusalWitness {
+                stage,
+                op,
+                subject: span.start,
+                raw: span.len,
+                ..RefusalWitness::default()
+            };
+            self.refuse_witnessed(recipe, refusal, witness);
+            reopened = true;
+        }
+        reopened
+    }
+
+    /// Note, for the end of this wave, that a stage-carrying request reached
+    /// these intervals.
+    ///
+    /// Called from the attach pass AFTER `annotate`, once per (request,
+    /// interval), and only when some recipe declares a mid-walk stage.
+    fn mid_walk_note(
+        &mut self,
+        recipe: usize,
+        task: &CopyTask,
+        owned: &[IntervalId],
+    ) -> Result<(), CustodyRefusal> {
+        let op = match &task.body {
+            TaskBody::Op { op, .. } | TaskBody::Extent { op, .. } => *op,
+        };
+        if self.recipes[recipe].op_mod(op).stage == 0 {
+            return Ok(());
+        }
+        for &id in owned {
+            // Unfiltered: one push per (request, interval) that carries any
+            // stage at all. The drain decides which of them close at this wave,
+            // because the interval's EFFECTIVE stage is not final until the
+            // wave's attach pass is over.
+            super::arena::charged_push(
+                &mut self.mid_walk_pending,
+                self.arena.ledger_ref(),
+                (id, recipe),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Close every interval whose effective stage declared `AfterWave(depth)`.
+    ///
+    /// The stage ORDER inside the wave is the program's, exactly as the final
+    /// wave's is: the schedule sorts on `(rank, id)`, which is total.
+    fn mid_walk_close(&mut self, depth: u32) -> Result<(), CustodyRefusal> {
+        let mut pending = std::mem::take(&mut self.mid_walk_pending);
+        if pending.is_empty() {
+            self.mid_walk_pending = pending;
+            return Ok(());
+        }
+        // Sorted on the SAME key the final schedule uses, so "the declared
+        // order is the order that ran" is one statement about both waves. The
+        // id makes it total; duplicates therefore land adjacent and the
+        // closing-offset test below skips them the second time.
+        pending.sort_unstable_by_key(|(id, _)| {
+            (self.effective_stage(*id).map(|(rank, _)| rank), id.0)
+        });
+        // One byte per interval, so the "already attempted" test below is an
+        // index rather than a scan of a list that grows with the observation.
+        //
+        // RESERVED THROUGH THE LEDGER before it is grown, and not left to the
+        // per-wave reconciliation that has already run for this wave: the very
+        // next thing this function does is allocate closing bytes, so an
+        // unadmitted table here is holdings above the admitted total right at
+        // the ceiling (Codex 019fe963, finding A2).
+        let wanted = self.owners.len().saturating_sub(self.mid_walk_done.len());
+        Self::reserve_own(
+            &mut self.mid_walk_done,
+            self.arena.ledger_ref(),
+            &mut self.own_tables_charged,
+            wanted,
+        )?;
+        self.mid_walk_done.resize(self.owners.len(), false);
+        let ledger = self.arena.ledger();
+        let mut result = Ok(());
+        for position in 0..pending.len() {
+            let (id, tagged_by) = pending[position];
+            if self.mid_walk_closed_already(id) {
+                continue;
+            }
+            match self.close_when(id) {
+                CloseWhen::AfterWave(wave) if wave == depth => {}
+                // A STAGE THAT ARRIVED AFTER ITS OWN CLOSE (Codex 019fe942,
+                // finding B2). The wave it declared has already run, so no
+                // close for it is going to happen at the declared point — and
+                // falling through to the final wave would take a LATER image
+                // than the program asked for and report the declared topology
+                // anyway. It is the same defect as a reopen, one wave earlier,
+                // and it fails the same way.
+                CloseWhen::AfterWave(wave) if wave < depth => {
+                    // THE RECIPE THAT TAGGED IT, exactly, and no other. Every
+                    // entry in the pending list carries its own, so a recipe
+                    // that merely shares a `ConsumerId` with the late one keeps
+                    // its hour.
+                    let span = self.owners.record(id).span();
+                    let refusal = Refusal::ClosedIntervalReopened {
+                        recipe: self.recipes[tagged_by].id,
+                        span,
+                        closed_after_wave: wave,
+                        reopened_in_wave: depth,
+                    };
+                    let witness = RefusalWitness {
+                        subject: span.start,
+                        raw: span.len,
+                        ..RefusalWitness::default()
+                    };
+                    self.refuse_witnessed(tagged_by, refusal, witness);
+                    continue;
+                }
+                _ => continue,
+            }
+            // The elisions this interval's stages record, taken here rather
+            // than in the final schedule, because the final schedule will not
+            // see this interval again.
+            if let Err(custody) = self.record_elisions(id, &ledger) {
+                result = Err(custody);
+                break;
+            }
+            // Enrolled HERE. `enrol_witnesses` runs after every forward wave
+            // and cannot reach an interval that has to be closed before the
+            // next one; it is idempotent, so the interval simply is not
+            // enrolled twice.
+            if let Err(custody) = self.owners.enrol_witness(id) {
+                result = Err(custody);
+                break;
+            }
+            match self.close_one(id) {
+                Ok(readable) => {
+                    if !readable {
+                        if let Err(custody) = super::arena::charged_push(
+                            &mut self.unreadable_closes,
+                            self.arena.ledger_ref(),
+                            id,
+                        ) {
+                            result = Err(custody);
+                            break;
+                        }
+                    }
+                }
+                Err(custody) => {
+                    result = Err(custody);
+                    break;
+                }
+            }
+            // RECORDED WHETHER OR NOT THE RE-COPY SUCCEEDED. The attempt is
+            // what the topology promises; a refused re-copy is a FAILED witness
+            // (`unreadable_closes` above carries that), never an absent one, so
+            // the final wave must not take a second image of it.
+            self.mid_walk_done[id.0 as usize] = true;
+            if let Err(custody) = super::arena::charged_push(
+                &mut self.mid_walk_closed,
+                self.arena.ledger_ref(),
+                (id, depth),
+            ) {
+                result = Err(custody);
+                break;
+            }
+        }
+        pending.clear();
+        self.mid_walk_pending = pending;
+        result
+    }
+
+    /// Record the elisions `id`'s stages declare, once each.
+    fn record_elisions(
+        &mut self,
+        id: IntervalId,
+        ledger: &super::arena::CustodyLedger,
+    ) -> Result<(), CustodyRefusal> {
+        let recipes = self.recipes;
+        let stages = self.annot.stages_of(id);
+        for position in 0..stages.len() {
+            let stage = self.annot.stages_of(id)[position];
+            let Some(target) = stage_entry(recipes, stage).and_then(|entry| entry.elide_into) else {
+                continue;
+            };
+            if !self.annot.stages_of(id).contains(&target) {
+                continue;
+            }
+            // An elided stage does not get to claim its own position: its close
+            // happens where the covering stage's does, and the fact that it did
+            // is what carries the attribution.
+            if self
+                .elisions
+                .iter()
+                .any(|e| e.interval == id && e.elided == stage)
+            {
+                continue;
+            }
+            super::arena::charged_push(
+                &mut self.elisions,
+                ledger,
+                Elision {
+                    interval: id,
+                    elided: stage,
+                    into: target,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Re-copy one interval's opening span into its closing slot.
+    ///
+    /// `Ok(false)` means the engine refused the re-copy — a FAILED witness, not
+    /// an absent one; the caller records it as uncertifiable.
+    fn close_one(&mut self, id: IntervalId) -> Result<bool, CustodyRefusal> {
+        let span = self.owners.record(id).span();
+        let len = match usize::try_from(span.len) {
+            Ok(len) => len,
+            Err(_) => {
+                return Err(CustodyRefusal::AllocationFailed {
+                    held: self.arena.held(),
+                    requested: span.len,
+                })
+            }
+        };
+        let offset = self.arena.alloc_zeroed(span.len)?;
+        let memory = self.memory;
+        if memory
+            .copy_into(span.start, self.arena.slice_mut(offset, len))
+            .is_err()
+        {
+            return Ok(false);
+        }
+        self.owners.record_mut(id).set_closing_offset(offset);
+        Ok(true)
+    }
+
+    /// ONE vector, holding the whole closing SEQUENCE: the mid-walk closes that
+    /// have already happened, in the order they happened, followed by the
+    /// intervals the final wave still has to close, in the program's order.
+    ///
+    /// `Ok(None)` — no recipe declared a program — is enrolment order and no
+    /// allocation at all, exactly as before.
+    ///
+    /// Returns `(sequence, first_unclosed)`: everything from `first_unclosed`
+    /// onwards is what `closing_wave` copies, and everything before it is
+    /// history. Two vectors were an unreleased phantom charge for storage the
+    /// observation no longer held (Codex 019fe942, finding E3).
     fn closing_schedule(
         &mut self,
-    ) -> Result<(Option<Vec<IntervalId>>, Vec<Elision>), CustodyRefusal> {
-        let mut elisions: Vec<Elision> = Vec::new();
+    ) -> Result<Option<(Vec<IntervalId>, usize)>, CustodyRefusal> {
         if self.recipes.iter().all(|recipe| recipe.closing.is_none()) {
             // NO program, no permutation, and no copy of the witness list. The
             // list is one entry per witnessed interval and it is built at the
             // moment custody is fullest; duplicating it to hand back an order
             // identical to the one already in hand would be work-scaled memory
             // for nothing.
-            return Ok((None, elisions));
+            return Ok(None);
         }
-        // The programs are ITERATED, not collected. One `&ClosingProgram` per
-        // recipe is work-scaled — an observation may hold any number of recipes
-        // — so a `Vec` of them is memory the ledger would have to be told about,
-        // at the fullest moment of the observation, to answer a question two
-        // closures can answer by walking the recipes they already have.
-        //
-        // One program per observation is not a restriction worth adding: each
-        // interval's stages come from the recipes that reached it, and two
-        // recipes' programs order disjoint stage sets. So the rank of a stage is
-        // looked up across every program, and the first match wins.
-        let recipes = self.recipes;
-        let rank_of = |stage: u16| -> Option<usize> {
-            recipes
-                .iter()
-                .filter_map(|recipe| recipe.closing.as_ref())
-                .find_map(|program| program.stages.iter().position(|s| s.stage == stage))
-        };
-        let elide_target = |stage: u16| -> Option<u16> {
-            recipes
-                .iter()
-                .filter_map(|recipe| recipe.closing.as_ref())
-                .find_map(|program| {
-                    program
-                        .stages
-                        .iter()
-                        .find(|s| s.stage == stage)
-                        .map(|entry| entry.elide_into)
-                })
-                .flatten()
-        };
         // CHARGED BEFORE TAKEN, and through the fallible path. `to_vec` would
         // be an infallible allocation of one entry per witnessed interval at the
         // fullest moment of the observation: at the ceiling that aborts the
         // process where it should return a `CustodyRefusal`.
         let ledger = self.arena.ledger();
         let mut order: Vec<IntervalId> = Vec::new();
+        // WITNESSED IDS ALONE. Every mid-walk close was enrolled when it was
+        // taken, so it is already in ; adding its count again
+        // reserves capacity for a sequence twice as long as the one that
+        // exists and can refuse a snapshot that fits (Codex 019fe963, A4).
         super::arena::charged_reserve(&mut order, &ledger, self.owners.witnessed_ids().len())?;
-        order.extend_from_slice(self.owners.witnessed_ids());
+        order.extend(self.mid_walk_closed.iter().map(|(id, _)| *id));
+        let first_unclosed = order.len();
+        // MID-WALK CLOSES ARE NOT RE-SCHEDULED. Their image was taken at the
+        // wave their stage asked for and their elisions recorded there;
+        // scheduling them again would take a second, later image and silently
+        // replace the one the program asked for.
+        for &id in self.owners.witnessed_ids() {
+            if !self.mid_walk_closed_already(id) {
+                order.push(id);
+            }
+        }
 
-        // The elisions are recorded in ONE pass, and the order is then decided
-        // by sorting `order` in place. The `keyed` vector this replaces was a
-        // second work-scaled allocation whose charge was never released when it
-        // was dropped, so an observation carried a phantom charge for scratch it
-        // no longer held. Recomputing a rank per comparison is a walk over one
-        // interval's stage list — single digits — against an allocation the
-        // ceiling has to be told about.
-        let annot = &self.annot;
-        let effective_rank = |id: IntervalId| -> usize {
-            let stages = annot.stages_of(id);
-            let mut best = usize::MAX;
-            for &stage in stages {
-                let effective = match elide_target(stage) {
-                    Some(target) if stages.contains(&target) => target,
-                    _ => stage,
-                };
-                if let Some(rank) = rank_of(effective) {
-                    best = best.min(rank);
-                }
-            }
-            best
-        };
-        for &id in &order {
-            let stages = annot.stages_of(id);
-            for &stage in stages {
-                // An elided stage does not get to claim its own position: its
-                // close happens where the covering stage's does, and the fact
-                // that it did is what carries the attribution.
-                if let Some(target) = elide_target(stage) {
-                    if stages.contains(&target)
-                        && !elisions
-                            .iter()
-                            .any(|e| e.interval == id && e.elided == stage)
-                    {
-                        // Charged where it grows: bounded by the witnessed count
-                        // times the stage count, which is not small enough to
-                        // leave unadmitted at the ceiling.
-                        super::arena::charged_push(
-                            &mut elisions,
-                            &ledger,
-                            Elision {
-                                interval: id,
-                                elided: stage,
-                                into: target,
-                            },
-                        )?;
-                    }
-                }
-            }
+        // The elisions are recorded in ONE pass over the intervals still to be
+        // closed — the mid-walk ones recorded theirs at their own wave — and
+        // the order is then decided by sorting the tail in place.
+        for position in first_unclosed..order.len() {
+            self.record_elisions(order[position], &ledger)?;
         }
         // UNSTABLE, with the id in the key. `sort_by_key` is stable and Rust's
         // stable sort allocates auxiliary storage proportional to the slice —
@@ -4317,8 +4878,17 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // so equal ranks still come out in enrolment order. The tie-break is
         // now a property of the key rather than of the algorithm, which is the
         // stronger statement of the two.
-        order.sort_unstable_by_key(|id| (effective_rank(*id), id.0));
-        Ok((Some(order), elisions))
+        //
+        // The HEAD is not sorted: it already ran, in the order it ran in.
+        order[first_unclosed..].sort_unstable_by_key(|id| {
+            (
+                self.effective_stage(*id)
+                    .map(|(rank, _)| rank)
+                    .unwrap_or(usize::MAX),
+                id.0,
+            )
+        });
+        Ok(Some((order, first_unclosed)))
     }
 
     /// The closing phase: re-copy the opening addresses.
@@ -4340,53 +4910,46 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // `record_mut`, and it was a second `Vec<IntervalId>` as long as the
         // witness list — work-scaled memory the ledger never saw, taken at the
         // exact moment custody is fullest.
-        let (schedule, elisions) = self.closing_schedule()?;
-        let witnessed = match &schedule {
-            Some(order) => order.len(),
-            None => self.owners.witnessed_ids().len(),
+        let schedule = self.closing_schedule()?;
+        // The whole sequence, and where in it this wave's work starts. With no
+        // program there is no sequence and every witnessed interval is still to
+        // be closed.
+        let (start, total) = match &schedule {
+            Some((order, first_unclosed)) => (*first_unclosed, order.len()),
+            None => (0, self.owners.witnessed_ids().len()),
         };
-        let mut unreadable = Vec::new();
-        for position in 0..witnessed {
+        for position in start..total {
             let id = match &schedule {
-                Some(order) => order[position],
+                Some((order, _)) => order[position],
                 None => self.owners.witnessed_ids()[position],
             };
-            let id = &id;
-            let span = self.owners.record(*id).span();
-            let len = match usize::try_from(span.len) {
-                Ok(len) => len,
-                Err(_) => {
-                    return Err(CustodyRefusal::AllocationFailed {
-                        held: self.arena.held(),
-                        requested: span.len,
-                    })
-                }
-            };
-            let offset = self.arena.alloc_zeroed(span.len)?;
-            let memory = self.memory;
-            if memory
-                .copy_into(span.start, self.arena.slice_mut(offset, len))
-                .is_err()
-            {
+            if !self.close_one(id)? {
                 // Charged: this list is bounded by the witnessed interval
                 // count, it grows at the moment custody is fullest, and it
                 // survives into `SnapshotBuild`. A region that became
                 // unreadable mid-bracket can put every witnessed interval on
                 // it.
-                super::arena::charged_push(&mut unreadable, self.arena.ledger_ref(), *id)?;
-                continue;
+                super::arena::charged_push(
+                    &mut self.unreadable_closes,
+                    self.arena.ledger_ref(),
+                    id,
+                )?;
             }
-            self.owners.record_mut(*id).set_closing_offset(offset);
         }
         // EMPTY means enrolment order — see `SnapshotBuild::closing_order`. A
         // caller that wants to check a declared order is a caller that declared
         // one, and materialising the default order for everybody else would be
         // a work-scaled allocation at the moment custody is fullest.
+        //
+        // Non-empty, it is ONE SEQUENCE with the mid-walk closes at its front:
+        // a reader checking that "the declared order is the order that ran" has
+        // to see both waves' closes in the order they happened, or the check is
+        // about the tail of the program and silently not about the head.
         Ok((
-            witnessed as u32,
-            unreadable,
-            schedule.unwrap_or_default(),
-            elisions,
+            total as u32,
+            std::mem::take(&mut self.unreadable_closes),
+            schedule.map(|(order, _)| order).unwrap_or_default(),
+            std::mem::take(&mut self.elisions),
         ))
     }
 
@@ -4657,7 +5220,7 @@ impl<'a, M: SnapshotMemory> DispatchProbe<'a, M> {
     /// The real `copy_wave`, so a probe can get bytes on the ground before the
     /// decode row runs against them.
     pub(super) fn copy_pass(&mut self, tasks: &[CopyTask]) -> Result<(), CustodyRefusal> {
-        self.observation.copy_wave(tasks)?;
+        self.observation.copy_wave(tasks, 0)?;
         self.observation.owners.end_wave()
     }
 

@@ -51,7 +51,8 @@
 use super::*;
 
 use crate::snapshot_recipes::executor::{
-    observe, Admissibility, CarrySource, CloseStage, ClosingProgram, CompareMask, CountExpr,
+    observe, Admissibility, CarrySource, CloseStage, CloseWhen, ClosingProgram, CompareMask,
+    CountExpr,
     CountTerm, DisagreeAction, ObservationConfig, OpMod, Probe, Recipe, RecipeOp, RecipeOutcome,
     RejectAction, RelWindow, Root, SampleSpec, Tolerance,
 };
@@ -839,6 +840,7 @@ fn d81_recipe() -> Recipe {
             CloseStage {
                 stage: STAGE_RAIL,
                 elide_into: None,
+                when: CloseWhen::Final,
             },
             // d81's elision, in its own shape: the selector's close is skipped
             // in favour of the LATER source-position read, and the selector
@@ -846,14 +848,17 @@ fn d81_recipe() -> Recipe {
             CloseStage {
                 stage: STAGE_SELECTOR,
                 elide_into: Some(STAGE_SOURCE),
+                when: CloseWhen::Final,
             },
             CloseStage {
                 stage: STAGE_SOURCE,
                 elide_into: None,
+                when: CloseWhen::Final,
             },
             CloseStage {
                 stage: STAGE_MAP,
                 elide_into: None,
+                when: CloseWhen::Final,
             },
         ],
     })

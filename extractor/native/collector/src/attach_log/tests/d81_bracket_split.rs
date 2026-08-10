@@ -391,6 +391,7 @@ fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
             .subject(77)
             .raw(0xDEAD_BEEF);
     let read = CompactRailReplayRead {
+        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
         provinces: Vec::new(),
         hub_simulation: None,
         observed_neighbors: 0,
@@ -1317,6 +1318,7 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
 
     // The observe half's own terminal answer, with a reason of its own.
     let already_failed = CompactRailReplayRead {
+        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
         provinces: Vec::new(),
         hub_simulation: None,
         observed_neighbors: 0,
@@ -1385,6 +1387,10 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         .sum::<usize>();
     let deferred_copy = || {
         D81ObserveOutcome::Deferred(Box::new(D81DeferredCompute {
+            shadow_armed: false,
+            shadow_roots: None,
+            shadow_witnesses: Vec::new(),
+            shadow_witnesses_declined: false,
             started: Instant::now(),
             status_flags: 0,
             phases: D81PhaseAccum::default(),
@@ -2001,6 +2007,10 @@ fn d81_bracket_split_cost_model() {
     let mut pending: Vec<D81ObserveOutcome> = (0..TRIALS)
         .map(|_| {
             D81ObserveOutcome::Deferred(Box::new(D81DeferredCompute {
+            shadow_armed: false,
+            shadow_roots: None,
+            shadow_witnesses: Vec::new(),
+            shadow_witnesses_declined: false,
                 started: Instant::now(),
                 status_flags: 0,
                 phases: D81PhaseAccum::default(),
@@ -2279,6 +2289,7 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
 
     // 1. THE OBSERVE HALF'S OWN TERMINAL ANSWER, kept across a mismatch.
     let already_failed = CompactRailReplayRead {
+        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
         provinces: Vec::new(),
         hub_simulation: None,
         observed_neighbors: 0,
@@ -2332,6 +2343,7 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     // supplies every honest `SourceUnavailable` witness in a capture.
     let computed = d81_stamp_bracket_observation(
         d81_finish_rail_replay_state(D81ObserveOutcome::Complete(CompactRailReplayRead {
+        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
             provinces: Vec::new(),
             hub_simulation: None,
             observed_neighbors: 0,

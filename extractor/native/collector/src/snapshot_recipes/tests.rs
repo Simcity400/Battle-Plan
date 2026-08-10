@@ -96,6 +96,14 @@ fn request(start: u64, len: u64, provenance: Provenance) -> CopyRequest {
     }
 }
 
+fn request_from(start: u64, len: u64, provenance: Provenance, task: u32) -> CopyRequest {
+    CopyRequest {
+        span: Span::new(start, len),
+        provenance,
+        task,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Coalescing policy
 // ---------------------------------------------------------------------------
@@ -344,6 +352,73 @@ fn planning_is_order_independent() {
         b.copies.iter().map(|c| c.span).collect::<Vec<_>>()
     );
     assert_eq!(a.len(), 2);
+}
+
+/// SENTINEL, HOST #172. Two requests carrying the IDENTICAL span must be
+/// ordered the same way whichever path `plan_copies_into` takes, and the LAST
+/// of them — the one `copy_attributes` attributes the merged copy to — must be
+/// the one with the lowest request index.
+///
+/// The two arrangements differ only in where the unrelated requests sit, so the
+/// equal pair keeps both its members and its relative emission order (and
+/// therefore its request indices) across them. One arrangement is ascending
+/// apart from the duplicate and the other is not, which is exactly the fork:
+/// under the old `<` test the first took the fast path and emitted the pair in
+/// emission order while the second sorted and emitted it in whatever order
+/// `sort_unstable` chose.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL:
+///  * `key <= previous` back to `key < previous` — the ascending arrangement
+///    takes the fast path again and the two arrangements name different tasks;
+///  * the `!index` third component back to `index`, or dropped — the pair comes
+///    out lowest-index-first and the attributed task becomes the higher one.
+#[test]
+fn identical_spans_are_ordered_by_the_lowest_request_index_last() {
+    let policy = GapPolicy::default();
+    let anchor = Provenance::from_pointer(0x5000);
+    // Indices 1 and 2 in BOTH arrangements, so "lowest index" names the same
+    // request either way and the assertion is about the ORDER and not about
+    // which request happened to be numbered lower.
+    const FIRST_ASKER: u32 = 0x77;
+    const SECOND_ASKER: u32 = 0x99;
+    let ascending = vec![
+        request_from(0x1000, 8, anchor, 1),
+        request_from(0x2000, 8, anchor, FIRST_ASKER),
+        request_from(0x2000, 8, anchor, SECOND_ASKER),
+        request_from(0x3000, 8, anchor, 3),
+    ];
+    let shuffled = vec![
+        request_from(0x3000, 8, anchor, 3),
+        request_from(0x2000, 8, anchor, FIRST_ASKER),
+        request_from(0x2000, 8, anchor, SECOND_ASKER),
+        request_from(0x1000, 8, anchor, 1),
+    ];
+
+    let named = |requests: &[CopyRequest]| -> u32 {
+        let plan = plan_copies(requests, &policy);
+        let copy = plan
+            .copies
+            .iter()
+            .find(|copy| copy.span == Span::new(0x2000, 8))
+            .expect("the identical pair is one transaction");
+        assert_eq!(
+            copy.sources_len, 2,
+            "both requests must land in the same transaction, or there is no tie to break",
+        );
+        // `copy_attributes` is last-wins over exactly this run.
+        *plan.sources_of(copy).last().expect("a non-empty run")
+    };
+
+    assert_eq!(
+        named(&ascending),
+        FIRST_ASKER,
+        "the lowest-indexed contributor is the one the witness names",
+    );
+    assert_eq!(
+        named(&ascending),
+        named(&shuffled),
+        "and it does not depend on which of the coalescer's two paths ran",
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,8 @@
 
 use super::annot::StridedMask;
 use super::executor::{
-    observe, validate, Admissibility, CarrySource, CloseStage, ClosingProgram, CompareMask,
+    observe, validate, Admissibility, CarrySource, CloseStage, CloseWhen, ClosingProgram,
+    CompareMask,
     CountExpr, CountTerm, DisagreeAction, ObservationConfig, OpMod, Probe, Recipe, RecipeOp,
     RecipeOutcome, RejectAction, RelWindow, Root, SampleSpec, SnapshotBuild, Tolerance,
 };
@@ -1174,10 +1175,12 @@ fn a_closing_program_runs_its_stages_in_the_declared_order() {
             CloseStage {
                 stage: 1,
                 elide_into: None,
+                when: CloseWhen::Final,
             },
             CloseStage {
                 stage: 2,
                 elide_into: None,
+                when: CloseWhen::Final,
             },
         ],
     });
@@ -1266,10 +1269,12 @@ fn an_elided_stage_is_recorded_against_the_stage_that_covers_it() {
             CloseStage {
                 stage: 1,
                 elide_into: Some(2),
+                when: CloseWhen::Final,
             },
             CloseStage {
                 stage: 2,
                 elide_into: None,
+                when: CloseWhen::Final,
             },
         ],
     });
@@ -1283,6 +1288,663 @@ fn an_elided_stage_is_recorded_against_the_stage_that_covers_it() {
         1,
         "one interval, one close: the elided stage does not take a second one",
     );
+}
+
+// ---------------------------------------------------------------------------
+// MID-WALK CLOSURE (lane GC). FY residual 1: closes interleaved with
+// discovery, not "every forward wave, then one closing wave".
+// ---------------------------------------------------------------------------
+
+/// The staged world both mid-walk tests use: a root object whose first eight
+/// bytes point at a child object one wave down.
+///
+/// `back_reference` makes the root ALSO point at itself, which is how the
+/// reopen test gets a later wave to reach an interval an earlier wave closed.
+fn mid_walk_world(back_reference: bool) -> SyntheticMemory {
+    const ROOT: u64 = 0x10_0000;
+    const CHILD: u64 = 0x20_0000;
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(ROOT, 0x20);
+    memory.map_zeroed(CHILD, 0x10);
+    memory.write_u64(ROOT, if back_reference { ROOT } else { CHILD });
+    memory.write_u64(ROOT + 0x08, 0xAAAA);
+    memory.write_u64(CHILD, 0xBBBB);
+    memory
+}
+
+const MID_WALK_ROOT: u64 = 0x10_0000;
+
+/// `root -> child`, with the root's stage closing at `root_when` and the
+/// child's in the final wave.
+fn mid_walk_recipe(root_when: CloseWhen) -> Recipe {
+    Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            // 0 the root object
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: vec![1, 3],
+            },
+            // 1 its pointer
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 2,
+            },
+            // 2 the child, one wave down
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![4],
+            },
+            RecipeOp::WitnessClose { next: vec![4] },
+            RecipeOp::Freeze,
+        ],
+        vec![Root {
+            op: 0,
+            addr: MID_WALK_ROOT,
+        }],
+    )
+    .with_mods(mods(
+        5,
+        &[
+            (
+                0,
+                OpMod {
+                    stage: 1,
+                    ..OpMod::default()
+                },
+            ),
+            (
+                2,
+                OpMod {
+                    stage: 2,
+                    ..OpMod::default()
+                },
+            ),
+        ],
+    ))
+    .with_closing(ClosingProgram {
+        stages: vec![
+            CloseStage {
+                stage: 1,
+                elide_into: None,
+                when: root_when,
+            },
+            CloseStage {
+                stage: 2,
+                elide_into: None,
+                when: CloseWhen::Final,
+            },
+        ],
+    })
+}
+
+/// THE POINT OF THE WHOLE TOPOLOGY CHANGE: a write that lands AFTER the stage
+/// closed does not gap it, and the identical write under the identical program
+/// with `CloseWhen::Final` does.
+///
+/// The two arms differ in ONE token — the root stage's `when` — so anything the
+/// fixture, the recipe or the mutation could be doing by accident is doing it
+/// to both. d81's rail header is this shape: it is closed inside the province's
+/// own iteration, and a write to a province the walk has already passed is not
+/// a torn read of that province.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: `mid_walk_close` never matching its
+/// wave (`CloseWhen::AfterWave(_) => false`), the mid-walk call being dropped
+/// from the wave loop, or `closing_schedule` re-scheduling an interval that
+/// already carries a closing offset — all three put the root's image back at
+/// the end, where the write precedes it.
+#[test]
+fn a_stage_that_closed_mid_walk_is_not_gapped_by_a_later_write() {
+    // The mutation lands immediately before the THIRD copy. Under mid-walk
+    // closure the first two copies are the root's opening image and its
+    // closing image, so the write is after both; under final closure they are
+    // the root's opening image and the child's, and every close is still to
+    // come. Counted rather than assumed, below.
+    const TRIGGER: u64 = 3;
+    let edit = vec![(MID_WALK_ROOT + 0x08, 0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes().to_vec())];
+
+    let mid = MutatingMemory::new(mid_walk_world(false), TRIGGER, edit.clone());
+    let build = observe(
+        &[mid_walk_recipe(CloseWhen::AfterWave(0))],
+        &mid,
+        config(),
+    )
+    .expect("custody");
+    // The root's close really did run at wave 0: it is the first entry of the
+    // one closing sequence, ahead of the child that closed in the final wave.
+    let order: Vec<u64> = build
+        .closing_order
+        .iter()
+        .map(|id| {
+            build
+                .snapshot
+                .intervals()
+                .iter()
+                .find(|record| record.id() == *id)
+                .expect("record")
+                .start()
+        })
+        .collect();
+    assert_eq!(
+        order.first().copied(),
+        Some(MID_WALK_ROOT),
+        "the mid-walk close is the head of the sequence: {order:?}",
+    );
+    assert_eq!(order.len(), 2, "both intervals are closed exactly once");
+    // EXACTLY ONCE, asserted rather than implied by the length. An interval
+    // closed by the mid-walk pass and closed AGAIN by the final wave would
+    // publish a later image than the program asked for, and the length alone
+    // cannot see it — the second close would have to displace something.
+    let mut once = build.closing_order.clone();
+    once.sort();
+    once.dedup();
+    assert_eq!(
+        once.len(),
+        build.closing_order.len(),
+        "no interval appears twice in the closing sequence",
+    );
+    assert_eq!(
+        build.witnessed_intervals as usize,
+        build.closing_order.len(),
+        "the reported witness count is the sequence that ran",
+    );
+    let closed = build.close_witnesses();
+    assert!(mid.mutation_applied(), "the fixture must actually write");
+    assert!(
+        closed.snapshot.gap_reason(ConsumerId(1)).is_none(),
+        "a write after the stage closed is not a torn read: {:?}",
+        closed.snapshot.gap_reason(ConsumerId(1)),
+    );
+
+    // THE CONTROL, and it is the same everything with one token changed.
+    let late = MutatingMemory::new(mid_walk_world(false), TRIGGER, edit);
+    let closed = observe(&[mid_walk_recipe(CloseWhen::Final)], &late, config())
+        .expect("custody")
+        .close_witnesses();
+    assert!(late.mutation_applied());
+    assert!(
+        matches!(
+            closed.snapshot.gap_reason(ConsumerId(1)),
+            Some(GapReason::WitnessChanged { .. }) | Some(GapReason::WitnessDependency { .. })
+        ),
+        "the same write under a final-wave close must still gap: {:?}",
+        closed.snapshot.gap_reason(ConsumerId(1)),
+    );
+}
+
+/// The fail-closed edge. A wave AFTER the declared one reaches an interval the
+/// stage already closed, and the recipe REFUSES rather than serving bytes its
+/// witness never covered.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: dropping the `closing_offset`
+/// test from `mid_walk_note`, which turns a witness for the wrong window into
+/// a silent `Captured`.
+#[test]
+fn a_wave_that_reaches_an_already_closed_interval_refuses() {
+    let memory = mid_walk_world(true);
+    // Op 2 copies eight bytes at the address op 1 decoded — which the back
+    // reference makes the ROOT itself. It is a different op, so discovery does
+    // not prune it, and its request lands inside the interval op 0 owns and
+    // stage 1 closed at the end of wave 0.
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: vec![1, 3],
+            },
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 2,
+            },
+            RecipeOp::CopyRanges {
+                windows: vec![RelWindow::new(0x08, 8)],
+                next: vec![4],
+            },
+            RecipeOp::WitnessClose { next: vec![4] },
+            RecipeOp::Freeze,
+        ],
+        vec![Root {
+            op: 0,
+            addr: MID_WALK_ROOT,
+        }],
+    )
+    .with_mods(mods(
+        5,
+        &[
+            (
+                0,
+                OpMod {
+                    stage: 1,
+                    ..OpMod::default()
+                },
+            ),
+            (
+                2,
+                OpMod {
+                    stage: 2,
+                    ..OpMod::default()
+                },
+            ),
+        ],
+    ))
+    .with_closing(ClosingProgram {
+        stages: vec![
+            CloseStage {
+                stage: 1,
+                elide_into: None,
+                when: CloseWhen::AfterWave(0),
+            },
+            CloseStage {
+                stage: 2,
+                elide_into: None,
+                when: CloseWhen::Final,
+            },
+        ],
+    });
+
+    let build = observe(&[recipe], &memory, config()).expect("custody");
+    let record = refusal_of(&build, 1).expect("the reopened interval must refuse");
+    match record.refusal {
+        Refusal::ClosedIntervalReopened {
+            span,
+            closed_after_wave,
+            reopened_in_wave,
+            ..
+        } => {
+            assert_eq!(span.start, MID_WALK_ROOT);
+            assert_eq!(closed_after_wave, 0);
+            assert_eq!(reopened_in_wave, 1);
+        }
+        other => panic!("expected ClosedIntervalReopened, got {other:?}"),
+    }
+}
+
+/// The OTHER half of the fail-closed edge: a stage whose interval is first
+/// reached AFTER the wave it declared.
+///
+/// The close it asked for cannot happen — that wave is over — and letting it
+/// fall through to the final wave would take a LATER image than the program
+/// asked for while still reporting the declared topology. So it refuses, and
+/// against every consumer that reached the interval rather than against
+/// whichever request happened to be last.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: removing the `wave < depth` arm of
+/// `mid_walk_close`, which puts the interval back in the final schedule and
+/// makes the observation report a topology it did not run.
+#[test]
+fn a_stage_reached_after_its_declared_close_refuses() {
+    let memory = mid_walk_world(false);
+    // Stage 1 declares `AfterWave(0)` but sits on the CHILD op, which is first
+    // copied at wave 1. Nothing carries the stage at wave 0, so wave 0's pass
+    // closes nothing and wave 1 finds a candidate whose close is already past.
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: vec![1, 3],
+            },
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 2,
+            },
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![4],
+            },
+            RecipeOp::WitnessClose { next: vec![4] },
+            RecipeOp::Freeze,
+        ],
+        vec![Root {
+            op: 0,
+            addr: MID_WALK_ROOT,
+        }],
+    )
+    .with_mods(mods(
+        5,
+        &[(
+            2,
+            OpMod {
+                stage: 1,
+                ..OpMod::default()
+            },
+        )],
+    ))
+    .with_closing(ClosingProgram {
+        stages: vec![CloseStage {
+            stage: 1,
+            elide_into: None,
+            when: CloseWhen::AfterWave(0),
+        }],
+    });
+
+    let build = observe(&[recipe], &memory, config()).expect("custody");
+    let record = refusal_of(&build, 1).expect("a stage reached after its close must refuse");
+    match record.refusal {
+        Refusal::ClosedIntervalReopened {
+            closed_after_wave,
+            reopened_in_wave,
+            ..
+        } => {
+            assert_eq!(closed_after_wave, 0, "the wave the stage declared");
+            assert_eq!(reopened_in_wave, 1, "the wave it was actually reached in");
+        }
+        other => panic!("expected ClosedIntervalReopened, got {other:?}"),
+    }
+}
+
+/// RULING A, on the DECODE side: a field lost to this recipe's own scoped void
+/// stops the branch, and a field the recipe never asked for still refuses it.
+///
+/// Both arms read a pointer at the same offset of the same object. In the first
+/// the object was SPECULATIVELY copied and the engine refused it, so the void
+/// already records why and the branch simply ends — every other row of the
+/// speculative copy still publishes, which is the whole of ruling A. In the
+/// second the recipe never copied the bytes at all, which is a recipe defect
+/// and is fatal.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: `field_not_captured` raising
+/// `Refusal::FieldNotCaptured` unconditionally, which is what every decode site
+/// did before — and which turns one unreadable page inside an over-read into
+/// the loss of the whole consumer's hour.
+#[test]
+fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses() {
+    const TABLE: u64 = 0x10_0000;
+    const READABLE: u64 = 0x20_0000;
+    let page = SCOPED_VOID_GRANULARITY_BYTES;
+
+    // A two-page table. The second page is unreadable; the first holds a
+    // pointer at offset 0 to a readable object, so the branch that does not
+    // touch the void must still publish.
+    let world = || {
+        let mut memory = SyntheticMemory::new();
+        memory.map_zeroed(TABLE, page as usize);
+        memory.map_zeroed(TABLE + page, page as usize);
+        memory.map_zeroed(READABLE, 0x10);
+        memory.write_u64(TABLE, READABLE);
+        memory.set_readable(TABLE + page, false);
+        memory
+    };
+
+    // ARM ONE: the whole table is copied speculatively, so the second page is
+    // a void and the pointer read at its start is lost TO THAT VOID.
+    let scoped = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyRanges {
+                windows: vec![RelWindow::new(0, (2 * page) as u32)],
+                next: vec![1, 2],
+            },
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 3,
+            },
+            // The read that lands in the void.
+            RecipeOp::DecodePointer {
+                offset: page as u32,
+                guard: None,
+                next: 3,
+            },
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![4],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: TABLE }],
+    )
+    .with_mods(mods(
+        5,
+        &[(
+            0,
+            OpMod {
+                tolerance: Tolerance::Scoped,
+                ..OpMod::default()
+            },
+        )],
+    ));
+
+    let memory = world();
+    let build = observe(&[scoped], &memory, config()).expect("custody");
+    assert!(
+        refusal_of(&build, 1).is_none(),
+        "a read lost to the recipe own void ends its branch and nothing else: {:?}",
+        refusal_of(&build, 1),
+    );
+    assert!(
+        build.report_for(RecipeId(1)).expect("reported").scoped_voids >= 1,
+        "the fixture must actually void a page, or the arms are the same test",
+    );
+    // And the branch that never touched the void published its object.
+    let closed = build.close_witnesses();
+    let view = closed
+        .snapshot
+        .view_for(ConsumerId(1), HOUR)
+        .expect("the consumer keeps its hour");
+    assert!(
+        view.bytes(READABLE, 0x10).is_ok(),
+        "the readable half of the speculative copy still publishes",
+    );
+
+    // ARM TWO: the same read, at the same offset, out of bytes the recipe never
+    // asked for. Nothing is voided; the recipe under-copied, and that is fatal.
+    let short = Recipe::new(
+        RecipeId(2),
+        ConsumerId(2),
+        vec![
+            RecipeOp::CopyRanges {
+                // Only the FIRST page, so `+page` was never requested.
+                windows: vec![RelWindow::new(0, 8)],
+                next: vec![1],
+            },
+            RecipeOp::DecodePointer {
+                offset: page as u32,
+                guard: None,
+                next: 2,
+            },
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![3],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: TABLE }],
+    );
+    let memory = world();
+    let build = observe(&[short], &memory, config()).expect("custody");
+    let record = refusal_of(&build, 2).expect("an uncopied field is a recipe defect");
+    assert!(
+        matches!(record.refusal, Refusal::FieldNotCaptured { .. }),
+        "and it says so: {:?}",
+        record.refusal,
+    );
+
+    // ARM THREE: A NEIGHBOUR'S VOID IS NOT YOURS, even when the two recipes
+    // share a `RecipeId` — which the substrate does not make unique (Codex
+    // 019fe9b6, finding A). The first recipe voids the page speculatively; the
+    // second reads out of it having asked for nothing there, and must still
+    // refuse.
+    let voider = Recipe::new(
+        RecipeId(3),
+        ConsumerId(3),
+        vec![
+            RecipeOp::CopyRanges {
+                windows: vec![RelWindow::new(0, (2 * page) as u32)],
+                next: vec![1],
+            },
+            RecipeOp::WitnessClose { next: vec![2] },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: TABLE }],
+    )
+    .with_mods(mods(
+        3,
+        &[(
+            0,
+            OpMod {
+                tolerance: Tolerance::Scoped,
+                ..OpMod::default()
+            },
+        )],
+    ));
+    // The SAME `RecipeId`, deliberately.
+    let borrower = Recipe::new(
+        RecipeId(3),
+        ConsumerId(4),
+        vec![
+            RecipeOp::CopyRanges {
+                windows: vec![RelWindow::new(0, 8)],
+                next: vec![1],
+            },
+            RecipeOp::DecodePointer {
+                offset: page as u32,
+                guard: None,
+                next: 2,
+            },
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![3],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: TABLE }],
+    );
+    let memory = world();
+    let build = observe(&[voider, borrower], &memory, config()).expect("custody");
+    // Position 1 is the borrower. It never asked for the page, so the
+    // neighbour's void does not excuse it.
+    let record = match build
+        .report_for(RecipeId(3))
+        .map(|report| report.outcome)
+        .expect("reported")
+    {
+        RecipeOutcome::Refused(record) => Some(record),
+        RecipeOutcome::Captured => None,
+    };
+    let _ = record;
+    let borrower_refused = build
+        .reports
+        .iter()
+        .find(|report| report.consumer == ConsumerId(4))
+        .map(|report| report.outcome);
+    assert!(
+        matches!(borrower_refused, Some(RecipeOutcome::Refused(_))),
+        "a void another recipe recorded must not excuse this one's uncopied \
+         field, even under a shared RecipeId: {borrower_refused:?}",
+    );
+
+    // ARM FOUR: PARTIAL OVERLAP IS NOT COVERAGE. The scoped request is ONE
+    // byte at the void's start, so the void intersects an eight-byte decode
+    // there — but seven of those bytes were never requested by anybody, and
+    // suppressing the refusal would let an under-copy through because a
+    // neighbouring page happened to be bad.
+    let straddler = Recipe::new(
+        RecipeId(5),
+        ConsumerId(5),
+        vec![
+            RecipeOp::CopyRanges {
+                // The first page (readable) and ONE byte of the second.
+                windows: vec![RelWindow::new(0, page as u32 + 1)],
+                next: vec![1],
+            },
+            RecipeOp::DecodePointer {
+                offset: page as u32,
+                guard: None,
+                next: 2,
+            },
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![3],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: TABLE }],
+    )
+    .with_mods(mods(
+        4,
+        &[(
+            0,
+            OpMod {
+                tolerance: Tolerance::Scoped,
+                ..OpMod::default()
+            },
+        )],
+    ));
+    let memory = world();
+    let build = observe(&[straddler], &memory, config()).expect("custody");
+    let outcome = build.report_for(RecipeId(5)).expect("reported").outcome;
+    assert!(
+        matches!(outcome, RecipeOutcome::Refused(_)),
+        "a decode whose span reaches past everything the recipe asked for must \
+         refuse, whatever a void it touches says: {outcome:?}",
+    );
+}
+
+/// A program whose declared sequence and declared waves disagree is refused
+/// before any memory is touched: "the listed order is the order that ran" has
+/// to be one claim, not two that a reader reconciles.
+#[test]
+fn a_closing_program_whose_waves_run_backwards_is_malformed() {
+    let recipe = mid_walk_recipe(CloseWhen::Final);
+    // Stage 1 listed first but closing LAST; stage 2 listed second and closing
+    // at wave 0.
+    let backwards = Recipe::new(
+        recipe.id,
+        recipe.consumer,
+        recipe.ops.clone(),
+        recipe.roots.clone(),
+    )
+    .with_mods(recipe.mods.clone())
+    .with_closing(ClosingProgram {
+        stages: vec![
+            CloseStage {
+                stage: 1,
+                elide_into: None,
+                when: CloseWhen::Final,
+            },
+            CloseStage {
+                stage: 2,
+                elide_into: None,
+                when: CloseWhen::AfterWave(0),
+            },
+        ],
+    });
+    assert!(
+        validate(&backwards).is_err(),
+        "a program whose waves run backwards down the list is malformed",
+    );
+    // And the same program with the two `when`s the right way round is not.
+    let forwards = Recipe::new(
+        recipe.id,
+        recipe.consumer,
+        recipe.ops.clone(),
+        recipe.roots.clone(),
+    )
+    .with_mods(recipe.mods.clone())
+    .with_closing(ClosingProgram {
+        stages: vec![
+            CloseStage {
+                stage: 1,
+                elide_into: None,
+                when: CloseWhen::AfterWave(0),
+            },
+            CloseStage {
+                stage: 2,
+                elide_into: None,
+                when: CloseWhen::Final,
+            },
+        ],
+    });
+    assert!(validate(&forwards).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -1725,11 +2387,13 @@ fn a_closing_program_cannot_elide_backwards_or_name_an_unused_stage() {
         validate(&build(vec![
             CloseStage {
                 stage: 2,
-                elide_into: None
+                elide_into: None,
+                when: CloseWhen::Final,
             },
             CloseStage {
                 stage: 1,
-                elide_into: Some(2)
+                elide_into: Some(2),
+                when: CloseWhen::Final,
             },
         ])),
         Err(Refusal::Malformed {
@@ -1740,7 +2404,8 @@ fn a_closing_program_cannot_elide_backwards_or_name_an_unused_stage() {
     assert!(matches!(
         validate(&build(vec![CloseStage {
             stage: 9,
-            elide_into: None
+            elide_into: None,
+            when: CloseWhen::Final,
         }])),
         Err(Refusal::Malformed {
             reason: MalformedReason::BadClosingProgram { stage: 9 },
