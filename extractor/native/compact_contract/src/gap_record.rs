@@ -398,6 +398,18 @@ pub enum GapRecordValidationError {
         second_start: i32,
         second_end: i32,
     },
+    /// [`validate_gap_records_hour_ordered`] was handed a record starting
+    /// before the one it had already accepted.
+    ///
+    /// A separate outcome rather than a silent re-sort: the sweep answers the
+    /// overlap question by keeping only the records still open at the current
+    /// hour, so out-of-order input would let it MISS an overlap. A missed
+    /// overlap reads as a valid ledger, which is the one answer this must never
+    /// invent.
+    NotHourOrdered {
+        previous_start: i32,
+        next_start: i32,
+    },
 }
 
 impl fmt::Display for GapRecordValidationError {
@@ -459,6 +471,92 @@ pub fn validate_gap_records(
                 });
             }
         }
+    }
+    Ok(())
+}
+
+/// The same rule as [`validate_gap_records`], answered by a sweep over records
+/// delivered in non-decreasing `hour_start` order.
+///
+/// # Why a second entry point
+///
+/// [`validate_gap_records`] takes a slice and compares every pair, so it costs
+/// O(n^2) time and needs every row resident at once. A recorder ledger is one
+/// row per (game hour, domain) absence — 1.7 million rows at 68,300 game hours —
+/// and neither the time nor the residency survives that. This form holds only
+/// the records still OPEN at the hour it is on: sorted by `hour_start`, any
+/// earlier record that could still overlap the current one has not ended yet, so
+/// the open set is exactly the candidate set and everything before it can be
+/// dropped.
+///
+/// The two answer the same question. They can differ in WHICH error they name
+/// when an input has several, because this one interleaves the per-record checks
+/// with the sweep while the slice form runs them in two passes; the callers ask
+/// only whether the ledger is valid. `hour_ordered_validation_agrees_with_pairwise`
+/// holds them to the same verdict.
+pub fn validate_gap_records_hour_ordered<I>(
+    records: I,
+    observed_hour_start: i32,
+    observed_hour_end: i32,
+) -> Result<(), GapRecordValidationError>
+where
+    I: IntoIterator<Item = GapRecord>,
+{
+    if observed_hour_start > observed_hour_end {
+        return Err(GapRecordValidationError::InvalidObservedRange {
+            hour_start: observed_hour_start,
+            hour_end: observed_hour_end,
+        });
+    }
+    // The records that have started and not yet ended. Its size is the number of
+    // gaps open at one instant — a handful of domains — not the session length.
+    let mut open: Vec<GapRecord> = Vec::new();
+    let mut previous_start: Option<i32> = None;
+    for record in records {
+        if let Some(previous) = previous_start {
+            if record.hour_start < previous {
+                return Err(GapRecordValidationError::NotHourOrdered {
+                    previous_start: previous,
+                    next_start: record.hour_start,
+                });
+            }
+        }
+        previous_start = Some(record.hour_start);
+        record.validate()?;
+        if record.hour_start < observed_hour_start || record.hour_end > observed_hour_end {
+            return Err(GapRecordValidationError::OutsideObservedRange {
+                gap_start: record.hour_start,
+                gap_end: record.hour_end,
+                observed_start: observed_hour_start,
+                observed_end: observed_hour_end,
+            });
+        }
+        open.retain(|candidate| candidate.hour_end >= record.hour_start);
+        for candidate in &open {
+            // `candidate.hour_start <= record.hour_start <= candidate.hour_end`
+            // after the retain above, so the hour ranges intersect and only the
+            // domain question is left.
+            let overlap_domain = if candidate.domains.is_empty() || record.domains.is_empty() {
+                Some(None)
+            } else {
+                candidate
+                    .domains
+                    .iter()
+                    .find(|domain| record.domains.binary_search(domain).is_ok())
+                    .copied()
+                    .map(Some)
+            };
+            if let Some(domain) = overlap_domain {
+                return Err(GapRecordValidationError::OverlapForDomain {
+                    domain,
+                    first_start: candidate.hour_start,
+                    first_end: candidate.hour_end,
+                    second_start: record.hour_start,
+                    second_end: record.hour_end,
+                });
+            }
+        }
+        open.push(record);
     }
     Ok(())
 }
@@ -819,6 +917,131 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// Whichever way a ledger is walked, it is the same ledger.
+    ///
+    /// The sweep replaces an O(n^2) pairwise loop on the recorder's finalize
+    /// path, so what has to hold is that it never says "valid" where the
+    /// pairwise form said "invalid" — a missed overlap would publish a ledger
+    /// that double-counts an hour. The cases below are built to make the sweep
+    /// fail if it purged the open set too eagerly (a long record still open
+    /// under several later ones), if it ignored the wildcard rule (an
+    /// empty-`domains` record beside a domain one), or if it compared only
+    /// adjacent records.
+    #[test]
+    fn hour_ordered_validation_agrees_with_pairwise() {
+        fn shortfall(hour_start: i32, hour_end: i32, domains: Vec<CompactDomainId>) -> GapRecord {
+            GapRecord {
+                hour_start,
+                hour_end,
+                reason: GapReason::SourceUnavailable,
+                domains,
+                witness: GapWitness::StatusBits {
+                    status_bits: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                },
+            }
+        }
+        fn skipped(hour_start: i32, hour_end: i32) -> GapRecord {
+            GapRecord {
+                hour_start,
+                hour_end,
+                reason: GapReason::SkippedHour,
+                domains: Vec::new(),
+                witness: GapWitness::HourDiscontinuity {
+                    previous_hour: hour_start - 1,
+                    next_hour: hour_end + 1,
+                },
+            }
+        }
+
+        // The expected verdict is written down per case, so a sweep that said
+        // "valid" for everything would fail here rather than merely agree with
+        // a pairwise loop that had been broken the same way.
+        let cases: Vec<(bool, Vec<GapRecord>)> = vec![
+            // Disjoint by domain at one hour.
+            (
+                true,
+                vec![shortfall(10, 10, vec![4]), shortfall(10, 10, vec![5])],
+            ),
+            // The same domain twice at one hour.
+            (
+                false,
+                vec![shortfall(10, 10, vec![4]), shortfall(10, 10, vec![4])],
+            ),
+            // A long record for domain 4 and a later point record for it, with
+            // an unrelated domain in between: only a sweep that keeps the long
+            // record open finds this.
+            (
+                false,
+                vec![
+                    shortfall(10, 40, vec![4]),
+                    shortfall(12, 12, vec![9]),
+                    shortfall(30, 30, vec![4]),
+                ],
+            ),
+            // The same, but the late record is for another domain.
+            (
+                true,
+                vec![
+                    shortfall(10, 40, vec![4]),
+                    shortfall(12, 12, vec![9]),
+                    shortfall(30, 30, vec![7]),
+                ],
+            ),
+            // A wildcard record overlaps every domain record inside it.
+            (false, vec![skipped(10, 20), shortfall(15, 15, vec![4])]),
+            // Two wildcards that touch but do not overlap.
+            (true, vec![skipped(10, 12), skipped(13, 15)]),
+            // Two wildcards that do overlap.
+            (false, vec![skipped(10, 14), skipped(12, 15)]),
+            // A record outside the observed range.
+            (false, vec![shortfall(1, 1, vec![4])]),
+            (true, vec![]),
+        ];
+
+        for (expected_valid, case) in cases {
+            let mut ordered = case.clone();
+            ordered.sort_by_key(|record| record.hour_start);
+            let pairwise = validate_gap_records(&case, 5, 100).is_ok();
+            let swept = validate_gap_records_hour_ordered(ordered, 5, 100).is_ok();
+            assert_eq!(pairwise, expected_valid, "pairwise verdict for {case:?}");
+            assert_eq!(swept, expected_valid, "swept verdict for {case:?}");
+        }
+    }
+
+    /// Out-of-order input is refused rather than answered. The sweep can only
+    /// see an overlap while both records are open, so a record that arrives
+    /// after its own hour has passed could be waved through.
+    #[test]
+    fn hour_ordered_validation_refuses_records_that_go_backwards() {
+        let records = vec![
+            GapRecord {
+                hour_start: 20,
+                hour_end: 20,
+                reason: GapReason::SourceUnavailable,
+                domains: vec![4],
+                witness: GapWitness::StatusBits {
+                    status_bits: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                },
+            },
+            GapRecord {
+                hour_start: 10,
+                hour_end: 10,
+                reason: GapReason::SourceUnavailable,
+                domains: vec![4],
+                witness: GapWitness::StatusBits {
+                    status_bits: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                },
+            },
+        ];
+        assert_eq!(
+            validate_gap_records_hour_ordered(records, 5, 100),
+            Err(GapRecordValidationError::NotHourOrdered {
+                previous_start: 20,
+                next_start: 10,
+            })
+        );
+    }
 
     #[test]
     fn counter_and_backpressure_reason_codes_are_exact_and_round_trip() {

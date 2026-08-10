@@ -146,7 +146,10 @@ fn main() {
                 "gaps": gap_ledger::reference_flat_gaps_json(&gaps),
                 "domain_gap_outcomes": gap_ledger::reference_flat_domain_gap_outcomes_json(&outcomes),
             });
-            let bytes = gap_ledger::ledger_manifest_bytes(&flat, &gaps, outcomes.len());
+            // The flat arm's rows ARE the flat list, so it is priced by the
+            // flat form of the same function (lane GE moved the production
+            // pricing onto the class table, which this arm does not build).
+            let bytes = gap_ledger::flat_ledger_manifest_bytes(&flat, &gaps, outcomes.len());
             let charge = Charge::new(Component::ManifestGapLedger, bytes);
             let serialized = serde_json::to_vec(&flat).map(|v| v.len()).unwrap_or(0);
             mem_account::mark("profile.ledger_built");
@@ -154,8 +157,30 @@ fn main() {
             (serialized, (0usize, 0usize))
         }
         "compact" => {
-            let ledger = gap_ledger::encode_gap_ledger(&gaps, outcomes.iter().copied());
-            let bytes = gap_ledger::ledger_manifest_bytes(&ledger, &gaps, outcomes.len());
+            // Through the class table, as production now does it: what the
+            // compact arm holds is the classes, not the rows.
+            let table = gap_ledger::GapClassTable::from_records(&gaps);
+            let ledger =
+                gap_ledger::encode_gap_ledger_from_table(&table, outcomes.iter().copied());
+            // The rows are charged too: THIS BIN still holds them (they are the
+            // synthetic session it generated), even though production no longer
+            // does. Charging only the table would publish a compact arm that is
+            // smaller than the process it ran in.
+            // The LARGER of two moments, never their sum: while the table is
+            // being built this arm holds the rows plus `from_records`' sort
+            // index plus the growing classes, and once it is built it holds the
+            // rows plus the classes plus the ledger JSON plus the outcomes. The
+            // sort index is gone by the time the second moment exists, so adding
+            // it there would publish a peak no instant reached. Production
+            // builds neither — it streams into the class builder.
+            let rows_bytes = gap_ledger::gap_records_resident_bytes(&gaps);
+            let building = rows_bytes
+                + table.resident_bytes()
+                + gap_ledger::GapClassTable::from_records_transient_bytes(gaps.len());
+            let built = rows_bytes
+                + table.resident_bytes()
+                + gap_ledger::ledger_manifest_bytes(&ledger, outcomes.len());
+            let bytes = building.max(built);
             let charge = Charge::new(Component::ManifestGapLedger, bytes);
             let serialized = serde_json::to_vec(&ledger).map(|v| v.len()).unwrap_or(0);
             let classes = (

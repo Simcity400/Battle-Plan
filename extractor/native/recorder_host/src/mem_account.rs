@@ -585,6 +585,26 @@ pub fn peak_live_heap_bytes() -> Option<u64> {
     Some(tracking::PEAK.load(Ordering::Relaxed).max(0) as u64)
 }
 
+/// Drop the recorded peak to whatever is live RIGHT NOW.
+///
+/// A peak is process-lifetime by design, which is what makes it useful and also
+/// what makes it useless for pricing ONE phase: everything the process did
+/// before that phase -- building the input, for a profiler -- is already in the
+/// number. Calling this at a phase boundary makes the next reading the peak of
+/// that phase ABOVE its own starting point, which is the quantity a before/after
+/// comparison is stated in.
+///
+/// Measurement builds only, and deliberately not mirrored for the component
+/// peaks: those are read out of a production path where nothing may reset them.
+#[cfg(feature = "mem-alloc-trace")]
+pub fn reset_peak_live_heap() {
+    let live = tracking::LIVE.load(Ordering::Relaxed);
+    tracking::PEAK.store(live, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "mem-alloc-trace"))]
+pub fn reset_peak_live_heap() {}
+
 #[cfg(not(feature = "mem-alloc-trace"))]
 pub fn peak_live_heap_bytes() -> Option<u64> {
     None

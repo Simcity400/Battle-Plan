@@ -109,6 +109,11 @@ pub enum GapLedgerError {
     /// declares. The declared count is checked against the expansion rather
     /// than trusted, so a truncated class list cannot read as a short session.
     RowCountMismatch { declared: u64, expanded: u64 },
+    /// A record reached [`GapClassTableBuilder`] for an hour it had already
+    /// closed. Refused rather than mis-filed: the builder's whole saving is that
+    /// it keeps only the current hour's tallies, and folding a late record into
+    /// a closed run would move a row to an hour nobody recorded it at.
+    OutOfOrder { open_hour: i32, record_hour: i32 },
 }
 
 impl std::fmt::Display for GapLedgerError {
@@ -125,6 +130,14 @@ impl std::fmt::Display for GapLedgerError {
             Self::RowCountMismatch { declared, expanded } => write!(
                 f,
                 "gap ledger declares {declared} rows but expands to {expanded}"
+            ),
+            Self::OutOfOrder {
+                open_hour,
+                record_hour,
+            } => write!(
+                f,
+                "a gap record for hour {record_hour} reached the class builder after hour \
+                 {open_hour} was closed; the builder requires non-decreasing hour_start"
             ),
         }
     }
@@ -808,22 +821,405 @@ fn runs_from_json(value: &Value, what: &str) -> Result<Vec<(i32, u32)>, GapLedge
 // gaps: encode / expand
 // ---------------------------------------------------------------------------
 
-/// Compact `records` into the ledger's `gaps` table.
+/// One class of the `gaps` table, in typed form.
 ///
-/// Cost is O(n log n) in the number of records and O(classes + runs) in
-/// retained bytes: the flat `serde_json::Value` array is never built.
-pub fn encode_gaps(records: &[GapRecord]) -> Value {
-    // (class key, hour) -> what happened AT THAT HOUR: for a per-domain class,
-    // the affected domains, one entry per record; for a shared class, how many
-    // times that exact record occurred. The per-hour tally is what makes the run
-    // merge exact -- two hours join a run only when their tallies are identical.
-    let mut per_hour: BTreeMap<(GapClassKey, i32), (Vec<CompactDomainId>, u32)> = BTreeMap::new();
-    for record in records {
+/// The JSON a class becomes is a pure function of this, and the rows it stands
+/// for can be walked back out of it without ever building the flat list -- which
+/// is the whole reason the typed form exists rather than only the JSON one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GapClass {
+    key: GapClassKey,
+    /// The hour's exact domain tally for a [`DomainGrouping::PerDomain`] class,
+    /// ascending, duplicates kept. Empty for a `Shared` class, whose domains are
+    /// in `key.shared_domains`.
+    domains: Vec<CompactDomainId>,
+    /// How many times a `Shared` class's one record occurred at each of its
+    /// hours. Zero for `PerDomain`, where the tally above carries multiplicity.
+    repeat: u32,
+    hour_runs: Vec<(i32, u32)>,
+}
+
+impl GapClass {
+    /// How many rows this class stands for at ONE of its hours.
+    fn rows_per_hour(&self) -> usize {
+        match self.key.grouping {
+            DomainGrouping::PerDomain => self.domains.len(),
+            DomainGrouping::Shared => self.repeat as usize,
+        }
+    }
+
+    /// Every hour this class names, ascending.
+    ///
+    /// `first + step` cannot leave `i32`: a run is only ever extended by a hour
+    /// that was itself an `i32` (see [`GapClassTableBuilder::close_hour`]), so
+    /// its last hour is a value that existed.
+    fn hours(&self) -> impl Iterator<Item = i32> + '_ {
+        self.hour_runs.iter().flat_map(|(first, count)| {
+            (0..*count).map(move |step| (i64::from(*first) + i64::from(step)) as i32)
+        })
+    }
+
+    /// The `index`-th row this class stands for at `hour`.
+    fn row_at(&self, hour: i32, index: usize) -> GapRecord {
+        GapRecord {
+            hour_start: hour,
+            // In range for the same reason `hours()` is: `span_hours` came from
+            // a record whose `hour_end` was an `i32`, and every hour in the run
+            // list carried that same span.
+            hour_end: (i64::from(hour) + self.key.span_hours - 1) as i32,
+            reason: self.key.reason,
+            domains: match self.key.grouping {
+                DomainGrouping::PerDomain => vec![self.domains[index]],
+                DomainGrouping::Shared => self.key.shared_domains.clone(),
+            },
+            // INFALLIBLE HERE, and checked rather than assumed: the builder
+            // refuses any record whose witness does not survive the template
+            // round trip, so a template in a table is one that resolves.
+            witness: self
+                .key
+                .witness
+                .to_witness(hour)
+                .expect("the builder rejects a witness that does not round trip"),
+        }
+    }
+
+    /// Every row this class stands for, hour ascending.
+    fn rows(&self) -> impl Iterator<Item = GapRecord> + '_ {
+        self.hours()
+            .flat_map(move |hour| (0..self.rows_per_hour()).map(move |index| self.row_at(hour, index)))
+    }
+
+    /// Whether this class's rows can affect `domain`, by the same rule
+    /// [`GapRecord::affects_domain`] uses: an empty domain list is every domain.
+    fn affects_domain(&self, domain: CompactDomainId) -> bool {
+        match self.key.grouping {
+            DomainGrouping::PerDomain => self.domains.binary_search(&domain).is_ok(),
+            DomainGrouping::Shared => {
+                self.key.shared_domains.is_empty()
+                    || self.key.shared_domains.binary_search(&domain).is_ok()
+            }
+        }
+    }
+
+    /// The hours this class starts at whose record still covers `hour`.
+    ///
+    /// A class's rows all share one span, so a row starting at `s` covers `hour`
+    /// exactly when `s` is in `[hour - span + 1, hour]`. The runs are ascending
+    /// and disjoint, so that window is found by walking from the first run that
+    /// can reach it rather than by scanning every hour the class names.
+    fn starts_covering(&self, hour: i32) -> impl Iterator<Item = i32> + '_ {
+        let low = i64::from(hour) - self.key.span_hours + 1;
+        let high = i64::from(hour);
+        // The first run whose LAST hour is at or after `low`; everything before
+        // it ends too early to reach `hour`.
+        let from = self
+            .hour_runs
+            .partition_point(|(first, count)| i64::from(*first) + i64::from(*count) - 1 < low);
+        self.hour_runs[from.min(self.hour_runs.len())..]
+            .iter()
+            .take_while(move |(first, _)| i64::from(*first) <= high)
+            .flat_map(move |(first, count)| {
+                let run_low = i64::from(*first).max(low);
+                let run_high = (i64::from(*first) + i64::from(*count) - 1).min(high);
+                let steps = (run_high - run_low + 1).max(0) as u64;
+                (0..steps).map(move |step| (run_low + step as i64) as i32)
+            })
+    }
+}
+
+/// The `gaps` table, kept as classes rather than as rows.
+///
+/// # Why this is a type and not just a `Value`
+///
+/// The ledger's classes are what the manifest carries, but they are also the
+/// only compact form the DERIVED rows have. Every consumer of those rows used to
+/// take a `&[GapRecord]` -- one struct plus one heap `Vec` per (hour, domain)
+/// absence, 211 MiB at 68,300 game hours (lane FV, `runs/fv_gap_ledger`) -- and
+/// the list existed only so those consumers could walk it. Holding the classes
+/// instead and expanding them on demand costs O(classes + hour runs) and gives
+/// every consumer the same rows.
+///
+/// The claim is NOT "O(1) in session length": a class whose hours alternate
+/// carries one run per two hours. It is "O(distinct classes + hour runs)", which
+/// on a real capture is 174 classes / 1,122 runs for 40,139 rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GapClassTable {
+    classes: Vec<GapClass>,
+    row_count: usize,
+}
+
+impl GapClassTable {
+    /// How many rows this table stands for. Exactly what the flat array held.
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    /// How many classes the table holds. Published beside the row count so a
+    /// reader can see the compaction that was achieved rather than assume it.
+    pub fn class_count(&self) -> usize {
+        self.classes.len()
+    }
+
+    /// How many hour runs the classes hold in total: the OTHER term this shape's
+    /// size is O of, and the one that grows on an alternating class.
+    pub fn hour_run_count(&self) -> usize {
+        self.classes.iter().map(|class| class.hour_runs.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.row_count == 0
+    }
+
+    /// Every row, class order, hour ascending within a class.
+    ///
+    /// The same MULTISET the table was built from; NOT the order it was built
+    /// in. Every consumer of the derived rows answers an existence, a count or a
+    /// per-record question, so none of them reads the order -- and the two that
+    /// need hour order ask for it explicitly ([`Self::rows_hour_ordered`]).
+    pub fn rows(&self) -> impl Iterator<Item = GapRecord> + '_ {
+        self.classes.iter().flat_map(GapClass::rows)
+    }
+
+    /// Every row, hour ascending across the whole table.
+    ///
+    /// A k-way merge over the classes, so the state is one cursor per class
+    /// rather than one row per row. Ties are broken by class index, which makes
+    /// the order deterministic without saying anything about the rows.
+    pub fn rows_hour_ordered(&self) -> HourOrderedRows<'_> {
+        HourOrderedRows::new(self)
+    }
+
+    /// Whether any two rows in this table are identical.
+    ///
+    /// O(classes), not O(rows), and exact. Two identical rows share a class key
+    /// and an hour, and the builder folds every row with that pair into ONE
+    /// class entry -- so a duplicate can only show up as a repeated domain in a
+    /// per-domain tally or as a `repeat` above one on a shared class. There is
+    /// nowhere else for it to hide.
+    pub fn has_duplicate_rows(&self) -> bool {
+        self.classes.iter().any(|class| match class.key.grouping {
+            DomainGrouping::PerDomain => class.domains.windows(2).any(|pair| pair[0] == pair[1]),
+            DomainGrouping::Shared => class.repeat > 1,
+        })
+    }
+
+    /// Whether any row covering `(hour, domain)` satisfies `predicate`.
+    ///
+    /// The point query the per-(hour, domain) validators ask. Answered by
+    /// walking the classes and binary searching their runs, so it costs
+    /// O(classes * log runs) instead of a scan of every row.
+    pub fn any_covering(
+        &self,
+        hour: i32,
+        domain: CompactDomainId,
+        mut predicate: impl FnMut(&GapRecord) -> bool,
+    ) -> bool {
+        for class in &self.classes {
+            if !class.affects_domain(domain) {
+                continue;
+            }
+            for start in class.starts_covering(hour) {
+                for index in 0..class.rows_per_hour() {
+                    let record = class.row_at(start, index);
+                    // The class-level filters above are an INDEX, and an index
+                    // that is wrong must not change an answer: the record's own
+                    // `covers` is what decides, exactly as it did when this was
+                    // a scan of a flat list.
+                    if record.covers(hour, domain) && predicate(&record) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Every row that intersects `[hour_start, hour_end]` and satisfies
+    /// `filter`, as a list.
+    ///
+    /// Materializes only what the WINDOW holds, which is why it takes one: the
+    /// two callers ask about a single hole between two observed hours.
+    pub fn rows_intersecting(
+        &self,
+        hour_start: i32,
+        hour_end: i32,
+        mut filter: impl FnMut(&GapRecord) -> bool,
+    ) -> Vec<GapRecord> {
+        let mut found = Vec::new();
+        for class in &self.classes {
+            // A row starting at `s` intersects the window when
+            // `s <= hour_end` and `s + span - 1 >= hour_start`.
+            let low = i64::from(hour_start) - class.key.span_hours + 1;
+            let high = i64::from(hour_end);
+            let from = class
+                .hour_runs
+                .partition_point(|(first, count)| i64::from(*first) + i64::from(*count) - 1 < low);
+            for (first, count) in &class.hour_runs[from.min(class.hour_runs.len())..] {
+                if i64::from(*first) > high {
+                    break;
+                }
+                let run_low = i64::from(*first).max(low);
+                let run_high = (i64::from(*first) + i64::from(*count) - 1).min(high);
+                let mut step = run_low;
+                while step <= run_high {
+                    let start = step as i32;
+                    for index in 0..class.rows_per_hour() {
+                        let record = class.row_at(start, index);
+                        if record.hour_end >= hour_start
+                            && record.hour_start <= hour_end
+                            && filter(&record)
+                        {
+                            found.push(record);
+                        }
+                    }
+                    step += 1;
+                }
+            }
+        }
+        found
+    }
+
+    /// Resident bytes the classes hold, as a FLOOR: the class spines, their
+    /// domain lists and their run lists. Understating slack is the safe
+    /// direction, exactly as [`gap_records_resident_bytes`] does it.
+    pub fn resident_bytes(&self) -> u64 {
+        let spine = (self.classes.len() as u64) * (std::mem::size_of::<GapClass>() as u64);
+        let inner: u64 = self
+            .classes
+            .iter()
+            .map(|class| {
+                let domains = (class.domains.len() + class.key.shared_domains.len()) as u64
+                    * (std::mem::size_of::<CompactDomainId>() as u64);
+                let runs =
+                    class.hour_runs.len() as u64 * (std::mem::size_of::<(i32, u32)>() as u64);
+                domains + runs
+            })
+            .sum();
+        spine + inner
+    }
+
+    /// The `gaps` table as the manifest carries it.
+    pub fn to_json(&self) -> Value {
+        let table: Vec<Value> = self
+            .classes
+            .iter()
+            .map(|class| {
+                let mut object = Map::new();
+                object.insert("reason".into(), json!(class.key.reason.wire_name()));
+                object.insert("grouping".into(), json!(class.key.grouping.wire_name()));
+                match class.key.grouping {
+                    DomainGrouping::PerDomain => {
+                        object.insert("domains".into(), domains_json(&class.domains));
+                    }
+                    DomainGrouping::Shared => {
+                        object.insert("domains".into(), domains_json(&class.key.shared_domains));
+                        object.insert("repeat".into(), json!(class.repeat));
+                    }
+                }
+                object.insert("span_hours".into(), json!(class.key.span_hours));
+                object.insert("witness".into(), class.key.witness.to_json());
+                object.insert("hour_runs".into(), runs_json(&class.hour_runs));
+                Value::Object(object)
+            })
+            .collect();
+        json!({
+            "row_count": self.row_count,
+            "class_count": table.len(),
+            "classes": table,
+        })
+    }
+
+    /// Build from a list of records in ANY order.
+    ///
+    /// For the reference and test paths, where the rows are already in hand.
+    /// Production never has a list: it streams its derivation into
+    /// [`GapClassTableBuilder`], and `the_ordered_builder_and_from_records_agree`
+    /// holds the two to the same table.
+    ///
+    /// Takes a SLICE and sorts four-byte indices, rather than taking an iterator
+    /// and collecting. A caller that already holds the rows would otherwise pay
+    /// for a second full copy of them just to hand them over, which is the exact
+    /// cost this whole change exists to remove -- and it would then not be
+    /// visible in any component, because nobody would charge it.
+    pub fn from_records(records: &[GapRecord]) -> Self {
+        // `usize`, not a narrower index type: a `u32` index would silently drop
+        // every row past the four-billionth, and a helper whose contract is
+        // "records in any order" must not have a length above which it quietly
+        // means "some of the records".
+        let mut order: Vec<usize> = (0..records.len()).collect();
+        // Stable, and by hour_start only: within one hour the builder sorts the
+        // tally and counts the repeats, so no finer order can change the table.
+        order.sort_by_key(|index| records[*index].hour_start);
+        let mut builder = GapClassTableBuilder::default();
+        for index in order {
+            builder
+                .push(&records[index])
+                .expect("records visited in hour order are in order for the builder");
+        }
+        builder.finish()
+    }
+
+    /// The bytes [`Self::from_records`] holds beyond the table while it builds:
+    /// one index per row.
+    ///
+    /// Published so a caller that charges the table can charge the construction
+    /// transient too. Production does not use `from_records` at all.
+    pub fn from_records_transient_bytes(record_count: usize) -> u64 {
+        (record_count as u64) * (std::mem::size_of::<usize>() as u64)
+    }
+}
+
+/// Builds a [`GapClassTable`] from records delivered in NON-DECREASING
+/// `hour_start` order.
+///
+/// The order is a requirement, not a convenience. What the builder retains is
+/// the tallies of the hour it is currently on plus the classes it has already
+/// closed; a record for an hour it has closed cannot be folded in without
+/// reopening a run, so it is REFUSED rather than dropped or mis-filed. The
+/// caller that guarantees the order is the derivation, which merges its four
+/// sources by hour.
+#[derive(Debug, Default)]
+pub struct GapClassTableBuilder {
+    open_hour: Option<i32>,
+    open: BTreeMap<GapClassKey, (Vec<CompactDomainId>, u32)>,
+    closed: BTreeMap<(GapClassKey, Vec<CompactDomainId>, u32), Vec<(i32, u32)>>,
+    row_count: usize,
+}
+
+impl GapClassTableBuilder {
+    /// Fold one record in. Errors if `record.hour_start` is BEFORE the hour the
+    /// builder is on, or if the record's witness does not survive the template
+    /// round trip.
+    pub fn push(&mut self, record: &GapRecord) -> Result<(), GapLedgerError> {
+        match self.open_hour {
+            Some(open) if record.hour_start < open => {
+                return Err(GapLedgerError::OutOfOrder {
+                    open_hour: open,
+                    record_hour: record.hour_start,
+                })
+            }
+            Some(open) if record.hour_start > open => self.close_hour(open),
+            Some(_) => {}
+            None => {}
+        }
+        self.open_hour = Some(record.hour_start);
+
         let grouping = if record.domains.len() == 1 {
             DomainGrouping::PerDomain
         } else {
             DomainGrouping::Shared
         };
+        let witness = WitnessTemplate::from_witness(&record.witness, record.hour_start);
+        // CHECKED HERE so `GapClass::row_at` can be infallible. The template
+        // states the witness relative to the hour, and a value that cannot be
+        // resolved back is a row this table could not give again -- which is
+        // information loss, and it is refused where it can still be seen.
+        if witness.to_witness(record.hour_start).ok().as_ref() != Some(&record.witness) {
+            return Err(GapLedgerError::Malformed(format!(
+                "the witness of the gap record at hour {} does not survive the class template",
+                record.hour_start
+            )));
+        }
         let key = GapClassKey {
             reason: record.reason,
             grouping,
@@ -832,52 +1228,131 @@ pub fn encode_gaps(records: &[GapRecord]) -> Value {
                 DomainGrouping::Shared => record.domains.clone(),
             },
             span_hours: i64::from(record.hour_end) - i64::from(record.hour_start) + 1,
-            witness: WitnessTemplate::from_witness(&record.witness, record.hour_start),
+            witness,
         };
-        let slot = per_hour.entry((key, record.hour_start)).or_default();
+        let slot = self.open.entry(key).or_default();
         match grouping {
             DomainGrouping::PerDomain => slot.0.extend_from_slice(&record.domains),
             DomainGrouping::Shared => slot.1 += 1,
         }
+        self.row_count += 1;
+        Ok(())
     }
 
-    // (class key, that hour's exact tally) -> the hours carrying it.
-    let mut classes: BTreeMap<(GapClassKey, Vec<CompactDomainId>, u32), Vec<i32>> = BTreeMap::new();
-    for ((key, hour), (mut domains, repeat)) in per_hour {
-        domains.sort_unstable();
-        classes
-            .entry((key, domains, repeat))
-            .or_default()
-            .push(hour);
-    }
-
-    let table: Vec<Value> = classes
-        .into_iter()
-        .map(|((key, domains, repeat), hours)| {
-            let mut class = Map::new();
-            class.insert("reason".into(), json!(key.reason.wire_name()));
-            class.insert("grouping".into(), json!(key.grouping.wire_name()));
-            match key.grouping {
-                DomainGrouping::PerDomain => {
-                    class.insert("domains".into(), domains_json(&domains));
+    /// Move the tallies of `hour` into the closed classes.
+    fn close_hour(&mut self, hour: i32) {
+        for (key, (mut domains, repeat)) in std::mem::take(&mut self.open) {
+            domains.sort_unstable();
+            let runs = self.closed.entry((key, domains, repeat)).or_default();
+            // Hours arrive ascending, so a run is extended in place when the
+            // hour is the strictly next one and a new run opens otherwise --
+            // which is exactly what `run_encode` does to a sorted list.
+            match runs.last_mut() {
+                Some((first, count)) if i64::from(*first) + i64::from(*count) == i64::from(hour) => {
+                    *count += 1;
                 }
-                DomainGrouping::Shared => {
-                    class.insert("domains".into(), domains_json(&key.shared_domains));
-                    class.insert("repeat".into(), json!(repeat));
-                }
+                _ => runs.push((hour, 1)),
             }
-            class.insert("span_hours".into(), json!(key.span_hours));
-            class.insert("witness".into(), key.witness.to_json());
-            class.insert("hour_runs".into(), runs_json(&run_encode(hours)));
-            Value::Object(class)
-        })
-        .collect();
+        }
+    }
 
-    json!({
-        "row_count": records.len(),
-        "class_count": table.len(),
-        "classes": table,
-    })
+    pub fn finish(mut self) -> GapClassTable {
+        if let Some(hour) = self.open_hour.take() {
+            self.close_hour(hour);
+        }
+        let classes = self
+            .closed
+            .into_iter()
+            .map(|((key, domains, repeat), hour_runs)| GapClass {
+                key,
+                domains,
+                repeat,
+                hour_runs,
+            })
+            .collect();
+        GapClassTable {
+            classes,
+            row_count: self.row_count,
+        }
+    }
+}
+
+/// A k-way merge over a [`GapClassTable`]'s classes, yielding rows hour
+/// ascending with one cursor per class rather than one row per row.
+pub struct HourOrderedRows<'a> {
+    table: &'a GapClassTable,
+    /// Per class, the (run index, step within that run) of the hour the heap
+    /// currently holds for it. A cursor rather than a search: re-finding "the
+    /// next hour after this one" by scanning the runs would make the merge cost
+    /// O(rows * runs), which is the shape this whole change exists to remove.
+    cursors: Vec<(usize, u32)>,
+    /// (hour, class index, index within the class's rows at that hour), in a
+    /// `Reverse` wrapper so `BinaryHeap`'s max-heap pops hours ascending.
+    heap: std::collections::BinaryHeap<std::cmp::Reverse<(i32, usize, usize)>>,
+}
+
+impl<'a> HourOrderedRows<'a> {
+    fn new(table: &'a GapClassTable) -> Self {
+        let mut heap = std::collections::BinaryHeap::with_capacity(table.classes.len());
+        let mut cursors = vec![(0usize, 0u32); table.classes.len()];
+        for (index, class) in table.classes.iter().enumerate() {
+            if class.rows_per_hour() == 0 {
+                // Nothing to yield, and the cursor must not point at a run whose
+                // rows will never be asked for.
+                cursors[index] = (class.hour_runs.len(), 0);
+                continue;
+            }
+            if let Some((first, _)) = class.hour_runs.first() {
+                heap.push(std::cmp::Reverse((*first, index, 0)));
+            } else {
+                cursors[index] = (0, 0);
+            }
+        }
+        Self {
+            table,
+            cursors,
+            heap,
+        }
+    }
+}
+
+impl Iterator for HourOrderedRows<'_> {
+    type Item = GapRecord;
+
+    fn next(&mut self) -> Option<GapRecord> {
+        let std::cmp::Reverse((hour, class_index, row_index)) = self.heap.pop()?;
+        let class = &self.table.classes[class_index];
+        let record = class.row_at(hour, row_index);
+        if row_index + 1 < class.rows_per_hour() {
+            self.heap
+                .push(std::cmp::Reverse((hour, class_index, row_index + 1)));
+            return Some(record);
+        }
+        let (run_index, step) = &mut self.cursors[class_index];
+        *step += 1;
+        if class
+            .hour_runs
+            .get(*run_index)
+            .is_some_and(|(_, count)| *step >= *count)
+        {
+            *run_index += 1;
+            *step = 0;
+        }
+        if let Some((first, _)) = class.hour_runs.get(*run_index) {
+            let next_hour = (i64::from(*first) + i64::from(*step)) as i32;
+            self.heap
+                .push(std::cmp::Reverse((next_hour, class_index, 0)));
+        }
+        Some(record)
+    }
+}
+
+/// Compact `records` into the ledger's `gaps` table.
+///
+/// The reference and test entry point; production builds a [`GapClassTable`]
+/// from its streaming derivation and calls [`GapClassTable::to_json`] instead.
+pub fn encode_gaps(records: &[GapRecord]) -> Value {
+    GapClassTable::from_records(records).to_json()
 }
 
 fn expand_gaps(table: &Value) -> Result<Vec<GapRecord>, GapLedgerError> {
@@ -1537,6 +2012,18 @@ pub fn encode_gap_ledger<I>(gaps: &[GapRecord], outcomes: I) -> Value
 where
     I: IntoIterator<Item = DomainOutcome> + Clone,
 {
+    encode_gap_ledger_from_table(&GapClassTable::from_records(gaps), outcomes)
+}
+
+/// Build the whole `compact_stream.gap_ledger` object from an already-compacted
+/// [`GapClassTable`].
+///
+/// The production entry point. The flat row list never exists on this path: the
+/// derivation streams into the table and the table becomes the JSON.
+pub fn encode_gap_ledger_from_table<I>(gaps: &GapClassTable, outcomes: I) -> Value
+where
+    I: IntoIterator<Item = DomainOutcome> + Clone,
+{
     json!({
         "schema": GAP_LEDGER_SCHEMA,
         "version": GAP_LEDGER_VERSION,
@@ -1549,7 +2036,7 @@ where
                  `gaps` and `domain_gap_outcomes` arrays, which cost 33.5 KB of \
                  manifest JSON per game hour. Expand it with the recorder_host \
                  gap_ledger module or the gap_ledger.py helper.",
-        "gaps": encode_gaps(gaps),
+        "gaps": gaps.to_json(),
         "domain_gap_outcomes": encode_domain_gap_outcomes(outcomes),
     })
 }
@@ -1784,7 +2271,31 @@ pub fn domain_outcomes_resident_bytes(count: usize) -> u64 {
 /// is exactly what the manifest carries and exactly what pack time reads back.
 /// Affordable only because the ledger is run encoded — the flat shape priced
 /// this way would have cost a second full copy of itself.
-pub fn ledger_manifest_bytes(ledger: &Value, records: &[GapRecord], outcome_count: usize) -> u64 {
+/// The CLASS TABLE IS NOT PRICED HERE. The derived rows are no longer
+/// materialized on the production path (lane GE) and the classes that replaced
+/// them are charged where they are built, for as long as they live -- charging
+/// them again here would double count them into the same component, which is an
+/// over-charge and exactly what `accounting_consistent` exists to catch.
+///
+/// What is left is the JSON and the H4DG outcomes the ledger was built from.
+pub fn ledger_manifest_bytes(ledger: &Value, outcome_count: usize) -> u64 {
+    let json = serde_json::to_vec(ledger)
+        .map(|bytes| bytes.len() as u64)
+        .unwrap_or(0);
+    json + domain_outcomes_resident_bytes(outcome_count)
+}
+
+/// What a MATERIALIZED expansion of the same ledger would have cost.
+///
+/// Kept, and public, because it is the "before" arm of the measurement lane GE
+/// is stated in: the profiler builds the flat list, charges this, and the
+/// difference against [`ledger_manifest_bytes`] over the class table is the
+/// change. Production never calls it.
+pub fn flat_ledger_manifest_bytes(
+    ledger: &Value,
+    records: &[GapRecord],
+    outcome_count: usize,
+) -> u64 {
     let json = serde_json::to_vec(ledger)
         .map(|bytes| bytes.len() as u64)
         .unwrap_or(0);

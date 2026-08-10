@@ -1149,3 +1149,195 @@ fn no_ledger_key_contains_a_dot() {
         "gap_ledger",
     );
 }
+
+// ---------------------------------------------------------------------------
+// The typed class table (lane GE)
+// ---------------------------------------------------------------------------
+
+/// The two builders answer the same thing.
+///
+/// Production streams its derivation into `GapClassTableBuilder` in hour order
+/// and keeps only the current hour's tallies; `from_records` buffers a list and
+/// sorts it. If the streaming path ever grouped differently -- an hour closed
+/// too early, a tally flushed into the wrong class -- the two would disagree on
+/// the classes, and this compares the whole published table, not a count.
+#[test]
+fn the_ordered_builder_and_from_records_agree() {
+    let mut records = mixed_session();
+    // Deliberately not in hour order, so `from_records` has to do its own
+    // sorting and the comparison is not against an already-sorted input.
+    records.reverse();
+
+    let unordered = GapClassTable::from_records(&records);
+
+    let mut hour_ordered = records.clone();
+    hour_ordered.sort_by_key(|record| record.hour_start);
+    let mut builder = GapClassTableBuilder::default();
+    for record in &hour_ordered {
+        builder.push(record).expect("hour ordered input is accepted");
+    }
+    let streamed = builder.finish();
+
+    assert_eq!(streamed.to_json(), unordered.to_json());
+    assert_eq!(streamed.row_count(), records.len());
+    assert_eq!(sorted(streamed.rows().collect()), sorted(records));
+}
+
+/// A record for an hour the builder has already closed is REFUSED.
+///
+/// The builder's whole saving is that it holds one hour of tallies; folding a
+/// late record into a closed run would move a row to an hour nobody recorded it
+/// at, which is the hour misattribution this ledger exists to make impossible.
+/// Make `push` re-open the previous hour instead and this fails.
+#[test]
+fn the_builder_refuses_a_record_for_a_closed_hour() {
+    let mut builder = GapClassTableBuilder::default();
+    builder.push(&coverage_row(200, 7, 0)).unwrap();
+    builder.push(&coverage_row(201, 7, 0)).unwrap();
+    assert_eq!(
+        builder.push(&coverage_row(200, 9, 0)),
+        Err(GapLedgerError::OutOfOrder {
+            open_hour: 201,
+            record_hour: 200,
+        })
+    );
+}
+
+/// The point query has to see the INTERIOR of a multi-hour record.
+///
+/// `hour_runs` holds the hours records START at, not every hour they cover, so
+/// a lookup that binary searched for the queried hour directly would answer
+/// "no gap here" in the middle of a nine-hour skipped range -- and the coverage
+/// gate would then raise a second record for an hour that was already
+/// explained. The empty-domain row below covers every domain, the backpressure
+/// row only its own.
+#[test]
+fn a_point_query_finds_the_interior_of_a_multi_hour_record() {
+    let table = GapClassTable::from_records(&mixed_session());
+    for hour in 141..=149 {
+        assert!(
+            table.any_covering(hour, 7, |record| record.reason == GapReason::SkippedHour),
+            "the skipped range must cover hour {hour} for every domain"
+        );
+    }
+    assert!(!table.any_covering(150, 7, |record| record.reason == GapReason::SkippedHour));
+    for hour in 153..=164 {
+        assert!(
+            table.any_covering(hour, 10, |record| record.reason == GapReason::Backpressure),
+            "the backpressure range must cover hour {hour} for domain 10"
+        );
+    }
+    assert!(!table.any_covering(160, 11, |record| record.reason == GapReason::Backpressure));
+}
+
+/// `any_covering` must find exactly what a scan of the flat rows would.
+///
+/// The class-level filters are an INDEX; an index that disagrees with the rows
+/// is a wrong answer, so this compares the two over every (hour, domain) the
+/// fixture touches.
+#[test]
+fn the_point_query_agrees_with_a_scan_of_every_row() {
+    let records = mixed_session();
+    let table = GapClassTable::from_records(&records);
+    let mut covered = 0usize;
+    for hour in 95..175 {
+        for domain in [5u16, 6, 7, 8, 9, 10, 11, 21, 47, 99] {
+            let scanned = records.iter().any(|record| record.covers(hour, domain));
+            let indexed = table.any_covering(hour, domain, |_| true);
+            assert_eq!(scanned, indexed, "hour {hour} domain {domain}");
+            covered += usize::from(scanned);
+        }
+    }
+    assert!(
+        covered > 0,
+        "the fixture must actually cover some domain-hours, or this proves nothing"
+    );
+}
+
+/// The hour-ordered merge yields every row, once, hours ascending.
+///
+/// The bounds-and-overlap sweep on the finalize path depends on both halves: a
+/// row out of order makes the sweep refuse the ledger, and a row dropped makes
+/// it miss an overlap.
+#[test]
+fn the_hour_ordered_merge_is_ascending_and_complete() {
+    let records = mixed_session();
+    let table = GapClassTable::from_records(&records);
+    let merged: Vec<GapRecord> = table.rows_hour_ordered().collect();
+    assert_eq!(merged.len(), records.len());
+    assert!(
+        merged
+            .windows(2)
+            .all(|pair| pair[0].hour_start <= pair[1].hour_start),
+        "the merge must not go backwards"
+    );
+    assert_eq!(sorted(merged), sorted(records));
+}
+
+/// Duplicate rows are visible on the classes, exactly.
+///
+/// `derived_gap_ledger_is_valid` used to hold one encoded copy of every row to
+/// answer this. The claim that replaced it is that a duplicate can only appear
+/// as a repeated domain in one class-hour tally or as a `repeat` above one, so
+/// both spellings are checked here -- and a clean session is checked with them,
+/// which a `has_duplicate_rows` that always answered `true` would fail.
+#[test]
+fn duplicate_rows_are_visible_on_the_classes() {
+    let per_domain_duplicate = vec![coverage_row(300, 7, 0), coverage_row(300, 7, 0)];
+    assert!(GapClassTable::from_records(&per_domain_duplicate).has_duplicate_rows());
+
+    let shared = GapRecord {
+        hour_start: 300,
+        hour_end: 300,
+        reason: GapReason::PartialData,
+        domains: vec![5, 6, 8],
+        witness: GapWitness::CoverageAndStatus {
+            expected_perf_records: 1,
+            observed_perf_records: 0,
+            expected_data_records: 1,
+            observed_data_records: 0,
+            status_bits: 0x200,
+        },
+    };
+    let shared_duplicate = vec![shared.clone(), shared];
+    assert!(GapClassTable::from_records(&shared_duplicate).has_duplicate_rows());
+
+    assert!(!GapClassTable::from_records(&mixed_session()).has_duplicate_rows());
+}
+
+/// The class table costs less than the rows it stands for, and the saving grows
+/// with the session.
+///
+/// This is lane GE's whole claim, stated where it can fail: a table that kept
+/// one entry per row would hold the ratio at one.
+#[test]
+fn the_class_table_is_smaller_than_its_rows_and_the_saving_grows() {
+    let session = |hours: i32| {
+        let mut records = Vec::new();
+        for hour in 0..hours {
+            for domain in [7u16, 9, 11, 13, 17] {
+                records.push(coverage_row(hour, domain, 0));
+            }
+        }
+        records
+    };
+    let mut previous = 0.0f64;
+    for hours in [100i32, 1_000, 10_000] {
+        let records = session(hours);
+        let table = GapClassTable::from_records(&records);
+        let rows_bytes = gap_records_resident_bytes(&records) as f64;
+        let table_bytes = table.resident_bytes().max(1) as f64;
+        let ratio = rows_bytes / table_bytes;
+        assert!(
+            ratio > previous,
+            "the saving must grow with the session: {hours} hours gave {ratio:.1}x, \
+             the shorter session gave {previous:.1}x"
+        );
+        previous = ratio;
+    }
+    assert!(
+        previous > 100.0,
+        "10,000 hours of one stable domain set should compact by far more than 100x, \
+         got {previous:.1}x"
+    );
+}
