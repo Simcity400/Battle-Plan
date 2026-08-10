@@ -653,8 +653,52 @@ fn the_instrument_does_not_charge_for_a_domain_whose_gap_is_already_published() 
             LABEL_HOUR,
             &BTreeSet::from([DOMAIN_ID])
         ),
-        (0, 1),
-        "a domain that already published a gap costs nothing to refuse"
+        (0, 0),
+        "a domain that already published a gap costs nothing to refuse, AND is \
+         not offered as a domain that could have"
+    );
+}
+
+/// THE TWO HALVES OF THE RATIO ARE ONE POPULATION (lane GF, 2026-08-10).
+///
+/// The manifest publishes these two numbers together and calls the denominator
+/// "refusable bracketed domain-hours". The numerator has filtered
+/// `already_gapped` since the counter was written; the denominator had not, so
+/// a domain that CANNOT enter the numerator was still being offered by the
+/// denominator, and the published rate was an incremental loss divided by a
+/// population that includes something incapable of contributing to it. On t45
+/// that was d81 on 341 of 595 frames.
+///
+/// The test uses TWO domains so the error is visible as a ratio rather than as
+/// a count: one mismatched and refusable, one mismatched and already gapped.
+/// The right answer is 1 of 1, not 1 of 2.
+///
+/// MUTATION RUN: drop `&& !already_gapped.contains(domain)` from the
+/// `bracketed` filter in `hour_label_mismatched_bracket_count`.
+/// OBSERVED: `the denominator must offer only domains the numerator could
+/// count` — left `(1, 2)`, right `(1, 1)`.
+#[test]
+fn the_denominator_offers_only_domains_the_numerator_could_count() {
+    const OTHER_DOMAIN_ID: u16 = DOMAIN_ID + 1;
+    let brackets = [
+        bracket(DOMAIN_ID, LABEL_HOUR + 1, LABEL_HOUR + 1),
+        bracket(OTHER_DOMAIN_ID, LABEL_HOUR + 1, LABEL_HOUR + 1),
+    ];
+
+    assert_eq!(
+        hour_label_mismatched_bracket_count(&brackets, LABEL_HOUR, &BTreeSet::new()),
+        (2, 2),
+        "premise: with nothing already published both mismatches are charged \
+         against both brackets"
+    );
+    assert_eq!(
+        hour_label_mismatched_bracket_count(
+            &brackets,
+            LABEL_HOUR,
+            &BTreeSet::from([OTHER_DOMAIN_ID])
+        ),
+        (1, 1),
+        "the denominator must offer only domains the numerator could count"
     );
 }
 
