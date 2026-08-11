@@ -32412,10 +32412,12 @@ fn an_hour_whose_domain_reported_a_gap_names_it_instead_of_republishing_the_last
 /// `replay_decoder`); the fold's own per-hour state had the identical hole.
 ///
 /// kills: `WorldFold::ingest_record`'s `COMPACT_RECORD_TYPE_FRAME_REFUSED` arm.
-/// Delete it (or empty out `close_refused_hour`) and hour 1 publishes with
-/// hour 0's `domain_gap` problem and hour 0's note, failing both assertions
-/// below. Making `close_refused_hour` publish a snapshot instead fails the
-/// hour-count assertion.
+/// Delete it (or empty out `close_refused_hour`) and hour 1 publishes carrying
+/// hour 0's `domain_gap` PROBLEM entry and hour 0's note verbatim, failing the
+/// problem assertion and the note-stamp assertion respectively. Making
+/// `close_refused_hour` publish a snapshot instead fails the hour-count
+/// assertion. Dropping the `refused game hour` stamp from the carried note in
+/// `close_refused_hour` fails the stamp assertion on its own.
 #[test]
 fn a_refused_hour_does_not_stamp_its_gap_complaint_onto_the_next_hour() {
     let base_hi = 16_959_360i64;
@@ -32497,16 +32499,27 @@ fn a_refused_hour_does_not_stamp_its_gap_complaint_onto_the_next_hour() {
             .any(|problem| problem["problem"] == json!("domain_gap")),
         "hour 1 observed domain 13 cleanly; the refused hour's gap is not its problem: {problems:?}"
     );
+    // A note from the refused hour may TRAVEL - `close_refused_hour` carries the
+    // refused hour's statements so a destructive mutation it made cannot go
+    // unexplained - but it may never arrive as a bare claim about THIS hour.
+    // Anything carried says which refused hour it belongs to, which is exactly
+    // what the structured `domain_problems` entry above cannot do and why that
+    // one does not travel at all.
     let notes = snapshots[0]["provenance"]["notes"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    assert!(
-        !notes
-            .iter()
-            .any(|note| note.as_str().unwrap_or_default().contains("DOMAIN_GAP")),
-        "the refused hour's note must not be republished as hour 1's: {notes:?}"
-    );
+    for note in notes.iter().filter_map(|note| note.as_str()) {
+        assert!(
+            note.starts_with("refused game hour "),
+            "a note surfacing on a healthy hour must name the refused hour it came \
+             from rather than read as this hour's own: {note}"
+        );
+        assert!(
+            note.contains("1936.1.1.0"),
+            "and it must name the hour that was actually refused: {note}"
+        );
+    }
     assert_eq!(
         snapshots[0]["countries"]["47"]["research"]["tech_count"],
         json!(21),
@@ -32730,3 +32743,187 @@ fn a_refused_partial_hour_does_not_prune_a_loadout_against_a_stale_air_wing_set(
     );
 }
 
+
+
+/// A prune performed while closing a REFUSED hour must still be named, on the
+/// first hour that publishes.
+///
+/// `finish_hour` names this deletion in the hour that performs it
+/// ("division_equipment_live pruned N row(s) after D20 division deletion"), and
+/// that note is the only account of a removal which may have taken a row
+/// observed in that very hour: the d26 key is `(owner, div_id)` and cannot tell
+/// `17:1` from `17:2`. A refused hour publishes no snapshot, so the note went
+/// into `notes_this_hour` and `reset_hour_state` discarded it - while KEEPING
+/// the deletion. The next published hour then reflected an ambiguous prune with
+/// nothing anywhere saying so.
+///
+/// Hour 0 seeds `17:1` with equipment 11. Hour 1 deletes it and is REFUSED.
+/// Hour 2 publishes.
+///
+/// The assertions pin both halves: the statement reaches hour 2, and it names
+/// the refused hour it actually happened in rather than implying hour 2 pruned
+/// anything.
+///
+/// kills: the `carried_refusal_notes` capture in `WorldFold::close_refused_hour`
+/// (or its drain in `finish_hour`). Remove either and hour 2 publishes with
+/// `notes: []`, failing the first assertion - which is exactly the state before
+/// this fix, verified by running it that way.
+#[test]
+fn a_prune_done_while_closing_a_refused_hour_is_named_on_the_next_published_hour() {
+    let snaps = gq_snapshots_with_refused_hour(
+        vec![
+            vec![
+                (20, chunk3_division_payload(&[(17, 1, 47)])),
+                (
+                    26,
+                    chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]),
+                ),
+            ],
+            // Refused: the deletion is folded and the prune runs, but this hour
+            // publishes nothing to say so.
+            vec![(20, chunk3_division_delete_payload(17, 1))],
+            vec![
+                (20, chunk3_division_payload(&[(17, 2, 47)])),
+                (
+                    26,
+                    chunk3_rowless_division_equipment_payload(DELTA, 1, 1, 0),
+                ),
+            ],
+        ],
+        1,
+    );
+
+    assert_eq!(snaps.len(), 2, "the refused hour publishes nothing");
+
+    let notes = snaps[1]["provenance"]["notes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let carried = notes
+        .iter()
+        .filter_map(|note| note.as_str())
+        .find(|note| note.contains("division_equipment_live pruned"))
+        .unwrap_or_else(|| {
+            panic!("the refused hour's prune must be reported on the first published hour: {notes:?}")
+        });
+    assert!(
+        carried.contains("refused game hour"),
+        "the statement must name the refused hour it happened in, not imply this hour pruned: {carried}"
+    );
+    assert!(
+        carried.contains("1936.1.1.1") && !carried.contains("1936.1.1.2"),
+        "and it must name the REFUSED hour (1936.1.1.1), not the hour publishing it          (1936.1.1.2): {carried}"
+    );
+    assert_eq!(
+        snaps[1]["date"],
+        json!("1936.1.1.2"),
+        "the two really are different hours, so the assertion above is discriminating"
+    );
+
+    // The refusal's own semantics are untouched: the prune still happened.
+    assert_eq!(
+        snaps[1]["divisions"][0]["div_uid"],
+        json!("17:2"),
+        "the reused division is published"
+    );
+    assert_eq!(
+        snaps[1]["divisions"][0]["equipment"],
+        Value::Null,
+        "and it did NOT inherit the deleted division's equipment"
+    );
+}
+
+
+/// A DESTRUCTIVE mutation made by a refused hour's ordinary `DOMAIN_DATA` must
+/// also be named on the next published hour - not just the two close-time
+/// prunes.
+///
+/// `fold_division_equipment`'s duplicate-root branch calls
+/// `division_equipment.remove(key)` and explains it with a note and nothing
+/// else. In a refused hour that clearing is permanent while the note went into
+/// `notes_this_hour` and was discarded, so a later hour published
+/// `equipment: null` for a division whose equipment had been silently cleared
+/// two hours earlier.
+///
+/// This is the same class as the prune note but reached EARLIER in the hour,
+/// which is why `close_refused_hour` carries every note the refused hour wrote
+/// rather than only the ones its prunes add - a distinction the sibling test
+/// above cannot see, because there the only note IS a prune note.
+///
+/// Hour 0 seeds `(47,17)` and `(47,18)` with equipment. Hour 1 sends a d26
+/// delta with duplicate roots for `(47,17)`, clearing it, and is REFUSED.
+/// Hour 2 publishes both divisions with a rowless d26 delta.
+///
+/// kills: replacing the `std::mem::take(&mut self.notes_this_hour)` carry in
+/// `WorldFold::close_refused_hour` with one that captures only notes written
+/// after the prunes began (the previous, narrower form). Hour 2 then publishes
+/// with no mention of the clearing, failing the first assertion.
+#[test]
+fn a_destructive_mutation_inside_a_refused_hour_is_named_on_the_next_published_hour() {
+    let snaps = gq_snapshots_with_refused_hour(
+        vec![
+            vec![
+                (20, chunk3_division_payload(&[(17, 1, 47), (18, 1, 47)])),
+                (
+                    26,
+                    chunk3_division_equipment_payload(
+                        0,
+                        &[(47, 17, 0, 0, 0, 1), (47, 18, 0, 0, 1, 1)],
+                        &[(11, 250_000), (12, 500_000)],
+                    ),
+                ),
+            ],
+            // Refused: duplicate roots for (47,17) clear its accumulator entry.
+            // No d20 record, so neither close-time prune writes anything.
+            vec![(
+                26,
+                chunk3_division_equipment_payload(
+                    DELTA,
+                    &[(47, 17, 0, 0, 0, 1), (47, 17, 0, 0, 1, 1)],
+                    &[(21, 100_000), (22, 200_000)],
+                ),
+            )],
+            vec![
+                (20, chunk3_division_payload(&[(17, 1, 47), (18, 1, 47)])),
+                (
+                    26,
+                    chunk3_rowless_division_equipment_payload(DELTA, 2, 2, 0),
+                ),
+            ],
+        ],
+        1,
+    );
+
+    assert_eq!(snaps.len(), 2, "the refused hour publishes nothing");
+
+    let notes = snaps[1]["provenance"]["notes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let carried = notes
+        .iter()
+        .filter_map(|note| note.as_str())
+        .find(|note| note.contains("duplicate-key row(s)"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the refused hour cleared (47,17)'s equipment; the first published hour must \
+                 say so: {notes:?}"
+            )
+        });
+    assert!(
+        carried.contains("refused game hour 1936.1.1.1"),
+        "and it must name the refused hour it happened in: {carried}"
+    );
+
+    // The clearing itself is unchanged - this fix is provenance only.
+    let divs = snaps[1]["divisions"].as_array().cloned().unwrap_or_default();
+    let div17 = divs
+        .iter()
+        .find(|div| div["div_uid"] == json!("17:1"))
+        .unwrap_or_else(|| panic!("17:1 is published: {divs:?}"));
+    assert_eq!(
+        div17["equipment"],
+        Value::Null,
+        "the ambiguous key stays cleared; only its explanation was missing"
+    );
+}

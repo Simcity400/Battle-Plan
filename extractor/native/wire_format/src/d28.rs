@@ -1,9 +1,9 @@
 //! d28 `oob_command_live` — the order-of-battle command tree: army groups,
 //! armies, fleets and task forces, with their membership.
 //!
-//! Derived from `world_fold.rs:17381`-`:17581`
+//! Derived from `world_fold.rs:17471`-`:17671`
 //! (`fold_oob_command`), its payload constants at `:970`-`:972` and `:1019`-`:1038`,
-// @world-fold-authority domain=28 functions=fold_oob_command lines=17381-17581 sha256=f636e6e733751bf84ab8b8b6d30506f2464013bfbc06d210b0ba4994993bd486 closure=b2b3a7379480ab653bbf26f171dc0f1993b95558d8bd3d7d9777cf7d7e618c00
+// @world-fold-authority domain=28 functions=fold_oob_command lines=17471-17671 sha256=f636e6e733751bf84ab8b8b6d30506f2464013bfbc06d210b0ba4994993bd486 closure=175792a730abbf8ea2acd181b9160b63115e769bf24c78f04848a1a3b7b62c88
 //! the accumulator's own JSON projection (`:7948`-`:8010`, `:23542`-`:23560`), and
 //! the collector read that produces the flags, the status words and the member
 //! child rows (`extractor/native/collector/src/attach_log.rs:46680`-`:47160`,
