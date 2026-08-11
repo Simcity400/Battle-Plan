@@ -227,9 +227,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "compact_contract"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "occupation_resistance_compliance_live_replay_verify"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "serde_json",
  "snapshot",
  "windows-sys",

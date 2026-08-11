@@ -4278,31 +4278,30 @@ mod tests {
 
         if std::env::var_os(WORKER_MARKER).is_some() {
             bounded_unique_name_window_property();
-            return;
-        }
-
-        let binary = std::env::current_exe().expect("locate this test binary to re-execute it");
-        let output = std::process::Command::new(binary)
-            .env(WORKER_MARKER, "1")
-            .args(["--exact", TEST_NAME, "--test-threads=1", "--nocapture"])
-            .output()
-            .expect("run the isolated single-test child");
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        assert!(
-            output.status.success(),
-            "the isolated child run failed (exit {:?})\n--- child stdout ---\n{stdout}\
+        } else {
+            let binary = std::env::current_exe().expect("locate this test binary to re-execute it");
+            let output = std::process::Command::new(binary)
+                .env(WORKER_MARKER, "1")
+                .args(["--exact", TEST_NAME, "--test-threads=1", "--nocapture"])
+                .output()
+                .expect("run the isolated single-test child");
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            assert!(
+                output.status.success(),
+                "the isolated child run failed (exit {:?})\n--- child stdout ---\n{stdout}\
              \n--- child stderr ---\n{stderr}",
-            output.status.code()
-        );
-        // A child whose filter matched nothing also exits 0, so the pass count
-        // is what keeps this outer assertion from passing vacuously — it is
-        // also what catches a rename that leaves `TEST_NAME` stale.
-        assert!(
-            stdout.contains("test result: ok. 1 passed"),
-            "the isolated child must have run exactly this one test\n--- child stdout ---\n\
+                output.status.code()
+            );
+            // A child whose filter matched nothing also exits 0, so the pass count
+            // is what keeps this outer assertion from passing vacuously — it is
+            // also what catches a rename that leaves `TEST_NAME` stale.
+            assert!(
+                stdout.contains("test result: ok. 1 passed"),
+                "the isolated child must have run exactly this one test\n--- child stdout ---\n\
              {stdout}\n--- child stderr ---\n{stderr}"
-        );
+            );
+        }
     }
 
     /// The candidate-window property itself. Only ever called in the isolated

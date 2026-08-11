@@ -51,8 +51,8 @@ struct MountedLayer {
 
 #[derive(Clone, Debug)]
 struct ZipLayerIndex {
-    /// Normalized (lowercase, game-relative) entry name -> archive entry index.
-    entries: BTreeMap<String, usize>,
+    /// Case-folded entry identity -> case-preserved spelling and archive index.
+    entries: BTreeMap<String, (String, usize)>,
     archive: Arc<Mutex<zip::ZipArchive<fs::File>>>,
 }
 
@@ -168,8 +168,9 @@ impl EffectiveVfs {
     }
 
     pub fn resolve(&self, logical_path: &str) -> Result<Option<EffectiveVfsResolvedFile>, String> {
-        let logical_path = normalize_game_relative_path(logical_path)?;
-        let parent = logical_parent(&logical_path);
+        let logical_path = normalize_game_relative_path_preserve_case(logical_path)?;
+        let normalized_path = normalize_game_relative_path(&logical_path)?;
+        let parent = logical_parent(&normalized_path);
         for layer in self.layers.iter().rev() {
             if let Some(bytes) = read_layer_file(layer, &logical_path)? {
                 return Ok(Some(self.resolved(layer, logical_path, bytes)?));
@@ -272,9 +273,10 @@ impl EffectiveVfs {
         bytes: Vec<u8>,
     ) -> Result<EffectiveVfsResolvedFile, String> {
         let payload_sha256 = sha256_bytes(&bytes);
+        let normalized_path = normalize_game_relative_path(&logical_path)?;
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: self.authority_manifest_sha256.clone(),
-            normalized_game_relative_path: logical_path.clone(),
+            normalized_game_relative_path: normalized_path,
             winning_layer_ordinal: layer.ordinal,
             layer_kind: layer.layer_kind,
             layer_id: layer.layer_id.clone(),
@@ -317,7 +319,7 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
                 .zip_index
                 .as_ref()
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
-            let Some(&entry_index) = index.entries.get(logical_path) else {
+            let Some((_, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase()) else {
                 return Ok(None);
             };
             let mut archive = index
@@ -325,7 +327,7 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
                 .lock()
                 .map_err(|_| "effective VFS archive handle is poisoned".to_string())?;
             let mut entry = archive
-                .by_index(entry_index)
+                .by_index(*entry_index)
                 .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
             let mut bytes = Vec::new();
             entry
@@ -409,7 +411,10 @@ fn index_zip_layer(local_source: &Path, expected_sha256: &str) -> Result<ZipLaye
             return Err("effective VFS archive contains an unsupported entry type".into());
         }
         let name = normalize_archive_entry(entry.name())?;
-        if entries.insert(name, index).is_some() {
+        if entries
+            .insert(name.to_ascii_lowercase(), (name, index))
+            .is_some()
+        {
             return Err("effective VFS archive repeats a case-insensitive path".into());
         }
     }
@@ -447,7 +452,7 @@ fn list_layer_files(
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
             // Entry names were normalized and de-duplicated at mount; listing
             // is a pure walk over the prebuilt index with no archive I/O.
-            for path in index.entries.keys() {
+            for (path, _) in index.entries.values() {
                 if path_is_under(path, prefix) && extension_matches(path, extension) {
                     paths.insert(path.to_ascii_lowercase(), path.clone());
                 }
@@ -472,7 +477,11 @@ fn walk_directory(
         .map_err(|error| format!("list effective VFS directory failed: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("list effective VFS entry failed: {error}"))?;
-    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+    entries.sort_by(|left, right| {
+        let left = left.file_name().to_string_lossy().replace('\\', "/");
+        let right = right.file_name().to_string_lossy().replace('\\', "/");
+        crate::authored_ui::engine_recursive_path_cmp(&left, &right)
+    });
     for entry in entries {
         let file_type = entry
             .file_type()
@@ -489,7 +498,7 @@ fn walk_directory(
                 .map_err(|_| "effective VFS file escaped its layer root")?
                 .to_string_lossy()
                 .replace('\\', "/");
-            let path = normalize_game_relative_path(&relative)?;
+            let path = normalize_game_relative_path_preserve_case(&relative)?;
             if extension_matches(&path, extension)
                 && out.insert(path.to_ascii_lowercase(), path).is_some()
             {
@@ -521,7 +530,13 @@ fn normalize_archive_entry(name: &str) -> Result<String, String> {
     if parts.is_empty() {
         return Err("effective VFS archive contains an empty entry path".into());
     }
-    normalize_game_relative_path(&parts.join("/"))
+    normalize_game_relative_path_preserve_case(&parts.join("/"))
+}
+
+fn normalize_game_relative_path_preserve_case(path: &str) -> Result<String, String> {
+    let preserved = path.trim().replace('\\', "/");
+    normalize_game_relative_path(&preserved)?;
+    Ok(preserved)
 }
 
 fn path_from_logical(root: &Path, logical_path: &str) -> PathBuf {

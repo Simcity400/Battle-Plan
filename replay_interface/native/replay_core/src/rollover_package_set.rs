@@ -757,8 +757,8 @@ fn validate_selected_container(
                 format!("authenticate selected compact-stream entry: {error}"),
             )
         })?;
-    if receipt.uncompressed_len() != segment.raw_bytes
-        || receipt.sha256() != segment.raw_sha256.as_str()
+    if receipt.uncompressed_len() != segment.raw_decoded_bytes
+        || receipt.sha256() != segment.raw_decoded_sha256.as_str()
     {
         return Err(RolloverAuthenticationError::Integrity(
             "selected compact-stream authentication receipt disagrees with the package set".to_string(),

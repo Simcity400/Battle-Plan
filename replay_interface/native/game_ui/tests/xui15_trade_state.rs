@@ -592,12 +592,12 @@ fn unavailable_production_licenses_render_only_fail_closed_notice() {
 }
 
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn shipped_gui_scene_and_compositor_accept_exact_trade_cards() {
-    let game = PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
-    if !game.join("interface/countrytradeview.gui").is_file() {
-        eprintln!("SKIP: shipped countrytradeview.gui unavailable");
-        return;
-    }
+    let game = replay_test_gates::require_vanilla_game_root();
     let resolver = AssetResolver::new(vec![game]);
     let screen = AdmittedTradeScreen::Visible(presentation());
     let scene = build_trade_compose_scene(&resolver, &screen, 1920, 1080)

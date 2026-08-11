@@ -59,7 +59,7 @@ use portable_replay_format::sha256::Sha256;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
 const CACHE_HEADER_LEN: u64 = 40;
 
 fn hex32(byte: u8) -> String {
@@ -84,9 +84,20 @@ fn put_string(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(value.as_bytes());
 }
 
+fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        out.push(if value == 0 { byte } else { byte | 0x80 });
+        if value == 0 {
+            return;
+        }
+    }
+}
+
 fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
     let mut payload = vec![tag];
-    payload.extend_from_slice(&count.to_le_bytes());
+    put_varint(&mut payload, u64::from(count));
     cache_around_payload(&payload)
 }
 
@@ -214,7 +225,7 @@ fn an_allocator_refusal_becomes_a_typed_error_not_an_abort() {
     // An array of ELEMENTS null tags: the payload really does carry one byte
     // per declared element, so every proportionality bound is satisfied.
     let mut payload = vec![5u8];
-    payload.extend_from_slice(&ELEMENTS.to_le_bytes());
+    put_varint(&mut payload, u64::from(ELEMENTS));
     payload.extend(std::iter::repeat(0u8).take(ELEMENTS as usize));
     let (index_bytes, cache, source_len, source_sha) = cache_around_payload(&payload);
     assert!(

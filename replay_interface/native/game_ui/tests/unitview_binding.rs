@@ -38,13 +38,8 @@ use game_ui::unitview::{
 use replay_core::{open_recording, ViewStatus, WorldTimeline};
 use std::path::{Path, PathBuf};
 
-const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
-fn game_root() -> Option<PathBuf> {
-    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-    root.is_dir().then_some(root)
+fn game_root() -> PathBuf {
+    replay_test_gates::require_vanilla_game_root()
 }
 
 fn fixture(name: &str) -> WorldTimeline {
@@ -74,11 +69,12 @@ fn parse_unitview(root: &Path) -> LayoutSet {
 /// GATE L1 — the three selected-unit detail panels parse and every FILE field
 /// slot is present (no missing slots), with runtime grids classified as skips.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn unitview_detail_panels_have_all_file_field_slots() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP unitview_detail_panels_have_all_file_field_slots: the game root missing");
-        return;
-    };
+    let root = game_root();
     let layouts = parse_unitview(&root);
     let report = inspect_unitview_layout(&layouts);
 

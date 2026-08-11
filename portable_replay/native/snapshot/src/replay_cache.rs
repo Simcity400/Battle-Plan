@@ -321,7 +321,9 @@ impl ReplayHourIndex {
                 "hour index count {hour_count} exceeds {MAX_HOURS}"
             )));
         }
-        let mut hours = Vec::with_capacity(hour_count);
+        bound_count_by_remaining(hour_count, MIN_HOUR_ENTRY_BYTES, reader.remaining())?;
+        let mut hours = Vec::new();
+        reserve_exact(&mut hours, hour_count)?;
         for _ in 0..hour_count {
             hours.push(ReplayHourEntry {
                 hour_index: reader.i64()?,
@@ -1557,8 +1559,9 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
         )),
         PATCH_REPLACE => Ok(Patch::Replace(decode_value(reader, depth + 1)?)),
         PATCH_OBJECT => {
-            let removal_count = reader.count()?;
-            let mut removals = Vec::with_capacity(removal_count.min(4096));
+            let removal_count = reader.count(MIN_TEXT_BYTES)?;
+            let mut removals = Vec::new();
+            reserve_exact(&mut removals, removal_count)?;
             for _ in 0..removal_count {
                 removals.push(reader.text()?);
             }
@@ -1567,8 +1570,9 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
                     "object patch removals are not strictly ordered",
                 ));
             }
-            let change_count = reader.count()?;
-            let mut changes = Vec::with_capacity(change_count.min(4096));
+            let change_count = reader.count(MIN_KEYED_VALUE_BYTES)?;
+            let mut changes = Vec::new();
+            reserve_exact(&mut changes, change_count)?;
             for _ in 0..change_count {
                 let key = reader.text()?;
                 if !is_valid_object_key(&key) {
@@ -1615,8 +1619,9 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             Ok(Patch::Object { removals, changes })
         }
         PATCH_ARRAY => {
-            let count = reader.count()?;
-            let mut changes: Vec<(u32, Patch)> = Vec::with_capacity(count.min(4096));
+            let count = reader.count(MIN_INDEXED_PATCH_BYTES)?;
+            let mut changes: Vec<(u32, Patch)> = Vec::new();
+            reserve_exact(&mut changes, count)?;
             let mut previous: Option<u32> = None;
             for _ in 0..count {
                 let gap = u32::try_from(reader.varint()?).map_err(|_| {
@@ -1767,16 +1772,18 @@ fn decode_value(
             Ok(CanonValue::String(body))
         }
         TAG_ARRAY => {
-            let count = reader.count()?;
-            let mut values = Vec::with_capacity(count.min(4096));
+            let count = reader.count(MIN_VALUE_BYTES)?;
+            let mut values = Vec::new();
+            reserve_exact(&mut values, count)?;
             for _ in 0..count {
                 values.push(decode_value(reader, depth + 1)?);
             }
             Ok(CanonValue::Array(values))
         }
         TAG_OBJECT => {
-            let count = reader.count()?;
-            let mut members: Vec<(String, CanonValue)> = Vec::with_capacity(count.min(4096));
+            let count = reader.count(MIN_KEYED_VALUE_BYTES)?;
+            let mut members: Vec<(String, CanonValue)> = Vec::new();
+            reserve_exact(&mut members, count)?;
             for _ in 0..count {
                 let key = reader.text()?;
                 if !is_valid_object_key(&key) {
@@ -1863,6 +1870,41 @@ fn require_depth(depth: usize) -> Result<(), ReplayCacheError> {
 
 fn count_u32(value: usize) -> Result<u32, ReplayCacheError> {
     u32::try_from(value).map_err(|_| ReplayCacheError::new("binary collection count exceeds u32"))
+}
+
+/// Exact encoded byte floors for count-bearing collections.
+const MIN_VALUE_BYTES: usize = 1;
+const MIN_TEXT_BYTES: usize = 1;
+const MIN_KEYED_VALUE_BYTES: usize = MIN_TEXT_BYTES + MIN_VALUE_BYTES;
+const MIN_INDEXED_PATCH_BYTES: usize = 1 + MIN_VALUE_BYTES;
+/// i64 + four u64s + two u32s + digest + an empty u32-length-prefixed date.
+const MIN_HOUR_ENTRY_BYTES: usize = 8 + 8 * 4 + 4 * 2 + 32 + 4;
+
+/// Reserve a count-fed collection fallibly so hostile input can never turn an
+/// allocator refusal into a process abort.
+fn reserve_exact<T>(vector: &mut Vec<T>, count: usize) -> Result<(), ReplayCacheError> {
+    vector.try_reserve_exact(count).map_err(|_| {
+        ReplayCacheError::new(format!(
+            "binary replay artifact declares {count} elements of {} bytes, which this process cannot allocate",
+            std::mem::size_of::<T>()
+        ))
+    })
+}
+
+fn bound_count_by_remaining(
+    count: usize,
+    min_bytes_per_element: usize,
+    remaining: usize,
+) -> Result<(), ReplayCacheError> {
+    let floor = count.checked_mul(min_bytes_per_element).ok_or_else(|| {
+        ReplayCacheError::new("binary collection count overflows its minimum encoded size")
+    })?;
+    if floor > remaining {
+        return Err(ReplayCacheError::new(format!(
+            "binary collection declares {count} elements needing at least {floor} bytes, but only {remaining} input bytes remain"
+        )));
+    }
+    Ok(())
 }
 
 fn strictly_increasing_keys(values: &[String]) -> bool {
@@ -1984,6 +2026,10 @@ impl<'a> ByteReader<'a> {
         Ok(self.take(32)?.try_into().unwrap())
     }
 
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.position
+    }
+
     /// A varint, rejecting any non-minimal spelling so one number has one
     /// encoding and the cache SHA stays a function of the content.
     fn varint(&mut self) -> Result<u64, ReplayCacheError> {
@@ -2006,16 +2052,12 @@ impl<'a> ByteReader<'a> {
         }
     }
 
-    fn count(&mut self) -> Result<usize, ReplayCacheError> {
+    fn count(&mut self, min_bytes_per_element: usize) -> Result<usize, ReplayCacheError> {
         let value = self.varint()?;
-        // A collection cannot be longer than the bytes left to describe it.
-        if value > (self.bytes.len() - self.position) as u64 {
-            return Err(ReplayCacheError::new(
-                "binary collection count exceeds the bytes that remain",
-            ));
-        }
-        usize::try_from(value)
-            .map_err(|_| ReplayCacheError::new("binary collection count does not fit usize"))
+        let count = usize::try_from(value)
+            .map_err(|_| ReplayCacheError::new("binary collection count does not fit usize"))?;
+        bound_count_by_remaining(count, min_bytes_per_element, self.remaining())?;
+        Ok(count)
     }
 
     fn text(&mut self) -> Result<String, ReplayCacheError> {
@@ -2024,7 +2066,11 @@ impl<'a> ByteReader<'a> {
         if len > MAX_STRING_BYTES {
             return Err(ReplayCacheError::new("binary string exceeds the size bound"));
         }
-        String::from_utf8(self.take(len)?.to_vec())
+        let raw = self.take(len)?;
+        let mut bytes = Vec::new();
+        reserve_exact(&mut bytes, raw.len())?;
+        bytes.extend_from_slice(raw);
+        String::from_utf8(bytes)
             .map_err(|_| ReplayCacheError::new("binary replay string is not UTF-8"))
     }
 

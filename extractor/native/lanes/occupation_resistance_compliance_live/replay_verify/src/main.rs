@@ -1,16 +1,10 @@
-#[path = "../../../../compact_contract/src/record_header.rs"]
-#[allow(dead_code)]
-mod compact_record_header;
-#[path = "../../../../compact_contract/src/record_semantics.rs"]
-#[allow(dead_code)]
-mod compact_record_semantics;
-#[path = "../../../../compact_contract/src/status_flags_base.rs"]
-#[allow(dead_code)]
-mod compact_status_flags;
 #[path = "../../domain52_compact.rs"]
 #[allow(dead_code)]
 mod domain52_compact;
 
+use compact_contract as compact_record_header;
+use compact_contract as compact_record_semantics;
+use compact_contract as compact_status_flags;
 use compact_record_header::{parse_compact_record_header, COMPACT_RECORD_HEADER_LEN};
 #[cfg(test)]
 use compact_record_semantics::COMPACT_DOMAIN_FRAME;
