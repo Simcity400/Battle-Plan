@@ -1377,6 +1377,18 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         ),
         (5, 6)
     );
+    // AND ITS PROVENANCE IS `Measured` ON A REFUSED FRAME, which is the shape
+    // that makes the word a statement about the NUMBERS and not about the
+    // outcome (lane GM, 2026-08-11): nothing was discarded here, so nothing was
+    // preserved, and a reader must not take `Measured` for "this frame
+    // delivered".
+    // kills: mapping this arm through the placeholder constructor instead of
+    //   returning the read untouched (the record would read
+    //   `PreservedAfterRefusal` and would lose the read's own reason with it)
+    assert_eq!(
+        kept.diagnostics_provenance,
+        D81DiagnosticsProvenance::Measured,
+    );
 
     // A DEFERRED observation on the same refusal IS the skip: nothing terminal
     // exists yet, so the copy is dropped UNCOMPUTED and the mismatch is named.
