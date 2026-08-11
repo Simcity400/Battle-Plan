@@ -76,6 +76,7 @@ impl SnapshotBuild {
             forward_waves_run,
             phases_run,
             witnessed_intervals,
+            closing_copies: _,
             custody_held,
             custody_table_bytes,
             custody_arena_bytes,
@@ -207,6 +208,15 @@ impl SnapshotBuild {
             let mut seen: BTreeSet<(IntervalId, ConsumerId)> = BTreeSet::new();
             let mut queue: VecDeque<(IntervalId, ConsumerId)> = VecDeque::new();
             for consumer in dependents.get(&root).into_iter().flatten() {
+                // `CloseAction::Record`: this consumer takes the closing image
+                // and renders its own verdict, so a change here is recorded in
+                // `changed` and costs it nothing. It is opt-in per (op,
+                // consumer) and it is what lets a converted reader close over
+                // exactly the fields its live form closed over -- see
+                // `executor::CloseAction`.
+                if !snapshot.annotations().close_gaps(root, *consumer) {
+                    continue;
+                }
                 gapped
                     .entry(*consumer)
                     .or_insert(GapReason::WitnessChanged { interval: root });
@@ -225,6 +235,12 @@ impl SnapshotBuild {
                     .get(&id)
                     .map(|list| list.contains(&consumer))
                     .unwrap_or(false)
+                    // A consumer that judges this interval's own closing image
+                    // judges its parent's too: the subtree walk exists to gap a
+                    // reader whose pointer chain may be stale, and a reader that
+                    // re-reads the chain from the closing image is exactly the
+                    // reader that does not need it.
+                    && snapshot.annotations().close_gaps(id, consumer)
                 {
                     gapped
                         .entry(consumer)

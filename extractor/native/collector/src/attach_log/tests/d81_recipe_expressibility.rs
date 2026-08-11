@@ -1193,14 +1193,21 @@ fn the_rail_headers_dead_bytes_do_not_gap_the_reader_but_its_fields_do() {
     // Where the closing wave starts, measured rather than guessed: every
     // interval is witnessed, so the closing copies are the last
     // `interval_count` of them and the openings are everything before.
-    let (total_copies, intervals) = {
+    // WHERE THE CLOSING WAVE BEGINS, asked of the observation rather than
+    // computed from the interval count. It used to be `total - intervals + 1`,
+    // which held only while every interval took ONE closing copy; since the
+    // closing wave takes as many observations as an interval's consumers asked
+    // for (owner ruling 2026-08-11), that arithmetic put the write AFTER the
+    // images it was meant to land between and the control silently stopped
+    // gapping.
+    let (total_copies, closing_copies) = {
         let plain = stage_world();
         plain.reset_counters();
         let build =
             observe(&[d81_recipe()], &plain, ObservationConfig::new(hour)).expect("custody");
-        (plain.copies(), build.snapshot.interval_count() as u64)
+        (plain.copies(), build.closing_copies)
     };
-    let mid = total_copies - intervals + 1;
+    let mid = total_copies - closing_copies + 1;
 
     // The control on the control: with the trigger past every copy the fixture
     // writes nothing at all, so an empty gap set here proves only that the

@@ -4114,3 +4114,73 @@ fn the_visited_key_does_not_alias_two_recipes() {
     // at op 0.
     assert_ne!(executor::visit_tag(0, 1), executor::visit_tag(1, 0));
 }
+
+
+/// RULING: a `Gap` request wins whatever order the requests arrive in.
+///
+/// `CloseAction::Record` lets a converted reader take the closing image and
+/// render its own verdict instead of being gapped by the substrate's. It is a
+/// NARROWING of what the substrate certifies, so it is per (op, consumer) and
+/// the strictest request must win — and "strictest wins" is only expressible if
+/// every request is recorded, in both orders.
+///
+/// THE DEFECT THIS PINS (Codex 019feb7d, finding 5). A first version skipped
+/// storing a `Gap` request on an interval nobody had asked about, on the grounds
+/// that `Gap` is the answer `close_gaps` already gives for an interval with no
+/// asks. That is true until one arrives: a consumer whose `Gap` request reached
+/// a coalesced interval FIRST and whose `Record` request reached it second was
+/// left with only the `Record`, and opted out of a gap it had asked for.
+///
+/// MUTATION: put the `if gap_on_change && !self.closes.contains_key(&interval)
+/// { return; }` short-circuit back into `Annotations::ask_close` and the first
+/// arm below fails.
+#[test]
+fn a_gap_request_wins_whatever_order_the_requests_arrive_in() {
+    use super::annot::Annotations;
+    use super::{ConsumerId, IntervalId};
+
+    let interval = IntervalId(7);
+    let consumer = ConsumerId(81);
+
+    // GAP FIRST, then RECORD.
+    let mut gap_first = Annotations::new();
+    gap_first.arm();
+    gap_first.ask_close(interval, consumer, true);
+    gap_first.ask_close(interval, consumer, false);
+    assert!(
+        gap_first.close_gaps(interval, consumer),
+        "a consumer that asked to be gapped must be gapped, whatever it asked \
+         for afterwards",
+    );
+
+    // RECORD FIRST, then GAP. The same two requests, and the same answer.
+    let mut record_first = Annotations::new();
+    record_first.arm();
+    record_first.ask_close(interval, consumer, false);
+    record_first.ask_close(interval, consumer, true);
+    assert!(
+        record_first.close_gaps(interval, consumer),
+        "the order requests arrive in must not decide the policy",
+    );
+
+    // RECORD ONLY: the opt-out this whole mechanism exists for.
+    let mut record_only = Annotations::new();
+    record_only.arm();
+    record_only.ask_close(interval, consumer, false);
+    assert!(
+        !record_only.close_gaps(interval, consumer),
+        "a consumer whose every request said `Record` renders its own verdict",
+    );
+
+    // AND A NEIGHBOUR IS UNTOUCHED. One consumer's opt-out may not reach
+    // another's hour, which is the whole reason the policy is per request.
+    let neighbour = ConsumerId(47);
+    assert!(
+        record_only.close_gaps(interval, neighbour),
+        "a consumer that never asked takes the substrate's verdict",
+    );
+
+    // AND AN INTERVAL NOBODY ASKED ABOUT IS GAPPED, which is the default the
+    // opt-out is measured against.
+    assert!(record_only.close_gaps(IntervalId(9), consumer));
+}

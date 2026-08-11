@@ -1270,17 +1270,25 @@ fn the_two_clusters_are_a_call_reduction() {
 /// batched read is allowed to decide a refusal on its own.
 #[test]
 fn the_batched_reads_are_a_fast_path_and_never_a_refusal() {
+    // THE WALK IS `d81_walk_provinces` NOW (lane GI, 2026-08-10), and the
+    // fallback is the READ SOURCE rather than a bare guarded call -- which is
+    // the same claim, stronger: on the live arm `source.u64_stable` IS
+    // `read_u64_stable`, and on the authoritative arm the batch is `None`, so
+    // the fallback is the only path either arm has.
     let source = include_str!("../../attach_log.rs");
     let walk = source
-        .split("fn read_compact_rail_replay_state(")
+        .split("fn d81_walk_provinces(")
         .nth(1)
-        .expect("the observe half of d81");
+        .expect("the d81 province walk");
 
     for (site, fallback) in [
-        ("batch.u64_at(slot)", "read_u64_stable(slot)"),
-        ("batch.u8_at(marker_address)", "read_u8_stable(marker_address)"),
-        ("batch.u32_at(entry_key_address)", "read_u32_stable(entry_key_address)"),
-        ("batch.u64_at(value_address)", "read_u64_stable(value_address)"),
+        ("batch.u64_at(slot)", "source.u64_stable(slot)"),
+        ("batch.u8_at(marker_address)", "source.u8_stable(marker_address)"),
+        (
+            "batch.u32_at(entry_key_address)",
+            "source.u32_stable(entry_key_address)",
+        ),
+        ("batch.u64_at(value_address)", "source.u64_stable(value_address)"),
     ] {
         let at = walk
             .find(site)
@@ -1292,9 +1300,17 @@ fn the_batched_reads_are_a_fast_path_and_never_a_refusal() {
              {fallback:?}, or a batch miss becomes a refusal d81 never had"
         );
     }
+    let reader = source
+        .split("fn read_compact_rail_replay_state(")
+        .nth(1)
+        .expect("the observe half of d81");
     assert!(
-        walk.contains("D81ExtentPair::copy(base, len)")
-            && walk.matches("D81ExtentPair::copy(").count() == 2,
+        // THE TWO EXTENT PAIRS MOVED TO THE EQUALITY ARM, the only place a live
+        // walk still runs; asserted against the reader rather than the walk, and
+        // still as TWO, because a third batched cluster would need its own
+        // equivalence proof wherever it lived.
+        reader.contains("D81ExtentPair::copy(base, len)")
+            && reader.matches("D81ExtentPair::copy(").count() == 2,
         "exactly the two funded clusters are batched; a third would need its \
          own equivalence proof"
     );

@@ -80,13 +80,15 @@
 //!
 //! # What is NOT here, stated so it is a boundary and not an omission
 //!
-//! 1. **The reader's own reads are not yet served from the view.** That is the
-//!    step that changes what a capture publishes, and d81 has no end-to-end
-//!    fixture — staging a `CGameState` complete enough to drive
-//!    `read_compact_rail_replay_state` past its `RailRoots` stage is a fixture
-//!    nobody has built (see the head of `super::tests::d81_frame_cost`). So the
-//!    only instrument that can compare the converted reader against the live
-//!    one is a capture, and [`D81_COPY_BRACKET_ARMED`] is OFF.
+//! 1. **The plan's own preconditions are still live reads, and they are ~15 of
+//!    them.** `roots()`, `selector_header()` and `map_container()` run inside
+//!    the bracket exactly as they did, because the plan is rooted on what they
+//!    resolve — the container address is a `Root` — and because the four
+//!    whole-snapshot closing gates compare the live engine at bracket close
+//!    against what they opened with. Fifteen guarded calls against the ~105,000
+//!    the walk used to issue is not the number this conversion is about, and
+//!    routing them through the view as well would cost the closing gates their
+//!    meaning. See [`D81ReadSource`] for what IS served from the copy.
 //!
 //! 2. **The hub.** `read_compact_rail_hub_simulation` and its companion tree —
 //!    country and country-system windows, the foreign-source vectors, the route
@@ -101,8 +103,8 @@
 //!    silence.
 
 use crate::snapshot_recipes::executor::{
-    Admissibility, CarrySource, CloseStage, CloseWhen, ClosingProgram, CompareMask, CountExpr,
-    CountTerm,
+    Admissibility, CarrySource, CloseAction, CloseStage, CloseWhen, ClosingProgram, CompareMask,
+    CountExpr, CountTerm,
     DisagreeAction, OpMod, RejectAction, RelWindow, Recipe, RecipeOp, Root, SampleSpec, Tolerance,
 };
 use crate::snapshot_recipes::{ConsumerId, Limits, MemoryRefusal, RecipeId, SnapshotMemory, Span};
@@ -118,18 +120,30 @@ use super::{
     RAIL_HEADER_WINDOW_LEN, RAIL_INFO_PAIRS_PTR_OFF,
 };
 
-/// THE CONVERSION SWITCH, and it is OFF.
+/// THE CONVERSION SWITCH, and it is ON (lane GI, 2026-08-10, owner-funded on
+/// t46's equality evidence).
 ///
-/// `false` is not a placeholder for "not finished wiring". It is the statement
-/// that no instrument exists offline to compare the converted reader against
-/// the live one — d81 has no end-to-end fixture — so the first evidence either
-/// way comes from a capture, and arming it is an owner decision taken with that
-/// capture's numbers in hand rather than a lane's.
+/// `true` means the recipe program IS d81's reader: the copy plan runs inside
+/// the clock bracket and every byte the province walk decodes comes out of that
+/// copy, at the same address, in the compute half. The live guarded walk is off
+/// the critical sweep path — it survives only as [`D81_COPY_BRACKET_SHADOW_ENV`]
+/// arms it, so a capture can still prove authoritative-equals-live on the wire
+/// before the walk's code is deleted.
+///
+/// WHAT CHANGED THE ANSWER. Lane GC shipped this plan with the switch off and
+/// named the reason: no offline instrument could compare a converted reader
+/// against the live one. Two things closed that. t46 ran the plan beside the
+/// live walk on a real game and compared 7,024 rows with 0 divergent and every
+/// refusal-class counter zero. And the walk itself is now parameterised over
+/// [`D81ReadSource`], so the SAME walk body runs against a staged world twice —
+/// once reading it directly, once through this plan's view — which is the
+/// end-to-end equivalence gate that did not exist
+/// (`the_authoritative_walk_publishes_what_the_live_walk_publishes`).
 ///
 /// A `const` and not an environment variable, deliberately: an env-gated read
 /// path is a second production configuration that no gate runs, and the
 /// measurement law here is that what ships is what was measured.
-pub const D81_COPY_BRACKET_ARMED: bool = false;
+pub const D81_COPY_BRACKET_AUTHORITATIVE: bool = true;
 
 /// The consumer every d81 post-bracket reader would take its view as.
 pub const D81_CONSUMER: ConsumerId = ConsumerId(81);
@@ -760,12 +774,78 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         mods[fatal as usize].admit = Some(heap_window(RejectAction::RefuseRecipe));
     }
 
-    // M4 + RULING B: the rail header is taken as an adjacent pair and compared
-    // ONLY over the two fields the reader consumes.
-    mods[op::RAIL_HEADER as usize].samples = SampleSpec {
-        count: 2,
-        on_disagree: DisagreeAction::Gap,
+    // THE COPIER TAKES THE IMAGES; THE READER RENDERS THE VERDICT (lane GI,
+    // 2026-08-10, after t46 measured 78 of 80 frames gapped).
+    //
+    // The substrate's own defaults gap this consumer whenever back-to-back
+    // images disagree or a closing image differs over the consumed bytes. That
+    // is right for a reader that takes the substrate's verdict and WRONG for a
+    // converted one that renders its own: `d81_walk_provinces` closes exactly
+    // the fields its live form closed — a rail header, a province-array slot, a
+    // map slot, an active entry, a record pointer — and closes nothing else. A
+    // rail slot for a province it never visited, a byte of the 384 KB selector
+    // table, or an anchor triplet it read once and never re-read moving under it
+    // was never a refusal, and under the defaults every one of them is.
+    //
+    // t46 is the measurement, not the fear: `d81_shadow_consumer_gapped` was 78
+    // of 80 frames, so the plan under the defaults would have refused 97.5% of
+    // the hours the live walk delivered.
+    //
+    // SO EVERY COPY OP TAKES TWO ADJACENT IMAGES AND DECLARES `Record` ON BOTH
+    // POLICIES. The images are all still taken and all still available through
+    // the view; what changes is who judges them. The walk's own `_stable` pairs
+    // and its closing comparisons then mean exactly what they meant live, and
+    // its refusals keep their stage, subject, index and witness.
+    //
+    // WHAT IT COSTS: one extra adjacent copy per interval. At t26's shape that
+    // is 21,069 more transactions on top of 21,069 opening and 21,069 closing —
+    // about 2.3 ms at lane GA's measured 110 ns for an A/B copy, against the
+    // ~33 ms of live walk it replaces.
+    for op in [
+        op::GAMESTATE,
+        op::RAIL_MANAGER,
+        op::ACTIVE_ROOT,
+        op::SELECTOR_MAP,
+        op::SELECTOR_TABLE,
+        op::RAIL_TABLE,
+        op::ACTIVE_TABLE,
+        op::SOURCE_ARRAY,
+        op::SOURCE_SLOT,
+        op::SELECTOR_ROUTE,
+        op::SOURCE_PROVINCE_PTR,
+        op::MAP_ARRAY,
+        op::MAP_SLOT,
+        op::MAP_PROVINCE_PTR,
+        op::RECORD_WINDOW,
+        op::RAIL_HEADER,
+        op::PAIR_BLOB,
+        op::IDLER_SLOT,
+        op::IDLER_SLOT_B,
+        op::IDLER,
+        op::OWNER,
+        op::CONTAINER,
+    ] {
+        mods[op as usize].samples = SampleSpec {
+            count: D81_CLOSING_IMAGES_HELD as u8,
+            on_disagree: DisagreeAction::Record,
+        };
+        mods[op as usize].on_close = CloseAction::Record;
+    }
+    // THE ACTIVE TABLE TAKES THREE, because its reader takes three (Codex
+    // 019feb7d, finding 3). `d81_read_coherent_active_entry` observes the
+    // seven-byte window up to `D81_ACTIVE_COHERENCE_READS` times and publishes
+    // the first CONSECUTIVE PAIR that agrees, so a live sequence of A, B, B
+    // publishes B. With two images the third attempt has nothing to read and the
+    // walk reports `Torn` for a window the live reader accepted.
+    mods[op::ACTIVE_TABLE as usize].samples = SampleSpec {
+        count: super::D81_ACTIVE_COHERENCE_READS as u8,
+        on_disagree: DisagreeAction::Record,
     };
+
+    // M4 + RULING B: the rail header is compared ONLY over the two fields the
+    // reader consumes. The mask still matters under `Record`: it is what
+    // `changed` is computed from, and the four dead bytes inside the window must
+    // stay outside that judgement whoever renders it.
     mods[op::RAIL_HEADER as usize].compare = CompareMask {
         windows: vec![
             RelWindow::new(RAIL_INFO_PAIRS_PTR_OFF as i64, 8),
@@ -860,6 +940,7 @@ const D81_MAX_SELECTOR_SLOTS: u32 = 1 << 20;
 /// `range_confirmed_good` gate and the same `copy_selected` every other read in
 /// this file goes through. Nothing else about the process is exposed: the
 /// substrate can move bytes through this and cannot compute over them.
+#[derive(Default)]
 pub struct Domain81SnapshotMemory;
 
 /// [`Domain81SnapshotMemory`] with a call counter.
@@ -872,21 +953,38 @@ pub struct Domain81SnapshotMemory;
 ///
 /// A `Cell`, not an atomic: one observation runs on one thread, and
 /// `SnapshotMemory::copy_into` takes `&self`.
-#[derive(Default)]
-pub struct CountingSnapshotMemory {
+/// GENERIC OVER THE INNER MEMORY so the gate can count a staged world's copies
+/// on the same terms production counts the process's. A counter that only
+/// existed on the production path would leave the offline gate unable to assert
+/// the transaction ceiling the plan's whole shape is argued from.
+pub struct CountingSnapshotMemory<M = Domain81SnapshotMemory> {
+    inner: M,
     calls: std::cell::Cell<u64>,
 }
 
-impl CountingSnapshotMemory {
+impl<M: Default> Default for CountingSnapshotMemory<M> {
+    fn default() -> Self {
+        Self::new(M::default())
+    }
+}
+
+impl<M> CountingSnapshotMemory<M> {
+    pub fn new(inner: M) -> Self {
+        Self {
+            inner,
+            calls: std::cell::Cell::new(0),
+        }
+    }
+
     pub fn calls(&self) -> u64 {
         self.calls.get()
     }
 }
 
-impl SnapshotMemory for CountingSnapshotMemory {
+impl<M: SnapshotMemory> SnapshotMemory for CountingSnapshotMemory<M> {
     fn copy_into(&self, addr: u64, out: &mut [u8]) -> Result<(), MemoryRefusal> {
         self.calls.set(self.calls.get().saturating_add(1));
-        Domain81SnapshotMemory.copy_into(addr, out)
+        self.inner.copy_into(addr, out)
     }
 }
 
@@ -905,133 +1003,500 @@ impl SnapshotMemory for Domain81SnapshotMemory {
 }
 
 // ===========================================================================
-// THE SHADOW: the plan run beside the live reader, and the equality it claims
+// THE READ SOURCE: one walk body, two places its bytes can come from
 // ===========================================================================
 
-/// The environment spelling of the shadow's on switch.
+/// Which of the copier's images a read takes its bytes from.
 ///
-/// AN ENVIRONMENT VARIABLE AND A CONTROL KEY, both, neither required — exactly
-/// `BATTLE_PLAN_D47_SWEEP_SHADOW`'s shape and for its reason: the orchestrator's
-/// transition captures are started by the WMI/env path, where there is no
-/// control block to write, while a recorder-hosted capture has no environment
-/// to set. Either arms it.
-///
-/// NOT a cargo feature, following `custody_shadow::CUSTODY_SHADOW_ENV`: a
-/// feature forks the binary, and then the only collector that can answer the
-/// question is a different collector from the one that ships.
-///
-/// # WHAT ARMING COSTS THE FRAME, and it is not nothing
-///
-/// The plan itself runs in the COMPUTE half, after d81's clock bracket has
-/// closed and its verdict is decided, so it cannot change d81's own
-/// publication. Two smaller routes remain, both ARMED-ONLY, and they are
-/// written here rather than discovered in a capture (Codex 019fea08):
-///
-/// 1. **The witness collection is inside d81's bracket.** One struct move per
-///    published province, into capacity reserved once before the walk. It is
-///    irreducible if the witness is to exist at all — the values it holds are
-///    this hour's and exist nowhere else — and it is time the guard's closing
-///    observation is taken after, so an armed frame's bracket is very slightly
-///    wider than a disarmed one's.
-///
-/// 2. **The reader-gate permit is held across the compute half.** The shadow
-///    therefore delays other readers queued behind d81 in the same frame, and a
-///    reader delayed far enough can open in a later game hour.
-///
-/// Both are the same shape as every other shadow in this collector — the d47
-/// sweep shadow costs two needles in the shared scan and a second admission
-/// pass over ~3,400 role objects, inside the frame — and both are why an armed
-/// capture's DELIVERY is not comparable to a disarmed one's. Its EQUALITY
-/// numbers are what it is for, and those are unaffected by either.
-pub const D81_COPY_BRACKET_SHADOW_ENV: &str = "BATTLE_PLAN_D81_COPY_BRACKET_SHADOW";
-
-/// The fields the shadow compares, in ordinal order. Ordinal 0 is "no
-/// divergence"; the witness on the wire is an index into this table, so a
-/// capture names the field rather than a number nobody can decode.
-pub const D81_SHADOW_FIELDS: [&str; 11] = [
-    "none",
-    "rail_slot",
-    "rail_header_pair_ptr",
-    "rail_header_pair_count",
-    "neighbour_pair_bytes",
-    "active_window",
-    "source_province_slot",
-    "map_province_slot",
-    "map_record_ptr",
-    "record_selector_key",
-    "anchor_triplet",
-];
-
-/// One province's LIVE reading, kept so the shadow can ask the COPY for the
-/// same fields at the same addresses.
-///
-/// Built only when the shadow is armed. Every field is a value the walk had
-/// already decoded and an address it had already formed, so capturing it costs
-/// the move and nothing else — the shadow performs no engine read of its own
-/// outside the copy plan.
-pub struct D81ShadowWitness {
-    pub province_id: u32,
-    pub rail_slot_addr: usize,
-    pub rail_info: usize,
-    pub rail_header_addr: usize,
-    pub pair_ptr: usize,
-    pub pair_count: u32,
-    pub pair_bytes: Vec<u8>,
-    pub active_window_addr: usize,
-    /// The DECODED coherence state, not the raw bytes: the live walk decodes
-    /// this window through  and the shadow runs
-    /// the same decoder over the copy, so the comparison is of the values the
-    /// reader acts on rather than of a byte image it never compares.
-    pub active: super::D81ActiveEntryState,
-    pub source_slot_addr: usize,
-    pub source_province_ptr: usize,
-    pub map_slot_addr: usize,
-    pub map_province: usize,
-    pub record_addr: usize,
-    pub record: usize,
-    pub selector_key_addr: usize,
-    pub selector_key: u32,
-    pub anchor_addr: usize,
-    pub anchor_bits: [u32; 3],
+/// The live walk reads the same address more than once on purpose — a stable
+/// pair, an adjacent A/B sample, a closing re-read — and each of those is a
+/// DIFFERENT instant. A frozen copy has no instants, it has IMAGES, and the
+/// substrate takes exactly the three the walk distinguishes. Naming the image
+/// at the call site is what keeps the walk's own comparisons meaningful instead
+/// of tautological: an opening read compared against a closing read is still
+/// comparing two observations, taken by the copier rather than by the walk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum D81Image {
+    /// The copy the observation's forward wave took.
+    Opening,
+    /// The `k`-th ADJACENT sample (`k >= 1`), taken back to back with the
+    /// opening copy.
+    Sample(usize),
+    /// The FIRST image the closing wave took, after every forward wave — for a
+    /// mid-walk stage, at the end of the wave it declared.
+    Closing,
+    /// The `k`-th ADJACENT closing observation (`k >= 1`), taken back to back
+    /// with [`Self::Closing`].
+    ///
+    /// The closing side of [`Self::Sample`], and the instrument the walk renders
+    /// its own closing torn verdict from. A closing read is an observation like
+    /// any other, and the live walk took two of them at every closing site.
+    ClosingSample(usize),
 }
 
-/// What one shadow frame observed. Every field is per-frame and lands on the
-/// wire as its own diagnostic unit.
+/// Adjacent observations this plan asks for at EACH instant.
+///
+/// It is one number because it is one decision: the opening wave takes this
+/// many and, since the owner ruling of 2026-08-11, so does the closing wave.
+/// The plan's `SampleSpec` is declared FROM it, so changing it changes what the
+/// copier does rather than only what this file says about it -- an earlier
+/// version was a restatement that no copy count depended on, which is a
+/// constant a test can assert and a mutation cannot reach.
+///
+/// AS MANY AS THE OPENING SIDE TAKES (owner ruling 2026-08-11): two for a stable
+/// pair and [`super::D81_ACTIVE_COHERENCE_READS`] for the active window, because
+/// a closing read is an observation like any other and the live walk took two of
+/// them at every closing site. With one image the walk's closing A/B compared
+/// that image with itself and could never tear, which published where the live
+/// walk refused.
+///
+/// It is a named constant rather than an assumption so that the mapping in
+/// [`D81ReadSource::paired_image`] and the number the substrate actually takes
+/// cannot drift apart without a gate failing.
+pub const D81_CLOSING_IMAGES_HELD: usize = 2;
+
+/// Ordinals for [`D81ViewMisses::first_class`]. A WIRE vocabulary: a new class
+/// appends and an existing number never moves.
+pub const D81_MISS_UNREADABLE: u32 = 1;
+pub const D81_MISS_NOT_CAPTURED: u32 = 2;
+pub const D81_MISS_NOT_OWNED: u32 = 3;
+pub const D81_MISS_NOT_CONTIGUOUS: u32 = 4;
+pub const D81_MISS_NO_CLOSING_IMAGE: u32 = 5;
+
+/// Why reads of the hour's copy could not answer, in the classes that mean
+/// DIFFERENT things to a capture.
+///
+/// The split is the whole point. [`Self::unreadable`] is ruling A working: the
+/// plan asked for the span, the engine refused it, the void is recorded and
+/// only the reads that touch it fail — so the reader raises exactly the typed
+/// failure an unreadable LIVE read raised, at the same stage, subject and
+/// index. Every other class is OUR defect: bytes the reader consumes that the
+/// plan did not ask for, did not own, or could not hand over in one piece. Those
+/// refuse the frame too, but they are a conversion bug and not an engine
+/// condition, and a capture that could not tell them apart would read a plan
+/// that under-copies as a game that went unreadable.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct D81ShadowCounters {
-    /// The switch was on for this frame.
-    pub armed: bool,
-    /// The plan ran to a view. False with `armed` true means the observation
-    /// refused or custody declined it, and the reason words say which.
+pub struct D81ViewMisses {
+    /// RULING A. The plan asked; the engine refused; the void names it.
+    pub unreadable: u32,
+    /// OUR DEFECT: the reader consumed bytes the plan never asked for.
+    pub not_captured: u32,
+    /// OUR DEFECT: copied, but by transactions this consumer does not own.
+    pub not_owned: u32,
+    /// OUR DEFECT: copied, but split across transactions a single borrow cannot
+    /// span. [`SnapshotView::read_into`] stitches, so this can only reach a call
+    /// site that needs one contiguous slice — the sampled and closing images.
+    pub not_contiguous: u32,
+    /// OUR DEFECT: the reader closed over a span whose closing image the
+    /// observation never took.
+    pub no_closing_image: u32,
+    /// A requested adjacent image the observation does not hold.
+    ///
+    /// AN ENGINE CONDITION, NOT A SUBSTITUTION (Codex 019feb7d, finding 1). An
+    /// earlier version served the opening image in its place, which made every
+    /// walk-side A/B pair a comparison of one image with itself and published
+    /// exactly the transients the live second read refused on. The plan asks for
+    /// two adjacent images of everything (three of the active table), so a
+    /// missing one means the engine refused the adjacent copy — which is what
+    /// the live walk's second read would have refused on — and the read fails
+    /// here as it failed there.
+    ///
+    /// It is counted apart from [`Self::unreadable`] because the SPAN was
+    /// readable and only its second observation was not, which is a different
+    /// thing for a capture to see.
+    pub samples_absent: u32,
+    /// The FIRST miss, so a capture can name one rather than count many.
+    pub first_class: u32,
+    pub first_addr: u64,
+    pub first_len: u32,
+    /// The LAST miss, which is the one that ended the walk.
+    ///
+    /// NOT THE SAME WITNESS AS THE FIRST, and the difference decides a refusal's
+    /// name. A read that misses returns `None` at its own site and the walk
+    /// refuses there, so the miss recorded LAST is the one the published refusal
+    /// belongs to; the first is the capture's earliest evidence and may belong to
+    /// a read that recovered. `d81_restamp_plan_defect` renames from this one —
+    /// renaming from the first would let an earlier, harmless plan defect
+    /// relabel a later genuine void, and vice versa.
+    pub last_class: u32,
+    pub last_addr: u64,
+}
+
+impl D81ViewMisses {
+    /// Misses that mean the plan is wrong, as opposed to the engine being
+    /// unreadable.
+    pub fn plan_defects(&self) -> u32 {
+        self.not_captured
+            .saturating_add(self.not_owned)
+            .saturating_add(self.not_contiguous)
+            .saturating_add(self.no_closing_image)
+    }
+
+    pub fn total(&self) -> u32 {
+        self.unreadable.saturating_add(self.plan_defects())
+    }
+}
+
+/// Where d81's province walk takes its bytes from.
+///
+/// # The two arms are the same walk
+///
+/// `read_compact_rail_replay_state`'s per-province loop moved into
+/// `d81_walk_provinces`, which reads through this and nothing else. The LIVE
+/// arm calls the identical guarded primitives the loop called before, so the
+/// retired path is byte-for-byte what it was and the equality lever can still
+/// run it. The SNAPSHOT arm serves the same addresses out of the hour's copy.
+/// One body, so a change to the walk cannot apply to one arm and not the other
+/// — which is the drift the shadow's private field list could not rule out.
+///
+/// # There is no fallback, and that is deliberate
+///
+/// A snapshot read that cannot be served returns `None` at exactly the site a
+/// live read would have, and the walk raises its own typed failure there. It
+/// does NOT re-read the engine. A hidden live re-read would put bytes from
+/// outside the labelled bracket into a published row — the hour-misattribution
+/// rule — and it would make the plan's coverage unfalsifiable, because a plan
+/// that copied nothing would still publish perfect rows.
+pub enum D81ReadSource<'a> {
+    /// The live process, through the same guarded primitives as before.
+    Live,
+    /// The hour's copy. Nothing reachable from here can read the game.
+    Snapshot(D81SnapshotSource<'a>),
+    /// A STAGED WORLD, and it exists so the conversion has an offline gate.
+    ///
+    /// [`Self::Live`] can only read the game, so the walk it drives cannot be
+    /// run against a fixture — which is exactly why lane GC could not compare a
+    /// converted reader against the live one and left the switch off. This arm
+    /// reads a staged world DIRECTLY, byte for byte, with no plan between it and
+    /// the memory, so `d81_walk_provinces` can be run twice over one world — once
+    /// through this and once through the copy the plan took of it — and the rows
+    /// compared. That is `the_authoritative_walk_publishes_what_the_live_walk_
+    /// publishes`, and it is a claim about the SHIPPED walk because it is the
+    /// shipped walk on both arms.
+    ///
+    /// Test-only, and it has to be: a production build that could read anything
+    /// but the game and the hour's copy would have a third read path no capture
+    /// ever runs.
+    #[cfg(test)]
+    Staged(&'a dyn crate::snapshot_recipes::SnapshotMemory),
+}
+
+/// The snapshot arm's state: the view and what it could not answer.
+pub struct D81SnapshotSource<'a> {
+    view: crate::snapshot_recipes::view::SnapshotView<'a>,
+    misses: std::cell::Cell<D81ViewMisses>,
+}
+
+impl<'a> D81ReadSource<'a> {
+    pub fn snapshot(view: crate::snapshot_recipes::view::SnapshotView<'a>) -> Self {
+        D81ReadSource::Snapshot(D81SnapshotSource {
+            view,
+            misses: std::cell::Cell::new(D81ViewMisses::default()),
+        })
+    }
+
+    /// True when this source is the hour's copy rather than the live process.
+    ///
+    /// THE WALK ASKS THIS ONCE, at the rail header's fallback, and the site says
+    /// why. Everywhere else the walk cannot tell which source it is on, which is
+    /// what keeps the two arms one body.
+    pub fn is_snapshot(&self) -> bool {
+        matches!(self, D81ReadSource::Snapshot(_))
+    }
+
+    pub fn misses(&self) -> D81ViewMisses {
+        match self {
+            D81ReadSource::Snapshot(source) => source.misses.get(),
+            // A direct read has no copy to miss: every refusal it produces is
+            // the memory itself refusing, and the walk has already named it.
+            _ => D81ViewMisses::default(),
+        }
+    }
+
+    /// Fill `out` from `addr` out of `image`, or say it could not.
+    ///
+    /// The one primitive: every accessor below is this plus a decode, which is
+    /// what keeps the two arms from acquiring different coverage.
+    pub fn read_into(&self, addr: usize, out: &mut [u8], image: D81Image) -> bool {
+        match self {
+            // The image is a live re-read, which is what the walk did at each of
+            // these sites before: three reads of one address at three instants.
+            D81ReadSource::Live => super::read_into(addr, out),
+            D81ReadSource::Snapshot(source) => source.read_into(addr, out, image),
+            // Same rule as the live arm, for the same reason: a direct read has
+            // no images, only later reads, and a staged world does not change
+            // between them.
+            #[cfg(test)]
+            D81ReadSource::Staged(memory) => memory.copy_into(addr as u64, out).is_ok(),
+        }
+    }
+
+    pub fn scalar<const N: usize>(&self, addr: usize, image: D81Image) -> Option<[u8; N]> {
+        let mut out = [0u8; N];
+        self.read_into(addr, &mut out, image).then_some(out)
+    }
+
+    pub fn u64_at(&self, addr: usize, image: D81Image) -> Option<u64> {
+        self.scalar::<8>(addr, image).map(u64::from_le_bytes)
+    }
+
+    pub fn u32_at(&self, addr: usize, image: D81Image) -> Option<u32> {
+        self.scalar::<4>(addr, image).map(u32::from_le_bytes)
+    }
+
+    pub fn u8_at(&self, addr: usize, image: D81Image) -> Option<u8> {
+        self.scalar::<1>(addr, image).map(|byte| byte[0])
+    }
+
+    /// The second observation a stable pair takes.
+    ///
+    /// An OPENING pair is the opening image and the copier's first adjacent
+    /// sample: the same instrument, taken by the copier instead of by the walk.
+    ///
+    /// # A CLOSING pair is a REAL pair
+    ///
+    /// The copier takes [`D81_CLOSING_IMAGES_HELD`] closing observations of every
+    /// interval — and [`super::D81_ACTIVE_COHERENCE_READS`] of the active window
+    /// — so a closing pair compares two adjacent observations exactly as an
+    /// opening pair does. That is tear-detection PARITY with the live walk at
+    /// every closing site, and it is what the owner funded on 2026-08-11.
+    ///
+    /// WHAT THAT BUYS, and each of the three is a scenario the single-image
+    /// version published where the live walk refused:
+    ///
+    ///  * A WRITE BETWEEN THE TWO ADJACENT CLOSING READS is now seen. The two
+    ///    closing images differ, the walk's own pair check refuses `Torn`, and
+    ///    the live walk refuses `Torn` for the same write.
+    ///  * A SECOND CLOSING READ THAT WENT UNREADABLE now refuses with its honest
+    ///    reason. The copier asked for that observation and the engine declined
+    ///    it, so [`crate::snapshot_recipes::view::SnapshotView::closing_sample_bytes`]
+    ///    answers `Unreadable` rather than `NotCaptured`, and the walk raises the
+    ///    same `Unreadable` the live second read raised — not a plan defect,
+    ///    because the plan asked.
+    ///  * THE ACTIVE CLOSING LOOP coheres over its own three observations. A
+    ///    closing sequence `A, B, B` coheres on `B` and the closure against
+    ///    opening `A` refuses, which is the live verdict for the same sequence.
+    ///
+    /// WHAT REMAINS, and it is not a closing-side gap: the copier takes its
+    /// images at ITS instants and the live walk took its during the walk, so a
+    /// field the engine rewrites inside the bracket can be published with
+    /// different CONTENT by the two arms. That is the sampling-window difference
+    /// lane FY named, it is inherent to copy-only brackets, and it is what the
+    /// equality mode exists to MEASURE rather than something any image count
+    /// rules out.
+    pub fn paired_image(image: D81Image) -> D81Image {
+        match image {
+            D81Image::Opening => D81Image::Sample(1),
+            D81Image::Closing => D81Image::ClosingSample(1),
+            // A pair OF a sample is that sample: the walk never nests one, and
+            // returning the next index would silently reach past what the
+            // sequence holds.
+            other => other,
+        }
+    }
+
+    /// `read_u64_stable`, expressed once for both arms.
+    ///
+    /// Live, this is a read and a second read of the same address, compared —
+    /// verbatim what `read_u64_stable` does, at both images, because a live
+    /// image IS just a later read.
+    pub fn u64_stable_at(&self, addr: usize, image: D81Image) -> Option<u64> {
+        let first = self.u64_at(addr, image)?;
+        let second = self.u64_at(addr, Self::paired_image(image))?;
+        (first == second).then_some(first)
+    }
+
+    pub fn u32_stable_at(&self, addr: usize, image: D81Image) -> Option<u32> {
+        let first = self.u32_at(addr, image)?;
+        let second = self.u32_at(addr, Self::paired_image(image))?;
+        (first == second).then_some(first)
+    }
+
+    pub fn u8_stable_at(&self, addr: usize, image: D81Image) -> Option<u8> {
+        let first = self.u8_at(addr, image)?;
+        let second = self.u8_at(addr, Self::paired_image(image))?;
+        (first == second).then_some(first)
+    }
+
+    pub fn u64_stable(&self, addr: usize) -> Option<u64> {
+        self.u64_stable_at(addr, D81Image::Opening)
+    }
+
+    pub fn u32_stable(&self, addr: usize) -> Option<u32> {
+        self.u32_stable_at(addr, D81Image::Opening)
+    }
+
+    pub fn u8_stable(&self, addr: usize) -> Option<u8> {
+        self.u8_stable_at(addr, D81Image::Opening)
+    }
+}
+
+impl D81SnapshotSource<'_> {
+    fn note(&self, class: u32, span: crate::snapshot_recipes::Span) {
+        let mut misses = self.misses.get();
+        match class {
+            D81_MISS_UNREADABLE => misses.unreadable = misses.unreadable.saturating_add(1),
+            D81_MISS_NOT_CAPTURED => misses.not_captured = misses.not_captured.saturating_add(1),
+            D81_MISS_NOT_OWNED => misses.not_owned = misses.not_owned.saturating_add(1),
+            D81_MISS_NOT_CONTIGUOUS => {
+                misses.not_contiguous = misses.not_contiguous.saturating_add(1)
+            }
+            _ => misses.no_closing_image = misses.no_closing_image.saturating_add(1),
+        }
+        if misses.first_class == 0 {
+            misses.first_class = class;
+            misses.first_addr = span.start;
+            misses.first_len = span.len.min(u64::from(u32::MAX)) as u32;
+        }
+        misses.last_class = class;
+        misses.last_addr = span.start;
+        self.misses.set(misses);
+    }
+
+    fn note_absent_sample(&self) {
+        let mut misses = self.misses.get();
+        misses.samples_absent = misses.samples_absent.saturating_add(1);
+        self.misses.set(misses);
+    }
+
+
+    /// Fold a view refusal into a miss class. `ForeignHour` and `ConsumerGapped`
+    /// cannot reach here — a view that exists is this hour's and is not gapped —
+    /// and are folded to `NotCaptured` rather than given a class of their own,
+    /// because a class nothing can produce is a wire word nobody can interpret.
+    fn class_of(refusal: crate::snapshot_recipes::view::ViewRefusal) -> u32 {
+        use crate::snapshot_recipes::view::ViewRefusal as R;
+        match refusal {
+            R::Unreadable { .. } => D81_MISS_UNREADABLE,
+            R::NotOwned { .. } => D81_MISS_NOT_OWNED,
+            R::NotContiguous { .. } => D81_MISS_NOT_CONTIGUOUS,
+            R::NotCaptured { .. } | R::ForeignHour { .. } | R::ConsumerGapped(_) => {
+                D81_MISS_NOT_CAPTURED
+            }
+        }
+    }
+
+    fn read_into(&self, addr: usize, out: &mut [u8], image: D81Image) -> bool {
+        let span = crate::snapshot_recipes::Span::new(addr as u64, out.len() as u64);
+        match image {
+            D81Image::Opening => match self.view.read_into(addr as u64, out) {
+                Ok(()) => true,
+                Err(refusal) => {
+                    self.note(Self::class_of(refusal), span);
+                    false
+                }
+            },
+            D81Image::Sample(index) => {
+                match self.view.sample_bytes(addr as u64, out.len(), index) {
+                    Ok(bytes) => {
+                        out.copy_from_slice(bytes);
+                        true
+                    }
+                    // A REQUESTED IMAGE THE OBSERVATION DOES NOT HOLD, and it
+                    // FAILS rather than being substituted (Codex 019feb7d,
+                    // finding 1). Every copy op of this plan asks for its
+                    // adjacent images, so reaching here means the engine refused
+                    // the adjacent copy — the same condition the live walk's
+                    // second read refuses on, at the same site, with the same
+                    // typed failure. Serving the opening image instead would
+                    // make the walk's pair check a comparison of one image with
+                    // itself and publish the transients it exists to catch.
+                    Err(crate::snapshot_recipes::view::ViewRefusal::NotCaptured { .. }) => {
+                        self.note_absent_sample();
+                        false
+                    }
+                    Err(refusal) => {
+                        self.note(Self::class_of(refusal), span);
+                        false
+                    }
+                }
+            }
+            // THE CLOSING SEQUENCE, image by image. Image 0 is the first
+            // closing observation and `ClosingSample(k)` the k-th adjacent one,
+            // which is what gives the walk's closing A/B two observations to
+            // compare instead of one image against itself.
+            D81Image::Closing | D81Image::ClosingSample(_) => {
+                let index = match image {
+                    D81Image::ClosingSample(index) => index,
+                    _ => 0,
+                };
+                match self.view.closing_sample_bytes(addr as u64, out.len(), index) {
+                    Ok(bytes) => {
+                        out.copy_from_slice(bytes);
+                        true
+                    }
+                    // THE ENGINE DECLINED AN OBSERVATION THE PLAN ASKED FOR.
+                    // `closing_sample_bytes` answers `Unreadable` for exactly
+                    // that, and `NotCaptured` only when nobody asked — so this
+                    // falls through to the class mapping below and is counted as
+                    // the engine condition it is, never as a plan defect. It is
+                    // the live walk's own second closing read going unreadable,
+                    // refusing at the same site with the same reason.
+                    //
+                    // AN ABSENT CLOSING IMAGE NOBODY ASKED FOR is still a plan
+                    // defect: the reader closed over a span outside the plan's
+                    // own closing set.
+                    Err(crate::snapshot_recipes::view::ViewRefusal::NotCaptured { .. }) => {
+                        self.note(D81_MISS_NO_CLOSING_IMAGE, span);
+                        false
+                    }
+                    Err(refusal) => {
+                        self.note(Self::class_of(refusal), span);
+                        false
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// THE PLAN'S OWN ACCOUNTING, published on every frame
+// ===========================================================================
+
+/// What one frame's AUTHORITATIVE observation cost and produced.
+///
+/// Published on every outcome, armed or not, because this is now the read path
+/// and not an experiment: `plan_us` is the whole of what the conversion moved
+/// off the critical sweep, and a capture that could not see it could not
+/// attribute the sweep-length change to anything.
+///
+/// Every field is per-frame and lands on the wire as its own diagnostic unit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct D81PlanCounters {
+    /// The plan ran to a view. False means the observation refused, custody
+    /// declined it, or the consumer was gapped — and the words below say which.
     pub ran: bool,
-    pub rows_compared: u32,
-    pub rows_equal: u32,
-    pub rows_divergent: u32,
-    /// The FIRST divergence's province and field ordinal. Zero when there was
-    /// none; the field ordinal indexes [`D81_SHADOW_FIELDS`].
-    pub first_divergence_province: u32,
-    pub first_divergence_field: u32,
+    /// Guarded copy transactions the substrate issued, INCLUDING the ones that
+    /// failed: a bisected scoped copy's retries and an adjacent sample are both
+    /// work the engine did.
     pub copies_issued: u64,
     pub intervals_closed: u32,
     pub scoped_voids: u32,
     pub pointers_rejected: u32,
     /// Custody declined the observation before it began.
     pub custody_refused: bool,
-    /// An allocation for the shadow's own per-province bookkeeping was
-    /// declined, so the collection is INCOMPLETE and its equality figures
-    /// cover only the provinces it reached. Recorded rather than fatal: a
-    /// diagnostic may not abort a frame the live reader had already read.
-    pub witnesses_declined: bool,
-    /// The observation ran but the substrate would not issue a view for the
-    /// consumer — a torn image, an unmet sample, or the refusal below. Its own
-    /// word, because "armed, not ran, no refusal reason" is an inference from
-    /// absences rather than a statement.
+    /// The observation ran but the substrate would not issue a view — a changed
+    /// witness, an unmet sample, or the refusal below. Its own word, because
+    /// "not ran, no refusal reason" is an inference from absences rather than a
+    /// statement.
     pub consumer_gapped: bool,
     pub refused: bool,
-    /// [`d81_shadow_refusal_ordinal`], zero when the recipe captured.
+    /// [`d81_plan_refusal_ordinal`], zero when the recipe captured.
     pub refusal_ordinal: u32,
+    /// [`d81_plan_gap_ordinal`], zero when the consumer was not gapped. WHICH
+    /// gap it was is the difference between "the engine moved under the copier"
+    /// and "the recipe refused", and a capture that could only see
+    /// `consumer_gapped` could not tell them apart.
+    pub gap_ordinal: u32,
     pub custody_held_bytes: u64,
+    /// THE NUMBER THE CONVERSION IS ABOUT: wall spent inside the bracket
+    /// building the copy — root formation excluded, because those fifteen reads
+    /// are charged to `roots_us` exactly as they were before.
     pub plan_us: u64,
+    /// What the compute half's reads could not get out of the copy, by class.
+    /// See [`D81ViewMisses`]: `unreadable` is the engine, everything else is us.
+    pub misses: D81ViewMisses,
 }
 
 /// A refusal as a stable small ordinal, so the wire can carry WHICH refusal
@@ -1040,7 +1505,7 @@ pub struct D81ShadowCounters {
 /// The order is the `Refusal` enum's own declaration order and it is a WIRE
 /// vocabulary: a new variant appends, and an existing number never moves.
 /// Zero is reserved for "no refusal".
-pub fn d81_shadow_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) -> u32 {
+pub fn d81_plan_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) -> u32 {
     use crate::snapshot_recipes::Refusal as R;
     match refusal {
         R::DepthExceeded { .. } => 1,
@@ -1065,134 +1530,266 @@ pub fn d81_shadow_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) ->
 
 /// The name a refusal ordinal publishes under, so "refusals by reason" is a set
 /// of NAMED units rather than one number a reader has to decode.
-pub fn d81_shadow_refusal_unit_name(ordinal: u32) -> &'static str {
+pub fn d81_plan_refusal_unit_name(ordinal: u32) -> &'static str {
     match ordinal {
-        1 => "d81_shadow_refusal_01_depth_exceeded",
-        2 => "d81_shadow_refusal_02_copy_task_limit",
-        3 => "d81_shadow_refusal_03_range_limit",
-        4 => "d81_shadow_refusal_04_byte_limit",
-        5 => "d81_shadow_refusal_05_range_too_wide",
-        6 => "d81_shadow_refusal_06_extent_count",
-        7 => "d81_shadow_refusal_07_extent_bytes",
-        8 => "d81_shadow_refusal_08_join_out_of_range",
-        9 => "d81_shadow_refusal_09_join_table_missing",
-        10 => "d81_shadow_refusal_10_field_not_captured",
-        11 => "d81_shadow_refusal_11_memory_unreadable",
-        12 => "d81_shadow_refusal_12_address_not_representable",
-        13 => "d81_shadow_refusal_13_pointer_not_admissible",
-        14 => "d81_shadow_refusal_14_carry_not_set",
-        15 => "d81_shadow_refusal_15_conditional_unresolved",
-        16 => "d81_shadow_refusal_16_closed_interval_reopened",
-        17 => "d81_shadow_refusal_17_malformed",
-        _ => "d81_shadow_refusal_00_unknown",
+        1 => "d81_plan_refusal_01_depth_exceeded",
+        2 => "d81_plan_refusal_02_copy_task_limit",
+        3 => "d81_plan_refusal_03_range_limit",
+        4 => "d81_plan_refusal_04_byte_limit",
+        5 => "d81_plan_refusal_05_range_too_wide",
+        6 => "d81_plan_refusal_06_extent_count",
+        7 => "d81_plan_refusal_07_extent_bytes",
+        8 => "d81_plan_refusal_08_join_out_of_range",
+        9 => "d81_plan_refusal_09_join_table_missing",
+        10 => "d81_plan_refusal_10_field_not_captured",
+        11 => "d81_plan_refusal_11_memory_unreadable",
+        12 => "d81_plan_refusal_12_address_not_representable",
+        13 => "d81_plan_refusal_13_pointer_not_admissible",
+        14 => "d81_plan_refusal_14_carry_not_set",
+        15 => "d81_plan_refusal_15_conditional_unresolved",
+        16 => "d81_plan_refusal_16_closed_interval_reopened",
+        17 => "d81_plan_refusal_17_malformed",
+        _ => "d81_plan_refusal_00_unknown",
     }
 }
 
-/// Compare every witnessed province's LIVE reading against the COPY.
+/// The gap a view refusal names, as a small ordinal. Zero is "no gap".
+///
+/// A WIRE vocabulary on the same terms as the refusal ordinals above.
+pub fn d81_plan_gap_ordinal(refusal: &crate::snapshot_recipes::view::ViewRefusal) -> u32 {
+    use crate::snapshot_recipes::view::ViewRefusal as V;
+    use crate::snapshot_recipes::GapReason as G;
+    match refusal {
+        V::ForeignHour { .. } => 1,
+        V::ConsumerGapped(G::Refused(_)) => 2,
+        V::ConsumerGapped(G::WitnessChanged { .. }) => 3,
+        V::ConsumerGapped(G::WitnessDependency { .. }) => 4,
+        V::ConsumerGapped(G::SamplesDisagreed { .. }) => 5,
+        V::NotCaptured { .. } => 6,
+        V::NotContiguous { .. } => 7,
+        V::NotOwned { .. } => 8,
+        V::Unreadable { .. } => 9,
+    }
+}
+
+pub fn d81_plan_gap_unit_name(ordinal: u32) -> &'static str {
+    match ordinal {
+        1 => "d81_plan_gap_01_foreign_hour",
+        2 => "d81_plan_gap_02_recipe_refused",
+        3 => "d81_plan_gap_03_witness_changed",
+        4 => "d81_plan_gap_04_witness_dependency",
+        5 => "d81_plan_gap_05_samples_disagreed",
+        6 => "d81_plan_gap_06_not_captured",
+        7 => "d81_plan_gap_07_not_contiguous",
+        8 => "d81_plan_gap_08_not_owned",
+        9 => "d81_plan_gap_09_unreadable",
+        _ => "d81_plan_gap_00_unknown",
+    }
+}
+
+// ===========================================================================
+// THE REVERSE SHADOW: the retired live walk, run beside the authoritative one
+// ===========================================================================
+
+/// The environment spelling of the equality lever's on switch.
+///
+/// AN ENVIRONMENT VARIABLE AND A CONTROL KEY, both, neither required — exactly
+/// `BATTLE_PLAN_D47_SWEEP_SHADOW`'s shape and for its reason: the orchestrator's
+/// transition captures are started by the WMI/env path, where there is no
+/// control block to write, while a recorder-hosted capture has no environment
+/// to set. Either arms it.
+///
+/// NOT a cargo feature, following `custody_shadow::CUSTODY_SHADOW_ENV`: a
+/// feature forks the binary, and then the only collector that can answer the
+/// question is a different collector from the one that ships.
+///
+/// # THE LEVER TURNED AROUND (lane GI, 2026-08-10)
+///
+/// It used to mean "run the copy plan beside the live reader". The plan IS the
+/// reader now, so it means the other thing: run the RETIRED live walk beside the
+/// authoritative one and compare the rows they publish. The authoritative rows
+/// are what the frame publishes either way — the live arm's rows are never
+/// published, only compared — so an armed capture cannot deliver a row a
+/// disarmed one would not.
+///
+/// # WHAT ARMING COSTS THE FRAME, and it is the whole retired walk
+///
+/// The live arm reads the engine, so it runs INSIDE the clock bracket, and it is
+/// the ~105,000 guarded calls this conversion removed. An armed capture's
+/// bracket is therefore about as long as a pre-conversion one's and its DELIVERY
+/// is not comparable to a disarmed capture's. Its EQUALITY numbers are what it
+/// is for, and those are unaffected: both arms observe the same hour, the live
+/// arm inside the bracket and the copy taken inside the same bracket.
+///
+/// The disarmed path pays one relaxed atomic load per frame — the environment
+/// lever is folded into the same atomic at session install — and nothing else:
+/// no second walk, no allocation, no engine read, and
+/// [`D81EqualityCounters::armed`] false publishes no equality unit at all.
+pub const D81_COPY_BRACKET_SHADOW_ENV: &str = "BATTLE_PLAN_D81_COPY_BRACKET_SHADOW";
+
+/// The row fields the equality mode compares, in ordinal order, AS WIRE UNIT
+/// NAMES.
+///
+/// Ordinal 0 is "no divergence". One table and not two — a vocabulary and a
+/// separate list of unit names for it drift, which is how a capture ends up
+/// with a field ordinal nobody can decode. The frame publishes the NAME, so
+/// "which field disagreed" is a count against a word rather than a number a
+/// reader has to look up.
+pub const D81_SHADOW_FIELD_UNITS: [&str; 7] = [
+    "d81_shadow_divergence_00_none",
+    "d81_shadow_divergence_01_row_present",
+    "d81_shadow_divergence_02_province_id",
+    "d81_shadow_divergence_03_active_terminal",
+    "d81_shadow_divergence_04_anchor_variant",
+    "d81_shadow_divergence_05_anchor_bits",
+    "d81_shadow_divergence_06_neighbors",
+];
+
+/// The unit name a divergence ordinal publishes under, saturating at "unknown"
+/// so a future field cannot publish under another field's name.
+pub fn d81_shadow_divergence_unit_name(ordinal: u32) -> &'static str {
+    D81_SHADOW_FIELD_UNITS
+        .get(ordinal as usize)
+        .copied()
+        .unwrap_or("d81_shadow_divergence_99_unknown")
+}
+
+/// What one equality frame observed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct D81EqualityCounters {
+    /// The lever was on for this frame.
+    pub armed: bool,
+    /// Both arms produced a verdict, so the comparison below happened. False
+    /// with `armed` true means the authoritative arm had no rows to compare
+    /// against — the plan refused or the consumer was gapped — and
+    /// [`D81PlanCounters`] says which.
+    pub ran: bool,
+    /// Rows the retired live walk published.
+    pub rows_live: u32,
+    /// Rows the authoritative walk published.
+    pub rows_authoritative: u32,
+    /// Rows compared: the longer of the two, so a row present on one side and
+    /// absent on the other is a DIVERGENCE and never a skipped comparison.
+    pub rows_compared: u32,
+    pub rows_equal: u32,
+    pub rows_divergent: u32,
+    /// The FIRST divergence's province and field ordinal. Zero when there was
+    /// none; the field ordinal indexes [`D81_SHADOW_FIELD_UNITS`].
+    pub first_divergence_province: u32,
+    pub first_divergence_field: u32,
+    /// The two arms agreed about WHETHER the frame refused, and about the
+    /// refusing stage and reason when it did.
+    pub failures_agree: bool,
+    /// `(stage << 16) | reason` for each arm, zero when that arm did not refuse.
+    /// Published so a disagreement names both sides rather than only its own.
+    pub live_failure: u32,
+    pub authoritative_failure: u32,
+    /// Neighbour totals, which the row comparison would otherwise only reach
+    /// through the per-province neighbour lists.
+    pub live_neighbors: u32,
+    pub authoritative_neighbors: u32,
+    /// Wall the retired live walk cost inside the bracket. This is the number
+    /// the conversion removed, measured on the same frame that measures what
+    /// replaced it.
+    pub live_walk_us: u64,
+}
+
+/// One arm's walk result, reduced to what the equality mode compares.
+///
+/// Borrowed rather than owned: the authoritative arm's rows are the ones the
+/// frame PUBLISHES, and a comparison that took them by value would be a
+/// comparison that could consume the publication.
+pub struct D81WalkVerdict<'a, F> {
+    pub provinces: &'a [compact_contract::rail_replay::RailProvinceState],
+    pub observed_neighbors: usize,
+    /// THE WHOLE REFUSAL, not a summary of it.
+    ///
+    /// `(stage << 16) | reason` is what the WIRE carries, because a diagnostic
+    /// unit is one integer. It is not what the comparison may run on: two arms
+    /// refusing at different provinces, indices, raw witnesses or read addresses
+    /// are not in agreement, and a comparison over the packed word would call
+    /// them equal. The type is generic so this module needs no knowledge of the
+    /// reader's failure type beyond it being comparable.
+    pub failure: Option<F>,
+    /// The packed `(stage << 16) | reason` of `failure`, for the wire.
+    pub failure_word: u32,
+}
+
+/// Compare the retired live walk's rows against the authoritative ones.
 ///
 /// # What equality means here, exactly
 ///
-/// For each field the live walk consumed, the same bytes are read out of the
-/// view AT THE SAME ADDRESS and compared to the value the walk decoded. A field
-/// the view cannot serve — because the plan did not copy it, or copied it into
-/// a void — counts as a DIVERGENCE and not as a skip: "the copy could not
-/// answer" is precisely the outcome a conversion has to be told about, and
-/// calling it equal would let a plan that copies nothing report perfect
-/// agreement.
+/// Row `i` of one arm against row `i` of the other, over every field the wire
+/// carries, with the LONGER list setting the count — so a row one arm published
+/// and the other did not is `row_present`, ordinal 1, and never a comparison
+/// that quietly did not happen. Then the two refusals: a frame both arms refused
+/// on the same stage and reason agrees; anything else does not.
 ///
 /// # It compares VALUES, not timing, and the difference is the measurement
 ///
-/// The live walk read its fields during the walk; the plan copied them at the
-/// top of the bracket. A field the engine rewrote in between diverges
-/// legitimately. That is not noise to be tuned away — it is the
-/// sampling-window widening lane FX named and lane FZ documented, finally
-/// measured against a running game, and it is the number the arming decision
-/// turns on.
-pub fn d81_shadow_compare(
-    view: &crate::snapshot_recipes::view::SnapshotView<'_>,
-    witnesses: &[D81ShadowWitness],
-    counters: &mut D81ShadowCounters,
+/// The live arm read its fields during its own walk; the plan copied them at the
+/// top of the same bracket. A field the engine rewrote in between diverges
+/// legitimately. That is not noise to be tuned away — it is the sampling-window
+/// difference between a walk and a copy, and it is the number a capture is run
+/// to see.
+pub fn d81_equality_compare<F: PartialEq>(
+    live: &D81WalkVerdict<'_, F>,
+    authoritative: &D81WalkVerdict<'_, F>,
+    counters: &mut D81EqualityCounters,
 ) {
-    let u32_at = |addr: usize| -> Option<u32> {
-        view.bytes(addr as u64, 4)
-            .ok()
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
-    };
-    let u64_at = |addr: usize| -> Option<u64> {
-        view.bytes(addr as u64, 8)
-            .ok()
-            .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
-    };
+    counters.ran = true;
+    counters.rows_live = live.provinces.len().min(u32::MAX as usize) as u32;
+    counters.rows_authoritative = authoritative.provinces.len().min(u32::MAX as usize) as u32;
+    counters.live_neighbors = live.observed_neighbors.min(u32::MAX as usize) as u32;
+    counters.authoritative_neighbors =
+        authoritative.observed_neighbors.min(u32::MAX as usize) as u32;
+    counters.live_failure = live.failure_word;
+    counters.authoritative_failure = authoritative.failure_word;
+    // THE WHOLE VALUE. Same stage and reason at different provinces, indices or
+    // witnesses is a divergence the conversion has to be told about, and the
+    // packed word cannot see it.
+    counters.failures_agree = live.failure == authoritative.failure;
 
-    for witness in witnesses {
+    let rows = live.provinces.len().max(authoritative.provinces.len());
+    for index in 0..rows {
         counters.rows_compared = counters.rows_compared.saturating_add(1);
-        // The EARLIEST field of this row that disagreed, not whichever the
-        // loop noticed: the checks run in ordinal order and only the first
-        // sticks.
-        let mut diverged = 0u32;
-        {
-            let mut check = |ordinal: u32, equal: bool| {
-                if diverged == 0 && !equal {
-                    diverged = ordinal;
-                }
-            };
-            check(
-                1,
-                u64_at(witness.rail_slot_addr) == Some(witness.rail_info as u64),
-            );
-            check(
-                2,
-                u64_at(witness.rail_header_addr) == Some(witness.pair_ptr as u64),
-            );
-            check(
-                3,
-                u32_at(witness.rail_header_addr + super::RAIL_HEADER_COUNT_IN_WINDOW)
-                    == Some(witness.pair_count),
-            );
-            check(
-                4,
-                witness.pair_bytes.is_empty()
-                    || view
-                        .bytes(witness.pair_ptr as u64, witness.pair_bytes.len())
-                        .map(|bytes| bytes == witness.pair_bytes.as_slice())
-                        .unwrap_or(false),
-            );
-            check(
-                5,
-                view.bytes(
-                    witness.active_window_addr as u64,
-                    super::D81_ACTIVE_WINDOW_LEN,
-                )
-                .ok()
-                .and_then(|bytes| <[u8; super::D81_ACTIVE_WINDOW_LEN]>::try_from(bytes).ok())
-                .map(|window| super::d81_active_state_from_window(window) == witness.active)
-                .unwrap_or(false),
-            );
-            check(
-                6,
-                u64_at(witness.source_slot_addr) == Some(witness.source_province_ptr as u64),
-            );
-            check(
-                7,
-                u64_at(witness.map_slot_addr) == Some(witness.map_province as u64),
-            );
-            check(8, u64_at(witness.record_addr) == Some(witness.record as u64));
-            check(
-                9,
-                u32_at(witness.selector_key_addr) == Some(witness.selector_key),
-            );
-            let anchor_equal = (0..3).all(|axis| {
-                u32_at(witness.anchor_addr + axis * 4) == Some(witness.anchor_bits[axis])
-            });
-            check(10, anchor_equal);
-        }
-
+        let (Some(left), Some(right)) = (
+            live.provinces.get(index),
+            authoritative.provinces.get(index),
+        ) else {
+            counters.rows_divergent = counters.rows_divergent.saturating_add(1);
+            if counters.first_divergence_field == 0 {
+                counters.first_divergence_field = 1;
+                counters.first_divergence_province = live
+                    .provinces
+                    .get(index)
+                    .or_else(|| authoritative.provinces.get(index))
+                    .map(|row| row.province_id)
+                    .unwrap_or(0);
+            }
+            continue;
+        };
+        // The EARLIEST field of this row that disagreed, not whichever the loop
+        // noticed: the checks run in ordinal order and only the first sticks.
+        let diverged = if left.province_id != right.province_id {
+            2
+        } else if left.active_terminal != right.active_terminal {
+            3
+        } else if left.anchor_variant != right.anchor_variant {
+            4
+        } else if left.anchor_bits != right.anchor_bits {
+            5
+        } else if left.neighbors != right.neighbors {
+            6
+        } else {
+            0
+        };
         if diverged == 0 {
             counters.rows_equal = counters.rows_equal.saturating_add(1);
         } else {
             counters.rows_divergent = counters.rows_divergent.saturating_add(1);
             if counters.first_divergence_field == 0 {
-                counters.first_divergence_province = witness.province_id;
+                counters.first_divergence_province = left.province_id;
                 counters.first_divergence_field = diverged;
             }
         }

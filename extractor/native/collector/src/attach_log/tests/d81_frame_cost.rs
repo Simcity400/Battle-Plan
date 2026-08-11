@@ -63,7 +63,7 @@ fn d81_topology_outcome(
     state: &CollectorState,
     cache: &CompactFrameMapTopologyCache,
 ) -> (D81FailureStage, u32) {
-    let read = d81_finish_rail_replay_state(read_compact_rail_replay_state(state, 0, cache));
+    let read = d81_finish_rail_replay_state(read_compact_rail_replay_state(state, 0, cache, false));
     let failure = read
         .first_failure
         .expect("the fixture stages no rail tree, so d81 always refuses");
@@ -1474,6 +1474,7 @@ fn the_walks_own_slot_read_serves_the_selector_resolve_for_the_same_slot() {
     let slot = province_array.at(SELECTOR_PROVINCE_ID as usize * 8);
 
     let route = d81_resolve_anchor_selector_key(
+        &crate::attach_log::d81_copy_bracket::D81ReadSource::Live,
         6338,
         &topology,
         SELECTOR_CPROVINCE_VTABLE,
@@ -1493,6 +1494,7 @@ fn the_same_fixture_refuses_when_the_resolve_reads_the_slot_itself() {
     let (resolved, replacement, province_array) = selector_fixture();
     let topology = selector_topology(&resolved, &province_array);
     let failure = d81_resolve_anchor_selector_key(
+        &crate::attach_log::d81_copy_bracket::D81ReadSource::Live,
         6338,
         &topology,
         SELECTOR_CPROVINCE_VTABLE,
@@ -1526,6 +1528,7 @@ fn a_hint_that_names_another_address_is_ignored_and_the_slot_is_read() {
     let topology = selector_topology(&resolved, &province_array);
     let other_slot = province_array.at(SELECTOR_PROVINCE_ID as usize * 8 - 8);
     let failure = d81_resolve_anchor_selector_key(
+        &crate::attach_log::d81_copy_bracket::D81ReadSource::Live,
         6338,
         &topology,
         SELECTOR_CPROVINCE_VTABLE,
@@ -1583,14 +1586,14 @@ fn the_surviving_closing_slot_read_is_the_later_of_the_two() {
         .1;
     assert!(
         selector_close.starts_with(
-            "\n            let closing_selector_ptr = match d81_read_u64_pair(selector_route.province_slot) {"
+            "\n            let closing_selector_ptr = match d81_read_u64_pair_at(\n                source,\n                selector_route.province_slot,\n                d81_copy_bracket::D81Image::Closing,\n            ) {"
         ),
         "the read that survives must be the SOURCE close -- the later of the \
          two -- or the deduplicated span is a prefix of the one it replaces"
     );
     let after_surviving_read = walk
         .split_once(
-            "let closing_source_province_ptr = match d81_read_u64_pair(source_province_slot) {",
+            "let closing_source_province_ptr = match d81_read_u64_pair_at(\n            source,\n            source_province_slot,\n            d81_copy_bracket::D81Image::Closing,\n        ) {",
         )
         .expect("the surviving closing read")
         .1;
@@ -1607,7 +1610,7 @@ fn the_surviving_closing_slot_read_is_the_later_of_the_two() {
     );
     assert!(
         after_surviving_read.contains(
-            "if selector_slot_is_source_slot {\n                    return fail(status_flags, selector_close_read_failure(read_failure));"
+            "if selector_slot_is_source_slot {\n                    return Err(selector_close_read_failure(read_failure));"
         ),
         "and a refusal of the surviving read must be dressed in the SELECTOR's \
          clothes when the two slots are one, because the selector close is the \
@@ -1730,7 +1733,12 @@ fn d81_elided_read_count_model() {
         .expect("the staged window is readable");
     });
     let u64_pair = guarded_reads(|| {
-        d81_read_u64_pair(heap.at(0x00)).expect("the staged pointer is readable");
+        d81_read_u64_pair_at(
+            &crate::attach_log::d81_copy_bracket::D81ReadSource::Live,
+            heap.at(0x00),
+            crate::attach_log::d81_copy_bracket::D81Image::Opening,
+        )
+        .expect("the staged pointer is readable");
     });
 
     // The resolve, over a fixture whose live slot AGREES with the topology, so
@@ -1745,6 +1753,7 @@ fn d81_elided_read_count_model() {
     let resolve = |hint: Option<(usize, usize)>| {
         guarded_reads(|| {
             d81_resolve_anchor_selector_key(
+                &crate::attach_log::d81_copy_bracket::D81ReadSource::Live,
                 6338,
                 &topology,
                 SELECTOR_CPROVINCE_VTABLE,

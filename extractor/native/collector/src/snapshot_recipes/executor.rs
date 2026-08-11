@@ -400,6 +400,44 @@ pub enum DisagreeAction {
     Record,
 }
 
+/// What a CHANGED closing witness does.
+///
+/// # Why this exists beside [`DisagreeAction`], and why the default is `Gap`
+///
+/// The closing wave re-copies every enrolled interval and compares it against
+/// the opening image over the consumed bytes; anything that moved gaps the
+/// consumer, which is the right default and the only safe one for a reader that
+/// takes the substrate's verdict.
+///
+/// It is the WRONG answer for a converted reader that renders its own. d81's
+/// live walk closes exactly the fields it decided from — a rail header, a
+/// province-array slot, a map slot, an active entry — and closes nothing else:
+/// a rail slot for a province it never visited, or a byte of the 384 KB selector
+/// table, moving under it was never a refusal. The substrate's default compares
+/// all of it, so t46 measured 78 of 80 frames gapped where the live walk
+/// published every one. `Record` restores the reader's own reach: the closing
+/// image is still taken, still available through
+/// [`super::view::SnapshotView::closing_bytes`], and the reader compares the
+/// fields it consumed and refuses in its own vocabulary.
+///
+/// It is a NARROWING of what the substrate certifies, so it is opt-in per op and
+/// per consumer, and a neighbour that wants the default cannot be downgraded by
+/// one that does not — the same join `DisagreeAction` takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseAction {
+    /// Gap the consumers of a changed interval, and their dependent subtree.
+    Gap,
+    /// Record the change and issue the images anyway, for a reader that
+    /// compares the closing image itself.
+    Record,
+}
+
+impl Default for CloseAction {
+    fn default() -> Self {
+        CloseAction::Gap
+    }
+}
+
 /// How many back-to-back images one copy takes.
 ///
 /// # This is the only instrument that can see a torn read
@@ -598,6 +636,8 @@ pub struct OpMod {
     pub samples: SampleSpec,
     /// Copy ops only.
     pub tolerance: Tolerance,
+    /// Copy ops only: what a CHANGED closing witness costs this consumer.
+    pub on_close: CloseAction,
     /// Copy ops only.
     pub compare: CompareMask,
     /// Any op: the stage tag its intervals and its refusals carry.
@@ -620,6 +660,7 @@ static UNQUALIFIED: OpMod = OpMod {
         on_disagree: DisagreeAction::Gap,
     },
     tolerance: Tolerance::Required,
+    on_close: CloseAction::Gap,
     compare: CompareMask {
         windows: Vec::new(),
     },
@@ -635,6 +676,7 @@ impl OpMod {
             && !self.instance_from_carry
             && self.samples == SampleSpec::default()
             && self.tolerance == Tolerance::default()
+            && self.on_close == CloseAction::default()
             && self.compare.windows.is_empty()
             && self.stage == 0
     }
@@ -1370,6 +1412,16 @@ pub struct SnapshotBuild {
     pub phases_run: u32,
     /// Intervals enrolled in the closing wave.
     pub witnessed_intervals: u32,
+    /// COPIES the closing wave issued, which is no longer one per witnessed
+    /// interval: an interval whose consumers asked for adjacent observations
+    /// gets that many closing images too (owner ruling 2026-08-11).
+    ///
+    /// It is reported because it is the only way a caller can say where the
+    /// closing wave BEGAN in the transaction stream, and a test that places a
+    /// write between the opening and closing waves has to know that exactly. The
+    /// arithmetic it replaces -- "total minus interval count" -- was true only
+    /// while every interval took one.
+    pub closing_copies: u64,
     /// Everything the observation held against its ceiling at the end: copied
     /// bytes plus the index and link tables that address them. This is the
     /// number the 512 MiB budget is a budget FOR, and it is on the build
@@ -1501,6 +1553,7 @@ struct TableBinding {
 struct CopyAttributes {
     samples: SampleSpec,
     tolerance: Tolerance,
+    on_close: CloseAction,
     stage: u16,
     op: u16,
 }
@@ -1510,6 +1563,7 @@ impl Default for CopyAttributes {
         Self {
             samples: SampleSpec::default(),
             tolerance: Tolerance::Required,
+            on_close: CloseAction::Gap,
             stage: 0,
             op: 0,
         }
@@ -1772,6 +1826,8 @@ struct Observation<'a, M: SnapshotMemory> {
     task_hint: Vec<DecodeHint>,
     waves: Vec<Vec<CopyTask>>,
     forward_waves_run: u32,
+    /// Copies the closing wave has issued. See `SnapshotBuild::closing_copies`.
+    closing_copies: u64,
     // Scratch, owned by the observation and reused across waves. A fresh
     // allocation per task or per copy transaction would be a heap allocation
     // inside the bracket, which is the thing being priced.
@@ -1906,6 +1962,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             task_hint: Vec::new(),
             waves: (0..FORWARD_WAVES + 1).map(|_| Vec::new()).collect(),
             forward_waves_run: 0,
+            closing_copies: 0,
             by_recipe: Vec::new(),
             requests: Vec::new(),
             plan: super::policy::CopyPlan::new(),
@@ -2341,6 +2398,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             forward_waves_run: self.forward_waves_run,
             phases_run,
             witnessed_intervals: witnessed,
+            closing_copies: self.closing_copies,
             custody_held,
             custody_table_bytes,
             custody_arena_bytes,
@@ -2915,6 +2973,10 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // `Gap` whatever its ops declared, and a recipe that elected to resolve
         // a disagreement itself was gapped by one anyway.
         attributes.samples.on_disagree = DisagreeAction::Record;
+        // SAME IDENTITY, SAME REASON: the join below only moves the policy
+        // towards `Gap`, so starting from the default would make every copy's
+        // policy `Gap` whatever its ops declared.
+        attributes.on_close = CloseAction::Record;
         let copy = planned.copies[index];
         for &task in planned.sources_of(&copy) {
             let op = match tasks[task as usize].body {
@@ -2927,6 +2989,9 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             }
             if modifier.tolerance == Tolerance::Required {
                 attributes.tolerance = Tolerance::Required;
+            }
+            if modifier.on_close == CloseAction::Gap {
+                attributes.on_close = CloseAction::Gap;
             }
             attributes.op = op;
             attributes.stage = modifier.stage;
@@ -3234,10 +3299,16 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         let modifier = self.recipes[recipe].op_mod(op);
         let stage = modifier.stage;
         let windows = modifier.compare.windows.clone();
+        let consumer = self.recipes[recipe].consumer;
+        let gap_on_close = modifier.on_close == CloseAction::Gap;
         for &id in owned {
             if stage != 0 {
                 self.annot.tag_stage(id, stage);
             }
+            // BEFORE the mask arms below, every one of which `continue`s. A
+            // consumer that declared `Record` on a masked op would otherwise be
+            // gapped by a default it never asked for.
+            self.annot.ask_close(id, consumer, gap_on_close);
             if windows.is_empty() {
                 // No mask means "this contributor reads all of it", and that is
                 // final: see the module header on monotonicity.
@@ -4796,6 +4867,8 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
     ///
     /// `Ok(false)` means the engine refused the re-copy — a FAILED witness, not
     /// an absent one; the caller records it as uncertifiable.
+    /// Copy one interval's closing sequence. Returns false when the FIRST image
+    /// could not be taken, which is what makes the witness uncertifiable.
     fn close_one(&mut self, id: IntervalId) -> Result<bool, CustodyRefusal> {
         let span = self.owners.record(id).span();
         let len = match usize::try_from(span.len) {
@@ -4809,6 +4882,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         };
         let offset = self.arena.alloc_zeroed(span.len)?;
         let memory = self.memory;
+        self.closing_copies = self.closing_copies.saturating_add(1);
         if memory
             .copy_into(span.start, self.arena.slice_mut(offset, len))
             .is_err()
@@ -4816,6 +4890,36 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             return Ok(false);
         }
         self.owners.record_mut(id).set_closing_offset(offset);
+        // THE REST OF THE CLOSING SEQUENCE (owner ruling 2026-08-11).
+        //
+        // A closing read is an observation like any other, and a reader that
+        // renders its own torn verdict took TWO of them at every closing site.
+        // With one image its closing A/B compares that image with itself: it
+        // publishes where the live reader refused `Torn`, and where the live
+        // reader's second closing read went unreadable. So the wave takes as
+        // many images as the interval's own `SampleSpec` asked for.
+        //
+        // AN INTERVAL NOBODY ASKED ABOUT TAKES ONE, which is the wave every
+        // recipe had before this existed, so no plan that declares no samples
+        // pays anything for it.
+        //
+        // A FAILURE HERE IS NOT `unreadable_closes`. That list means the FIRST
+        // image could not be taken, which makes the witness uncertifiable for
+        // everyone; a missing SECOND image is a fact about one reader's own
+        // instrument, and the view reports it to that reader as an unreadable
+        // observation rather than gapping the interval's whole dependent set.
+        let wanted = self.annot.closing_images_wanted(id);
+        for _ in 1..wanted {
+            let extra = self.arena.alloc_zeroed(span.len)?;
+            self.closing_copies = self.closing_copies.saturating_add(1);
+            if memory
+                .copy_into(span.start, self.arena.slice_mut(extra, len))
+                .is_err()
+            {
+                break;
+            }
+            self.annot.push_closing_image(id, extra as u32);
+        }
         Ok(true)
     }
 

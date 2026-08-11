@@ -391,7 +391,8 @@ fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
             .subject(77)
             .raw(0xDEAD_BEEF);
     let read = CompactRailReplayRead {
-        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
+        plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
+        equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
         provinces: Vec::new(),
         hub_simulation: None,
         observed_neighbors: 0,
@@ -1318,7 +1319,8 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
 
     // The observe half's own terminal answer, with a reason of its own.
     let already_failed = CompactRailReplayRead {
-        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
+        plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
+        equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
         provinces: Vec::new(),
         hub_simulation: None,
         observed_neighbors: 0,
@@ -1385,30 +1387,16 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         .iter()
         .map(|province| province.neighbors.len())
         .sum::<usize>();
-    let deferred_copy = || {
-        D81ObserveOutcome::Deferred(Box::new(D81DeferredCompute {
-            shadow_armed: false,
-            shadow_roots: None,
-            shadow_witnesses: Vec::new(),
-            shadow_witnesses_declined: false,
-            started: Instant::now(),
-            status_flags: 0,
-            phases: D81PhaseAccum::default(),
-            admitted_record_is_province: 0,
-            admitted_key_is_province_id: 0,
-            provinces: ring.clone(),
-            observed_neighbors,
-            hub: D81HubObservation {
-                foreign_tables: BTreeMap::new(),
-                povs: Vec::new(),
-                read_failure: None,
-                reread_refused: Some(false),
-            },
-            closure_failure: None,
-            hour_stamp: None,
-            snapshot_bytes: 0,
-        }))
-    };
+    // SINCE THE CONVERSION THE COPY IS WHAT CROSSES THE BRACKET, not the rows.
+    // The compute half decodes the plan's snapshot, so a fixture that handed it a
+    // ready-made row list would be a fixture for a design that no longer exists —
+    // and, worse, one that could not tell "the compute did not run" from "there
+    // was nothing left to compute". `staged_deferred` carries a REAL copy of a
+    // staged world whose neighbours are reciprocal, so the control below
+    // genuinely publishes.
+    let _ = (&ring, observed_neighbors);
+    let deferred_copy =
+        || D81ObserveOutcome::Deferred(Box::new(super::d81_authoritative::staged_deferred()));
     // THE CONTROL, and what makes the assertion below mean anything: this exact
     // copy DOES compute to a published snapshot when it is not refused.
     let computed = d81_finish_rail_replay_state(deferred_copy());
@@ -2004,31 +1992,18 @@ fn d81_bracket_split_cost_model() {
     // Built up front, one per trial, because the finish CONSUMES its copy --
     // which is the ownership rule the split rests on, so the bench has to obey
     // it rather than work around it.
+    // THE SHAPE IS THE CONVERSION GATE'S WORLD, not t26's 3,510 railed
+    // provinces, and the substitution is forced rather than chosen (lane GI,
+    // 2026-08-10). The post-bracket half no longer receives rows: it receives the
+    // hour's COPY and walks it, so a bench that fed it a synthetic row list would
+    // be timing a function signature that does not exist. Staging 3,510 provinces
+    // into a `SyntheticMemory` — whose lookup is a linear scan over regions —
+    // would spend its whole wall inside the fixture rather than inside the code
+    // under test, so the shape is the gate's own and the number below is
+    // "the post-bracket half at that shape", walk included.
+    let _ = (&mutual, observed_neighbors);
     let mut pending: Vec<D81ObserveOutcome> = (0..TRIALS)
-        .map(|_| {
-            D81ObserveOutcome::Deferred(Box::new(D81DeferredCompute {
-            shadow_armed: false,
-            shadow_roots: None,
-            shadow_witnesses: Vec::new(),
-            shadow_witnesses_declined: false,
-                started: Instant::now(),
-                status_flags: 0,
-                phases: D81PhaseAccum::default(),
-                admitted_record_is_province: 0,
-                admitted_key_is_province_id: 0,
-                provinces: mutual.clone(),
-                observed_neighbors,
-                hub: D81HubObservation {
-                    foreign_tables: BTreeMap::new(),
-                    povs: Vec::new(),
-                    read_failure: None,
-                    reread_refused: Some(false),
-                },
-                closure_failure: None,
-                hour_stamp: None,
-                snapshot_bytes: 0,
-            }))
-        })
+        .map(|_| D81ObserveOutcome::Deferred(Box::new(super::d81_authoritative::staged_deferred())))
         .collect();
     let mut fold_samples = Vec::with_capacity(TRIALS);
     let mut published = 0usize;
@@ -2043,8 +2018,9 @@ fn d81_bracket_split_cost_model() {
         published = read.provinces.len();
     }
     println!(
-        "d81 reciprocity fold + closure checks moved off the bracket \
-         ({published} railed provinces, {observed_neighbors} directed edges):"
+        "d81 post-bracket half -- the authoritative walk over the hour's copy, \
+         then the reciprocity fold and the closure checks \
+         ({published} railed provinces):"
     );
     println!("  {}", percentiles_us(fold_samples));
 }
@@ -2289,7 +2265,8 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
 
     // 1. THE OBSERVE HALF'S OWN TERMINAL ANSWER, kept across a mismatch.
     let already_failed = CompactRailReplayRead {
-        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
+        plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
+        equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
         provinces: Vec::new(),
         hub_simulation: None,
         observed_neighbors: 0,
@@ -2343,7 +2320,8 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     // supplies every honest `SourceUnavailable` witness in a capture.
     let computed = d81_stamp_bracket_observation(
         d81_finish_rail_replay_state(D81ObserveOutcome::Complete(CompactRailReplayRead {
-        shadow: crate::attach_log::d81_copy_bracket::D81ShadowCounters::default(),
+        plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
+        equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
             provinces: Vec::new(),
             hub_simulation: None,
             observed_neighbors: 0,

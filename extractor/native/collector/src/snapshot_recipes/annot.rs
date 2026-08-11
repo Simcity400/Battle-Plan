@@ -248,11 +248,61 @@ impl SampleImages {
     }
 }
 
+/// The SECOND and later closing images of one interval.
+///
+/// # Why the closing wave takes more than one
+///
+/// A reader that renders its own torn verdict compares two adjacent observations
+/// of a field. It does that at the OPENING — which is what [`SampleImages`] is
+/// for — and it does it again at every CLOSING re-read, because a closing read is
+/// an observation like any other and the live reader it replaces took two of
+/// them. With one closing image a converted reader's closing A/B compares that
+/// image with itself and can never tear: it publishes where the live reader
+/// refused `Torn`, and it publishes where the live reader's second closing read
+/// went unreadable.
+///
+/// So the closing wave takes as many images as the interval's own
+/// [`super::executor::SampleSpec`] asked for. An interval nobody asked about
+/// takes one, which is the closing wave every recipe had before this existed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClosingImages {
+    /// Arena offsets of images 2..=n, in the order taken. Image 1 is the
+    /// record's own `closing_offset`.
+    pub extra: Vec<u32>,
+}
+
+impl ClosingImages {
+    /// Images held, the first one included.
+    pub fn held(&self) -> usize {
+        1 + self.extra.len()
+    }
+}
+
+/// One consumer's policy for the CLOSING witness of one interval.
+///
+/// The shape mirrors [`SampleAsk`] because the question is the same one: a
+/// policy belongs to a REQUEST, not to an interval, and two recipes reaching one
+/// interval may want different things. Merging them would invent a request
+/// nobody made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloseAsk {
+    pub consumer: super::ConsumerId,
+    /// Whether a CHANGED closing image gaps this consumer, or is left for it to
+    /// judge from the image itself.
+    pub gap_on_change: bool,
+}
+
 /// Everything the annotations hold for one observation.
 #[derive(Clone, Debug, Default)]
 pub struct Annotations {
     consumed: BTreeMap<IntervalId, Consumption>,
     samples: BTreeMap<IntervalId, SampleImages>,
+    /// Arena offsets of the SECOND and later closing images, in the order the
+    /// closing wave took them. The FIRST closing image is the record's own
+    /// `closing_offset`, exactly as the first opening image is its
+    /// `opening_offset` — see [`ClosingImages`].
+    closing: BTreeMap<IntervalId, ClosingImages>,
+    closes: BTreeMap<IntervalId, Vec<CloseAsk>>,
     stages: BTreeMap<IntervalId, Vec<u16>>,
     /// True once any recipe in the observation declares any annotation. While
     /// false every entry point below is a single predictable branch.
@@ -278,7 +328,93 @@ impl Annotations {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.consumed.is_empty() && self.samples.is_empty() && self.stages.is_empty()
+        self.consumed.is_empty()
+            && self.samples.is_empty()
+            && self.closing.is_empty()
+            && self.closes.is_empty()
+            && self.stages.is_empty()
+    }
+
+    /// How many CLOSING images this interval's consumers asked for.
+    ///
+    /// The same number their [`SampleSpec`] asked for at the opening, because it
+    /// is the same question: a reader that compares two adjacent observations of
+    /// a field needs two of them at every instant it compares, not only at the
+    /// first. One when nobody asked, which is the closing wave every recipe had
+    /// before this existed.
+    ///
+    /// [`SampleSpec`]: super::executor::SampleSpec
+    pub fn closing_images_wanted(&self, interval: IntervalId) -> u8 {
+        self.samples
+            .get(&interval)
+            .map(|images| images.asks.iter().map(|ask| ask.wanted).max().unwrap_or(1))
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// Record one extra closing image's arena offset.
+    pub fn push_closing_image(&mut self, interval: IntervalId, offset: u32) {
+        self.closing.entry(interval).or_default().extra.push(offset);
+    }
+
+    /// The extra closing images of `interval`, the first one excluded.
+    pub fn closing_images(&self, interval: IntervalId) -> Option<&ClosingImages> {
+        self.closing.get(&interval)
+    }
+
+    /// Record one consumer's closing-witness policy for one interval.
+    ///
+    /// Identical requests collapse; different ones stand side by side, and the
+    /// strictest wins at closure. The table is work-scaled and is charged
+    /// through [`Self::capacity_bytes`] like every other one here.
+    ///
+    /// EVERY REQUEST IS STORED, including a `Gap` one on an interval nobody has
+    /// asked about (Codex 019feb7d, finding 5). An earlier version skipped those
+    /// on the grounds that `Gap` is the answer [`Self::close_gaps`] already
+    /// gives — which is true of an interval with NO asks and false the moment
+    /// one arrives: a consumer whose `Gap` request reached a coalesced interval
+    /// first, and whose `Record` request reached it second, would have had only
+    /// the `Record` stored and would then have opted out of a gap it asked for.
+    /// The strictest request must win whatever order the requests arrive in, and
+    /// that is only expressible if every one of them is recorded.
+    pub fn ask_close(
+        &mut self,
+        interval: IntervalId,
+        consumer: super::ConsumerId,
+        gap_on_change: bool,
+    ) {
+        if !self.armed {
+            return;
+        }
+        let request = CloseAsk {
+            consumer,
+            gap_on_change,
+        };
+        let entry = self.closes.entry(interval).or_default();
+        if !entry.contains(&request) {
+            entry.push(request);
+        }
+    }
+
+    /// Whether a CHANGED closing image of `interval` gaps `consumer`.
+    ///
+    /// TRUE WHEN NOBODY ASKED, which is the substrate's own default and the safe
+    /// direction: a consumer that never expressed a preference is one that takes
+    /// the substrate's verdict. False only when EVERY one of this consumer's
+    /// requests elected to judge the image itself — a consumer reached by two
+    /// recipes, one of which wants the default, is not opting out.
+    pub fn close_gaps(&self, interval: IntervalId, consumer: super::ConsumerId) -> bool {
+        let Some(asks) = self.closes.get(&interval) else {
+            return true;
+        };
+        let mut asked = false;
+        for ask in asks.iter().filter(|ask| ask.consumer == consumer) {
+            asked = true;
+            if ask.gap_on_change {
+                return true;
+            }
+        }
+        !asked
     }
 
     /// Record that every byte of `interval` a contributor touched is consumed.
@@ -428,6 +564,14 @@ impl Annotations {
         for images in self.samples.values() {
             sample_heap += vec_bytes(&images.extra) + vec_bytes(&images.asks);
         }
+        let mut close_heap = 0u64;
+        for asks in self.closes.values() {
+            close_heap += vec_bytes(asks);
+        }
+        let mut closing_heap = 0u64;
+        for images in self.closing.values() {
+            closing_heap += vec_bytes(&images.extra);
+        }
         let mut stage_heap = 0u64;
         for stages in self.stages.values() {
             stage_heap += vec_bytes(stages);
@@ -441,6 +585,14 @@ impl Annotations {
             self.samples.len(),
             std::mem::size_of::<SampleImages>(),
             sample_heap,
+        ) + table(
+            self.closes.len(),
+            std::mem::size_of::<Vec<CloseAsk>>(),
+            close_heap,
+        ) + table(
+            self.closing.len(),
+            std::mem::size_of::<ClosingImages>(),
+            closing_heap,
         ) + table(
             self.stages.len(),
             std::mem::size_of::<Vec<u16>>(),

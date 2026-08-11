@@ -719,14 +719,24 @@ fn the_shipped_plans_province_tables_are_a_fixed_number_of_transactions() {
     // its unreadable page), plus at most EIGHT scattered copies per RAILED
     // province — the rail header and its adjacent sample, the pair blob, the
     // two map windows, the record window and the source  window —
-    // plus one closing copy per interval.
+    // plus the SAMPLE wave and the CLOSING wave, each of which is one copy per
+    // interval per observation the reader takes.
+    //
+    // BOTH WAVES ARE PER INTERVAL, not per province. Every copy op takes two
+    // back-to-back images at the opening AND two at the closing, because the
+    // converted reader renders its own torn verdict from them instead of taking
+    // the substrate's -- see `domain81_copy_plan`'s `CloseAction::Record` block
+    // for why, t46's 78-of-80 gapped frames for the measurement that forced the
+    // first half, and the owner ruling of 2026-08-11 for the second. That is
+    // three more transactions per interval and none of them scales with the
+    // province count.
     //
     // PER RAILED PROVINCE, and that is the assertion. At this fixture 171 of
     // 512 provinces are railed; a plan that reached the map, record or source
     // families off the ARRAYS instead of off the rail branch would do three
     // times the work, publish the same rows, and pass every other check in
     // this file.
-    let ceiling = 64 + 8 * railed_count + intervals;
+    let ceiling = 64 + 8 * railed_count + 4 * intervals;
     assert!(
         copies < ceiling,
         "the plan issued {copies} copies against a ceiling of {ceiling}; a whole-table \

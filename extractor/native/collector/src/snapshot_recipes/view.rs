@@ -572,6 +572,54 @@ impl<'a> SnapshotView<'a> {
         Ok(&self.snapshot.bytes[offset..offset + len])
     }
 
+    /// Borrow `len` bytes at `addr` from the `image`-th CLOSING image.
+    ///
+    /// Image 0 is [`Self::closing_bytes`]. Image `k >= 1` is the `k`-th adjacent
+    /// closing observation, taken back to back with it — the closing side of
+    /// [`Self::sample_bytes`], and the instrument a converted reader renders its
+    /// own closing torn verdict from.
+    ///
+    /// # The two ways an image can be absent are DIFFERENT ANSWERS
+    ///
+    /// [`ViewRefusal::Unreadable`] when the interval's consumers ASKED for this
+    /// image and the closing wave could not take it: the engine refused an
+    /// observation the reader needs, which is the live reader's own second
+    /// closing read going unreadable and must refuse with that reason.
+    /// [`ViewRefusal::NotCaptured`] when nobody asked for it, which is a reader
+    /// wanting an observation its own plan never requested — its defect, not the
+    /// engine's.
+    pub fn closing_sample_bytes(
+        &self,
+        addr: u64,
+        len: usize,
+        image: usize,
+    ) -> Result<&'a [u8], ViewRefusal> {
+        if image == 0 {
+            return self.closing_bytes(addr, len);
+        }
+        let want = Span::new(addr, len as u64);
+        let (record, skew) = self.owned_record(want)?;
+        let held = self.snapshot.annot.closing_images(record.id());
+        let offset = held.and_then(|images| images.extra.get(image - 1).copied());
+        match offset {
+            Some(offset) => {
+                let at = offset as usize + skew;
+                Ok(&self.snapshot.bytes[at..at + len])
+            }
+            None => {
+                let wanted = self.snapshot.annot.closing_images_wanted(record.id()) as usize;
+                Err(if image < wanted {
+                    ViewRefusal::Unreadable {
+                        span: want,
+                        void: record.span(),
+                    }
+                } else {
+                    ViewRefusal::NotCaptured { span: want }
+                })
+            }
+        }
+    }
+
     /// The interval that wholly holds `want` and this consumer may read, with
     /// the offset of `want` inside it. Shared by the image accessors, which all
     /// need the same three checks in the same order.
