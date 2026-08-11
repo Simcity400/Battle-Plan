@@ -2458,3 +2458,185 @@ fn the_anchor_window_refuses_from_the_window_read_where_the_live_arm_recovers() 
     assert!(declining.refused());
     assert_eq!(rows.provinces.len(), PUBLISHED_ROWS);
 }
+
+/// THE PLAN'S OWN PRICE IS MEASURED, and `d81_plan_us` is not a zero the wire
+/// carries on every frame.
+///
+/// `D81PlanCounters::plan_us` names itself "THE NUMBER THE CONVERSION IS ABOUT"
+/// and `d81_plan_units` publishes it as `d81_plan_us`. Between the conversion
+/// landing and lane GJ, NO WRITER EXISTED: the field was default-constructed
+/// and published untouched, so BOTH captures that carry the word — t48 and t49
+/// — read `d81_plan_us` = 0 across the whole capture while `d81_phase_plan_us`
+/// on the same records read 59.2 and 67.0 ms per observation. The wire-shape
+/// test that "covered" it supplied its own 4,012 and so could not see this.
+///
+/// kills: `counters.plan_us = d81_elapsed_us(started)` removed from
+/// `d81_observe_copy_plan_with`'s success path — the field falls back to
+/// `Default::default()`'s zero and this assertion fails, which is exactly the
+/// state t48 and t49 shipped in.
+///
+/// WHY NON-ZERO IS A REAL BOUND HERE and not a race with a fast clock: this
+/// fixture's observation issues thousands of guarded copies through
+/// `CountingSnapshotMemory`, asserted below against the same counter, and this
+/// same fixture was MEASURED at 6,985-8,130 us over six runs while cutting the
+/// tolerance in the test below. A whole
+/// observation cannot land inside one microsecond.
+#[test]
+fn the_plans_own_price_is_measured_rather_than_left_at_its_default_zero() {
+    let world = stage_world(WorldShape::default());
+    let counting = CountingSnapshotMemory::new(&world.memory);
+    let mut counters = crate::attach_log::d81_copy_bracket::D81PlanCounters::default();
+    let closed = d81_observe_copy_plan_with(&counting, &world.roots, WORLD_HOUR, &mut counters)
+        .expect("custody must admit a fixture this size");
+    drop(closed);
+    assert!(
+        counters.copies_issued > 1_000,
+        "the fixture must be big enough for the bound below to be a bound; it issued {}",
+        counters.copies_issued,
+    );
+    assert!(
+        counters.plan_us > 0,
+        "the plan published a zero price for {} guarded copies; `plan_us` has no writer",
+        counters.copies_issued,
+    );
+}
+
+/// `d81_plan_us` names the WHOLE observation and not a slice of it, so a reader
+/// pricing the conversion from the plan family is not reading a fragment of what
+/// the phase family carries.
+///
+/// WHAT THIS PINS, AND WHAT IT DOES NOT — stated because the two are easy to
+/// confuse. It brackets `d81_observe_copy_plan_with` from OUTSIDE with the
+/// production accumulator (`D81PhaseAccum::plan_ns`, closed exactly as the call
+/// site closes it) and requires the word written INSIDE to account for at least
+/// FOUR FIFTHS of that window. It therefore pins a LOWER BOUND on the inner
+/// window's extent, not the extent itself.
+///
+/// It does NOT pin the production call site's own boundary: that `plan_mark`
+/// lives in `read_compact_rail_replay_state`, which needs a live engine, so
+/// moving it — to include the hub read, say — is invisible here and is checked
+/// by reading. Nor does it establish that the two words come out EQUAL: it
+/// proves ordering and a lower bound, and no capture has been taken since the
+/// writer was added, so what a manifest will show is unobserved. What the
+/// production boundary is, and how the two windows relate, is written at the
+/// assignment itself.
+///
+/// kills: `plan_us` moved to cover the RECIPE BUILD alone, or `close_witnesses`
+/// alone. Both leave the word non-zero — so the zero-check above still passes —
+/// and this test refuses them, on a measured share rather than an argued one.
+/// IT DOES NOT REFUSE A TIMER AROUND `observe` ALONE, and that is stated rather
+/// than glossed: `observe` measures about 95% of the window on this fixture, so
+/// it clears the bound. The ~5% it omits is ~350-400 us here and `plan_us` has
+/// microsecond resolution, so that omission WOULD reach the wire — this test
+/// simply does not bound it.
+///
+/// The two kills are MEASURED here rather than argued from transaction shares.
+/// An earlier revision justified its threshold by saying the closing wave was
+/// one image of four; it is two of four, and in any case a transaction share is
+/// not a wall share — which is the same mistake `runs/gj_crit_doubling` spends
+/// several pages telling other people not to make.
+#[test]
+fn the_plan_price_and_the_plan_phase_timer_measure_the_same_window() {
+    let world = stage_world(WorldShape::default());
+    let counting = CountingSnapshotMemory::new(&world.memory);
+    let mut counters = crate::attach_log::d81_copy_bracket::D81PlanCounters::default();
+    let phases = D81PhaseAccum::default();
+    let mark = Instant::now();
+    let closed = d81_observe_copy_plan_with(&counting, &world.roots, WORLD_HOUR, &mut counters)
+        .expect("custody must admit a fixture this size");
+    phases.close(&phases.plan_ns, mark);
+    drop(closed);
+    let phase_us = phases.snapshot().plan_us;
+    assert!(
+        phase_us >= counters.plan_us,
+        "the phase window encloses the plan's own, so it cannot read shorter: \
+         phase {phase_us} us against plan {} us",
+        counters.plan_us,
+    );
+    // A FRACTION AND NOT A MICROSECOND GAP, chosen from measurement rather than
+    // taste. Six runs of this fixture put the observation at 6,985-8,130 us and
+    // the gap between the two words at 1-2 us, so an absolute tolerance would be
+    // a bet on the scheduler: any preemption between the outer and inner
+    // `Instant::now()` inflates the OUTER word alone, with no production defect
+    // behind it, and a 50 us bound is one quantum away from a flake.
+    //
+    // Against a measured ratio of ~0.9997, four fifths needs about 1.9 ms of
+    // stall on this fixture to flake. What it REFUSES is measured below, on this
+    // same fixture, rather than inferred from how the transactions divide.
+    assert!(
+        counters.plan_us * 5 >= phase_us * 4,
+        "the plan's own word must account for the enclosing window, not a slice \
+         of it: phase {phase_us} us against plan {} us",
+        counters.plan_us,
+    );
+
+    // THE CANDIDATE WRONG WINDOWS, RUN AND TIMED. The same calls
+    // `d81_observe_copy_plan_with` makes, in its order, on this fixture, so that
+    // "the threshold refuses that slice" is an observation and not an argument
+    // about transaction counts.
+    //
+    // MEDIAN OF N, AND NOT THE MINIMUM. A single pass would be a worse bet than
+    // the absolute tolerance this test started with: a scheduler stall landing
+    // inside the recipe build inflates the NUMERATOR and drags the ratio toward
+    // one, failing with no code change behind it (Codex round 9).
+    //
+    // But the obvious repair — take the smallest share of N — is worse than it
+    // looks, and Codex round 10 caught it: a stall OUTSIDE the candidate
+    // inflates only the denominator and pushes that pass's share DOWN, so
+    // minimising actively SELECTS the contaminated pass and would let a genuinely
+    // oversized candidate through on one bad iteration. The median is the
+    // estimator that resists contamination on both sides, and at five passes it
+    // survives two stalls in either direction.
+    //
+    // THE MARGINS, MEASURED over four runs of this fixture:
+    //     recipe build      0.060% - 0.080% of the observation
+    //     close_witnesses   4.68%  - 5.25%
+    // against a bound of 80%. That is ~1000x of headroom for the first and ~15x
+    // for the second, so what these assert is the SHAPE of the observation, not
+    // a timing target.
+    //
+    // WHICH ALSO SIZES THE ONE CANDIDATE THIS TEST DOES NOT REFUSE: `observe`
+    // alone is the remaining ~95%, comfortably past four fifths, so a `plan_us`
+    // around it would pass here. That is a deliberate limit and not a claim that
+    // the omission is invisible — 5% of a 7.5 ms observation is ~350-400 us and
+    // `plan_us` has microsecond resolution, so the wire WOULD show it. What this
+    // test pins is a lower bound of four fifths, not the exact window.
+    use crate::snapshot_recipes::executor::{observe, ObservationConfig};
+    const PASSES: usize = 5;
+    // Ratios, not raw spans: comparing nanoseconds across passes would rank by
+    // how fast the box was on each pass rather than by how much of the
+    // observation the candidate occupied.
+    let mut build_shares: Vec<f64> = Vec::with_capacity(PASSES);
+    let mut close_shares: Vec<f64> = Vec::with_capacity(PASSES);
+    for _ in 0..PASSES {
+        let probe = CountingSnapshotMemory::new(&world.memory);
+        let whole = Instant::now();
+        let build_mark = Instant::now();
+        let plan = domain81_copy_plan(&world.roots);
+        let build_ns = build_mark.elapsed().as_nanos() as f64;
+        let built = observe(&[plan], &probe, ObservationConfig::new(WORLD_HOUR)).expect("custody");
+        let close_mark = Instant::now();
+        let reclosed = built.close_witnesses();
+        let close_ns = close_mark.elapsed().as_nanos() as f64;
+        let whole_ns = whole.elapsed().as_nanos() as f64;
+        drop(reclosed);
+        assert!(whole_ns > 0.0, "the observation must take measurable time");
+        build_shares.push(build_ns / whole_ns);
+        close_shares.push(close_ns / whole_ns);
+    }
+    let median = |mut shares: Vec<f64>| -> f64 {
+        shares.sort_by(|a, b| a.partial_cmp(b).expect("no NaN: every span is finite"));
+        shares[shares.len() / 2]
+    };
+    for (name, share) in [
+        ("recipe build", median(build_shares)),
+        ("close_witnesses", median(close_shares)),
+    ] {
+        assert!(
+            share < 0.8,
+            "across {PASSES} passes a `plan_us` wrapping only the {name} would \
+             read a median {share} of the observation, which the four-fifths \
+             bound must refuse but does not",
+        );
+    }
+}

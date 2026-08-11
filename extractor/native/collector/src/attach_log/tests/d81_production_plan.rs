@@ -722,8 +722,11 @@ fn the_shipped_plans_province_tables_are_a_fixed_number_of_transactions() {
     // plus the SAMPLE wave and the CLOSING wave, each of which is one copy per
     // interval per observation the reader takes.
     //
-    // BOTH WAVES ARE PER INTERVAL, not per province. Every copy op takes two
-    // back-to-back images at the opening AND two at the closing, because the
+    // BOTH WAVES ARE PER INTERVAL, not per province. A typical copy op takes two
+    // back-to-back images at the opening AND two at the closing — the ACTIVE
+    // TABLE takes three at each end, since `D81_ACTIVE_COHERENCE_READS` is what
+    // its reader takes, which is where the small constant in the assertion below
+    // comes from — because the
     // converted reader renders its own torn verdict from them instead of taking
     // the substrate's -- see `domain81_copy_plan`'s `CloseAction::Record` block
     // for why, t46's 78-of-80 gapped frames for the measurement that forced the
@@ -745,6 +748,34 @@ fn the_shipped_plans_province_tables_are_a_fixed_number_of_transactions() {
     assert!(
         copies > intervals,
         "sanity: the counter is live and a closing wave ran",
+    );
+    // THE COUNT UNDER THE CEILING, PINNED RATHER THAN LEFT AS SLACK. The ceiling
+    // above bounds the SHAPE; this bounds the COUNT, and the count is worth
+    // bounding because it is the one term of the phase's 67.0 ms that anybody
+    // has measured (lane GJ: 84,256 transactions per observation at t49's 3,511
+    // railed provinces, against a phase total of 67.0 ms — a total, never an
+    // attribution; see `runs/gj_crit_doubling/FINDINGS.txt` section 5).
+    //
+    // Four images is the model for a TYPICAL interval and not for every one:
+    // 4 x 1,035 is 4,140 of the 4,144 here, and 4 x 21,063 is 84,252 of t49's
+    // 84,256, with the remainder the active table's extra coherence images at
+    // each end. Composed with
+    // `intervals = 9 + 6 * railed` it gives the SIZING APPROXIMATION
+    // `40 + 24 * railed` — exact on this fixture, and 0.06% high at t49, where
+    // the interval formula itself runs 12 short. Approximation, not law: the
+    // law is the assertion below.
+    //
+    // WHAT PRODUCTION CHANGE MAKES THIS FAIL: a fifth image per interval, or an
+    // opening or closing wave that stops taking its pair. Either moves the
+    // TRANSACTION COUNT by ~25% — what that does to the phase's wall is not
+    // known here — and neither changes a single published row, so no equality
+    // check in this file would notice.
+    assert_eq!(
+        copies,
+        4 * intervals + 4,
+        "the observation is four images for a typical interval, plus the extra \
+         the active table's coherence sequence takes at each end; \
+         {copies} against {intervals} intervals is a different transaction model",
     );
 
     let spans_whole = |base: u64, bytes: u64| {

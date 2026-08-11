@@ -63,10 +63,41 @@
 //! the stage tag and the dependency edge.
 //!
 //! Measured at the gate's own shape (512 provinces, 171 railed): 1,035
-//! intervals and 2,240 guarded copies, which is nine fixed plus SIX intervals
-//! per railed province and nothing per unrailed one. It is pinned by
+//! intervals and 4,144 guarded copies. The intervals are nine fixed plus SIX
+//! per railed province and nothing per unrailed one; the copies are FOUR IMAGES
+//! FOR A TYPICAL INTERVAL — two back-to-back at the opening and two at the
+//! closing, the first half forced by t46's 78-of-80 gapped frames and the second
+//! by the owner ruling of 2026-08-11 — and MORE for the active table, whose
+//! coherence sequence takes `D81_ACTIVE_COHERENCE_READS` at each end. That is
+//! where the `+4` in the assertion comes from, and it is why the tested property
+//! is `copies == 4 * intervals + 4` rather than a clean four per interval. Both
+//! are pinned by
 //! `the_shipped_plans_province_tables_are_a_fixed_number_of_transactions`,
 //! whose ceiling is per RAILED province and says why.
+//!
+//! SO THE PHASE SIZES ROUGHLY AS `40 + 24 * railed` — a rule DERIVED from the
+//! tested four-image property above composed with `intervals = 9 + 6 * railed`,
+//! not a tested property itself. It is exact on the fixture and 0.06% high at
+//! t49's 3,511 railed provinces (84,304 against 84,256 measured), because the
+//! interval formula itself runs 12 short there.
+//!
+//! The phase that issues those 84,256 transactions took 67.0 ms per observation
+//! — a phase total and NOT a price for the transactions, since its decode,
+//! linking and allocation work is inside the same window. That 67.0 ms is 98% of
+//! d81's cost growth on the frames that PRESERVED a phase split — and d81 in
+//! turn overtook d47 as the fan-out's longest chain, alongside a 52.1 -> 100.9
+//! ms critical-path doubling between t47 and t49 (lane GJ,
+//! `runs/gj_crit_doubling/FINDINGS.txt`). Two cautions travel with those
+//! numbers. All 334 of t49's frames publish a phase block, but only 17 kept a
+//! measurement in it — the rest had theirs replaced by defaults when their
+//! bracket was rejected — so the step from "98% of d81's growth" to "the cause
+//! of the doubling" is an inference (that document's R3 is the missing
+//! measurement). And HOW the 67.0 ms are spent is NOT attributed at all — see
+//! its R4 before assuming the copies are where they go.
+//!
+//! An earlier revision of this line said 2,240 copies, from a two-image model
+//! that predates the ruling; it was 1.85x low, and it is the number a reader
+//! prices the conversion from.
 //!
 //! # The closing program, and why it needs mid-walk closure
 //!
@@ -1451,15 +1482,26 @@ impl D81SnapshotSource<'_> {
 }
 
 // ===========================================================================
-// THE PLAN'S OWN ACCOUNTING, published on every frame
+// THE PLAN'S OWN ACCOUNTING — its BLOCK is on every frame, its MEASUREMENTS
+// are not
 // ===========================================================================
 
 /// What one frame's AUTHORITATIVE observation cost and produced.
 ///
-/// Published on every outcome, armed or not, because this is now the read path
-/// and not an experiment: `plan_us` is the whole of what the conversion moved
-/// off the critical sweep, and a capture that could not see it could not
-/// attribute the sweep-length change to anything.
+/// The block is emitted on every outcome, armed or not, because this is now the
+/// read path and not an experiment: `plan_us` is the whole of what the
+/// conversion moved off the critical sweep, and a capture that could not see it
+/// could not attribute the sweep-length change to anything.
+///
+/// PUBLICATION IS NOT PRESERVATION, and the difference is most of a capture. A
+/// rejected bracket discards the observation that filled these in — a TORN one
+/// drops the whole observed outcome in the worker, a LABEL MISMATCH hands it
+/// over and a deferred one is dropped — and the block those frames publish is
+/// then default-constructed. In t49 that is 317 of 334 frames carrying zeros
+/// they did not measure, and nothing on the wire currently marks them as such:
+/// `ran` means a view was ISSUED, so a custody refusal that measured `plan_us`
+/// perfectly well also reports false. See `runs/gj_crit_doubling/FINDINGS.txt`,
+/// residual R3.
 ///
 /// Every field is per-frame and lands on the wire as its own diagnostic unit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
