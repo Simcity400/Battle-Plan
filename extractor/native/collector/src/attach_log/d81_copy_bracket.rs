@@ -1482,8 +1482,8 @@ impl D81SnapshotSource<'_> {
 }
 
 // ===========================================================================
-// THE PLAN'S OWN ACCOUNTING — its BLOCK is on every frame, its MEASUREMENTS
-// are not
+// THE PLAN'S OWN ACCOUNTING — its BLOCK is on every frame, and which frames
+// MEASURED the block they publish is its own word on the wire
 // ===========================================================================
 
 /// What one frame's AUTHORITATIVE observation cost and produced.
@@ -1493,15 +1493,22 @@ impl D81SnapshotSource<'_> {
 /// conversion moved off the critical sweep, and a capture that could not see it
 /// could not attribute the sweep-length change to anything.
 ///
-/// PUBLICATION IS NOT PRESERVATION, and the difference is most of a capture. A
-/// rejected bracket discards the observation that filled these in — a TORN one
-/// drops the whole observed outcome in the worker, a LABEL MISMATCH hands it
-/// over and a deferred one is dropped — and the block those frames publish is
-/// then default-constructed. In t49 that is 317 of 334 frames carrying zeros
-/// they did not measure, and nothing on the wire currently marks them as such:
-/// `ran` means a view was ISSUED, so a custody refusal that measured `plan_us`
-/// perfectly well also reports false. See `runs/gj_crit_doubling/FINDINGS.txt`,
-/// residual R3.
+/// PUBLICATION IS NOT PRESERVATION, and the difference used to be most of a
+/// capture. A rejected bracket discards the observation that filled these in — a
+/// TORN one drops the whole observed outcome in the worker, a LABEL MISMATCH
+/// hands it over and a deferred one is dropped — and the block those frames
+/// published was then default-constructed. In t49 that was 317 of 334 frames
+/// carrying zeros they did not measure.
+///
+/// LANE GM CARRIES THEM ACROSS BOTH DISCARDS (2026-08-11): the counters are
+/// copied off the outcome before it dies and published beside the refusal, which
+/// is a change to PROVENANCE and not to the refusal — no row from a refused
+/// bracket reaches the wire, and none of the words below decides anything.
+/// Which of the two a record carries is
+/// `D81DiagnosticsProvenance`, published as `d81_diagnostics_measured_frames` /
+/// `_preserved_frames` / `_substituted_frames`. It is NOT `ran`: that means a
+/// view was ISSUED, so a custody refusal that measured `plan_us` perfectly well
+/// also reports false. See `runs/gj_crit_doubling/FINDINGS.txt`, residual R3.
 ///
 /// Every field is per-frame and lands on the wire as its own diagnostic unit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

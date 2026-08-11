@@ -60,6 +60,11 @@ pub struct ClosedSnapshot {
     pub custody_held: u64,
     pub custody_table_bytes: u64,
     pub custody_arena_bytes: u64,
+    /// Copies the FINAL closing wave issued, carried through from
+    /// [`SnapshotBuild::final_wave_copies`] for the same reason `custody_held`
+    /// is: the caller that has to say WHERE the final wave began holds a
+    /// `ClosedSnapshot` and not the build it came from.
+    pub final_wave_copies: u64,
     /// RULING B. The order the closing wave ran in, and the closes a later
     /// stage covered. Carried through because a declared closure order that
     /// silently did not happen is a defect nothing else would show.
@@ -77,6 +82,7 @@ impl SnapshotBuild {
             phases_run,
             witnessed_intervals,
             closing_copies: _,
+            final_wave_copies,
             custody_held,
             custody_table_bytes,
             custody_arena_bytes,
@@ -312,6 +318,7 @@ impl SnapshotBuild {
             custody_held,
             custody_table_bytes,
             custody_arena_bytes,
+            final_wave_copies,
             closing_order,
             elisions,
         }

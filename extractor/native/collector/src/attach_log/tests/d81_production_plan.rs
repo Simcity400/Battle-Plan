@@ -824,12 +824,19 @@ fn the_shipped_plan_closes_its_rail_headers_before_the_observation_ends() {
     )
     .expect("custody");
     let total = plain.copies();
-    let intervals = build.snapshot.interval_count() as u64;
-    // The FINAL closing wave is the last `intervals - mid_walk` copies; the
-    // mid-walk closes are earlier than that by construction. A write placed at
-    // the head of the final wave is therefore after every rail-header close and
-    // before every other one.
-    let final_wave_start = total - intervals + 1;
+    // WHERE THE FINAL WAVE BEGINS, asked of the observation rather than computed
+    // from the interval count. It used to be `total - intervals + 1`, which was
+    // true only while every interval took ONE closing copy; since the owner
+    // ruling of 2026-08-11 a paired site takes `D81_CLOSING_IMAGES_HELD` of
+    // them, so that expression lands inside the final wave instead of at its
+    // head — after some intervals had already closed — and the write it places
+    // no longer proves anything about the rail header's close in particular.
+    //
+    // `final_wave_copies` EXCLUDES THE MID-WALK CLOSES, which is what this site
+    // needs and what `closing_copies` cannot give: the rail-header stage closes
+    // during the forward waves, and a trigger placed before those closes would
+    // gap the header and turn this test's control into its subject.
+    let final_wave_start = total - build.final_wave_copies + 1;
 
     let victim = rail_info_of(0) + crate::attach_log::RAIL_INFO_PAIRS_PTR_OFF as u64;
     let dirty = MutatingMemory::new(

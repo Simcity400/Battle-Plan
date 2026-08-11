@@ -403,6 +403,7 @@ fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
         map_reciprocity_key_is_province_id: 4,
         phase_times: D81PhaseTimes::default(),
         bracket_observed_hour_raw: None,
+        diagnostics_provenance: D81DiagnosticsProvenance::Measured,
     };
     let finished = d81_finish_rail_replay_state(D81ObserveOutcome::Complete(read));
     assert_eq!(finished.first_failure, Some(refusal));
@@ -641,8 +642,8 @@ fn a_rejected_bracket_never_reaches_the_compute() {
          gap record falls back to the frame's label (lane FQ)"
     );
     assert!(
-        split.contains("rejected(refusal, None)")
-            && split.contains("rejected(refusal, Some(observed))"),
+        split.contains("rejected(refusal, RefusedObservation::MeasurementOnly(measured))")
+            && split.contains("rejected(refusal, RefusedObservation::Whole(observed))"),
         "and the refusal each arm publishes under must be the one the guard \
          decided -- see \
          `a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip` \
@@ -658,9 +659,15 @@ fn a_rejected_bracket_never_reaches_the_compute() {
     );
 
     // The rejected arm's own outcome refuses the hour rather than publishing an
-    // empty one, and it does no work.
-    let refused =
-        compact_rail_replay_bracket_refused_read(0, SplitBracketRefusal::BracketIncoherent);
+    // empty one, and it does no work. The measurement it is handed is the empty
+    // one here: what this arm asserts is the REFUSAL, and the preservation of a
+    // non-empty block is asserted in
+    // `a_refused_frames_measurements_survive_both_discard_sites`.
+    let refused = compact_rail_replay_bracket_refused_read(
+        0,
+        SplitBracketRefusal::BracketIncoherent,
+        D81PreservedMeasurement::default(),
+    );
     assert!(refused.hub_simulation.is_none());
     assert_eq!(
         refused.status_flags,
@@ -671,6 +678,12 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         Some(D81FailureStage::Worker)
     );
     assert_eq!(refused.phase_times, D81PhaseTimes::default());
+    assert_eq!(
+        refused.diagnostics_provenance,
+        D81DiagnosticsProvenance::PreservedAfterRefusal,
+        "and a refused record's block is published as PRESERVED, so a reader \
+         cannot mistake this empty one for a measurement of a cheap frame",
+    );
 }
 
 /// THE SKIP, AND THE THREE LINKS THAT MAKE IT TRUTHFUL (lane FJ, 2026-08-08).
@@ -717,6 +730,7 @@ fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
         SplitBracketRefusal::LabelMismatch {
             observed_hour_raw: observed,
         },
+        D81PreservedMeasurement::default(),
     );
     assert!(
         encode_compact_rail_replay_production(&mut refused, 0).is_none(),
@@ -866,13 +880,17 @@ fn the_skipped_frame_publishes_no_source_unavailable_claim() {
         SplitBracketRefusal::LabelMismatch {
             observed_hour_raw: 7,
         },
+        D81PreservedMeasurement::default(),
     );
     assert_eq!(
         mismatch.status_flags, COMPACT_STATUS_PARTIAL_DATA,
         "the engine was read perfectly; only its attribution failed"
     );
-    let incoherent =
-        compact_rail_replay_bracket_refused_read(0, SplitBracketRefusal::BracketIncoherent);
+    let incoherent = compact_rail_replay_bracket_refused_read(
+        0,
+        SplitBracketRefusal::BracketIncoherent,
+        D81PreservedMeasurement::default(),
+    );
     assert_eq!(
         incoherent.status_flags,
         COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
@@ -1334,10 +1352,11 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         map_reciprocity_key_is_province_id: 6,
         phase_times: D81PhaseTimes::default(),
         bracket_observed_hour_raw: None,
+        diagnostics_provenance: D81DiagnosticsProvenance::Measured,
     };
     let kept = d81_bracket_refused_outcome(
         mismatch,
-        Some(D81ObserveOutcome::Complete(already_failed)),
+        RefusedObservation::Whole(D81ObserveOutcome::Complete(already_failed)),
         0,
     );
     assert_eq!(
@@ -1407,7 +1426,11 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
          run'"
     );
 
-    let deferred = d81_bracket_refused_outcome(mismatch, Some(deferred_copy()), 0);
+    let deferred = d81_bracket_refused_outcome(
+        mismatch,
+        RefusedObservation::Whole(deferred_copy()),
+        0,
+    );
     assert!(
         deferred.hub_simulation.is_none(),
         "the deferred copy must be dropped UNREAD -- a hub snapshot here is the \
@@ -1422,10 +1445,14 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         Some(observed_hour_raw)
     );
 
-    // And the incoherent arm is untouched: it never receives an observation at
-    // all, because `spawn_gated_split` has already dropped its copy unread.
-    let incoherent =
-        d81_bracket_refused_outcome(SplitBracketRefusal::BracketIncoherent, None, 0);
+    // And the incoherent arm is untouched: it never receives an OBSERVATION at
+    // all, because `spawn_gated_split` has already dropped its copy unread and
+    // hands on only what that copy had measured.
+    let incoherent = d81_bracket_refused_outcome(
+        SplitBracketRefusal::BracketIncoherent,
+        RefusedObservation::MeasurementOnly(D81PreservedMeasurement::default()),
+        0,
+    );
     assert_eq!(
         incoherent.first_failure.map(|failure| failure.reason),
         Some(D81FailureReason::Torn)
@@ -1443,16 +1470,270 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         .0;
     assert!(
         split.contains("Some(refusal @ SplitBracketRefusal::BracketIncoherent) => {")
+            && split.contains("let measured = preserve(&observed);")
             && split.contains("drop(observed);")
-            && split.contains("rejected(refusal, None)"),
+            && split.contains("rejected(refusal, RefusedObservation::MeasurementOnly(measured))"),
         "a bracket that cannot vouch for its observation still has its copy \
-         dropped unread"
+         dropped unread, and what leaves the arm is the MEASUREMENT taken \
+         through a shared reference -- never the observation"
     );
     assert!(
         split.contains("Some(refusal @ SplitBracketRefusal::LabelMismatch { .. }) => {")
-            && split.contains("rejected(refusal, Some(observed))"),
+            && split.contains("rejected(refusal, RefusedObservation::Whole(observed))"),
         "and a label-mismatched bracket hands its observation to the handler, \
          which is the only way a terminal read failure can survive the skip"
+    );
+}
+
+/// A distinctive plan block, so a substituted default cannot be mistaken for it.
+fn measured_plan_counters() -> crate::attach_log::d81_copy_bracket::D81PlanCounters {
+    crate::attach_log::d81_copy_bracket::D81PlanCounters {
+        ran: true,
+        copies_issued: 84_256,
+        intervals_closed: 21_063,
+        plan_us: 4_012,
+        custody_held_bytes: 7_654_321,
+        ..crate::attach_log::d81_copy_bracket::D81PlanCounters::default()
+    }
+}
+
+/// The same for the phase block. No field is zero, so a `D81PhaseTimes::default()`
+/// substituted in its place differs in every one of them.
+fn measured_phase_times() -> D81PhaseTimes {
+    D81PhaseTimes {
+        topology_us: 9_001,
+        roots_us: 9_002,
+        plan_us: 9_003,
+        snapshot_bytes: 9_004,
+        provinces_railed: 9_005,
+        ..D81PhaseTimes::default()
+    }
+}
+
+/// A REFUSED FRAME'S MEASUREMENTS SURVIVE BOTH DISCARD SITES (lane GM,
+/// 2026-08-11, closing lane GJ's residual R3).
+///
+/// WHAT WENT WRONG. A refused d81 frame published the whole diagnostic block —
+/// plan counters, phase timings, its own `read_time_us` — with SUBSTITUTED ZEROS
+/// in place of the values the bracket had already measured, because the
+/// observation holding them was discarded before anything read it. In t49 that
+/// was 317 of 334 frames, and the capture was diagnosable at all only because 17
+/// of them happened to keep their bracket: a capture whose brackets all refused
+/// would have shipped an all-zero block and reported a 67 ms regression as free.
+///
+/// TWO SITES, ONE PER ARM, and this test drives one arm each because a fix to
+/// either alone leaves most of a capture dark:
+///
+///  1. THE WORKER, on a TORN bracket (`BracketIncoherent`, 277 of t49's 317).
+///     Driven through the real `spawn_gated_split` rather than pinned to its
+///     source: a fixture-less `FrameLaneTracker` has no readable clock, so the
+///     guard genuinely publishes `BracketIncoherent` and the arm this test cares
+///     about is the arm that runs.
+///  2. THE HANDLER, on a LABEL MISMATCH (40 of the 317), whose deferred outcome
+///     is handed over and then dropped. Driven at
+///     `d81_bracket_refused_outcome`, since the mismatch verdict needs a clock a
+///     fixture cannot supply.
+///
+/// WHAT IS STILL REFUSED IS ASSERTED IN BOTH ARMS, because a "preservation" that
+/// leaked a row would be a far worse defect than the one it fixes: no
+/// `hub_simulation`, no provinces, the refusal's own typed reason, and the
+/// refusal's own status word.
+///
+/// kills: `spawn_gated_split`'s `BracketIncoherent` arm -> back to discarding
+///   the observation unmeasured (`drop(observed); rejected(refusal,
+///   RefusedObservation::MeasurementOnly(D81PreservedMeasurement::default()))`)
+///   — arm 1 then reads a default plan and phase block where the observation
+///   measured `measured_plan_counters()` / `measured_phase_times()`
+/// kills: `d81_bracket_refused_outcome`'s `Whole(Deferred(..))` arm -> back to
+///   `drop(deferred); compact_rail_replay_bracket_refused_read(status_flags,
+///   refusal, D81PreservedMeasurement::default())` — arm 2 then reads a zero
+///   `d81_plan_copies_issued` where the deferred copy measured one
+/// kills: either arm's `diagnostics_provenance` -> `Measured` (the wire would
+///   claim a refused frame's preserved block was measured by a frame that ran)
+#[test]
+fn a_refused_frames_measurements_survive_both_discard_sites() {
+    // ---- ARM 1: THE WORKER'S TORN BRACKET ---------------------------------
+    let hour = super::state_fixture::fixture_game_hour_raw();
+    let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
+    let observed_read = CompactRailReplayRead {
+        plan: measured_plan_counters(),
+        equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
+        provinces: Vec::new(),
+        hub_simulation: Some(Vec::new()),
+        observed_neighbors: 0,
+        read_time_us: 97_700,
+        status_flags: 0,
+        first_failure: None,
+        map_reciprocity_record_is_province: 11,
+        map_reciprocity_key_is_province_id: 12,
+        phase_times: measured_phase_times(),
+        bracket_observed_hour_raw: None,
+        diagnostics_provenance: D81DiagnosticsProvenance::Measured,
+    };
+    let torn = std::thread::scope(|scope| {
+        crate::attach_log::spawn_gated_split(
+            scope,
+            None,
+            &lanes,
+            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+            hour,
+            move || D81ObserveOutcome::Complete(observed_read),
+            d81_finish_rail_replay_state,
+            d81_preserve_measurement,
+            |refusal, observed| d81_bracket_refused_outcome(refusal, observed, 0),
+            d81_stamp_bracket_observation,
+        )
+        .join()
+        .expect("the worker must not panic")
+    });
+    // THE CONTROL ON THE ARM: the bracket really did refuse, and refused TORN.
+    // Without this the assertions below could be passing on a frame that was
+    // never refused at all.
+    assert_eq!(
+        torn.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::Torn),
+        "a fixture-less tracker has no clock, so this arm must be the \
+         incoherent one",
+    );
+    // REFUSAL SEMANTICS, UNCHANGED. The observed read carried a hub snapshot;
+    // the torn arm drops it, and nothing derived from the copy survives.
+    assert!(
+        torn.hub_simulation.is_none() && torn.provinces.is_empty(),
+        "a torn bracket publishes no rows and no hub snapshot -- preservation \
+         carries COUNTERS across the discard and nothing else",
+    );
+    assert_eq!(
+        torn.status_flags,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+    );
+    // AND THE MEASUREMENTS ARE THE OBSERVATION'S OWN.
+    assert_eq!(torn.plan, measured_plan_counters());
+    assert_eq!(torn.phase_times, measured_phase_times());
+    assert_eq!(torn.read_time_us, 97_700);
+    assert_eq!(torn.map_reciprocity_record_is_province, 11);
+    assert_eq!(torn.map_reciprocity_key_is_province_id, 12);
+    assert_eq!(
+        torn.diagnostics_provenance,
+        D81DiagnosticsProvenance::PreservedAfterRefusal,
+        "and the wire says they were PRESERVED, not measured by a frame that \
+         ran to a published outcome",
+    );
+
+    // ---- ARM 2: THE HANDLER'S DEFERRED DROP -------------------------------
+    let mut deferred = super::d81_authoritative::staged_deferred();
+    deferred.plan = measured_plan_counters();
+    deferred.snapshot_bytes = 9_004;
+    deferred.phases.topology_ns.set(9_001_000);
+    deferred.phases.roots_ns.set(9_002_000);
+    deferred.phases.plan_ns.set(9_003_000);
+    deferred.phases.provinces_railed.set(9_005);
+    let mismatch = SplitBracketRefusal::LabelMismatch {
+        observed_hour_raw: 42,
+    };
+    let handled = d81_bracket_refused_outcome(
+        mismatch,
+        RefusedObservation::Whole(D81ObserveOutcome::Deferred(Box::new(deferred))),
+        0,
+    );
+    // REFUSAL SEMANTICS, UNCHANGED. The deferred compute did not run -- a hub
+    // snapshot here would be the walk having run on an hour the bracket refuses
+    // -- and the reason is the mismatch's own.
+    assert!(
+        handled.hub_simulation.is_none() && handled.provinces.is_empty(),
+        "the deferred copy must still be dropped unread",
+    );
+    assert_eq!(
+        handled.first_failure.map(|failure| failure.reason),
+        Some(D81FailureReason::HourLabelMismatch),
+    );
+    assert_eq!(handled.status_flags, COMPACT_STATUS_PARTIAL_DATA);
+    // AND THE MEASUREMENTS ARE THE DEFERRED COPY'S OWN.
+    assert_eq!(handled.plan, measured_plan_counters());
+    assert_eq!(handled.phase_times, measured_phase_times());
+    assert!(
+        handled.read_time_us > 0,
+        "the frame's own wall must be published rather than left at zero, or \
+         `read_time_us - sum(phases)` reads negative on every refused frame",
+    );
+    assert_eq!(
+        handled.diagnostics_provenance,
+        D81DiagnosticsProvenance::PreservedAfterRefusal,
+    );
+
+    // ---- AND THE ONE SHAPE THAT REALLY IS A SUBSTITUTION ------------------
+    // A read built after the join holds no outcome to measure, so its zeros are
+    // substitutions and say so. This is what makes the word above a
+    // DISTINCTION rather than a label everything wears.
+    let panicked = compact_rail_replay_worker_panic_read(0);
+    assert_eq!(
+        panicked.diagnostics_provenance,
+        D81DiagnosticsProvenance::Substituted,
+    );
+    assert_eq!(panicked.phase_times, D81PhaseTimes::default());
+}
+
+/// THE THREE PROVENANCE WORDS REACH THE WIRE, ONE PER RECORD.
+///
+/// The block above is only a distinction if a consumer can read it, and it is
+/// read as three NAMED counters rather than as one ordinal: a summed ordinal
+/// names nothing, while three counts divide into `d81_plan_frames` and answer
+/// "how many of this capture's d81 frames measured the numbers they published".
+///
+/// kills: mapping two `D81DiagnosticsProvenance` variants onto one unit name
+///   (the distinctness assertion fails)
+/// kills: emitting more or fewer than one unit per record (the per-record count
+///   assertion fails, and the three counts would stop summing to
+///   `d81_plan_frames`)
+#[test]
+fn each_d81_record_publishes_exactly_one_provenance_word() {
+    let base = compact_rail_replay_bracket_refused_read(
+        0,
+        SplitBracketRefusal::BracketIncoherent,
+        D81PreservedMeasurement::default(),
+    );
+    let mut names = Vec::new();
+    for provenance in [
+        D81DiagnosticsProvenance::Measured,
+        D81DiagnosticsProvenance::PreservedAfterRefusal,
+        D81DiagnosticsProvenance::Substituted,
+    ] {
+        let read = CompactRailReplayRead {
+            diagnostics_provenance: provenance,
+            ..compact_rail_replay_bracket_refused_read(
+                0,
+                SplitBracketRefusal::BracketIncoherent,
+                D81PreservedMeasurement::default(),
+            )
+        };
+        let units = d81_diagnostics_provenance_units(&read);
+        assert_eq!(units.len(), 1, "{provenance:?}");
+        assert_eq!(units[0].value, 1, "{provenance:?}");
+        assert!(
+            units[0].name.starts_with("d81_diagnostics_"),
+            "the manifest aggregates by name, so the namespace is load-bearing: \
+             {}",
+            units[0].name,
+        );
+        assert!(
+            !units[0].name.ends_with("_sample"),
+            "a `_sample` suffix would route this to LastValue, and a count that \
+             does not sum cannot be divided into `d81_plan_frames`: {}",
+            units[0].name,
+        );
+        names.push(units[0].name);
+    }
+    let distinct: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        names.len(),
+        "two provenances sharing a name would make a preserved block \
+         indistinguishable from a measured one on the wire: {names:?}",
+    );
+    // And the base refused read -- the one production actually builds -- carries
+    // the preserved word, not a measured one.
+    assert_eq!(
+        d81_diagnostics_provenance_units(&base)[0].name,
+        "d81_diagnostics_preserved_frames",
     );
 }
 
@@ -2226,8 +2507,10 @@ fn the_refusals_own_witness_and_the_brackets_stamp_are_one_observation() {
     // And the placeholder read the refusal builds, once stamped, agrees with
     // itself: the emit site reads the reason from `first_failure` and the hour
     // from the stamp, so those two are what must not contradict.
-    let refused =
-        d81_stamp_bracket_observation(compact_rail_replay_bracket_refused_read(0, refusal), stamp);
+    let refused = d81_stamp_bracket_observation(
+        compact_rail_replay_bracket_refused_read(0, refusal, D81PreservedMeasurement::default()),
+        stamp,
+    );
     assert_eq!(
         refused.first_failure.map(|failure| failure.reason),
         Some(D81FailureReason::HourLabelMismatch)
@@ -2280,6 +2563,7 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
         map_reciprocity_key_is_province_id: 6,
         phase_times: D81PhaseTimes::default(),
         bracket_observed_hour_raw: None,
+        diagnostics_provenance: D81DiagnosticsProvenance::Measured,
     };
     assert_eq!(
         already_failed.bracket_observed_hour_raw, None,
@@ -2289,7 +2573,7 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     let kept = d81_stamp_bracket_observation(
         d81_bracket_refused_outcome(
             mismatch,
-            Some(D81ObserveOutcome::Complete(already_failed)),
+            RefusedObservation::Whole(D81ObserveOutcome::Complete(already_failed)),
             0,
         ),
         Some(observed),
@@ -2304,7 +2588,11 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     // 2. THE PLACEHOLDER for a refused bracket, on both refusal shapes.
     for refusal in [mismatch, SplitBracketRefusal::BracketIncoherent] {
         let placeholder = d81_stamp_bracket_observation(
-            d81_bracket_refused_outcome(refusal, None, 0),
+            d81_bracket_refused_outcome(
+                refusal,
+                RefusedObservation::MeasurementOnly(D81PreservedMeasurement::default()),
+                0,
+            ),
             Some(observed),
         );
         assert_eq!(
@@ -2332,6 +2620,7 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
             map_reciprocity_key_is_province_id: 0,
             phase_times: D81PhaseTimes::default(),
             bracket_observed_hour_raw: None,
+            diagnostics_provenance: D81DiagnosticsProvenance::Measured,
         })),
         Some(observed),
     );
@@ -2340,7 +2629,11 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     // 4. AND AN ABSENT OBSERVATION STAYS ABSENT. A stamp that filled in a
     // default here would be the fabricated witness this lane removes.
     let unobserved = d81_stamp_bracket_observation(
-        d81_bracket_refused_outcome(SplitBracketRefusal::BracketIncoherent, None, 0),
+        d81_bracket_refused_outcome(
+            SplitBracketRefusal::BracketIncoherent,
+            RefusedObservation::MeasurementOnly(D81PreservedMeasurement::default()),
+            0,
+        ),
         None,
     );
     assert_eq!(unobserved.bracket_observed_hour_raw, None);

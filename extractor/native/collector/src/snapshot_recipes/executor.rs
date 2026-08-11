@@ -1421,7 +1421,22 @@ pub struct SnapshotBuild {
     /// write between the opening and closing waves has to know that exactly. The
     /// arithmetic it replaces -- "total minus interval count" -- was true only
     /// while every interval took one.
+    ///
+    /// IT IS NOT WHERE THE FINAL WAVE BEGINS when a program declares a mid-walk
+    /// stage: those closes are issued DURING the forward waves and are counted
+    /// here too, so `total - closing_copies` lands ahead of them. See
+    /// [`Self::final_wave_copies`].
     pub closing_copies: u64,
+    /// Copies the FINAL closing wave issued: [`Self::closing_copies`] less the
+    /// mid-walk closes, which happen earlier in the transaction stream.
+    ///
+    /// THE ONLY EXACT ANSWER to "where does the final wave begin", which is
+    /// `total_copies - final_wave_copies + 1`, and a test that places a write
+    /// after every mid-walk close and ahead of every final one has to know it
+    /// exactly. Neither `interval_count` nor `closing_copies` gives it: the
+    /// first assumes one closing image per interval (untrue since the owner
+    /// ruling of 2026-08-11), the second counts the mid-walk closes as well.
+    pub final_wave_copies: u64,
     /// Everything the observation held against its ceiling at the end: copied
     /// bytes plus the index and link tables that address them. This is the
     /// number the 512 MiB budget is a budget FOR, and it is on the build
@@ -2357,8 +2372,16 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         self.link_pruned()?;
         self.charge_own_tables(0)?;
         self.enrol_witnesses()?;
+        // EVERY CLOSING COPY TAKEN SO FAR IS A MID-WALK ONE, by construction:
+        // `mid_walk_close` is the only other caller of `close_one`, and it runs
+        // inside the forward-wave loop above. The difference across the call
+        // below is therefore exactly what the FINAL wave issued.
+        let closing_copies_before_final_wave = self.closing_copies;
         let closing = self.closing_wave()?;
         let (witnessed, unreadable_closes, closing_order, elisions) = closing;
+        let final_wave_copies = self
+            .closing_copies
+            .saturating_sub(closing_copies_before_final_wave);
 
         let phases_run = self.forward_waves_run + u32::from(witnessed > 0);
         let reports = self.build_reports();
@@ -2399,6 +2422,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             phases_run,
             witnessed_intervals: witnessed,
             closing_copies: self.closing_copies,
+            final_wave_copies,
             custody_held,
             custody_table_bytes,
             custody_arena_bytes,

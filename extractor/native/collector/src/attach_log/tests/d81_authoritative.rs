@@ -713,9 +713,23 @@ impl crate::snapshot_recipes::SnapshotMemory for RefusingAtMemory<'_> {
 /// Take the plan's copy of a world that CHANGES between the opening wave and the
 /// closing one, and run the shipped walk over that copy.
 ///
-/// The trigger is the first copy of the CLOSING wave, computed from a clean run
-/// of the same plan rather than guessed: the closing wave is exactly one copy per
-/// interval and it is last, so `total - intervals + 1` is its first transaction.
+/// The trigger is the first copy of the FINAL closing wave, MEASURED from a
+/// clean run of the same plan rather than computed from the interval count.
+///
+/// IT USED TO BE `total - intervals + 1`, which held only while every interval
+/// took ONE closing copy. Since the owner ruling of 2026-08-11 the closing wave
+/// takes as many images as an interval's consumers asked for
+/// ([`D81_CLOSING_IMAGES_HELD`] = 2 on the paired sites), so that expression
+/// lands in the MIDDLE of the final wave: a write triggered there is already
+/// after some intervals' closing images, and the tests below that say "before
+/// the closing wave" were not placing it there. The observation reports the
+/// count itself — `final_wave_copies` — so the boundary is read off the run that
+/// took it.
+///
+/// MID-WALK CLOSES ARE NOT IN IT, and that is the point of asking for the FINAL
+/// wave's copies rather than for `closing_copies`: the shipped plan closes its
+/// rail-header stage during wave 3, and those copies are earlier in the
+/// transaction stream than everything this trigger is meant to precede.
 fn copied_walk_with_mutation(
     world: StagedWorld,
     edits: Vec<(u64, Vec<u8>)>,
@@ -728,10 +742,25 @@ fn copied_walk_with_mutation(
     let probe = CountingSnapshotMemory::new(&world.memory);
     let closed = d81_observe_copy_plan_with(&probe, &world.roots, WORLD_HOUR, &mut clean)
         .expect("custody must admit a fixture this size");
-    let intervals = u64::from(clean.intervals_closed);
-    let trigger = probe.calls().saturating_sub(intervals) + 1;
+    let trigger = final_wave_start(probe.calls(), &closed);
     drop(closed);
     copied_walk_with_mutation_at(world, edits, trigger)
+}
+
+/// The transaction ordinal of the FINAL closing wave's first copy, given the
+/// total the memory counted and the observation that closed.
+///
+/// One function so the three sites that need the boundary state it once: the
+/// default mutation trigger above, the shipped plan's final-wave trigger, and
+/// the mid-walk assertion in
+/// `the_rail_header_closes_against_its_own_closing_image`. Ordinals are
+/// 1-based, matching `CountingSnapshotMemory::calls()` and `MutatingMemory`'s
+/// trigger.
+fn final_wave_start(
+    total_copies: u64,
+    closed: &crate::snapshot_recipes::witness::ClosedSnapshot,
+) -> u64 {
+    total_copies.saturating_sub(closed.final_wave_copies) + 1
 }
 
 /// [`copied_walk_with_mutation`] with the trigger chosen by the caller, so a
@@ -1833,6 +1862,10 @@ fn active_terminal_of(province: u32) -> bool {
 /// kills: `match header(D81Image::Closing)` -> `header(D81Image::Opening)` at
 ///   the walk's closing header site (the two calls would compare one image
 ///   with itself and publish a two-neighbour row)
+/// kills: `closing_program`'s rail-header stage -> `CloseWhen::Final` (the
+///   header's closing image would be taken by the FINAL wave, so its ordinal
+///   would no longer be below the measured start of that wave and the mid-walk
+///   assertion below would fail)
 #[test]
 fn the_rail_header_closes_against_its_own_closing_image() {
     use crate::snapshot_recipes::Span;
@@ -1853,6 +1886,30 @@ fn the_rail_header_closes_against_its_own_closing_image() {
     let mut probe = crate::attach_log::d81_copy_bracket::D81PlanCounters::default();
     let closed = d81_observe_copy_plan_with(&counting, &world.roots, WORLD_HOUR, &mut probe)
         .expect("custody");
+    // AND THE CLOSE IS GENUINELY MID-WALK: it happens before the FINAL closing
+    // wave, whose first copy the observation reports directly.
+    //
+    // THE BOUNDARY USED TO BE `total - intervals_closed + 1`, which is not the
+    // final wave's head and is LATER than it — the wave takes two images at
+    // every paired site, so it is about twice `intervals_closed` copies long.
+    // Under that expression the assertion below admitted a header close sitting
+    // inside the first half of the final wave, which is precisely the state
+    // `CloseWhen::AfterWave` exists to distinguish from a mid-walk one. The
+    // measured boundary is what makes this a mid-walk claim.
+    let final_wave_starts = final_wave_start(counting.calls(), &closed);
+    // AND THE OLD EXPRESSION IS MEASURABLY NOT THIS BOUNDARY, which is what made
+    // the assertion below vacuous rather than merely imprecise: the final wave
+    // issues MORE than one copy per interval, so `total - intervals_closed + 1`
+    // names a transaction well inside it. At this fixture the two differ by
+    // about 1,500 transactions.
+    assert!(
+        closed.final_wave_copies > u64::from(probe.intervals_closed),
+        "the final closing wave takes more than one copy per interval \
+         ({} copies against {} intervals), or `D81_CLOSING_IMAGES_HELD` has \
+         gone back to 1 and this arm is testing the pre-ruling shape",
+        closed.final_wave_copies,
+        probe.intervals_closed,
+    );
     drop(closed);
     let ordinals = recorder.ordinals_covering(header);
     assert_eq!(
@@ -1867,9 +1924,6 @@ fn the_rail_header_closes_against_its_own_closing_image() {
     // pair AGREES on it. What refuses is the comparison against the opening.
     let closing_ordinal = ordinals[D81_CLOSING_IMAGES_HELD];
 
-    // AND THE CLOSE IS GENUINELY MID-WALK: it happens before the final wave,
-    // which is the last `intervals_closed` copies of the observation.
-    let final_wave_starts = counting.calls() - u64::from(probe.intervals_closed) + 1;
     assert!(
         closing_ordinal < final_wave_starts,
         "the header's close must land inside wave 3 ({closing_ordinal} against a \
