@@ -1,9 +1,9 @@
 //! d27 `army_orders` — the battle-plan orders held by armies and army groups,
 //! with the target states an area-defence order covers.
 //!
-//! Derived from `world_fold.rs:17047`-`:17228`
+//! Derived from `world_fold.rs:17314`-`:17495`
 //! (`fold_army_orders`), its payload constants at `:967`-`:969` and
-// @world-fold-authority domain=27 functions=fold_army_orders lines=17047-17228 sha256=648d691c782cbd794ebb2848dc82aaf4e1ec16f0b0e4cdd9ace7e393ba22ce5d closure=eb13c4dd44f69a4322147846d47770f6cfd360eb19cacc9d785f7e5f21f2c86e
+// @world-fold-authority domain=27 functions=fold_army_orders lines=17314-17495 sha256=648d691c782cbd794ebb2848dc82aaf4e1ec16f0b0e4cdd9ace7e393ba22ce5d closure=080667d55983bb578208c1c2ff5d363f662b3eaee3bb97ed9ce4db2c1b3c8294
 //! `:1019`-`:1023`, the accumulator's own JSON projection (`:7915`-`:7952`,
 //! `:23532`-`:23541`), and the collector read that produces the flags, the
 //! status word and the target-state child rows

@@ -1,8 +1,8 @@
 //! d65 `special_project_programs_live` — per-country special-project facilities.
 //!
-//! Derived from `world_fold.rs:14895`-`:14989`
+//! Derived from `world_fold.rs:15162`-`:15256`
 //! (`fold_special_project_programs`), its payload constants at `:191`-`:196`, the
-// @world-fold-authority domain=65 functions=fold_special_project_programs lines=14895-14989 sha256=5cd8a0d5f4dc1a3cb1d55efb7b0e3855e51f1d01748c14e1da6f9b2bd1402e8b closure=84c0ca754b96d7d55ec9190d6fe19ed4d1823739540b0bf171ace489d549f55c
+// @world-fold-authority domain=65 functions=fold_special_project_programs lines=15162-15256 sha256=5cd8a0d5f4dc1a3cb1d55efb7b0e3855e51f1d01748c14e1da6f9b2bd1402e8b closure=5c837d32be3adde92e0ede3f19b83cd5c0d29c84007516a28c933ce494372c02
 //! status-independent payload authority
 //! `decode_compact_special_project_programs_data_payload`
 //! (`recorder_host/src/domain_data_authority.rs:12305`-`:12384`), and the

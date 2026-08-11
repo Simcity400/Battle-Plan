@@ -1,9 +1,9 @@
 //! d36 `air_variant_reserves` — per-country stockpiled reserves of each air
 //! variant.
 //!
-//! Derived from `world_fold.rs:18244`-`:18347`
+//! Derived from `world_fold.rs:18511`-`:18614`
 //! (`fold_air_variant_reserves`), its payload constants at `:989`-`:990` and
-// @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=18244-18347 sha256=6b4f4dcb82fc64534f8323e2363dc7ab8963c6684192cb54019f07af35b76f2d closure=cbd014878696d3647c4a9ec0150a9500b4a623a053b878881b54bb1ac877d1d7
+// @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=18511-18614 sha256=6b4f4dcb82fc64534f8323e2363dc7ab8963c6684192cb54019f07af35b76f2d closure=1476973041dcca0efcdb7d93f78ce9b5d887ebc9f0cabd8ed860a0e70e660ab5
 //! `:156`, the render at `world_fold.rs::build_designs`, and the collector read that produces
 //! the rows (`extractor/native/collector/src/attach_log.rs:55392`-`:55530`,
 //! `:71487`-`:71523`). There is no `extractor/documents/domains/d36_*.md`, so the
