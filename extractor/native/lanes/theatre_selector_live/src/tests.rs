@@ -85,7 +85,8 @@ fn land_body(owner: u32, theatre_id: u32) -> SectionBody {
             engine_order: 0,
             display_name: "Western Front".into(),
             name_provenance: NameProvenance::EngineRuntimeString,
-            priority_ordinal: PriorityOrdinal::Unavailable,
+            priority_ordinal: PriorityOrdinal::Measured(2),
+            delete_eligible: Some(true),
             members: vec![
                 MemberRow {
                     kind: ObjectKind::ArmyGroup,
@@ -97,6 +98,11 @@ fn land_body(owner: u32, theatre_id: u32) -> SectionBody {
                     display_name: None,
                     name_provenance: None,
                     priority_ordinal: PriorityOrdinal::Unavailable,
+                    orders_visibility: Some(ArmyOrdersVisibility {
+                        training_visible: true,
+                        stop_at_max_visible: true,
+                        border_conflict_visible: false,
+                    }),
                 },
                 MemberRow {
                     kind: ObjectKind::Army,
@@ -108,6 +114,11 @@ fn land_body(owner: u32, theatre_id: u32) -> SectionBody {
                     display_name: None,
                     name_provenance: None,
                     priority_ordinal: PriorityOrdinal::Unavailable,
+                    orders_visibility: Some(ArmyOrdersVisibility {
+                        training_visible: false,
+                        stop_at_max_visible: false,
+                        border_conflict_visible: true,
+                    }),
                 },
             ],
             alert_categories: vec![3, 9],
@@ -126,6 +137,7 @@ fn air_body(owner: u32) -> SectionBody {
             display_name: "Home Air".into(),
             name_provenance: NameProvenance::EngineRuntimeString,
             priority_ordinal: PriorityOrdinal::Unavailable,
+            delete_eligible: None,
             members: vec![
                 MemberRow {
                     kind: ObjectKind::AirGroup,
@@ -137,6 +149,7 @@ fn air_body(owner: u32) -> SectionBody {
                     display_name: Some("Fighter Group".into()),
                     name_provenance: Some(NameProvenance::EngineRuntimeString),
                     priority_ordinal: PriorityOrdinal::Unavailable,
+                    orders_visibility: None,
                 },
                 MemberRow {
                     kind: ObjectKind::AirWing,
@@ -148,6 +161,7 @@ fn air_body(owner: u32) -> SectionBody {
                     display_name: None,
                     name_provenance: None,
                     priority_ordinal: PriorityOrdinal::Unavailable,
+                    orders_visibility: None,
                 },
             ],
             alert_categories: vec![],
@@ -622,83 +636,118 @@ fn unauthenticated_source_refuses_to_produce() {
 // Uncaptured controller fields
 // ---------------------------------------------------------------------------
 
-/// Red when the producer starts emitting a fabricated priority ordinal --
-/// including the tempting `Measured(0)` default -- for a row whose controller
-/// read law is not established.
+/// Which rows carry a measured priority is part of the schema, and both
+/// directions of that rule are enforced.
+///
+/// Land and navy rows read the engine field the panel reads, so a land or navy
+/// row shipping `Unavailable` has silently lost an implemented leaf. The air
+/// row's ordinal is not a field at all -- it is the modal admitted wing
+/// priority -- so an air row shipping `Measured` has invented one; `Measured(0)`
+/// is the tempting spelling and is a false measurement, not a declared hole.
+/// Members and free wings have no implemented priority law at all.
+///
+/// kills: `validate_section_body` dropping the
+/// `priority_ordinal.measured().is_some() != priority_is_implemented` check, the
+/// member `PriorityOrdinal::Unavailable` check, or the free-wing one -- each of
+/// the four mutations leaves one of the four cases below encoding.
 #[test]
-fn priority_ordinal_is_explicitly_unavailable_never_defaulted() {
-    let frame = produced();
-    let snapshot = frame.snapshot.unwrap();
-    let mut checked = 0;
-    for section in &snapshot.sections {
-        if let SectionAdmission::Admitted(body) = &section.admission {
-            for theatre in &body.theatres {
-                assert_eq!(theatre.priority_ordinal, PriorityOrdinal::Unavailable);
-                assert_eq!(theatre.priority_ordinal.measured(), None);
-                checked += 1;
-            }
-        }
-    }
-    assert!(checked > 0, "fixture must exercise at least one theatre");
+fn priority_disposition_is_enforced_in_both_directions() {
+    // The fixture itself is the positive case: it encodes with a measured land
+    // priority, a measured navy priority, and unavailable everywhere else.
+    assert!(encode_payload(&exact_frame()).is_ok());
+
+    let mutate = |section: usize, apply: &dyn Fn(&mut SectionBody)| {
+        let mut frame = exact_frame();
+        let SectionAdmission::Admitted(body) =
+            &mut frame.snapshot.as_mut().unwrap().sections[section].admission
+        else {
+            panic!("fixture section {section} is admitted");
+        };
+        apply(body);
+        encode_payload(&frame)
+    };
+
+    // Land row loses its measurement.
+    assert!(mutate(0, &|body| {
+        body.theatres[0].priority_ordinal = PriorityOrdinal::Unavailable;
+    })
+    .is_err());
+    // Air row invents one.
+    assert!(mutate(1, &|body| {
+        body.theatres[0].priority_ordinal = PriorityOrdinal::Measured(0);
+    })
+    .is_err());
+    // A member invents one.
+    assert!(mutate(0, &|body| {
+        body.theatres[0].members[0].priority_ordinal = PriorityOrdinal::Measured(1);
+    })
+    .is_err());
+    // A free wing invents one.
+    assert!(mutate(1, &|body| {
+        body.free_air_wings[0].priority_ordinal = PriorityOrdinal::Measured(1);
+    })
+    .is_err());
 }
 
-/// Red when `Unavailable` and `Measured(0)` stop being distinguishable on the
-/// wire -- the exact collapse that would turn a hole into a false measurement.
+/// `Unavailable` and `Measured(0)` stay distinguishable on the wire -- the
+/// exact collapse that would turn a declared hole into a false measurement.
+///
+/// Driven through the codec pair directly rather than through a frame, because
+/// the frame validator now forbids either spelling on most row kinds and would
+/// refuse the fixture before the encoding could be compared.
+///
+/// kills: `priority` encoding both variants identically (for instance by
+/// dropping the tag byte), and `Reader::priority` mapping tag 0 to
+/// `Measured(0)`.
 #[test]
 fn unavailable_priority_is_distinct_from_measured_zero() {
-    let (unavailable_bytes, unavailable) = encode_with_priority(PriorityOrdinal::Unavailable);
-    let (measured_bytes, measured) = encode_with_priority(PriorityOrdinal::Measured(0));
-    assert_eq!(unavailable, PriorityOrdinal::Unavailable);
-    assert_eq!(unavailable.measured(), None);
-    assert_eq!(measured, PriorityOrdinal::Measured(0));
-    assert_eq!(measured.measured(), Some(0));
+    let mut unavailable_bytes = Vec::new();
+    priority(&mut unavailable_bytes, PriorityOrdinal::Unavailable);
+    let mut measured_bytes = Vec::new();
+    priority(&mut measured_bytes, PriorityOrdinal::Measured(0));
     assert_ne!(
         unavailable_bytes, measured_bytes,
         "an unmeasured priority must not encode identically to a measured zero"
     );
-}
 
-/// Encode the fixture with one theatre's priority replaced, returning both the
-/// bytes and what they decode back to.
-fn encode_with_priority(value: PriorityOrdinal) -> (Vec<u8>, PriorityOrdinal) {
-    let mut frame = exact_frame();
-    {
-        let SectionAdmission::Admitted(body) =
-            &mut frame.snapshot.as_mut().unwrap().sections[0].admission
-        else {
-            panic!("fixture section 0 is admitted");
-        };
-        body.theatres[0].priority_ordinal = value;
-    }
-    let bytes = encode_payload(&frame).unwrap();
-    let decoded = decode_payload(&bytes).unwrap();
-    let SectionAdmission::Admitted(body) = &decoded.snapshot.unwrap().sections[0].admission else {
-        panic!("still admitted");
+    let decode = |bytes: &[u8]| {
+        Reader {
+            payload: bytes,
+            at: 0,
+        }
+        .priority()
     };
-    (bytes, body.theatres[0].priority_ordinal)
+    assert_eq!(
+        decode(&unavailable_bytes),
+        Ok(PriorityOrdinal::Unavailable)
+    );
+    assert_eq!(decode(&measured_bytes), Ok(PriorityOrdinal::Measured(0)));
+    assert_eq!(PriorityOrdinal::Unavailable.measured(), None);
+    assert_eq!(PriorityOrdinal::Measured(0).measured(), Some(0));
 }
 
-/// Red when a wire payload claims `Unavailable` while smuggling a nonzero
-/// ordinal in the value slot.
-/// The corrupted payload is built deterministically: the byte where an
-/// `Unavailable` encoding differs from a `Measured(3)` encoding *is* the tag
-/// byte, so this test cannot pass by stumbling on some unrelated field that
-/// happens to refuse.
+/// A wire encoding that claims `Unavailable` while smuggling a nonzero ordinal
+/// in the value slot is refused.
+///
+/// The forged bytes are built from the real encoder's output for `Measured(3)`
+/// with only the tag byte cleared, so this cannot pass by stumbling on some
+/// unrelated malformed field.
+///
+/// kills: `Reader::priority` dropping its `0 if ordinal == 0` guard and
+/// returning `Unavailable` for any tag-0 encoding.
 #[test]
 fn unavailable_priority_with_nonzero_ordinal_refuses() {
-    let (unavailable, _) = encode_with_priority(PriorityOrdinal::Unavailable);
-    let (mut measured, _) = encode_with_priority(PriorityOrdinal::Measured(3));
-    assert_eq!(unavailable.len(), measured.len());
-    let tag_at = unavailable
-        .iter()
-        .zip(measured.iter())
-        .position(|(left, right)| left != right)
-        .expect("the two encodings must differ at the priority tag");
-    assert_eq!(measured[tag_at], 1, "located byte must be the priority tag");
-    // Tag now claims "unavailable" while the value slot still says 3.
-    measured[tag_at] = 0;
+    let mut forged = Vec::new();
+    priority(&mut forged, PriorityOrdinal::Measured(3));
+    assert_eq!(forged[0], 1, "the first byte is the priority tag");
+    forged[0] = 0;
     assert!(
-        decode_payload(&measured).is_err(),
+        Reader {
+            payload: &forged,
+            at: 0
+        }
+        .priority()
+        .is_err(),
         "an unavailable priority carrying a nonzero ordinal must refuse"
     );
 }
@@ -746,7 +795,23 @@ fn localization_keyed_name_requires_a_key() {
 /// carrier's own record of what it does not claim.
 #[test]
 fn uncaptured_controller_fields_are_declared() {
-    assert_eq!(UNCAPTURED_CONTROLLER_FIELDS.len(), 25);
+    assert_eq!(UNCAPTURED_CONTROLLER_FIELDS.len(), 18);
+    // Drift in the other direction: a leaf this producer now measures must not
+    // still be declared a hole, or the record would understate itself.
+    for captured in [
+        "theater_group_settings_view.current_priority_ordinal",
+        "theater_group_settings_view.delete_eligibility",
+        "theater_group_item.supply_priority_ordinal",
+        "navy_theater_group_item.current_priority_ordinal",
+        "orders_group_item.army_training_state",
+        "orders_group_item.exercise_stop_at_max_state",
+        "orders_group_item.border_conflict_state",
+    ] {
+        assert!(
+            !UNCAPTURED_CONTROLLER_FIELDS.contains(&captured),
+            "{captured} is measured now and must not be declared uncaptured"
+        );
+    }
     let mut sorted = UNCAPTURED_CONTROLLER_FIELDS.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
@@ -783,7 +848,8 @@ fn one_member_under_two_theatres_rejects_the_section() {
         engine_order: order,
         display_name: "Home Fleet Area".into(),
         name_provenance: NameProvenance::EngineRuntimeString,
-        priority_ordinal: PriorityOrdinal::Unavailable,
+        priority_ordinal: PriorityOrdinal::Measured(1),
+        delete_eligible: None,
         members: vec![MemberRow {
             kind: ObjectKind::Fleet,
             object_id: 7_000,
@@ -794,6 +860,7 @@ fn one_member_under_two_theatres_rejects_the_section() {
             display_name: None,
             name_provenance: None,
             priority_ordinal: PriorityOrdinal::Unavailable,
+            orders_visibility: None,
         }],
         alert_categories: Vec::new(),
     };
@@ -852,56 +919,58 @@ fn member_and_free_wing_priority_are_explicitly_unavailable() {
     assert!(members > 0 && wings > 0, "fixture must exercise both rows");
 }
 
-/// Red when the producer's declaration drifts from the list the replay
-/// consumer independently requires. The two crates share no dependency -- the
-/// recording file is their only interface -- so this equality is the only thing
-/// keeping a producer-side edit from silently un-declaring a hole the consumer
-/// still refuses to render without.
+/// Every declared hole names a template family the XUI07 dependency contract
+/// actually lists, and names a leaf inside it.
+///
+/// This test used to assert set equality against
+/// `replay_core::theatre_selector::REQUIRED_UNCAPTURED_CONTROLLER_FIELDS`. That
+/// constant no longer exists -- schema 6 does not read
+/// `uncaptured_controller_fields` at all (it is tolerated surplus) -- so the
+/// equality was pinning this list to a contract that had already been retired,
+/// and it is exactly what stopped the list shrinking when leaves were measured.
+/// What is still worth pinning is that the list names real things.
+///
+/// kills: an entry that is not `template.field`, or one whose template is not
+/// one of the contract's families.
 #[test]
-fn producer_declaration_matches_the_replay_required_list() {
-    // Kept in sync by hand with
-    // `replay_core::theatre_selector::REQUIRED_UNCAPTURED_CONTROLLER_FIELDS`.
-    const REPLAY_REQUIRED: &[&str] = &[
-        "theater_group_settings_view.current_priority_ordinal",
-        "theater_group_settings_view.delete_eligibility",
-        "orders_group_item.army_training_state",
-        "orders_group_item.exercise_stop_at_max_state",
-        "orders_group_item.border_conflict_state",
-        "navy_theater_fleet_item.live_spotting_state",
-        "navy_theater_fleet_item.exercise_stop_at_max_state",
-        "theater_group_item.supply_priority_ordinal",
-        "theater_group_item.combat_log_ownership_and_eligibility",
-        "navy_theater_group_item.current_priority_ordinal",
-        "navy_theater_group_item.combat_log_ownership_and_eligibility",
-        "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
-        "new_theater_group_item.current_eligibility",
-        "strategic_region_alert_entry.category_to_atlas_frame_law",
-        "strategic_region_alert_entry.runtime_glow_state",
-        "strategic_region_item.region_and_parent_identity",
-        "strategic_region_item.engine_order",
-        "strategic_region_item.alert_identities_and_order",
-        "strategic_region_item.naval_access_row_input",
-        "fleet_row_item_box.split_off_state_and_count",
-        "reserve_fleet_row_item_box.split_off_state_and_count",
-        "air_theatre_wing_item.active_visual_frame",
-        "air_theatre_item.current_priority_ordinal",
-        "air_theatre_group_item.current_priority_ordinal",
-        "air_theatre_free_wings_item.current_priority_ordinal",
+fn every_declared_hole_names_a_contract_template_and_leaf() {
+    const CONTRACT_FAMILIES: &[&str] = &[
+        "theater_group_settings_view",
+        "orders_group_item",
+        "navy_theater_fleet_item",
+        "theater_group_item",
+        "navy_theater_group_item",
+        "reserve_navy_theater_group_item",
+        "new_theater_group_item",
+        "strategic_region_alert_entry",
+        "strategic_region_item",
+        "fleet_row_item_box",
+        "reserve_fleet_row_item_box",
+        "air_theatre_wing_item",
+        "air_theatre_item",
+        "air_theatre_free_wings_item",
+        "air_theatre_group_item",
     ];
-    let mut declared = UNCAPTURED_CONTROLLER_FIELDS.to_vec();
-    let mut required = REPLAY_REQUIRED.to_vec();
-    declared.sort_unstable();
-    required.sort_unstable();
-    assert_eq!(declared, required);
+    for field in UNCAPTURED_CONTROLLER_FIELDS {
+        let (family, leaf) = field
+            .split_once('.')
+            .unwrap_or_else(|| panic!("{field} must name template.field"));
+        assert!(!leaf.is_empty(), "{field} must name a leaf");
+        assert!(
+            CONTRACT_FAMILIES.contains(&family),
+            "{family} is not an XUI07 dependency-contract template family"
+        );
+    }
 }
 
 /// Red when the declared uncaptured-field list stops naming every template the
 /// dependency contract lists as a producer dependency.
 #[test]
 fn every_contract_template_family_is_declared_uncaptured() {
+    // `theater_group_settings_view` and `orders_group_item` are deliberately
+    // absent: every leaf they contributed is measured now, so requiring them
+    // here would force the list to keep declaring holes it no longer has.
     for family in [
-        "theater_group_settings_view",
-        "orders_group_item",
         "navy_theater_fleet_item",
         "theater_group_item",
         "navy_theater_group_item",
@@ -1100,4 +1169,218 @@ fn the_roster_digest_travels_byte_for_byte() {
         decoded.content_identity.unwrap().engine_roster.roster_sha256,
         [0xab; 32]
     );
+}
+
+
+// ---------------------------------------------------------------------------
+// Measured controller leaves (lane GS)
+// ---------------------------------------------------------------------------
+
+/// A round trip preserves every measured controller leaf.
+///
+/// The fixture's land theatre carries a measured priority, delete eligibility,
+/// and both orders-group shapes (training+stop-at-max, and border conflict), so
+/// dropping any one of them from the encoder or the decoder shows up as a
+/// changed frame rather than as a silently absent field.
+///
+/// kills: the encoder omitting `opt_bool`/`orders_visibility`, or the decoder
+/// reading them in the wrong order.
+#[test]
+fn measured_controller_leaves_survive_a_round_trip() {
+    let frame = exact_frame();
+    let decoded = decode_payload(&encode_payload(&frame).expect("fixture encodes"))
+        .expect("fixture decodes");
+    let SectionAdmission::Admitted(body) = &decoded.snapshot.as_ref().unwrap().sections[0].admission
+    else {
+        panic!("fixture section 0 is admitted");
+    };
+    let land = &body.theatres[0];
+    assert_eq!(land.priority_ordinal, PriorityOrdinal::Measured(2));
+    assert_eq!(land.delete_eligible, Some(true));
+    assert_eq!(
+        land.members[0].orders_visibility,
+        Some(ArmyOrdersVisibility {
+            training_visible: true,
+            stop_at_max_visible: true,
+            border_conflict_visible: false,
+        })
+    );
+    assert_eq!(
+        land.members[1].orders_visibility,
+        Some(ArmyOrdersVisibility {
+            training_visible: false,
+            stop_at_max_visible: false,
+            border_conflict_visible: true,
+        })
+    );
+    assert_eq!(decoded, frame);
+}
+
+/// Delete eligibility is a land-theatre leaf and nothing else.
+///
+/// The predicate is over the land theatre's own member vector. A navy or air row
+/// carrying it would be asserting a measurement of a control the engine never
+/// binds there, and a land row without it would be a silently unmeasured row.
+///
+/// kills: `validate_section_body` dropping the
+/// `delete_eligible.is_some() != (kind == LandTheatre)` check, in either
+/// direction.
+#[test]
+fn delete_eligibility_is_confined_to_land_theatres() {
+    let mut frame = exact_frame();
+    let SectionAdmission::Admitted(body) =
+        &mut frame.snapshot.as_mut().unwrap().sections[1].admission
+    else {
+        panic!("fixture section 1 is admitted");
+    };
+    // Section 1 is the air body: its theatre has no delete control.
+    body.theatres[0].delete_eligible = Some(false);
+    assert!(encode_payload(&frame).is_err());
+
+    let mut frame = exact_frame();
+    let SectionAdmission::Admitted(body) =
+        &mut frame.snapshot.as_mut().unwrap().sections[0].admission
+    else {
+        panic!("fixture section 0 is admitted");
+    };
+    body.theatres[0].delete_eligible = None;
+    assert!(encode_payload(&frame).is_err());
+}
+
+/// The orders group belongs to army rows and nothing else.
+///
+/// kills: `validate_section_body` dropping the
+/// `orders_visibility.is_some() != is_army_kind` check, in either direction.
+#[test]
+fn orders_group_visibility_is_confined_to_army_rows() {
+    let mut frame = exact_frame();
+    let SectionAdmission::Admitted(body) =
+        &mut frame.snapshot.as_mut().unwrap().sections[1].admission
+    else {
+        panic!("fixture section 1 is admitted");
+    };
+    // Section 1's members are an air group and an air wing.
+    body.theatres[0].members[0].orders_visibility = Some(ArmyOrdersVisibility {
+        training_visible: false,
+        stop_at_max_visible: false,
+        border_conflict_visible: false,
+    });
+    assert!(encode_payload(&frame).is_err());
+
+    let mut frame = exact_frame();
+    let SectionAdmission::Admitted(body) =
+        &mut frame.snapshot.as_mut().unwrap().sections[0].admission
+    else {
+        panic!("fixture section 0 is admitted");
+    };
+    body.theatres[0].members[0].orders_visibility = None;
+    assert!(encode_payload(&frame).is_err());
+}
+
+/// The two orders-group implications are the engine's law, so a pair that
+/// violates them is refused rather than transported.
+///
+/// border conflict inside the training-hidden one, so "stop-at-max without
+/// training" and "training and border conflict together" are shapes the engine
+/// cannot produce. Accepting them would let a mis-derived producer, or a torn
+/// wire, present an icon combination the panel can never paint.
+///
+/// kills: `ArmyOrdersVisibility::law_holds` losing either clause, and
+/// `Reader::orders_visibility` skipping its `law_holds` call -- the encode and
+/// decode halves are exercised separately below, because a validator that only
+/// runs on the way out would let a corrupted payload back in.
+#[test]
+fn orders_group_visibility_pairs_the_engine_cannot_produce_are_refused() {
+    for illegal in [
+        ArmyOrdersVisibility {
+            training_visible: false,
+            stop_at_max_visible: true,
+            border_conflict_visible: false,
+        },
+        ArmyOrdersVisibility {
+            training_visible: true,
+            stop_at_max_visible: false,
+            border_conflict_visible: true,
+        },
+    ] {
+        let mut frame = exact_frame();
+        let SectionAdmission::Admitted(body) =
+            &mut frame.snapshot.as_mut().unwrap().sections[0].admission
+        else {
+            panic!("fixture section 0 is admitted");
+        };
+        body.theatres[0].members[0].orders_visibility = Some(illegal);
+        assert!(
+            encode_payload(&frame).is_err(),
+            "illegal orders pair {illegal:?} must not encode"
+        );
+
+        // And the same pair arriving on the wire, past any producer.
+        let mut forged = Vec::new();
+        orders_visibility(&mut forged, Some(illegal));
+        assert_eq!(forged[0], 1, "the first byte is the presence flag");
+        assert!(
+            Reader {
+                payload: &forged,
+                at: 0
+            }
+            .orders_visibility()
+            .is_err(),
+            "illegal orders pair {illegal:?} must not decode"
+        );
+    }
+}
+
+/// An absent controller leaf can never be read back as a measured `false`.
+///
+/// Presence and value are separate bytes on the wire, so a payload whose
+/// presence byte is clear but whose value byte is set is a contradiction: some
+/// producer or some transport lost one of the two halves. It is refused rather
+/// than resolved in favour of either side -- taking the presence byte would
+/// silently downgrade a measurement to a hole, and taking the value byte would
+/// silently invent one.
+///
+/// kills: the decoder's `opt_bool` returning `Ok(None)` without testing the
+/// value byte, and `orders_visibility` returning `Ok(None)` without testing its
+/// three.
+#[test]
+fn an_absent_controller_leaf_with_a_set_value_byte_is_refused() {
+    assert_eq!(
+        Reader {
+            payload: &[0, 0, 0, 0],
+            at: 0
+        }
+        .opt_bool(),
+        Ok(None),
+        "a cleanly absent optional bool decodes as absent"
+    );
+    assert!(
+        Reader {
+            payload: &[0, 1, 0, 0],
+            at: 0
+        }
+        .opt_bool()
+        .is_err(),
+        "an absent optional bool carrying a true value is a contradiction"
+    );
+
+    assert_eq!(
+        Reader {
+            payload: &[0, 0, 0, 0],
+            at: 0
+        }
+        .orders_visibility(),
+        Ok(None)
+    );
+    for forged in [[0u8, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] {
+        assert!(
+            Reader {
+                payload: &forged,
+                at: 0
+            }
+            .orders_visibility()
+            .is_err(),
+            "absent orders visibility carrying {forged:?} is a contradiction"
+        );
+    }
 }

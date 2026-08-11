@@ -13,7 +13,12 @@ pub mod a729_hook;
 
 pub const DOMAIN_ID: u16 = 82;
 pub const DOMAIN_NAME: &str = "character_presentation_live";
-pub const SCHEMA_VERSION: u32 = 3;
+/// Bumped to 4 when each trait node gained its exact `definition_kind`. The
+/// producer already read that value at `trait_definition+0x920` to decide
+/// whether a progress numerator applies and then discarded it, so this closes a
+/// retention gap rather than opening a new engine read. Encoder and decoder move
+/// together in this file; an older payload is rejected outright.
+pub const SCHEMA_VERSION: u32 = 4;
 pub const AUTHORITY_EXACT_A729_CHARACTER_PRESENTATION: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"CPR1");
 pub const MAX_TRAIT_TREES: usize = 8_192;
@@ -163,6 +168,12 @@ pub struct TraitNodeObservation {
     /// Exact selected-leader trait-XP numerator for definition kinds 2/3.
     /// Sparse-vector absence is `Some(0)`; `None` means not applicable.
     pub progress_raw: Option<i64>,
+    /// Exact trait-definition kind, read at `trait_definition+0x920` in the
+    /// same observation that decided [`Self::progress_raw`]'s applicability.
+    /// The two are validated against each other rather than merely carried
+    /// side by side, because the whole value of retaining the kind is that it
+    /// explains the progress field.
+    pub definition_kind: u32,
     /// Optional pointer-free identity for the currently materialized hover
     /// reason observation. Host-local text is not emitted.
     pub reason_context_id: Option<String>,
@@ -316,6 +327,14 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
             if !tokens.insert(node.trait_token.as_str()) {
                 return invalid("duplicate trait token within tree");
             }
+            // The producer's own applicability law: a numerator exists exactly
+            // for kinds 2 and 3 (`a729_hook::trait_definition_kind_and_progress`).
+            // Enforcing it here is what stops the retained kind from becoming a
+            // second, unrelated field that could disagree with the progress it
+            // is supposed to explain.
+            if matches!(node.definition_kind, 2 | 3) != node.progress_raw.is_some() {
+                return invalid("trait definition kind contradicts its progress applicability");
+            }
         }
     }
     if observed_roots
@@ -463,6 +482,7 @@ pub fn encode_payload(frame: &CharacterPresentationFrame) -> Result<Vec<u8>, Car
             out.push(u8::from(node.reason_context_id.is_some()));
             out.push(0);
             i64v(&mut out, node.progress_raw.unwrap_or_default());
+            u32v(&mut out, node.definition_kind);
             string(&mut out, &node.trait_token)?;
             if let Some(context_id) = &node.reason_context_id {
                 string(&mut out, context_id)?;
@@ -561,6 +581,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
                 if !has_progress && progress != 0 {
                     return invalid("CPR1 absent trait progress has nonzero storage");
                 }
+                let definition_kind = reader.u32()?;
                 let trait_token = reader.string()?;
                 let reason_context_id = if has_reason_context {
                     Some(reader.string()?)
@@ -571,6 +592,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
                     trait_token,
                     state,
                     progress_raw: has_progress.then_some(progress),
+                    definition_kind,
                     reason_context_id,
                 });
             }
@@ -738,12 +760,14 @@ mod tests {
                             trait_token: "panzer_leader".into(),
                             state: TraitNodeState::Picked,
                             progress_raw: None,
+                            definition_kind: 4,
                             reason_context_id: Some("leader_traits::trait_tooltip::0".into()),
                         },
                         TraitNodeObservation {
                             trait_token: "armor_officer".into(),
                             state: TraitNodeState::Pickable,
                             progress_raw: Some(42),
+                            definition_kind: 2,
                             reason_context_id: None,
                         },
                     ],

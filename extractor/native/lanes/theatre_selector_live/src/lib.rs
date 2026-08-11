@@ -36,21 +36,36 @@
 //!
 //! # What this carrier deliberately does not claim
 //!
-//! Several controller fields named by the dependency contract have no exact
-//! a729 read law established yet. They are carried as explicit
-//! `Unavailable` variants (see [`PriorityOrdinal`]) rather than guessed,
-//! defaulted, or substituted from UI strings or sprite frames. See
+//! Several controller fields named by the dependency contract are still absent
+//! here. They are carried as explicit `Unavailable` variants (see
+//! [`PriorityOrdinal`]) or omitted keys rather than guessed, defaulted, or
+//! substituted from UI strings or sprite frames. See
 //! `UNCAPTURED_CONTROLLER_FIELDS` for the enumerated list.
+//!
+//! What is *not* true of that list is that the read laws are unknown. XUI07's
+//! `manifest.json` carries function-level `controller_law_evidence` for every
+//! one of them; the gap is implementation, and for two of them it is an
+//! architectural blocker rather than missing evidence. See
+//! `runs/gs_theatre_reads/READ_LAWS.md` for the per-field verdict and the exact
+//! step that closes each remaining row.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOMAIN_ID: u16 = 98;
 pub const DOMAIN_NAME: &str = "theatre_selector_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"THS2");
-/// Bumped to 3 when `ContentIdentity` gained the engine-held mod/DLC roster.
-/// Encoder and decoder move together in this file, so an older payload is
-/// rejected outright rather than partially understood.
-pub const SCHEMA_VERSION: u32 = 3;
+/// Bumped to 4 when the land/navy theatre rows and the army/army-group member
+/// rows gained their measured controller leaves. Encoder and decoder move
+/// together in this file, so an older payload is rejected outright rather than
+/// partially understood.
+///
+/// This is **not** the XUI07 replay schema 6. Schema 6 additionally hard-requires
+/// `combat_log_owned` on every land controller and a whole strategic-region
+/// subtree with a `pinned_frame`, and both of those leaves are decided by an
+/// engine virtual call rather than by any field this producer can copy. Bumping
+/// past 4 before those are measured would ship a shape replay refuses anyway,
+/// with the difference that the refusal would look like a producer bug.
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub const MAX_COUNTRIES: usize = 4_096;
 pub const MAX_THEATRES_PER_SECTION: usize = 16_384;
@@ -75,21 +90,32 @@ pub const AIR_AND_NAVY_LAW_MANIFEST_SHA256: [u8; 32] =
     hex32(b"eee5a6c973edc425a709864071f940ebb002b4f741d138f09864dab4dc017ed6");
 
 /// Controller fields the XUI07 dependency contract names as producer
-/// dependencies for which no exact a729 read law is established by this
-/// carrier. Every one is transported as an explicit unavailable variant. This
-/// list is asserted by test so it cannot silently drift from the shipped
-/// representation.
+/// dependencies that this carrier does not yet transport. Every one is
+/// transported as an explicit unavailable variant or an omitted key, never as a
+/// default. This list is asserted by test so it cannot silently drift from the
+/// shipped representation.
+///
+/// # What this list does and does not mean
+///
+/// It used to say that "no exact a729 read law is established" for these. That
+/// was never true as a blanket claim and is now removed: XUI07's
+/// `manifest.json` `controller_law_evidence` carries function-level artifacts
+/// for all of them. Each remaining row is here for one of exactly two reasons,
+/// and `runs/gs_theatre_reads/READ_LAWS.md` says which:
+///
+/// * **Unimplemented** -- the law is a plain field read (or a walk over
+///   structures this producer already reaches) and nothing but work stands
+///   between it and capture.
+/// * **Blocked on an engine virtual** -- the law's value is produced by a
+///   runtime-polymorphic call whose leaf set XUI07 explicitly declines to
+///   bound. A worker-thread reader that copies bytes cannot evaluate one, and
+///   guessing the leaf is exactly the fail-open this carrier exists to refuse.
+///   Only `*.combat_log_ownership_and_eligibility` and the strategic row's
+///   pinned frame are in this class.
 pub const UNCAPTURED_CONTROLLER_FIELDS: &[&str] = &[
-    "theater_group_settings_view.current_priority_ordinal",
-    "theater_group_settings_view.delete_eligibility",
-    "orders_group_item.army_training_state",
-    "orders_group_item.exercise_stop_at_max_state",
-    "orders_group_item.border_conflict_state",
     "navy_theater_fleet_item.live_spotting_state",
     "navy_theater_fleet_item.exercise_stop_at_max_state",
-    "theater_group_item.supply_priority_ordinal",
     "theater_group_item.combat_log_ownership_and_eligibility",
-    "navy_theater_group_item.current_priority_ordinal",
     "navy_theater_group_item.combat_log_ownership_and_eligibility",
     "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
     "new_theater_group_item.current_eligibility",
@@ -329,15 +355,42 @@ pub enum NameProvenance {
 /// could not establish.
 ///
 /// The dependency contract requires a current priority ordinal on several
-/// selector rows. No exact a729 controller read law for it is established by
-/// this carrier, so every row currently ships `Unavailable`. This is a
-/// deliberate, inspectable hole: it is never defaulted to zero and never
-/// inferred from a sprite frame, which the contract forbids as substitute
-/// semantics.
+/// selector rows. Land and navy theatre rows now carry a measured ordinal --
+/// the engine field the panel reads, not the `ordinal + 1` frame it writes to
+/// the widget. The air rows still ship `Unavailable` because their ordinal is
+/// the *modal admitted wing priority*, which needs the wing census law that is
+/// not implemented here.
+///
+/// `Unavailable` is a deliberate, inspectable hole: it is never defaulted to
+/// zero and never inferred from a sprite frame, which the contract forbids as
+/// substitute semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PriorityOrdinal {
     Unavailable,
     Measured(u32),
+}
+
+/// The three orders-group icon states an army or army-group row exposes.
+///
+/// These are the *final controller booleans*, which is what the contract asks
+/// for: the engine's own visibility decision, not the offsets it decided from.
+/// The two implications below are the engine's law rather than a convention, so
+/// they are validated instead of documented -- a pair that violates them was
+/// not produced by the law it claims to come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArmyOrdersVisibility {
+    pub training_visible: bool,
+    /// Shown only together with training.
+    pub stop_at_max_visible: bool,
+    /// Mutually exclusive with training.
+    pub border_conflict_visible: bool,
+}
+
+impl ArmyOrdersVisibility {
+    fn law_holds(self) -> bool {
+        (!self.stop_at_max_visible || self.training_visible)
+            && !(self.border_conflict_visible && self.training_visible)
+    }
 }
 
 impl PriorityOrdinal {
@@ -362,9 +415,15 @@ pub struct MemberRow {
     pub display_name: Option<String>,
     pub name_provenance: Option<NameProvenance>,
     /// `air_theatre_group_item` carries a current priority ordinal the panel
-    /// needs. No exact a729 read law is established, so every member ships
-    /// `Unavailable` rather than a default.
+    /// needs. Its law is the modal-wing-priority selection, which this producer
+    /// does not implement, so every member ships `Unavailable` rather than a
+    /// default.
     pub priority_ordinal: PriorityOrdinal,
+    /// Measured orders-group icon state. `Some` exactly for `Army` and
+    /// `ArmyGroup` rows: those are the only kinds the engine binds an
+    /// orders group to, so `Some` on any other kind would be a claim about a
+    /// controller that does not exist.
+    pub orders_visibility: Option<ArmyOrdersVisibility>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -376,6 +435,10 @@ pub struct TheatreRow {
     pub display_name: String,
     pub name_provenance: NameProvenance,
     pub priority_ordinal: PriorityOrdinal,
+    /// Measured delete eligibility. `Some` exactly for `LandTheatre`: the
+    /// predicate is over the land theatre's own member vector, and no navy or
+    /// air row has a delete button to be eligible for.
+    pub delete_eligible: Option<bool>,
     pub members: Vec<MemberRow>,
     /// Exact alert-manager category ordinals, ascending in engine scan order.
     /// Land theatres only.
@@ -386,8 +449,10 @@ pub struct TheatreRow {
 pub struct FreeAirWingRow {
     pub wing_id: u32,
     pub engine_order: u32,
-    /// `air_theatre_free_wings_item` carries a current priority ordinal. Same
-    /// unestablished-read-law status as the other priority slots.
+    /// `air_theatre_free_wings_item` carries a current priority ordinal. Its
+    /// law is the same modal-wing-priority selection as the air theatre's, and
+    /// it is unimplemented here for the same reason, so this ships
+    /// `Unavailable`.
     pub priority_ordinal: PriorityOrdinal,
 }
 
@@ -701,6 +766,24 @@ fn validate_section_body(
             return invalid("THS2 theatre owner does not match its section");
         }
         validate_name(&theatre.display_name, &theatre.name_provenance, "theatre")?;
+        // Delete eligibility is a land-row controller leaf. Carrying it on a
+        // navy or air row would assert a measurement of a control the engine
+        // never binds there.
+        if theatre.delete_eligible.is_some() != (theatre.kind == ObjectKind::LandTheatre) {
+            return invalid("THS2 delete eligibility is not confined to land theatres");
+        }
+        // Which rows carry a measured priority is itself part of the schema,
+        // in both directions. A land or navy row that ships `Unavailable` has
+        // silently lost a leaf this producer implements, and an air row that
+        // ships `Measured` has invented one it does not: the air ordinal is a
+        // modal selection over a wing census, not a field.
+        let priority_is_implemented = matches!(
+            theatre.kind,
+            ObjectKind::LandTheatre | ObjectKind::NavyTheatre
+        );
+        if theatre.priority_ordinal.measured().is_some() != priority_is_implemented {
+            return invalid("THS2 theatre priority disposition does not match its kind");
+        }
         let expected = expected_theatre_order
             .entry(theatre.kind)
             .or_insert(0_u32);
@@ -776,6 +859,26 @@ fn validate_section_body(
             if !parent_valid || (member.reserve_navy && member.kind != ObjectKind::Fleet) {
                 return invalid("THS2 member parent/reserve law is invalid");
             }
+            // No member kind has an implemented priority law yet, so a
+            // measured member ordinal could only have been invented.
+            if member.priority_ordinal != PriorityOrdinal::Unavailable {
+                return invalid("THS2 member priority has no implemented read law");
+            }
+            let expects_orders =
+                matches!(member.kind, ObjectKind::Army | ObjectKind::ArmyGroup);
+            match member.orders_visibility {
+                Some(orders) if expects_orders => {
+                    if !orders.law_holds() {
+                        return invalid("THS2 orders-group visibility violates its engine law");
+                    }
+                }
+                None if !expects_orders => {}
+                _ => {
+                    return invalid(
+                        "THS2 orders-group visibility is not confined to army rows",
+                    )
+                }
+            }
             let expected = expected_member_order
                 .entry((
                     member.kind,
@@ -797,6 +900,9 @@ fn validate_section_body(
 
     let mut free_wings = BTreeSet::new();
     for (index, wing) in body.free_air_wings.iter().enumerate() {
+        if wing.priority_ordinal != PriorityOrdinal::Unavailable {
+            return invalid("THS2 free-wing priority has no implemented read law");
+        }
         if wing.wing_id == 0
             || !free_wings.insert(wing.wing_id)
             || wing.engine_order != index as u32
@@ -955,6 +1061,7 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
                     string(&mut out, &theatre.display_name);
                     provenance(&mut out, &theatre.name_provenance);
                     priority(&mut out, theatre.priority_ordinal);
+                    opt_bool(&mut out, theatre.delete_eligible);
                     u32v(&mut out, theatre.members.len() as u32);
                     u32v(&mut out, theatre.alert_categories.len() as u32);
                     for member in &theatre.members {
@@ -966,6 +1073,7 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
                         u32v(&mut out, member.parent_id);
                         u32v(&mut out, member.engine_order);
                         priority(&mut out, member.priority_ordinal);
+                        orders_visibility(&mut out, member.orders_visibility);
                         if let Some(name) = &member.display_name {
                             string(&mut out, name);
                             provenance(
@@ -1137,6 +1245,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
                     let display_name = reader.string()?;
                     let name_provenance = reader.provenance()?;
                     let priority_ordinal = reader.priority()?;
+                    let delete_eligible = reader.opt_bool()?;
                     let member_count = reader.u32()? as usize;
                     let alert_count = reader.u32()? as usize;
                     total_members = total_members.saturating_add(member_count);
@@ -1155,6 +1264,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
                         let parent_id = reader.u32()?;
                         let member_engine_order = reader.u32()?;
                         let member_priority = reader.priority()?;
+                        let member_orders = reader.orders_visibility()?;
                         let (member_name, member_provenance) = if has_name {
                             (Some(reader.string()?), Some(reader.provenance()?))
                         } else {
@@ -1170,6 +1280,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
                             display_name: member_name,
                             name_provenance: member_provenance,
                             priority_ordinal: member_priority,
+                            orders_visibility: member_orders,
                         });
                     }
                     let mut alert_categories = Vec::with_capacity(alert_count);
@@ -1184,6 +1295,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
                         display_name,
                         name_provenance,
                         priority_ordinal,
+                        delete_eligible,
                         members,
                         alert_categories,
                     });
@@ -1281,6 +1393,24 @@ fn provenance(out: &mut Vec<u8>, value: &NameProvenance) {
         }
     }
 }
+/// A boolean that may legitimately be absent. Presence and value are separate
+/// bytes so an absent leaf can never be read back as `false`.
+fn opt_bool(out: &mut Vec<u8>, value: Option<bool>) {
+    out.push(u8::from(value.is_some()));
+    out.push(u8::from(value.unwrap_or(false)));
+    out.extend_from_slice(&[0; 2]);
+}
+fn orders_visibility(out: &mut Vec<u8>, value: Option<ArmyOrdersVisibility>) {
+    out.push(u8::from(value.is_some()));
+    let orders = value.unwrap_or(ArmyOrdersVisibility {
+        training_visible: false,
+        stop_at_max_visible: false,
+        border_conflict_visible: false,
+    });
+    out.push(u8::from(orders.training_visible));
+    out.push(u8::from(orders.stop_at_max_visible));
+    out.push(u8::from(orders.border_conflict_visible));
+}
 fn priority(out: &mut Vec<u8>, value: PriorityOrdinal) {
     match value {
         PriorityOrdinal::Unavailable => {
@@ -1356,6 +1486,38 @@ impl<'a> Reader<'a> {
             2 => Ok(NameProvenance::LocalizationKey(self.string()?)),
             _ => invalid("THS2 name provenance is unknown"),
         }
+    }
+    fn opt_bool(&mut self) -> Result<Option<bool>, CarrierError> {
+        let present = self.bool()?;
+        let value = self.bool()?;
+        if self.bytes(2)? != [0, 0] {
+            return invalid("THS2 optional bool reserved bytes are nonzero");
+        }
+        if !present && value {
+            return invalid("THS2 absent optional bool carries a true value");
+        }
+        Ok(present.then_some(value))
+    }
+    fn orders_visibility(&mut self) -> Result<Option<ArmyOrdersVisibility>, CarrierError> {
+        let present = self.bool()?;
+        let orders = ArmyOrdersVisibility {
+            training_visible: self.bool()?,
+            stop_at_max_visible: self.bool()?,
+            border_conflict_visible: self.bool()?,
+        };
+        if !present {
+            if orders.training_visible
+                || orders.stop_at_max_visible
+                || orders.border_conflict_visible
+            {
+                return invalid("THS2 absent orders-group visibility carries a true value");
+            }
+            return Ok(None);
+        }
+        if !orders.law_holds() {
+            return invalid("THS2 orders-group visibility violates its engine law");
+        }
+        Ok(Some(orders))
     }
     fn priority(&mut self) -> Result<PriorityOrdinal, CarrierError> {
         let tag = self.byte()?;

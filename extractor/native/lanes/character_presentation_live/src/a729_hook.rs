@@ -449,6 +449,11 @@ pub struct ProcessLocalTraitNode {
     /// Exact raw numerator from the selected leader's +0xDF8/+0xE04 sparse
     /// trait-XP pairs for trait kinds 2/3. `None` is not applicable.
     pub progress_raw: Option<i64>,
+    /// Exact definition kind read at `trait_definition_ptr + 0x920`, the same
+    /// value that decides `progress_raw`'s applicability. It used to be read
+    /// and thrown away; the XUI17 admission needs it per node, and re-reading
+    /// it later would be a second observation of a value that can change.
+    pub definition_kind: u32,
 }
 
 /// One exact row-bind call in post-sort callback order. The row and ace
@@ -554,6 +559,7 @@ pub fn decode_trait_rows_with_catalog(
                 trait_token,
                 state: node.state,
                 progress_raw: node.progress_raw,
+                definition_kind: node.definition_kind,
                 reason_context_id: None,
             });
         }
@@ -2427,12 +2433,15 @@ fn read_process_local_trait_trees(
                     root
                 ));
             }
+            let (definition_kind, progress_raw) =
+                trait_definition_kind_and_progress(trait_definition_ptr, &progress_by_definition)?;
             nodes.push(ProcessLocalTraitNode {
                 source_ordinal: source_ordinal as u32,
                 item_ptr,
                 trait_definition_ptr,
                 state: read_trait_node_state(item_ptr)?,
-                progress_raw: trait_progress_raw(trait_definition_ptr, &progress_by_definition)?,
+                progress_raw,
+                definition_kind,
             });
         }
         trees.push(ProcessLocalTraitTree { root, nodes });
@@ -2499,10 +2508,17 @@ fn read_trait_progress_catalog(selected_leader_ptr: usize) -> Result<BTreeMap<us
     Ok(by_definition)
 }
 
-fn trait_progress_raw(
+/// The exact definition kind, and the trait-XP numerator its value selects.
+///
+/// One read, two results, deliberately. The kind decides whether a progress
+/// value applies at all, so reading it twice -- once to decide and once to
+/// carry -- would allow the carried kind to disagree with the applicability it
+/// is supposed to explain. The tear-detecting re-read stays inside this
+/// function, which is what makes the returned pair a single observation.
+fn trait_definition_kind_and_progress(
     trait_definition_ptr: usize,
     progress_by_definition: &BTreeMap<usize, i64>,
-) -> Result<Option<i64>, String> {
+) -> Result<(u32, Option<i64>), String> {
     let kind_address = trait_definition_ptr
         .checked_add(TRAIT_DEFINITION_KIND)
         .ok_or_else(|| "A39 trait kind address overflowed".to_string())?;
@@ -2513,12 +2529,13 @@ fn trait_progress_raw(
     if first_kind != second_kind {
         return Err("A39 trait kind changed during observation".into());
     }
-    Ok(matches!(first_kind, 2 | 3).then(|| {
+    let progress = matches!(first_kind, 2 | 3).then(|| {
         progress_by_definition
             .get(&trait_definition_ptr)
             .copied()
             .unwrap_or(0)
-    }))
+    });
+    Ok((first_kind, progress))
 }
 
 fn read_trait_node_state(item_ptr: usize) -> Result<TraitNodeState, String> {
@@ -3348,6 +3365,9 @@ mod tests {
                         trait_token: "panzer_leader".into(),
                         state: TraitNodeState::Picked,
                         progress_raw,
+                        // The carrier enforces `kind in {2,3}` iff a numerator
+                        // is present, so the fixture kind tracks the argument.
+                        definition_kind: if progress_raw.is_some() { 2 } else { 4 },
                         reason_context_id: None,
                     }],
                 },
@@ -3445,6 +3465,7 @@ mod tests {
                         trait_definition_ptr: 0x3000,
                         state: TraitNodeState::Pickable,
                         progress_raw: Some(42),
+                        definition_kind: 2,
                     }],
                 },
                 ProcessLocalTraitTree {
