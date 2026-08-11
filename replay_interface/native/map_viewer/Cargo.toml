@@ -3,15 +3,22 @@ name = "map_viewer"
 version = "0.1.0"
 edition = "2021"
 description = "Rust-native the game map bundle tooling and D3D11 terrain replay backend"
+build = "build.rs"
+
+[build-dependencies]
+replay_test_gates = { path = "../replay_test_gates" }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 # A5 keying swap: the renderer reads owner/controller/cosmetic from the
 # scrubbable WorldTimeline typed views instead of the static history parse.
 # Acyclic (replay_core depends only on serde/serde_json/snapshot).
 replay_core = { path = "../replay_core" }
 snapshot = { package = "portable_replay_format", path = "../../../portable_replay/native/snapshot" }
+portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
+portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 winapi = { version = "0.3.9", features = [
     "d3d11",
@@ -26,6 +33,7 @@ winapi = { version = "0.3.9", features = [
 
 [dev-dependencies]
 flate2 = "1"
+replay_test_gates = { path = "../replay_test_gates" }
 serde_json = "1"
 # Neutral, deterministic map-frame-bundle fixture. It is shared ground on
 # purpose: the producer (extractor/native/terrain_capture) cannot be a

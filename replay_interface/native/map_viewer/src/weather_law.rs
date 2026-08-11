@@ -8,9 +8,9 @@
 //! emitter drawn with `gfx/FX/particle.shader`.
 //!
 //! This module encodes the RENDER law: given a weather *type* per strategic
-//! region (the extractor feed supplies the type; this module never invents it),
+//! region (exact D24 supplies the type; this module never invents it),
 //! how does the engine draw the overlay — 100% from shipped files, with every
-//! parameter cited or explicitly `UNTRACED`.
+//! parameter cited or explicitly assigned to its production owner.
 //!
 //! # The binding chain (shipped files, source of truth)
 //!
@@ -58,8 +58,7 @@
 //! - `billboard = yes` — camera-facing quad (particle.shader's default, not the
 //!   `NO_BILLBOARD` path).
 //! - `life = { 2.6 0.7 }`, `emission`, `max_amount`, `velocity`, `force` —
-//!   simulation params (spawn/motion; not needed to draw one static frame, kept
-//!   for fidelity/UNTRACED accounting).
+//!   simulation params consumed by XMAP20's generic particle runtime.
 //!
 //! # The pixel-shader color law (`gfx/FX/particle.shader`)
 //!
@@ -73,9 +72,9 @@
 //! `PixelSimpleParticle` returns `tex2D(DiffuseMap, uv) * vColor`
 //! (`particle.shader:168`) — the sprite texel (linear, from the DXT5/BC3 DDS)
 //! times the linear vertex color. The `FOG` define (present on
-//! `ParticleAlphaBlend`, absent on `ParticleAdditive`) applies
-//! `ApplyDistanceFog` to RGB before return (`particle.shader:189-191`); with no
-//! captured fog constants that stage is `UNTRACED` (identity here).
+//! `ParticleAlphaBlend`, absent on `ParticleAdditive`) applies the exact
+//! compile-time `constants.fxh`/`standardfuncsgfx.fxh` distance-fog law to RGB
+//! before return (`particle.shader:189-191`).
 //!
 //! Blend (`particle.shader` BlendState blocks, `WriteMask="RED|GREEN|BLUE"` —
 //! particles never write alpha to the target):
@@ -89,13 +88,15 @@
 //!
 //! # Camera distance / zoom fade (`common/defines/00_graphics.lua:1008-1015`)
 //!
-//! The engine fades the whole weather layer by camera height. The *constants*
-//! are cited exactly; the *formula* that combines them is engine C++ with no
-//! shipped-text source, so `weather_camera_fade` is a documented reconstruction
-//! (`UNTRACED` formula, cited constants). Constants:
+//! Exact-a729 `CAirInterface::GetWeatherEffectForAirRegion`
+//! (`hoi4.exe+0x0166ec50`) applies a piecewise whole-layer alpha and particle
+//! playback-rate law to camera distance. The constants remain effective-VFS
+//! inputs. Constants:
 //! `WEATHER_DISTANCE_CUTOFF=1500` (hidden beyond),
 //! `WEATHER_DISTANCE_FADE_LENGTH=400`, `WEATHER_ZOOM_IN_CUTOFF=358`,
-//! `WEATHER_ZOOM_IN_FADE_LENGTH=220`, `WEATHER_ZOOM_IN_FADE_FACTOR=0.0`.
+//! `WEATHER_ZOOM_IN_FADE_LENGTH=220`, `WEATHER_ZOOM_IN_FADE_FACTOR=0.0`,
+//! `WEATHER_PLAYBACK_RATE=0.15`, `WEATHER_PLAYBACK_RATE_CUTOFF=500`, and
+//! `WEATHER_PLAYBACK_RATE_LENGTH=200`.
 //!
 //! # Spawn positions (`map/weatherpositions.txt`)
 //!
@@ -109,19 +110,16 @@
 //!
 //! Pure function of mod-resolved files + a supplied weather *type*: the sprite
 //! texture, the linear vertex color, the blend mode, the billboard size, the
-//! spawn positions, the fade constants. Runtime state (NOT in any file, must
-//! come from the extractor feed / a capture moment): the per-region *current
-//! weather type* and its intensity/phase, the live particle ages (hence exact
-//! per-particle `smoke_fade` alpha), the camera height (hence the fade factor),
-//! and the animated turbulence offsets. This module draws the fully-traced
-//! static overlay for a *given* type and leaves the rest `UNTRACED` with a
-//! named capture plan (see `documents/WEATHER_LAW.md`).
+//! spawn positions, and fade constants. Runtime state comes from exact D24,
+//! the presentation-independent visual epoch, viewer camera, and the owning
+//! lighting/composition packets. Live particle age and turbulence are renderer
+//! temporal state, never selected-Present authority.
 
 use crate::image_load::load_dds_rgba;
 use crate::mod_resolver::GameFileResolver;
 use crate::types::RgbaImage;
 use crate::Result;
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 /// `common/weather.txt` source path (mod-resolved).
 pub const WEATHER_EFFECTS_SOURCE: &str = "common/weather.txt";
@@ -133,6 +131,10 @@ pub const PARTICLES_GFX_SOURCE: &str = "gfx/entities/particles.gfx";
 pub const WEATHER_POSITIONS_SOURCE: &str = "map/weatherpositions.txt";
 /// `common/defines/00_graphics.lua` source path (mod-resolved).
 pub const GRAPHICS_DEFINES_SOURCE: &str = "common/defines/00_graphics.lua";
+/// Shipped particle program whose named effects bind the decoded cloud law.
+pub const PARTICLE_SHADER_SOURCE: &str = "gfx/FX/particle.shader";
+/// Compile-time distance-fog constants included by the particle shader.
+pub const FOG_CONSTANTS_SOURCE: &str = "gfx/FX/constants.fxh";
 
 /// `standardfuncsgfx.fxh:48-56` `ToLinear` gamma exponent.
 pub const TO_LINEAR_GAMMA: f32 = 2.2;
@@ -141,7 +143,7 @@ pub const TO_LINEAR_GAMMA: f32 = 2.2;
 /// and keyed by `common/weather.txt` `weather_effects`. Only the types with a
 /// particle overlay are represented here (`no_phenomenon` draws nothing;
 /// `arctic_water`/`mud` are ground post-effects, not airborne particles).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum WeatherType {
     /// No weather particle overlay.
     NoPhenomenon,
@@ -183,47 +185,18 @@ impl WeatherType {
         }
     }
 
-    /// Map a recording's `weather_kind` string (`replay_core`'s
-    /// `WeatherRegionRow.weather_kind`, requirements item 6) onto the engine
-    /// weather type this render law draws. This is the wiring point between the
-    /// recorded per-region phenomenon and the file-derived overlay chain.
-    ///
-    /// Two naming families are accepted:
-    /// * The **file-derived** `common/weather.txt` `weather_effects` keys
-    ///   (`no_phenomenon`, `rain_light`, `rain_heavy`, `snow`, `blizzard`,
-    ///   `sandstorm`) — these are authoritative (via [`from_key`]).
-    /// * The **friendly aliases** the current fixtures / a friendlier extractor
-    ///   emit (`clear`, `rain`, `storm`) — these are an **inference** about the
-    ///   recording's naming convention, NOT a shipped-file key. They are mapped
-    ///   here so the overlay resolves, but the mapping is flagged: the honest
-    ///   fix is for the recording to emit the engine `weather_effects` key
-    ///   directly (see the lane report's gap table). `snow`/`blizzard`/
-    ///   `sandstorm` coincide in both families.
-    ///
-    /// Returns `None` for an unrecognised kind (fail-closed: draw nothing rather
-    /// than guess a phenomenon).
-    ///
-    /// [`from_key`]: WeatherType::from_key
+    /// Decode only the exact `common/weather.txt` key recorded by D24.
+    /// Friendly aliases are intentionally rejected: production cannot infer
+    /// an engine phenomenon from display-oriented naming.
     pub fn from_recording_kind(kind: &str) -> Option<Self> {
-        let k = kind.trim();
-        if let Some(ty) = Self::from_key(k) {
-            return Some(ty);
-        }
-        // Friendly aliases (INFERENCE — recording naming convention, not a
-        // weather.txt key).
-        match k.to_ascii_lowercase().as_str() {
-            "clear" | "none" | "no_weather" => Some(Self::NoPhenomenon),
-            "rain" => Some(Self::RainLight),
-            "storm" | "thunderstorm" | "lightning" => Some(Self::RainHeavy),
-            _ => None,
-        }
+        Self::from_key(kind)
     }
 }
 
 /// The `big`/`small` variant of a weather emitter position
 /// (`map/weatherpositions.txt` column 5). `big` selects the primary
 /// `weather_effect`, `small` selects the `small = yes` entry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum WeatherPositionSize {
     /// `big` — primary (non-small) `weather_effect`.
     Big,
@@ -285,6 +258,35 @@ impl WeatherEffectsTable {
             .copied()
             .find(|b| b.small == want_small)
             .or_else(|| of_type.first().copied())
+    }
+
+    /// All authored candidates for a weather type/size in file order.
+    ///
+    /// Exact-a729 selects one candidate for every non-empty emitter vector and
+    /// advances the epoch PRNG once. A `big` position uses the big vector when
+    /// non-empty and otherwise falls back to the small vector; `small` uses
+    /// only the small vector.
+    pub fn bindings(
+        &self,
+        weather: WeatherType,
+        size: WeatherPositionSize,
+    ) -> Vec<&WeatherEffectBinding> {
+        let want_small = matches!(size, WeatherPositionSize::Small);
+        let selected = self
+            .entries
+            .iter()
+            .filter(|(ty, binding)| *ty == weather && binding.small == want_small)
+            .map(|(_, binding)| binding)
+            .collect::<Vec<_>>();
+        if selected.is_empty() && matches!(size, WeatherPositionSize::Big) {
+            self.entries
+                .iter()
+                .filter(|(ty, binding)| *ty == weather && binding.small)
+                .map(|(_, binding)| binding)
+                .collect()
+        } else {
+            selected
+        }
     }
 }
 
@@ -418,9 +420,8 @@ impl WeatherEmitterTable {
     }
 }
 
-/// The `WEATHER_*` camera-fade constants (`00_graphics.lua:1008-1015`). The
-/// values are cited exactly; the fade *formula* combining them is engine C++
-/// (see [`weather_camera_fade`]).
+/// The `WEATHER_*` camera-fade and playback constants
+/// (`00_graphics.lua:1008-1015`), consumed by the exact-a729 law.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeatherFadeDefines {
     /// `WEATHER_DISTANCE_CUTOFF` — hidden beyond this camera distance.
@@ -433,6 +434,12 @@ pub struct WeatherFadeDefines {
     pub zoom_in_fade_length: f32,
     /// `WEATHER_ZOOM_IN_FADE_FACTOR` — residual factor at max zoom-in.
     pub zoom_in_fade_factor: f32,
+    /// Minimum particle playback rate beyond the playback cutoff.
+    pub playback_rate: f32,
+    /// Camera distance at/after which the minimum playback rate applies.
+    pub playback_rate_cutoff: f32,
+    /// Length of the full-to-minimum playback transition.
+    pub playback_rate_length: f32,
 }
 
 /// The default vanilla fade constants (`00_graphics.lua:1008-1012`). Present so
@@ -444,40 +451,190 @@ pub const VANILLA_WEATHER_FADE_DEFINES: WeatherFadeDefines = WeatherFadeDefines 
     zoom_in_cutoff: 358.0,
     zoom_in_fade_length: 220.0,
     zoom_in_fade_factor: 0.0,
+    playback_rate: 0.15,
+    playback_rate_cutoff: 500.0,
+    playback_rate_length: 200.0,
 };
 
-/// `UNTRACED` fade reconstruction from the cited constants. The engine's exact
-/// combination of the distance-cutoff and zoom-in bands is C++ with no
-/// shipped-text source; this is the documented best reconstruction:
-/// a far fade that ramps 1 -> 0 over `[cutoff-fade_length, cutoff]`, and a near
-/// fade that ramps `1 -> zoom_in_fade_factor` as camera distance drops through
-/// `[zoom_in_cutoff, zoom_in_cutoff - zoom_in_fade_length]`. Returns a 0..1
-/// visibility multiplier on the whole weather layer. The comment names this
-/// UNTRACED so a merge reviewer sees the constants are real but the shape is not
-/// pinned by a file.
-pub fn weather_camera_fade(camera_distance: f32, defines: &WeatherFadeDefines) -> f32 {
-    // Far fade: fully hidden at/after distance_cutoff, full below the band start.
-    let far = if camera_distance >= defines.distance_cutoff {
-        0.0
-    } else if camera_distance <= defines.distance_cutoff - defines.distance_fade_length {
-        1.0
-    } else {
-        (defines.distance_cutoff - camera_distance) / defines.distance_fade_length.max(f32::EPSILON)
-    };
+/// Effective-file distance-fog constants consumed by
+/// `standardfuncsgfx.fxh::CalculateDistanceFogFactor`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherDistanceFogDefines {
+    pub color: [f32; 3],
+    pub begin: f32,
+    pub end: f32,
+    pub max: f32,
+}
 
-    // Near (zoom-in) fade: at/above zoom_in_cutoff -> full; at/below the band
-    // bottom -> zoom_in_fade_factor; linear between.
-    let band_bottom = defines.zoom_in_cutoff - defines.zoom_in_fade_length;
-    let near = if camera_distance >= defines.zoom_in_cutoff {
-        1.0
-    } else if camera_distance <= band_bottom {
+pub const VANILLA_WEATHER_DISTANCE_FOG: WeatherDistanceFogDefines = WeatherDistanceFogDefines {
+    color: [0.12, 0.28, 0.6],
+    begin: 1.0,
+    end: 150.0,
+    max: 0.35,
+};
+
+/// Exact role-specific alpha and particle playback-rate outputs.
+///
+/// `0x14166ec50` applies the near-zoom branch only to the fading/cloud entity.
+/// The primary precipitation entity remains fully visible until the shared
+/// far-distance fade applies to both roles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherVisibilityLaw {
+    pub primary_alpha: f32,
+    pub fading_alpha: f32,
+    pub playback_rate: f32,
+}
+
+pub fn weather_visibility_law(
+    camera_distance: f32,
+    defines: &WeatherFadeDefines,
+) -> Result<WeatherVisibilityLaw> {
+    if !camera_distance.is_finite()
+        || camera_distance < 0.0
+        || ![
+            defines.distance_cutoff,
+            defines.distance_fade_length,
+            defines.zoom_in_cutoff,
+            defines.zoom_in_fade_length,
+            defines.zoom_in_fade_factor,
+            defines.playback_rate,
+            defines.playback_rate_cutoff,
+            defines.playback_rate_length,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+        || defines.distance_fade_length <= 0.0
+        || defines.zoom_in_fade_length <= 0.0
+        || defines.playback_rate_length <= 0.0
+        || !(0.0..=1.0).contains(&defines.zoom_in_fade_factor)
+        || !(0.0..=1.0).contains(&defines.playback_rate)
+    {
+        return Err("weather visibility inputs/defines are invalid".into());
+    }
+    let near_band_end = defines.zoom_in_cutoff + defines.zoom_in_fade_length;
+    let far_band_start = defines.distance_cutoff - defines.distance_fade_length;
+    if far_band_start < near_band_end {
+        return Err("weather near/far visibility bands overlap".into());
+    }
+    let near_fading_alpha = if camera_distance < defines.zoom_in_cutoff {
         defines.zoom_in_fade_factor
+    } else if camera_distance < near_band_end {
+        let t = (camera_distance - defines.zoom_in_cutoff) / defines.zoom_in_fade_length;
+        defines.zoom_in_fade_factor + t * (1.0 - defines.zoom_in_fade_factor)
     } else {
-        let t = (camera_distance - band_bottom) / defines.zoom_in_fade_length.max(f32::EPSILON);
-        defines.zoom_in_fade_factor + (1.0 - defines.zoom_in_fade_factor) * t
+        1.0
     };
+    let far_alpha = if camera_distance <= far_band_start {
+        1.0
+    } else if camera_distance <= defines.distance_cutoff {
+        (defines.distance_cutoff - camera_distance) / defines.distance_fade_length
+    } else {
+        0.0
+    };
+    let full_rate_end = defines.playback_rate_cutoff - defines.playback_rate_length;
+    let playback_rate = if camera_distance <= full_rate_end {
+        1.0
+    } else if camera_distance < defines.playback_rate_cutoff {
+        let remaining =
+            (defines.playback_rate_cutoff - camera_distance) / defines.playback_rate_length;
+        remaining * (1.0 - defines.playback_rate) + defines.playback_rate
+    } else {
+        defines.playback_rate
+    };
+    Ok(WeatherVisibilityLaw {
+        primary_alpha: far_alpha.clamp(0.0, 1.0),
+        fading_alpha: (near_fading_alpha * far_alpha).clamp(0.0, 1.0),
+        playback_rate: playback_rate.clamp(0.0, 1.0),
+    })
+}
 
-    (far * near).clamp(0.0, 1.0)
+/// Exact-a729 camera alpha multiplier for the primary precipitation role.
+///
+/// This compatibility helper cannot represent the separate fading/cloud role;
+/// production callers consume [`WeatherVisibilityLaw`] directly.
+#[deprecated(note = "use weather_visibility_law for role-specific primary/fading visibility")]
+pub fn weather_camera_fade(camera_distance: f32, defines: &WeatherFadeDefines) -> Result<f32> {
+    Ok(weather_visibility_law(camera_distance, defines)?.primary_alpha)
+}
+
+/// Exact `standardfuncsgfx.fxh` distance-fog factor.
+pub fn weather_distance_fog_factor(
+    camera_position: [f32; 3],
+    world_position: [f32; 3],
+    defines: &WeatherDistanceFogDefines,
+) -> Result<f32> {
+    if camera_position
+        .iter()
+        .chain(world_position.iter())
+        .chain(defines.color.iter())
+        .chain([&defines.begin, &defines.end, &defines.max])
+        .any(|value| !value.is_finite())
+        || ((defines.end * defines.end) - (defines.begin * defines.begin)).abs() <= f32::EPSILON
+    {
+        return Err("weather distance-fog inputs/defines are invalid".into());
+    }
+    let diff = [
+        camera_position[0] - world_position[0],
+        camera_position[1] - world_position[1],
+        camera_position[2] - world_position[2],
+    ];
+    let squared_distance = diff.iter().map(|value| value * value).sum::<f32>();
+    if squared_distance <= f32::EPSILON {
+        return Err("weather distance-fog camera and world positions coincide".into());
+    }
+    let inverse_length = squared_distance.sqrt().recip();
+    let directional = 1.0 - (diff[1] * inverse_length).abs();
+    let begin_squared = defines.begin * defines.begin;
+    let end_squared = defines.end * defines.end;
+    let distance = ((squared_distance - begin_squared) / (end_squared - begin_squared))
+        .min(defines.max)
+        .clamp(0.0, 1.0);
+    Ok(distance * directional)
+}
+
+/// Exact `lerp(vColor, FOG_COLOR, factor)` application.
+pub fn apply_weather_distance_fog(
+    color: [f32; 3],
+    factor: f32,
+    defines: &WeatherDistanceFogDefines,
+) -> Result<[f32; 3]> {
+    if color
+        .iter()
+        .chain(defines.color.iter())
+        .any(|value| !value.is_finite())
+        || !factor.is_finite()
+        || !(0.0..=1.0).contains(&factor)
+    {
+        return Err("weather distance-fog color/factor is invalid".into());
+    }
+    Ok([
+        color[0] + (defines.color[0] - color[0]) * factor,
+        color[1] + (defines.color[1] - color[1]) * factor,
+        color[2] + (defines.color[2] - color[2]) * factor,
+    ])
+}
+
+pub fn weather_selection_word(seed_words: [u32; 2]) -> u32 {
+    let mut value = seed_words[1].wrapping_add(seed_words[0].wrapping_mul(0xb529_7a4d));
+    value = (value >> 8 ^ value).wrapping_add(0x68e3_1da4);
+    value = (value.wrapping_mul(0x100) ^ value).wrapping_mul(0x1b56_c4e9);
+    value = (value >> 8 ^ value).wrapping_mul(0x92d6_8ca2);
+    (value >> 8 ^ value) & 0x7fff_ffff
+}
+
+pub fn weather_selected_candidate_index(
+    selection_seed: &mut Option<[u32; 2]>,
+    candidate_count: usize,
+) -> Result<Option<usize>> {
+    if candidate_count == 0 {
+        return Ok(None);
+    }
+    let seed = selection_seed
+        .as_mut()
+        .ok_or("nonempty weather variant vector has no presentation-independent seed")?;
+    let selection_word = weather_selection_word(*seed);
+    seed[0] = seed[0].wrapping_add(1);
+    Ok(Some(selection_word as usize % candidate_count))
 }
 
 // -------------------------------------------------------------------------
@@ -514,26 +671,358 @@ pub fn weather_effects_from_source(source: &str) -> Result<WeatherEffectsTable> 
         }
         rest = after;
     }
-    if entries.is_empty() {
-        return Err("common/weather.txt: weather_effects had no recognised weather types".into());
-    }
     Ok(WeatherEffectsTable { entries })
 }
 
 /// Resolve the entity name (`<name>_clouds_entity`) to its `particle` name via
 /// `gfx/entities/weather_entities.asset` (`entity -> event.particle`).
 pub fn entity_particle_name(entities_source: &str, entity_name: &str) -> Option<String> {
-    // Find the `entity = { ... name = "<entity_name>" ... }` block and read its
-    // `event = { particle = "<name>" ... }`.
-    for entity_block in each_braced_value(entities_source, "entity") {
-        if braced_field(&entity_block, "name").as_deref() == Some(entity_name) {
-            // The particle is nested in state = { event = { particle = "..." } }.
-            if let Some(p) = field_after_token(&entity_block, "particle") {
-                return Some(p);
+    entity_particle_names(entities_source, entity_name)
+        .into_iter()
+        .next()
+}
+
+/// Resolve every authored `event.particle` reference for one entity in event
+/// order. Production uses the whole vector; the singular helper above remains
+/// for compatibility with the older cloud-law inspection API.
+pub fn entity_particle_names(entities_source: &str, entity_name: &str) -> Vec<String> {
+    entity_default_state_events(entities_source, entity_name)
+        .map(|state| {
+            state
+                .ordered_events
+                .into_iter()
+                .flat_map(|event| {
+                    event
+                        .ordered_particle_effects
+                        .into_iter()
+                        .map(|effect| effect.particle_token)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Count exact named entity definitions so callers can reject ambiguous
+/// effective-VFS registration rather than accepting the first match.
+pub fn entity_definition_count(entities_source: &str, entity_name: &str) -> usize {
+    each_braced_value(entities_source, "entity")
+        .filter(|block| braced_field(block, "name").as_deref() == Some(entity_name))
+        .count()
+}
+
+/// One exact authored row in the selected weather entity state.
+///
+/// The index counts every `event = {}` row, including sound-only events.
+/// Optional values preserve source omission; no parser or engine default is
+/// manufactured here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeatherAuthoredEvent {
+    pub authored_event_index: u32,
+    pub ordered_particle_effects: Vec<WeatherAuthoredParticleEffect>,
+    pub node_token: Option<String>,
+    pub time_f32_bits: Option<u32>,
+    pub keep_particle: Option<bool>,
+    pub trigger_once: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeatherAuthoredParticleEffect {
+    pub authored_effect_index: u32,
+    pub particle_token: String,
+}
+
+/// Exact default state selected by one weather entity definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeatherEntityStateEvents {
+    pub state_name: String,
+    pub ordered_events: Vec<WeatherAuthoredEvent>,
+}
+
+/// Parse the unique entity's exact `default_state` and its ordered event rows.
+///
+/// Weather entities are created in their authored default state by the exact
+/// weather producer. Returning an error for an absent/ambiguous state keeps
+/// XMAP19/XMAP20 from guessing which event program the engine selected.
+pub fn entity_default_state_events(
+    entities_source: &str,
+    entity_name: &str,
+) -> Result<WeatherEntityStateEvents> {
+    let entities = each_braced_value(entities_source, "entity")
+        .filter(|block| braced_field(block, "name").as_deref() == Some(entity_name))
+        .collect::<Vec<_>>();
+    if entities.len() != 1 {
+        return Err(format!(
+            "weather entity {entity_name:?} resolved {} times",
+            entities.len()
+        )
+        .into());
+    }
+    let entity = &entities[0];
+    let state_name = braced_field(entity, "default_state")
+        .ok_or_else(|| format!("weather entity {entity_name:?} has no default_state"))?;
+    let states = each_braced_value(entity, "state")
+        .filter(|block| braced_field(block, "name").as_deref() == Some(state_name.as_str()))
+        .collect::<Vec<_>>();
+    if states.len() != 1 {
+        return Err(format!(
+            "weather entity {entity_name:?} default state {state_name:?} resolved {} times",
+            states.len()
+        )
+        .into());
+    }
+    let mut ordered_events = Vec::new();
+    for (index, event) in each_braced_value(&states[0], "event").enumerate() {
+        reject_duplicate_event_fields(&event, entity_name, index)?;
+        let time_f32_bits = match braced_field(&event, "time") {
+            Some(raw) => {
+                let value = raw.parse::<f32>().map_err(|_| {
+                    format!("weather entity {entity_name:?} event {index} has invalid time {raw:?}")
+                })?;
+                if !value.is_finite() || value < 0.0 {
+                    return Err(format!(
+                        "weather entity {entity_name:?} event {index} has invalid time {raw:?}"
+                    )
+                    .into());
+                }
+                Some(value.to_bits())
             }
+            None => None,
+        };
+        ordered_events.push(WeatherAuthoredEvent {
+            authored_event_index: u32::try_from(index)?,
+            ordered_particle_effects: authored_particle_effects(&event, entity_name, index)?,
+            node_token: braced_field(&event, "node"),
+            time_f32_bits,
+            keep_particle: optional_pdx_bool(
+                braced_field(&event, "keep_particle"),
+                entity_name,
+                index,
+                "keep_particle",
+            )?,
+            trigger_once: optional_pdx_bool(
+                braced_field(&event, "trigger_once"),
+                entity_name,
+                index,
+                "trigger_once",
+            )?,
+        });
+    }
+    if ordered_events.is_empty() {
+        return Err(format!(
+            "weather entity {entity_name:?} default state {state_name:?} has no events"
+        )
+        .into());
+    }
+    Ok(WeatherEntityStateEvents {
+        state_name,
+        ordered_events,
+    })
+}
+
+fn reject_duplicate_event_fields(event: &str, entity_name: &str, event_index: usize) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for (key, _) in top_level_assignments(event)? {
+        if matches!(
+            key.as_str(),
+            "node" | "time" | "keep_particle" | "trigger_once"
+        ) && !seen.insert(key.clone())
+        {
+            return Err(format!(
+                "weather entity {entity_name:?} event {event_index} repeats field {key:?}"
+            )
+            .into());
         }
     }
-    None
+    Ok(())
+}
+
+fn authored_particle_effects(
+    event: &str,
+    entity_name: &str,
+    event_index: usize,
+) -> Result<Vec<WeatherAuthoredParticleEffect>> {
+    let assignments = top_level_assignments(event)?;
+    let mut effect_index = 0u32;
+    let mut particles = Vec::new();
+    for (key, value) in assignments {
+        match key.as_str() {
+            "particle" => {
+                let particle_token = value.ok_or_else(|| {
+                    format!(
+                        "weather entity {entity_name:?} event {event_index} has a non-scalar particle effect"
+                    )
+                })?;
+                if particle_token.trim().is_empty() {
+                    return Err(format!(
+                        "weather entity {entity_name:?} event {event_index} has a blank particle token"
+                    )
+                    .into());
+                }
+                particles.push(WeatherAuthoredParticleEffect {
+                    authored_effect_index: effect_index,
+                    particle_token,
+                });
+                effect_index = effect_index
+                    .checked_add(1)
+                    .ok_or("weather authored effect ordinal overflow")?;
+            }
+            "sound" => {
+                if value.is_some() {
+                    return Err(format!(
+                        "weather entity {entity_name:?} event {event_index} has a non-braced sound effect"
+                    )
+                    .into());
+                }
+                effect_index = effect_index
+                    .checked_add(1)
+                    .ok_or("weather authored effect ordinal overflow")?;
+            }
+            _ => {}
+        }
+    }
+    Ok(particles)
+}
+
+/// Return top-level `key = value` assignments while treating a braced value as
+/// one value. This is deliberately smaller than a Clausewitz parser, but it
+/// preserves exact source order, repeated keys, comments, strings, and nested
+/// braces for the authored weather event grammar.
+fn top_level_assignments(source: &str) -> Result<Vec<(String, Option<String>)>> {
+    let bytes = source.as_bytes();
+    let mut index = 0usize;
+    let mut out = Vec::new();
+    while index < bytes.len() {
+        while index < bytes.len() {
+            match bytes[index] {
+                b'#' => {
+                    while index < bytes.len() && bytes[index] != b'\n' {
+                        index += 1;
+                    }
+                }
+                byte if (byte as char).is_whitespace() => index += 1,
+                _ => break,
+            }
+        }
+        if index >= bytes.len() {
+            break;
+        }
+        let key_start = index;
+        while index < bytes.len()
+            && ((bytes[index] as char).is_ascii_alphanumeric() || bytes[index] == b'_')
+        {
+            index += 1;
+        }
+        if key_start == index {
+            return Err("weather event has an invalid top-level token".into());
+        }
+        let key = source[key_start..index].to_string();
+        while index < bytes.len() && (bytes[index] as char).is_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() || bytes[index] != b'=' {
+            return Err(format!("weather event field {key:?} is missing '='").into());
+        }
+        index += 1;
+        while index < bytes.len() && (bytes[index] as char).is_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            return Err(format!("weather event field {key:?} has no value").into());
+        }
+        let value = match bytes[index] {
+            b'{' => {
+                index = skip_balanced_value(source, index)?;
+                None
+            }
+            b'"' => {
+                index += 1;
+                let start = index;
+                while index < bytes.len() && bytes[index] != b'"' {
+                    index += 1;
+                }
+                if index >= bytes.len() {
+                    return Err(
+                        format!("weather event field {key:?} has an unterminated string").into(),
+                    );
+                }
+                let value = source[start..index].to_string();
+                index += 1;
+                Some(value)
+            }
+            _ => {
+                let start = index;
+                while index < bytes.len()
+                    && !(bytes[index] as char).is_whitespace()
+                    && bytes[index] != b'#'
+                {
+                    index += 1;
+                }
+                Some(source[start..index].to_string())
+            }
+        };
+        out.push((key, value));
+    }
+    Ok(out)
+}
+
+fn skip_balanced_value(source: &str, open: usize) -> Result<usize> {
+    let bytes = source.as_bytes();
+    let mut index = open;
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut comment = false;
+    while index < bytes.len() {
+        if comment {
+            if bytes[index] == b'\n' {
+                comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if quoted {
+            match bytes[index] {
+                b'\\' if !escaped => escaped = true,
+                b'"' if !escaped => quoted = false,
+                _ => escaped = false,
+            }
+            index += 1;
+            continue;
+        }
+        match bytes[index] {
+            b'#' => comment = true,
+            b'"' => quoted = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or("weather event braced value is unbalanced")?;
+                if depth == 0 {
+                    return Ok(index + 1);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    Err("weather event braced value is unterminated".into())
+}
+
+fn optional_pdx_bool(
+    raw: Option<String>,
+    entity_name: &str,
+    event_index: usize,
+    field: &str,
+) -> Result<Option<bool>> {
+    match raw.as_deref() {
+        None => Ok(None),
+        Some("yes") => Ok(Some(true)),
+        Some("no") => Ok(Some(false)),
+        Some(value) => Err(format!(
+            "weather entity {entity_name:?} event {event_index} has invalid {field} {value:?}"
+        )
+        .into()),
+    }
 }
 
 /// Resolve a `pdxparticle` name (`<name>_clouds_particle`) to its `type`
@@ -696,7 +1185,88 @@ pub fn weather_fade_defines_from_source(source: &str) -> Result<WeatherFadeDefin
         zoom_in_cutoff: get("WEATHER_ZOOM_IN_CUTOFF")?,
         zoom_in_fade_length: get("WEATHER_ZOOM_IN_FADE_LENGTH")?,
         zoom_in_fade_factor: get("WEATHER_ZOOM_IN_FADE_FACTOR")?,
+        playback_rate: get("WEATHER_PLAYBACK_RATE")?,
+        playback_rate_cutoff: get("WEATHER_PLAYBACK_RATE_CUTOFF")?,
+        playback_rate_length: get("WEATHER_PLAYBACK_RATE_LENGTH")?,
     })
+}
+
+/// Parse the effective compile-time distance-fog constants.
+pub fn weather_distance_fog_defines_from_source(source: &str) -> Result<WeatherDistanceFogDefines> {
+    let color = hlsl_static_numbers(source, "FOG_COLOR")
+        .filter(|values| values.len() == 3)
+        .ok_or("constants.fxh: missing three-component FOG_COLOR")?;
+    let scalar = |name: &str| -> Result<f32> {
+        hlsl_static_numbers(source, name)
+            .and_then(|values| values.first().copied())
+            .ok_or_else(|| format!("constants.fxh: missing {name}").into())
+    };
+    let defines = WeatherDistanceFogDefines {
+        color: [color[0], color[1], color[2]],
+        begin: scalar("FOG_BEGIN")?,
+        end: scalar("FOG_END")?,
+        max: scalar("FOG_MAX")?,
+    };
+    weather_distance_fog_factor([0.0, defines.end + 1.0, 0.0], [0.0, 0.0, 1.0], &defines)?;
+    Ok(defines)
+}
+
+/// Count exact named `pdxparticle` registrations.
+pub fn pdxparticle_registration_count(particles_gfx_source: &str, particle_name: &str) -> usize {
+    each_braced_value(particles_gfx_source, "pdxparticle")
+        .filter(|block| braced_field(block, "name").as_deref() == Some(particle_name))
+        .count()
+}
+
+/// Count exact named `particle` definitions in one effective asset source.
+pub fn particle_asset_definition_count(asset_source: &str, particle_type: &str) -> usize {
+    each_braced_value(asset_source, "particle")
+        .filter(|block| braced_field(block, "name").as_deref() == Some(particle_type))
+        .count()
+}
+
+/// True when an effective particle asset defines the requested
+/// `pdxparticle.type` name.
+pub fn particle_asset_defines(asset_source: &str, particle_type: &str) -> bool {
+    particle_asset_definition_count(asset_source, particle_type) != 0
+}
+
+/// Every texture file referenced by one named particle definition, in authored
+/// subsystem order with duplicates removed after their first occurrence.
+pub fn particle_asset_texture_files(asset_source: &str, particle_type: &str) -> Vec<String> {
+    for block in each_braced_value(asset_source, "particle") {
+        if braced_field(&block, "name").as_deref() == Some(particle_type) {
+            let mut out = Vec::new();
+            for texture in each_braced_value(&block, "texture") {
+                if let Some(file) = braced_field(&texture, "file") {
+                    if !out.contains(&file) {
+                        out.push(file);
+                    }
+                }
+            }
+            return out;
+        }
+    }
+    Vec::new()
+}
+
+/// Every shader Effect referenced by one named particle definition, in
+/// authored subsystem order with duplicates removed after first occurrence.
+pub fn particle_asset_shader_effects(asset_source: &str, particle_type: &str) -> Vec<String> {
+    for block in each_braced_value(asset_source, "particle") {
+        if braced_field(&block, "name").as_deref() == Some(particle_type) {
+            let mut out = Vec::new();
+            for texture in each_braced_value(&block, "texture") {
+                if let Some(effect) = braced_field(&texture, "shader") {
+                    if !out.contains(&effect) {
+                        out.push(effect);
+                    }
+                }
+            }
+            return out;
+        }
+    }
+    Vec::new()
 }
 
 // -------------------------------------------------------------------------
@@ -782,17 +1352,18 @@ pub const MAP_PLANE_X: f32 = 5632.0;
 /// See [`MAP_PLANE_X`].
 pub const MAP_PLANE_Z: f32 = 2048.0;
 
-/// A rendered top-down weather overlay: RGBA8 premultiplied-over-nothing atop a
-/// transparent map plane. This is the LAW made visible for the orchestrator's
-/// eyeball — it draws every resolved cloud emitter at its
+/// Legacy diagnostic top-down weather overlay: RGBA8
+/// premultiplied-over-nothing atop a transparent map plane. It draws every
+/// resolved cloud emitter at its
 /// `map/weatherpositions.txt` `(x,z)` location, sprite-splatted at the asset
 /// `size_mean` (map units -> pixels), tinted by `ToLinear(color)` and composited
 /// with the asset's `ParticleBlend`.
 ///
-/// NOTE (honest): the shipped `particle.shader` draws camera-facing billboards
-/// through the runtime `ViewProjectionMatrix` (a per-frame capture/camera CB,
-/// an UNTRACED runtime input owned by the camera lane). This overlay is a
-/// deliberately *orthographic top-down* projection so the law's file-derived
+/// This is not a production rendering or promotion authority. The shipped
+/// `particle.shader` draws camera-facing billboards through the viewer-owned
+/// XMAP03 `ViewProjectionMatrix`, and XMAP20 owns the full particle simulation.
+/// This diagnostic is a deliberately *orthographic top-down* projection so
+/// some file-derived
 /// parameters (position, size, color, blend, alpha curve) can be verified
 /// without inventing a camera. The per-particle `smoke_fade` phase is sampled at
 /// the curve peak (the representative brightest frame); the live per-particle
@@ -810,6 +1381,9 @@ pub struct WeatherOverlay {
 /// region that has a `map/weatherpositions.txt` emitter (or, if
 /// `only_regions` is `Some`, just those). `width`/`height` set the output raster;
 /// the map plane `[0,MAP_PLANE_X] x [0,MAP_PLANE_Z]` maps linearly to it.
+#[deprecated(
+    note = "diagnostic mean/peak preview only; production weather is XMAP19 content plus XMAP20 simulation"
+)]
 pub fn render_weather_overlay(
     resolver: &GameFileResolver,
     weather: WeatherType,
@@ -1032,6 +1606,34 @@ fn lua_number(source: &str, name: &str) -> Option<f32> {
     None
 }
 
+fn hlsl_static_numbers(source: &str, name: &str) -> Option<Vec<f32>> {
+    let matches = source
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with("//")
+                || !line
+                    .split(|character: char| {
+                        !(character.is_ascii_alphanumeric() || character == '_')
+                    })
+                    .any(|token| token == name)
+            {
+                return None;
+            }
+            let value = line.split_once('=')?.1.split("//").next()?;
+            let numbers = value
+                .split(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, '(' | ')' | ',' | ';' | '{' | '}')
+                })
+                .filter_map(|token| token.trim_end_matches('f').parse::<f32>().ok())
+                .collect::<Vec<_>>();
+            (!numbers.is_empty()).then_some(numbers)
+        })
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches[0].clone())
+}
+
 /// Extract the `{...}` body of `key = { ... }` (balanced braces).
 fn extract_braced_block(source: &str, key: &str) -> Option<String> {
     let start = find_key_brace(source, key)?;
@@ -1222,12 +1824,6 @@ fn braced_field(block: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Read the first `token = "value"` / `token = value` occurrence anywhere in a
-/// block (used for the deeply nested `particle = "..."` in an entity's state).
-fn field_after_token(block: &str, token: &str) -> Option<String> {
-    braced_field(block, token)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,31 +1832,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn from_recording_kind_maps_fx_weather_sweep_phenomena() {
-        // The kinds fx_weather_sweep (replay_fixture_gen) emits as
-        // weather.regions.*.phenom_name, in tick order, plus the expected
-        // engine WeatherType each must resolve to and whether it draws a cloud
-        // overlay (NoPhenomenon / Sandstorm have no fading_entity).
-        let cases = [
-            ("clear", WeatherType::NoPhenomenon, false),
-            ("rain", WeatherType::RainLight, true),
-            ("storm", WeatherType::RainHeavy, true),
-            ("snow", WeatherType::Snow, true),
-            ("blizzard", WeatherType::Blizzard, true),
-            ("sandstorm", WeatherType::Sandstorm, false),
-        ];
-        for (kind, expect_ty, expect_cloud) in cases {
-            let ty = WeatherType::from_recording_kind(kind)
-                .unwrap_or_else(|| panic!("kind {kind:?} must map"));
-            assert_eq!(ty, expect_ty, "kind {kind:?}");
-            // Resolve the cloud binding through the shipped-file chain to prove
-            // the wired type reaches (or correctly declines) an overlay.
-            let effects = weather_effects_from_source(WEATHER_TXT).expect("weather.txt");
-            let binding = effects.binding(ty, WeatherPositionSize::Big);
-            let has_cloud = binding.map(|b| b.fading_entity.is_some()).unwrap_or(false);
-            assert_eq!(has_cloud, expect_cloud, "cloud overlay for {kind:?}");
-        }
-        // Engine keys still work (the recording SHOULD emit these).
+    fn from_recording_kind_accepts_only_engine_keys() {
         assert_eq!(
             WeatherType::from_recording_kind("rain_light"),
             Some(WeatherType::RainLight)
@@ -1269,7 +1841,8 @@ mod tests {
             WeatherType::from_recording_kind("no_phenomenon"),
             Some(WeatherType::NoPhenomenon)
         );
-        // Fail-closed on nonsense.
+        assert_eq!(WeatherType::from_recording_kind("rain"), None);
+        assert_eq!(WeatherType::from_recording_kind("storm"), None);
         assert_eq!(WeatherType::from_recording_kind("volcano"), None);
     }
 
@@ -1425,6 +1998,8 @@ entity = {
 	WEATHER_ZOOM_IN_FADE_LENGTH = 220, -- How far the zoom in fade out distance should be
 	WEATHER_ZOOM_IN_FADE_FACTOR = 0.0, -- How much the weather effects should fade out when maximum zoomed in
 	WEATHER_PLAYBACK_RATE = 0.15,
+	WEATHER_PLAYBACK_RATE_CUTOFF = 500,
+	WEATHER_PLAYBACK_RATE_LENGTH = 200,
 "#;
 
     const WEATHER_POSITIONS: &str = "1;2781.24;9.90;1571.49;small\n1;2746.16;10.10;1548.63;small\n7;2941.69;10.50;1516.84;big\n";
@@ -1487,6 +2062,16 @@ entity = {
     }
 
     #[test]
+    fn measured_empty_weather_effects_table_is_valid() {
+        let table =
+            weather_effects_from_source("weather_effects = { }").expect("authored empty table");
+        assert!(table.rows().is_empty());
+        assert!(table
+            .bindings(WeatherType::RainLight, WeatherPositionSize::Big)
+            .is_empty());
+    }
+
+    #[test]
     fn resolves_entity_and_pdxparticle_chain() {
         assert_eq!(
             entity_particle_name(WEATHER_ENTITIES, "rain_clouds_entity").as_deref(),
@@ -1500,6 +2085,54 @@ entity = {
             entity_particle_name(WEATHER_ENTITIES, "nonexistent_entity"),
             None
         );
+    }
+
+    #[test]
+    fn preserves_all_event_and_intra_event_effect_ordinals() {
+        let source = r#"
+entity = {
+    name = "combined_weather_entity"
+    default_state = "idle"
+    state = {
+        name = "idle"
+        event = {
+            time = 0
+            sound = { soundeffect = "before" }
+            particle = "first_particle"
+            sound = { soundeffect = "after" }
+            particle = "second_particle"
+            keep_particle = yes
+        }
+        event = { trigger_once = no sound = { soundeffect = "only_sound" } }
+    }
+}
+"#;
+        let state =
+            entity_default_state_events(source, "combined_weather_entity").expect("parse state");
+        assert_eq!(state.state_name, "idle");
+        assert_eq!(state.ordered_events.len(), 2);
+        assert_eq!(state.ordered_events[0].authored_event_index, 0);
+        assert_eq!(
+            state.ordered_events[0].time_f32_bits,
+            Some(0.0f32.to_bits())
+        );
+        assert_eq!(state.ordered_events[0].keep_particle, Some(true));
+        assert_eq!(
+            state.ordered_events[0].ordered_particle_effects,
+            vec![
+                WeatherAuthoredParticleEffect {
+                    authored_effect_index: 1,
+                    particle_token: "first_particle".into(),
+                },
+                WeatherAuthoredParticleEffect {
+                    authored_effect_index: 3,
+                    particle_token: "second_particle".into(),
+                },
+            ]
+        );
+        assert_eq!(state.ordered_events[1].authored_event_index, 1);
+        assert!(state.ordered_events[1].ordered_particle_effects.is_empty());
+        assert_eq!(state.ordered_events[1].trigger_once, Some(false));
     }
 
     #[test]
@@ -1630,16 +2263,84 @@ entity = {
     }
 
     #[test]
-    fn camera_fade_hides_beyond_cutoff_and_full_in_band() {
+    fn exact_camera_visibility_and_playback_branch_boundaries() {
         let d = VANILLA_WEATHER_FADE_DEFINES;
-        // Beyond distance cutoff -> hidden.
-        assert_eq!(weather_camera_fade(2000.0, &d), 0.0);
-        // Comfortably inside both bands (e.g. 900): far=1, near=1 -> 1.
-        assert!((weather_camera_fade(900.0, &d) - 1.0).abs() < 1e-6);
-        // In the far fade band: halfway (1300 of [1100,1500]) -> 0.5.
-        assert!((weather_camera_fade(1300.0, &d) - 0.5).abs() < 1e-6);
-        // Fully zoomed in (below band bottom 138) -> zoom_in_fade_factor (0.0).
-        assert_eq!(weather_camera_fade(50.0, &d), 0.0);
+        let at = |distance| weather_visibility_law(distance, &d).expect("exact law");
+        assert_eq!(at(357.0).primary_alpha, 1.0);
+        assert_eq!(at(357.0).fading_alpha, 0.0);
+        assert_eq!(at(358.0).primary_alpha, 1.0);
+        assert_eq!(at(358.0).fading_alpha, 0.0);
+        assert_eq!(at(468.0).primary_alpha, 1.0);
+        assert!((at(468.0).fading_alpha - 0.5).abs() < 1e-6);
+        assert_eq!(at(578.0).primary_alpha, 1.0);
+        assert_eq!(at(578.0).fading_alpha, 1.0);
+        assert_eq!(at(1100.0).primary_alpha, 1.0);
+        assert_eq!(at(1100.0).fading_alpha, 1.0);
+        assert!((at(1300.0).primary_alpha - 0.5).abs() < 1e-6);
+        assert!((at(1300.0).fading_alpha - 0.5).abs() < 1e-6);
+        assert_eq!(at(1500.0).primary_alpha, 0.0);
+        assert_eq!(at(1500.0).fading_alpha, 0.0);
+        assert_eq!(at(1501.0).primary_alpha, 0.0);
+        assert_eq!(at(1501.0).fading_alpha, 0.0);
+        assert_eq!(at(300.0).playback_rate, 1.0);
+        assert!((at(400.0).playback_rate - 0.575).abs() < 1e-6);
+        assert_eq!(at(500.0).playback_rate, 0.15);
+        assert_eq!(weather_camera_fade(900.0, &d).expect("fade"), 1.0);
+    }
+
+    #[test]
+    fn particle_shader_effects_follow_authored_subsystem_order() {
+        assert_eq!(
+            particle_asset_shader_effects(RAIN_CLOUDS_ASSET, "rain_clouds_file"),
+            vec!["ParticleAdditive"]
+        );
+        let multi = r#"
+particle = {
+  name = "weather_mod_file"
+  subsystem = { texture = { file = "a.dds" shader = "ModWeatherAlpha" } }
+  subsystem = { texture = { file = "b.dds" shader = "ModWeatherAdd" } }
+  subsystem = { texture = { file = "c.dds" shader = "ModWeatherAlpha" } }
+}
+"#;
+        assert_eq!(
+            particle_asset_shader_effects(multi, "weather_mod_file"),
+            vec!["ModWeatherAlpha", "ModWeatherAdd"]
+        );
+    }
+
+    #[test]
+    fn particle_definition_count_rejects_same_file_duplicates_upstream() {
+        let duplicate = r#"
+particle = { name = "weather_mod_file" }
+particle = { name = "weather_mod_file" }
+"#;
+        assert_eq!(
+            particle_asset_definition_count(duplicate, "weather_mod_file"),
+            2
+        );
+        assert!(particle_asset_defines(duplicate, "weather_mod_file"));
+    }
+
+    #[test]
+    fn exact_distance_fog_parses_and_applies_shipped_law() {
+        let source = r#"
+static const float3 FOG_COLOR = float3( 0.12, 0.28, 0.6 );
+static const float FOG_BEGIN = 1.0f;
+static const float FOG_END = 150.0f;
+static const float FOG_MAX = 0.35f;
+// static const float FOG_MAX = 1000.7f;
+"#;
+        let defines =
+            weather_distance_fog_defines_from_source(source).expect("distance fog defines");
+        assert_eq!(defines, VANILLA_WEATHER_DISTANCE_FOG);
+        let factor = weather_distance_fog_factor([0.0, 100.0, 100.0], [0.0, 0.0, 0.0], &defines)
+            .expect("distance fog factor");
+        let expected_distance = ((20_000.0f32 - 1.0) / (22_500.0 - 1.0)).min(0.35);
+        let expected_direction = 1.0 - (100.0f32 / 20_000.0f32.sqrt()).abs();
+        assert!((factor - expected_distance * expected_direction).abs() < 1e-6);
+        let fogged =
+            apply_weather_distance_fog([1.0, 1.0, 1.0], factor, &defines).expect("fog color");
+        assert!(fogged[0] < 1.0 && fogged[1] < 1.0 && fogged[2] < 1.0);
     }
 
     #[test]

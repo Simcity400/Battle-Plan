@@ -112,9 +112,9 @@ against the current `870ebf` process without rediscovery.
 
 The block below records how the retained artifacts were acquired; it is not the
 current Rust validation procedure. Do not invoke its direct `rustc`/`cargo`
-commands. The primary agent runs Rust validation centrally through
-`extractor/native/scripts/Invoke-CentralRustValidation.ps1`; subagents perform
-static edits only.
+commands. Implementation-lane and authority validation runs through the
+caller's worktree-local
+`extractor/native/scripts/Invoke-CentralRustValidation.ps1`.
 
 ```powershell
 python extractor\native\lanes\supply_logistics_attrition_live\live_probe.py --pid 45880 --out-dir extractor\native\runs\supply_logistics_attrition_live_870ebf_20260701_v3
@@ -143,7 +143,7 @@ Gate coverage includes valid kind-5 exact rows, proven-empty availability,
 composite tombstones, missing-source rejection, header counter checks, malformed
 badges, invalid division values, CSupply inputs, and pressure-candidate
 validation/rejection. Rust validation is run only through the repository's
-central validation script by the primary agent.
+central validation script from the caller's own worktree.
 
 The lane-local replay pack proof wraps `domain44_payload.bin` in a compact `H4CR` stream,
 packs it into `.battleplan`, reopens the container, verifies it, and byte-compares the embedded

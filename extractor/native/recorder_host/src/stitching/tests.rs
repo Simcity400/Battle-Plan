@@ -57,6 +57,7 @@ fn snap_seg(
     for (index, h) in hours.iter().copied().enumerate() {
         let disposition = CoverageDisposition::Snapshot {
             sha256: format!("{h:064x}"),
+            date: Some(format!("1936.1.1.{h}")),
         };
         coverage.insert(h, disposition.clone());
         observations.insert(
@@ -347,6 +348,51 @@ fn later_failed_hour_is_a_main_gap_over_older_snapshot() {
         .iter()
         .any(|c| c["start_hour"].as_i64() == Some(85)
             && c["kind"].as_str() == Some("capture_failed")));
+}
+
+/// R5-H2: the published playback index must DATE every visible snapshot hour.
+/// A reader answers jump-to-date from the index and never from a frame body,
+/// so a dateless stitched index silently degrades date navigation into "seek
+/// to hour zero" while still reporting success.
+#[test]
+fn main_index_dates_every_visible_snapshot_hour() {
+    let plan = stitched(plan_stitch(
+        "g",
+        stitch_inputs(),
+        vec![snap_seg(0, 0, K, 0..=2), snap_seg(1, 0, K, 3..=4)],
+    ));
+    let index = plan.main_index_value();
+    let snapshots = index["snapshots"].as_array().unwrap();
+    assert_eq!(snapshots.len(), 5);
+    for row in snapshots {
+        let hour = row["hour_index"].as_i64().expect("hour_index");
+        assert_eq!(
+            row["date"].as_str(),
+            Some(format!("1936.1.1.{hour}").as_str()),
+            "visible hour {hour} must carry its index date: {row}"
+        );
+    }
+}
+
+/// A visible snapshot hour with no date is refused at plan validation rather
+/// than published as an index a reader cannot navigate.
+#[test]
+fn a_visible_snapshot_without_a_date_is_refused() {
+    let mut undated = snap_seg(0, 0, K, 0..=0);
+    undated
+        .coverage
+        .get_mut(&0)
+        .unwrap()
+        .clone_from(&CoverageDisposition::Snapshot {
+            sha256: format!("{:064x}", 0),
+            date: None,
+        });
+    let disposition = undated.coverage.get(&0).unwrap().clone();
+    undated.observations.get_mut(&0).unwrap()[0].disposition = disposition;
+    assert!(matches!(
+        plan_stitch("g", stitch_inputs(), vec![undated, snap_seg(1, 0, K, 1..=1)]),
+        StitchOutcome::Separate { .. }
+    ));
 }
 
 #[test]
@@ -1223,6 +1269,7 @@ fn digests_and_transition_evidence_use_canonical_grammars() {
         .unwrap()
         .clone_from(&CoverageDisposition::Snapshot {
             sha256: "not-a-digest".into(),
+            date: Some("1936.1.1.0".into()),
         });
     let bad_disposition = bad_snapshot_digest.coverage.get(&0).unwrap().clone();
     bad_snapshot_digest.observations.get_mut(&0).unwrap()[0].disposition = bad_disposition;

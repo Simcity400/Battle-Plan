@@ -10,9 +10,7 @@ use crate::light_depth_projection::{
     L03LightDepthProjection, L03LightDepthTarget, L03_LIGHT_DEPTH_DXGI_FORMAT,
     L03_LIGHT_DEPTH_HEIGHT, L03_LIGHT_DEPTH_MIP_LEVELS, L03_LIGHT_DEPTH_WIDTH,
 };
-use crate::shadow_law::{
-    shadow_blur_constant_buffers_from_factor, ShadowBlurConstantBuffers,
-};
+use crate::shadow_law::{shadow_blur_constant_buffers_from_factor, ShadowBlurConstantBuffers};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
@@ -63,10 +61,14 @@ fn fail(message: impl Into<String>) -> Box<dyn std::error::Error> {
 
 fn validate_screen_target(target: &ShadowScreenTarget, label: &str) -> Result<()> {
     if target.stable_resource_id.trim().is_empty() {
-        return Err(fail(format!("S1 shadow chain blocked: {label} resource ID is missing")));
+        return Err(fail(format!(
+            "S1 shadow chain blocked: {label} resource ID is missing"
+        )));
     }
     if target.width == 0 || target.height == 0 {
-        return Err(fail(format!("S1 shadow chain blocked: {label} dimensions are empty")));
+        return Err(fail(format!(
+            "S1 shadow chain blocked: {label} dimensions are empty"
+        )));
     }
     if target.dxgi_format != SHADOW_SCREEN_DXGI_FORMAT
         || target.mip_levels != SHADOW_SCREEN_MIP_LEVELS
@@ -126,9 +128,8 @@ pub fn plan_s1_shadow_screen_chain(
     let blur_camera_factor = f32::from_bits(blur_camera_factor_f32_bits.ok_or_else(|| {
         fail("S1 shadow chain blocked: active frame blur camera factor is missing")
     })?);
-    let producer = producer_and_final_target.ok_or_else(|| {
-        fail("S1 shadow chain blocked: producer/final screen target is missing")
-    })?;
+    let producer = producer_and_final_target
+        .ok_or_else(|| fail("S1 shadow chain blocked: producer/final screen target is missing"))?;
     let intermediate = blur_intermediate_target
         .ok_or_else(|| fail("S1 shadow chain blocked: blur intermediate target is missing"))?;
     validate_screen_target(&producer, "producer/final target")?;
@@ -243,7 +244,11 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
             vec![
-                (ShadowScreenPassKind::TerrainUnlitProducer, "light-depth", "screen-a"),
+                (
+                    ShadowScreenPassKind::TerrainUnlitProducer,
+                    "light-depth",
+                    "screen-a"
+                ),
                 (ShadowScreenPassKind::HorizontalBlur, "screen-a", "screen-b"),
                 (ShadowScreenPassKind::VerticalBlur, "screen-b", "screen-a"),
             ]

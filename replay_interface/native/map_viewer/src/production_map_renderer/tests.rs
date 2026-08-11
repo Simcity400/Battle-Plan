@@ -1,5 +1,13 @@
 use super::*;
 use crate::PlaybackEnvironment;
+
+/// The crate's gate table, included so this test resolves the capture root
+/// through EXACTLY the candidate list the build-time probe used.
+#[allow(dead_code)]
+mod corpus {
+    include!("../../test_gates.rs");
+}
+
 use replay_core::{
     BlendDesc, BlendFactor, BlendOperation, BufferSource, Comparison, CompiledShaderPayload,
     ConstantBufferBinding, ContentLayerKind, CullMode, DepthDesc, DlcSelection, DrawCommand,
@@ -595,12 +603,18 @@ fn frame_with_static_program(
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_state_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         },
     }
 }
@@ -898,7 +912,7 @@ fn mod_override_replace_path_and_optional_dlc_are_vfs_driven() {
 }
 
 #[test]
-fn changed_or_missing_admitted_asset_fails_instead_of_substituting() {
+fn post_admission_source_mutation_cannot_change_immutable_playback() {
     let root = temp_root("changed");
     let game = root.join("game");
     let mod_root = root.join("mod-content");
@@ -912,7 +926,7 @@ fn changed_or_missing_admitted_asset_fails_instead_of_substituting() {
     let (_, manifest, admitted) = admitted_renderer(&game, &mod_root, false);
     write(&mod_root, "gfx/FX/map.shader", b"mutated-after-admission");
 
-    let error = admitted
+    let inventory = admitted
         .playback_inventory(
             &manifest,
             PlaybackEnvironment {
@@ -923,8 +937,18 @@ fn changed_or_missing_admitted_asset_fails_instead_of_substituting() {
                 settings: BTreeMap::new(),
             },
         )
-        .unwrap_err();
-    assert!(error.to_string().contains("mismatch"));
+        .unwrap();
+    assert_eq!(inventory.resolved_content.len(), 1);
+    assert_eq!(
+        admitted
+            .read_admitted_used_content(&manifest.required_content[0].content)
+            .unwrap(),
+        b"recorded-shader"
+    );
+    assert_eq!(
+        inventory.resolved_content[0].payload_sha256,
+        manifest.required_content[0].content.payload_sha256
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1135,12 +1159,18 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_state_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         },
     };
     let prepared = renderer.prepare_frame(Some(&frame)).unwrap();
@@ -1331,12 +1361,18 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_state_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         },
     };
 
@@ -2000,16 +2036,16 @@ fn o04_duplicate_dangling_and_unadmitted_references_fail_closed() {
     );
 }
 
+// Was a static `#[ignore]`, so it never ran under the standing `Mode Final`
+// gate even on a machine that holds the retained capture.
 #[test]
-#[ignore = "external evidence: retained production-complete-frame capture; point BATTLE_PLAN_RETAINED_PRODUCTION_COMPLETE_FRAME at it to run"]
+#[cfg_attr(
+    not(gate_retained_production_frame),
+    ignore = "the retained production-complete-frame capture (set BATTLE_PLAN_RETAINED_PRODUCTION_COMPLETE_FRAME to its root)"
+)]
 fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order() {
-    let capture_root = std::env::var_os("BATTLE_PLAN_RETAINED_PRODUCTION_COMPLETE_FRAME").or_else(|| std::env::var_os("HOI4_RETAINED_PRODUCTION_COMPLETE_FRAME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(
-                r"C:\tmp\hoi4_rendering_law_capture\20260717T000008Z-production-complete-frame",
-            )
-        });
+    let capture_root = corpus::retained_production_frame_root()
+        .expect("the retained production-complete-frame capture is absent, but this test was compiled as runnable");
     let capture_gpu = capture_root.join("gpu");
     assert!(
         capture_gpu.is_dir(),

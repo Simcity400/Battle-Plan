@@ -136,10 +136,10 @@ orchestrator-owned row updates:
 
 ## Proof commands
 
-Rust validation is run only by the primary agent through
-`extractor/native/scripts/Invoke-CentralRustValidation.ps1`; lane agents do not
-invoke Cargo directly. The historical live probe remains evidence reproduction
-tooling, not a production-schema authority.
+Implementation-lane and authority validation runs through the caller's
+worktree-local `extractor/native/scripts/Invoke-CentralRustValidation.ps1`.
+Agents do not invoke Cargo or `rustc` directly. The historical live probe
+remains evidence reproduction tooling, not a production-schema authority.
 
 ## Required report fields
 

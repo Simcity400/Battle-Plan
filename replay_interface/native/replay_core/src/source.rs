@@ -149,6 +149,17 @@ struct MetadataRoute {
 pub enum SourceError {
     /// The recording could not be opened, read, or validated.
     Open(String),
+    /// Retained bytes disagree with the digest/length that names them: a failed
+    /// SHA-256, a failed CRC-32, a truncated/short payload, or a spooled object
+    /// that changed underneath an authenticated read.
+    ///
+    /// A sibling of [`SourceError::Open`] (identical Display shape) typed so
+    /// consumers can classify "these bytes are corrupt or substituted" apart
+    /// from "this recording is malformed" without matching on error text
+    /// (`SEAM_CONTRACTS.md`, ingest boundary). Integrity is a strictly stronger
+    /// claim than malformation: it names bytes that were authenticated against a
+    /// declared digest and lost.
+    Integrity(String),
     /// The recording path does not exist. A sibling of [`SourceError::Open`]
     /// (identical Display shape) typed so consumers can classify "not found"
     /// without matching on error text.
@@ -160,6 +171,14 @@ pub enum SourceError {
     ModsetMismatch(String),
     /// The recording was recognized but this build cannot play it back.
     Unsupported(String),
+    /// The recording was recognized as the compact-stream-only production
+    /// flavor: an empty snapshot index alongside positive compact-stream
+    /// evidence (a `collector_compact_stream` manifest role or a compact
+    /// timeline declaration). A sibling of [`SourceError::Unsupported`]
+    /// (identical Display shape) typed so consumers — the snapshot-native
+    /// dump preflight in particular — can waive exactly this subclass
+    /// without matching on error text.
+    UnsupportedCompactStreamOnly(String),
     /// The store holds several games; pick one with [`open_recording_game`].
     MultipleGames(Vec<String>),
 }
@@ -167,12 +186,18 @@ pub enum SourceError {
 impl std::fmt::Display for SourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            // NotFound/ModsetMismatch keep the exact "open: ..." rendering the
-            // untyped Open produced, so every message contract holds verbatim.
-            SourceError::Open(m) | SourceError::NotFound(m) | SourceError::ModsetMismatch(m) => {
+            // NotFound/ModsetMismatch/Integrity keep the exact "open: ..."
+            // rendering the untyped Open produced, so every message contract
+            // holds verbatim.
+            SourceError::Open(m)
+            | SourceError::NotFound(m)
+            | SourceError::ModsetMismatch(m)
+            | SourceError::Integrity(m) => {
                 write!(f, "open: {m}")
             }
-            SourceError::Unsupported(m) => write!(f, "unsupported recording: {m}"),
+            SourceError::Unsupported(m) | SourceError::UnsupportedCompactStreamOnly(m) => {
+                write!(f, "unsupported recording: {m}")
+            }
             SourceError::MultipleGames(games) => write!(
                 f,
                 "store holds {} games ({}); select one explicitly with open_recording_game",
@@ -183,6 +208,63 @@ impl std::fmt::Display for SourceError {
     }
 }
 impl std::error::Error for SourceError {}
+
+/// True when a snapshot-layer load failure is a PAYLOAD-INTEGRITY failure —
+/// retained bytes that disagree with the digest/length naming them — rather
+/// than a malformed or semantically inconsistent recording.
+///
+/// Total match on the TYPED snapshot errors; no `.contains()` on error text, so
+/// the wording of a portable message can change without silently reclassifying
+/// a corrupt payload as a schema problem (or the reverse).
+fn is_integrity_failure(error: &snapshot::LoadError) -> bool {
+    let snapshot::LoadError::Container(container) = error else {
+        return false;
+    };
+    is_container_integrity_failure(container)
+}
+
+/// The container-level half of [`is_integrity_failure`], for the many routes
+/// that read a container entry directly instead of going through `Store`.
+pub(crate) fn is_container_integrity_failure(container: &snapshot::ContainerError) -> bool {
+    match container {
+        snapshot::ContainerError::PayloadIntegrity(_) => true,
+        // `Truncated` is NOT here: its call sites are structural shortfalls
+        // (EOCD, central directory, Zip64 records), not payload bytes.
+        snapshot::ContainerError::Zip(zip) => matches!(
+            zip,
+            snapshot::zip::ZipError::PayloadIntegrity(_)
+                | snapshot::zip::ZipError::SizeMismatch { .. }
+                | snapshot::zip::ZipError::Decompress(_)
+        ),
+        _ => false,
+    }
+}
+
+/// Adapt a snapshot-layer load failure into the ingest error class it belongs
+/// to, preserving the integrity class losslessly instead of flattening every
+/// cause into [`SourceError::Open`].
+fn source_error_from_load(error: &snapshot::LoadError, message: String) -> SourceError {
+    match error {
+        snapshot::LoadError::Container(snapshot::ContainerError::ModsetMismatch { .. }) => {
+            SourceError::ModsetMismatch(message)
+        }
+        error if is_integrity_failure(error) => SourceError::Integrity(message),
+        _ => SourceError::Open(message),
+    }
+}
+
+/// As [`source_error_from_load`], for the routes that hold a
+/// [`snapshot::Container`] and read/authenticate one entry directly. Every such
+/// site must classify through here: an authenticated read that fails its digest
+/// is the integrity class no matter which route performed it, and the shipped
+/// product open path funnels through these same routes.
+fn source_error_from_container(error: &snapshot::ContainerError, message: String) -> SourceError {
+    match error {
+        snapshot::ContainerError::ModsetMismatch { .. } => SourceError::ModsetMismatch(message),
+        error if is_container_integrity_failure(error) => SourceError::Integrity(message),
+        _ => SourceError::Open(message),
+    }
+}
 
 /// One raw, schema-shaped frame (REPLAY_SCHEMA.md §1).
 ///
@@ -199,6 +281,280 @@ pub struct RawFrame {
     pub rest: Map<String, Value>,
 }
 
+/// One recorder-DECLARED main-timeline coverage gap, carried verbatim from the
+/// recording index (`index.coverage`; `STITCHING_DESIGN.md` §7.1) across the
+/// ingest boundary.
+///
+/// This is the recorder's own statement that a span of hours is missing and
+/// WHY. It is never inferred from hour arithmetic: a downstream consumer that
+/// reconstructs anonymous ranges from discontinuous hours has lost the reason,
+/// the witness, and the owning segment. Per `documents/DECISIONS.md` a gap
+/// carries its hour, its reason, the domains it affects, and a witness:
+/// * hours — `start_hour..=end_hour`, inclusive, on the canonical hour axis;
+/// * reason — `reason`, the recorder's reason text, plus the `kind` class;
+/// * affected domains — an index coverage row is a WHOLE-HOUR absence, so every
+///   domain is affected at every hour of the span (see
+///   [`DeclaredCoverageGap::affects_all_domains`]); a coverage row never
+///   describes a partial, per-domain loss;
+/// * witness — `evidence_id`, plus `segment_id`/`owner` binding the claim to
+///   the segment and observation that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredCoverageGap {
+    /// First absent canonical hour (inclusive).
+    pub start_hour: i64,
+    /// Last absent canonical hour (inclusive); equals `start_hour` for a
+    /// single-hour gap.
+    pub end_hour: i64,
+    /// Disposition class: `"gap"`, `"capture_failed"`, or `"coalesced"`. Never
+    /// `"snapshot"` — a snapshot hour is playable, not a gap.
+    pub kind: String,
+    /// The recorder's reason text. Nonblank by admission.
+    pub reason: String,
+    /// The recorder's evidence id — the witness for this claim. Nonblank by
+    /// admission.
+    pub evidence_id: String,
+    /// Owning segment, when the index names one.
+    pub segment_id: Option<u32>,
+    /// The selected-observation owner object, verbatim, when the index carries
+    /// one. Opaque here: replay ingest never reinterprets recorder ownership.
+    pub owner: Option<Value>,
+    /// The recorder's selection evidence for this span, when it emitted any.
+    /// Present as a bundle because the recorder emits its four members together
+    /// or not at all (`add_main_ownership_fields` in the stitcher), so a
+    /// partial bundle is a corrupt row rather than a smaller claim.
+    pub selection: Option<DeclaredCoverageSelection>,
+}
+
+/// The exact observation the recorder SELECTED for a covered span, and the
+/// decoded source extent that observation occupies.
+///
+/// This is the provenance that makes a gap auditable back to bytes: without it
+/// a consumer has the reason and the evidence id but cannot point at the source
+/// region the claim was derived from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredCoverageSelection {
+    /// The recorder's same-hour selection rule id.
+    pub selection_rule: String,
+    /// The selected observation's id.
+    pub selected_observation_id: String,
+    /// Inclusive decoded record-sequence bounds of the selected observation.
+    pub source_record_seq_bounds: (u64, u64),
+    /// Half-open decoded byte bounds of the selected observation.
+    pub source_byte_bounds: (u64, u64),
+}
+
+impl DeclaredCoverageGap {
+    /// True when `hour` falls inside this declared gap.
+    pub fn covers(&self, hour: i64) -> bool {
+        self.start_hour <= hour && hour <= self.end_hour
+    }
+    /// Number of absent hours this row declares (always >= 1).
+    pub fn hour_count(&self) -> u64 {
+        self.end_hour.abs_diff(self.start_hour).saturating_add(1)
+    }
+    /// An index coverage row is a whole-hour absence: no frame exists for those
+    /// hours at all, so every domain is affected. Present as a named predicate
+    /// so a consumer never has to infer the domain scope from the row's shape.
+    pub fn affects_all_domains(&self) -> bool {
+        true
+    }
+}
+
+/// The recording index's own declared coverage statement — the stitched-index
+/// fields (`STITCHING_DESIGN.md` §7.1) that the ingest boundary must carry
+/// instead of dropping.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeclaredCoverage {
+    /// `index.index_schema` (`"stitched-main-v1"` for a stitched index).
+    pub index_schema: Option<String>,
+    /// `index.segments_file` — where the authoritative branch graph lives.
+    pub segments_file: Option<String>,
+    /// `index.main_head` (`{ segment_id, hour_index }`), verbatim.
+    pub main_head: Option<Value>,
+    /// Declared gaps, ascending by `start_hour` and non-overlapping.
+    pub gaps: Vec<DeclaredCoverageGap>,
+}
+
+impl DeclaredCoverage {
+    /// True when this index declares itself stitched.
+    pub fn is_stitched(&self) -> bool {
+        self.index_schema.as_deref() == Some(STITCHED_INDEX_SCHEMA)
+    }
+    /// The declared gap covering `hour`, if any.
+    pub fn gap_at(&self, hour: i64) -> Option<&DeclaredCoverageGap> {
+        self.gaps.iter().find(|gap| gap.covers(hour))
+    }
+    /// True when the index carries nothing beyond a plain (v1) snapshot list.
+    pub fn is_empty(&self) -> bool {
+        self.index_schema.is_none()
+            && self.segments_file.is_none()
+            && self.main_head.is_none()
+            && self.gaps.is_empty()
+    }
+}
+
+/// The stitched index schema id (`STITCHING_DESIGN.md` §7.1).
+const STITCHED_INDEX_SCHEMA: &str = "stitched-main-v1";
+
+/// The complete set of non-snapshot coverage dispositions the recorder emits
+/// (`CoverageDisposition` in `recorder_host/src/stitching.rs`). Closed on
+/// purpose: an unrecognized kind is a gap whose class no consumer can act on.
+const DECLARED_COVERAGE_KINDS: &[&str] = &["gap", "capture_failed", "coalesced"];
+
+/// Parse the recorder-declared coverage statement out of one recording index.
+///
+/// Fail-closed: a coverage row that cannot be read as a complete gap claim is
+/// refused, never silently dropped. Dropping it would let a recording that
+/// ANNOUNCES missing hours reach the fold as an unexplained hour discontinuity.
+fn read_declared_coverage(
+    game_id: &str,
+    index: &snapshot::Index,
+) -> Result<DeclaredCoverage, SourceError> {
+    let is_stitched = index.is_stitched();
+    let mut gaps: Vec<DeclaredCoverageGap> = Vec::with_capacity(index.coverage.len());
+    for (ordinal, row) in index.coverage.iter().enumerate() {
+        let context = format!("recording {game_id:?} index.coverage[{ordinal}]");
+        let row = row.as_object().ok_or_else(|| {
+            SourceError::Open(format!("{context} is not an object; refusing to drop it"))
+        })?;
+        let field_i64 = |name: &str| -> Result<i64, SourceError> {
+            row.get(name).and_then(Value::as_i64).ok_or_else(|| {
+                SourceError::Open(format!("{context}.{name} is missing or not an integer"))
+            })
+        };
+        let field_text = |name: &str| -> Result<String, SourceError> {
+            row.get(name)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    SourceError::Open(format!("{context}.{name} is missing, blank, or not a string"))
+                })
+        };
+        let field_u64_pair = |name: &str| -> Result<(u64, u64), SourceError> {
+            let bad = || SourceError::Open(format!("{context}.{name} is not a [u64, u64] bound"));
+            let values = row.get(name).and_then(Value::as_array).ok_or_else(bad)?;
+            match values.as_slice() {
+                [first, second] => Ok((
+                    first.as_u64().ok_or_else(bad)?,
+                    second.as_u64().ok_or_else(bad)?,
+                )),
+                _ => Err(bad()),
+            }
+        };
+        let start_hour = field_i64("start_hour")?;
+        let end_hour = field_i64("end_hour")?;
+        if start_hour > end_hour {
+            return Err(SourceError::Open(format!(
+                "{context} spans {start_hour}..={end_hour} (end before start)"
+            )));
+        }
+        let kind = field_text("kind")?;
+        if kind == "snapshot" {
+            return Err(SourceError::Open(format!(
+                "{context} declares kind \"snapshot\"; a coverage row is an absence, not a frame"
+            )));
+        }
+        // Closed set. The stitched-container validator enforces this for a
+        // packed v2 container, but a directory store never reaches that
+        // validator, so an unknown disposition would otherwise be carried into
+        // playback as a gap whose class nothing downstream can interpret.
+        if !DECLARED_COVERAGE_KINDS.contains(&kind.as_str()) {
+            return Err(SourceError::Open(format!(
+                "{context} declares unknown coverage kind {kind:?} (admitted kinds: {})",
+                DECLARED_COVERAGE_KINDS.join(", ")
+            )));
+        }
+        let segment_id = match row.get("segment_id") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        SourceError::Open(format!("{context}.segment_id is not a segment ordinal"))
+                    })?,
+            ),
+        };
+        let owner = match row.get("owner") {
+            None | Some(Value::Null) => None,
+            Some(value) if value.is_object() => Some(value.clone()),
+            Some(_) => {
+                return Err(SourceError::Open(format!(
+                    "{context}.owner is present but is not an object"
+                )))
+            }
+        };
+        // The recorder emits the four selection-evidence members together or
+        // not at all. Admit them the same way: a partial bundle means the row
+        // was rewritten, and keeping the surviving half would present partial
+        // provenance as if it were the whole claim.
+        let selection_members = [
+            "selection_rule",
+            "selected_observation_id",
+            "source_record_seq_bounds",
+            "source_byte_bounds",
+        ];
+        let present = selection_members
+            .iter()
+            .filter(|name| row.get(**name).is_some_and(|value| !value.is_null()))
+            .count();
+        let selection = match present {
+            0 => None,
+            count if count == selection_members.len() => Some(DeclaredCoverageSelection {
+                selection_rule: field_text("selection_rule")?,
+                selected_observation_id: field_text("selected_observation_id")?,
+                source_record_seq_bounds: field_u64_pair("source_record_seq_bounds")?,
+                source_byte_bounds: field_u64_pair("source_byte_bounds")?,
+            }),
+            count => {
+                return Err(SourceError::Open(format!(
+                    "{context} carries {count} of {} selection-evidence members; a partial \
+                     selection bundle is not admissible provenance",
+                    selection_members.len()
+                )))
+            }
+        };
+        // A stitched row always names its owning segment and observation owner
+        // (`add_main_ownership_fields` emits both unconditionally). It does NOT
+        // always carry selection evidence: a cross-session TRANSITION gap has
+        // no logical frame observation to select, so the recorder legitimately
+        // emits the row without a bundle (`MainHour::selected_observation` is
+        // `None` there). Requiring it would refuse real recordings.
+        if is_stitched && (segment_id.is_none() || owner.is_none()) {
+            return Err(SourceError::Open(format!(
+                "{context} is a stitched-index coverage row but omits its owning segment or its \
+                 observation owner; a stitched gap names who owns the hours it declares absent"
+            )));
+        }
+        if let Some(previous) = gaps.last() {
+            if start_hour <= previous.end_hour {
+                return Err(SourceError::Open(format!(
+                    "{context} starts at {start_hour}, at or before the previous declared gap end \
+                     {} (coverage must be ascending and non-overlapping)",
+                    previous.end_hour
+                )));
+            }
+        }
+        gaps.push(DeclaredCoverageGap {
+            start_hour,
+            end_hour,
+            kind,
+            reason: field_text("reason")?,
+            evidence_id: field_text("evidence_id")?,
+            segment_id,
+            owner,
+            selection,
+        });
+    }
+    Ok(DeclaredCoverage {
+        index_schema: index.index_schema.clone(),
+        segments_file: index.segments_file.clone(),
+        main_head: index.main_head.clone(),
+        gaps,
+    })
+}
+
 /// A recording backend. Portable production recordings carry canonical H4CR
 /// plus a certified hourly offset index and sparse binary checkpoints. Legacy
 /// and debug recordings may carry per-hour JSON snapshots.
@@ -210,6 +566,16 @@ pub trait ReplaySource: Send + Sync {
     fn hours(&self) -> &[i64];
     /// Non-fatal ingest findings (index entries skipped, duplicate hours, ...).
     fn warnings(&self) -> &[String];
+    /// The recording index's own DECLARED coverage statement, when it carries
+    /// one. `None` means the index declared nothing (a plain v1 index with no
+    /// coverage rows), which is NOT the same as declaring full coverage.
+    ///
+    /// Consumers must prefer a declared gap over any hour-arithmetic inference:
+    /// a declared gap names its reason, its witness, and its owning segment,
+    /// and an inferred one cannot.
+    fn declared_coverage(&self) -> Option<&DeclaredCoverage> {
+        None
+    }
     fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
         None
     }
@@ -219,8 +585,6 @@ pub trait ReplaySource: Send + Sync {
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         None
     }
-    /// Strictly admitted recorder-owned post-process-end engine capture, when the
-    /// selected game index declares the dedicated two-entry G2 package.
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         None
     }
@@ -379,24 +743,42 @@ fn open_recording_impl_with_post_anchor<F>(
 where
     F: FnOnce(&Store),
 {
-    let store = if path.is_file() {
+    // Acquire the object's metadata ONCE and classify from it. `is_file()` /
+    // `is_dir()` both answer false for an existing-but-unreadable path (a
+    // permission or IO failure), which would misreport a real recording as
+    // absent; only a metadata error whose kind is NotFound is "not found".
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(SourceError::NotFound(format!(
+                "path does not exist (expected a .battleplan file or a snapshot store directory): {}",
+                path.display()
+            )))
+        }
+        Err(error) => {
+            return Err(SourceError::Open(format!(
+                "inspect recording path {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    let store = if metadata.is_file() {
         Store::open_replay(path, &ExpectedIdentity::default()).map_err(|e| {
-            let message = format!("open .battleplan: {e}");
-            // Preserve the snapshot layer's typed modset mismatch across the
-            // adapter (no string matching): everything else stays Open.
-            match &e {
-                snapshot::LoadError::Container(snapshot::ContainerError::ModsetMismatch {
-                    ..
-                }) => SourceError::ModsetMismatch(message),
-                _ => SourceError::Open(message),
-            }
+            // Preserve the snapshot layer's typed modset mismatch and typed
+            // payload-integrity class across the adapter (no string matching).
+            source_error_from_load(&e, format!("open .battleplan: {e}"))
         })?
-    } else if path.is_dir() {
+    } else if metadata.is_dir() {
         Store::open_directory(path)
-            .map_err(|e| SourceError::Open(format!("anchor directory store: {e}")))?
+            .map_err(|e| source_error_from_load(&e, format!("anchor directory store: {e}")))?
     } else {
-        return Err(SourceError::NotFound(format!(
-            "path does not exist (expected a .battleplan file or a snapshot store directory): {}",
+        // DELIBERATE message change, scoped to a case whose old rendering was
+        // the defect: an existing-but-special object (a pipe, a device) used to
+        // be reported as `NotFound("path does not exist ...")`, which is false.
+        // The absent-path rendering above is unchanged, and it is the only one
+        // any fixture or product surface pins.
+        return Err(SourceError::Open(format!(
+            "recording path is neither a .battleplan file nor a snapshot store directory: {}",
             path.display()
         )));
     };
@@ -460,13 +842,29 @@ fn open_store_impl(
 
     let index = store
         .index(&game_id)
-        .map_err(|e| SourceError::Open(format!("read index for game {game_id:?}: {e}")))?;
+        .map_err(|e| source_error_from_load(&e, format!("read index for game {game_id:?}: {e}")))?;
     validate_recorder_portable_container_contract(&store, &game_id, &index, &metadata)?;
+
+    // The recorder's DECLARED coverage statement is admitted here, before any
+    // route is chosen, so no route can silently discard it.
+    let declared_coverage = read_declared_coverage(&game_id, &index)?;
 
     // FAIL-CLOSED by default. Only an explicit portable certified pre-folder
     // can turn a verified compact-only container into immutable canonical
     // snapshots; replay_core never sees H4CR records or extractor fold types.
     if index.snapshots.is_empty() {
+        // Every route below this point derives its hours from a decoder or
+        // cache, not from `index.snapshots`, and none of them can carry an
+        // index-declared gap. Refuse rather than drop the recorder's own
+        // statement that hours are missing.
+        if !declared_coverage.gaps.is_empty() {
+            return Err(SourceError::Unsupported(format!(
+                "recording {game_id:?} declares {} index coverage gap(s) but has no snapshot index \
+                 entries; this build cannot carry declared coverage across the \
+                 compact-stream/replay-cache routes",
+                declared_coverage.gaps.len()
+            )));
+        }
         if packaged_replay_cache_roles_present(&store) {
             return open_packaged_replay_cache(
                 store,
@@ -498,11 +896,11 @@ fn open_store_impl(
                 decoder,
             );
         }
-        return Err(SourceError::Unsupported(empty_index_message(
+        return Err(empty_index_error(
             &store,
             metadata.timeline.as_ref(),
             &game_id,
-        )));
+        ));
     }
     validate_index_schema_version(index.schema_version.as_ref())?;
 
@@ -516,17 +914,57 @@ fn open_store_impl(
                 entry.file
             )),
             Some(hour) => {
+                // REFUSE, never resolve. The index is the canonical authority
+                // for an hour (REPLAY_SCHEMA.md §0.3); two rows claiming one
+                // hour means the recording states two different truths about
+                // it, and "keep the first" silently picks one — including its
+                // date and its file — with no evidence that the first is the
+                // right one. There is no rule that makes that choice sound.
                 if let Some(existing) = files_by_hour.get(&hour) {
-                    warnings.push(format!(
-                        "duplicate index entries for hour_index {hour} \
-                         ({existing:?} and {:?}); keeping the first",
+                    return Err(SourceError::Open(format!(
+                        "recording {game_id:?} index names hour_index {hour} twice \
+                         ({existing:?} and {:?}); the index is the canonical authority for an \
+                         hour and this build refuses to choose between two claims",
                         entry.file
-                    ));
-                } else {
-                    files_by_hour.insert(hour, entry.file.clone());
-                    dates_by_hour.insert(hour, entry.date.clone());
+                    )));
                 }
+                files_by_hour.insert(hour, entry.file.clone());
+                dates_by_hour.insert(hour, entry.date.clone());
             }
+        }
+    }
+    // A STITCHED index is produced by this project's own stitcher and must
+    // carry a date on every visible snapshot row. Without it `date_at` answers
+    // `None` for the whole timeline and jump-to-date degrades into "seek to the
+    // first hour" while still reporting success — an unanswerable navigation
+    // query returning a plausible answer. Plain (v1) indexes keep the
+    // historical tolerance: their dates are optional by contract.
+    if index.is_stitched() {
+        if let Some((hour, _)) = dates_by_hour
+            .iter()
+            .find(|(_, date)| date.as_deref().is_none_or(|date| date.trim().is_empty()))
+        {
+            return Err(SourceError::Open(format!(
+                "stitched recording {game_id:?} visible snapshot hour {hour} carries no index \
+                 date; a stitched index must date every visible hour (date navigation reads the \
+                 index, never a frame body)"
+            )));
+        }
+    }
+    // A declared gap and a playable snapshot cannot both own an hour: the
+    // stitched index "never lists a superseded snapshot and never hides a main
+    // gap" (STITCHING_DESIGN.md §7.1).
+    for gap in &declared_coverage.gaps {
+        if let Some((hour, file)) = files_by_hour
+            .range(gap.start_hour..=gap.end_hour)
+            .next()
+            .map(|(hour, file)| (*hour, file.clone()))
+        {
+            return Err(SourceError::Open(format!(
+                "recording {game_id:?} declares hours {}..={} absent ({}: {}) yet its index also \
+                 names a playable snapshot {file:?} at hour {hour}",
+                gap.start_hour, gap.end_hour, gap.kind, gap.reason
+            )));
         }
     }
     if files_by_hour.is_empty() {
@@ -558,6 +996,7 @@ fn open_store_impl(
         hours,
         files_by_hour,
         dates_by_hour,
+        declared_coverage,
         warnings,
         recorder_binding: metadata.binding,
         design_catalog,
@@ -622,11 +1061,17 @@ fn open_compact_stream_with_decoder(
         &game_id,
         metadata.recorder_manifest.as_ref(),
     )?;
+    // Same shipped-playback ceiling the spooled sibling applies, admitted from
+    // the MANIFEST length BEFORE any bytes are materialized. This route reads
+    // the whole entry into memory, so skipping the admission here made the
+    // in-memory path the more permissive of the two.
+    admit_product_compact_stream_bytes(entry.bytes)?;
     let raw_h4cr = container.read_entry_bytes(&entry.path).map_err(|error| {
-        SourceError::Open(format!(
+        let message = format!(
             "read verified compact stream role entry {:?}: {error}",
             entry.path
-        ))
+            );
+        source_error_from_load(&snapshot::LoadError::Container(error), message)
     })?;
     let request = snapshot::CertifiedPrefoldRequest::try_new_with_identity_mode(
         game_id.clone(),
@@ -1108,7 +1553,10 @@ fn validate_packaged_replay_cache_index_descriptor(
 ) -> Result<(), SourceError> {
     let bytes = store
         .read_game_file_bytes(game_id, "index.json")
-        .map_err(|error| SourceError::Open(format!("read replay index descriptor: {error}")))?
+        .map_err(|error| {
+            let message = format!("read replay index descriptor: {error}");
+            source_error_from_load(&error, message)
+        })?
         .ok_or_else(|| SourceError::Open("replay index descriptor disappeared".to_string()))?;
     let value = snapshot::parse_json_strict(&bytes)
         .map_err(|error| SourceError::Open(format!("strict replay index descriptor: {error}")))?;
@@ -1273,10 +1721,11 @@ fn open_compact_stream_with_spooled_decoder(
                 PRODUCT_COMPACT_STREAM_MAX_BYTES,
             )
             .map_err(|error| {
-                SourceError::Open(format!(
+                let message = format!(
                     "authenticate compact stream role entry {:?} into private spool: {error}",
                     entry.path
-                ))
+                );
+                source_error_from_container(&error, message)
             })?;
         if receipt.path() != entry.path.as_str() {
             return Err(SourceError::Open(
@@ -1446,16 +1895,19 @@ fn validate_compact_stream_entry_identity(
     Ok(())
 }
 
+/// Prove container identity for EVERY prefolded hour, not just the first.
+///
+/// The whole prefolded set is already materialized on this route, so checking
+/// only entry 0 left every later hour's provenance unjoined to the container
+/// manifest for no saving at all.
 fn validate_prefolded_container_identity(
     container: &snapshot::Container,
     replay: &snapshot::PrefoldedReplay,
 ) -> Result<(), SourceError> {
-    let first = replay
-        .entries()
-        .first()
-        .expect("PrefoldedReplay construction guarantees at least one hour")
-        .snapshot();
-    validate_snapshot_container_identity(container, first)
+    for entry in replay.entries() {
+        validate_snapshot_container_identity(container, entry.snapshot())?;
+    }
+    Ok(())
 }
 
 fn validate_snapshot_container_identity(
@@ -1533,9 +1985,10 @@ fn read_portable_design_catalog(
         let index_bytes = store
             .read_game_file_bytes(game_id, "index.json")
             .map_err(|error| {
-                SourceError::Open(format!(
+                let message = format!(
                     "read authenticated index for A27 design-catalog join: {error}"
-                ))
+                );
+                source_error_from_load(&error, message)
             })?
             .ok_or_else(|| {
                 SourceError::Open(
@@ -1658,13 +2111,48 @@ fn read_portable_design_catalog(
         }
     }
 
+    // No unauthenticated catalog, ever. `Store::read_game_file_bytes`
+    // authenticates a CONTAINER entry against its manifest digest, but for a
+    // directory store it is an anchored file read with no hash or length
+    // authority at all — the A27 catalog is a semantic authority the fold reads
+    // for every frame, so admitting it from loose bytes lets an edited file on
+    // disk redefine designs with nothing to detect it. A recorder-manifest row
+    // supplies its own sha256/length (verified below), which is an independent
+    // authority; without either, refuse.
+    if store.container().is_none() && recorder_row.is_none() {
+        let present = store
+            .read_game_file_bytes(game_id, crate::design_catalog::PORTABLE_ARTIFACT_PATH)
+            .map_err(|error| {
+                source_error_from_load(
+                    &error,
+                    format!(
+                        "probe A27 design catalog artifact {:?}: {error}",
+                        crate::design_catalog::PORTABLE_ARTIFACT_PATH
+                    ),
+                )
+            })?
+            .is_some();
+        if present {
+            return Err(SourceError::Open(format!(
+                "A27 design catalog {:?} exists in a directory store with no container entry \
+                 digest and no recorder-manifest sha256/length; this build refuses to admit an \
+                 unauthenticated semantic catalog",
+                crate::design_catalog::PORTABLE_ARTIFACT_PATH
+            )));
+        }
+        return Ok(None);
+    }
+
     let bytes = store
         .read_game_file_bytes(game_id, crate::design_catalog::PORTABLE_ARTIFACT_PATH)
         .map_err(|error| {
-            SourceError::Open(format!(
-                "read verified A27 design catalog artifact {:?}: {error}",
-                crate::design_catalog::PORTABLE_ARTIFACT_PATH
-            ))
+            source_error_from_load(
+                &error,
+                format!(
+                    "read verified A27 design catalog artifact {:?}: {error}",
+                    crate::design_catalog::PORTABLE_ARTIFACT_PATH
+                ),
+            )
         })?;
     bytes
         .map(|bytes| {
@@ -1759,9 +2247,10 @@ fn validate_packaged_static_artifact_roster(
     let index_bytes = store
         .read_game_file_bytes(game_id, "index.json")
         .map_err(|error| {
-            SourceError::Open(format!(
+            let message = format!(
                 "read authenticated index for static-artifact roster join: {error}"
-            ))
+            );
+            source_error_from_load(&error, message)
         })?
         .ok_or_else(|| {
             SourceError::Open(
@@ -1896,9 +2385,10 @@ fn validate_packaged_static_artifact_roster(
                 let payload = store
                     .read_game_file_bytes(game_id, expected_path)
                     .map_err(|error| {
-                        SourceError::Open(format!(
+                        let message = format!(
                             "read verified static artifact {name:?}: {error}"
-                        ))
+                        );
+                        source_error_from_load(&error, message)
                     })?
                     .ok_or_else(|| {
                         SourceError::Open(format!(
@@ -1996,9 +2486,10 @@ fn read_packaged_decision_catalog(
     let index_bytes = store
         .read_game_file_bytes(game_id, "index.json")
         .map_err(|error| {
-            SourceError::Open(format!(
+            let message = format!(
                 "read authenticated index for A34 decision catalog join: {error}"
-            ))
+            );
+            source_error_from_load(&error, message)
         })?
         .ok_or_else(|| {
             SourceError::Open(
@@ -2137,9 +2628,10 @@ fn read_packaged_decision_catalog(
     let bytes = store
         .read_game_file_bytes(game_id, DECISION_CATALOG_PATH)
         .map_err(|error| {
-            SourceError::Open(format!(
+            let message = format!(
                 "read verified A34 decision catalog payload: {error}"
-            ))
+            );
+            source_error_from_load(&error, message)
         })?
         .ok_or_else(|| SourceError::Open("verified A34 decision catalog payload is absent".into()))?;
     let actual_sha =
@@ -2379,9 +2871,10 @@ fn validate_recorder_portable_container_contract(
     let index_bytes = container
         .read_entry_bytes(&canonical_index)
         .map_err(|error| {
-            SourceError::Open(format!(
+            let message = format!(
                 "read canonical index for recorder fold-disposition join: {error}"
-            ))
+            );
+            source_error_from_container(&error, message)
         })?;
     let raw_index = snapshot::parse_json_strict(&index_bytes).map_err(|error| {
         SourceError::Open(format!(
@@ -2434,10 +2927,11 @@ fn validate_recorder_portable_container_contract(
         let snapshot_bytes = container
             .read_entry_bytes(&matches[0].path)
             .map_err(|error| {
-                SourceError::Open(format!(
+                let message = format!(
                     "read indexed snapshot {:?} for hour binding: {error}",
                     matches[0].path
-                ))
+                );
+                source_error_from_container(&error, message)
             })?;
         let snapshot_value = snapshot::parse_json_strict(&snapshot_bytes).map_err(|error| {
             SourceError::Open(format!(
@@ -2650,7 +3144,7 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
                     timeline: None,
                     recorder_manifest: None,
                     g2_engine_capture: None,
-                });
+                            });
             }
             return Err(SourceError::Open(format!(
                 "recorder_manifest role entry exists but canonical timeline {timeline_path:?} is absent"
@@ -2658,9 +3152,12 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
         }
 
         let timeline_bytes = container.read_entry_bytes(&timeline_path).map_err(|error| {
-            SourceError::Open(format!(
+            {
+                let message = format!(
                 "listed canonical timeline {timeline_path:?} could not be read and verified: {error}"
-            ))
+            );
+                source_error_from_container(&error, message)
+            }
         })?;
         let timeline = parse_metadata_object(&timeline_bytes, "timeline.json")?;
         let reference = session_manifest_reference(&timeline)?;
@@ -2671,7 +3168,7 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
                     timeline: Some(Value::Object(timeline)),
                     recorder_manifest: None,
                     g2_engine_capture: None,
-                });
+                            });
             }
             return Err(SourceError::Open(
                 "timeline.json.session_manifest is absent but recorder_manifest role entry exists"
@@ -2694,10 +3191,13 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
             )));
         }
         let manifest_bytes = container.read_entry_bytes(&entry.path).map_err(|error| {
-            SourceError::Open(format!(
+            {
+                let message = format!(
                 "read recorder_manifest {:?} referenced by timeline.json.session_manifest: {error}",
                 entry.path
-            ))
+            );
+                source_error_from_container(&error, message)
+            }
         })?;
         let recorder_manifest =
             parse_metadata_object(&manifest_bytes, &format!("recorder manifest {reference:?}"))?;
@@ -2708,16 +3208,17 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
             timeline: Some(Value::Object(timeline)),
             recorder_manifest: Some(recorder_manifest),
             g2_engine_capture: None,
-        });
+            });
     }
 
     directory_recorder_metadata_route_with_reader(|relative| {
         store
             .read_game_file_bytes(game_id, relative)
             .map_err(|error| {
-                SourceError::Open(format!(
+                let message = format!(
                     "handle-relative read of {game_id:?}/{relative}: {error}"
-                ))
+                );
+                source_error_from_load(&error, message)
             })
     })
 }
@@ -2739,7 +3240,7 @@ where
             timeline: None,
             recorder_manifest: None,
             g2_engine_capture: None,
-        });
+            });
     };
     let Some(reference) = session_manifest_reference(&timeline)? else {
         return Ok(MetadataRoute {
@@ -2747,7 +3248,7 @@ where
             timeline: Some(Value::Object(timeline)),
             recorder_manifest: None,
             g2_engine_capture: None,
-        });
+            });
     };
     let manifest = read_optional_metadata_object_once(
         || read_once(&reference),
@@ -3255,23 +3756,26 @@ fn validate_display_variant(
     Ok(())
 }
 
-/// Precise Unsupported message for a recording whose snapshot index is empty,
-/// naming the compact-stream evidence when it is present.
-fn empty_index_message(store: &Store, timeline: Option<&Value>, game_id: &str) -> String {
+/// Precise Unsupported error for a recording whose snapshot index is empty.
+/// When positive compact-stream evidence is present the error is the TYPED
+/// [`SourceError::UnsupportedCompactStreamOnly`] subclass (R18-5) — this
+/// function is that variant's sole producer — so consumers classify the
+/// compact-stream-only flavor structurally rather than by message text.
+fn empty_index_error(store: &Store, timeline: Option<&Value>, game_id: &str) -> SourceError {
     let contract = "playback requires certified replay_decoder hour-index/checkpoint \
                     roles, legacy per-hour snapshot entries, or an explicitly supplied \
                     certified portable pre-folder; ordinary product open does not guess \
                     compact record layouts";
     match compact_stream_evidence(store, timeline) {
-        Some(evidence) => format!(
+        Some(evidence) => SourceError::UnsupportedCompactStreamOnly(format!(
             "recording {game_id:?} is a compact-stream-only production recording \
              (empty snapshot index; {evidence}): it carries only the raw compact \
              domain stream, and {contract}"
-        ),
-        None => format!(
+        )),
+        None => SourceError::Unsupported(format!(
             "recording {game_id:?} has an empty snapshot index (\"snapshots\": []) \
              and no per-hour snapshots; {contract}"
-        ),
+        )),
     }
 }
 
@@ -3725,6 +4229,8 @@ struct StoreSource {
     /// Authenticated index dates parallel to `files_by_hour`. A missing date
     /// stays missing; reading navigation metadata never opens a frame body.
     dates_by_hour: BTreeMap<i64, Option<String>>,
+    /// The index's own declared coverage statement, carried verbatim.
+    declared_coverage: DeclaredCoverage,
     warnings: Vec<String>,
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
@@ -3804,6 +4310,7 @@ impl ReplaySource for IndexedReplaySource {
             .as_ref()
             .and_then(|binding| binding.campaign_identity.as_ref())
     }
+
 
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
@@ -3923,6 +4430,7 @@ impl ReplaySource for SpooledPrefoldedSource {
             .and_then(|binding| binding.campaign_identity.as_ref())
     }
 
+
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
     }
@@ -3961,6 +4469,14 @@ impl ReplaySource for SpooledPrefoldedSource {
             ))
         })?;
         let snapshot = read_spooled_hour(&self.owner, &self.snapshot_dir, &self.spool, entry)?;
+        // Admission proved container identity for the FIRST spooled hour only,
+        // because this route is deliberately lazy and never materializes the
+        // whole spool. Re-prove it for every hour that is actually read, so a
+        // later hour whose provenance disagrees with the container manifest is
+        // refused at the frame it is served from rather than never.
+        if let Some(container) = self.store.container() {
+            validate_snapshot_container_identity(container, &snapshot)?;
+        }
         let mut rest = snapshot.rest;
         if let Some(binding) = &self.recorder_binding {
             validate_existing_recorder_metadata(&rest, binding)?;
@@ -4020,6 +4536,7 @@ impl ReplaySource for PrefoldedSource {
             .as_ref()
             .and_then(|binding| binding.campaign_identity.as_ref())
     }
+
 
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
@@ -4103,6 +4620,9 @@ impl ReplaySource for StoreSource {
     fn warnings(&self) -> &[String] {
         &self.warnings
     }
+    fn declared_coverage(&self) -> Option<&DeclaredCoverage> {
+        (!self.declared_coverage.is_empty()).then_some(&self.declared_coverage)
+    }
     fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
         self.store
             .container()
@@ -4116,6 +4636,7 @@ impl ReplaySource for StoreSource {
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
     }
+
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
     }
@@ -4143,15 +4664,42 @@ impl ReplaySource for StoreSource {
         let snap = self
             .store
             .load_file(&self.game_id, file)
-            .map_err(|e| SourceError::Open(format!("load snapshot {file:?}: {e}")))?;
-        // The index is the authority for the hour; a body that names a
-        // DIFFERENT hour is an inconsistent recording and is refused, not
-        // silently re-keyed.
+            .map_err(|e| source_error_from_load(&e, format!("load snapshot {file:?}: {e}")))?;
+        // Join the COMPLETE snapshot header against the index, not just the
+        // hour. The spooled sibling refuses a mismatched hour/game/schema/date
+        // before it hands a frame back; without the same join here `date_at`
+        // (index) and `frame()` (body) can answer differently for one hour and
+        // the navigation UI and the frame disagree with no refusal anywhere.
+        //
+        // The index stays the authority. A header field the body does not carry
+        // stays absent (a v1 recording need not repeat it); a field the body
+        // DOES carry and that contradicts the index is refused.
         if let Some(body_hour) = snap.hour_index {
             if body_hour != hour_index {
                 return Err(SourceError::Open(format!(
                     "snapshot {file:?} body hour_index {body_hour} != index hour_index \
                      {hour_index} (index is the authority; refusing inconsistent recording)"
+                )));
+            }
+        }
+        if let Some(body_game) = snap.game_id.as_deref() {
+            if body_game != self.game_id {
+                return Err(SourceError::Open(format!(
+                    "snapshot {file:?} body game_id {body_game:?} != selected game {:?} \
+                     (index is the authority; refusing inconsistent recording)",
+                    self.game_id
+                )));
+            }
+        }
+        if let (Some(index_date), Some(body_date)) = (
+            self.dates_by_hour.get(&hour_index).and_then(Option::as_deref),
+            snap.date.as_deref(),
+        ) {
+            if index_date != body_date {
+                return Err(SourceError::Open(format!(
+                    "snapshot {file:?} body date {body_date:?} != index date {index_date:?} at \
+                     hour_index {hour_index} (index is the authority; refusing inconsistent \
+                     recording)"
                 )));
             }
         }
@@ -4345,6 +4893,167 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// R5-H3: the integrity class must travel typed. Its Display is byte-for-
+    /// byte the untyped `Open` rendering, so every existing message contract
+    /// holds while consumers gain a class to match on.
+    #[test]
+    fn integrity_is_a_typed_sibling_of_open_with_an_identical_rendering() {
+        let message = "entry payload/g/h.json: sha256 aa != manifest bb";
+        assert_eq!(
+            SourceError::Integrity(message.into()).to_string(),
+            SourceError::Open(message.into()).to_string()
+        );
+        assert!(matches!(
+            SourceError::Integrity(message.into()),
+            SourceError::Integrity(_)
+        ));
+    }
+
+    /// A failed digest, a failed CRC, a short payload and a decompression
+    /// failure are the integrity class; a malformed/semantic refusal is not.
+    /// Classification is a total match on the typed snapshot errors — never a
+    /// substring of the message.
+    #[test]
+    fn load_failures_are_classified_by_type_not_by_message_text() {
+        let integrity: Vec<snapshot::LoadError> = vec![
+            snapshot::LoadError::Container(snapshot::ContainerError::PayloadIntegrity(
+                "entry x: sha256 aa != manifest bb".into(),
+            )),
+            snapshot::LoadError::Container(snapshot::ContainerError::Zip(
+                snapshot::zip::ZipError::PayloadIntegrity("entry x: payload crc32 mismatch".into()),
+            )),
+            snapshot::LoadError::Container(snapshot::ContainerError::Zip(
+                snapshot::zip::ZipError::SizeMismatch {
+                    name: "x".into(),
+                    declared: 10,
+                    got: 9,
+                },
+            )),
+            snapshot::LoadError::Container(snapshot::ContainerError::Zip(
+                snapshot::zip::ZipError::Decompress("inflate failed".into()),
+            )),
+        ];
+        for error in &integrity {
+            assert!(
+                matches!(
+                    source_error_from_load(error, "m".into()),
+                    SourceError::Integrity(_)
+                ),
+                "{error} must be the integrity class"
+            );
+        }
+
+        let not_integrity: Vec<snapshot::LoadError> = vec![
+            // A semantic/identity refusal: nothing was authenticated and lost.
+            snapshot::LoadError::Container(snapshot::ContainerError::Reject(
+                "manifest missing required_features".into(),
+            )),
+            snapshot::LoadError::Container(snapshot::ContainerError::NoManifest),
+            // Structural shortfalls of the ZIP scaffolding: a malformed
+            // archive, not payload bytes that failed their digest.
+            snapshot::LoadError::Container(snapshot::ContainerError::Zip(
+                snapshot::zip::ZipError::Truncated("central directory"),
+            )),
+            snapshot::LoadError::Directory("anchor escaped its root".into()),
+            // A message that CONTAINS integrity words but is not the class.
+            snapshot::LoadError::Container(snapshot::ContainerError::Reject(
+                "entry x: sha256 field is not lowercase hex".into(),
+            )),
+        ];
+        for error in &not_integrity {
+            assert!(
+                matches!(
+                    source_error_from_load(error, "m".into()),
+                    SourceError::Open(_)
+                ),
+                "{error} must stay the ordinary open class"
+            );
+        }
+
+        // The pre-existing typed modset signal is unchanged.
+        assert!(matches!(
+            source_error_from_load(
+                &snapshot::LoadError::Container(snapshot::ContainerError::ModsetMismatch {
+                    manifest: "a".into(),
+                    snapshot: "b".into(),
+                }),
+                "m".into()
+            ),
+            SourceError::ModsetMismatch(_)
+        ));
+    }
+
+    /// Return the body of one top-level `fn <name>(` in this module's source.
+    fn function_body(name: &str) -> String {
+        // Normalize line endings: include_str! sees the checkout's bytes, and
+        // a CRLF checkout would never match the " {\n" body-open pattern.
+        let source = include_str!("source.rs").replace("\r\n", "\n");
+        let source = source.as_str();
+        let start = source
+            .find(&format!("\nfn {name}("))
+            .unwrap_or_else(|| panic!("{name} must exist in this module"));
+        let open = source[start..]
+            .find(" {\n")
+            .unwrap_or_else(|| panic!("{name} must have a body"))
+            + start;
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        for (offset, byte) in bytes[open..].iter().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return source[open..open + offset + 1].to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("{name} body is unbalanced");
+    }
+
+    /// R5-L4 / R5-L5. Two properties whose violation is invisible to any
+    /// fixture this build can construct — the compact ceiling needs a >2 GiB
+    /// declared entry, and the per-hour identity recheck on the LAZY spooled
+    /// route only fires for an hour a real spool serves. Both are single call
+    /// sites in this module, so the call site itself is what the gate pins:
+    /// deleting either one fails this test.
+    #[test]
+    fn both_compact_routes_admit_the_product_ceiling_and_every_prefold_route_proves_identity() {
+        for route in [
+            "open_compact_stream_with_decoder",
+            "open_compact_stream_with_spooled_decoder",
+        ] {
+            assert!(
+                function_body(route).contains("admit_product_compact_stream_bytes("),
+                "{route} must apply the shipped compact-playback ceiling before materializing \
+                 or spooling the stream"
+            );
+        }
+        // The eager route proves identity for every entry (covered end-to-end
+        // by tests/r5_ingest_properties.rs); the lazy route cannot, so it
+        // re-proves identity for each hour it actually serves.
+        let eager = function_body("validate_prefolded_container_identity");
+        assert!(
+            eager.contains("for entry in replay.entries()"),
+            "the eager prefold route must prove identity for EVERY hour, not just the first"
+        );
+        let lazy = include_str!("source.rs");
+        let lazy_frame = lazy
+            .find("impl ReplaySource for SpooledPrefoldedSource")
+            .expect("the lazy spooled source must exist");
+        let lazy_body = &lazy[lazy_frame..];
+        let lazy_end = lazy_body
+            .find("\nimpl ")
+            .map(|offset| offset + 1)
+            .unwrap_or(lazy_body.len());
+        assert!(
+            lazy_body[..lazy_end].contains("validate_snapshot_container_identity(container,"),
+            "the lazy spooled source must re-prove container identity for each hour it serves"
+        );
     }
 
     #[test]
@@ -5668,10 +6377,39 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("raw H4CR package must not enter replay_core directly"),
         };
-        assert!(matches!(error, SourceError::Unsupported(_)));
+        // R18-5: the compact-stream-only flavor is the TYPED subclass, so the
+        // preflight consumer classifies it structurally instead of matching
+        // "compact-stream-only production recording" in the message text.
+        assert!(matches!(
+            error,
+            SourceError::UnsupportedCompactStreamOnly(_)
+        ));
         let message = error.to_string();
+        assert!(message.starts_with("unsupported recording: "), "{message}");
         assert!(message.contains("compact-stream-only"), "{message}");
         assert!(message.contains("collector_compact_stream"), "{message}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_index_without_compact_evidence_stays_plain_unsupported() {
+        // R18-5 boundary: only positive compact-stream evidence selects the
+        // waivable typed subclass. A bare empty index must remain the plain
+        // Unsupported flavor the preflight does NOT waive.
+        let root = temp_root("empty_index_no_evidence");
+        let game = root.join("g");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(
+            game.join("index.json"),
+            br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#,
+        )
+        .unwrap();
+        let error = match open_recording(&root) {
+            Err(error) => error,
+            Ok(_) => panic!("an empty snapshot index must not open"),
+        };
+        assert!(matches!(error, SourceError::Unsupported(_)));
+        assert!(error.to_string().contains("empty snapshot index"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -6206,11 +6944,23 @@ mod tests {
         matches!(
             (module, line),
             ("replay_core/source.rs", "games.join(\", \")")
+                // A message join over a static string table; no path is built.
                 | (
                     "replay_core/source.rs",
-                    "let store = if path.is_file() {"
+                    "DECLARED_COVERAGE_KINDS.join(\", \")"
                 )
-                | ("replay_core/source.rs", "} else if path.is_dir() {")
+                // Anchoring the recording root: ONE metadata read of the
+                // caller-supplied path, then a typed classification of it.
+                // No descendant pathname is constructed or opened here.
+                | (
+                    "replay_core/source.rs",
+                    "let metadata = match fs::metadata(path) {"
+                )
+                | (
+                    "replay_core/source.rs",
+                    "let store = if metadata.is_file() {"
+                )
+                | ("replay_core/source.rs", "} else if metadata.is_dir() {")
                 | ("snapshot/lib.rs", "if path.is_file() {")
                 | (
                     "snapshot/container.rs",
@@ -6333,6 +7083,13 @@ mod tests {
                     | "fs::hard_link(&temp, &destination).map_err(|error| {"
                     | "match fs::remove_file(&destination) {"
                     | "let _ = fs::remove_file(&temp);"
+                    // Non-Windows arm of identity-gated spool cleanup. The
+                    // pathname is the crate's OWN spool temporary or its own
+                    // just-published destination, never a container-supplied
+                    // name, and the unlink runs only after the pathname's file
+                    // identity matched the retained handle. Windows disposes by
+                    // handle instead and has no pathname site here.
+                    | "match fs::remove_file(path) {"
             )
     }
 
@@ -6378,7 +7135,12 @@ mod tests {
                     | "let metadata = fs::symlink_metadata(&candidate)"
                     | "if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {"
                     | "let canonical = fs::canonicalize(&candidate)"
-                    | "let mut file = fs::File::open(&canonical)"
+                    | "let mut file = fs::File::open(&canonical).map_err(|error| {"
+                    // Whole-file SHA-256 probe over the already-resolved,
+                    // descriptor-authorized package path, run only to classify
+                    // an open that has ALREADY failed (integrity vs structure).
+                    // It admits nothing: the failed open stays failed.
+                    | "let file = fs::File::open(path).ok()?;"
             )
     }
 

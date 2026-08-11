@@ -210,19 +210,84 @@ foreach ($recording in $recordings) {
         $pixelReceipt = [Text.Encoding]::UTF8.GetString(
             [IO.File]::ReadAllBytes($pixelReceiptPath)
         ) | ConvertFrom-Json
-        if ([string]$pixelReceipt.schema -cne 'battle-plan-production-pixel-gate-receipt-v5' -or
+        # G2 was retired (owner decision 2026-07-27): the product emits v4
+        # receipts only. FW10's per-receipt G2 disposition latch died with it;
+        # the v4 arm is the surviving product contract.
+        if ([string]$pixelReceipt.schema -cne 'battle-plan-production-pixel-gate-receipt-v4' -or
             [string]$pixelReceipt.recording_sha256 -cne $recordingSha256) {
             throw "$id ordinal $ordinal pixel receipt is not bound to the recording"
+        }
+        # The product serializes both flags as booleans and every count as a
+        # number, never null: any other JSON type is not a product receipt
+        # (PowerShell would otherwise coerce null to 0/false silently).
+        if ($pixelReceipt.selected_present_executed -isnot [bool] -or
+            $pixelReceipt.map_presented -isnot [bool]) {
+            throw "$id ordinal $ordinal selected_present_executed/map_presented are not booleans"
+        }
+        foreach ($numericField in @(
+                'selected_hour',
+                'map_operations',
+                'selected_present_operations',
+                'selected_present_m02_draws',
+                'pixel_byte_len')) {
+            $numericProperty = $pixelReceipt.PSObject.Properties[$numericField]
+            if ($null -eq $numericProperty -or
+                $null -eq $numericProperty.Value -or
+                $numericProperty.Value -is [bool] -or
+                $numericProperty.Value -isnot [ValueType]) {
+                throw "$id ordinal $ordinal $numericField is not a number"
+            }
+            # The product serializes selected_hour as i64 and every count as
+            # usize: fractional values are never emitted, and the counts are
+            # never negative. Refuse before any [int64] cast can coerce.
+            $numericValue = $numericProperty.Value
+            $isIntegral = $numericValue -is [int] -or
+                $numericValue -is [int64] -or
+                $numericValue -is [int16] -or
+                ($numericValue -is [decimal] -and
+                 [decimal]$numericValue -eq [decimal]::Truncate([decimal]$numericValue))
+            if (-not $isIntegral) {
+                throw "$id ordinal $ordinal $numericField is not an integer"
+            }
+            if ($numericField -cne 'selected_hour' -and [int64]$numericValue -lt 0) {
+                throw "$id ordinal $ordinal $numericField is negative"
+            }
+        }
+        $selectedPresentExecuted = [bool]$pixelReceipt.selected_present_executed
+        $mapPresented = [bool]$pixelReceipt.map_presented
+        # G2 retirement: the product never emits either retired field, so a
+        # receipt carrying one is not a sequence the product can emit.
+        foreach ($retiredField in @('g2_engine_capture', 'g2_exact_pixel_admission')) {
+            $retiredProperty = $pixelReceipt.PSObject.Properties[$retiredField]
+            if ($null -ne $retiredProperty -and $null -ne $retiredProperty.Value) {
+                throw "$id ordinal $ordinal carries retired G2 field $retiredField"
+            }
+        }
+        # The UI pass is unconditional post-retirement: a dump either executes
+        # selected-Present or refuses to publish any receipt.
+        if (-not $selectedPresentExecuted) {
+            throw "$id ordinal $ordinal has no selected-Present execution; the product refuses such a dump"
+        }
+        # The product refuses to publish any receipt whose dump presented
+        # neither authenticated map output nor selected-Present execution.
+        if (-not $mapPresented -and -not $selectedPresentExecuted) {
+            throw "$id ordinal $ordinal presents neither map output nor selected-Present execution; the product refuses such a dump"
+        }
+        # The M02 count is incremented at most once per executed
+        # selected-Present operation, so it can never exceed the operation
+        # frontier the same UI outcome reported.
+        if ([int64]$pixelReceipt.selected_present_m02_draws -gt
+            [int64]$pixelReceipt.selected_present_operations) {
+            throw "$id ordinal $ordinal claims more M02 draws than selected-Present operations; the M02 count is a subset of the executed operation frontier"
         }
         if ([int64]$pixelReceipt.pixel_byte_len -le 0 -or
             ([int64]$pixelReceipt.map_operations + [int64]$pixelReceipt.selected_present_operations) -le 0) {
             throw "$id ordinal $ordinal executed no authenticated product pixels"
         }
-        if ($pixelReceipt.map_presented -is [bool] -and $pixelReceipt.map_presented) {
+        if ($mapPresented) {
             $roleCoverage.map_output = $true
         }
-        if ($pixelReceipt.selected_present_executed -is [bool] -and
-            $pixelReceipt.selected_present_executed) {
+        if ($selectedPresentExecuted) {
             $roleCoverage.selected_present_ui = $true
             $companions = $pixelReceipt.selected_present_typed_companions
             if ($null -eq $companions) {

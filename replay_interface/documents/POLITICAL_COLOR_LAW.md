@@ -1,343 +1,162 @@
-# Political Map-Mode Color Law
+# Political map-mode production law
 
-## Evidence Scope
+## Authority and document role
 
-This pass validates the captured secondary political color lookup, not a primary
-political fill lookup. The available `live_PAN2` capture has a sidecar for
-`ProvinceSecondaryColorMap` with `province_secondary_color_map.rgba`, 2816x1024,
-11,534,336 bytes, FNV-1a64 `b3df2c5b99e22325`, runtime RGBA8 format, and source
-DXGI format 91 (`DXGI_FORMAT_B8G8R8A8_UNORM_SRGB`)
-(`C:\Users\Example\AppData\Local\hoi4_captures\live_PAN2\province_secondary_color_map_capture.json:2-11`).
-The map-frame bundle declares `ProvinceSecondaryColorMap` at shader slot 6
-(`...\live_PAN2\map_frame_bundle.json:684-691`) and records the active SRV as
-2816x1024, DXGI 91, slot 6 (`...\live_PAN2\map_frame_bundle.json:896-918`).
-The payload manifest records the same `province_secondary_color_map.rgba` bytes
-and hash (`...\live_PAN2\map_frame_bundle.json:10435-10439`), and the capture
-event confirms a runtime texture readback at slot 6 with the same dimensions and
-hash (`...\live_PAN2\terrain_capture_events.jsonl:206`).
+This is the current normative law for the XMAP05 political, occupation,
+GradientBorder, IntelMap, FoW, visibility, and SceneCB0-patch family. Durable
+exact-a729 engine jobs, hashes, retained capture observations, and the exact
+producer law are recorded in
+`replay_interface/re_evidence/rendering_laws/XMAP05/PRODUCTION_EVIDENCE.md`.
+Required replay inputs are specified in
+`replay_interface/re_evidence/rendering_laws/XMAP05/EXTRACTOR_DATA_REQUIREMENTS.md`.
 
-Other bundles reference the same lookup family: terrain chunks list
-`ProvinceSecondaryColorMap` at slot 6
-(`...\live_PAN2\terrain_chunk_library.json:120-130`), trees at slot 15
-(`...\live_PAN2\map_frame_trees_pass_bundle.json:704-714`), water at slot 3
-(`...\live_PAN2\map_frame_water_pass_bundle.json:708-718`), and the rivers
-bundle carries the same payload file/hash
-(`...\live_PAN2\map_frame_rivers_pass_bundle.json:4924-4930`). The checked-in
-`map_viewer/out/captures/session_20260702d` path was not present in this
-worktree, so validation used `C:\Users\Example\AppData\Local\hoi4_captures\live_PAN2`.
+The product path is the XMAP05 foundation adapter and
+`NativeXmap05PoliticalHandoff`. Captured political resources and the legacy
+`--gb-cpu` visualizer are comparison/debug surfaces, not product inputs or
+fallbacks.
 
-## Shader Law
+The binary authority is `hoi4.exe 1.19.2.0.a729`, image base
+`0x140000000`, SHA-256
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
-`pdxmap.shader` declares `ProvinceSecondaryColorMap` with Index 6, linear
-filtering, and wrap addressing (`<local-path> of Iron IV\gfx\FX\pdxmap.shader:68-76`).
-The same shader constructs map UVs with half-texel centers; `uv2.x` is
-`(pos.x + 0.5) / MAP_SIZE_X`, while `uv2.y` is vertically flipped as
-`(pos.y + 0.5 - MAP_SIZE_Y) / -MAP_SIZE_Y`
-(`...\gfx\FX\pdxmap.shader:198-201`). The map-frame constants record
-`MAP_SIZE_X = 5632`, `MAP_SIZE_Y = 2048`, and `MAP_POW2/FOW_POW2 = 1`
-(`...\live_PAN2\map_frame_bundle.json:10472-10477`), so the captured color
-lookup is exactly half-scale: 2816x1024.
+## Political epoch
 
-The pixel shader applies the lookup through `secondary_color_mask(...,
-Input.uv2, ProvinceSecondaryColorMap, ...)`
-(`...\gfx\FX\pdxmap.shader:327-328`). `secondary_color_mask` samples the mask
-at that UV, multiplies `CalculateOccupationMask(vUV)` by the sampled alpha,
-reduces bloom by the same factor, and lerps current diffuse RGB to sampled mask
-RGB (`...\gfx\FX\standardfuncsgfx.fxh:979-987`). The separate
-`calculate_map_tex_index` terrain-tile decode law is for `TerrainIDMap`, not
-for the political secondary color lookup (`...\gfx\FX\standardfuncsgfx.fxh:1065-1073`).
+One XMAP05 epoch joins:
 
-Therefore the implemented province-id-to-texel law is:
+- admitted effective `definition.csv`, `provinces.bmp`, state membership,
+  country tags, country colors, and graphics defines;
+- measured current-hour state owner, state controller, cosmetic tag, and
+  province-controller tables;
+- the complete current D18 country roster;
+- current map, country, visibility, and selected-viewer-POV payloads; and
+- the exact MAPC1 control-authority envelope.
 
-1. Output texture shape is 2816x1024 RGBA8, one mip, row pitch 11264.
-2. For texel `(x, y)`, sample the center of the corresponding 2x2 full map area:
-   `source_x = floor((x + 0.5) * 5632 / 2816)`.
-3. Match `uv2.y` by flipping source rows:
-   `source_y = 2048 - 1 - floor((y + 0.5) * 2048 / 1024)`.
-4. Read that source pixel from `map/provinces.bmp`, map its RGB through
-   `map/definition.csv` to a province id, then map province id to state via
-   `history/states/*.txt`.
+MAPC1 binds the exact executable and evidence manifest, proven province
+controller field and country-remap function, strict state/province identity
+orders, nonzero capture sequence, complete-table assertions, and canonical
+census/roster/presentation digests. Save-shaped or static-history rows cannot
+satisfy this contract.
 
-## Static Composition Law
+Before reading content, XMAP05 independently enumerates the effective
+non-recursive state-history, country-tag, and country-file censuses and rejects
+an admission that omitted a winning path. Every subsequent read remains
+allowlist-bound to the admitted effective VFS.
 
-Country colors are resolved through `GameFileResolver` only:
+The epoch digest changes with replay hour, viewer country, owner, controller,
+cosmetic identity, MAPC1 authority, visibility authority, or effective
+content. The app-device handoff replaces all XMAP05 resources at a semantic
+epoch boundary; no stale ownership epoch is carried forward.
 
-1. `common/country_tags/*.txt` maps tags to `common/countries/*.txt`; for
-   example GER maps to Germany and KUW maps to Kuwait
-   (`...\common\country_tags\00_countries.txt:1-8`,
-   `...\common\country_tags\00_countries.txt:135-138`).
-2. Country files provide fallback `color` assignments, such as Germany
-   `color = { 106 119 89 }` and Kuwait `color = rgb { 153 76 0 }`
-   (`...\common\countries\Germany.txt:1-7`,
-   `...\common\countries\Kuwait.txt:1-7`).
-3. `common/countries/colors.txt` overrides file colors; GER uses HSV,
-   SOV and USA use RGB in that file
-   (`...\common\countries\colors.txt:3-14`,
-   `...\common\countries\colors.txt:256-259`).
+## Political and occupation resources
 
-For the 1936 static start, ownership/controller comes from the initial
-`history = { ... }` block. Brandenburg has initial owner GER
-(`...\history\states\64-Brandenburg.txt:1-13`). Kuwait has owner KUW and
-province ids 8085, 13366, 13367
-(`...\history\states\656-Kuwait.txt:1-26`). Dated blocks are not part of the
-1936 start state; Suzhou has owner CHI initially, while its JAP controller entry
-is gated under `1938.10.25`
-(`...\history\states\1034 - Suzhou.txt:10-34`).
+`ProvincePrimaryColorMap` and `ProvinceSecondaryColorMap` are derived from the
+selected replay epoch and admitted country colors. The half-resolution lookup
+uses the shader's vertically flipped half-texel UV law. Occupation-secondary
+RGB is the stripe target and alpha is stripe strength, consumed by
+`secondary_color_mask` and the procedural diagonal occupation mask.
 
-The static secondary rule implemented here is intentionally narrow:
+Static 1936 state history is not a runtime fallback. Captured all-transparent
+secondary maps are negative comparison frames, and the retained
+nontransparent Resistance capture is an additional producer oracle. Shipping
+authority remains the current typed control epoch plus effective files.
 
-1. Sea, lake, unknown, no-state, no-owner, and impassable texels are transparent
-   in the secondary lookup.
-2. If controller equals owner, the secondary lookup is transparent.
-3. If a static initial controller differs from owner, the primary diagnostic
-   color uses controller color and the secondary lookup stores owner color with
-   alpha 255, so the shader can stripe back toward the owner color.
-4. Any unresolved tag color is a hard error.
+## GradientBorder law
 
-Country-tag aliases and cosmetic states are dynamic state, not static file law.
-`common/country_tag_aliases/tag_aliases.txt` documents aliases as trigger-based
-country mappings and supports government/cosmetic tests
-(`...\common\country_tag_aliases\tag_aliases.txt:1-43`,
-`...\common\country_tag_aliases\tag_aliases.txt:78-91`). Playback needs the
-extractor to provide the current resolved tag/cosmetic state when it diverges
-from vanilla 1936 history.
+Country GradientBorder generation uses the exact-a729 full-resolution
+province-edge topology. The engine groups 12-byte province/neighbor edge rows,
+orders integer coordinate chains, marks the complete country region, and keeps
+only chains whose neighboring province lies outside that region. Internal
+same-controller joins and diagonal-only contacts are not country edges.
 
-## Validation v1 (live_PAN2, 1936 start)
+The fill worker finds the minimum squared Euclidean distance to the integer
+edge-point set. Spatial bins only prune candidates. After the square root it
+writes:
 
-Command:
-
-```powershell
-cargo run -p map_viewer --bin dump_political_colors -- --game "<local-path> of Iron IV" --capture "C:\Users\Example\AppData\Local\hoi4_captures\live_PAN2" --out "C:\Users\Example\AppData\Local\Temp\cdx_lanes\col1_colors\replay_interface\native\map_viewer\out\political_colors_live_PAN2"
+```text
+if distance > center:
+    byte = 255
+         - trunc((distance - center) * (1 / thickness) * 255)
+         - trunc(center)
+else:
+    byte = 255 - trunc(distance)
+byte = clamp(byte - 8, 0, 255)
 ```
 
-Result:
+`center` and thickness interpolation come from the admitted effective graphics
+defines and exact country-area law. The literal subtract-eight is engine law,
+not a tuned adjustment. Production contains no chamfer metric, captured
+`RAMP_D0`, reduced-raster majority vote, seam invention, or CPU-visualizer
+fallback.
 
-| Metric | Value |
-| --- | --- |
-| Captured symbol | `ProvinceSecondaryColorMap` |
-| Generated FNV | `b3df2c5b99e22325` |
-| Captured FNV | `b3df2c5b99e22325` |
-| Byte exact | `true` |
-| Texel match | `100.00000000%` |
-| Texel mismatches | `0` |
-| Byte mismatches | `0` |
-| Channel mismatches | `[0, 0, 0, 0]` |
-| Mismatch classes | none |
-| Captured all-zero transparent | `true` |
+Channel1 and Channel2 use the proved `2 * layer_height + 2` packing: top layer,
+zero separator, country layer, zero pad. Country RGB and distance occupy the
+Channel1 country layer. Channel2 country-layer `.g` is 255 only on
+controller-owned land.
 
-The generated stats file records the descriptors and exact-match result
-(`map_viewer/out/political_colors_live_PAN2/political_color_stats.json:4-45`),
-class counts and no mismatch samples
-(`map_viewer/out/political_colors_live_PAN2/political_color_stats.json:52-60`),
-and notes that vanilla 1936 has no visible static secondary occupation mask in
-this capture (`map_viewer/out/political_colors_live_PAN2/political_color_stats.json:61-64`).
+`GradientBorderChannel3` is the admitted effective
+`map/terrain/naval_dominance_fx.dds`: 2x1, one effective mip,
+`B8G8R8A8_UNORM_SRGB`, point sampled, clamped, non-array, non-cube. The two
+mod-resolved texels are uploaded exactly. Vanilla bytes are an oracle, not a
+shipping constant.
 
-Class counts:
+## FoW and disclosure
 
-| Class | Texels |
-| --- | ---: |
-| `sea_or_lake_transparent` | 1,869,948 |
-| `owner_controller_equal_transparent` | 953,348 |
-| `impassable_transparent` | 60,288 |
+`IntelMap` uses the exact six-by-six province coverage average and bitwise
+inverse law. Omniscient mode disables FoW only after the complete D18 POV
+census is authenticated. A country POV requires its current D94 vector and
+current D95 land/task-force disclosure surfaces with nonzero matching
+identities.
 
-Dump paths:
+D95 raw bytes drive disclosure tier and reason. Threshold-excluded entities
+are labeled as such; they are not falsely called engine-confirmed hidden.
+Exact SPU1 authenticates the absence of an air-wing spotting surface, and
+XMAP05 exposes `air_wing_spotting_unavailable = true`. No third spotting
+threshold or other visibility rule is invented.
 
-| Artifact | Path |
-| --- | --- |
-| Synthesized secondary RGBA | `map_viewer/out/political_colors_live_PAN2/province_secondary_color_map_synthesized.rgba` |
-| Owner/controller diagnostic RGBA | `map_viewer/out/political_colors_live_PAN2/province_owner_color_map_synthesized.rgba` |
-| Secondary diff heatmap | `map_viewer/out/political_colors_live_PAN2/province_secondary_color_map_diff.bmp` |
-| Stats JSON | `map_viewer/out/political_colors_live_PAN2/political_color_stats.json` |
+## SceneCB0 patch
 
-Determinism was checked by writing a second run to
-`map_viewer/out/political_colors_live_PAN2_run2` and comparing SHA-256 hashes:
+XMAP05 publishes a typed `Xmap05SceneCb0Patch`; XMAP10 owns the aggregate
+416-byte buffer. The patch binds the effective content identities, replay hour,
+viewer camera, political epoch, exact executable, and authenticated
+viewer-owned XMAP10 recurrence.
 
-| Artifact | SHA-256 |
-| --- | --- |
-| `province_secondary_color_map_synthesized.rgba` | `D4D2639AD94B0211839461226EB57A5E185829E5C4A9783C2DA9F0A3DA032BF5` |
-| `province_owner_color_map_synthesized.rgba` | `4527E962BF1EDEF11CCC26A43645DDCBA4B2ED0872D4802BD2F8984C2AAFF5D3` |
-| `province_secondary_color_map_diff.bmp` | `8442ED8A69A4A54FCA630E724E3C709C876A5A94C13619DFC8425071391541F3` |
-| `political_color_stats.json` | `F995E044935F5A682230127D2F8FE2FE6F354D01B73DFE01CC42C8962F30A477` |
+- `vGBCamDistOverride_GBOutlineCutoff` comes from effective graphics defines.
+- `FOWFadeFactor` is
+  `square(clamp((DRAW_FOW_CUTOFF-camera_height)/DRAW_FOW_FADE_LENGTH,0,1))`.
+- FoW time comes from the authenticated viewer-owned XMAP10 presentation
+  recurrence. Legacy opacity is sealed to the engine reset value `+0.0` and is
+  not recorder-presentation authority.
+- Camera height comes from the validated viewer-owned XMAP03 current eye.
+- `MinMeshAlpha` is exact positive zero.
+- `GB_TextureHeight` is the logical province-raster height.
 
-## Validation v2 (restore_gate_1, ongoing vanilla war save)
+The patch validates the reflected layout and preserves fields owned by every
+other packet.
 
-> **STORE NOTES (updated 2026-07-19):** the historical `hoi4_captures` path is
-> stale, but the original 243-file `restore_gate_1` directory was recovered and
-> copied byte-exactly to
-> `<local-path>`. The portable
-> authority packet at
-> `re_evidence/rendering_laws/RESTORE_GATE_1_RECOVERY_20260719/` authenticates
-> the `ProvinceSecondaryColorMap` payload plus its terrain-t6 and water-t3
-> consumers. Its all-zero SHA-256 remains `d4d2639a...`, so the observation is
-> genuine but still vacuous for the rare non-transparent producer law. The
-> separate retained-RDC packet remains an independent same-frame observation.
+## Native handoff
 
-### Intent
+`NativeXmap05PoliticalHandoff` creates and retains six real D3D11 textures and
+SRVs on the replay application's device:
 
-v1 validated only against a 1936-start capture (`live_PAN2`) whose secondary map
-was all-transparent — a weak test, because controller equals owner nearly
-everywhere at game start, so the law's "transparent" prediction matched trivially.
-The recovered `2026-07-06` session at
-`<local-path>` captured
-`ProvinceSecondaryColorMap` from the user's ONGOING vanilla save (loaded via
-`--continuelastsave`, matching `autosave.hoi4`, an `IRE` game on "Operation
-Postern v1.19.2.0" with many war/event flags set). A war in progress means
-occupations, so the secondary map was expected to be NON-trivial — the strong
-test v1 could not run.
+1. `ProvincePrimaryColorMap`;
+2. `ProvinceSecondaryColorMap`;
+3. `GradientBorderChannel1`;
+4. `GradientBorderChannel2`;
+5. `GradientBorderChannel3`; and
+6. `IntelMap`.
 
-### Verdict: the captured ongoing-save secondary map is ALL-ZERO
+Each upload binds the prepared payload digest, descriptor digest, exact format,
+extent, row pitch, and mip contract. Consumers receive typed owner/resource
+views rather than unlabelled SRVs. XMAP04/XMAP07 water and terrain draws resolve
+their reflected slots and reject missing, stale, wrong-hour, wrong-content, or
+same-device-mismatched providers.
 
-A raw byte scan of
-`restore_gate_1\province_secondary_color_map.rgba` (11,534,336 bytes =
-2816x1024x4) finds **0 non-zero bytes, 0 non-transparent texels, 0 non-zero-alpha
-texels** — fully transparent. Its declared FNV-1a64 is `b3df2c5b99e22325`, which
-is **byte-identical to the v1 `live_PAN2` all-zero capture** (same hash, same
-length). So the strong test also produced an all-transparent secondary map,
-despite the war-in-progress save.
+## Fail-closed boundary
 
-Command:
-
-```powershell
-cargo run -p map_viewer --bin dump_political_colors -- --game "<local-path> of Iron IV" --capture "<local-path>" --out "...\map_viewer\out\political_colors_restore_gate_1"
-```
-
-| Metric | Value |
-| --- | --- |
-| Captured symbol | `ProvinceSecondaryColorMap` |
-| Captured shader slot | `3` (water pass; terrain pass declares slot `6`) |
-| Generated FNV | `b3df2c5b99e22325` |
-| Captured FNV | `b3df2c5b99e22325` |
-| Byte exact | `true` |
-| Texel match | `100.00000000%` |
-| Captured all-zero transparent | `true` |
-| Synthesized all-zero transparent | `true` |
-| **Validation is vacuous** | **`true`** |
-
-The 100% / byte-exact match here is **VACUOUS**: both the synthesized static map
-and the captured runtime map are fully transparent, so no non-transparent texel
-was ever exercised. Transparent-equals-transparent proves nothing about the
-province-id -> occupation-stripe mapping. `compare_political_colors_to_capture`
-now emits `validation_is_vacuous` and `all_synthesized_texels_transparent_zero`
-so this can never be misread as a strong pass
-(`replay_interface/native/map_viewer/src/political_color_synthesis.rs`, `PoliticalColorComparisonReport`).
-
-### Render-path validation (the capture is genuine, not a dumper artifact)
-
-The all-zero map is the resource actually bound at the draw, not a stray/cleared
-texture:
-
-1. Terrain bundle `active_draw.shader_resources[6].declared_name` =
-   `ProvinceSecondaryColorMap`, sourced from
-   `runtime_texture_readback_ProvinceSecondaryColorMap_finalize`
-   (`restore_gate_1\map_frame_bundle.json`). The water bundle binds the same
-   payload at slot 3 (`restore_gate_1\map_frame_water_pass_bundle.json`).
-2. The dumper works: other runtime readbacks in the SAME session came back richly
-   non-zero — `terrain_id_map.rgba`, `gradient_border_channel1.rgba`,
-   `snow_mud_data.rgba`, `light_index_map.rgba`. So an all-zero
-   `ProvinceSecondaryColorMap` is the game's genuine content for this frame in the
-   default 3D terrain view, not a readback failure.
-
-### Shader semantics confirmed (occupation stripes)
-
-`pdxmap.shader:328` calls
-`secondary_color_mask(diffuse.rgb, normal, Input.uv2, ProvinceSecondaryColorMap, vBloomAlpha)`.
-`standardfuncsgfx.fxh:979-987`:
-`vColorMask = tex2D(TexMaskSampler, vUV).rgba; vOccupationMask =
-CalculateOccupationMask(vUV) * vColorMask.a; vColor = lerp(vColor,
-vColorMask.rgb, vOccupationMask)`. `CalculateOccupationMask`
-(`standardfuncsgfx.fxh:965-976`) is a diagonal cosine STRIPE pattern. Therefore:
-
-- **texel alpha** = per-province occupation-stripe strength (0 = no stripe).
-- **texel rgb** = the color the terrain is striped toward.
-- The SRV is sampled unconditionally by the terrain/water/river/tree/mesh shaders
-  (`pdxmap`, `pdxwater`, `river`, `tree`, `pdxmesh` all call
-  `secondary_color_mask`); there is no shader-side mapmode gate. Whether stripes
-  are written is decided CPU-side inside `hoi4.exe`.
-
-An all-transparent map is thus fully consistent with the shader law: alpha 0
-everywhere -> `vOccupationMask` 0 everywhere -> no stripes rendered. It does not,
-however, *prove* the province-id -> stripe mapping, because no province produced a
-non-transparent texel to check.
-
-### Blocker: ongoing-save owner/controller ground truth is not parseable
-
-The strong test also needs the ground-truth owner/controller state for this
-frame, to synthesize the expected occupation stripes and diff them. There is no
-extractor feed yet, so the only source is the save file itself. This is BLOCKED:
-
-- `autosave.hoi4` (the `--continuelastsave` target) has magic `HOI4bin5` — the
-  Clausewitz BINARY (Ironman-style) token format. All 12 most-recent saves are
-  `HOI4bin5`; no plaintext (`HOI4txt`) save exists.
-- Structural field keys (`owner`, `controller`, `state`, `id`, ...) are encoded as
-  2-byte NUMERIC tokens. The literal strings `controller`/`owner`/`province`
-  present in the file are inside quoted VALUES (`air_controller`,
-  `vlasov_owner_flag`, `SIK_a_modern_province` — event/idea/flag names), not
-  struct keys.
-- Decoding numeric tokens -> field names requires the game's binary save-token
-  dictionary, embedded in `hoi4.exe` and not shipped as any plain file (the game's
-  `common/operation_tokens` and `common/synchronized_dynamic_tokens` are unrelated
-  content-token files, not the save codec table). No `rakaly`/`melt`-class tool is
-  present on PATH, and the repo has no the game save-token table or binary-save parser.
-
-Building that would be a save-format reverse-engineering epic, which is out of
-scope for this job. Per the job's STOP rule, the ground-truth-diff arm of the
-strong test is reported as blocked rather than attempted.
-
-### Determinism (2x)
-
-Two runs to `political_colors_restore_gate_1` and
-`political_colors_restore_gate_1_run2` produced identical SHA-256 for all four
-artifacts:
-
-| Artifact | SHA-256 |
-| --- | --- |
-| `province_secondary_color_map_synthesized.rgba` | `D4D2639AD94B0211839461226EB57A5E185829E5C4A9783C2DA9F0A3DA032BF5` |
-| `province_owner_color_map_synthesized.rgba` | `4527E962BF1EDEF11CCC26A43645DDCBA4B2ED0872D4802BD2F8984C2AAFF5D3` |
-| `province_secondary_color_map_diff.bmp` | `8442ED8A69A4A54FCA630E724E3C709C876A5A94C13619DFC8425071391541F3` |
-| `political_color_stats.json` | `B17FF0873DB702A4C868947FD3CB59B6241532615D25E7ED0BBBECE2FDED5746` |
-
-(The three synthesized-artifact hashes equal v1's, as expected: synthesis reads
-the same static installed content. The stats JSON hash differs from v1 because it records
-the new `restore_gate_1` capture descriptor and the new vacuous/transparent
-fields.)
-
-### Proves vs assumes after retained Resistance recovery
-
-| Claim | Current status |
-| --- | --- |
-| Secondary map shape / sampler / slot (2816x1024 RGBA8, `pdxmap` slot 6, water slot 3, Linear/Wrap) | **PROVEN** from shipped shaders + capture descriptors. |
-| The SRV drives occupation STRIPES: alpha = stripe strength, rgb = stripe target color, procedural diagonal mask, sampled unconditionally, CPU-gated | **PROVEN** from shipped `pdxmap`/`standardfuncsgfx` shaders. |
-| A fully transparent secondary map -> no stripes rendered | **PROVEN** (shader lerp with `vOccupationMask == 0`). |
-| The game writes an all-transparent secondary map in the default 3D terrain view for both a 1936 start and the captured ongoing-war frame | **OBSERVED** for those two frames only. This does not generalize the secondary map to all modes or states. |
-| A real Resistance-mode `ProvinceSecondaryColorMap` is nontransparent | **PROVEN from retained content**. The recovered 2816x1024 RDC payload has 3,917 nontransparent texels and alpha histogram `0:2879667, 19:96, 38:132, 57:89, 76:3600`. |
-| The province-id -> nontransparent occupation-stripe producer and raster law | **PROVEN statically and by retained content**. Exact-a729 RE closes the case-0xc membership/color/alpha writer, dirty scheduling, raster worker, and generic upload chain; the retained frame independently confirms full alpha 76 and the three 2x2 edge-coverage levels. The retained capture does not supply a current CPU upload ordinal or selected-Present receipt. |
-
-## Remaining Dynamic Admission Data
-
-The two all-transparent bundle observations remain useful negative frames, but
-they are no longer the complete retained corpus. The recovered Resistance RDC
-closes the nontransparent-content discriminator and exact coverage levels. No
-new visible state, operator-selected control, or human interpretation is needed
-for the secondary occupation texture.
-
-Exact product admission still needs one autonomous clean-launch transaction that
-binds the nontransparent pre-upload CPU bytes to their upload ordinal and
-process/hook epoch, the same selected-Present D80 terrain-t6/water-t3 consumers,
-and a distinct native replay H2 staging readback with zero byte difference.
-Primary political fill capture/reconstruction remains a separate political-map
-scope and is not evidence missing from the occupation-secondary producer law.
-
-## Product Rendering Status (2026-07-08)
-
-Replay-driven political color substitution is blocked. The app must not present
-generated owner/controller colors as the real the game political fill until either:
-
-1. The primary political fill SRV/render target is captured and replayed, or
-2. The exact engine generation path is reverse-engineered from `hoi4.exe`.
-
-The executable contains the relevant `CGradientBorderManager` /
-`CGradientBorder::CFillBufferThreaded` trail, but the current Rust
-GradientBorder generator still contains captured-fit distance pieces. It remains
-a research helper only. Product rendering keeps generated GB and secondary
-textures inert and, for captured passes, leaves HOI4-captured political SRVs in
-place instead of substituting generated replay textures.
+Production rejects incomplete control or POV censuses, missing MAPC1/D18/D94/
+D95 authority, wrong hours or identities, content-admission omissions,
+unresolved colors, topology disagreement, malformed DDS resources, stale
+political epochs, reflected-layout drift, and upload/receipt mismatches. It
+does not use initial-history ownership, save parsing, captured textures,
+recorder POV, neutral political colors, guessed occupation alpha, or legacy
+GradientBorder output as a substitute.

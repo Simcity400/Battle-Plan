@@ -1,7 +1,123 @@
 use crate::content_parse::Result;
-use crate::paradox_text::{first_scalar_any, parse_file, scalar_u32, Document, Value};
+use crate::normalize_game_relative_path;
+use crate::paradox_text::{
+    destructive_event_count, diagnose_text_decode, first_scalar_any, parse_bytes, scalar_u32,
+    Document, Value,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
+
+/// Exact-a729 default installed when a sprite definition has no authored
+/// `effectFile`. The renderer subsequently replaces `.lua` with `.shader`.
+pub const A729_DEFAULT_SPRITE_EFFECT: &str = "gfx/FX/buttonstate.lua";
+
+/// Resolve an authored effect token to the effective-VFS shader source opened
+/// by exact-a729.
+pub fn a729_effect_shader_path(effect_file: Option<&str>) -> std::result::Result<String, String> {
+    let token = match effect_file {
+        Some(value) if value.trim().is_empty() => {
+            return Err("sprite effect token is authored but empty".into())
+        }
+        Some(value) => value,
+        None => A729_DEFAULT_SPRITE_EFFECT,
+    };
+    let normalized = normalize_game_relative_path(token)?;
+    let Some((stem, extension)) = normalized.rsplit_once('.') else {
+        return Err("sprite effect token has no extension".into());
+    };
+    if extension.eq_ignore_ascii_case("lua") {
+        Ok(format!("{stem}.shader"))
+    } else if extension.eq_ignore_ascii_case("shader") {
+        Ok(normalized)
+    } else {
+        Err(format!(
+            "sprite effect token uses unsupported exact-a729 extension .{extension}"
+        ))
+    }
+}
+
+/// Exact include closure for the built-in shader families implemented by the
+/// replay compositor. Unknown shaders remain a typed admission refusal.
+pub fn xui07_builtin_shader_includes(shader_path: &str) -> Option<&'static [&'static str]> {
+    if shader_path.eq_ignore_ascii_case("gfx/FX/buttonstate.shader") {
+        Some(&["gfx/FX/buttonstate.fxh", "gfx/FX/sprite_animation.fxh"])
+    } else if shader_path.eq_ignore_ascii_case("gfx/FX/buttonstate_nodowneffect.shader")
+        || shader_path.eq_ignore_ascii_case("gfx/FX/buttonstate_nodownordisableeffect.shader")
+    {
+        Some(&[])
+    } else if shader_path.eq_ignore_ascii_case("gfx/FX/buttonstate_onlydisable.shader") {
+        Some(&["gfx/FX/buttonstate.fxh", "gfx/FX/sprite_animation.fxh"])
+    } else if shader_path.eq_ignore_ascii_case("gfx/FX/buttonstate_blendframes.shader") {
+        Some(&["gfx/FX/buttonstate.fxh"])
+    } else if shader_path.eq_ignore_ascii_case("gfx/FX/static_button.shader")
+        || shader_path.eq_ignore_ascii_case("gfx/FX/progress.shader")
+        || shader_path.eq_ignore_ascii_case("gfx/FX/progress_startend.shader")
+        || shader_path.eq_ignore_ascii_case("gfx/FX/progress_reverse.shader")
+        || shader_path.eq_ignore_ascii_case("gfx/FX/progress_minmax.shader")
+        || shader_path.eq_ignore_ascii_case("gfx/FX/progress_radial.shader")
+        || shader_path.eq_ignore_ascii_case("gfx/FX/circularprogressbar.shader")
+    {
+        Some(&[])
+    } else {
+        None
+    }
+}
+
+/// Parse the sprite `color` token into portable RGBA f32 bits. Absence uses
+/// exact-a729's observed white default; callers must separately retain whether
+/// that value was authored.
+pub fn a729_sprite_color_rgba_f32_bits(raw: &Value) -> std::result::Result<[u32; 4], String> {
+    let mut values = raw.values_ci("color");
+    let Some(value) = values.next() else {
+        return Ok([1.0f32.to_bits(); 4]);
+    };
+    if values.next().is_some() {
+        return Err("sprite definition repeats color".into());
+    }
+    if let Some(scalar) = value.as_scalar() {
+        let hex = scalar
+            .trim()
+            .strip_prefix("0x")
+            .or_else(|| scalar.trim().strip_prefix("0X"))
+            .ok_or_else(|| "sprite color scalar is not 0xAARRGGBB".to_string())?;
+        if hex.len() != 8 {
+            return Err("sprite color scalar is not 0xAARRGGBB".into());
+        }
+        let argb = u32::from_str_radix(hex, 16)
+            .map_err(|_| "sprite color scalar is not 0xAARRGGBB".to_string())?;
+        return Ok([
+            (f32::from(((argb >> 16) & 0xff) as u8) / 255.0).to_bits(),
+            (f32::from(((argb >> 8) & 0xff) as u8) / 255.0).to_bits(),
+            (f32::from((argb & 0xff) as u8) / 255.0).to_bits(),
+            (f32::from(((argb >> 24) & 0xff) as u8) / 255.0).to_bits(),
+        ]);
+    }
+    let channels = value
+        .fields()
+        .iter()
+        .map(|entry| {
+            entry
+                .value
+                .as_scalar()
+                .ok_or(())
+                .and_then(|value| value.parse::<f32>().map_err(|_| ()))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| "sprite color vector contains a non-f32 channel".to_string())?;
+    if !(channels.len() == 3 || channels.len() == 4)
+        || channels
+            .iter()
+            .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(channel))
+    {
+        return Err("sprite color vector must contain three or four finite unit channels".into());
+    }
+    Ok([
+        channels[0].to_bits(),
+        channels[1].to_bits(),
+        channels[2].to_bits(),
+        channels.get(3).copied().unwrap_or(1.0).to_bits(),
+    ])
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Size {
@@ -33,6 +149,12 @@ pub struct SpriteRegistry {
     sprites: Vec<SpriteDefinition>,
     by_name: BTreeMap<String, usize>,
     kinds: BTreeMap<String, usize>,
+    /// Files loaded through [`SpriteRegistry::parse_file`] whose bytes were
+    /// destroyed at decode: `(rel_path, destructive event count)`. Only that
+    /// entry point owns the bytes, so only it can observe this;
+    /// [`SpriteRegistry::add_document`] receives an already-decoded document and
+    /// contributes nothing here.
+    decode_lossy_files: Vec<(String, usize)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -43,6 +165,14 @@ pub struct GfxParseStats {
     pub recovery_count: usize,
     pub kind_histogram: BTreeMap<String, usize>,
     pub files_with_recoveries: Vec<String>,
+    /// `.gfx` files whose BYTES were destroyed at decode, among those observed
+    /// at the byte level (i.e. loaded through [`SpriteRegistry::parse_file`]).
+    /// A different axis from `files_with_recoveries` — see
+    /// `gui::LayoutDocument::decode_losses`.
+    pub files_with_decode_loss: Vec<String>,
+    /// Destructive decode EVENTS, never entry counts (the per-site detail is
+    /// capped, so entry counts would understate).
+    pub decode_loss_count: usize,
     pub failures: Vec<String>,
 }
 
@@ -51,9 +181,33 @@ impl SpriteRegistry {
         Self::default()
     }
 
+    /// Parse one `.gfx` file from disk. The byte-owning entry point, so it is
+    /// the only one that can observe decode damage, and it does.
     pub fn parse_file(&mut self, path: &Path, rel: &str) -> Result<usize> {
-        let doc = parse_file(path)?;
+        let bytes = std::fs::read(path)?;
+        let events = destructive_event_count(&diagnose_text_decode(&bytes));
+        if events != 0 {
+            self.decode_lossy_files.push((rel.to_string(), events));
+        }
+        let doc = parse_bytes(&bytes);
         Ok(self.add_document(rel, &doc))
+    }
+
+    /// Files whose bytes were destroyed at decode, with EVENT counts, in load
+    /// order. Reported, never gating. Empty for the shipped game (measured).
+    pub fn decode_lossy_files(&self) -> Vec<String> {
+        self.decode_lossy_files
+            .iter()
+            .map(|(file, events)| format!("{file} ({events} destructive decode events)"))
+            .collect()
+    }
+
+    /// Total destructive decode events across files loaded from disk.
+    pub fn decode_loss_events(&self) -> usize {
+        self.decode_lossy_files
+            .iter()
+            .map(|(_, events)| *events)
+            .sum()
     }
 
     pub fn add_document(&mut self, source_file: &str, doc: &Document) -> usize {
@@ -102,6 +256,15 @@ impl SpriteRegistry {
 
     pub fn sprites(&self) -> &[SpriteDefinition] {
         &self.sprites
+    }
+
+    /// Effective last-registered sprite winners in deterministic folded-name
+    /// order. This is the semantic registry, unlike `sprites()`, which also
+    /// retains shadowed declarations for diagnostics.
+    pub fn effective_sprites(&self) -> impl Iterator<Item = &SpriteDefinition> {
+        self.by_name
+            .values()
+            .filter_map(|index| self.sprites.get(*index))
     }
 
     pub fn len(&self) -> usize {

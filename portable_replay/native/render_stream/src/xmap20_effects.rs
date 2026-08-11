@@ -182,7 +182,7 @@ pub struct Xmap20ActiveEffect {
 
 impl Xmap20ActiveEffect {
     fn from_checkpoint(
-        event: &EffectLifecycleEvent,
+        event: &Xmap20LifecycleEvent,
         packets: &[&ParticlePacket],
     ) -> Xmap20ActiveEffect {
         Self {
@@ -437,7 +437,7 @@ fn validate_lifecycle(
 }
 
 fn validate_event(
-    event: &EffectLifecycleEvent,
+    event: &Xmap20LifecycleEvent,
     dependencies: &Xmap20DependencyReceipts,
 ) -> Result<(), String> {
     if event.effect_instance_id == 0
@@ -464,7 +464,8 @@ fn validate_event(
             entity_instance_id,
             node_token,
         } => {
-            if *entity_instance_id == 0
+            if event.producer_kind != "unit"
+                || *entity_instance_id == 0
                 || node_token.trim().is_empty()
                 || !dependencies.admits_entity_semantic_source(&event.producer_instance_id)
             {
@@ -476,7 +477,8 @@ fn validate_event(
         ParentAnchor::World {
             world_transform_4x4_f32_bits,
         } => {
-            if !world_transform_4x4_f32_bits
+            if event.producer_kind != "weather"
+                || !world_transform_4x4_f32_bits
                 .iter()
                 .all(|bits| f32::from_bits(*bits).is_finite())
                 || !dependencies.admits_weather_semantic_source(&event.producer_instance_id)
@@ -492,7 +494,7 @@ fn validate_event(
 
 fn validate_identity_unchanged(
     prior: &Xmap20ActiveEffect,
-    event: &EffectLifecycleEvent,
+    event: &Xmap20LifecycleEvent,
 ) -> Result<(), String> {
     if prior.registration_token != event.registration_token
         || prior.registration_hash_u32 != event.registration_hash_u32
@@ -511,7 +513,7 @@ fn validate_identity_unchanged(
 
 fn validate_frontier_forward(
     prior: &Xmap20ActiveEffect,
-    event: &EffectLifecycleEvent,
+    event: &Xmap20LifecycleEvent,
 ) -> Result<(), String> {
     if event.update_index < prior.last_update_index {
         return Err("XMAP20 effect update frontier moved backwards".into());
@@ -694,10 +696,13 @@ fn validate_active_effect(effect: &Xmap20ActiveEffect) -> Result<(), String> {
         ParentAnchor::Entity {
             entity_instance_id,
             node_token,
-        } if *entity_instance_id != 0 && !node_token.trim().is_empty() => {}
+        } if effect.producer_kind == "unit"
+            && *entity_instance_id != 0
+            && !node_token.trim().is_empty() => {}
         ParentAnchor::World {
             world_transform_4x4_f32_bits,
-        } if world_transform_4x4_f32_bits
+        } if effect.producer_kind == "weather"
+            && world_transform_4x4_f32_bits
             .iter()
             .all(|bits| f32::from_bits(*bits).is_finite()) => {}
         _ => return Err("XMAP20 admitted active effect has an invalid parent anchor".into()),
@@ -866,8 +871,8 @@ mod tests {
         }
     }
 
-    fn event(sequence: u64, operation: EffectOperation) -> EffectLifecycleEvent {
-        EffectLifecycleEvent {
+    fn event(sequence: u64, operation: EffectOperation) -> Xmap20LifecycleEvent {
+        Xmap20LifecycleEvent {
             sequence,
             update_index: 7,
             effect_instance_id: 9,
@@ -892,8 +897,8 @@ mod tests {
     }
 
     fn frame(
-        ordered_lifecycle_events: Vec<EffectLifecycleEvent>,
-        active_effects: Vec<EffectLifecycleEvent>,
+        ordered_lifecycle_events: Vec<Xmap20LifecycleEvent>,
+        active_effects: Vec<Xmap20LifecycleEvent>,
     ) -> Xmap20EffectFrame {
         Xmap20EffectFrame {
             schema: XMAP20_EFFECT_FRAME_SCHEMA.into(),
@@ -966,6 +971,8 @@ mod tests {
     #[test]
     fn rejects_nonfinite_world_anchor() {
         let mut spawn = event(1, EffectOperation::Spawn);
+        spawn.producer_kind = "weather".into();
+        spawn.producer_instance_id = "xmap19.weather:r1:e0:c2:p1:primary".into();
         spawn.parent_anchor = ParentAnchor::World {
             world_transform_4x4_f32_bits: {
                 let mut matrix = [0u32; 16];
@@ -975,6 +982,9 @@ mod tests {
         };
         let error = admit_xmap20_effects(&frame(vec![spawn.clone()], vec![spawn]), &dependencies())
             .unwrap_err();
-        assert!(error.contains("non-finite transform"));
+        assert_eq!(
+            error,
+            "XMAP20 world anchor is non-finite or not joined to XMAP19 identity"
+        );
     }
 }

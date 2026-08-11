@@ -13,11 +13,12 @@ use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::winuser::{
     AdjustWindowRect, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetClientRect, LoadCursorW, PeekMessageW, PostQuitMessage, RegisterClassW, ReleaseCapture,
-    ScreenToClient, SetCapture, SetWindowTextW, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-    CW_USEDEFAULT, IDC_ARROW, MSG, PM_REMOVE, WM_CAPTURECHANGED, WM_DESTROY, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    GetClientRect, GetKeyState, LoadCursorW, PeekMessageW, PostQuitMessage, RegisterClassW,
+    ReleaseCapture, ScreenToClient, SetCapture, SetWindowTextW, TranslateMessage, CS_HREDRAW,
+    CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, MSG, PM_REMOVE, VK_SHIFT, WM_CAPTURECHANGED, WM_DESTROY,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 
 use crate::Result;
@@ -40,6 +41,7 @@ pub enum WindowEvent {
     },
     KeyDown {
         vk: i32,
+        shift: bool,
     },
     KeyUp {
         vk: i32,
@@ -55,6 +57,8 @@ pub enum WindowEvent {
     },
     MouseUp {
         button: MouseButton,
+        x: i32,
+        y: i32,
     },
     /// Wheel delta in WHEEL_DELTA (120) units; x/y are client coords.
     Wheel {
@@ -64,6 +68,16 @@ pub enum WindowEvent {
     },
     /// Mouse capture was taken away (WM_CAPTURECHANGED): cancel drags.
     CaptureLost,
+}
+
+/// Input family implemented by this concrete client event pump.
+///
+/// This value describes the messages the running standalone viewer actually
+/// accepts (WM_KEY* plus WM_MOUSE*). It is deliberately not decoded from a
+/// replay carrier. Adding controller or focus-traversal messages requires a
+/// new implementation here before XUI25 can admit that family.
+pub fn actual_client_input_variant() -> game_ui::variant_admission::InputVariant {
+    game_ui::variant_admission::InputVariant::MouseKeyboard
 }
 
 thread_local! {
@@ -99,7 +113,10 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_KEYDOWN => {
-            push_event(WindowEvent::KeyDown { vk: wparam as i32 });
+            push_event(WindowEvent::KeyDown {
+                vk: wparam as i32,
+                shift: GetKeyState(VK_SHIFT) < 0,
+            });
             0
         }
         WM_KEYUP => {
@@ -124,12 +141,13 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_LBUTTONUP | WM_MBUTTONUP | WM_RBUTTONUP => {
             ReleaseCapture();
+            let (x, y) = lparam_xy(lparam);
             let button = match msg {
                 WM_LBUTTONUP => MouseButton::Left,
                 WM_MBUTTONUP => MouseButton::Middle,
                 _ => MouseButton::Right,
             };
-            push_event(WindowEvent::MouseUp { button });
+            push_event(WindowEvent::MouseUp { button, x, y });
             0
         }
         WM_CAPTURECHANGED => {

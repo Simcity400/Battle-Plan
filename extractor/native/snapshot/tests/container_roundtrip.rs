@@ -437,9 +437,11 @@ fn rejects_tampered_first_snapshot_at_open() {
         &format!("payload/{GAME}/000017000461.snapshot.json"),
     );
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default());
+    // A stored-hash mismatch is the typed payload-integrity class, not the
+    // generic reject class (H3: integrity is typed end-to-end).
     assert!(
-        matches!(c.as_ref().err(), Some(ContainerError::Reject(m)) if m.contains("sha256")),
-        "tampered first snapshot must be rejected, got err={:?}",
+        matches!(c.as_ref().err(), Some(ContainerError::PayloadIntegrity(m)) if m.contains("sha256")),
+        "tampered first snapshot must be rejected as payload integrity, got err={:?}",
         c.err()
     );
 }
@@ -462,9 +464,10 @@ fn rejects_tampered_later_snapshot_on_lazy_read() {
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default())
         .expect("opens: first snapshot + index are intact");
     let err = c.load(17050260).unwrap_err();
+    // Same typed class on the lazy route as at open (H3).
     assert!(
-        matches!(&err, ContainerError::Reject(m) if m.contains("sha256")),
-        "tampered later snapshot must fail on lazy read, got {err}"
+        matches!(&err, ContainerError::PayloadIntegrity(m) if m.contains("sha256")),
+        "tampered later snapshot must fail on lazy read as payload integrity, got {err}"
     );
     // the untampered first snapshot still loads fine.
     assert!(c.load(17000461).is_ok());

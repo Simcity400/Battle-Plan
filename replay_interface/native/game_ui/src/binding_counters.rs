@@ -1,5 +1,5 @@
-//! U1 — on-map unit-counter **CONTENT** binding (REPLAY_PRODUCTION_PLAN §6a
-//! wave U1 / `UI_COVERAGE_MATRIX` C1 / `EXTRACTION_NEEDS` A15).
+//! U1 — on-map unit-counter **CONTENT** binding. The counter law is
+//! `replay_interface/documents/UNIT_COUNTER_LAW.md`.
 //!
 //! This module is the *population* seam for what an on-map unit counter
 //! **displays** — its name, strength/org bars, NATO symbol, owner colour key,
@@ -8,7 +8,7 @@
 //! rendering; the counter's **screen-space geometry / stacking / selection** is
 //! CAP6-gated and deliberately NOT in scope here (see `map_viewer::unit_placement`
 //! for the placement half and `map_viewer::unit_counter_assets` for the decoded
-//! asset chain — both READ-ONLY references for this lane).
+//! asset chain).
 //!
 //! ## Data path (Constraint 2 — typed views only)
 //!
@@ -35,7 +35,7 @@
 //!   (per `common/units/*` `sub_unit` files) is a refinement not yet threaded;
 //!   for the served roles the direct key resolves. Naval/air counters use
 //!   separate symbol systems (ship silhouettes / air-mission icons), NOT the
-//!   subuniticons division mapping named by this lane, so their symbol key is
+//!   subuniticons division mapping used here, so their symbol key is
 //!   `None` with the reason recorded ([`NatoKeySource`]).
 //! * **Strength bar fraction** — FILE-derived: the division `strength` leaf is a
 //!   `0..=1` strength RATIO in the schema, so it doubles as the `GFX_mapicon_unit_bar_str`
@@ -116,7 +116,7 @@ pub enum NatoKeySource {
     /// The land `template_role` leaf was not measured — no key.
     LandRoleUnavailable,
     /// Naval counter: the ship-silhouette symbol system is separate from the
-    /// subuniticons division mapping this lane binds; symbol key not derived
+    /// subuniticons division mapping used here; symbol key not derived
     /// here (documented). The `dominant_hull_class` is still carried as the
     /// content hint on [`CounterContent::symbol_hint`].
     NavalHullClassNotMapped,
@@ -137,8 +137,8 @@ pub enum ServedBadge {
     /// The view carries this signal but it was `Absent`/`Unobtained` this hour
     /// (fail-closed: badge-absent, never defaulted).
     AbsentThisHour,
-    /// The `replay_core` unit view does NOT surface this A15 signal at all — a
-    /// recording-side gap (`EXTRACTION_NEEDS` A15). Always badge-absent; filed.
+    /// The typed unit view has no authenticated value for this signal at this
+    /// hour. Always badge-absent; never inferred from another field.
     NotSurfaced,
 }
 

@@ -1,6 +1,7 @@
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -324,7 +325,18 @@ pub(crate) fn validate_map_frame_runtime_bundle_for_with_resolver(
     if spec.terrain_strict {
         validate_map_frame_shader_cache_constants_evidence(&frame)?;
     }
-    validate_map_frame_vanilla_sources(&frame, &bundle_dir, spec, resolver)?;
+    // FW12 H2: record the typed vanilla-source verification outcome on the
+    // frame (ResolverVerified / ProducerVerified / Unverified{sources}) — the
+    // no-resolver case is a recorded state consumers can gate on, not a
+    // silent skip.
+    // RES2: seal the outcome to this frame's own evidence, so it cannot be
+    // lifted onto a different frame to admit it.
+    let verification = validate_map_frame_vanilla_sources(&frame, &bundle_dir, spec, resolver)?;
+    frame.vanilla_source_verification = Some(seal_vanilla_source_verification(
+        &frame,
+        spec.required_vanilla_sources,
+        verification,
+    ));
     for draw in &frame.draws {
         validate_map_frame_draw(draw, &frame, &bundle_dir, spec)?;
     }
@@ -379,6 +391,8 @@ fn substitute_synthesized_terrain_id_map(
             byte_len: synthesized.bytes.len(),
             fnv1a64: synthesized.descriptor.fnv1a64.clone(),
             provenance: provenance.clone(),
+            resolved_from: None,
+            effective_vfs_verified: None,
         },
     );
     frame.synthetic_payloads.insert(
@@ -771,6 +785,8 @@ fn populate_descriptor_only_runtime_shader_resources_for_draw(
                         byte_len: resolved.bytes.len(),
                         fnv1a64: resolved.fnv1a64.clone(),
                         provenance: resolved.provenance.clone(),
+                        resolved_from: None,
+                        effective_vfs_verified: None,
                     });
                 synthetic_payloads
                     .entry(resolved.file.clone())
@@ -1178,6 +1194,8 @@ fn terrain_chunk_library_shader_resource_fallbacks(
                         provenance: format!(
                             "terrain_chunk_library_shader_resource_fallback_{name}"
                         ),
+                        resolved_from: None,
+                        effective_vfs_verified: None,
                     });
             let entries = fallbacks.entry(name.clone()).or_insert_with(Vec::new);
             if !entries.iter().any(|(existing, existing_evidence)| {
@@ -1875,12 +1893,29 @@ pub(crate) fn validate_map_frame_shader_bytecode_evidence(
     validate_map_frame_file_evidence(bundle_dir, evidence)
 }
 
+/// Validate the bundle's required vanilla-source evidence and return the
+/// TYPED verification outcome (FW12 H2 — the FW7-F2 consumer half).
+///
+/// With a local resolver, every required source is re-read and re-hashed
+/// against the local effective VFS (`ResolverVerified`, or a hard mismatch
+/// error). WITHOUT a resolver the cross-check used to be silently skipped;
+/// now the skip is a recorded state: each source's evidence is consulted for
+/// the capture host's machine-readable `effective_vfs_verified` field
+/// (written by FW7's `copy_required_source_evidence`), yielding
+/// `ProducerVerified` when every source was resolved through the session's
+/// declared content layers, and `Unverified { unverified_sources }` otherwise
+/// — never silence. `Unverified` is not a refusal by itself: the bundle's
+/// internal evidence self-consistency is still enforced above, and refusing
+/// would break every pre-FW7 bundle; the caller records the state on the
+/// frame ([`MapFrameRuntimeBundle::vanilla_source_verification`]) so
+/// consumers can gate.
 pub(crate) fn validate_map_frame_vanilla_sources(
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     spec: MapFrameBundleValidationSpec,
     resolver: Option<&GameFileResolver>,
-) -> Result<()> {
+) -> Result<MapFrameVanillaSourceVerification> {
+    let mut unverified_sources = Vec::new();
     for &source in spec.required_vanilla_sources {
         let evidence = frame.vanilla_sources.get(source).ok_or_else(|| {
             format!(
@@ -1908,9 +1943,250 @@ pub(crate) fn validate_map_frame_vanilla_sources(
                 )
                 .into());
             }
+        } else if evidence.effective_vfs_verified != Some(true) {
+            unverified_sources.push(source.to_string());
         }
     }
-    Ok(())
+    Ok(if resolver.is_some() {
+        MapFrameVanillaSourceVerification::ResolverVerified
+    } else if unverified_sources.is_empty() {
+        MapFrameVanillaSourceVerification::ProducerVerified
+    } else {
+        MapFrameVanillaSourceVerification::Unverified { unverified_sources }
+    })
+}
+
+/// RES2: the strict CONSUMER refusal FW12 deferred — a production-playback
+/// consumer demanding that a frame's required vanilla sources were actually
+/// certified against the effective VFS the engine compiled from.
+///
+/// FW12 recorded [`MapFrameVanillaSourceVerification`] on every validated
+/// frame and deliberately left `Unverified` non-refusing at the PRODUCER side,
+/// because bundles captured before FW7 legitimately carry no verification and
+/// refusing them at load would break every diagnostic route that exists to
+/// inspect exactly those bundles. The refusal therefore belongs to the
+/// consumer that presents the frame as product output, not to bundle loading.
+///
+/// Fail-closed on `None` as well as on `Unverified`: `None` means validation
+/// never ran for this frame (for example a terrain-chunk-library frame
+/// assembled by [`crate::terrain_chunk_library`], which sets the field to
+/// `None` because it never routes through
+/// [`validate_map_frame_vanilla_sources`]). A state that was never established
+/// is not a state that passed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapFrameVanillaSourceRefusal {
+    /// The renderer/consumer surface that refused (e.g. `"production terrain
+    /// renderer"`), so the operator sees which product boundary fired.
+    pub consumer_label: String,
+    /// The required sources that carry no effective-VFS certification. Empty
+    /// when the frame carries no verification outcome at all.
+    pub unverified_sources: Vec<String>,
+    /// True when the frame was never validated (`vanilla_source_verification`
+    /// was `None`) rather than validated-and-found-unverified.
+    pub verification_absent: bool,
+}
+
+impl fmt::Display for MapFrameVanillaSourceRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.verification_absent {
+            return write!(
+                f,
+                "{} blocked: map-frame bundle carries no vanilla-source verification outcome; \
+                 production playback requires sources certified against the engine's effective VFS",
+                self.consumer_label
+            );
+        }
+        write!(
+            f,
+            "{} blocked: map-frame bundle's required vanilla source(s) are unverified against the \
+             engine's effective VFS ({}); production playback requires either a capture host that \
+             declared its content layers (terrain_capture_attach --content-layers/--vanilla-content) \
+             or a local effective-VFS resolver that re-reads these sources",
+            self.consumer_label,
+            self.unverified_sources.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for MapFrameVanillaSourceRefusal {}
+
+/// Strict consumer gate: admit a frame for PRODUCTION PLAYBACK only when its
+/// vanilla sources were certified — `ResolverVerified` (a local effective-VFS
+/// resolver re-read and re-hashed them) or `ProducerVerified` (the capture host
+/// resolved them through its declared content layers).
+///
+/// Diagnostic/evidence consumers deliberately do not call this: they keep
+/// accepting `Unverified` frames, which is the only way pre-FW7 bundles stay
+/// inspectable.
+/// `pub(crate)` because [`MapFrameVanillaSourceVerification`] is a crate-internal
+/// type; the public consumer API is
+/// [`crate::NativeD3d11TerrainBundle::require_production_vanilla_sources`].
+pub(crate) fn require_production_verified_vanilla_sources(
+    verification: Option<&MapFrameVanillaSourceVerification>,
+    consumer_label: &str,
+) -> std::result::Result<(), MapFrameVanillaSourceRefusal> {
+    match verification {
+        Some(MapFrameVanillaSourceVerification::ResolverVerified)
+        | Some(MapFrameVanillaSourceVerification::ProducerVerified) => Ok(()),
+        Some(MapFrameVanillaSourceVerification::Unverified { unverified_sources }) => {
+            Err(MapFrameVanillaSourceRefusal {
+                consumer_label: consumer_label.to_string(),
+                unverified_sources: unverified_sources.clone(),
+                verification_absent: false,
+            })
+        }
+        None => Err(MapFrameVanillaSourceRefusal {
+            consumer_label: consumer_label.to_string(),
+            unverified_sources: Vec::new(),
+            verification_absent: true,
+        }),
+    }
+}
+
+/// RES2: a vanilla-source verification outcome SEALED to the evidence it
+/// describes.
+///
+/// Both fields are private to this module, so no other module can mint a seal
+/// — and `sealed_for` binds it to a digest of the frame's own required
+/// vanilla-source evidence, so a seal lifted from a verified frame does not
+/// validate on a different one. Without that binding, `pub(crate)` field access
+/// alone would let any module copy a `ResolverVerified` seal onto an
+/// uncertified frame and admit it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MapFrameVanillaSourceSeal {
+    verification: MapFrameVanillaSourceVerification,
+    sealed_for: u64,
+}
+
+impl MapFrameVanillaSourceSeal {
+    /// The sealed outcome, WITHOUT checking the binding. Only for reporting
+    /// what was recorded; admission must use [`unseal_vanilla_source_outcome`].
+    pub(crate) fn recorded_outcome(&self) -> &MapFrameVanillaSourceVerification {
+        &self.verification
+    }
+}
+
+/// Digest binding a seal to the exact required vanilla-source evidence it was
+/// derived from. Any change to that evidence — including wholesale replacement
+/// by another frame's sources — changes the digest and voids the seal.
+fn vanilla_source_seal_identity(frame: &MapFrameRuntimeBundle, required_sources: &[&str]) -> u64 {
+    let mut identity: u64 = 0xcbf2_9ce4_8422_2325;
+    for source in required_sources {
+        let evidence = frame.vanilla_sources.get(*source);
+        let mut mix = |bytes: &[u8]| {
+            for byte in bytes {
+                identity ^= u64::from(*byte);
+                identity = identity.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        mix(source.as_bytes());
+        match evidence {
+            Some(evidence) => {
+                mix(&evidence.byte_len.to_le_bytes());
+                mix(evidence.fnv1a64.as_bytes());
+                mix(&[u8::from(evidence.effective_vfs_verified == Some(true))]);
+            }
+            None => mix(b"<absent>"),
+        }
+    }
+    identity
+}
+
+/// Seal a freshly computed verification outcome to the frame that produced it.
+///
+/// PRIVATE to this module, deliberately. While it was `pub(crate)` a sibling
+/// module could mint `ResolverVerified` for an uncertified frame using that
+/// frame's own evidence, producing a seal whose binding matched — a forgery the
+/// digest cannot catch, because the digest only proves WHICH evidence a seal
+/// describes, not that the outcome was honestly computed. Restricting minting
+/// to this module is what makes the outcome trustworthy; the binding then stops
+/// a legitimately minted seal from being moved to another frame. Its only
+/// caller is the validation path above.
+fn seal_vanilla_source_verification(
+    frame: &MapFrameRuntimeBundle,
+    required_sources: &[&str],
+    verification: MapFrameVanillaSourceVerification,
+) -> MapFrameVanillaSourceSeal {
+    MapFrameVanillaSourceSeal {
+        sealed_for: vanilla_source_seal_identity(frame, required_sources),
+        verification,
+    }
+}
+
+/// Read a frame's verification outcome, returning `None` when the seal is
+/// absent OR does not belong to this frame's evidence. Fail-closed by
+/// construction: a substituted seal reads as "never verified", which the
+/// consumer gate refuses.
+pub(crate) fn unseal_vanilla_source_outcome<'a>(
+    frame: &'a MapFrameRuntimeBundle,
+    required_sources: &[&str],
+) -> Option<&'a MapFrameVanillaSourceVerification> {
+    let seal = frame.vanilla_source_verification.as_ref()?;
+    (seal.sealed_for == vanilla_source_seal_identity(frame, required_sources))
+        .then(|| &seal.verification)
+}
+
+/// Proof that a map-frame bundle passed the RES2 production vanilla-source
+/// gate — a bundle admitted for PRODUCTION PLAYBACK.
+///
+/// The inner reference is PRIVATE TO THIS MODULE, so no other module in this
+/// crate (and nothing outside it) can build this type with a struct literal.
+/// [`admit_production_map_bundle`] below is the only constructor, and it runs
+/// the gate. The production preparation funnels take this type instead of a raw
+/// bundle, which makes the gate a COMPILE-TIME requirement rather than a
+/// convention a reviewer has to police.
+///
+/// That distinction is the point. Earlier revisions of this lane proved gate
+/// placement with source scans; review showed a scan can be defeated by
+/// `#[cfg(any())]`, `if false { … }`, a shadowed helper, or a decoy string,
+/// all of which keep the searched text intact while disabling enforcement. A
+/// type the funnel cannot be called without has none of those holes: deleting
+/// or disabling the admission is a compile error, not a silently green test.
+#[derive(Debug, Clone, Copy)]
+pub struct AdmittedProductionMapBundle<'a> {
+    bundle: &'a NativeD3d11TerrainBundle,
+}
+
+impl<'a> AdmittedProductionMapBundle<'a> {
+    /// The underlying bundle, now carrying the admission proof.
+    pub fn bundle(&self) -> &'a NativeD3d11TerrainBundle {
+        self.bundle
+    }
+}
+
+/// The ONLY constructor of [`AdmittedProductionMapBundle`]. Runs the strict
+/// consumer gate and hands back the proof on success.
+///
+/// Takes ONLY the bundle and reads that bundle's own verification outcome. An
+/// earlier revision accepted the verification state as a separate argument,
+/// which let any module in this crate pair bundle A with bundle B's
+/// `ProducerVerified` state and mint a proof for an uncertified A — a forgery
+/// that defeated the whole point of the type. The state and the bundle it
+/// describes are now inseparable.
+pub(crate) fn admit_production_map_bundle<'a>(
+    bundle: &'a NativeD3d11TerrainBundle,
+    consumer_label: &str,
+) -> std::result::Result<AdmittedProductionMapBundle<'a>, MapFrameVanillaSourceRefusal> {
+    require_production_verified_vanilla_sources(
+        bundle.vanilla_source_verification(),
+        consumer_label,
+    )?;
+    Ok(AdmittedProductionMapBundle { bundle })
+}
+
+/// The ONE sanctioned bypass: capture-parity preparation, whose output is
+/// diffed against the capture it came from and is never shown as product
+/// output. See
+/// [`crate::NativeD3d11TerrainRenderer::prepare_capture_parity_map`].
+///
+/// Gating the parity route would refuse every pre-FW7 capture on the one route
+/// that exists to reproduce such a capture, so the bypass is correct — but it
+/// is deliberately a single named function in this module rather than a public
+/// constructor, so every use of it is greppable and reviewable.
+pub(crate) fn capture_parity_map_bundle(
+    bundle: &NativeD3d11TerrainBundle,
+) -> AdmittedProductionMapBundle<'_> {
+    AdmittedProductionMapBundle { bundle }
 }
 
 pub(crate) fn validate_map_frame_base_terrain_shipped_resources(
@@ -4688,6 +4964,8 @@ mod tests {
                             byte_len: captured_len,
                             fnv1a64: hash,
                             provenance: "unit_test_full_terrain_id_map".to_string(),
+                            resolved_from: None,
+                            effective_vfs_verified: None,
                         },
                     );
                 }
@@ -4827,6 +5105,526 @@ mod tests {
             Some(&resolver),
         )
         .expect("matching effective-VFS source identities must validate");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// RES2: the strict CONSUMER gate FW12 deferred.
+    ///
+    /// Production playback (the consumer that turns a frame into product
+    /// pixels) refuses a frame whose required vanilla sources nothing
+    /// certified against the engine's effective VFS, with a typed
+    /// [`MapFrameVanillaSourceRefusal`]. The diagnostic/evidence routes —
+    /// bundle validation and `NativeD3d11TerrainBundle` loading — keep
+    /// accepting exactly that frame, which is what keeps pre-FW7 captures
+    /// inspectable. `ProducerVerified` and `ResolverVerified` frames pass on
+    /// both.
+    #[test]
+    fn production_playback_refuses_unverified_vanilla_sources_diagnostics_still_accept() {
+        let root = temp_test_dir("res2_production_vanilla_source_gate");
+        let resolver = synthetic_terrain_resolver(&root, 0);
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create map-frame bundle directory");
+        // Pre-FW7 shape: no `effective_vfs_verified` on any required source.
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+        rewrite_terrain_bundle_with_valid_output_merger_state(&path);
+
+        // --- Diagnostic routes still accept the Unverified frame ---
+        let frame = validate_map_frame_runtime_bundle(&path)
+            .expect("diagnostic validation must keep accepting a pre-FW7 bundle");
+        assert!(
+            matches!(
+                frame
+                    .vanilla_source_verification
+                    .as_ref()
+                    .map(MapFrameVanillaSourceSeal::recorded_outcome),
+                Some(MapFrameVanillaSourceVerification::Unverified { .. })
+            ),
+            "fixture must be the Unverified case"
+        );
+        let unverified_bundle = NativeD3d11TerrainBundle::load(&path)
+            .expect("loading stays permissive: it is the diagnostic route");
+
+        // --- Production playback refuses it, typed ---
+        let refusal = unverified_bundle
+            .require_production_vanilla_sources("production terrain renderer")
+            .expect_err("production playback must refuse unverified vanilla sources");
+        assert!(!refusal.verification_absent);
+        assert_eq!(
+            refusal.unverified_sources,
+            TERRAIN_MAP_FRAME_SPEC
+                .required_vanilla_sources
+                .iter()
+                .map(|source| source.to_string())
+                .collect::<Vec<_>>(),
+            "the refusal names every uncertified source"
+        );
+        assert!(
+            refusal.consumer_label == "production terrain renderer",
+            "the refusal names the product boundary that fired"
+        );
+        let rendered = refusal.to_string();
+        assert!(
+            rendered.contains("blocked") && rendered.contains("effective VFS"),
+            "refusal message must read as a product blocker: {rendered}"
+        );
+
+        // --- ResolverVerified: the same bundle, loaded with a local resolver,
+        // passes production playback AND the diagnostic route ---
+        let resolver_bundle = NativeD3d11TerrainBundle::load_with_resolver(&path, &resolver)
+            .expect("resolver-backed load");
+        resolver_bundle
+            .require_production_vanilla_sources("production terrain renderer")
+            .expect("ResolverVerified frames are admitted to production playback");
+        validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
+            .expect("ResolverVerified frames still pass the diagnostic route");
+
+        // --- ProducerVerified: an FW7+ capture host declared its content
+        // layers, so the frame is admitted with no local resolver at all ---
+        let producer_dir = root.join("producer_bundle");
+        fs::create_dir_all(&producer_dir).expect("create producer bundle directory");
+        let producer_path = write_valid_map_frame_bundle(&producer_dir, |mut frame| {
+            for evidence in frame.vanilla_sources.values_mut() {
+                evidence.effective_vfs_verified = Some(true);
+                evidence.resolved_from = Some("base_installation".to_string());
+            }
+            frame
+        });
+        rewrite_terrain_bundle_with_valid_output_merger_state(&producer_path);
+        let producer_frame = validate_map_frame_runtime_bundle(&producer_path)
+            .expect("producer-verified bundle passes the diagnostic route");
+        assert_eq!(
+            producer_frame
+                .vanilla_source_verification
+                .as_ref()
+                .map(MapFrameVanillaSourceSeal::recorded_outcome),
+            Some(&MapFrameVanillaSourceVerification::ProducerVerified)
+        );
+        NativeD3d11TerrainBundle::load(&producer_path)
+            .expect("producer-verified bundle loads")
+            .require_production_vanilla_sources("production terrain renderer")
+            .expect("ProducerVerified frames are admitted to production playback");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Drop BOTH `//` line comments and `/* ... */` block comments (nested, as
+    /// Rust allows) so a source scan cannot be satisfied by a commented-out
+    /// call. Round-2 review closed the `//` hole; round-3 review found that
+    /// block-commenting a gate still left the needle searchable, which would
+    /// let production enforcement be disabled with every placement test green.
+    ///
+    /// Deliberately does not track string literals. That direction is safe: a
+    /// `/*` inside a string can only cause OVER-stripping, which makes a needle
+    /// disappear and the scan FAIL loudly. Under-stripping is the only
+    /// false-pass direction, and it is exactly what this function removes.
+    fn strip_comments(source: &str) -> String {
+        // Char-based (not byte-based): these sources contain non-ASCII text, and
+        // reassembling bytes as chars would mangle it.
+        let chars: Vec<char> = source.chars().collect();
+        let mut out = String::with_capacity(source.len());
+        let mut index = 0usize;
+        let mut block_depth = 0usize;
+        let mut in_line_comment = false;
+        while index < chars.len() {
+            let current = chars[index];
+            let next = chars.get(index + 1).copied();
+            if in_line_comment {
+                if current == '\n' {
+                    in_line_comment = false;
+                    out.push('\n');
+                }
+                index += 1;
+                continue;
+            }
+            if block_depth > 0 {
+                if current == '/' && next == Some('*') {
+                    block_depth += 1;
+                    index += 2;
+                    continue;
+                }
+                if current == '*' && next == Some('/') {
+                    block_depth -= 1;
+                    index += 2;
+                    continue;
+                }
+                // Keep newlines so line-oriented needles cannot be spliced
+                // together across a removed comment.
+                if current == '\n' {
+                    out.push('\n');
+                }
+                index += 1;
+                continue;
+            }
+            if current == '/' && next == Some('/') {
+                in_line_comment = true;
+                index += 2;
+                continue;
+            }
+            if current == '/' && next == Some('*') {
+                block_depth = 1;
+                index += 2;
+                continue;
+            }
+            out.push(current);
+            index += 1;
+        }
+        out
+    }
+
+    /// Exact half-open slice `[start, end)`, both anchors required. Panicking
+    /// on a missing anchor is deliberate: if a scanned function is renamed, the
+    /// scan must fail loudly rather than silently degrade to "found nothing,
+    /// asserted nothing".
+    fn source_slice<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let start_index = source
+            .find(start)
+            .unwrap_or_else(|| panic!("source scan anchor not found: {start}"));
+        let body = &source[start_index..];
+        let end_index = body
+            .find(end)
+            .unwrap_or_else(|| panic!("source scan end anchor not found: {end}"));
+        &body[..end_index]
+    }
+
+    /// The scan helpers are load-bearing for every placement proof below, so
+    /// they get their own test: a commented-out call must not satisfy a scan,
+    /// and a slice must not leak past its end anchor.
+    #[test]
+    fn source_scan_helpers_reject_commented_out_calls_and_respect_slice_bounds() {
+        // `//` line comments (round-2 finding).
+        let stripped = strip_comments("keep_me();\n// gate_call()?;\ncode(); // trailing\n");
+        assert!(stripped.contains("keep_me();"));
+        assert!(
+            !stripped.contains("gate_call()?;"),
+            "a line-commented call must not count"
+        );
+        assert!(stripped.contains("code();") && !stripped.contains("trailing"));
+
+        // `/* ... */` block comments, including nested ones (round-3 finding):
+        // block-commenting a gate must NOT leave its needle searchable.
+        let blocked = strip_comments("before();\n/* gate_call()?; */\nafter();\n");
+        assert!(blocked.contains("before();") && blocked.contains("after();"));
+        assert!(
+            !blocked.contains("gate_call()?;"),
+            "a block-commented call must not count"
+        );
+        let nested =
+            strip_comments("a();\n/* outer /* inner gate_call()?; */ still_hidden(); */\nb();\n");
+        assert!(nested.contains("a();") && nested.contains("b();"));
+        assert!(
+            !nested.contains("gate_call()?;") && !nested.contains("still_hidden();"),
+            "nested block comments must be fully removed"
+        );
+        // A block comment spanning lines must not splice the surviving lines
+        // together into a needle that never existed.
+        let spanning = strip_comments("head();\n/*\ngate_call()?;\n*/\ntail();\n");
+        assert!(!spanning.contains("gate_call()?;"));
+        assert!(spanning.contains("head();\n") && spanning.contains("tail();"));
+
+        let sliced = source_slice("AAA start MIDDLE end BBB", "start", "end");
+        assert!(sliced.contains("MIDDLE"));
+        assert!(
+            !sliced.contains("BBB"),
+            "the slice must not leak past its end anchor"
+        );
+    }
+
+    /// RES2 enforcement proof: the production preparation funnels CANNOT be
+    /// reached without the vanilla-source gate, because they take
+    /// [`AdmittedProductionMapBundle`] instead of a raw bundle and that type's
+    /// only constructor runs the gate.
+    ///
+    /// This replaced an earlier source scan. Review established that a lexical
+    /// scan cannot prove enforcement: `#[cfg(any())]`, `if false { … }`, a
+    /// shadowed helper, or a decoy string literal all keep the searched text
+    /// intact while disabling the gate. The type-state has no such hole —
+    /// removing the admission is a compile error, not a silently green test.
+    /// What remains testable here is the property the type rests on: the sole
+    /// constructor refuses uncertified frames, so no admission proof can exist
+    /// for one.
+    #[test]
+    fn admission_proof_cannot_be_obtained_for_an_uncertified_frame() {
+        let root = temp_test_dir("res2_admission_proof_requires_certification");
+        let resolver = synthetic_terrain_resolver(&root, 0);
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create map-frame bundle directory");
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+        rewrite_terrain_bundle_with_valid_output_merger_state(&path);
+
+        // Unverified (pre-FW7 shape): no admission proof can be minted, so the
+        // production funnels are unreachable for this bundle.
+        let unverified =
+            NativeD3d11TerrainBundle::load(&path).expect("diagnostic load still works");
+        let refusal = unverified
+            .admit_for_production("production terrain renderer")
+            .expect_err("an uncertified frame must not yield an admission proof");
+        assert!(!refusal.verification_absent);
+        assert!(!refusal.unverified_sources.is_empty());
+
+        // ResolverVerified: the proof is minted and carries the same bundle.
+        let verified = NativeD3d11TerrainBundle::load_with_resolver(&path, &resolver)
+            .expect("resolver-backed load");
+        let admitted = verified
+            .admit_for_production("production terrain renderer")
+            .expect("a certified frame yields an admission proof");
+        assert!(
+            std::ptr::eq(admitted.bundle(), &verified),
+            "the proof must carry the very bundle that was admitted"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// RES2: the optional layer bundles take the SAME resolver as the terrain
+    /// bundle in every production render entry point. They used to load
+    /// resolver-less even under `--game`, which would make the vanilla-source
+    /// gate refuse a legitimate pre-FW7 multilayer capture that the local
+    /// effective VFS verifies perfectly well.
+    #[test]
+    fn production_render_entry_points_thread_the_resolver_into_optional_layers() {
+        let replay_source = strip_comments(include_str!("d3d11_replay.rs"));
+        let loaded_body = source_slice(
+            &replay_source,
+            "fn render_production_map_d3d11_loaded(",
+            "prepare_reference_production_map_with_layers(",
+        );
+        for loader in ["load_water", "load_rivers", "load_borders", "load_trees"] {
+            assert!(
+                loaded_body.contains(&format!("{loader}_with_resolver(path, resolver)")),
+                "{loader} must use the resolver when one was supplied"
+            );
+        }
+
+        // Scoped to the `render-production-map-d3d11` arm only (round-2 review
+        // finding): a matching loader in an unrelated command must not mask a
+        // deletion from the production route.
+        let cli_source = strip_comments(include_str!("cli.rs"));
+        let cli_arm = source_slice(
+            &cli_source,
+            "\"render-production-map-d3d11\" => {",
+            "\"accept-terrain-d3d11\" => {",
+        );
+        for loader in ["load_water", "load_rivers", "load_borders", "load_trees"] {
+            assert!(
+                cli_arm.contains(&format!("{loader}_with_resolver(path, resolver)")),
+                "the render-production-map-d3d11 arm must use the resolver for the {loader} layer"
+            );
+        }
+    }
+
+    /// RES2: the capture-parity route keeps accepting pre-FW7 bundles.
+    ///
+    /// Review round 6 caught this as a real regression: gating
+    /// `prepare_production_map` also gated `render` and `accept_terrain_d3d11`,
+    /// whose whole job is to re-render a capture and diff it byte-for-byte.
+    /// Refusing an uncertified bundle there would break legitimate existing
+    /// acceptance evidence to enforce a product rule that does not apply to it
+    /// — the "correct gate refuses shipped artifacts" trap. Parity preparation
+    /// is therefore deliberately unadmitted, and this test pins that.
+    #[test]
+    fn capture_parity_preparation_still_accepts_an_uncertified_frame() {
+        let root = temp_test_dir("res2_capture_parity_accepts_uncertified");
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+        rewrite_terrain_bundle_with_valid_output_merger_state(&path);
+
+        let uncertified = NativeD3d11TerrainBundle::load(&path).expect("pre-FW7 bundle loads");
+        uncertified
+            .admit_for_production("production terrain renderer")
+            .expect_err("the PRODUCT route refuses it");
+
+        // The parity route mints its proof without the gate, so acceptance and
+        // byte-comparison runs keep working on exactly that bundle.
+        let parity = capture_parity_map_bundle(&uncertified);
+        assert!(
+            std::ptr::eq(parity.bundle(), &uncertified),
+            "parity preparation must carry the same bundle"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// RES2: a verified seal lifted from one frame does not admit another.
+    ///
+    /// The frame's `vanilla_source_verification` field is `pub(crate)`, so any
+    /// module in this crate CAN assign it — review round 6 pointed out that
+    /// module privacy alone therefore left the proof forgeable by copying a
+    /// verified frame's outcome onto an uncertified one. The seal is bound to
+    /// the evidence it describes, so the substitution reads as "never verified"
+    /// and the gate refuses. This test performs exactly that forgery.
+    #[test]
+    fn a_verified_seal_from_another_frame_does_not_admit_this_one() {
+        let root = temp_test_dir("res2_seal_substitution_is_refused");
+        let resolver = synthetic_terrain_resolver(&root, 0);
+
+        // Frame A: uncertified (pre-FW7 shape).
+        let a_dir = root.join("uncertified");
+        fs::create_dir_all(&a_dir).expect("create bundle dir");
+        let a_path = write_valid_map_frame_bundle(&a_dir, |frame| frame);
+        rewrite_terrain_bundle_with_valid_output_merger_state(&a_path);
+        let mut uncertified =
+            NativeD3d11TerrainBundle::load(&a_path).expect("uncertified bundle loads");
+        uncertified
+            .admit_for_production("production terrain renderer")
+            .expect_err("baseline: the uncertified frame is refused");
+
+        // Frame B: certified against the local effective VFS, so it carries a
+        // ResolverVerified seal.
+        let certified = NativeD3d11TerrainBundle::load_with_resolver(&a_path, &resolver)
+            .expect("resolver-backed load");
+        let stolen_seal = certified
+            .frame
+            .vanilla_source_verification
+            .clone()
+            .expect("certified frame carries a seal");
+        assert_eq!(
+            stolen_seal.recorded_outcome(),
+            &MapFrameVanillaSourceVerification::ResolverVerified
+        );
+
+        // THE FORGERY: graft B's verified seal onto A, whose sources nothing
+        // certified. Make A's evidence genuinely different first, so this is a
+        // real substitution rather than two identical frames.
+        uncertified
+            .frame
+            .vanilla_sources
+            .values_mut()
+            .next()
+            .expect("frame has vanilla sources")
+            .byte_len += 1;
+        uncertified.frame.vanilla_source_verification = Some(stolen_seal);
+
+        let refusal = uncertified
+            .admit_for_production("production terrain renderer")
+            .expect_err("a seal from a different frame must not admit this one");
+        assert!(
+            refusal.verification_absent,
+            "a seal that does not belong to this frame must read as absent, not as verified"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// RES2 fail-closed doctrine: a frame that was never validated carries
+    /// `None`, and "never established" is not "passed". Production playback
+    /// refuses it as a distinct, typed case (this is the shape
+    /// `terrain_chunk_library` assembles, which never routes through
+    /// `validate_map_frame_vanilla_sources`).
+    #[test]
+    fn production_playback_refuses_a_frame_with_no_verification_outcome() {
+        let refusal =
+            require_production_verified_vanilla_sources(None, "production terrain renderer")
+                .expect_err("an absent verification outcome must fail closed");
+        assert!(refusal.verification_absent);
+        assert!(refusal.unverified_sources.is_empty());
+        assert!(
+            refusal
+                .to_string()
+                .contains("carries no vanilla-source verification outcome"),
+            "absent verification must be distinguishable from a named-source refusal"
+        );
+
+        require_production_verified_vanilla_sources(
+            Some(&MapFrameVanillaSourceVerification::ResolverVerified),
+            "production terrain renderer",
+        )
+        .expect("ResolverVerified is admitted");
+        require_production_verified_vanilla_sources(
+            Some(&MapFrameVanillaSourceVerification::ProducerVerified),
+            "production terrain renderer",
+        )
+        .expect("ProducerVerified is admitted");
+    }
+
+    /// FW12 H2: the vanilla-source verification outcome is a typed, recorded
+    /// state — ResolverVerified with a local resolver, ProducerVerified when
+    /// the FW7 capture host marked every source `effective_vfs_verified:
+    /// true`, and a RECORDED `Unverified { unverified_sources }` (never a
+    /// silent skip) otherwise.
+    #[test]
+    fn map_frame_vanilla_source_verification_states_are_typed_and_recorded() {
+        let root = temp_test_dir("map_frame_vanilla_source_verification_states");
+        let resolver = synthetic_terrain_resolver(&root, 0);
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create map-frame bundle directory");
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+
+        // No local resolver + producer never marked the evidence (pre-FW7
+        // bundle shape): every required source is recorded as unverified on
+        // the returned frame.
+        let frame = validate_map_frame_runtime_bundle(&path).expect("valid captured bundle");
+        let all_required: Vec<String> = TERRAIN_MAP_FRAME_SPEC
+            .required_vanilla_sources
+            .iter()
+            .map(|source| source.to_string())
+            .collect();
+        assert_eq!(
+            frame
+                .vanilla_source_verification
+                .as_ref()
+                .map(MapFrameVanillaSourceSeal::recorded_outcome),
+            Some(&MapFrameVanillaSourceVerification::Unverified {
+                unverified_sources: all_required.clone(),
+            }),
+            "the no-resolver skip must be recorded, typed state"
+        );
+
+        // Local resolver present: every source re-hashed against the local
+        // effective VFS.
+        let verification = validate_map_frame_vanilla_sources(
+            &frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            Some(&resolver),
+        )
+        .expect("matching identities must validate");
+        assert_eq!(
+            verification,
+            MapFrameVanillaSourceVerification::ResolverVerified
+        );
+
+        // FW7 producer-verified evidence: `effective_vfs_verified: true` on
+        // every required source upgrades the no-resolver outcome.
+        let mut producer_frame = frame.clone();
+        for evidence in producer_frame.vanilla_sources.values_mut() {
+            evidence.effective_vfs_verified = Some(true);
+            evidence.resolved_from = Some("base_installation".to_string());
+        }
+        let verification = validate_map_frame_vanilla_sources(
+            &producer_frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            None,
+        )
+        .expect("producer-verified bundle must validate");
+        assert_eq!(
+            verification,
+            MapFrameVanillaSourceVerification::ProducerVerified
+        );
+
+        // A single source lacking (or explicitly denying) producer
+        // verification is named in the recorded state.
+        let denied_source = TERRAIN_MAP_FRAME_SPEC.required_vanilla_sources[0];
+        let mut partial_frame = producer_frame.clone();
+        partial_frame
+            .vanilla_sources
+            .get_mut(denied_source)
+            .expect("required source evidence")
+            .effective_vfs_verified = Some(false);
+        let verification = validate_map_frame_vanilla_sources(
+            &partial_frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            None,
+        )
+        .expect("partially verified bundle still validates evidence");
+        assert_eq!(
+            verification,
+            MapFrameVanillaSourceVerification::Unverified {
+                unverified_sources: vec![denied_source.to_string()],
+            }
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4999,6 +5797,8 @@ mod tests {
                     byte_len: synthesized.bytes.len(),
                     fnv1a64: synthesized.descriptor.fnv1a64.clone(),
                     provenance: "unit_test_canonical_terrain_id_map".to_string(),
+                    resolved_from: None,
+                    effective_vfs_verified: None,
                 },
             );
             frame.runtime_files.insert(
@@ -5008,6 +5808,8 @@ mod tests {
                     byte_len: srv_payload.len(),
                     fnv1a64: srv_hash.clone(),
                     provenance: "unit_test_authenticated_srv_terrain_id_map".to_string(),
+                    resolved_from: None,
+                    effective_vfs_verified: None,
                 },
             );
             update_draw_terrain_id_resource_file(

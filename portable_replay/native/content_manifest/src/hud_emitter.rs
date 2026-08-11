@@ -4,18 +4,24 @@
 //! Physical launcher and archive access is supplied by a product-owned VFS
 //! adapter, so neither the recorder nor the replayer depends on the other.
 
+use crate::authored_ui::{
+    canonical_localisation_language, engine_recursive_path_cmp, safe_language_directory,
+};
 use crate::effective_vfs::EffectiveVfs;
-use crate::gfx::SpriteRegistry;
+use crate::gfx::{a729_effect_shader_path, xui07_builtin_shader_includes, SpriteRegistry};
 use crate::gui::{parse_gui_document, GuiElement};
 use crate::hud_role::{
     validate_sha256, AuthenticatedHudSurfaceClosure, EffectiveVfsHudRoleIndexDocument,
     HudSemanticRole, HudSurface, HudSurfaceActivationFrame, ResolvedHudRoleBinding,
 };
-use crate::paradox_text::{decode_text, parse_bytes, Value};
+use crate::paradox_text::{
+    decode_text, destructive_event_count, destructive_losses, diagnose_text_decode, parse_bytes,
+    Value,
+};
 use crate::{normalize_game_relative_path, UsedContentKey};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Component, Path};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedHudFile {
@@ -57,7 +63,11 @@ pub fn emit_effective_vfs_hud_role_index(
     validate_sha256(source_inventory_sha256, "HUD source inventory authority")?;
     let gui_files = vfs.list_recursive("interface", "gui")?;
     let gfx_files = vfs.list_recursive("interface", "gfx")?;
-    let localisation = localisation_sources(vfs, localisation_language)?;
+    // Byte-level decode damage, keyed by normalized game-relative path. This is
+    // a channel of its OWN, deliberately not folded into `Document.recoveries`:
+    // see `record_decode_damage`.
+    let mut decode_damaged = BTreeMap::<String, String>::new();
+    let localisation = localisation_sources(vfs, localisation_language, &mut decode_damaged)?;
 
     let mut roots = BTreeMap::<String, Vec<(String, GuiElement)>>::new();
     let mut gui_parse_failed = BTreeMap::new();
@@ -66,6 +76,7 @@ pub fn emit_effective_vfs_hud_role_index(
             return Err(format!("HUD VFS listing could not resolve {rel}"));
         };
         validate_resolved(&file, &rel, source_inventory_sha256)?;
+        record_decode_damage(&mut decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
         if !document.recoveries.is_empty() {
             gui_parse_failed.insert(rel, decode_text(&file.bytes).to_ascii_lowercase());
@@ -86,6 +97,7 @@ pub fn emit_effective_vfs_hud_role_index(
             return Err(format!("HUD VFS listing could not resolve {rel}"));
         };
         validate_resolved(&file, &rel, source_inventory_sha256)?;
+        record_decode_damage(&mut decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
         if !document.recoveries.is_empty() {
             gfx_parse_failed.insert(rel, decode_text(&file.bytes).to_ascii_lowercase());
@@ -93,6 +105,21 @@ pub fn emit_effective_vfs_hud_role_index(
         }
         sprites.add_document(&file.content.normalized_game_relative_path, &document);
     }
+    let mut requested_fonts = BTreeSet::new();
+    for candidates in roots.values() {
+        for (_, root) in candidates {
+            let mut refs = RootRefs::default();
+            collect_element_refs(root, &mut refs, &neutral(&root.name), 0);
+            requested_fonts.extend(refs.fonts.into_iter().map(|(_, font)| font));
+        }
+    }
+    let font_registry = authored_bitmap_font_dependency_registry_paths(
+        vfs,
+        &requested_fonts,
+        localisation_language,
+        source_inventory_sha256,
+        &mut decode_damaged,
+    )?;
 
     let core_surfaces = [
         HudSurface::Topbar,
@@ -151,12 +178,14 @@ pub fn emit_effective_vfs_hud_role_index(
                 &sprites,
                 &gfx_parse_failed,
                 &localisation,
+                &font_registry,
                 source_inventory_sha256,
                 &neutral(root_name),
                 &root,
                 &mut bindings,
                 &mut all_content,
                 &mut missing,
+                &mut decode_damaged,
             )?;
         }
         bindings.sort_by_cached_key(|binding| {
@@ -166,6 +195,7 @@ pub fn emit_effective_vfs_hud_role_index(
                 binding.content.normalized_game_relative_path.clone(),
             )
         });
+        append_decode_damage_blockers(&decode_damaged, &bindings, &mut missing);
         let closure_hash =
             hex_sha256(&serde_json::to_vec(&bindings).map_err(|error| error.to_string())?);
         closures.push(AuthenticatedHudSurfaceClosure {
@@ -194,12 +224,14 @@ fn append_root_dependencies(
     sprites: &SpriteRegistry,
     gfx_parse_failed: &BTreeMap<String, String>,
     localisation: &BTreeMap<String, String>,
+    font_registry: &BTreeMap<String, Result<AuthoredBitmapFontDependencyPaths, String>>,
     authority: &str,
     root_scope: &str,
     root: &GuiElement,
     bindings: &mut Vec<ResolvedHudRoleBinding>,
     all_content: &mut BTreeMap<String, UsedContentKey>,
     missing: &mut Vec<String>,
+    decode_damaged: &mut BTreeMap<String, String>,
 ) -> Result<(), String> {
     let mut refs = RootRefs::default();
     collect_element_refs(root, &mut refs, root_scope, 0);
@@ -245,50 +277,116 @@ fn append_root_dependencies(
                 )),
             }
         }
+        let effect_path = match a729_effect_shader_path(sprite.effect_file.as_deref()) {
+            Ok(path) => path,
+            Err(error) => {
+                missing.push(format!("sprite_effect:{element}:{sprite_id}:{error}"));
+                continue;
+            }
+        };
+        match resolve_key(vfs, &effect_path, authority) {
+            Ok(effect_key) => {
+                bindings.push(ResolvedHudRoleBinding {
+                    semantic_role: HudSemanticRole::SpriteEffect {
+                        element: element.clone(),
+                        sprite_id: sprite_id.clone(),
+                        effect_token: neutral(&effect_path),
+                    },
+                    content: effect_key.clone(),
+                });
+                all_content.insert(effect_key.normalized_game_relative_path.clone(), effect_key);
+            }
+            Err(error) => {
+                missing.push(format!(
+                    "sprite_effect:{element}:{sprite_id}:{effect_path}:{error}"
+                ));
+                continue;
+            }
+        }
+        if let Some(includes) = xui07_builtin_shader_includes(&effect_path) {
+            for (include_index, include_path) in includes.iter().enumerate() {
+                match resolve_key(vfs, include_path, authority) {
+                    Ok(include_key) => {
+                        bindings.push(ResolvedHudRoleBinding {
+                            semantic_role: HudSemanticRole::SpriteEffectInclude {
+                                element: element.clone(),
+                                sprite_id: sprite_id.clone(),
+                                include_slot: format!("include_{include_index}"),
+                            },
+                            content: include_key.clone(),
+                        });
+                        all_content.insert(
+                            include_key.normalized_game_relative_path.clone(),
+                            include_key,
+                        );
+                    }
+                    Err(error) => missing.push(format!(
+                        "sprite_effect_include:{element}:{sprite_id}:{include_path}:{error}"
+                    )),
+                }
+            }
+        } else {
+            missing.push(format!(
+                "sprite_effect_include_closure:{element}:{sprite_id}:{effect_path}:unsupported"
+            ));
+        }
     }
     for (element, font_id) in refs.fonts {
-        match bitmap_font_dependency_paths(vfs, &font_id, authority) {
-            Ok(paths) => {
-                if let Some(path) = paths.alias_source {
+        match font_registry.get(&font_id) {
+            Some(Ok(paths)) => {
+                for (registration_index, path) in paths.registration_sources.iter().enumerate() {
                     append_binding(
                         vfs,
                         authority,
                         &path,
                         HudSemanticRole::DefineOrScriptedConsumer {
-                            consumer: neutral(&format!("font_alias_{element}_{font_id}")),
+                            consumer: neutral(&format!(
+                                "font_registration_{element}_{font_id}_{registration_index}"
+                            )),
                             source_identity: neutral(&font_id),
                         },
                         bindings,
                         all_content,
                     )?;
                 }
-                append_binding(
-                    vfs,
-                    authority,
-                    &paths.descriptor,
-                    HudSemanticRole::Font {
-                        element: element.clone(),
-                        font_id: font_id.clone(),
-                    },
-                    bindings,
-                    all_content,
-                )?;
-                for (index, path) in paths.pages.into_iter().enumerate() {
-                    append_binding(
-                        vfs,
-                        authority,
-                        &path,
-                        HudSemanticRole::FontTexture {
-                            element: element.clone(),
-                            font_id: font_id.clone(),
-                            texture_slot: format!("page_{index}"),
-                        },
-                        bindings,
-                        all_content,
-                    )?;
+                for (variant_index, variant) in paths.variants.iter().enumerate() {
+                    for (descriptor_index, descriptor) in
+                        variant.ordered_descriptors.iter().enumerate()
+                    {
+                        append_binding(
+                            vfs,
+                            authority,
+                            &descriptor.descriptor,
+                            HudSemanticRole::Font {
+                                element: element.clone(),
+                                font_id: format!(
+                                    "{font_id}_variant_{variant_index}_descriptor_{descriptor_index}"
+                                ),
+                            },
+                            bindings,
+                            all_content,
+                        )?;
+                        for (page_index, path) in descriptor.pages.iter().enumerate() {
+                            append_binding(
+                                vfs,
+                                authority,
+                                &path,
+                                HudSemanticRole::FontTexture {
+                                    element: element.clone(),
+                                    font_id: font_id.clone(),
+                                    texture_slot: format!(
+                                        "variant_{variant_index}_descriptor_{descriptor_index}_page_{page_index}"
+                                    ),
+                                },
+                                bindings,
+                                all_content,
+                            )?;
+                        }
+                    }
                 }
             }
-            Err(error) => missing.push(format!("font:{element}:{font_id}:{error}")),
+            Some(Err(error)) => missing.push(format!("font:{element}:{font_id}:{error}")),
+            None => missing.push(format!("font:{element}:{font_id}:unplanned")),
         }
     }
     for (consumer, loc_key) in refs.texts {
@@ -400,20 +498,32 @@ fn collect_raw_refs(value: &Value, identity: &str, refs: &mut RootRefs) {
     }
 }
 
+/// Index the localisation keys of one language, recording byte-level decode
+/// damage into `damaged` as it goes.
+///
+/// Localisation is the surface where destroyed bytes are most consequential and
+/// least visible: a U+FFFD substituted into a key or a value becomes a
+/// user-visible string the replay cannot reproduce, and the Clausewitz parser
+/// never runs here at all, so `recoveries` could not have caught it under any
+/// wiring. Diagnosing at the same point the bytes are decoded is the only place
+/// this damage is observable.
 fn localisation_sources(
     vfs: &impl HudContentVfs,
     language: &str,
+    damaged: &mut BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, String> {
-    let expected = if language.starts_with("l_") {
-        language.to_string()
-    } else {
-        format!("l_{language}")
-    };
+    let language_directory = safe_language_directory(language)?;
+    let expected = canonical_localisation_language(language)?;
     let mut out = BTreeMap::new();
-    for rel in vfs.list_recursive("localisation", "yml")? {
+    // Filter the selected language at the VFS listing boundary. Resolving and
+    // decoding every other language before checking its header materializes
+    // unauthorised bytes and lets unrelated decode damage suppress the
+    // selected-language HUD closure.
+    for rel in vfs.list_recursive(&format!("localisation/{language_directory}"), "yml")? {
         let Some(file) = vfs.resolve(&rel)? else {
             continue;
         };
+        record_decode_damage(damaged, &file);
         let text = decode_text(&file.bytes);
         let mut lines = text.lines().filter(|line| {
             let line = line.trim();
@@ -443,6 +553,7 @@ fn localisation_sources(
     Ok(out)
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct BitmapFontDependencyPaths {
     alias_source: Option<String>,
@@ -450,20 +561,354 @@ struct BitmapFontDependencyPaths {
     pages: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct AuthoredBitmapFontDependencyPaths {
+    pub(crate) registration_sources: Vec<String>,
+    pub(crate) variants: Vec<AuthoredBitmapFontVariantDependencies>,
+    pub(crate) selected_variant_index: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AuthoredBitmapFontVariantDependencies {
+    pub(crate) ordered_languages: Vec<String>,
+    pub(crate) ordered_descriptors: Vec<AuthoredBitmapFontDescriptorDependencies>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AuthoredBitmapFontDescriptorDependencies {
+    pub(crate) descriptor: String,
+    pub(crate) pages: Vec<String>,
+}
+
+/// Parse the ordered effective `.gfx` registry once and plan every requested
+/// font from that one bounded pass. Per-font semantic failures remain isolated
+/// results, while namespace decode/parse damage fails the whole registry.
+pub(crate) fn authored_bitmap_font_dependency_registry_paths(
+    vfs: &impl HudContentVfs,
+    symbolic_names: &BTreeSet<String>,
+    localisation_language: &str,
+    authority: &str,
+    decode_damaged: &mut BTreeMap<String, String>,
+) -> Result<BTreeMap<String, Result<AuthoredBitmapFontDependencyPaths, String>>, String> {
+    let selected_language = canonical_localisation_language(localisation_language)?;
+    let mut files = vfs.list_recursive("interface", "gfx")?;
+    files.sort_by(|left, right| engine_recursive_path_cmp(left, right));
+    let mut registration_sources = BTreeMap::<String, Vec<String>>::new();
+    let mut pending = BTreeMap::<String, Vec<(Vec<String>, Vec<String>)>>::new();
+    let mut failures = BTreeMap::<String, String>::new();
+    for source in files {
+        let Some(file) = vfs.resolve(&source)? else {
+            continue;
+        };
+        validate_resolved(&file, &source, authority)?;
+        record_decode_damage(decode_damaged, &file);
+        let document = parse_bytes(&file.bytes);
+        if !document.recoveries.is_empty() {
+            return Err(format!(
+                "{source}: bitmap-font registry parse required recovery"
+            ));
+        }
+        for container in document.root.values_ci("bitmapfonts") {
+            for entry in container.fields() {
+                let Some(kind) = entry.key.as_deref() else {
+                    continue;
+                };
+                let is_base = kind.eq_ignore_ascii_case("bitmapfont");
+                let is_override = kind.eq_ignore_ascii_case("bitmapfont_override");
+                if !is_base && !is_override {
+                    continue;
+                }
+                let name = portable_exact_single_scalar(&entry.value, "name")?;
+                if !symbolic_names.contains(name) || failures.contains_key(name) {
+                    continue;
+                }
+                let result = (|| {
+                    let font_pending = pending.entry(name.to_string()).or_default();
+                    if is_base {
+                        if !font_pending.is_empty() {
+                            return Err(format!(
+                                "font {name:?} repeats its base CBitmapFont registration"
+                            ));
+                        }
+                        let descriptors = portable_base_fontfiles(&entry.value)?;
+                        if descriptors.is_empty() {
+                            return Err(format!(
+                                "font {name:?} base registration has no descriptor"
+                            ));
+                        }
+                        font_pending.push((Vec::new(), descriptors));
+                    } else {
+                        if font_pending.is_empty() {
+                            return Err(format!(
+                                "font override {name:?} appears before its base registration"
+                            ));
+                        }
+                        if entry.value.values_ci("path").next().is_some()
+                            || entry.value.values_ci("color").next().is_some()
+                            || entry.value.values_ci("border_color").next().is_some()
+                            || entry.value.values_ci("textcolors").next().is_some()
+                        {
+                            return Err(format!(
+                                "font override {name:?} carries a field not accepted by SBitmapFontOverride"
+                            ));
+                        }
+                        let languages = portable_scalar_list(
+                            portable_exact_single_value(&entry.value, "languages")?,
+                            "bitmapfont_override languages",
+                        )?;
+                        let descriptors = portable_scalar_list(
+                            portable_exact_single_value(&entry.value, "fontfiles")?,
+                            "bitmapfont_override fontfiles",
+                        )?
+                        .into_iter()
+                        .map(portable_font_descriptor)
+                        .collect::<Vec<_>>();
+                        if descriptors.is_empty() {
+                            return Err(format!("font override {name:?} has no descriptor"));
+                        }
+                        font_pending.push((languages, descriptors));
+                    }
+                    registration_sources
+                        .entry(name.to_string())
+                        .or_default()
+                        .push(source.clone());
+                    Ok::<_, String>(())
+                })();
+                if let Err(error) = result {
+                    failures.insert(name.to_string(), error);
+                }
+            }
+        }
+    }
+    let mut planned = BTreeMap::new();
+    for symbolic_name in symbolic_names {
+        if let Some(error) = failures.remove(symbolic_name) {
+            planned.insert(symbolic_name.clone(), Err(error));
+            continue;
+        }
+        let Some(font_pending) = pending.remove(symbolic_name) else {
+            planned.insert(
+                symbolic_name.clone(),
+                Err(format!(
+                    "font {symbolic_name:?} has no exact-case CBitmapFont registration"
+                )),
+            );
+            continue;
+        };
+        let result = (|| {
+            let selected_variant_index = font_pending
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, (languages, _))| {
+                    languages
+                        .iter()
+                        .any(|language| language == &selected_language)
+                })
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            let mut variants = Vec::new();
+            for (ordered_languages, descriptors) in font_pending {
+                let mut ordered_descriptors = Vec::new();
+                for descriptor in descriptors {
+                    ordered_descriptors.push(portable_plan_descriptor(
+                        vfs,
+                        symbolic_name,
+                        &descriptor,
+                        authority,
+                        decode_damaged,
+                    )?);
+                }
+                variants.push(AuthoredBitmapFontVariantDependencies {
+                    ordered_languages,
+                    ordered_descriptors,
+                });
+            }
+            Ok(AuthoredBitmapFontDependencyPaths {
+                registration_sources: registration_sources
+                    .remove(symbolic_name)
+                    .unwrap_or_default(),
+                variants,
+                selected_variant_index,
+            })
+        })();
+        planned.insert(symbolic_name.clone(), result);
+    }
+    Ok(planned)
+}
+
+fn portable_exact_single_value<'a>(value: &'a Value, key: &str) -> Result<&'a Value, String> {
+    // Do not inherit `Value::values_ci`'s shared input lifetime: the lookup
+    // token is only a predicate and never escapes with the returned value.
+    let mut values = value.fields().iter().filter_map(|entry| {
+        entry
+            .key
+            .as_deref()
+            .filter(|candidate| candidate.eq_ignore_ascii_case(key))
+            .map(|_| &entry.value)
+    });
+    let first = values
+        .next()
+        .ok_or_else(|| format!("bitmap-font field {key:?} is absent"))?;
+    if values.next().is_some() {
+        return Err(format!("bitmap-font field {key:?} repeats"));
+    }
+    Ok(first)
+}
+
+fn portable_exact_single_scalar<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
+    portable_exact_single_value(value, key)?
+        .as_scalar()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("bitmap-font field {key:?} is not scalar"))
+}
+
+fn portable_scalar_list(value: &Value, label: &str) -> Result<Vec<String>, String> {
+    let entries = value
+        .as_object()
+        .ok_or_else(|| format!("{label} is not an ordered scalar list"))?;
+    entries
+        .iter()
+        .map(|entry| {
+            if entry.key.is_some() {
+                return Err(format!("{label} contains a labeled entry"));
+            }
+            entry
+                .value
+                .as_scalar()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| format!("{label} contains a non-scalar or blank entry"))
+        })
+        .collect()
+}
+
+fn portable_font_descriptor(path: String) -> String {
+    let mut path = normalize_path(&path);
+    if !path.to_ascii_lowercase().ends_with(".fnt") {
+        path.push_str(".fnt");
+    }
+    path
+}
+
+fn portable_base_fontfiles(value: &Value) -> Result<Vec<String>, String> {
+    let mut descriptors = Vec::new();
+    for field in value.fields() {
+        let Some(key) = field.key.as_deref() else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("path") {
+            let path = field
+                .value
+                .as_scalar()
+                .ok_or("bitmapfont path is not an authored scalar")?;
+            descriptors.push(portable_font_descriptor(path.to_string()));
+        } else if key.eq_ignore_ascii_case("fontfiles") {
+            descriptors.clear();
+            descriptors.extend(
+                portable_scalar_list(&field.value, "bitmapfont fontfiles")?
+                    .into_iter()
+                    .map(portable_font_descriptor),
+            );
+        }
+    }
+    Ok(descriptors)
+}
+
+fn portable_plan_descriptor(
+    vfs: &impl HudContentVfs,
+    symbolic_name: &str,
+    descriptor: &str,
+    authority: &str,
+    decode_damaged: &mut BTreeMap<String, String>,
+) -> Result<AuthoredBitmapFontDescriptorDependencies, String> {
+    let resolved = vfs
+        .resolve(descriptor)?
+        .ok_or_else(|| format!("missing bitmap-font descriptor {descriptor}"))?;
+    validate_resolved(&resolved, descriptor, authority)?;
+    record_decode_damage(decode_damaged, &resolved);
+    let stem = Path::new(descriptor)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(symbolic_name)
+        .to_string();
+    let parent = Path::new(descriptor)
+        .parent()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_string();
+    let parsed = bmfont_page_files(&resolved.bytes)?;
+    if parsed.lossy_page_names != 0 {
+        record_decode_damage_summary(
+            decode_damaged,
+            descriptor,
+            parsed.lossy_page_names,
+            "binary BMFont page name is not valid UTF-8; decoded with replacement characters",
+        );
+    }
+    let mut pages = Vec::new();
+    if parsed.pages.is_empty() {
+        pages.push(
+            first_resolved_font_page(vfs, inferred_font_page_candidates(&parent, &stem, 0))?
+                .ok_or_else(|| format!("font {symbolic_name} has no inferred atlas page"))?,
+        );
+    } else {
+        for (page_id, page) in parsed.pages {
+            reject_unsafe_font_page(symbolic_name, page_id, &page)?;
+            let declared = normalize_path(&page);
+            let selected = match first_resolved_font_page(
+                vfs,
+                declared_font_page_candidates(&parent, &declared),
+            )? {
+                Some(path) => Some(path),
+                None => first_resolved_font_page(
+                    vfs,
+                    inferred_font_page_candidates(&parent, &stem, page_id),
+                )?,
+            }
+            .ok_or_else(|| {
+                format!("bitmap-font page {page} and inferred {stem} page {page_id} are absent")
+            })?;
+            pages.push(selected);
+        }
+    }
+    Ok(AuthoredBitmapFontDescriptorDependencies {
+        descriptor: descriptor.to_string(),
+        pages,
+    })
+}
+
+/// Resolve a bitmap font's descriptor and atlas pages.
+///
+/// The `.fnt` descriptor is TEXT the emitter decodes (`bmfont_page_files` reads
+/// its textual form), and it is subsequently BOUND, so it is diagnosed here for
+/// decode damage exactly like `.gui`/`.gfx`/`.yml`. Without this a destructively
+/// decoded descriptor could yield page paths and still leave the closure
+/// claiming completeness.
+///
+/// Only files the layer decodes AS TEXT are diagnosed. Atlas pages
+/// (`.dds`/`.tga`) are binary and are deliberately NOT run through the text
+/// decoder: a binary payload that happens to begin `FF FE` would be read as
+/// UTF-16 and could report a fabricated truncation.
+#[cfg(test)]
 fn bitmap_font_dependency_paths(
     vfs: &impl HudContentVfs,
     symbolic_name: &str,
+    localisation_language: &str,
     authority: &str,
+    decode_damaged: &mut BTreeMap<String, String>,
 ) -> Result<BitmapFontDependencyPaths, String> {
     if symbolic_name.trim().is_empty() {
         return Err("blank bitmap-font identity".into());
     }
     let direct = format!("gfx/fonts/{symbolic_name}.fnt");
-    let mut used_alias = false;
-    let descriptor = if vfs.resolve(&direct)?.is_some() {
-        direct
+    // Retain at most one large payload at a time. In particular, never keep
+    // `core.gfx` bytes live while materializing the descriptor: each payload
+    // can independently reach the VFS per-file ceiling.
+    let direct_resolved = vfs.resolve(&direct)?;
+    let (alias_source, resolved) = if let Some(resolved) = direct_resolved {
+        (None, resolved)
     } else {
-        used_alias = true;
         let core = vfs
             .resolve("interface/core.gfx")?
             .ok_or_else(|| format!("font {symbolic_name} has no descriptor or core.gfx alias"))?;
@@ -472,15 +917,15 @@ fn bitmap_font_dependency_paths(
         if !document.recoveries.is_empty() {
             return Err("core.gfx font alias parse required recovery".into());
         }
-        let mut aliases = Vec::new();
+        let resolved_language = canonical_localisation_language(localisation_language)?;
+        let mut base = Vec::new();
         for block in document.root.values_ci("bitmapfonts") {
             for entry in block.fields() {
                 let Some(kind) = entry.key.as_deref() else {
                     continue;
                 };
-                if !kind.eq_ignore_ascii_case("bitmapfont")
-                    && !kind.eq_ignore_ascii_case("bitmapfont_override")
-                {
+                let is_override = kind.eq_ignore_ascii_case("bitmapfont_override");
+                if !is_override && !kind.eq_ignore_ascii_case("bitmapfont") {
                     continue;
                 }
                 if entry
@@ -488,94 +933,225 @@ fn bitmap_font_dependency_paths(
                     .first_scalar_ci("name")
                     .is_some_and(|name| name.eq_ignore_ascii_case(symbolic_name))
                 {
+                    if is_override {
+                        if font_override_applies(&entry.value, &resolved_language)? {
+                            return Err(format!(
+                                "font {symbolic_name} has an applicable bitmapfont_override whose registration-population law is unproved"
+                            ));
+                        }
+                        continue;
+                    }
                     if let Some(path) = entry.value.first_scalar_ci("path") {
                         let mut path = normalize_path(path);
                         if !path.to_ascii_lowercase().ends_with(".fnt") {
                             path.push_str(".fnt");
                         }
-                        aliases.push(path);
+                        base.push(path);
                     }
                 }
             }
         }
+        // The exact-a729 evidence proves first-match selection only within an
+        // already populated bitmap-font object's language variants. It does
+        // not prove how duplicate `.gfx` declarations populate that object.
+        // Refuse applicable overrides above and require one base path.
+        let mut aliases = base;
         aliases.sort();
         aliases.dedup();
         if aliases.len() != 1 {
             return Err(format!(
-                "font {symbolic_name} has {} effective aliases",
+                "font {symbolic_name} has {} unresolved base aliases",
                 aliases.len()
             ));
         }
-        aliases.remove(0)
+        let descriptor = aliases.remove(0);
+        // `core` and its parsed document leave scope before the descriptor is
+        // resolved, so their payload allocations are not concurrent.
+        drop(document);
+        drop(core);
+        let resolved = vfs
+            .resolve(&descriptor)?
+            .ok_or_else(|| format!("missing bitmap-font descriptor {descriptor}"))?;
+        (Some("interface/core.gfx".to_string()), resolved)
     };
-    let resolved = vfs
-        .resolve(&descriptor)?
-        .ok_or_else(|| format!("missing bitmap-font descriptor {descriptor}"))?;
+    let descriptor = resolved.content.normalized_game_relative_path.clone();
     validate_resolved(&resolved, &descriptor, authority)?;
+    record_decode_damage(decode_damaged, &resolved);
     let stem = Path::new(&resolved.content.normalized_game_relative_path)
         .file_stem()
         .and_then(|value| value.to_str())
-        .unwrap_or(symbolic_name);
+        .unwrap_or(symbolic_name)
+        .to_string();
     let parent = Path::new(&resolved.content.normalized_game_relative_path)
         .parent()
         .and_then(|value| value.to_str())
-        .unwrap_or("");
-    let page_files = bmfont_page_files(&resolved.bytes)?;
+        .unwrap_or("")
+        .to_string();
+    let parsed = bmfont_page_files(&resolved.bytes)?;
+    if parsed.lossy_page_names != 0 {
+        record_decode_damage_summary(
+            decode_damaged,
+            &resolved.content.normalized_game_relative_path,
+            parsed.lossy_page_names,
+            "binary BMFont page name is not valid UTF-8; decoded with replacement characters",
+        );
+    }
+    let page_files = parsed.pages;
+    // The parsed page names and owned path strings are sufficient from here;
+    // release descriptor bytes before any atlas candidate is materialized.
+    drop(resolved);
     let mut pages = Vec::new();
     if page_files.is_empty() {
-        let candidates = [
-            format!("gfx/fonts/{stem}.dds"),
-            format!("gfx/fonts/{stem}.tga"),
-            format!("gfx/fonts/{stem}_0.dds"),
-            format!("gfx/fonts/{stem}_0.tga"),
-        ];
-        let mut found = Vec::new();
-        for candidate in candidates {
-            if vfs.resolve(&candidate)?.is_some() {
-                found.push(candidate);
-            }
-        }
-        if found.len() != 1 {
-            return Err(format!(
-                "font {symbolic_name} has {} inferred atlas candidates",
-                found.len()
-            ));
-        }
-        pages = found;
+        pages.push(
+            first_resolved_font_page(vfs, inferred_font_page_candidates(&parent, &stem, 0))?
+                .ok_or_else(|| format!("font {symbolic_name} has no inferred atlas page"))?,
+        );
     } else {
         for (id, page) in page_files {
-            let path = normalize_path(&format!("{parent}/{page}"));
-            if vfs.resolve(&path)?.is_some() {
-                pages.push(path);
-                continue;
-            }
-            let mut fallback = None;
-            for candidate in [
-                format!("gfx/fonts/{stem}.dds"),
-                format!("gfx/fonts/{stem}.tga"),
-                format!("gfx/fonts/{stem}_{id}.dds"),
-                format!("gfx/fonts/{stem}_{id}.tga"),
-            ] {
-                if vfs.resolve(&candidate)?.is_some() {
-                    fallback = Some(candidate);
-                    break;
-                }
-            }
-            pages.push(fallback.ok_or_else(|| {
-                format!("bitmap-font page {path} and inferred {stem} page {id} are absent")
+            reject_unsafe_font_page(symbolic_name, id, &page)?;
+            let declared = normalize_path(&page);
+            let selected = match first_resolved_font_page(
+                vfs,
+                declared_font_page_candidates(&parent, &declared),
+            )? {
+                Some(path) => Some(path),
+                None => first_resolved_font_page(
+                    vfs,
+                    inferred_font_page_candidates(&parent, &stem, id),
+                )?,
+            };
+            pages.push(selected.ok_or_else(|| {
+                format!("bitmap-font page {page} and inferred {stem} page {id} are absent")
             })?);
         }
     }
     pages.sort();
     pages.dedup();
     Ok(BitmapFontDependencyPaths {
-        alias_source: used_alias.then(|| "interface/core.gfx".into()),
-        descriptor: resolved.content.normalized_game_relative_path,
+        alias_source,
+        descriptor,
         pages,
     })
 }
 
-fn bmfont_page_files(bytes: &[u8]) -> Result<BTreeMap<u32, String>, String> {
+#[cfg(test)]
+fn font_override_applies(entry: &Value, resolved_language: &str) -> Result<bool, String> {
+    let Some(languages) = entry.first_value_ci("languages") else {
+        return Ok(true);
+    };
+    let entries = languages
+        .as_object()
+        .ok_or("bitmapfont_override languages is not an unlabeled scalar list")?;
+    if entries.is_empty()
+        || entries
+            .iter()
+            .any(|entry| entry.key.is_some() || entry.value.as_scalar().is_none())
+    {
+        return Err("bitmapfont_override languages is not an unlabeled scalar list".into());
+    }
+    Ok(entries
+        .iter()
+        .filter_map(|entry| entry.value.as_scalar())
+        .any(|language| language == resolved_language))
+}
+
+const LEGACY_FONT_ROOT: &str = "gfx/fonts";
+
+fn reject_unsafe_font_page(font: &str, id: u32, page: &str) -> Result<(), String> {
+    let normalized = page.replace('\\', "/");
+    let raw = Path::new(page);
+    let normalized_path = Path::new(&normalized);
+    let unsafe_component = |path: &Path| {
+        path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    };
+    if raw.is_absolute()
+        || normalized_path.is_absolute()
+        || page.starts_with('/')
+        || page.starts_with('\\')
+        || page.contains(':')
+        || unsafe_component(raw)
+        || unsafe_component(normalized_path)
+    {
+        return Err(format!(
+            "font {font} page {id} has unsafe declared path {page}"
+        ));
+    }
+    Ok(())
+}
+
+fn declared_font_page_candidates(parent: &str, declared: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let explicit = declared
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gfx/"));
+    if !explicit && !parent.is_empty() {
+        candidates.push(normalize_path(&format!("{parent}/{declared}")));
+    }
+    candidates.push(if declared.contains('/') {
+        declared.to_string()
+    } else {
+        normalize_path(&format!("{LEGACY_FONT_ROOT}/{declared}"))
+    });
+    dedup_font_candidates(&mut candidates);
+    candidates
+}
+
+fn inferred_font_page_candidates(parent: &str, stem: &str, id: u32) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut push_dir = |directory: &str| {
+        if id == 0 {
+            candidates.push(normalize_path(&format!("{directory}/{stem}.dds")));
+            candidates.push(normalize_path(&format!("{directory}/{stem}.tga")));
+        }
+        candidates.push(normalize_path(&format!("{directory}/{stem}_{id}.dds")));
+        candidates.push(normalize_path(&format!("{directory}/{stem}_{id}.tga")));
+    };
+    if !parent.is_empty() {
+        push_dir(parent);
+    }
+    push_dir(LEGACY_FONT_ROOT);
+    dedup_font_candidates(&mut candidates);
+    candidates
+}
+
+fn dedup_font_candidates(candidates: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    candidates.retain(|candidate| seen.insert(candidate.clone()));
+}
+
+fn first_resolved_font_page(
+    vfs: &impl HudContentVfs,
+    candidates: Vec<String>,
+) -> Result<Option<String>, String> {
+    for candidate in candidates {
+        if vfs.resolve(&candidate)?.is_some() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+/// Page names extracted from a BMFont descriptor, plus how many of them were
+/// DESTROYED while being decoded.
+///
+/// A binary (`BMF`-magic) descriptor decodes its page-name field with its own
+/// `String::from_utf8_lossy`, which is invisible to `diagnose_text_decode`: the
+/// whole binary file has no BOM, so the file-level diagnosis classifies it as
+/// lossless Latin-1 and reports nothing, while the page-name decode can still
+/// substitute U+FFFD and produce a path that was never in the input. That path
+/// would then be bound. `lossy_page_names` closes that gap.
+#[derive(Debug, Default)]
+struct BmfontPages {
+    pages: BTreeMap<u32, String>,
+    lossy_page_names: usize,
+}
+
+fn bmfont_page_files(bytes: &[u8]) -> Result<BmfontPages, String> {
     if bytes.get(0..3) == Some(b"BMF") {
         if bytes.len() < 4 {
             return Err("binary BMFont header is truncated".into());
@@ -593,17 +1169,28 @@ fn bmfont_page_files(bytes: &[u8]) -> Result<BTreeMap<u32, String>, String> {
                 .get(position..position + size)
                 .ok_or("binary BMFont block is truncated")?;
             if block_type == 3 {
-                return Ok(block
+                let mut out = BmfontPages::default();
+                for (index, page) in block
                     .split(|byte| *byte == 0)
                     .filter(|page| !page.is_empty())
                     .enumerate()
-                    .map(|(index, page)| (index as u32, String::from_utf8_lossy(page).into_owned()))
-                    .collect());
+                {
+                    if std::str::from_utf8(page).is_err() {
+                        // from_utf8_lossy below will substitute U+FFFD, so the
+                        // bound path is not the path the descriptor named.
+                        out.lossy_page_names += 1;
+                    }
+                    out.pages
+                        .insert(index as u32, String::from_utf8_lossy(page).into_owned());
+                }
+                return Ok(out);
             }
             position += size;
         }
-        return Ok(BTreeMap::new());
+        return Ok(BmfontPages::default());
     }
+    // The textual form is decoded by `decode_text`, so its damage is already
+    // covered by the file-level `diagnose_text_decode` on the same bytes.
     let mut pages = BTreeMap::new();
     for line in decode_text(bytes).lines().map(str::trim) {
         let Some(rest) = line.strip_prefix("page ") else {
@@ -617,7 +1204,10 @@ fn bmfont_page_files(bytes: &[u8]) -> Result<BTreeMap<u32, String>, String> {
             pages.insert(id, file.clone());
         }
     }
-    Ok(pages)
+    Ok(BmfontPages {
+        pages,
+        lossy_page_names: 0,
+    })
 }
 
 fn parse_kv_fields(text: &str) -> BTreeMap<String, String> {
@@ -718,6 +1308,113 @@ fn validate_resolved(
         ));
     }
     Ok(())
+}
+
+/// Record byte-level decode damage for one resolved file, on a channel that is
+/// deliberately separate from `Document.recoveries`.
+///
+/// WHY A SEPARATE CHANNEL (this question is settled; please do not re-fold it).
+/// A `Recovery` is produced only by the Clausewitz parser and means exactly one
+/// thing: the file's TOKEN STRUCTURE was ambiguous and the parse recovered
+/// (missing closing brace, stray `=`, depth limit, ...). Decode damage happens
+/// one layer earlier, at the byte-to-text boundary, and the two are independent
+/// in BOTH directions:
+///   * a file can decode destructively and still parse with ZERO recoveries —
+///     a U+FFFD is just an ordinary character inside an atom or quoted string,
+///     and the parser never notices;
+///   * the four brace-damaged vanilla `.gui` files decode perfectly and produce
+///     recoveries.
+/// Folding decode loss into `recoveries` would therefore widen that status from
+/// "the parse recovered" to "the parse recovered OR bytes were destroyed", and
+/// would silently change admission at every `recoveries.is_empty()` gate. The
+/// meaning of an existing status is not widened.
+///
+/// Only DESTRUCTIVE loss is recorded ([`destructive_losses`]). Lossless
+/// encoding attribution (`NonUtf8DecodedAsLatin1`) is not damage: Latin-1 is a
+/// Paradox encoding the shipped game itself uses for `§` colour codes, and no
+/// byte is lost.
+fn record_decode_damage(damaged: &mut BTreeMap<String, String>, file: &ResolvedHudFile) {
+    let losses = diagnose_text_decode(&file.bytes);
+    let destructive = destructive_losses(&losses);
+    let Some(first) = destructive.first() else {
+        return;
+    };
+    // The EVENT count, not the entry count: past MAX_TEXT_DECODE_DIAGNOSTICS the
+    // per-site entries collapse into one `Suppressed { count }`, so entry count
+    // would understate the damage.
+    record_decode_damage_summary(
+        damaged,
+        &file.content.normalized_game_relative_path,
+        destructive_event_count(&losses),
+        &first.to_string(),
+    );
+}
+
+/// Record `events` destructive decode events for `path`, accumulating rather
+/// than overwriting so a file damaged in two different decodes (e.g. a binary
+/// BMFont whose page names are separately lossy) reports both.
+fn record_decode_damage_summary(
+    damaged: &mut BTreeMap<String, String>,
+    path: &str,
+    events: usize,
+    first: &str,
+) {
+    if events == 0 {
+        return;
+    }
+    let fragment = neutral(&format!("destructive_events={events}:first={first}"));
+    match damaged.get_mut(path) {
+        Some(existing) => {
+            // Idempotent by fragment: `refs.fonts` is keyed by (element,
+            // font_id), so one descriptor shared by several elements is
+            // resolved once PER ELEMENT and would otherwise have its damage
+            // appended once per reference. Each fragment is a deterministic
+            // function of the file's bytes, so an identical fragment is a
+            // repeat observation, not additional damage.
+            if !existing.contains(fragment.as_str()) {
+                existing.push('|');
+                existing.push_str(&fragment);
+            }
+        }
+        None => {
+            damaged.insert(path.to_string(), fragment);
+        }
+    }
+}
+
+/// Mark a HUD dependency closure incomplete for every file it actually BINDS
+/// whose bytes were destroyed at decode.
+///
+/// This does not remove content from admission — the binding stays, exactly as
+/// it is for a clean input — it records a typed reason on `missing_roles`, so
+/// `complete_dependency_closure` cannot claim completeness over a file the
+/// replay is unable to reproduce byte-for-byte. Destroyed bytes are precisely
+/// the case the doctrine forbids surfacing as a silent approximation: the U+FFFD
+/// substituted for them would otherwise flow into a layout name, a sprite id or
+/// a localisation string with nothing anywhere recording that input was lost.
+///
+/// For CLEAN inputs `damaged` is empty and this is a no-op, so admitted results
+/// and closure hashes for clean content are unchanged. Measured against the game
+/// 1.19.2: 8318 shipped files across all 10 localisation languages produce ZERO
+/// destructive decode events, so no shipped content is affected.
+fn append_decode_damage_blockers(
+    damaged: &BTreeMap<String, String>,
+    bindings: &[ResolvedHudRoleBinding],
+    missing: &mut Vec<String>,
+) {
+    if damaged.is_empty() {
+        return;
+    }
+    let mut seen = BTreeSet::new();
+    for binding in bindings {
+        let path = binding.content.normalized_game_relative_path.as_str();
+        let Some(summary) = damaged.get(path) else {
+            continue;
+        };
+        if seen.insert(path) {
+            missing.push(format!("decode_loss:{path}:{summary}"));
+        }
+    }
 }
 
 fn failed_files_mentioning(failed: &BTreeMap<String, String>, identifier: &str) -> Option<String> {
@@ -877,6 +1574,432 @@ mod tests {
     }
 
     #[test]
+    fn emitter_binds_default_effect_shader_and_include_closure() {
+        let vfs = MapVfs::new(&[
+            (
+                "interface/fixture.gui",
+                br#"guiTypes = {
+                    containerWindowType = {
+                        name = fixture_topbar_hud
+                        iconType = { name = icon spriteType = GFX_fixture }
+                    }
+                }"#,
+            ),
+            (
+                "interface/fixture.gfx",
+                br#"spriteTypes = {
+                    spriteType = {
+                        name = GFX_fixture
+                        textureFile = "gfx/interface/fixture.dds"
+                    }
+                }"#,
+            ),
+            ("gfx/interface/fixture.dds", b"texture"),
+            ("gfx/fx/buttonstate.shader", b"shader"),
+            ("gfx/fx/buttonstate.fxh", b"button include"),
+            ("gfx/fx/sprite_animation.fxh", b"animation include"),
+        ]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("emit default effect closure");
+        let bindings = &document.closures[0].bindings;
+        assert!(bindings.iter().any(|binding| matches!(
+            binding.semantic_role,
+            HudSemanticRole::SpriteEffect { .. }
+        ) && binding.content.normalized_game_relative_path
+            == "gfx/fx/buttonstate.shader"));
+        let include_bindings = bindings
+            .iter()
+            .filter(|binding| {
+                matches!(
+                    binding.semantic_role,
+                    HudSemanticRole::SpriteEffectInclude { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(include_bindings.len(), 6);
+        let mut include_consumers = BTreeMap::<&str, BTreeSet<String>>::new();
+        let mut include_content = BTreeMap::<&str, BTreeSet<UsedContentKey>>::new();
+        for binding in include_bindings {
+            let path = binding.content.normalized_game_relative_path.as_str();
+            include_consumers.entry(path).or_default().insert(
+                serde_json::to_string(&binding.semantic_role)
+                    .expect("include semantic role serializes"),
+            );
+            include_content
+                .entry(path)
+                .or_default()
+                .insert(binding.content.clone());
+        }
+        assert_eq!(
+            include_consumers.keys().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["gfx/fx/buttonstate.fxh", "gfx/fx/sprite_animation.fxh"])
+        );
+        assert!(include_consumers
+            .values()
+            .all(|consumers| consumers.len() == 3));
+        assert!(include_content
+            .values()
+            .all(|content_identities| content_identities.len() == 1));
+    }
+
+    /// A `.gui` file whose bytes were DESTROYED at decode still binds — the
+    /// content is admitted exactly as before — but the closure may no longer
+    /// claim completeness, and says why in typed form. This is the whole point
+    /// of the separate channel: the damage is neither silent nor destructive of
+    /// admission.
+    #[test]
+    fn destroyed_bytes_block_closure_completeness_without_dropping_the_binding() {
+        // A UTF-8 BOM followed by a lone 0xFF: invalid UTF-8, so the byte is
+        // replaced by U+FFFD and is genuinely gone. The root name itself is
+        // intact, so the parse succeeds with ZERO recoveries — proving the
+        // existing carrier could never have seen this damage.
+        let mut bytes =
+            b"\xef\xbb\xbfguiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t\ttext = \"".to_vec();
+        bytes.push(0xff);
+        bytes.extend_from_slice(b"\"\n\t}\n}\n");
+
+        assert!(
+            parse_bytes(&bytes).recoveries.is_empty(),
+            "the parse must be clean, or this test proves nothing about the decode channel"
+        );
+
+        let vfs = MapVfs::new(&[("interface/fixture.gui", bytes.as_slice())]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("emit");
+        let closure = &document.closures[0];
+
+        // Admission is UNCHANGED: the binding is still there.
+        assert_eq!(closure.bindings.len(), 1);
+        assert_eq!(document.winning_content.len(), 1);
+
+        // ... but the damage is surfaced, typed, and blocks the completeness
+        // claim.
+        assert!(!closure.complete_dependency_closure);
+        let decode_roles = closure
+            .missing_roles
+            .iter()
+            .filter(|role| role.starts_with("decode_loss:"))
+            .collect::<Vec<_>>();
+        assert_eq!(decode_roles.len(), 1, "{:?}", closure.missing_roles);
+        assert!(
+            decode_roles[0].contains("interface/fixture.gui")
+                && decode_roles[0].contains("destructive_events=1")
+                && decode_roles[0].contains("invalid UTF-8"),
+            "{}",
+            decode_roles[0]
+        );
+    }
+
+    /// Lossless Latin-1 is NOT damage and must not appear as a blocker. The
+    /// shipped game itself writes raw 0xA7 (the `§` colour-code marker) into
+    /// `.gui` files, so treating this as loss would refuse correct content.
+    #[test]
+    fn latin1_encoded_content_is_not_treated_as_decode_damage() {
+        let mut bytes =
+            b"guiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t\ttext = \"Email"
+                .to_vec();
+        bytes.push(0xa7); // '§' in Latin-1, exactly as the game ships it
+        bytes.extend_from_slice(b"R\"\n\t}\n}\n");
+
+        // The diagnosis does fire — but as a lossless attribution, not damage.
+        let losses = diagnose_text_decode(&bytes);
+        assert_eq!(losses.len(), 1);
+        assert!(!losses[0].discards_input());
+        assert!(destructive_losses(&losses).is_empty());
+
+        let vfs = MapVfs::new(&[("interface/fixture.gui", bytes.as_slice())]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("emit");
+        let closure = &document.closures[0];
+        assert_eq!(closure.bindings.len(), 1);
+        assert!(
+            !closure
+                .missing_roles
+                .iter()
+                .any(|role| role.starts_with("decode_loss:")),
+            "{:?}",
+            closure.missing_roles
+        );
+    }
+
+    /// A BMFont `.fnt` descriptor is text the emitter decodes AND binds, so
+    /// destroyed bytes in one must block the closure exactly like a damaged
+    /// `.gui`. Without the descriptor being diagnosed, a damaged font could
+    /// still yield resolvable atlas pages and leave the closure claiming
+    /// completeness.
+    #[test]
+    fn destroyed_bytes_in_a_bound_bmfont_descriptor_block_the_closure() {
+        // A text BMFont descriptor with a UTF-8 BOM and one invalid byte: the
+        // page line still parses, so the font resolves and is bound.
+        let mut fnt =
+            b"\xef\xbb\xbfinfo face=\"f\" size=16\npage id=0 file=\"myfont_0.dds\"\n".to_vec();
+        fnt.push(0xff);
+        fnt.push(b'\n');
+
+        let vfs = MapVfs::new(&[
+            (
+                "interface/fixture.gui",
+                b"guiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t\tinstantTextBoxType = {\n\t\t\tname = label\n\t\t\tfont = \"myfont\"\n\t\t}\n\t}\n}\n"
+                    .as_slice(),
+            ),
+            (
+                "interface/core.gfx",
+                b"bitmapfonts={ bitmapfont={ name=myfont path=\"gfx/fonts/myfont\" } }"
+                    .as_slice(),
+            ),
+            ("gfx/fonts/myfont.fnt", fnt.as_slice()),
+            ("gfx/fonts/myfont_0.dds", b"\x00binary-atlas".as_slice()),
+        ]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("emit");
+        let closure = &document.closures[0];
+
+        // The font descriptor really is bound (otherwise this proves nothing).
+        assert!(
+            closure
+                .bindings
+                .iter()
+                .any(|b| b.content.normalized_game_relative_path == "gfx/fonts/myfont.fnt"),
+            "{:?}",
+            closure
+                .bindings
+                .iter()
+                .map(|b| &b.content.normalized_game_relative_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(!closure.complete_dependency_closure);
+        assert!(
+            closure
+                .missing_roles
+                .iter()
+                .any(|role| role.starts_with("decode_loss:gfx/fonts/myfont.fnt:")),
+            "{:?}",
+            closure.missing_roles
+        );
+        // The binary atlas page is NOT text-decoded, so it never appears here
+        // even though it is not valid UTF-8.
+        assert!(
+            !closure
+                .missing_roles
+                .iter()
+                .any(|role| role.contains("myfont_0.dds")),
+            "{:?}",
+            closure.missing_roles
+        );
+    }
+
+    #[test]
+    fn font_dependency_planner_uses_loader_page_priority_not_candidate_uniqueness() {
+        let vfs = MapVfs::new(&[
+            ("gfx/fonts/dual.fnt", b"info face=\"dual\" size=16\n"),
+            ("gfx/fonts/dual.dds", b"dds"),
+            ("gfx/fonts/dual.tga", b"tga"),
+        ]);
+        let paths = bitmap_font_dependency_paths(
+            &vfs,
+            "dual",
+            "l_english",
+            &authority(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(paths.descriptor, "gfx/fonts/dual.fnt");
+        assert_eq!(paths.pages, vec!["gfx/fonts/dual.dds"]);
+    }
+
+    #[test]
+    fn authored_font_dependency_planner_preserves_ordered_variants_and_selection() {
+        let core = br#"
+            bitmapfonts = {
+                bitmapfont = { name=Alias path="gfx/fonts/base" }
+                bitmapfont_override = {
+                    name=Alias
+                    fontfiles={ "gfx/fonts/japanese/alias" "gfx/fonts/japanese/fallback" }
+                    languages={ "l_japanese" }
+                }
+                bitmapfont_override = {
+                    name=Alias
+                    fontfiles={ "gfx/fonts/english/alias" }
+                    languages={ "l_english" }
+                }
+            }
+        "#;
+        let vfs = MapVfs::new(&[
+            ("interface/core.gfx", core),
+            ("gfx/fonts/base.fnt", b"info face=\"base\" size=16\n"),
+            ("gfx/fonts/base.dds", b"base"),
+            (
+                "gfx/fonts/japanese/alias.fnt",
+                b"info face=\"jp\" size=16\n",
+            ),
+            ("gfx/fonts/japanese/alias.dds", b"jp"),
+            (
+                "gfx/fonts/japanese/fallback.fnt",
+                b"info face=\"jp2\" size=16\n",
+            ),
+            ("gfx/fonts/japanese/fallback.dds", b"jp2"),
+            ("gfx/fonts/english/alias.fnt", b"info face=\"en\" size=16\n"),
+            ("gfx/fonts/english/alias.dds", b"en"),
+        ]);
+        let english = authored_bitmap_font_dependency_registry_paths(
+            &vfs,
+            &BTreeSet::from(["Alias".to_string()]),
+            "english",
+            &authority(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap()
+        .remove("Alias")
+        .unwrap()
+        .unwrap();
+        assert_eq!(english.selected_variant_index, 2);
+        let japanese = authored_bitmap_font_dependency_registry_paths(
+            &vfs,
+            &BTreeSet::from(["Alias".to_string()]),
+            "l_japanese",
+            &authority(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap()
+        .remove("Alias")
+        .unwrap()
+        .unwrap();
+        assert_eq!(japanese.selected_variant_index, 1);
+        assert_eq!(japanese.variants.len(), 3);
+        assert_eq!(japanese.variants[1].ordered_descriptors.len(), 2);
+        assert_eq!(japanese.variants[1].ordered_languages, vec!["l_japanese"]);
+    }
+
+    #[test]
+    fn authored_font_registry_scans_gfx_once_for_multiple_fonts() {
+        use std::cell::Cell;
+
+        struct CountingVfs {
+            inner: MapVfs,
+            gfx_lists: Cell<usize>,
+        }
+        impl HudContentVfs for CountingVfs {
+            fn list_recursive(
+                &self,
+                directory: &str,
+                extension: &str,
+            ) -> Result<Vec<String>, String> {
+                if directory == "interface" && extension == "gfx" {
+                    self.gfx_lists.set(self.gfx_lists.get() + 1);
+                }
+                self.inner.list_recursive(directory, extension)
+            }
+
+            fn resolve(&self, logical_path: &str) -> Result<Option<ResolvedHudFile>, String> {
+                self.inner.resolve(logical_path)
+            }
+        }
+
+        let vfs = CountingVfs {
+            inner: MapVfs::new(&[
+                (
+                    "interface/fonts.gfx",
+                    b"bitmapfonts={ bitmapfont={ name=One path=\"gfx/fonts/one\" } bitmapfont={ name=Two path=\"gfx/fonts/two\" } }",
+                ),
+                ("gfx/fonts/one.fnt", b"info face=\"one\" size=16\n"),
+                ("gfx/fonts/one.dds", b"one"),
+                ("gfx/fonts/two.fnt", b"info face=\"two\" size=16\n"),
+                ("gfx/fonts/two.dds", b"two"),
+            ]),
+            gfx_lists: Cell::new(0),
+        };
+        let planned = authored_bitmap_font_dependency_registry_paths(
+            &vfs,
+            &BTreeSet::from(["One".to_string(), "Two".to_string()]),
+            "l_english",
+            &authority(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(planned["One"].is_ok());
+        assert!(planned["Two"].is_ok());
+        assert_eq!(vfs.gfx_lists.get(), 1);
+    }
+
+    /// One damaged font shared by several elements is resolved once per
+    /// element, so the damage record must be idempotent per observation —
+    /// otherwise the reported event count multiplies with the number of
+    /// references, which is not a property of the file.
+    #[test]
+    fn repeated_observations_of_one_damaged_file_do_not_multiply() {
+        let mut damaged = BTreeMap::new();
+        for _ in 0..4 {
+            record_decode_damage_summary(&mut damaged, "gfx/fonts/f.fnt", 2, "invalid UTF-8");
+        }
+        assert_eq!(damaged.len(), 1);
+        let summary = &damaged["gfx/fonts/f.fnt"];
+        assert_eq!(
+            summary.matches("destructive_events=2").count(),
+            1,
+            "{summary}"
+        );
+
+        // A genuinely different observation of the same file still accumulates.
+        record_decode_damage_summary(&mut damaged, "gfx/fonts/f.fnt", 1, "binary page name");
+        let summary = &damaged["gfx/fonts/f.fnt"];
+        assert!(summary.contains("destructive_events=2"), "{summary}");
+        assert!(summary.contains("destructive_events=1"), "{summary}");
+
+        // Zero events is never recorded.
+        record_decode_damage_summary(&mut damaged, "other.gui", 0, "unused");
+        assert!(!damaged.contains_key("other.gui"));
+    }
+
+    /// The regression that matters most: for CLEAN content the decode channel
+    /// is inert. Same fixture as `emitter_round_trip_binds_the_unique_gui_root`,
+    /// asserted field-for-field to be untouched by this lane's wiring.
+    #[test]
+    fn clean_content_admission_is_unchanged_by_the_decode_channel() {
+        let vfs = MapVfs::new(&[(
+            "interface/fixture.gui",
+            b"guiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t}\n}\n"
+                .as_slice(),
+        )]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("emit");
+        let closure = &document.closures[0];
+        assert_eq!(closure.bindings.len(), 1);
+        assert_eq!(document.winning_content.len(), 1);
+        // Exactly the three pre-existing activation reasons, and nothing from
+        // the decode channel.
+        assert_eq!(closure.missing_roles.len(), 3);
+        assert!(closure
+            .missing_roles
+            .iter()
+            .all(|role| role.starts_with("compose_hud_activation:")));
+    }
+
+    #[test]
     fn emitter_refuses_dirty_frames_and_ambiguous_roots() {
         let vfs = MapVfs::new(&[(
             "interface/fixture.gui",
@@ -934,8 +2057,9 @@ mod tests {
         valid.extend_from_slice(&(pages.len() as u32).to_le_bytes());
         valid.extend_from_slice(pages);
         let parsed = bmfont_page_files(&valid).expect("valid binary BMFont");
-        assert_eq!(parsed.get(&0).map(String::as_str), Some("page_0.dds"));
-        assert_eq!(parsed.get(&1).map(String::as_str), Some("page_1.dds"));
+        assert_eq!(parsed.pages.get(&0).map(String::as_str), Some("page_0.dds"));
+        assert_eq!(parsed.pages.get(&1).map(String::as_str), Some("page_1.dds"));
+        assert_eq!(parsed.lossy_page_names, 0);
 
         // Exactly b"BMF": recognized as binary but shorter than the header.
         assert_eq!(
@@ -961,15 +2085,37 @@ mod tests {
         no_pages.push(1);
         no_pages.extend_from_slice(&1u32.to_le_bytes());
         no_pages.push(0);
-        assert!(bmfont_page_files(&no_pages).unwrap().is_empty());
+        assert!(bmfont_page_files(&no_pages).unwrap().pages.is_empty());
+    }
+
+    /// A BINARY BMFont decodes its page names with its own `from_utf8_lossy`,
+    /// which the file-level diagnosis cannot see: the file has no BOM, so
+    /// `diagnose_text_decode` calls the whole thing lossless Latin-1 and reports
+    /// nothing, while the page name really does lose bytes.
+    #[test]
+    fn binary_bmfont_page_names_that_lose_bytes_are_counted() {
+        let mut bytes = b"BMF\x03".to_vec();
+        let mut pages = b"good_0.dds\0".to_vec();
+        pages.extend_from_slice(b"bad_\xff_1.dds\0");
+        bytes.push(3);
+        bytes.extend_from_slice(&(pages.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&pages);
+
+        // The file-level diagnosis reports NO destructive loss ...
+        assert_eq!(destructive_event_count(&diagnose_text_decode(&bytes)), 0);
+        // ... but the page-name decode did lose a byte, and it is counted.
+        let parsed = bmfont_page_files(&bytes).expect("binary BMFont");
+        assert_eq!(parsed.lossy_page_names, 1);
+        assert_eq!(parsed.pages.get(&0).map(String::as_str), Some("good_0.dds"));
+        assert!(parsed.pages[&1].contains('\u{fffd}'));
     }
 
     #[test]
     fn text_bmfont_pages_and_kv_fields_parse() {
         let text = b"info face=\"font\" size=16\npage id=0 file=\"font_0.dds\"\npage id=1 file=font_1.dds\n";
         let parsed = bmfont_page_files(text).expect("text BMFont");
-        assert_eq!(parsed.get(&0).map(String::as_str), Some("font_0.dds"));
-        assert_eq!(parsed.get(&1).map(String::as_str), Some("font_1.dds"));
+        assert_eq!(parsed.pages.get(&0).map(String::as_str), Some("font_0.dds"));
+        assert_eq!(parsed.pages.get(&1).map(String::as_str), Some("font_1.dds"));
 
         let fields = parse_kv_fields("id=3 file=\"a b.dds\" bare orphan= last=x");
         assert_eq!(fields.get("id").map(String::as_str), Some("3"));
@@ -1004,7 +2150,9 @@ mod tests {
                 b"l_french:\n KEY_ALPHA:0 \"Alpha\"\n".as_slice(),
             ),
         ]);
-        let sources = localisation_sources(&vfs, "english").expect("localisation");
+        let mut damaged = BTreeMap::new();
+        let sources = localisation_sources(&vfs, "english", &mut damaged).expect("localisation");
+        assert!(damaged.is_empty(), "clean localisation records no damage");
         assert_eq!(
             sources.get("key_alpha").map(String::as_str),
             Some("localisation/english/fixture_l_english.yml")

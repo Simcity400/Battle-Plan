@@ -159,7 +159,10 @@ fn headless_execution_receipt_is_byte_deterministic() {
     assert_eq!(first_bridge.calls, vec!["begin:false", "finish"]);
     assert_eq!(first_bridge.calls, second_bridge.calls);
     assert_eq!(first.deterministic_sha256.len(), 64);
-    assert_eq!(first.mapname_d80_state, replay_core::MapnameD80State::Missing);
+    assert_eq!(
+        first.mapname_d80_state,
+        replay_core::MapnameD80State::Missing
+    );
 }
 
 fn c03_binding() -> C03CameraReplayBinding {
@@ -242,7 +245,10 @@ fn d3d_preparation_refuses_missing_product_modset_provenance() {
     let mut frame = empty_frame();
     frame.product_modset_sha256.clear();
     let error = prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap_err();
-    assert!(error.to_string().contains("product modset digest"), "{error}");
+    assert!(
+        error.to_string().contains("product modset digest"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -276,7 +282,10 @@ fn c03_binding_reaches_execution_receipt_without_reapplying_raw_events() {
     unbound.c03_camera_replay = None;
     let unbound_receipt =
         execute_production_d3d_frame(&unbound, &mut TraceBridge::default()).unwrap();
-    assert_ne!(receipt.deterministic_sha256, unbound_receipt.deterministic_sha256);
+    assert_ne!(
+        receipt.deterministic_sha256,
+        unbound_receipt.deterministic_sha256
+    );
 }
 
 #[test]
@@ -287,19 +296,23 @@ fn c03_binding_fails_closed_on_double_apply_or_selected_submit_mismatch() {
     let mut binding = c03_binding();
     binding.raw_event_reapplication_count = 1;
     double_apply.c03_camera_replay = Some(binding);
-    assert!(prepare_production_d3d_frame(&double_apply, &BTreeMap::new())
-        .unwrap_err()
-        .to_string()
-        .contains("identity/policy mismatch"));
+    assert!(
+        prepare_production_d3d_frame(&double_apply, &BTreeMap::new())
+            .unwrap_err()
+            .to_string()
+            .contains("identity/policy mismatch")
+    );
 
     let mut wrong_submit = empty_frame();
     wrong_submit.selected_submit_index = Some(8);
     wrong_submit.selected_submit_global_order = Some(3);
     wrong_submit.c03_camera_replay = Some(c03_binding());
-    assert!(prepare_production_d3d_frame(&wrong_submit, &BTreeMap::new())
-        .unwrap_err()
-        .to_string()
-        .contains("different selected submit"));
+    assert!(
+        prepare_production_d3d_frame(&wrong_submit, &BTreeMap::new())
+            .unwrap_err()
+            .to_string()
+            .contains("different selected submit")
+    );
 }
 
 #[test]
@@ -340,8 +353,7 @@ fn legacy_mapname_program_is_omitted_and_receipted_without_reconstruction() {
         .reason
         .starts_with("B10 legacy mapname program omitted:")));
 
-    let receipt =
-        execute_production_d3d_frame(&prepared, &mut TraceBridge::default()).unwrap();
+    let receipt = execute_production_d3d_frame(&prepared, &mut TraceBridge::default()).unwrap();
     assert_eq!(receipt.schema, PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA);
     assert_eq!(
         receipt.mapname_d80_state,
@@ -352,16 +364,7 @@ fn legacy_mapname_program_is_omitted_and_receipted_without_reconstruction() {
 #[test]
 fn authenticated_mapname_executes_but_a_legacy_claim_cannot_bypass_the_guard() {
     let mut raw = Vec::with_capacity(32);
-    for bits in [
-        0.5f32.to_bits(),
-        (-5632.0f32).to_bits(),
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ] {
+    for bits in [0.5f32.to_bits(), (-5632.0f32).to_bits(), 0, 0, 0, 0, 0, 0] {
         raw.extend_from_slice(&bits.to_le_bytes());
     }
     let mut draw = fixture_static_draw();
@@ -382,8 +385,7 @@ fn authenticated_mapname_executes_but_a_legacy_claim_cannot_bypass_the_guard() {
     };
     let mut prepared = prepared_static_frame(vec![operation]);
     prepared.mapname_d80_state = replay_core::MapnameD80State::Authenticated;
-    let receipt =
-        execute_production_d3d_frame(&prepared, &mut TraceBridge::default()).unwrap();
+    let receipt = execute_production_d3d_frame(&prepared, &mut TraceBridge::default()).unwrap();
     assert_eq!(
         receipt.mapname_d80_state,
         replay_core::MapnameD80State::Authenticated
@@ -505,9 +507,9 @@ fn fixture_static_draw() -> replay_core::StaticMapDraw {
     use replay_core::{
         BlendDesc, BlendFactor, BlendOperation, BufferSource, Comparison, CompiledShaderPayload,
         ContentLayerKind, CullMode, DepthDesc, DrawCommand, FillMode, GeometryBinding, IndexFormat,
-        PipelineDesc, PrimitiveTopology, RasterizerDesc, RenderOutputState, ShaderProgram,
-        StaticGeometrySource, StaticMapDraw, StencilFaceDesc, StencilOperation,
-        VertexBufferBinding, ViewportDesc,
+        InputElementDesc, PipelineDesc, PrimitiveTopology, RasterizerDesc, RenderOutputState,
+        ShaderProgram, StaticGeometrySource, StaticMapCommand, StaticMapDraw, StaticMapOperation,
+        StaticMapPassProgram, StencilFaceDesc, StencilOperation, VertexBufferBinding, ViewportDesc,
     };
 
     let bytecode = vec![0u8; 4];
@@ -525,7 +527,7 @@ fn fixture_static_draw() -> replay_core::StaticMapDraw {
         comparison: Comparison::Always,
     };
     let vertices = vec![0u8; 24];
-    StaticMapDraw {
+    let draw = StaticMapDraw {
         draw_token: "test.fixture.never_executed".into(),
         shader_program: ShaderProgram {
             source: replay_core::UsedContentKey {
@@ -592,7 +594,17 @@ fn fixture_static_draw() -> replay_core::StaticMapDraw {
                 antialiased_line_enabled: false,
             },
             samplers: Vec::new(),
-            input_layout: Vec::new(),
+            // Same canonical POSITION/R32G32_FLOAT vertex contract used by
+            // the executable offscreen production-draw fixture below.
+            input_layout: vec![InputElementDesc {
+                semantic_token: "POSITION".into(),
+                semantic_index: 0,
+                dxgi_format_u32: 16,
+                input_slot: 0,
+                aligned_byte_offset: 0,
+                per_instance: false,
+                instance_step_rate: 0,
+            }],
             index_format: IndexFormat::None,
             static_indices_u16: Vec::new(),
         },
@@ -641,8 +653,152 @@ fn fixture_static_draw() -> replay_core::StaticMapDraw {
             },
             scissor: None,
         },
-        payload_sha256: "44".repeat(32),
+        payload_sha256: String::new(),
+    };
+    let mut program = StaticMapPassProgram {
+        program_ordinal: 0,
+        pass_token: "test.fixture.sealing".into(),
+        ordered_content_keys: Vec::new(),
+        ordered_operations: vec![StaticMapOperation {
+            operation_ordinal: 0,
+            payload_sha256: String::new(),
+            command: StaticMapCommand::Draw { draw },
+        }],
+        payload_sha256: String::new(),
+    };
+    program
+        .seal_payload_hashes()
+        .expect("canonical static-map fixture sealing must succeed");
+    let StaticMapCommand::Draw { draw } = program.ordered_operations.remove(0).command else {
+        unreachable!("fixture sealing program contains exactly one draw")
+    };
+    draw
+}
+
+fn valid_m03_frame() -> replay_core::M03ArrowFrame {
+    use portable_render_stream::{
+        M03_A729_EXECUTABLE_SHA256, M03_ARROW_SCHEMA, M03_STATIC_PROOF_SHA256,
+    };
+    use replay_core::{
+        M03ArrowDraw, M03ArrowDrawMember, M03ArrowDrawMemberRef, M03ArrowDrawRef, M03ArrowRow,
+        M03PlanSubtype, M03StableKey, M03Visibility,
+    };
+
+    let draw = fixture_static_draw();
+    let used_content = vec![draw.shader_program.source.clone()];
+    let stable_key = M03StableKey::Plan {
+        owner_country_id: 1,
+        army_id: 2,
+        engine_order_instance_id: 3,
+        generation: 4,
+        slot_index: 0,
+    };
+    let a0 = 2.0f32;
+    let a4 = 3.0f32;
+    let c8 = 0.5f32;
+    let arrow = 4.0f32;
+    M03ArrowFrame {
+        schema: M03_ARROW_SCHEMA.into(),
+        executable_sha256: M03_A729_EXECUTABLE_SHA256.into(),
+        static_semantic_proof_sha256: M03_STATIC_PROOF_SHA256.into(),
+        update_index: 3,
+        first_sequence: 10,
+        last_sequence: 20,
+        used_content,
+        rows: vec![M03ArrowRow {
+            event_sequence: 12,
+            stable_key: stable_key.clone(),
+            definition_name: "move_thick".into(),
+            plan_subtype: Some(M03PlanSubtype::Front),
+            ordered_division_ids: vec![42],
+            ordered_fixed_point_input_points_1e5: vec![[0, 0], [100_000, 100_000]],
+            ordered_engine_working_points_1e5: Some(vec![[0, 0], [100_000, 100_000]]),
+            assigned: true,
+            active: true,
+            selected: false,
+            progress_raw_u32: 0,
+            fade_in_f32_bits: 0.2f32.to_bits(),
+            fade_out_f32_bits: 0.0f32.to_bits(),
+            culling_flags_u16: 0,
+            visibility: M03Visibility::Submitted,
+            manager_insertion_ordinal: 4,
+            definition_group_ordinal: 2,
+            comparator_definition_a0_f32_bits: a0.to_bits(),
+            comparator_definition_a4_f32_bits: a4.to_bits(),
+            comparator_definition_c8_f32_bits: c8.to_bits(),
+            comparator_arrow_178_f32_bits: arrow.to_bits(),
+            comparator_primary_f32_bits: (a4.max(a0) + arrow * c8).to_bits(),
+            comparator_tie_17c_f32_bits: 1.0f32.to_bits(),
+            draw_members: vec![M03ArrowDrawMemberRef {
+                engine_draw_ordinal: 0,
+                member_ordinal: 0,
+            }],
+        }],
+        draws: vec![M03ArrowDraw {
+            engine_draw_ordinal: 0,
+            draw,
+            members: vec![M03ArrowDrawMember {
+                stable_key,
+                member_ordinal: 0,
+                first_vertex: 0,
+                vertex_count: 3,
+            }],
+        }],
+        ordered_draws: vec![M03ArrowDrawRef {
+            engine_draw_ordinal: 0,
+        }],
     }
+}
+
+#[test]
+fn m03_used_content_is_an_exact_deterministic_draw_cover() {
+    let exact = valid_m03_frame();
+    exact.validate().unwrap();
+
+    let mut extra = exact.clone();
+    let mut unused = extra.used_content[0].clone();
+    unused.normalized_game_relative_path = "gfx/fx/unused_fixture.hlsl".into();
+    unused.source_sha256 = "88".repeat(32);
+    unused.payload_sha256 = "88".repeat(32);
+    extra.used_content.push(unused);
+    extra.used_content.sort();
+    assert!(extra
+        .validate()
+        .unwrap_err()
+        .contains("exact cover of draw content"));
+
+    let mut unstable = exact;
+    let duplicate = unstable.used_content[0].clone();
+    unstable.used_content.insert(0, duplicate);
+    assert!(unstable.validate().is_err());
+}
+
+#[test]
+fn rail_authority_content_is_added_once_and_required_by_receipt_validation() {
+    let draw = fixture_static_draw();
+    let mut maparrows = draw.shader_program.source.clone();
+    maparrows.normalized_game_relative_path = "gfx/maparrows/maparrows.txt".into();
+    maparrows.source_sha256 = "aa".repeat(32);
+    maparrows.payload_sha256 = "aa".repeat(32);
+    let mut graphics = draw.shader_program.source;
+    graphics.normalized_game_relative_path = "common/defines/00_graphics.lua".into();
+    graphics.source_sha256 = "bb".repeat(32);
+    graphics.payload_sha256 = "bb".repeat(32);
+    let authority = vec![maparrows.clone(), graphics.clone()];
+
+    let mut receipt_content = vec![graphics];
+    extend_receipt_content_closure(&mut receipt_content, &authority);
+    extend_receipt_content_closure(&mut receipt_content, &authority);
+    assert_eq!(receipt_content.len(), 2);
+    validate_receipt_content_closure(&receipt_content, &authority, "rail authority").unwrap();
+
+    receipt_content.retain(|content| content != &maparrows);
+    assert!(
+        validate_receipt_content_closure(&receipt_content, &authority, "rail authority")
+            .unwrap_err()
+            .to_string()
+            .contains("gfx/maparrows/maparrows.txt")
+    );
 }
 
 #[test]

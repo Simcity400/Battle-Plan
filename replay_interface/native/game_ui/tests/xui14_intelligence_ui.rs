@@ -216,6 +216,7 @@ fn exact() -> IntelligenceUiTrace {
             }],
         }),
         visibility: visible(),
+        pov_scope_drops: Vec::new(),
     }
 }
 
@@ -246,6 +247,27 @@ fn exact_trace_admits_and_preserves_controller_order() {
     assert_eq!(
         admitted.visibility(IntelligenceSurface::Networks),
         VisibilityDisposition::Visible
+    );
+}
+
+#[test]
+fn admitted_trace_retains_its_pov_scope_drop_audit() {
+    let mut trace = exact();
+    trace.pov_scope_drops = vec![PovScopedDrop {
+        component: IntelligenceComponent::Networks,
+        row_identity: "network-slot:4".into(),
+        recorded_owner: Some("FRA".into()),
+        pov_country: "GER".into(),
+    }];
+    admit_intelligence_ui(&trace).expect("scope audit does not alter semantic admission");
+    assert_eq!(
+        trace.pov_scope_drops,
+        [PovScopedDrop {
+            component: IntelligenceComponent::Networks,
+            row_identity: "network-slot:4".into(),
+            recorded_owner: Some("FRA".into()),
+            pov_country: "GER".into(),
+        }]
     );
 }
 

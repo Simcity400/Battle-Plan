@@ -11,7 +11,7 @@ use std::ffi::CString;
 use std::mem;
 use std::ptr;
 
-use map_viewer::GameFileResolver;
+use map_viewer::{GameFileResolver, NativeProductionMainSceneTarget};
 use replay_core::{
     AdditionalShaderStage, AddressMode, BlendFactor, BlendOperation, BufferSource, Comparison,
     ConstantBufferBinding, CullMode, DrawCommand, EntitySubmission, FillMode, Filter,
@@ -35,20 +35,46 @@ use crate::Result;
 /// identities are optional only so legacy debug callers can represent their
 /// lack of authority; execution rejects such callers before binding a view.
 pub struct SubmittedMainSceneTarget {
-    pub color_identity: Option<PreparedRenderTarget>,
-    pub depth_identity: Option<PreparedRenderTarget>,
-    pub color_rtv: *mut ID3D11RenderTargetView,
-    pub depth_dsv: *mut ID3D11DepthStencilView,
-    pub color_width: u32,
-    pub color_height: u32,
-    pub color_format: u32,
-    pub color_samples: u32,
-    pub color_quality: u32,
-    pub depth_width: u32,
-    pub depth_height: u32,
-    pub depth_format: u32,
-    pub depth_samples: u32,
-    pub depth_quality: u32,
+    pub(crate) color_identity: Option<PreparedRenderTarget>,
+    pub(crate) depth_identity: Option<PreparedRenderTarget>,
+    pub(crate) color_rtv: *mut ID3D11RenderTargetView,
+    pub(crate) depth_dsv: *mut ID3D11DepthStencilView,
+    pub(crate) color_width: u32,
+    pub(crate) color_height: u32,
+    pub(crate) color_format: u32,
+    pub(crate) color_samples: u32,
+    pub(crate) color_quality: u32,
+    pub(crate) depth_width: u32,
+    pub(crate) depth_height: u32,
+    pub(crate) depth_format: u32,
+    pub(crate) depth_samples: u32,
+    pub(crate) depth_quality: u32,
+}
+
+impl SubmittedMainSceneTarget {
+    pub(crate) fn from_native(target: &NativeProductionMainSceneTarget) -> Self {
+        let desc = target.desc();
+        Self {
+            color_identity: Some(PreparedRenderTarget::OpaqueRenderTarget {
+                attachment_ordinal: desc.color_attachment_ordinal,
+            }),
+            depth_identity: Some(PreparedRenderTarget::OpaqueRenderTarget {
+                attachment_ordinal: desc.depth_attachment_ordinal,
+            }),
+            color_rtv: target.color_rtv(),
+            depth_dsv: target.depth_dsv(),
+            color_width: desc.color_width,
+            color_height: desc.color_height,
+            color_format: desc.color_format,
+            color_samples: desc.color_samples,
+            color_quality: desc.color_quality,
+            depth_width: desc.depth_width,
+            depth_height: desc.depth_height,
+            depth_format: desc.depth_format,
+            depth_samples: desc.depth_samples,
+            depth_quality: desc.depth_quality,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +89,11 @@ pub struct SubmittedDrawStats {
 enum OrderedDraw<'a> {
     Particle(&'a ParticlePacket),
     Entity(&'a EntitySubmission),
+}
+
+enum SubmittedOutput<'a> {
+    AuthenticatedPacket(&'a RenderOutputState),
+    ViewerOwnedMainScene,
 }
 
 /// Resolve the authoritative cross-family sequence without sorting or
@@ -177,7 +208,7 @@ pub unsafe fn execute_submitted_draws(
                     &packet.geometry,
                     &packet.ordered_constant_buffers,
                     Some(&packet.ordered_gpu_instance_records),
-                    &packet.output_state,
+                    SubmittedOutput::AuthenticatedPacket(&packet.output_state),
                     target,
                     &mut stream_output,
                 )?;
@@ -199,7 +230,7 @@ pub unsafe fn execute_submitted_draws(
                     &entity.geometry,
                     &entity.ordered_constant_buffers,
                     None,
-                    &entity.output_state,
+                    SubmittedOutput::AuthenticatedPacket(&entity.output_state),
                     target,
                     &mut stream_output,
                 )?;
@@ -208,6 +239,98 @@ pub unsafe fn execute_submitted_draws(
         }
     }
     Ok(stats)
+}
+
+/// Execute XMAP20's presentation-independent particle snapshot into the
+/// viewer-owned MainScene target.
+///
+/// Recorder SceneCB0, recorder projection CB1, viewport and attachment
+/// identity are intentionally ignored. The caller supplies the exact current
+/// XMAP03/XMAP09/XMAP10 buffers and target after their provider receipts have
+/// been checked by `xmap20_effects`.
+pub unsafe fn execute_xmap20_particles(
+    gfx: &Gfx,
+    resolver: &GameFileResolver,
+    prepared: &map_viewer::PreparedXmap20Frame,
+    scene_constant_buffers: &[ConstantBufferBinding],
+    viewer_projection_cb1: &ConstantBufferBinding,
+    target: &SubmittedMainSceneTarget,
+) -> Result<SubmittedDrawStats> {
+    prepared.validate()?;
+    if !resolver.has_content_admission() {
+        return Err("XMAP20 execution requires validated effective-VFS admission".into());
+    }
+    validate_xmap20_provider_buffers(scene_constant_buffers, viewer_projection_cb1)?;
+    let mut stream_output = StreamOutputBuffers::default();
+    let mut stats = SubmittedDrawStats::default();
+    for packet in &prepared.ordered_particles {
+        let draw_constant_buffers = packet
+            .ordered_constant_buffers
+            .iter()
+            .map(|binding| {
+                if binding.slot == 1 {
+                    viewer_projection_cb1.clone()
+                } else {
+                    binding.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        if draw_constant_buffers
+            .iter()
+            .filter(|binding| binding.slot == 1)
+            .count()
+            != 1
+        {
+            return Err("XMAP20 packet does not have one replaceable projection CB1".into());
+        }
+        execute_draw(
+            gfx,
+            resolver,
+            scene_constant_buffers,
+            &packet.shader_program,
+            &packet.ordered_texture_bindings,
+            &packet.pipeline,
+            &packet.geometry,
+            &draw_constant_buffers,
+            Some(&packet.ordered_gpu_instance_records),
+            SubmittedOutput::ViewerOwnedMainScene,
+            target,
+            &mut stream_output,
+        )?;
+        stats.particle_draws += 1;
+    }
+    Ok(stats)
+}
+
+fn validate_xmap20_provider_buffers(
+    scene_constant_buffers: &[ConstantBufferBinding],
+    projection: &ConstantBufferBinding,
+) -> Result<()> {
+    if scene_constant_buffers.len() != 1 {
+        return Err("XMAP20 requires exactly one viewer-owned SceneCB0 binding".into());
+    }
+    let scene = &scene_constant_buffers[0];
+    if scene.stage_mask_u8 != 0b11
+        || scene.slot != 0
+        || scene.byte_offset != 0
+        || scene.byte_count != 416
+        || scene.raw_bytes.len() != 416
+        || scene.semantic_layout.trim().is_empty()
+        || format!("{:x}", Sha256::digest(&scene.raw_bytes)) != scene.sha256
+    {
+        return Err("XMAP20 SceneCB0 is not the exact 416-byte VS/PS provider payload".into());
+    }
+    if projection.stage_mask_u8 != 0b1
+        || projection.slot != 1
+        || projection.byte_offset != 0
+        || projection.byte_count != 64
+        || projection.raw_bytes.len() != 64
+        || projection.semantic_layout.trim().is_empty()
+        || format!("{:x}", Sha256::digest(&projection.raw_bytes)) != projection.sha256
+    {
+        return Err("XMAP20 projection CB1 is not the exact viewer-camera 64-byte payload".into());
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -221,14 +344,17 @@ unsafe fn execute_draw(
     geometry: &GeometryBinding,
     draw_constant_buffers: &[ConstantBufferBinding],
     particle_records: Option<&[u8]>,
-    output: &RenderOutputState,
+    output: SubmittedOutput<'_>,
     target: &SubmittedMainSceneTarget,
     stream_output: &mut StreamOutputBuffers,
 ) -> Result<()> {
     // The source key is not decorative provenance: exact VFS admission is
     // required before captured compiled bytecode may execute.
     resolver.read_admitted_used_content(&shader.source)?;
-    bind_output(gfx, output, target)?;
+    match output {
+        SubmittedOutput::AuthenticatedPacket(output) => bind_output(gfx, output, target)?,
+        SubmittedOutput::ViewerOwnedMainScene => bind_viewer_owned_main_scene(gfx, target)?,
+    }
 
     let vertex_shader = create_vertex_shader(gfx, &shader.compiled_vertex_shader.bytecode)?;
     let pixel_shader = create_pixel_shader(gfx, &shader.compiled_pixel_shader.bytecode)?;
@@ -485,6 +611,53 @@ unsafe fn bind_output(
     } else {
         (*context).RSSetScissorRects(0, ptr::null());
     }
+    Ok(())
+}
+
+unsafe fn bind_viewer_owned_main_scene(
+    gfx: &Gfx,
+    target: &SubmittedMainSceneTarget,
+) -> Result<()> {
+    if !matches!(
+        target.color_identity.as_ref(),
+        Some(PreparedRenderTarget::OpaqueRenderTarget { .. })
+    ) || !matches!(
+        target.depth_identity.as_ref(),
+        Some(PreparedRenderTarget::OpaqueRenderTarget { .. })
+    ) || target.color_rtv.is_null()
+        || target.depth_dsv.is_null()
+        || target.color_identity == target.depth_identity
+        || target.color_width == 0
+        || target.color_height == 0
+        || target.color_format == 0
+        || target.depth_format == 0
+        || target.depth_width != target.color_width
+        || target.depth_height != target.color_height
+        || target.color_samples == 0
+        || target.depth_samples != target.color_samples
+        || target.depth_quality != target.color_quality
+    {
+        return Err("XMAP20 viewer-owned MainScene target identity/descriptor is invalid".into());
+    }
+    let context = gfx.context.as_raw();
+    let rtvs = [target.color_rtv];
+    (*context).OMSetRenderTargets(1, rtvs.as_ptr(), target.depth_dsv);
+    let viewport = D3D11_VIEWPORT {
+        TopLeftX: 0.0,
+        TopLeftY: 0.0,
+        Width: target.color_width as f32,
+        Height: target.color_height as f32,
+        MinDepth: 0.0,
+        MaxDepth: 1.0,
+    };
+    (*context).RSSetViewports(1, &viewport);
+    let rect = RECT {
+        left: 0,
+        top: 0,
+        right: i32::try_from(target.color_width)?,
+        bottom: i32::try_from(target.color_height)?,
+    };
+    (*context).RSSetScissorRects(1, &rect);
     Ok(())
 }
 

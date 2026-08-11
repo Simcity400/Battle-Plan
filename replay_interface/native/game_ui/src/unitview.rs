@@ -1,6 +1,6 @@
-//! U1 — selected-unit view panel (`interface/unitview.gui`) layout gate +
-//! binding (REPLAY_PRODUCTION_PLAN §6a / UI_COVERAGE_MATRIX §2 row
-//! "Selected-unit panel").
+//! Selected-unit view panel (`interface/unitview.gui`) layout gate and binding.
+//! Generic geometry follows `replay_interface/documents/UI_LAYOUT_LAW.md`
+//! §§3 and 6.1; typed WorldFrame views own the dynamic values below.
 //!
 //! This module lays the layout for the selected-unit detail panels the game
 //! shows when a division / task-force / air-wing is selected, and binds
@@ -23,16 +23,16 @@
 //!   context. Per Constraint 3 every scalar is carried as its raw measured value
 //!   (`Option<f64>` / `Option<i64>`), never a fabricated percent/grouping. The
 //!   caller renders it raw until a shipped-file citation for a field's format is
-//!   found. See `LANE_REPORT.md` for the per-field FILE/UNKNOWN/VIEW-GAP table.
+//!   found. The per-field FILE/UNKNOWN/VIEW-GAP disposition is the code: each
+//!   bound field carries its citation, and unavailable values remain explicit
+//!   fail-closed `None` values.
 //!
 //! ## VIEW GAPS (data the read-only view does not surface)
 //!
 //! The panel shows a per-unit *custom display name* (division / task-force
-//! name) and the land panel shows an `experience` slot, but `DivisionUnitRow`
-//! and `FleetUnitRow` expose no such field, so `display_name` (land + naval) and
-//! land experience are fail-closed `None` with a filed view gap. This lane is
-//! READ-ONLY on `replay_core`; closing these is a `replay_core` change, not a
-//! binding change. See `LANE_REPORT.md`.
+//! name), but `DivisionUnitRow` and `FleetUnitRow` expose no custom-name field,
+//! so `display_name` (land + naval) remains fail-closed `None`. The land
+//! `experience` slot is populated from `DivisionUnitRow::experience`.
 
 use crate::gui::{GuiElement, LayoutSet};
 use replay_core::{
@@ -56,9 +56,8 @@ pub const NAVAL_DETAIL_WINDOW: &str = "ship_stats_window";
 pub const AIR_WING_ENTRY_WINDOW: &str = "ship_stats_air_wing_entry";
 
 /// FILE text-slot element names inside [`LAND_DETAIL_WINDOW`] the land binding
-/// targets. `unit_title`/`experience` are present in the layout but map to a
-/// VIEW GAP (see module header) — they are gated for layout presence here and
-/// documented as unbound in `LANE_REPORT.md`.
+/// targets. `unit_title` has no custom-name value in the typed view;
+/// `experience` binds the measured division-experience leaf.
 pub const LAND_FIELD_SLOTS: &[&str] = &[
     "unit_title",
     "experience",
@@ -247,6 +246,8 @@ pub struct LandUnitView {
     pub template_id: Option<i64>,
     pub strength: Option<f64>,
     pub organisation: Option<f64>,
+    /// Raw measured division experience for the FILE `experience` slot.
+    pub experience: Option<f64>,
     pub location_province: Option<u32>,
     pub moving: Option<bool>,
     pub in_combat: Option<bool>,
@@ -269,6 +270,7 @@ pub fn land_unit_view_from_row(row: &DivisionUnitRow, available: bool) -> LandUn
         template_id: opt_i64(&row.template_id),
         strength: opt_f64(&row.strength),
         organisation: opt_f64(&row.organisation),
+        experience: opt_f64(&row.experience),
         location_province: opt_u32(&row.location_province),
         moving: opt_bool(&row.moving),
         in_combat: opt_bool(&row.in_combat),
@@ -546,6 +548,7 @@ mod tests {
         assert_eq!(view.owner, None);
         assert_eq!(view.strength, None);
         assert_eq!(view.organisation, None);
+        assert_eq!(view.experience, None);
         assert_eq!(view.template_name, None);
         assert_eq!(view.display_name, None); // VIEW GAP, always None
         assert!(!view.equipment_available);
@@ -568,7 +571,7 @@ mod tests {
             strength: Leaf::Measured(0.95),
             organisation: Leaf::Measured(42.0),
             max_organisation: Leaf::Absent,
-            experience: Leaf::Absent,
+            experience: Leaf::Measured(0.42),
             current_supply: Leaf::Absent,
             max_supply: Leaf::Absent,
             counter_supply_status: Leaf::Absent,
@@ -593,6 +596,7 @@ mod tests {
         assert_eq!(view.template_role.as_deref(), Some("infantry"));
         assert_eq!(view.strength, Some(0.95));
         assert_eq!(view.organisation, Some(42.0));
+        assert_eq!(view.experience, Some(0.42));
         assert_eq!(view.location_province, Some(1000));
         assert_eq!(view.moving, Some(true));
         assert_eq!(view.in_combat, Some(false));
@@ -606,6 +610,8 @@ mod tests {
         let row = FleetUnitRow {
             task_force_uid: "201".to_string(),
             fleet_uid: Leaf::Measured("200".to_string()),
+            raw_task_force_id: Leaf::Measured(201),
+            raw_fleet_id: Leaf::Measured(200),
             owner: Leaf::Measured("GER".to_string()),
             location_province: Leaf::Measured(6434),
             movement_path: Leaf::Measured(vec![6434, 5088]),
@@ -664,6 +670,7 @@ mod tests {
     fn air_recording_absent_fields_are_none() {
         let row = WingUnitRow {
             wing_uid: "800:1".to_string(),
+            raw_wing_id: Leaf::Measured(800),
             owner: Leaf::Measured("ENG".to_string()),
             name: Leaf::Measured("Fighter Wing".to_string()),
             plane_count: Leaf::Measured(100),

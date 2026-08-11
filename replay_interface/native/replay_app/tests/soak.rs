@@ -44,7 +44,7 @@ use soak_support::{
 };
 
 // ---------------------------------------------------------------------------
-// Documented ceilings (see LANE_REPORT.md for the derivation).
+// Documented ceilings (each constant carries its own derivation below).
 // ---------------------------------------------------------------------------
 
 /// Post-warmup live-heap growth allowed across the whole seek/play/scrub

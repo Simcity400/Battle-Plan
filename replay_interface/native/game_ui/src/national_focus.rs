@@ -209,6 +209,27 @@ pub fn admit_national_focus_presentation(
     catalog: &FocusCatalog,
     canvas: &ResearchCanvasRequest,
 ) -> Result<AdmittedNationalFocusPresentation, FocusAdmissionRejection> {
+    admit_national_focus_semantics(focus, topology, catalog, Some(canvas))
+}
+
+/// Product XUI10 route. D12 and effective packaged definitions own semantic
+/// content; the viewer owns viewport/layout. D89 and selected-Present geometry
+/// are intentionally absent, and `progress_days` is never divided by an
+/// inferred denominator such as `cost * 7`.
+pub fn admit_observer_national_focus_presentation(
+    focus: &FocusView,
+    topology: &FocusTreeTopology,
+    catalog: &FocusCatalog,
+) -> Result<AdmittedNationalFocusPresentation, FocusAdmissionRejection> {
+    admit_national_focus_semantics(focus, topology, catalog, None)
+}
+
+fn admit_national_focus_semantics(
+    focus: &FocusView,
+    topology: &FocusTreeTopology,
+    catalog: &FocusCatalog,
+    canvas: Option<&ResearchCanvasRequest>,
+) -> Result<AdmittedNationalFocusPresentation, FocusAdmissionRejection> {
     let tree_id = measured(&focus.focus_tree, "focus_tree")?;
     let current = measured(&focus.current_set, "current_set")?;
     let current_continuous = measured(&focus.current_continuous_set, "current_continuous_set")?;
@@ -303,19 +324,20 @@ pub fn admit_national_focus_presentation(
     };
 
     let canvas_focus = match canvas {
-        ResearchCanvasRequest::Focus(value) if value.node_ids == *visible_order => value,
-        ResearchCanvasRequest::Focus(_) => {
+        Some(ResearchCanvasRequest::Focus(value)) if value.node_ids == *visible_order => Some(value),
+        Some(ResearchCanvasRequest::Focus(_)) => {
             return Err(reject(
                 FocusAdmissionCode::TopologyMismatch,
                 "UI09 focus canvas node sequence differs from focus.visible_order",
             ));
         }
-        _ => {
+        Some(_) => {
             return Err(reject(
                 FocusAdmissionCode::Canvas,
                 "national-focus presentation requires a UI09 focus canvas request",
             ));
         }
+        None => None,
     };
 
     let mut nodes = Vec::with_capacity(visible_order.len());
@@ -350,7 +372,9 @@ pub fn admit_national_focus_presentation(
                 ),
             ));
         }
-        if !canvas_focus.text.required_keys.contains(&def.title_loc_key) {
+        if canvas_focus
+            .is_some_and(|canvas| !canvas.text.required_keys.contains(&def.title_loc_key))
+        {
             return Err(reject(
                 FocusAdmissionCode::MissingVisibleText,
                 format!("focus {id} title key is absent from the UI09/XUI06 text witness"),
@@ -382,16 +406,18 @@ pub fn admit_national_focus_presentation(
         });
     }
 
-    let admitted = admit_research_canvas(canvas).map_err(|error| FocusAdmissionRejection {
-        code: FocusAdmissionCode::Canvas,
-        reason: format!("UI09 focus canvas rejected: {}", error.reason),
-        canvas_rejection: Some(error),
-    })?;
-    if admitted.kind() != ResearchCanvasKind::Focus {
-        return Err(reject(
-            FocusAdmissionCode::Canvas,
-            "UI09 admitted a non-focus canvas for national-focus presentation",
-        ));
+    if let Some(canvas) = canvas {
+        let admitted = admit_research_canvas(canvas).map_err(|error| FocusAdmissionRejection {
+            code: FocusAdmissionCode::Canvas,
+            reason: format!("UI09 focus canvas rejected: {}", error.reason),
+            canvas_rejection: Some(error),
+        })?;
+        if admitted.kind() != ResearchCanvasKind::Focus {
+            return Err(reject(
+                FocusAdmissionCode::Canvas,
+                "UI09 admitted a non-focus canvas for national-focus presentation",
+            ));
+        }
     }
 
     Ok(AdmittedNationalFocusPresentation {
@@ -406,9 +432,8 @@ pub fn admit_national_focus_presentation(
     })
 }
 
-/// Production A31/XUI10 admission. The legacy D12/D45 state remains useful for
-/// tree/current/completed context, but every final per-item presentation leaf
-/// and engine order must agree with the exact, hour-bound d89 sidecar.
+/// Compatibility/history-only D89 admission. Product replay uses
+/// [`admit_observer_national_focus_presentation`].
 pub fn admit_exact_national_focus_presentation(
     focus: &FocusView,
     exact: &NationalFocusPresentationExactView,

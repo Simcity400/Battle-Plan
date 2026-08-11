@@ -3,11 +3,11 @@ use game_ui::design_catalog::{
     DisplayOrderSnapshot, FieldCompleteness,
 };
 use game_ui::readonly_design_peace::*;
+use replay_core::world::ViewStatus;
 use replay_core::{
     OrderedDesignIdentityExact, SelectedDesignerFamilyExact, SelectedDesignerIdentityExact,
     SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact, StableDesignIdentityExact,
 };
-use replay_core::world::ViewStatus;
 
 fn atom(id: &str, raw: &str) -> DisplayAtom {
     DisplayAtom {
@@ -117,6 +117,10 @@ fn peace() -> PeaceConferenceSnapshot {
             role: PeaceParticipantRole::Victor,
             score: atom("p1:score", "100"),
             score_ratio: atom("p1:ratio", "60%"),
+            allocation_ids: vec!["a1".into()],
+            result_ids: vec!["r1".into()],
+            bid_count: atom("p1:bids", "1"),
+            contested_bid_count: atom("p1:contested", "0"),
         }],
         allocations: vec![PeaceAllocationRow {
             source_record_id: "allocation:1".into(),
@@ -131,9 +135,22 @@ fn peace() -> PeaceConferenceSnapshot {
             target_ship_ids: vec![],
             cost: atom("a1:cost", "20"),
             bid: atom("a1:bid", "25"),
-            status: "submitted".into(),
+            status: atom("a1:status", "submitted"),
+            popup_bid_count: atom("a1:popup-bids", "1"),
             contested_by_participant_ids: vec![],
         }],
+        allocation_groups: vec![PeaceAllocationGroupRow {
+            source_record_id: "group:1".into(),
+            ordinal: 0,
+            group_id: "g1".into(),
+            allocation_ids: vec!["a1".into()],
+            flag_texture_path: Some("gfx/flags/POL.tga".into()),
+            target_display: atom("g1:target", "Poland"),
+            available_state_count: atom("g1:available", "1"),
+            wargoal_count: atom("g1:wargoals", "1"),
+            contested_state_count: atom("g1:contested", "0"),
+        }],
+        contested_popups: vec![],
         results: vec![PeaceResultRow {
             source_record_id: "result:1".into(),
             ordinal: 0,
@@ -145,10 +162,72 @@ fn peace() -> PeaceConferenceSnapshot {
             target_country_tag: Some("POL".into()),
             target_state_ids: vec![1],
             target_ship_ids: vec![],
-            outcome: "awarded".into(),
+            outcome: atom("r1:outcome", "awarded"),
         }],
         complete: true,
     })
+}
+
+fn contested_peace() -> PeaceConferenceSnapshot {
+    let mut snapshot = peace();
+    let PeaceConferenceSnapshot::Active(active) = &mut snapshot else {
+        unreachable!()
+    };
+    active.participants.push(PeaceParticipantRow {
+        source_record_id: "participant:2".into(),
+        ordinal: 1,
+        participant_id: "p2".into(),
+        country_tag: "USA".into(),
+        role: PeaceParticipantRole::Victor,
+        score: atom("p2:score", "80"),
+        score_ratio: atom("p2:ratio", "40%"),
+        allocation_ids: vec!["a2".into()],
+        result_ids: vec![],
+        bid_count: atom("p2:bids", "1"),
+        contested_bid_count: atom("p2:contested", "1"),
+    });
+    active.allocations[0].contested_by_participant_ids = vec!["p2".into()];
+    active.allocations.push(PeaceAllocationRow {
+        source_record_id: "allocation:2".into(),
+        ordinal: 1,
+        allocation_id: "a2".into(),
+        turn: 2,
+        action_kind: "take_states".into(),
+        actor_participant_id: "p2".into(),
+        beneficiary_country_tag: Some("USA".into()),
+        target_country_tag: Some("POL".into()),
+        target_state_ids: vec![1],
+        target_ship_ids: vec![],
+        cost: atom("a2:cost", "20"),
+        bid: atom("a2:bid", "22"),
+        status: atom("a2:status", "submitted"),
+        popup_bid_count: atom("a2:popup-bids", "1"),
+        contested_by_participant_ids: vec![],
+    });
+    active.allocation_groups[0].allocation_ids.push("a2".into());
+    active.contested_popups.push(PeaceContestedPopup {
+        source_record_id: "popup:1".into(),
+        ordinal: 0,
+        popup_id: "popup:a1".into(),
+        selected_allocation_id: "a1".into(),
+        rows: vec![
+            PeaceContestedPopupRow {
+                source_record_id: "popup:1:row:0".into(),
+                ordinal: 0,
+                popup_row_id: "popup:a1:0".into(),
+                participant_id: "p1".into(),
+                allocation_id: "a1".into(),
+            },
+            PeaceContestedPopupRow {
+                source_record_id: "popup:1:row:1".into(),
+                ordinal: 1,
+                popup_row_id: "popup:a1:1".into(),
+                participant_id: "p2".into(),
+                allocation_id: "a2".into(),
+            },
+        ],
+    });
+    snapshot
 }
 
 #[test]
@@ -232,11 +311,9 @@ fn exact_d85_selection_joins_portable_catalog_without_token_fallback() {
             complete: true,
         }),
     };
-    let admitted = admit_exact_selected_designer_identity(
-        &catalog(DesignKind::TankVariant, "41:70"),
-        &exact,
-    )
-    .unwrap();
+    let admitted =
+        admit_exact_selected_designer_identity(&catalog(DesignKind::TankVariant, "41:70"), &exact)
+            .unwrap();
     assert_eq!(admitted.view(), DesignerViewKind::Tank);
     assert_eq!(admitted.selected().design_id, "41:70");
     assert_eq!(admitted.transition_sequence(), 4);
@@ -244,10 +321,7 @@ fn exact_d85_selection_joins_portable_catalog_without_token_fallback() {
     let mut wrong = exact;
     wrong.selection.as_mut().unwrap().family = SelectedDesignerFamilyExact::Plane;
     assert_eq!(
-        admit_exact_selected_designer_identity(
-            &catalog(DesignKind::TankVariant, "41:70"),
-            &wrong,
-        ),
+        admit_exact_selected_designer_identity(&catalog(DesignKind::TankVariant, "41:70"), &wrong,),
         Err(Xui08Rejection::ExactSelectionFamilyMismatch)
     );
 
@@ -430,6 +504,42 @@ fn peace_participant_and_reference_sets_fail_closed() {
     }
     assert_eq!(
         admit_peace_conference(&p),
+        Err(Xui08Rejection::InvalidAllocation)
+    );
+}
+
+#[test]
+fn contested_popup_requires_self_exclusion_selected_row_zero_and_unique_allocations() {
+    assert!(admit_peace_conference(&contested_peace()).is_ok());
+
+    let mut self_contested = contested_peace();
+    let PeaceConferenceSnapshot::Active(active) = &mut self_contested else {
+        unreachable!()
+    };
+    active.allocations[0].contested_by_participant_ids = vec!["p1".into()];
+    active.contested_popups[0].rows.truncate(1);
+    assert_eq!(
+        admit_peace_conference(&self_contested),
+        Err(Xui08Rejection::InvalidAllocation)
+    );
+
+    let mut wrong_selected_row = contested_peace();
+    let PeaceConferenceSnapshot::Active(active) = &mut wrong_selected_row else {
+        unreachable!()
+    };
+    active.contested_popups[0].rows[0].allocation_id = "a2".into();
+    assert_eq!(
+        admit_peace_conference(&wrong_selected_row),
+        Err(Xui08Rejection::InvalidAllocation)
+    );
+
+    let mut duplicate_membership = contested_peace();
+    let PeaceConferenceSnapshot::Active(active) = &mut duplicate_membership else {
+        unreachable!()
+    };
+    active.contested_popups[0].rows[1].allocation_id = "a1".into();
+    assert_eq!(
+        admit_peace_conference(&duplicate_membership),
         Err(Xui08Rejection::InvalidAllocation)
     );
 }

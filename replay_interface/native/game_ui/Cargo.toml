@@ -3,6 +3,16 @@ name = "game_ui"
 version = "0.1.0"
 edition = "2021"
 description = "game UI parser, sprite registry, and texture decoder foundation"
+build = "build.rs"
+
+# Test preconditions (the real the game install) are decided once, at build time,
+# by `build.rs` from the table in `test_gates.rs`, and become `cfg`s that mark
+# the affected tests `#[ignore]`. See the `replay_test_gates` crate docs.
+[build-dependencies]
+replay_test_gates = { path = "../replay_test_gates" }
+
+[dev-dependencies]
+replay_test_gates = { path = "../replay_test_gates" }
 
 [dependencies]
 # Consumers read world state ONLY through replay_core's typed views
@@ -14,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 snapshot = { package = "portable_replay_format", path = "../../../portable_replay/native/snapshot" }
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
+flate2 = "1"
 
 [[bin]]
 name = "ui_probe"

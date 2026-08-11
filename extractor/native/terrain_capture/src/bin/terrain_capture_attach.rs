@@ -57,6 +57,238 @@ const DEFAULT_UI_PASS_MAX_STATES: u32 = 64;
 /// Capture sessions may run for up to 30 minutes so slow the game continue-save
 /// loads still leave enough armed time for synchronized evidence collection.
 const MAX_DWELL_MS: u64 = 1_800_000;
+/// FW12 H3: schema of the `--content-layers` declaration file.
+const CONTENT_LAYERS_SCHEMA: &str = "battle-plan-capture-content-layers-v1";
+/// The DLL's identity for base-installation bytes (mirrors
+/// `d3d11_runtime::BASE_INSTALLATION_SOURCE_ID`).
+const BASE_INSTALLATION_SOURCE_ID: &str = "base_installation";
+
+/// FW12 H3: one operator-declared content layer of the live session's
+/// effective VFS, staged into the capture control so the DLL resolves
+/// game-source evidence through the layers the engine actually compiled from
+/// (and records `effective_vfs_verified: true`). Mirrors the DLL's
+/// `CaptureContentLayerControl` shape: layers are lowest priority FIRST,
+/// later layers win by relative path, and `replace_path` removes lower-layer
+/// files in exactly that directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeclaredContentLayer {
+    source_id: String,
+    root: PathBuf,
+    replace_path: Vec<String>,
+}
+
+/// Resolve the operator's content-layer declaration, if any:
+/// `--content-layers <file>` stages the file's layer stack verbatim (validated
+/// here — this helper only transports the declaration, it never derives one,
+/// so the layer-derivation authority stays with the resolver-side tooling);
+/// `--vanilla-content` declares "the effective VFS is the base installation
+/// only" as one explicit `base_installation` layer. Either way the emitted
+/// control sets `content_layers_authoritative: true` — the declaration is the
+/// operator's assertion that the stack is COMPLETE.
+fn declared_content_layers_from_args(args: &[String]) -> Result<Option<Vec<DeclaredContentLayer>>> {
+    let file = value_after(args, "--content-layers");
+    let vanilla = args.iter().any(|arg| arg == "--vanilla-content");
+    if file.is_some() && vanilla {
+        return Err("pass either --content-layers or --vanilla-content, not both".into());
+    }
+    if let Some(file) = file {
+        return parse_content_layers_declaration(Path::new(&file)).map(Some);
+    }
+    if vanilla {
+        let game_root = vanilla_content_game_root(args)?;
+        return Ok(Some(vec![DeclaredContentLayer {
+            source_id: BASE_INSTALLATION_SOURCE_ID.to_string(),
+            root: game_root,
+            replace_path: Vec::new(),
+        }]));
+    }
+    Ok(None)
+}
+
+/// `--vanilla-content` needs the base-installation root the LIVE session runs
+/// from: `--game-root` when attaching to a PID, otherwise the launch working
+/// directory (`--working-dir`, or the `--exe` parent). When both a
+/// `--game-root` and a launch working directory are known they must agree —
+/// evidence resolved from a different tree than the engine's working
+/// directory would be stamped verified against a VFS the engine never read.
+fn vanilla_content_game_root(args: &[String]) -> Result<PathBuf> {
+    let game_root = value_after(args, "--game-root").map(PathBuf::from);
+    let launch_working_dir = value_after(args, "--working-dir")
+        .map(PathBuf::from)
+        .or_else(|| {
+            value_after(args, "--exe")
+                .map(PathBuf::from)
+                .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        });
+    let root = match (game_root, launch_working_dir) {
+        (Some(game_root), Some(working_dir)) => {
+            let canonical_root = fs::canonicalize(&game_root).map_err(|error| {
+                format!("--game-root {}: {error}", game_root.display())
+            })?;
+            let canonical_working = fs::canonicalize(&working_dir).map_err(|error| {
+                format!("launch working directory {}: {error}", working_dir.display())
+            })?;
+            if canonical_root != canonical_working {
+                return Err(format!(
+                    "--vanilla-content: --game-root {} does not match the launch working directory {}; the declared base installation must be the tree the engine actually runs from",
+                    canonical_root.display(),
+                    canonical_working.display()
+                )
+                .into());
+            }
+            game_root
+        }
+        (Some(game_root), None) => game_root,
+        (None, Some(working_dir)) => working_dir,
+        (None, None) => {
+            return Err(
+                "--vanilla-content needs the base installation root: pass --game-root <dir> (PID attach) or --working-dir/--exe (launch)"
+                    .into(),
+            );
+        }
+    };
+    if !root.is_dir() {
+        return Err(format!(
+            "--vanilla-content base installation root {} is missing or not a directory",
+            root.display()
+        )
+        .into());
+    }
+    // The staged root is consumed inside the GAME process, whose working
+    // directory differs from this helper's — a relative root would silently
+    // resolve to a different tree (or nothing) there. Stage the canonical
+    // absolute path.
+    fs::canonicalize(&root)
+        .map_err(|error| format!("--vanilla-content root {}: {error}", root.display()).into())
+}
+
+/// Parse and validate a `--content-layers` declaration file. Fail-closed on
+/// schema drift, unknown fields, duplicate/empty ids, and missing roots — a
+/// mis-declared layer would otherwise stamp evidence
+/// `effective_vfs_verified: true` against a VFS the session never had.
+fn parse_content_layers_declaration(path: &Path) -> Result<Vec<DeclaredContentLayer>> {
+    let value: Value = serde_json::from_slice(&fs::read(path).map_err(|error| {
+        format!(
+            "could not read --content-layers declaration {}: {error}",
+            path.display()
+        )
+    })?)?;
+    let object = value
+        .as_object()
+        .ok_or("content-layers declaration root must be an object")?;
+    let allowed = BTreeSet::from(["schema", "layers"]);
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if actual != allowed {
+        return Err(format!(
+            "content-layers declaration fields drift: missing={:?}, extra={:?}",
+            allowed.difference(&actual).collect::<Vec<_>>(),
+            actual.difference(&allowed).collect::<Vec<_>>(),
+        )
+        .into());
+    }
+    if object.get("schema").and_then(Value::as_str) != Some(CONTENT_LAYERS_SCHEMA) {
+        return Err(format!(
+            "content-layers declaration schema drift (expected {CONTENT_LAYERS_SCHEMA})"
+        )
+        .into());
+    }
+    let rows = object
+        .get("layers")
+        .and_then(Value::as_array)
+        .ok_or("content-layers declaration has no layers array")?;
+    if rows.is_empty() {
+        return Err(
+            "content-layers declaration lists no layers; a vanilla-only session declares the base installation explicitly via --vanilla-content"
+                .into(),
+        );
+    }
+    let mut layers = Vec::with_capacity(rows.len());
+    let mut seen_ids = BTreeSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        let row = row
+            .as_object()
+            .ok_or_else(|| format!("content-layers declaration layer {index} must be an object"))?;
+        let allowed = BTreeSet::from(["source_id", "root", "replace_path"]);
+        for key in row.keys() {
+            if !allowed.contains(key.as_str()) {
+                return Err(format!(
+                    "content-layers declaration layer {index} has unknown field {key}"
+                )
+                .into());
+            }
+        }
+        let source_id = row
+            .get("source_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                format!("content-layers declaration layer {index} needs a non-empty source_id")
+            })?
+            .to_string();
+        if !seen_ids.insert(source_id.clone()) {
+            return Err(format!(
+                "content-layers declaration repeats source_id {source_id}"
+            )
+            .into());
+        }
+        let root = row
+            .get("root")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                format!("content-layers declaration layer {source_id} needs a root path")
+            })?;
+        if !root.is_dir() {
+            return Err(format!(
+                "content-layers declaration layer {source_id} root {} is missing or not a directory",
+                root.display()
+            )
+            .into());
+        }
+        // Canonicalize before staging: the control file is read by the DLL
+        // inside the game process, whose working directory is the game
+        // install — a root left relative to THIS helper's cwd would resolve
+        // to a different tree (or nothing) there and the evidence would be
+        // stamped verified against a VFS the session never had.
+        let root = fs::canonicalize(&root).map_err(|error| {
+            format!(
+                "content-layers declaration layer {source_id} root {}: {error}",
+                root.display()
+            )
+        })?;
+        let replace_path = match row.get("replace_path") {
+            None => Vec::new(),
+            Some(value) => value
+                .as_array()
+                .ok_or_else(|| {
+                    format!(
+                        "content-layers declaration layer {source_id} replace_path must be an array"
+                    )
+                })?
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|path| !path.is_empty())
+                        .map(ToOwned::to_owned)
+                        .ok_or_else(|| {
+                            format!(
+                                "content-layers declaration layer {source_id} replace_path entries must be non-empty strings"
+                            )
+                        })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        };
+        layers.push(DeclaredContentLayer {
+            source_id,
+            root,
+            replace_path,
+        });
+    }
+    Ok(layers)
+}
 
 fn main() -> Result<()> {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -151,6 +383,9 @@ fn main() -> Result<()> {
     if shader_cache_arg.is_some() && harness_bundle_control.is_some() {
         return Err("pass either --shader-cache or --harness-bundle-control, not both".into());
     }
+    // FW12 H3: the session's declared effective content layers (validated
+    // fail-closed) travel into every control-file variant below.
+    let declared_content_layers = declared_content_layers_from_args(&args)?;
     if let Some(shader_cache) = shader_cache_arg {
         write_shader_cache_control(
             &dll,
@@ -170,6 +405,7 @@ fn main() -> Result<()> {
             trees_close_mode.as_deref(),
             cb0_sample_ms,
             arm_delay_ms,
+            declared_content_layers.as_deref(),
         )?;
     } else if let Some(bundle) = harness_bundle_control {
         write_harness_bundle_control(
@@ -190,6 +426,7 @@ fn main() -> Result<()> {
             trees_close_mode.as_deref(),
             cb0_sample_ms,
             arm_delay_ms,
+            declared_content_layers.as_deref(),
         )?;
     } else if !capture_moments.is_empty()
         || capture_out_dir_arg.is_some()
@@ -204,6 +441,7 @@ fn main() -> Result<()> {
         || trees_close_mode.is_some()
         || cb0_sample_ms.is_some()
         || arm_delay_ms.is_some()
+        || declared_content_layers.is_some()
     {
         write_capture_moment_control(
             &dll,
@@ -222,6 +460,7 @@ fn main() -> Result<()> {
             trees_close_mode.as_deref(),
             cb0_sample_ms,
             arm_delay_ms,
+            declared_content_layers.as_deref(),
         )?;
     }
     if let Some(g2_pixel_control) = g2_pixel_control.as_deref() {
@@ -1022,6 +1261,7 @@ fn write_shader_cache_control(
     trees_close_mode: Option<&str>,
     cb0_sample_ms: Option<u64>,
     arm_delay_ms: Option<u64>,
+    content_layers: Option<&[DeclaredContentLayer]>,
 ) -> Result<()> {
     let capture_moments = normalized_capture_moments(capture_moments);
     let mut files = Vec::new();
@@ -1106,6 +1346,7 @@ fn write_shader_cache_control(
         true,
         cb0_sample_ms,
         arm_delay_ms,
+        content_layers,
     );
     let Some(dir) = dll.parent() else {
         return Err("terrain capture DLL path has no parent directory".into());
@@ -1132,6 +1373,7 @@ fn write_harness_bundle_control(
     trees_close_mode: Option<&str>,
     cb0_sample_ms: Option<u64>,
     arm_delay_ms: Option<u64>,
+    content_layers: Option<&[DeclaredContentLayer]>,
 ) -> Result<()> {
     let capture_moments = normalized_capture_moments(capture_moments);
     let (width, height, slots, paired_resource_slots, shader_cache_signatures) =
@@ -1140,7 +1382,7 @@ fn write_harness_bundle_control(
             Err(error)
                 if !capture_moments_need_harness_shader_cache_constants(&capture_moments) =>
             {
-                if error.to_string().contains("no shader_cache_constants") {
+                if error.downcast_ref::<MissingShaderCacheConstants>().is_some() {
                     empty_harness_bundle_control_parts()
                 } else {
                     return Err(error);
@@ -1170,6 +1412,7 @@ fn write_harness_bundle_control(
         false,
         cb0_sample_ms,
         arm_delay_ms,
+        content_layers,
     );
     let Some(dir) = dll.parent() else {
         return Err("terrain capture DLL path has no parent directory".into());
@@ -1258,10 +1501,24 @@ fn harness_bundle_control_parts(bundle: &Path) -> Result<ShaderCacheControlParts
     harness_bundle_control_parts_from_value(&value)
 }
 
+/// Typed "the bundle carries no `shader_cache_constants` object" error, so the
+/// harness-bundle control writer can recover exactly this subclass (and no
+/// other parse failure) without matching on error text (R18-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MissingShaderCacheConstants;
+
+impl std::fmt::Display for MissingShaderCacheConstants {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "map_frame_bundle.json has no shader_cache_constants")
+    }
+}
+
+impl std::error::Error for MissingShaderCacheConstants {}
+
 fn harness_bundle_control_parts_from_value(value: &Value) -> Result<ShaderCacheControlParts> {
     let constants = value
         .get("shader_cache_constants")
-        .ok_or("map_frame_bundle.json has no shader_cache_constants")?;
+        .ok_or(MissingShaderCacheConstants)?;
     let width = json_number_u32(constants, "map_size_x")?;
     let height = json_number_u32(constants, "map_size_y")?;
     let map_pow2_x_milli = json_number_milli(constants, "map_pow2_x")?;
@@ -1382,6 +1639,7 @@ fn write_capture_moment_control(
     trees_close_mode: Option<&str>,
     cb0_sample_ms: Option<u64>,
     arm_delay_ms: Option<u64>,
+    content_layers: Option<&[DeclaredContentLayer]>,
 ) -> Result<()> {
     let Some(dir) = dll.parent() else {
         return Err("terrain capture DLL path has no parent directory".into());
@@ -1410,6 +1668,7 @@ fn write_capture_moment_control(
             true,
             cb0_sample_ms,
             arm_delay_ms,
+            content_layers,
         ),
     )?;
     Ok(())
@@ -1510,6 +1769,7 @@ fn terrain_capture_control_json(
     vanilla_source_evidence_required: bool,
     cb0_sample_ms: Option<u64>,
     arm_delay_ms: Option<u64>,
+    content_layers: Option<&[DeclaredContentLayer]>,
 ) -> String {
     let allowed_slots = slots
         .iter()
@@ -1612,6 +1872,36 @@ fn terrain_capture_control_json(
             DEFAULT_MAX_CAPTURE_WORK_MS_PER_FRAME
         });
     let ui_max_states = ui_max_states.unwrap_or(DEFAULT_UI_PASS_MAX_STATES).max(1);
+    // FW12 H3: emit the operator-declared effective content layers (lowest
+    // priority first) plus the authoritative marker, so the capture DLL's
+    // `copy_required_source_evidence` resolves game-source evidence through
+    // the session's declared VFS and records `effective_vfs_verified: true`.
+    // Absent declaration => both fields omitted, and the DLL's serde defaults
+    // keep the honest `effective_vfs_verified: false` labelling.
+    let content_layers_json = content_layers
+        .map(|layers| {
+            let rows = layers
+                .iter()
+                .map(|layer| {
+                    format!(
+                        "{{\"source_id\":\"{}\",\"root\":\"{}\",\"replace_path\":[{}]}}",
+                        json_escape(&layer.source_id),
+                        json_escape(&layer.root.to_string_lossy()),
+                        layer
+                            .replace_path
+                            .iter()
+                            .map(|path| format!("\"{}\"", json_escape(path)))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "  \"content_layers\": [{rows}],\n  \"content_layers_authoritative\": true,\n"
+            )
+        })
+        .unwrap_or_default();
     format!(
         concat!(
             "{{\n",
@@ -1638,6 +1928,7 @@ fn terrain_capture_control_json(
             "{}",
             "{}",
             "  \"round_commands_enabled\": {},\n",
+            "{}",
             "{}",
             "  \"vanilla_source_evidence_required\": {},\n",
             "  \"provenance\": \"shader_cache_scan_TerrainIDMap_Texture_register_tN\"\n",
@@ -1666,6 +1957,7 @@ fn terrain_capture_control_json(
         arm_delay_ms_json,
         round_commands_enabled,
         trees_close_mode_json,
+        content_layers_json,
         vanilla_source_evidence_required
     )
 }
@@ -1717,6 +2009,7 @@ fn print_help() {
          [--cb0-sample-ms <ms>] arms the persistent scene-CB0 sampler: once the map renderer is live it appends one 416-byte TerrainSceneCB0 snapshot at most every <ms> ms to cb0_samples.jsonl for the WHOLE session (survives moment completion, round completion and the byte-budget quiesce; byte-budget exempt; capped at 100000 samples). Absent => sampler fully off.\n\
          [--max-draws-per-pass <n>] operator escape hatch for the PER-FRAME map-frame draw cap (default 128 for map moments, higher for the chunk library). A pass now closes at every clean frame boundary, so this bounds a SINGLE frame's draws; raise it only if one genuine frame legitimately issues more than the default. Must be >= 1 (0 is rejected).\n\
 [--arm-delay-ms <ms>] choreography: delay arming the map-frame moment sequence until <ms> ms AFTER the map renderer first goes live, so the orchestrator can zoom/position the camera before any pass is captured. The CB0 sampler and the renderer-live trust latch are NOT delayed. Absent/0 => arm immediately. This is the first-class replacement for the never-firing-token workaround and the zoom-race dance.\n\
+[--content-layers <declaration.json>] FW12 H3: stage the session's effective content layers (schema battle-plan-capture-content-layers-v1: {{\"schema\":..., \"layers\":[{{\"source_id\":..., \"root\":..., \"replace_path\":[...]}}]}}, lowest priority first) so game-source evidence resolves through the engine's declared VFS and records effective_vfs_verified: true. The declaration asserts the stack is COMPLETE (content_layers_authoritative). [--vanilla-content] declares a base-installation-only session (root from --game-root, --working-dir, or the --exe parent; a --game-root that contradicts the launch working directory is refused). Without either flag, evidence keeps the honest effective_vfs_verified: false labelling.\n\
 --direct-load-library is an explicit one-shot fallback for a live PID with no visible window. It uses the same remote LoadLibraryW path as suspended launch; never retry it while the target remains alive if module presence is uncertain.\n\
          KEEPALIVE PATTERN (no flag needed): include borders_pass in --capture-moments as a trailing moment to keep the session dwelling and the hooks live while you pan/zoom to set up a later moment. borders_pass only completes on a genuine inked border draw that changes the render target, so an idle camera leaves it pending and the dwell runs to its timeout, holding the renderer live for the CB0 sampler and any --arm-delay-ms window without capturing spurious bundles.\n\
          --dwell-ms is CAPPED at 1800000 (30 minutes); a larger value is rejected. Dwell expiry is safe: the capture DLL disarms its hooks and pins its module (it never unhooks or unloads at runtime); only process exit tears the hooks down."
@@ -1726,6 +2019,261 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!(
+            "terrain_capture_attach_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn control_json_emits_declared_content_layers_authoritative() {
+        let root = temp_dir("content_layers_emit");
+        let mod_root = root.join("mod_a");
+        fs::create_dir_all(&mod_root).expect("create mod root");
+        let layers = vec![DeclaredContentLayer {
+            source_id: "mod/example_mod.mod".to_string(),
+            root: mod_root.clone(),
+            replace_path: vec!["gfx/FX".to_string()],
+        }];
+        let json = terrain_capture_control_json(
+            &[TERRAIN_CAPTURE_MOMENT.to_string()],
+            0,
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &[],
+            8_000,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "hazard",
+            false,
+            false,
+            None,
+            true,
+            None,
+            None,
+            Some(&layers),
+        );
+        let parsed: Value = serde_json::from_str(&json).expect("control JSON parses");
+        assert_eq!(parsed["content_layers_authoritative"], true);
+        let rows = parsed["content_layers"]
+            .as_array()
+            .expect("content_layers array");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["source_id"], "mod/example_mod.mod");
+        assert_eq!(
+            rows[0]["root"].as_str().expect("root string"),
+            mod_root.to_string_lossy()
+        );
+        assert_eq!(rows[0]["replace_path"][0], "gfx/FX");
+
+        // Without a declaration, both fields stay absent so the DLL's serde
+        // defaults keep the honest effective_vfs_verified:false labelling.
+        let undeclared = terrain_capture_control_json(
+            &[TERRAIN_CAPTURE_MOMENT.to_string()],
+            0,
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &[],
+            8_000,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "hazard",
+            false,
+            false,
+            None,
+            true,
+            None,
+            None,
+            None,
+        );
+        let parsed: Value = serde_json::from_str(&undeclared).expect("control JSON parses");
+        assert!(parsed.get("content_layers").is_none());
+        assert!(parsed.get("content_layers_authoritative").is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn content_layers_declaration_validates_fail_closed() {
+        let root = temp_dir("content_layers_decl");
+        let mod_root = root.join("mod_a");
+        fs::create_dir_all(&mod_root).expect("create mod root");
+        let decl = root.join("layers.json");
+
+        // Valid declaration round-trips.
+        fs::write(
+            &decl,
+            format!(
+                "{{\"schema\":\"{CONTENT_LAYERS_SCHEMA}\",\"layers\":[{{\"source_id\":\"mod/a.mod\",\"root\":{},\"replace_path\":[\"gfx/FX\"]}}]}}",
+                serde_json::to_string(&mod_root.to_string_lossy()).expect("encode root"),
+            ),
+        )
+        .expect("write declaration");
+        let layers = parse_content_layers_declaration(&decl).expect("valid declaration");
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].source_id, "mod/a.mod");
+        assert_eq!(layers[0].replace_path, vec!["gfx/FX".to_string()]);
+        // The staged root must be canonical-absolute: the DLL consumes it in
+        // the GAME process, whose working directory is not this helper's.
+        assert!(layers[0].root.is_absolute(), "{:?}", layers[0].root);
+        assert_eq!(
+            layers[0].root,
+            fs::canonicalize(&mod_root).expect("canonical mod root")
+        );
+
+        // A relative root is staged as the canonical form of what it resolves
+        // to HERE (never forwarded verbatim into a foreign working directory).
+        let previous_cwd = env::current_dir().expect("cwd");
+        env::set_current_dir(&root).expect("enter temp root");
+        fs::write(
+            &decl,
+            format!(
+                "{{\"schema\":\"{CONTENT_LAYERS_SCHEMA}\",\"layers\":[{{\"source_id\":\"mod/a.mod\",\"root\":\"mod_a\"}}]}}"
+            ),
+        )
+        .expect("write declaration");
+        let relative = parse_content_layers_declaration(&decl);
+        env::set_current_dir(previous_cwd).expect("restore cwd");
+        let relative = relative.expect("relative root declaration");
+        assert_eq!(
+            relative[0].root,
+            fs::canonicalize(&mod_root).expect("canonical mod root"),
+            "relative roots must be canonicalized before staging"
+        );
+
+        // Schema drift refuses.
+        fs::write(
+            &decl,
+            "{\"schema\":\"hoi4-something-else-v1\",\"layers\":[]}",
+        )
+        .expect("write declaration");
+        let err = parse_content_layers_declaration(&decl).expect_err("schema drift refuses");
+        assert!(err.to_string().contains("schema drift"), "{err}");
+
+        // Empty layer list refuses (vanilla is declared explicitly instead).
+        fs::write(
+            &decl,
+            format!("{{\"schema\":\"{CONTENT_LAYERS_SCHEMA}\",\"layers\":[]}}"),
+        )
+        .expect("write declaration");
+        let err = parse_content_layers_declaration(&decl).expect_err("empty layers refuse");
+        assert!(err.to_string().contains("--vanilla-content"), "{err}");
+
+        // A missing root directory refuses — evidence must never be stamped
+        // verified against a tree that does not exist.
+        fs::write(
+            &decl,
+            format!(
+                "{{\"schema\":\"{CONTENT_LAYERS_SCHEMA}\",\"layers\":[{{\"source_id\":\"mod/a.mod\",\"root\":{}}}]}}",
+                serde_json::to_string(&root.join("missing").to_string_lossy())
+                    .expect("encode root"),
+            ),
+        )
+        .expect("write declaration");
+        let err = parse_content_layers_declaration(&decl).expect_err("missing root refuses");
+        assert!(
+            err.to_string().contains("missing or not a directory"),
+            "{err}"
+        );
+
+        // Duplicate source_id refuses.
+        fs::write(
+            &decl,
+            format!(
+                "{{\"schema\":\"{CONTENT_LAYERS_SCHEMA}\",\"layers\":[{{\"source_id\":\"mod/a.mod\",\"root\":{root_json}}},{{\"source_id\":\"mod/a.mod\",\"root\":{root_json}}}]}}",
+                root_json =
+                    serde_json::to_string(&mod_root.to_string_lossy()).expect("encode root"),
+            ),
+        )
+        .expect("write declaration");
+        let err = parse_content_layers_declaration(&decl).expect_err("duplicate id refuses");
+        assert!(err.to_string().contains("repeats source_id"), "{err}");
+
+        // Unknown layer fields refuse (drift protection).
+        fs::write(
+            &decl,
+            format!(
+                "{{\"schema\":\"{CONTENT_LAYERS_SCHEMA}\",\"layers\":[{{\"source_id\":\"mod/a.mod\",\"root\":{},\"priority\":3}}]}}",
+                serde_json::to_string(&mod_root.to_string_lossy()).expect("encode root"),
+            ),
+        )
+        .expect("write declaration");
+        let err = parse_content_layers_declaration(&decl).expect_err("unknown field refuses");
+        assert!(err.to_string().contains("unknown field priority"), "{err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vanilla_content_declares_base_installation_layer() {
+        let root = temp_dir("vanilla_content_root");
+        let args = vec![
+            "--vanilla-content".to_string(),
+            "--game-root".to_string(),
+            root.to_string_lossy().to_string(),
+        ];
+        let layers = declared_content_layers_from_args(&args)
+            .expect("vanilla declaration")
+            .expect("declared");
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].source_id, BASE_INSTALLATION_SOURCE_ID);
+        // Canonical-absolute for the same cross-process reason as
+        // --content-layers roots.
+        assert!(layers[0].root.is_absolute(), "{:?}", layers[0].root);
+        assert_eq!(
+            layers[0].root,
+            fs::canonicalize(&root).expect("canonical game root")
+        );
+        assert!(layers[0].replace_path.is_empty());
+
+        // A game root contradicting the launch working directory refuses.
+        let other = temp_dir("vanilla_content_other");
+        let args = vec![
+            "--vanilla-content".to_string(),
+            "--game-root".to_string(),
+            root.to_string_lossy().to_string(),
+            "--working-dir".to_string(),
+            other.to_string_lossy().to_string(),
+        ];
+        let err = declared_content_layers_from_args(&args)
+            .expect_err("contradicting roots must refuse");
+        assert!(
+            err.to_string()
+                .contains("does not match the launch working directory"),
+            "{err}"
+        );
+
+        // No root source at all refuses with the fix named.
+        let err = declared_content_layers_from_args(&["--vanilla-content".to_string()])
+            .expect_err("no root must refuse");
+        assert!(err.to_string().contains("--game-root"), "{err}");
+
+        // Mutually exclusive with --content-layers.
+        let err = declared_content_layers_from_args(&[
+            "--vanilla-content".to_string(),
+            "--content-layers".to_string(),
+            "layers.json".to_string(),
+        ])
+        .expect_err("both flags must refuse");
+        assert!(err.to_string().contains("not both"), "{err}");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other);
+    }
 
     #[test]
     fn dwell_cap_rejects_over_thirty_minutes() {
@@ -1745,6 +2293,76 @@ mod tests {
             "error must name the offending value and the cap: {message}"
         );
         assert!(validate_dwell_ms(3_600_000).is_err(), "an hour must reject");
+    }
+
+    #[test]
+    fn missing_shader_cache_constants_is_typed_not_text_matched() {
+        // R18-6: the harness-bundle control writer recovered the "bundle has
+        // no shader_cache_constants" subclass by substring on the rendered
+        // error. The producer now returns a typed MissingShaderCacheConstants
+        // the consumer can downcast, so an unrelated error whose text merely
+        // mentions the phrase can never be waived into an empty control.
+        let absent = serde_json::json!({ "other_key": {} });
+        let error = harness_bundle_control_parts_from_value(&absent)
+            .expect_err("a bundle without shader_cache_constants must refuse");
+        assert!(
+            error.downcast_ref::<MissingShaderCacheConstants>().is_some(),
+            "absence must be the typed subclass: {error}"
+        );
+
+        // A present-but-malformed constants object is a DIFFERENT failure and
+        // must NOT be the recoverable typed subclass.
+        let malformed = serde_json::json!({ "shader_cache_constants": {} });
+        let error = harness_bundle_control_parts_from_value(&malformed)
+            .expect_err("malformed constants must refuse");
+        assert!(
+            error.downcast_ref::<MissingShaderCacheConstants>().is_none(),
+            "a malformed-constants error must stay unrecoverable: {error}"
+        );
+    }
+
+    #[test]
+    fn harness_bundle_control_recovers_only_the_typed_absence() {
+        // R18-6 consumer: write_harness_bundle_control must recover ONLY the
+        // typed MissingShaderCacheConstants absence into an empty control.
+        // Any other failure — here an unreadable bundle whose PATH TEXT
+        // merely contains the old matched phrase — must propagate. This
+        // exercises the actual consumer at the recover site, so reinstating
+        // substring matching on the rendered error cannot survive it.
+        let root = std::env::temp_dir().join(format!(
+            "r18_attach_consumer_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let bundle = root.join("bundle");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(bundle.join("map_frame_bundle.json"), b"{\"other_key\":{}}").unwrap();
+        let dll_dir = root.join("module");
+        fs::create_dir_all(&dll_dir).unwrap();
+        let dll = dll_dir.join("terrain_capture.dll");
+        let moments = vec![UI_PASS_CAPTURE_MOMENT.to_string()];
+        write_harness_bundle_control(
+            &dll, &bundle, &moments, 1_000, None, None, None, None, None, None, None, "hazard",
+            false, false, None, None, None, None,
+        )
+        .expect("absent shader_cache_constants recovers to an empty control for ui_pass");
+        assert!(
+            dll_dir.join(CONTROL_FILE).is_file(),
+            "recovered control file must be written next to the DLL"
+        );
+
+        let tricky = root.join("no shader_cache_constants");
+        let error = write_harness_bundle_control(
+            &dll, &tricky, &moments, 1_000, None, None, None, None, None, None, None, "hazard",
+            false, false, None, None, None, None,
+        )
+        .expect_err("an unreadable bundle must propagate even if its path text matches");
+        assert!(
+            error.downcast_ref::<MissingShaderCacheConstants>().is_none(),
+            "a read failure is not the typed absence: {error}"
+        );
+        assert!(error.to_string().contains("failed to read"), "{error}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1785,6 +2403,7 @@ mod tests {
             false,
             None,
             true,
+            None,
             None,
             None,
         );
@@ -1828,6 +2447,7 @@ mod tests {
             false,
             None,
             true,
+            None,
             None,
             None,
         );
@@ -1923,6 +2543,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
         assert!(json.contains("\"capture_moment\": \"water_pass\""));
         assert!(json.contains("\"allowed_slots\": []"));
@@ -1958,6 +2579,7 @@ mod tests {
             false,
             None,
             true,
+            None,
             None,
             None,
         );
@@ -2009,6 +2631,7 @@ mod tests {
             false,
             None,
             true,
+            None,
             None,
             None,
         );
@@ -2088,6 +2711,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
         assert!(json.contains("\"capture_moment\": \"terrain_active_pass\""));
         assert!(json.contains(
@@ -2117,6 +2741,7 @@ mod tests {
             false,
             None,
             true,
+            None,
             None,
             None,
         );
@@ -2150,6 +2775,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
         assert!(default_json.contains("\"max_draws_per_pass\": 128"));
 
@@ -2173,6 +2799,7 @@ mod tests {
             false,
             None,
             true,
+            None,
             None,
             None,
         );
@@ -2205,6 +2832,7 @@ mod tests {
             true,
             None,
             Some(2_500), // arm_delay_ms
+            None,
         );
         assert!(with_delay.contains("\"arm_delay_ms\": 2500"));
 
@@ -2230,6 +2858,7 @@ mod tests {
             true,
             None,
             None, // arm_delay_ms absent
+            None,
         );
         assert!(!without_delay.contains("arm_delay_ms"));
     }
@@ -2296,6 +2925,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
         assert!(json.contains("\"round_commands_enabled\": true"));
         assert!(json.contains("\"trees_close_mode\": \"frame-repeat\""));
@@ -2325,6 +2955,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
         assert!(json.contains("\"census\": true"));
         assert!(json.contains("\"round_commands_enabled\": false"));
@@ -2352,6 +2983,7 @@ mod tests {
             false,
             None,
             true,
+            None,
             None,
             None,
         );

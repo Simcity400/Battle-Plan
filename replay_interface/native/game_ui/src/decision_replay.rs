@@ -344,13 +344,39 @@ pub struct DecisionPanelChild {
 /// Convert replay-core's fail-closed d87 view into the only runtime carrier
 /// accepted by the decision binder. A missing or unavailable typed view never
 /// falls back to authored definitions or local script evaluation.
+///
+/// The three d87 outcomes stay distinguishable all the way to the product's
+/// unavailability reason, because A34's activation matrix depends on telling
+/// them apart:
+///
+/// * [`ViewStatus::DomainAbsent`] - the recording never carried the panel at
+///   this hour. Unobserved.
+/// * [`ViewStatus::DomainUnavailable`] - the recording carried it and the
+///   authority, selected-Present join, or structural validation rejected it.
+///   Observed, not admitted.
+/// * [`ViewStatus::Present`] with zero rows and zero children - the panel was
+///   observed and the country genuinely had nothing to show. Measured empty.
+///   This is a normal admitted binding, never an error.
+///
+/// [`ViewStatus::DomainAbsent`]: replay_core::ViewStatus::DomainAbsent
+/// [`ViewStatus::DomainUnavailable`]: replay_core::ViewStatus::DomainUnavailable
+/// [`ViewStatus::Present`]: replay_core::ViewStatus::Present
 pub fn decision_panel_snapshot_from_world(
     view: &replay_core::DecisionPanelExactView,
 ) -> Result<DecisionPanelSnapshot> {
-    if view.status != replay_core::ViewStatus::Present {
-        return Err(GameUiError::missing(
-            "exact decision-panel runtime view is absent or unavailable",
-        ));
+    match view.status {
+        replay_core::ViewStatus::DomainAbsent => {
+            return Err(GameUiError::missing(
+                "exact decision-panel runtime view was never observed in this recording",
+            ))
+        }
+        replay_core::ViewStatus::DomainUnavailable => {
+            return Err(GameUiError::missing(
+                "exact decision-panel runtime view was observed but its authority, \
+                 selected-Present join, or structure was rejected",
+            ))
+        }
+        replay_core::ViewStatus::Present => {}
     }
     let panel = view.panel.as_ref().ok_or_else(|| {
         GameUiError::missing("present decision-panel view omitted its exact payload")

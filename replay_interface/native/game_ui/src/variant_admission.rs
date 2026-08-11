@@ -2,10 +2,11 @@
 //!
 //! There is deliberately no nearest-resolution, nearest-scale, language
 //! fallback, inferred font substitution, or reconstructed focus traversal in
-//! this module. A replay selects one producer-authenticated variant envelope
-//! by an exact key. File-derived layout laws can be used inside an envelope,
-//! but a changed viewport, GUI scale, language, glyph set, or input mode is a
-//! distinct envelope.
+//! this module. Product playback selects its key from the local playback
+//! profile and the input family implemented by the actual client event pump.
+//! Recorder/session presentation state is not an input. File-derived layout
+//! laws can be used inside an envelope, but a changed viewport, GUI scale,
+//! language, glyph set, or input mode is a distinct envelope.
 
 use crate::is_lowercase_sha256;
 use crate::runtime_graphics::ClipRect;
@@ -58,6 +59,63 @@ pub struct DisplayVariantKey {
 }
 
 impl DisplayVariantKey {
+    /// Build the exact product key from machine-local playback settings and
+    /// the input family accepted by the running client.
+    pub fn from_playback_environment(
+        environment: &map_viewer::PlaybackEnvironment,
+        input_variant: InputVariant,
+    ) -> Result<Self, VariantRejection> {
+        if input_variant != InputVariant::MouseKeyboard {
+            return Err(VariantRejection::UnsupportedInputVariant(input_variant));
+        }
+        let setting = |name: &str| {
+            environment.settings.get(name).ok_or_else(|| {
+                VariantRejection::InvalidEnvelope(format!(
+                    "local playback profile lacks {name}"
+                ))
+            })
+        };
+        let parse_u32 = |name: &str| -> Result<u32, VariantRejection> {
+            setting(name)?.parse::<u32>().map_err(|_| {
+                VariantRejection::InvalidEnvelope(format!(
+                    "local playback profile {name} is not a u32"
+                ))
+            })
+        };
+        let display_mode = match setting("display_mode")?.as_str() {
+            "fullscreen" => DisplayMode::Fullscreen,
+            "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,
+            "windowed" => DisplayMode::Windowed,
+            _ => {
+                return Err(VariantRejection::InvalidEnvelope(
+                    "local playback profile has an unknown display mode".into(),
+                ))
+            }
+        };
+        let key = Self {
+            physical_viewport: PixelExtent {
+                width: parse_u32("physical_width")?,
+                height: parse_u32("physical_height")?,
+            },
+            min_gui: PixelExtent {
+                width: parse_u32("min_gui_width")?,
+                height: parse_u32("min_gui_height")?,
+            },
+            gui_scale_f32_bits: parse_u32("gui_scale_f32_bits")?,
+            display_mode,
+            localisation_language: environment.localisation_language.clone(),
+            input_variant,
+        };
+        if !key.valid() {
+            return Err(VariantRejection::InvalidEnvelope(
+                "invalid local playback UI profile".into(),
+            ));
+        }
+        Ok(key)
+    }
+
+    /// Historical evidence adapter for validating old XUI25 carrier fixtures.
+    /// Shipped product composition must use [`Self::from_playback_environment`].
     pub fn from_session_metadata(
         display: &DisplayVariantMetadata,
         localisation_language: &str,
@@ -109,6 +167,60 @@ impl DisplayVariantKey {
             && scale.is_finite()
             && scale > 0.0
             && !self.localisation_language.trim().is_empty()
+    }
+}
+
+/// Product-owned display/language/input profile. It is deliberately a newtype
+/// so product APIs cannot accidentally accept a key decoded from replay
+/// session metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaybackUiProfile {
+    key: DisplayVariantKey,
+    settings_file_sha256: String,
+}
+
+impl PlaybackUiProfile {
+    pub fn admit(
+        environment: &map_viewer::PlaybackEnvironment,
+        actual_client_input: InputVariant,
+    ) -> Result<Self, VariantRejection> {
+        let settings_file_sha256 = environment
+            .settings
+            .get("settings_file_sha256")
+            .filter(|value| is_lowercase_sha256(value))
+            .ok_or_else(|| {
+                VariantRejection::InvalidEnvelope(
+                    "local playback profile lacks a valid settings_file_sha256".into(),
+                )
+            })?
+            .clone();
+        Ok(Self {
+            key: DisplayVariantKey::from_playback_environment(
+                environment,
+                actual_client_input,
+            )?,
+            settings_file_sha256,
+        })
+    }
+
+    pub fn key(&self) -> &DisplayVariantKey {
+        &self.key
+    }
+
+    pub fn physical_viewport(&self) -> PixelExtent {
+        self.key.physical_viewport
+    }
+
+    pub fn localisation_language(&self) -> &str {
+        &self.key.localisation_language
+    }
+
+    pub fn actual_client_input(&self) -> InputVariant {
+        self.key.input_variant
+    }
+
+    pub fn settings_file_sha256(&self) -> &str {
+        &self.settings_file_sha256
     }
 }
 

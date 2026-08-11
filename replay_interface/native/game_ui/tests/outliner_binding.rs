@@ -1,4 +1,4 @@
-//! D3 outliner-population gates (REPLAY_PRODUCTION_PLAN Phase D, item D3).
+//! D3 outliner-population gates.
 //!
 //! These drive the packed snapshot-flavor fixtures through the real
 //! `replay_core` `ReplaySource`/`WorldTimeline` and assert that
@@ -11,8 +11,8 @@
 //!   * `fx_division_movement` — divisions `101:1` (owner GER) and `201:1`
 //!     (owner SOV) present at every tick (the base snapshot's two divisions;
 //!     div 101 is repositioned but its identity/owner never change).
-//!   * `fx_naval_air_activity` — one fleet task force `501:1` (owner ENG) and
-//!     one air wing `800:1` (owner ENG); the base snapshot's divisions
+//!   * `fx_naval_air_activity` — one fleet task force `501` (owner ENG) and
+//!     one air wing `800` (owner ENG); the base snapshot's divisions
 //!     `101:1`/`201:1` are still present.
 
 use game_ui::binding::{
@@ -84,8 +84,8 @@ fn navy_air_rows_owner_filtered_per_pov() {
         let eng = outliner_unit_lists_from_frame(&frame, "ENG");
         assert_eq!(eng.navy_status, ViewStatus::Present);
         assert_eq!(eng.air_status, ViewStatus::Present);
-        assert_eq!(uids(&eng.navy), vec!["501:1"], "ENG navy @h{hour}");
-        assert_eq!(uids(&eng.air), vec!["800:1"], "ENG air @h{hour}");
+        assert_eq!(uids(&eng.navy), vec!["501"], "ENG navy @h{hour}");
+        assert_eq!(uids(&eng.air), vec!["800"], "ENG air @h{hour}");
         // ENG owns no division in the base snapshot.
         assert!(eng.army.is_empty(), "ENG army @h{hour}");
 
@@ -115,12 +115,12 @@ fn flat_binding_orders_army_navy_air_with_uid_text() {
         .iter()
         .map(|r| (r.icon_sprite.as_str(), r.text.as_str(), r.progress))
         .collect();
-    // army (none) then navy `501:1` then air `800:1`.
+    // army (none) then navy `501` then air `800`.
     assert_eq!(
         rows,
         vec![
-            (OUTLINER_NAVY_ICON, "501:1", None),
-            (OUTLINER_AIR_ICON, "800:1", None),
+            (OUTLINER_NAVY_ICON, "501", None),
+            (OUTLINER_AIR_ICON, "800", None),
         ]
     );
     assert!(!binding.collapsed);

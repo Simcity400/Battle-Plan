@@ -786,7 +786,7 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
     // coverage sha256 — the build-time half of §7.4 reference validation.
     for segment in &plan.segments {
         for (hour, disposition) in segment.input.coverage.iter() {
-            if let CoverageDisposition::Snapshot { sha256 } = disposition {
+            if let CoverageDisposition::Snapshot { sha256, .. } = disposition {
                 let bytes = source.snapshot_bytes(segment.segment_id, *hour)?;
                 let actual = Sha256::hex(&bytes);
                 if &actual != sha256 {
@@ -991,7 +991,7 @@ fn prepare_retained_entries<S: RetainedStitchedPayloadSource>(
 
     for segment in &plan.segments {
         for (hour_index, disposition) in &segment.input.coverage {
-            let CoverageDisposition::Snapshot { sha256 } = disposition else {
+            let CoverageDisposition::Snapshot { sha256, .. } = disposition else {
                 continue;
             };
             let receipt = source.snapshot_receipt(segment.segment_id, *hour_index)?;
@@ -2318,6 +2318,7 @@ mod tests {
         for (index, h) in hours.iter().copied().enumerate() {
             let disposition = CoverageDisposition::Snapshot {
                 sha256: Sha256::hex(&snap_payload(play_order, h)),
+                date: Some(format!("1936.1.1.{h}")),
             };
             coverage.insert(h, disposition.clone());
             observations.insert(

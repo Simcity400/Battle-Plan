@@ -10,9 +10,12 @@ use hud_role_observer_live_lane::{
     HudSurfaceActivationFrame, OmittedHudSurface,
 };
 use portable_content_manifest::{
-    normalize_game_relative_path, ContentLayerKind, ContentManifest, DlcSelection,
+    filesystem_case_key, normalize_game_relative_path, ContentLayerKind, ContentManifest,
+    DlcSelection,
     LayerStorageKind, RecordedContentLayer, RequiredContent, RequiredContentKind,
-    SourceGameIdentity, SourceProfileIdentity, UsedContentKey, SCHEMA as CONTENT_MANIFEST_SCHEMA,
+    SourceGameIdentity, SourceProfileIdentity, UsedContentKey,
+    AUTHORED_GFX_NAMESPACE_CONSUMER, AUTHORED_GUI_NAMESPACE_CONSUMER,
+    AUTHORED_LOCALISATION_NAMESPACES_CONSUMER, SCHEMA as CONTENT_MANIFEST_SCHEMA,
 };
 use portable_render_stream::ProductionRenderFrame;
 use serde::{Deserialize, Serialize};
@@ -1707,6 +1710,10 @@ fn build_from_finalized_static_bundle_inner(
             &inventory_winners,
         )?;
     }
+    append_complete_authored_namespace_observations(
+        &mut observations,
+        &inventory_winners,
+    )?;
     append_static_program_content_observations(
         &mut observations,
         static_program_content,
@@ -1847,8 +1854,8 @@ fn source_inventory_winners(
         .and_then(serde_json::Value::as_array)
         .filter(|rows| !rows.is_empty())
         .ok_or("live source inventory has no file rows")?;
-    let mut rows = BTreeMap::<(u32, String), (String, u64)>::new();
-    let mut paths = BTreeSet::new();
+    let mut rows = BTreeMap::<(u32, String), (String, String, u64)>::new();
+    let mut path_keys = BTreeSet::new();
     for (index, value) in values.iter().enumerate() {
         let row = value
             .as_object()
@@ -1886,26 +1893,29 @@ fn source_inventory_winners(
             .get("bytes")
             .and_then(serde_json::Value::as_u64)
             .ok_or_else(|| format!("source inventory row {index} has no byte count"))?;
+        let path_key = filesystem_case_key(&path);
         if rows
-            .insert((ordinal, path.clone()), (payload_sha256, payload_bytes))
+            .insert(
+                (ordinal, path_key.clone()),
+                (path.clone(), payload_sha256, payload_bytes),
+            )
             .is_some()
         {
             return Err(format!(
-                "source inventory repeats namespace/path {ordinal}:{path}"
+                "source inventory repeats or filesystem-case-collides at namespace/path {ordinal}:{path}"
             ));
         }
-        paths.insert(path);
+        path_keys.insert(path_key);
     }
     let mut winners = BTreeMap::new();
-    for path in paths {
-        let parent = Path::new(&path)
-            .parent()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .replace('\\', "/")
-            .to_ascii_lowercase();
+    for path_key in path_keys {
+        let parent_key = path_key
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or_default();
         for layer in ordered_layers.iter().rev() {
-            if let Some((payload_sha256, payload_bytes)) = rows.get(&(layer.ordinal, path.clone()))
+            if let Some((path, payload_sha256, payload_bytes)) =
+                rows.get(&(layer.ordinal, path_key.clone()))
             {
                 let content = UsedContentKey {
                     effective_vfs_manifest_sha256: authority.to_string(),
@@ -1927,13 +1937,73 @@ fn source_inventory_winners(
             if layer
                 .replace_paths
                 .iter()
-                .any(|replace| replace.eq_ignore_ascii_case(&parent))
+                .any(|replace| filesystem_case_key(replace) == parent_key)
             {
                 break;
             }
         }
     }
     Ok(winners)
+}
+
+fn append_complete_authored_namespace_observations(
+    observations: &mut Vec<ContentUseObservation>,
+    inventory_winners: &BTreeMap<String, UsedContentKey>,
+) -> Result<(), String> {
+    let matching = inventory_winners
+        .iter()
+        .filter_map(|(path, content)| {
+            let folded = path.to_ascii_lowercase();
+            let consumer = if folded.starts_with("interface/") && folded.ends_with(".gui") {
+                Some(AUTHORED_GUI_NAMESPACE_CONSUMER)
+            } else if folded.starts_with("interface/") && folded.ends_with(".gfx") {
+                Some(AUTHORED_GFX_NAMESPACE_CONSUMER)
+            } else if folded.starts_with("localisation/") && folded.ends_with(".yml") {
+                Some(AUTHORED_LOCALISATION_NAMESPACES_CONSUMER)
+            } else {
+                None
+            }?;
+            Some((path, content, consumer))
+        })
+        .collect::<Vec<_>>();
+    if matching.len() < 3
+        || !matching
+            .iter()
+            .any(|(_, _, consumer)| *consumer == AUTHORED_GUI_NAMESPACE_CONSUMER)
+        || !matching
+            .iter()
+            .any(|(_, _, consumer)| *consumer == AUTHORED_GFX_NAMESPACE_CONSUMER)
+        || !matching.iter().any(|(_, _, consumer)| {
+            *consumer == AUTHORED_LOCALISATION_NAMESPACES_CONSUMER
+        })
+    {
+        return Err(format!(
+            "production source inventory does not contain complete authored GUI/GFX/localisation namespaces"
+        ));
+    }
+    if observations.len().saturating_add(matching.len()) > MAX_OBSERVATIONS {
+        return Err(format!(
+            "portable content trace would exceed the {MAX_OBSERVATIONS} observation bound"
+        ));
+    }
+    let mut folded_paths = BTreeSet::new();
+    for (path, content, consumer) in matching {
+        content.validate()?;
+        if path != &content.normalized_game_relative_path
+            || !folded_paths.insert(filesystem_case_key(path))
+        {
+            return Err(format!(
+                "authored namespace winner key differs from its content identity or case-collides: {path}"
+            ));
+        }
+        observations.push(ContentUseObservation {
+            content_key: path.clone(),
+            kind: required_kind_for_path(path),
+            content: content.clone(),
+            consumer: consumer.into(),
+        });
+    }
+    Ok(())
 }
 
 fn append_static_program_content_observations(
@@ -2154,14 +2224,15 @@ fn required_json_sha(value: Option<&serde_json::Value>, label: &str) -> Result<S
 }
 
 fn required_kind_for_path(path: &str) -> RequiredContentKind {
+    let folded_path = path.to_ascii_lowercase();
     let extension = Path::new(path)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if path.starts_with("localisation/") {
+    if folded_path.starts_with("localisation/") {
         RequiredContentKind::Localisation
-    } else if path.starts_with("interface/") {
+    } else if folded_path.starts_with("interface/") {
         RequiredContentKind::GuiDefinition
     } else if extension == "shader" {
         RequiredContentKind::ShaderSource
@@ -2173,7 +2244,7 @@ fn required_kind_for_path(path: &str) -> RequiredContentKind {
         RequiredContentKind::Font
     } else if matches!(extension.as_str(), "bin" | "dxbc") {
         RequiredContentKind::CompiledShader
-    } else if path.starts_with("gfx/") {
+    } else if folded_path.starts_with("gfx/") {
         RequiredContentKind::Definition
     } else {
         RequiredContentKind::Definition
@@ -2532,6 +2603,137 @@ mod tests {
 
     fn sha(byte: char) -> String {
         byte.to_string().repeat(64)
+    }
+
+    fn namespace_content(path: &str, marker: char) -> UsedContentKey {
+        UsedContentKey {
+            effective_vfs_manifest_sha256: sha('a'),
+            normalized_game_relative_path: path.into(),
+            winning_layer_ordinal: 0,
+            layer_kind: ContentLayerKind::Base,
+            layer_id: "base".into(),
+            source_sha256: sha(marker),
+            payload_sha256: sha(marker),
+            payload_bytes: 17,
+        }
+    }
+
+    #[test]
+    fn complete_authored_namespaces_include_every_viewer_language() {
+        let winners = [
+            (
+                "interface/base.gui".to_string(),
+                namespace_content("interface/base.gui", '1'),
+            ),
+            (
+                "interface/base.gfx".to_string(),
+                namespace_content("interface/base.gfx", '2'),
+            ),
+            (
+                "localisation/french/ui_l_french.yml".to_string(),
+                namespace_content("localisation/french/ui_l_french.yml", '3'),
+            ),
+            (
+                "localisation/english/ui_l_english.yml".to_string(),
+                namespace_content("localisation/english/ui_l_english.yml", '4'),
+            ),
+            (
+                "common/technologies/infantry.txt".to_string(),
+                namespace_content("common/technologies/infantry.txt", '5'),
+            ),
+        ]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        let mut observations = Vec::new();
+        append_complete_authored_namespace_observations(&mut observations, &winners).unwrap();
+        assert_eq!(observations.len(), 4);
+        assert!(observations.iter().any(|row| {
+            row.consumer == AUTHORED_GUI_NAMESPACE_CONSUMER
+                && row.content_key == "interface/base.gui"
+        }));
+        assert!(observations.iter().any(|row| {
+            row.consumer == AUTHORED_GFX_NAMESPACE_CONSUMER
+                && row.content_key == "interface/base.gfx"
+        }));
+        assert!(observations.iter().any(|row| {
+            row.consumer == AUTHORED_LOCALISATION_NAMESPACES_CONSUMER
+                && row.content_key == "localisation/french/ui_l_french.yml"
+        }));
+        assert!(observations.iter().any(|row| {
+            row.consumer == AUTHORED_LOCALISATION_NAMESPACES_CONSUMER
+                && row.content_key == "localisation/english/ui_l_english.yml"
+        }));
+    }
+
+    #[test]
+    fn production_refuses_any_missing_authored_namespace() {
+        let winners = [
+            (
+                "interface/base.gui".to_string(),
+                namespace_content("interface/base.gui", '1'),
+            ),
+            (
+                "interface/base.gfx".to_string(),
+                namespace_content("interface/base.gfx", '2'),
+            ),
+        ]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        let error = append_complete_authored_namespace_observations(&mut Vec::new(), &winners)
+            .unwrap_err();
+        assert!(error.contains("GUI/GFX/localisation"));
+    }
+
+    #[test]
+    fn source_inventory_uses_filesystem_case_key_for_cross_layer_winners() {
+        let inventory = serde_json::json!({
+            "rows": [
+                {
+                    "namespace_ordinal": 0,
+                    "relpath": "interface/Ä.gui",
+                    "sha256": sha('1'),
+                    "bytes": 11
+                },
+                {
+                    "namespace_ordinal": 1,
+                    "relpath": "interface/ä.gui",
+                    "sha256": sha('2'),
+                    "bytes": 22
+                }
+            ]
+        });
+        let layers = vec![
+            RecordedContentLayer {
+                ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                display_name: "base".into(),
+                descriptor_sha256: None,
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: Vec::new(),
+                required_for_playback: false,
+            },
+            RecordedContentLayer {
+                ordinal: 1,
+                layer_kind: ContentLayerKind::Mod,
+                layer_id: "mod/unicode.mod".into(),
+                display_name: "unicode".into(),
+                descriptor_sha256: Some(sha('3')),
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: Vec::new(),
+                required_for_playback: false,
+            },
+        ];
+        let winners =
+            source_inventory_winners(&inventory, &layers, &[Some(0), Some(1)], &sha('a'))
+                .unwrap();
+        assert_eq!(winners.len(), 1);
+        let winner = winners.values().next().unwrap();
+        assert_eq!(winner.normalized_game_relative_path, "interface/ä.gui");
+        assert_eq!(winner.winning_layer_ordinal, 1);
+        assert_eq!(winner.payload_sha256, sha('2'));
     }
 
     struct TempFixtureCleanup(PathBuf);
@@ -3104,6 +3306,11 @@ mod tests {
             fs::create_dir_all(game.join("localisation")).unwrap();
             let files = [
                 ("interface/topbar.gui", gui("topbar")),
+                ("interface/base.gfx", "spriteTypes = { }".into()),
+                (
+                    "localisation/english/ui_l_english.yml",
+                    "l_english:\n XUI01_FIXTURE:0 \"Fixture\"\n".into(),
+                ),
                 ("interface/minimap.gui", gui("mini_map_interface")),
                 (
                     "interface/mapmodes_interface.gui",
@@ -3450,6 +3657,9 @@ mod tests {
             ],
             "rows": [
                 {"namespace_ordinal":0,"layer_kind":"vanilla","layer_id":"vanilla","relpath":"common/base.txt","bytes":1,"sha256":sha('0'),"storage_kind":"directory","source_container_sha256":null,"source_byte_offset":0,"source_byte_count":1,"source_range_sha256":sha('0')},
+                {"namespace_ordinal":0,"layer_kind":"vanilla","layer_id":"vanilla","relpath":"interface/base.gui","bytes":11,"sha256":sha('a'),"storage_kind":"directory","source_container_sha256":null,"source_byte_offset":0,"source_byte_count":11,"source_range_sha256":sha('a')},
+                {"namespace_ordinal":0,"layer_kind":"vanilla","layer_id":"vanilla","relpath":"interface/base.gfx","bytes":12,"sha256":sha('b'),"storage_kind":"directory","source_container_sha256":null,"source_byte_offset":0,"source_byte_count":12,"source_range_sha256":sha('b')},
+                {"namespace_ordinal":0,"layer_kind":"vanilla","layer_id":"vanilla","relpath":"localisation/english/base_l_english.yml","bytes":13,"sha256":sha('e'),"storage_kind":"directory","source_container_sha256":null,"source_byte_offset":0,"source_byte_count":13,"source_range_sha256":sha('e')},
                 {"namespace_ordinal":1,"layer_kind":"dlc","layer_id":"dlc_asset_only","relpath":"gfx/models/evidence.mesh","bytes":99,"sha256":sha('8'),"storage_kind":"directory","source_container_sha256":null,"source_byte_offset":0,"source_byte_count":99,"source_range_sha256":sha('8')},
                 {"namespace_ordinal":2,"layer_kind":"dlc","layer_id":"dlc_used","relpath":"gfx/models/tank.mesh","bytes":123,"sha256":sha('1'),"storage_kind":"zip_archive","source_container_sha256":sha('c'),"source_byte_offset":100,"source_byte_count":77,"source_range_sha256":sha('6')},
                 {"namespace_ordinal":3,"layer_kind":"dlc","layer_id":"dlc_unused","relpath":"common/unused.txt","bytes":7,"sha256":sha('d'),"storage_kind":"directory","source_container_sha256":null,"source_byte_offset":0,"source_byte_count":7,"source_range_sha256":sha('d')},
@@ -3502,7 +3712,7 @@ mod tests {
                 &sha('9'),
             )
             .unwrap();
-        assert_eq!(manifest.required_content.len(), 2);
+        assert_eq!(manifest.required_content.len(), 5);
         assert!(
             manifest
                 .dlc_selection
@@ -3866,6 +4076,17 @@ mod tests {
         mod_layer.source_container_sha256 = None;
         launch.ordered_mods[0].content_sha256 = sha('6');
         launch.ordered_mods[0].storage_kind = LayerStorageKind::Directory;
+        // A directory winner has no container, so the recorder records the
+        // payload digest as the source digest (the admission at
+        // append_*_content_observations refuses anything else, and manifest
+        // validation now binds it the same way). Keep the fixture in the only
+        // shape the producer can emit.
+        let definition = trace
+            .observations
+            .iter_mut()
+            .find(|row| row.content_key == "defines")
+            .unwrap();
+        definition.content.source_sha256 = definition.content.payload_sha256.clone();
         let first = build(trace.clone(), &launch, &sha('9')).unwrap();
         let first_digest = first.manifest_digest_sha256.clone().unwrap();
 
@@ -3874,7 +4095,7 @@ mod tests {
             .iter_mut()
             .find(|row| row.content_key == "defines")
             .unwrap();
-        definition.content.source_sha256 = sha('4');
+        definition.content.source_sha256 = sha('5');
         definition.content.payload_sha256 = sha('5');
         definition.content.payload_bytes += 1;
         let changed = build(trace, &launch, &sha('9')).unwrap();

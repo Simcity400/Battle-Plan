@@ -583,7 +583,7 @@ pub(crate) const TERRAIN_BASE_SHIPPED_SHADER_RESOURCES: [(&str, &str); 3] = [
     (TERRAIN_NORMAL_SYMBOL, "map/terrain/atlas_normal0.dds"),
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct MapFrameBundleValidationSpec {
     pub(crate) renderer_label: &'static str,
     pub(crate) capture_moment: &'static str,

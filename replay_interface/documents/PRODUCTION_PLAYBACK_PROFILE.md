@@ -59,5 +59,56 @@ compatibility identities.
 - a non-UI-only replay binds without constructing or requiring any UI catalog
 
 The authoritative code is `replay_interface/native/replay_app/src/install_paths.rs` and
-`replay_interface/native/replay_app/src/content_compatibility.rs`. Test receipts and source hashes
-are frozen separately under `re_evidence/production_playback_profile/`.
+`replay_interface/native/replay_app/src/content_compatibility.rs`.
+
+## Package and install acceptance
+
+The replayer ships inside the offline portable ZIP. `extractor/documents/PORTABLE_PRODUCT_PACKAGE.md`
+is the authority on that package's shape, on the recorder-side payload and data-root rules, and on
+how a build becomes promotable; the distribution policy it is built against is:
+
+- one stable channel by manual download — no automatic updater, downgrade service, online
+  downloader, or retained update staging;
+- no publisher signature, detached signature, or Authenticode gate. Content hashes and
+  `SHA256SUMS.txt` detect accidental corruption and are never publisher authentication, so there is
+  no public trust material, key rotation, or revocation lifecycle to maintain;
+- per-user operation with no administrator requirement: writable state under the current user's
+  application-data directory, protected by an inheritable owner/SYSTEM ACL;
+- a normal desktop window — no tray-only UI, background service, or installer-managed surface;
+- standard Windows DLL-search and process mitigations, chosen so they preserve required recorder and
+  replay behaviour;
+- vanilla plus exact content-addressed modsets that have passed fail-closed validation; unvalidated
+  modsets are rejected;
+- stale locks and incomplete incoming residue are quarantined and recovered only after mechanical
+  validation.
+
+The signed version-store launcher, retained-update, active-pointer, rollback, and installer mechanics
+under `replay_interface/native/package_runtime` are reusable reference code. They are not production
+prerequisites, and nothing here claims signed-installer acceptance for them.
+
+Reference playback hardware is an i5-8400 or Ryzen 5 2600, 16 GiB RAM, and a GTX 1060 6 GiB or
+RX 580 8 GiB at 1920x1080, required to hold an average of 60 fps with p95 frame time no worse than
+33.3 ms. That contract is enforced, not merely stated:
+`replay_interface/native/replay_app/src/performance_bench.rs` and
+`replay_interface/native/replay_app/Invoke-HeadlessPerformanceAcceptance.ps1`.
+
+Package acceptance cases. These specify required behaviour; only the current canonical receipt
+(`.cargo-target/release/hoi4-portable-package-receipt.json`) and a successful
+`extractor/native/scripts/Test-PortableProductPackageReceipt.ps1` run establish that a particular ZIP
+met them.
+
+| Case | Operation | Required outcome |
+|---|---|---|
+| Full release | the unfiltered centralized release across both native workspaces | the unsigned portable ZIP and its canonical receipt are published only after exact verification |
+| Non-authoritative build | extractor-only, replay-only, package-filtered, expression-filtered, or direct builder work | no promotable canonical package receipt |
+| Invalid input artifact | a missing, empty, reparse-point, wrong-PE-kind, or non-GUI binary | package publication refused |
+| Existing output | publishing over an existing destination | refused; never replaced |
+| Archive shape | inspect the closed candidate ZIP | exactly the specified entries, in stable order |
+| Archive integrity | reopen and decompress every candidate entry before publication | every entry's length, SHA-256, and bytes match the retained inputs and the checksum list |
+| Receipt drift | mutate the builder, source inputs, attestation, or build environment after receipt creation | receipt verification refused |
+| Staged receipt | verify a candidate receipt with staged-receipt authorization | the staged pass is explicitly non-canonical and non-promotable |
+
+Out of scope for this product: publisher signing keys or trust material, detached package
+signatures, Authenticode as a release gate, an online downloader or automatic updater, an
+installer-managed version store or rollback service, a tray-only UI or background service,
+administrator installation, and guessing Steam, the game, or profile paths.

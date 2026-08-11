@@ -180,6 +180,7 @@ mod tests {
         };
         let disposition = CoverageDisposition::Snapshot {
             sha256: format!("{hour:064x}"),
+            date: Some(format!("1936.1.1.{hour}")),
         };
         let source_path = format!("sessions/{play_order}/collector_stream.h4cr");
         let stored_digest = format!("{:064x}", play_order + 1);

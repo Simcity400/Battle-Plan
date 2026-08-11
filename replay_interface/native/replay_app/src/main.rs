@@ -3,12 +3,13 @@
 
 //! Battle Plan product surface: Win32 + D3D11 swapchain app.
 //!
-//! Product map rendering enters through the portable replay's admitted,
-//! authenticated production-render carrier. The normal app executes its exact
-//! D3D11 program on the app-owned device and swapchain target; an absent or
-//! incomplete carrier is feature-locally omitted. Validated capture bundles
-//! remain debug/evidence inputs only. The replay app does not render the removed
-//! CPU `map_visual.rgbx` scaffold or generated political-color substitutions.
+//! Product recording routes bind finalized content and one semantic
+//! `WorldFrame`, execute the mandatory foundation content operation, then
+//! require and execute the complete packet-native map composition before map
+//! pixels or receipts.
+//! Recorder production-render,
+//! selected-Present, camera, and draw carriers are not product-map authority.
+//! Validated capture bundles remain non-product debug/evidence inputs only.
 //!
 //! Usage: `replay_app [--configure] [--config <file>] [--recording <portable .battleplan>]
 //! [--game <dir>] [--userdata <dir>] [--recording <path>]
@@ -16,10 +17,11 @@
 //!
 //! `--recording` opens a snapshot-flavor or compact-stream-only `.battleplan`
 //! (or a snapshot store directory) through the single bounded product policy
-//! and drives the map from its recorded state owners. Without it the map shows
-//! the grounded 1936 owners.
-//! Replay-driven political color substitution is blocked until the engine's
-//! primary fill / exact GradientBorder generation law is ported.
+//! and projects and admits its selected semantic/content authority. It executes
+//! the foundation content operation, then requires exhaustive map-family
+//! admission and native execution before map pixels or receipts. There is no
+//! product fallback to grounded 1936 owners; only an explicitly
+//! non-product legacy/debug/bundle route may render.
 //! Debug-only `--capture` loads a validated map_viewer captured-pass session and uses
 //! the game's captured pdxmap/pdxwater shaders as the map base layer; invalid
 //! captured sessions fail startup with the validator message.
@@ -28,11 +30,11 @@
 //! user-data/profile root. The versioned local profile retains only those two
 //! roots; replay files remain independently movable and shareable.
 //!
-//! Controls: middle/right-drag or A/D pan horizontally; wheel zoom and
-//! vertical pan are blocked until the portable replay carries the exact C02/C03
-//! 3D current/target camera state; `R` resets to whole-map fit; `[`/`]` or
-//! Left/Right step one timeline hour; Space toggles ~4 hours/sec autoplay;
-//! left click/drag on the scrub bar seeks the timeline; Escape quits.
+//! Controls: middle/right-drag pans through the viewer-owned 3D ground
+//! projection; wheel zoom follows the C03 cursor-ray law; `R` resets to the
+//! engine overview; `[`/`]` or Left/Right step one timeline hour; Space
+//! toggles ~4 hours/sec autoplay; left click/drag on the scrub bar seeks the
+//! timeline; Escape quits. A/D/W/S remain legacy debug-bundle controls only.
 
 mod anomaly;
 mod blockers;
@@ -49,12 +51,12 @@ mod gui_definition_admission;
 mod install_paths;
 mod observer;
 mod palette;
-mod power_balance_runtime;
-mod prefold_worker;
 #[cfg(test)]
 mod post_effect;
-mod recording_open;
+mod power_balance_runtime;
+mod prefold_worker;
 mod recorded_ui_owner;
+mod recording_open;
 mod selected_pov_runtime;
 mod special_projects_runtime;
 mod timeline;
@@ -65,13 +67,15 @@ mod validate;
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod combat_gpu;
+#[cfg(windows)]
 mod counter_gpu;
 #[cfg(windows)]
 mod d3d;
 #[cfg(windows)]
-mod headless;
+mod furniture_render;
 #[cfg(windows)]
-mod map_furniture;
+mod headless;
 #[cfg(windows)]
 mod map_labels;
 #[cfg(windows)]
@@ -81,9 +85,9 @@ mod performance_bench;
 #[cfg(windows)]
 mod political_scene;
 #[cfg(windows)]
-mod render;
-#[cfg(windows)]
 mod product_entry;
+#[cfg(windows)]
+mod render;
 #[cfg(windows)]
 mod submitted_draw;
 #[cfg(windows)]
@@ -92,6 +96,8 @@ mod text;
 mod ui_runtime;
 #[cfg(windows)]
 mod win32;
+#[cfg(windows)]
+mod xmap20_effects;
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -102,30 +108,31 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--logical-stream <id>] [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
 --dump-hour selects the exact canonical REPLAY_SCHEMA hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
---benchmark-stress-output runs the checked-in non-semantic 1920x1080 production-path performance workload; --benchmark-output retains the stronger recording-backed profile and requires --benchmark-contract; --benchmark-warmup-frames (default 120, min 60) and --benchmark-sample-frames (default 600, min 300) may only increase sampling; \
+--benchmark-stress-output runs the checked-in non-semantic 1920x1080 stress workload; --benchmark-output requires --benchmark-contract only to select the logical stream/hour, executes and measures the complete packet-native map composition with GPU completion, and writes no benchmark receipt unless exhaustive map-family admission and native execution succeed; --benchmark-warmup-frames and --benchmark-sample-frames configure either benchmark profile; \
+--verify-xmap22-dump decodes the immutable sibling <out.bmp>.xmap22.json receipt through the production Rust type and verifies that the canonical BMP dimensions and top-down BGRA bytes match it; \
 --logical-stream <id> selects one independent timeline from logical-stream-package-set.json; package sets never default to or concatenate segments; \
 --configure selects/replaces the two machine-local content roots without opening a replay; --config provides a portable/headless configuration location; \
 normal product playback reconstructs the launcher's effective selection from the configured user-data dlc_load.json; --mod remains an explicit development/test override; \
---bundle and --capture are debug/evidence inputs only; normal portable recording playback never requires either. `--recording <portable> --dump-frame <bmp>` executes one exact recorded hour on an app-owned offscreen D3D11 target and fails instead of writing when any production carrier/input/output is omitted; \
+--bundle and --capture retain their non-product debug/evidence behavior and are blocked whenever --recording opens a product route (windowed or --dump-frame). `--recording <portable> --dump-frame <bmp>` selects one exact recorded hour, executes the complete packet-native map composition, and emits no map pixels, BMP, or success receipt unless exhaustive map-family admission and native execution succeed; \
 --demo-scrub is blocked because it generated synthetic, non-replay state changes; \
-terrain chunk synthesis is blocked in replay_app until the remaining runtime/LOD state is engine-derived; use map_viewer terrain tooling only for development; --synthesize-terrain-chunks and --chunks-from-files are blocked; \
---gb-cpu and REPLAY_APP_GB_CPU are blocked; generated political GradientBorder textures are research-only and not used for product rendering; \
+terrain is an unconditional authenticated XMAP04 product pass; legacy --synthesize-terrain-chunks and --chunks-from-files remain blocked because they cannot replace its admitted terrain/map-copy program; \
+political and GradientBorder resources are an unconditional authenticated XMAP05 product handoff; legacy --gb-cpu remains blocked because it cannot replace that handoff with a diagnostic CPU surface; \
 --postfx enables the ported scene-restore tone map (default ON: the game's on-screen image is post-tonemap; --no-postfx is blocked); \
 --postfx-restore-full (DEFAULT ON) composes the RestoreScene grade from installed content via the mod-aware resolver and fails closed when evidence is missing; --no-postfx-restore-full is blocked; \
 --postfx-validate-capture loads the captured restore-pass bundle and reports file-law vs captured deltas (LUT max delta, MiddleGrey/AverageLuminance diffs) then exits; a regression gate, never a render input (requires --capture and --game); \
 --freeze-clock is blocked because replay_app preserves captured map-clock constant-buffer bytes until real runtime timing is capture-derived; \
 --water-full (DEFAULT ON) uploads only the real engine/file-derived water path and fails closed when required inputs are missing; --no-water-full is blocked because it selected the old app-owned approximation; \
-borders are blocked in replay_app until the remaining thin-border fade/loop/sea-region law is ported; use map_viewer border dumps as development tooling; --borders-from-files is blocked; \
-country-label production integration is closed: measured control_by_province feeds the B10 controller law, authenticated reflection stamps mapname CB1, and normal D80 playback executes the exact captured glyph draw automatically; --map-labels remains blocked as a legacy manual-layer switch; \
-map furniture remains fail-closed: the exact relation/frame law is proven and the apparent highlight ring is part of the selected strip bitmap, but ordinary recording cannot yet authenticate/materialize the complete selected-Present GUI frontier, while reconstruction lacks exact current VP values and placement; \
-tree runtime replay admits exact selected-submit visibility/model/LOD draws against the complete engine-derived 296-bucket/99,056-cell library; --trees-from-files remains blocked because a files-only request has no authenticated per-frame selection, and --tree-seasons-by-date remains separately blocked on CB1; \
-building previews are blocked until map_objects_pass or mesh/material import law exists; --buildings-from-files and --buildings-preview-all are blocked";
+thin borders are unconditional authenticated XMAP06 early/late product passes; legacy --borders-from-files and --no-borders-from-files remain blocked because they cannot opt that pass in, out, or onto a files-only fallback; \
+country/state map labels are an unconditional authenticated XMAP17 product pass; the old --map-labels switches remain blocked because they cannot opt that pass in, out, or onto a fallback; \
+map furniture is an unconditional authenticated XMAP21 product pass and fails closed unless the displayed hour carries the complete typed v3 VP/capital/resource/raid frontier; --map-furniture is compatibility spelling and --no-map-furniture is blocked; \
+trees are an unconditional authenticated XMAP11 product pass derived from the current replay hour, viewer-owned camera/map-copy law, and admitted effective content; legacy --trees-from-files remains blocked because it cannot replace that pass with a files-only approximation; \
+cities, buildings, and fixed map objects are an unconditional authenticated XMAP12 product pass; legacy --buildings-from-files and --buildings-preview-all remain blocked because they cannot replace it with preview/fabricated state";
 
 const SENSITIVE_GAME_FILE_PATHS: &[&str] = &[
     "gfx/FX/constants.fxh",
@@ -455,7 +462,8 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 return Err(blockers::reason(BlockerId::MapLabelsFallback).into());
             }
             "--map-furniture" => {
-                return Err(blockers::reason(BlockerId::MapFurniture).into());
+                // Compatibility spelling. XMAP21 is an unconditional
+                // production pass and has no opt-in state.
             }
             "--no-map-furniture" => {
                 return Err(blockers::reason(BlockerId::NoMapFurniture).into());
@@ -601,7 +609,15 @@ fn resolve_headless_recording_hour(options: &mut CliOptions) -> Result<()> {
         (None, None) => None,
         (Some(_), Some(_)) => unreachable!("parse_cli rejects competing dump selectors"),
     };
-    let (Some(request), TimelineMode::Recording { path, logical_stream_id, .. }) = (request, &options.mode) else {
+    let (
+        Some(request),
+        TimelineMode::Recording {
+            path,
+            logical_stream_id,
+            ..
+        },
+    ) = (request, &options.mode)
+    else {
         return Ok(());
     };
     let source = recording_open::open_product_recording_segment(path, *logical_stream_id)
@@ -666,7 +682,10 @@ fn main() {
     #[cfg(windows)]
     let (args, product_launch) = match product_entry::normalize(raw_args) {
         Ok(product_entry::ProductLaunch::Cancelled) => return,
-        Ok(product_entry::ProductLaunch::Run { args, visible_errors }) => {
+        Ok(product_entry::ProductLaunch::Run {
+            args,
+            visible_errors,
+        }) => {
             let visible_errors = if visible_errors {
                 if let Err(error) = product_entry::ensure_product_profile() {
                     product_entry::show_error(&error);
@@ -680,10 +699,7 @@ fn main() {
                 // to a dialog when neither a pipe nor a console is available.
                 let diagnostics_available = product_entry::inherited_stderr_available()
                     || product_entry::attach_parent_console();
-                product_entry::visible_errors_for_route(
-                    false,
-                    diagnostics_available,
-                )
+                product_entry::visible_errors_for_route(false, diagnostics_available)
             };
             (args, visible_errors)
         }
@@ -709,8 +725,9 @@ fn main() {
 
 /// Standalone first-launch/reselection command. This deliberately has a tiny
 /// argument surface so configuration works in a terminal or deployment script
-/// without a map bundle, renderer, or replay file.
-fn run_configure(args: &[String]) -> Result<()> {
+/// without a map bundle, renderer, or replay file. The environment is injected
+/// so the registry env gate is unit-testable without touching process env vars.
+fn run_configure(args: &[String], env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<()> {
     let mut game = None;
     let mut user_data = None;
     let mut config = None;
@@ -750,6 +767,10 @@ fn run_configure(args: &[String]) -> Result<()> {
         }
         index += 1;
     }
+    // Same registry gate as ordinary playback startup: a machine whose
+    // environment ordinary product startup refuses must not be able to write
+    // a product profile either (R8 claim 6).
+    reject_env_overrides(env)?;
     let selected = install_paths::resolve_process_paths(
         config,
         install_paths::ResolveOptions {
@@ -778,10 +799,10 @@ fn run_configure(args: &[String]) -> Result<()> {
 
 fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|arg| arg == "--configure") {
-        return run_configure(args);
+        return run_configure(args, |name| std::env::var_os(name));
     }
     if args.iter().any(|arg| arg == "--validate-playback") {
-        return run_validate_playback(args);
+        return run_validate_playback(args, |name| std::env::var_os(name));
     }
     if args.iter().any(|arg| arg == "--benchmark-stress-output") {
         return run_performance_stress(args);
@@ -789,15 +810,18 @@ fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|arg| arg == "--benchmark-output") {
         return run_performance_benchmark(args);
     }
+    if args.iter().any(|arg| arg == "--verify-xmap22-dump") {
+        let path = parse_verify_xmap22_dump_args(args)?;
+        return headless::verify_xmap22_dump(&path);
+    }
     // E4 open/validate product entry: `--validate-recording <path>` runs the
     // SHARED validator and reports a readable diagnostic without needing a map
-    // bundle. It is intercepted before `parse_cli` so it works standalone.
-    if let Some(index) = args.iter().position(|arg| arg == "--validate-recording") {
-        let path = args
-            .get(index + 1)
-            .ok_or_else(|| format!("--validate-recording requires a path\n{USAGE}"))?;
-        let logical_stream_id = parse_standalone_logical_stream(args)?;
-        return run_validate_recording(std::path::Path::new(path), logical_stream_id);
+    // bundle. It is intercepted before `parse_cli` so it works standalone; its
+    // own strict parser rejects every unrelated token so a blocked switch can
+    // never ride along silently (R8 claim 6).
+    if args.iter().any(|arg| arg == "--validate-recording") {
+        let (path, logical_stream_id) = parse_validate_recording_args(args)?;
+        return run_validate_recording(&path, logical_stream_id, |name| std::env::var_os(name));
     }
     // G3: emit the canonical product-blocker list mechanically for audits and
     // the definition-of-done. Intercepted before `parse_cli` so it needs no
@@ -807,6 +831,7 @@ fn run(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let options = parse_cli(args)?;
+    reject_production_recording_debug_cli(&options)?;
     preflight_snapshot_recording_dump_request(&options)?;
     let bundle = options
         .bundle_dir
@@ -868,8 +893,10 @@ fn run(args: &[String]) -> Result<()> {
         );
     }
     reject_env_overrides(|name| std::env::var_os(name))?;
-    // Map labels and furniture are product-blocked. Their constructors stay
-    // fail-closed for validation-only callers.
+    // XMAP06 borders, XMAP11 trees, XMAP12 objects, XMAP17 labels, and XMAP21
+    // furniture are unconditional product passes.
+    // Their legacy switches remain blocked so CLI state cannot suppress or
+    // replace the authenticated foundation schedule.
     if options.postfx_validate_capture {
         let capture_dir = options.capture_dir.as_deref().ok_or(
             "--postfx-validate-capture requires --capture <session dir> with an original restore-pass bundle or retained RestoreScene manifest",
@@ -954,6 +981,34 @@ fn run(args: &[String]) -> Result<()> {
     }
 }
 
+fn parse_verify_xmap22_dump_args(args: &[String]) -> Result<PathBuf> {
+    let mut path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--verify-xmap22-dump" => {
+                if path.is_some() {
+                    return Err(
+                        format!("--verify-xmap22-dump may be passed only once\n{USAGE}").into(),
+                    );
+                }
+                index += 1;
+                path = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--verify-xmap22-dump requires a BMP path\n{USAGE}")
+                })?));
+            }
+            "--non-interactive" => {}
+            other => {
+                return Err(
+                    format!("{other:?} is not valid with --verify-xmap22-dump\n{USAGE}").into(),
+                )
+            }
+        }
+        index += 1;
+    }
+    path.ok_or_else(|| format!("--verify-xmap22-dump requires a BMP path\n{USAGE}").into())
+}
+
 #[cfg(windows)]
 fn run_performance_stress(args: &[String]) -> Result<()> {
     let (default_warmup, default_samples) = performance_bench::defaults();
@@ -980,9 +1035,7 @@ fn run_performance_stress(args: &[String]) -> Result<()> {
                     format!("--benchmark-sample-frames requires a count: {error}")
                 })?
             }
-            "--benchmark-contract" => {
-                workload_contract = Some(PathBuf::from(value(&mut index)?))
-            }
+            "--benchmark-contract" => workload_contract = Some(PathBuf::from(value(&mut index)?)),
             "--benchmark-stress-output" => output = Some(PathBuf::from(value(&mut index)?)),
             "--non-interactive" => {}
             other => {
@@ -1006,13 +1059,28 @@ fn run_performance_stress(args: &[String]) -> Result<()> {
     })
 }
 
-#[cfg(windows)]
-fn run_performance_benchmark(args: &[String]) -> Result<()> {
-    let (default_warmup, default_samples) = performance_bench::defaults();
+const STRESS_ONLY_BENCHMARK_CONTROLS: &[&str] =
+    &["--benchmark-warmup-frames", "--benchmark-sample-frames"];
+
+#[derive(Debug, PartialEq)]
+struct RecordingBenchmarkCliOptions {
+    recording: PathBuf,
+    frame_cache_entries: usize,
+    workload_contract: PathBuf,
+    output: PathBuf,
+    game: Option<PathBuf>,
+    userdata: Option<PathBuf>,
+    config: Option<PathBuf>,
+    non_interactive: bool,
+}
+
+/// Parse only the recording-backed `--benchmark-output` profile. Frame-count
+/// controls belong exclusively to the synthetic stress profile; accepting
+/// them here would claim they affect a route that terminates at XMAP00 before
+/// sampling.
+fn parse_recording_benchmark_args(args: &[String]) -> Result<RecordingBenchmarkCliOptions> {
     let mut recording = None;
     let mut frame_cache_entries = replay_core::TimelineConfig::default().frame_cache_entries;
-    let mut warmup_frames = default_warmup;
-    let mut sample_frames = default_samples;
     let mut workload_contract = None;
     let mut output = None;
     let mut game = None;
@@ -1034,15 +1102,11 @@ fn run_performance_benchmark(args: &[String]) -> Result<()> {
                     format!("--frame-cache requires an entry count: {error}")
                 })?
             }
-            "--benchmark-warmup-frames" => {
-                warmup_frames = value(&mut index)?.parse::<usize>().map_err(|error| {
-                    format!("--benchmark-warmup-frames requires a count: {error}")
-                })?
-            }
-            "--benchmark-sample-frames" => {
-                sample_frames = value(&mut index)?.parse::<usize>().map_err(|error| {
-                    format!("--benchmark-sample-frames requires a count: {error}")
-                })?
+            stress_only if STRESS_ONLY_BENCHMARK_CONTROLS.contains(&stress_only) => {
+                return Err(format!(
+                    "{stress_only} configures only --benchmark-stress-output and is not valid with --benchmark-output\n{USAGE}"
+                )
+                .into())
             }
             "--benchmark-contract" => {
                 workload_contract = Some(PathBuf::from(value(&mut index)?))
@@ -1065,24 +1129,40 @@ fn run_performance_benchmark(args: &[String]) -> Result<()> {
     let workload_contract =
         workload_contract.ok_or("--benchmark-output requires --benchmark-contract")?;
     let output = output.ok_or("--benchmark-output requires a receipt path")?;
-    let paths = install_paths::resolve_process_paths(
+    Ok(RecordingBenchmarkCliOptions {
+        recording,
+        frame_cache_entries,
+        workload_contract,
+        output,
+        game,
+        userdata,
         config,
+        non_interactive,
+    })
+}
+
+#[cfg(windows)]
+fn run_performance_benchmark(args: &[String]) -> Result<()> {
+    let options = parse_recording_benchmark_args(args)?;
+    let (warmup_frames, sample_frames) = performance_bench::defaults();
+    let paths = install_paths::resolve_process_paths(
+        options.config,
         install_paths::ResolveOptions {
-            game_override: resolve_game_dir(game, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA"))),
-            user_data_override: userdata,
+            game_override: resolve_game_dir(options.game, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA"))),
+            user_data_override: options.userdata,
             force_reselect: false,
-            non_interactive,
+            non_interactive: options.non_interactive,
         },
     )?;
     reject_env_overrides(|name| std::env::var_os(name))?;
     performance_bench::run(
         performance_bench::BenchOptions {
-            recording,
-            frame_cache_entries,
+            recording: options.recording,
+            frame_cache_entries: options.frame_cache_entries,
             warmup_frames,
             sample_frames,
-            workload_contract,
-            output,
+            workload_contract: options.workload_contract,
+            output: options.output,
         },
         &paths,
     )
@@ -1094,27 +1174,101 @@ fn run_performance_stress(_args: &[String]) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn run_performance_benchmark(_args: &[String]) -> Result<()> {
+fn run_performance_benchmark(args: &[String]) -> Result<()> {
+    let _ = parse_recording_benchmark_args(args)?;
     Err("replay_app headless performance benchmark requires Windows and D3D11".into())
 }
 
-fn parse_standalone_logical_stream(args: &[String]) -> Result<Option<u64>> {
-    let mut selected = None;
-    for (index, arg) in args.iter().enumerate() {
-        if arg != "--logical-stream" {
+/// Strict argument parser for the standalone `--validate-recording` command.
+/// Like `--configure` and `--validate-playback`, every unrelated token is
+/// rejected: the pre-`parse_cli` interception must not silently ignore (and
+/// thereby appear to accept) a blocked or unknown switch (R8 claim 6).
+fn parse_validate_recording_args(args: &[String]) -> Result<(PathBuf, Option<u64>)> {
+    let mut path = None;
+    let mut logical_stream_id = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--validate-recording" => {
+                index += 1;
+                if path.is_some() {
+                    return Err(
+                        format!("--validate-recording may be passed only once\n{USAGE}").into(),
+                    );
+                }
+                path = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--validate-recording requires a path\n{USAGE}")
+                })?));
+            }
+            "--logical-stream" => {
+                index += 1;
+                if logical_stream_id.is_some() {
+                    return Err(format!("--logical-stream may be passed only once\n{USAGE}").into());
+                }
+                let value = args.get(index).ok_or_else(|| {
+                    format!("--logical-stream requires an unsigned id\n{USAGE}")
+                })?;
+                logical_stream_id = Some(value.parse::<u64>().map_err(|error| {
+                    format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
+                })?);
+            }
+            "--non-interactive" => {}
+            other => {
+                return Err(format!(
+                    "{other:?} is not valid with --validate-recording; use only --logical-stream and --non-interactive\n{USAGE}"
+                )
+                .into())
+            }
+        }
+        index += 1;
+    }
+    let path = path.ok_or_else(|| format!("--validate-recording requires a path\n{USAGE}"))?;
+    Ok((path, logical_stream_id))
+}
+
+/// Registry-driven gate for the production-recording-scoped CLI rows: every
+/// `blockers::REGISTRY` row with [`blockers::Scope::ProductionRecording`] is
+/// rejected — with the row's reason verbatim — whenever the invocation opens a
+/// production recording (windowed playback or `--dump-frame`). Registry-driven
+/// so a new scoped row cannot be added without this single gate enforcing it;
+/// a row whose token has no presence accessor fails closed rather than passing
+/// silently.
+fn reject_production_recording_debug_cli(options: &CliOptions) -> Result<()> {
+    if !matches!(options.mode, TimelineMode::Recording { .. }) {
+        return Ok(());
+    }
+    for b in blockers::REGISTRY {
+        if b.scope != blockers::Scope::ProductionRecording {
             continue;
         }
-        if selected.is_some() {
-            return Err(format!("--logical-stream may be passed only once\n{USAGE}").into());
+        let blockers::Surface::CliSwitch(token) = b.surface else {
+            continue;
+        };
+        let present = recording_scoped_cli_present(options, token).ok_or_else(|| {
+            format!(
+                "blocker registry row {token} is production-recording-scoped but has no CLI presence accessor; refusing to continue"
+            )
+        })?;
+        if present {
+            return Err(b.reason.into());
         }
-        let value = args
-            .get(index + 1)
-            .ok_or_else(|| format!("--logical-stream requires an unsigned id\n{USAGE}"))?;
-        selected = Some(value.parse::<u64>().map_err(|error| {
-            format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
-        })?);
     }
-    Ok(selected)
+    Ok(())
+}
+
+/// Presence accessor for the production-recording-scoped registry tokens.
+/// `None` marks an unmapped token so the gate fails closed instead of
+/// ignoring a registry row it cannot check.
+fn recording_scoped_cli_present(options: &CliOptions, token: &str) -> Option<bool> {
+    Some(match token {
+        "--bundle" => options.bundle_dir.is_some(),
+        "--capture" => options.capture_dir.is_some(),
+        "--dump-zoom" => options.dump_zoom.is_some(),
+        "--dump-center" => options.dump_center.is_some(),
+        "--dump-hdr" => options.dump_hdr.is_some(),
+        "--hour" => options.day_night_hour.is_some(),
+        _ => return None,
+    })
 }
 
 /// Reject invalid canonical/ordinal requests for snapshot-native recordings
@@ -1131,7 +1285,15 @@ fn preflight_snapshot_recording_dump_request(options: &CliOptions) -> Result<()>
         (None, None) => None,
         (Some(_), Some(_)) => unreachable!("parse_cli rejects competing dump selectors"),
     };
-    let (Some(request), TimelineMode::Recording { path, logical_stream_id, .. }) = (request, &options.mode) else {
+    let (
+        Some(request),
+        TimelineMode::Recording {
+            path,
+            logical_stream_id,
+            ..
+        },
+    ) = (request, &options.mode)
+    else {
         return Ok(());
     };
     let is_rollover = path.file_name().and_then(|value| value.to_str())
@@ -1148,18 +1310,23 @@ fn preflight_snapshot_recording_dump_request(options: &CliOptions) -> Result<()>
             timeline::resolve_dump_hour(source.hours(), request)?;
             Ok(())
         }
-        Err(replay_core::SourceError::Unsupported(message))
-            if message.contains("compact-stream-only production recording") =>
-        {
-            Ok(())
-        }
+        // Typed compact-stream-only subclass (R18-5): the certified product
+        // fold for compact-only recordings is owned by the actual provider
+        // open in `headless`, so this optional snapshot-native preflight
+        // waives exactly that flavor — structurally, never by message text.
+        Err(replay_core::SourceError::UnsupportedCompactStreamOnly(_)) => Ok(()),
         Err(error) => Err(format!("open recording {}: {error}", path.display()).into()),
     }
 }
 
 /// Full headless playback-installation gate. Unlike `--validate-recording`,
 /// this verifies the selected local VFS against the replay content manifest.
-fn run_validate_playback(args: &[String]) -> Result<()> {
+/// The environment is injected so the registry env gate is unit-testable
+/// without touching process env vars.
+fn run_validate_playback(
+    args: &[String],
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<()> {
     let mut replay = None;
     let mut logical_stream_id = None;
     let mut game = None;
@@ -1217,6 +1384,9 @@ fn run_validate_playback(args: &[String]) -> Result<()> {
     }
     let replay =
         replay.ok_or_else(|| format!("--validate-playback requires a replay path\n{USAGE}"))?;
+    // Same registry gate as ordinary playback startup: a validation pass must
+    // not succeed in an environment product startup later refuses (R8 claim 6).
+    reject_env_overrides(env)?;
     let paths = install_paths::resolve_process_paths(
         config,
         install_paths::ResolveOptions {
@@ -1260,8 +1430,16 @@ fn run_validate_playback(args: &[String]) -> Result<()> {
 /// E4: open a recording through the shared validator and print a readable
 /// diagnostic. Exit success on a clean open, error (exit 2) on any rejection —
 /// the specific validator string (schema / hash / modset / version) is
-/// surfaced verbatim in the message.
-fn run_validate_recording(path: &std::path::Path, logical_stream_id: Option<u64>) -> Result<()> {
+/// surfaced verbatim in the message. The environment is injected so the
+/// registry env gate is unit-testable without touching process env vars.
+fn run_validate_recording(
+    path: &std::path::Path,
+    logical_stream_id: Option<u64>,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<()> {
+    // Same registry gate as ordinary playback startup: a validation pass must
+    // not succeed in an environment product startup later refuses (R8 claim 6).
+    reject_env_overrides(env)?;
     let outcome = validate::open_and_validate_segment(path, logical_stream_id);
     println!("{}", outcome.summary());
     match outcome {
@@ -1408,6 +1586,95 @@ mod tests {
     }
 
     #[test]
+    fn xmap22_dump_verifier_parser_is_standalone_and_fail_closed() {
+        assert_eq!(
+            parse_verify_xmap22_dump_args(&args(&[
+                "--verify-xmap22-dump",
+                "frame.bmp",
+                "--non-interactive",
+            ]))
+            .expect("standalone XMAP22 verifier arguments"),
+            PathBuf::from("frame.bmp")
+        );
+        for values in [
+            args(&["--verify-xmap22-dump"]),
+            args(&["--verify-xmap22-dump", "frame.bmp", "--game", "game"]),
+            args(&[
+                "--verify-xmap22-dump",
+                "frame.bmp",
+                "--verify-xmap22-dump",
+                "other.bmp",
+            ]),
+        ] {
+            parse_verify_xmap22_dump_args(&values)
+                .expect_err("incomplete, mixed, and duplicate verifier arguments must fail");
+        }
+    }
+
+    #[test]
+    fn recording_benchmark_parser_rejects_every_stress_only_control() {
+        for control in STRESS_ONLY_BENCHMARK_CONTROLS {
+            assert!(
+                USAGE.contains(control),
+                "stress-only control must remain documented: {control}"
+            );
+            let mut values = args(&[
+                "--recording",
+                "recording.battleplan",
+                "--benchmark-contract",
+                "contract.json",
+                "--benchmark-output",
+                "receipt.json",
+            ]);
+            values.push((*control).to_string());
+            values.push("999".to_string());
+            let error = parse_recording_benchmark_args(&values)
+                .expect_err("recording benchmark must reject stress-only controls");
+            assert!(
+                error
+                    .to_string()
+                    .contains("configures only --benchmark-stress-output"),
+                "unexpected error for {control}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn recording_benchmark_parser_accepts_only_recording_profile_controls() {
+        let parsed = parse_recording_benchmark_args(&args(&[
+            "--recording",
+            "recording.battleplan",
+            "--frame-cache",
+            "3",
+            "--benchmark-contract",
+            "contract.json",
+            "--benchmark-output",
+            "receipt.json",
+            "--game",
+            "game",
+            "--userdata",
+            "userdata",
+            "--config",
+            "profile.json",
+            "--non-interactive",
+        ]))
+        .expect("recording benchmark arguments");
+        assert_eq!(
+            parsed,
+            RecordingBenchmarkCliOptions {
+                recording: PathBuf::from("recording.battleplan"),
+                frame_cache_entries: 3,
+                workload_contract: PathBuf::from("contract.json"),
+                output: PathBuf::from("receipt.json"),
+                game: Some(PathBuf::from("game")),
+                userdata: Some(PathBuf::from("userdata")),
+                config: Some(PathBuf::from("profile.json")),
+                non_interactive: true,
+            }
+        );
+    }
+
+    #[test]
     fn cli_does_not_require_machine_local_bundle() {
         let options = parse_cli(&[]).expect("first launch reaches profile selection");
         assert_eq!(options.bundle_dir, None);
@@ -1419,6 +1686,55 @@ mod tests {
         let options = parse_cli(&args(&["--bundle", "some/dir"])).expect("args parse");
         assert_eq!(options.mode, TimelineMode::Static1936);
         assert_eq!(options.bundle_dir, Some(PathBuf::from("some/dir")));
+    }
+
+    #[test]
+    fn preflight_waives_only_the_typed_compact_stream_only_flavor() {
+        // R18-5 consumer: the snapshot-native dump preflight must waive the
+        // TYPED UnsupportedCompactStreamOnly refusal (the certified compact
+        // fold is owned by the provider open in headless) and must NOT waive
+        // any other open failure. This exercises the actual consumer, so
+        // reinstating the old substring arm — which would fail compact-only
+        // dumps now that the producer returns the typed variant — cannot
+        // survive this test.
+        let root =
+            std::env::temp_dir().join(format!("battle-plan-r18-preflight-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let game = root.join("g");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(
+            game.join("index.json"),
+            br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            game.join("timeline.json"),
+            br#"{"format":"hoi4_compact_stream_timeline_v1","raw_stream_role":"collector_compact_stream"}"#,
+        )
+        .unwrap();
+        std::fs::write(game.join("collector_stream.bin"), b"H4CR").unwrap();
+        let options = parse_cli(&args(&[
+            "--bundle",
+            "some/dir",
+            "--recording",
+            root.to_str().unwrap(),
+            "--dump-frame",
+            "out.bmp",
+            "--dump-hour",
+            "5",
+        ]))
+        .expect("args parse");
+        preflight_snapshot_recording_dump_request(&options)
+            .expect("the typed compact-stream-only refusal is waived by the preflight");
+
+        // Strip the compact evidence: the same empty index now opens as plain
+        // Unsupported, which the preflight must propagate, not waive.
+        std::fs::remove_file(game.join("timeline.json")).unwrap();
+        std::fs::remove_file(game.join("collector_stream.bin")).unwrap();
+        let err = preflight_snapshot_recording_dump_request(&options)
+            .expect_err("a bare empty snapshot index is not the waivable subclass");
+        assert!(err.to_string().contains("empty snapshot index"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1481,7 +1797,10 @@ mod tests {
     fn cli_rejects_logical_stream_without_recording() {
         let error = parse_cli(&args(&["--logical-stream", "0"]))
             .expect_err("logical stream without recording must fail");
-        assert!(error.to_string().contains("requires --recording"), "{error}");
+        assert!(
+            error.to_string().contains("requires --recording"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1718,6 +2037,24 @@ mod tests {
     }
 
     #[test]
+    fn cli_help_distinguishes_unconditional_xmap06_xmap11_xmap12_from_legacy_switches() {
+        for claim in [
+            "thin borders are unconditional authenticated XMAP06 early/late product passes",
+            "trees are an unconditional authenticated XMAP11 product pass",
+            "cities, buildings, and fixed map objects are an unconditional authenticated XMAP12 product pass",
+        ] {
+            assert!(USAGE.contains(claim), "missing shipping help claim: {claim}");
+        }
+        for legacy in [
+            "legacy --borders-from-files and --no-borders-from-files remain blocked",
+            "legacy --trees-from-files remains blocked",
+            "legacy --buildings-from-files and --buildings-preview-all remain blocked",
+        ] {
+            assert!(USAGE.contains(legacy), "missing legacy-switch boundary: {legacy}");
+        }
+    }
+
+    #[test]
     fn cli_freeze_clock_product_path_blocked() {
         let err = parse_cli(&args(&["--freeze-clock"])).expect_err("must fail");
         assert!(
@@ -1768,12 +2105,8 @@ mod tests {
     }
 
     #[test]
-    fn cli_map_furniture_product_path_blocked() {
-        let explicit = parse_cli(&args(&["--map-furniture"])).expect_err("must fail");
-        assert!(
-            explicit.to_string().contains("--map-furniture is blocked"),
-            "{explicit}"
-        );
+    fn cli_map_furniture_opt_out_product_path_blocked() {
+        parse_cli(&args(&["--map-furniture"])).expect("compatibility opt-in");
 
         let opt_out = parse_cli(&args(&["--no-map-furniture"])).expect_err("must fail");
         assert!(
@@ -1782,10 +2115,10 @@ mod tests {
                 .contains("--no-map-furniture is blocked"),
             "{opt_out}"
         );
-        let err =
-            parse_cli(&args(&["--map-furniture", "--no-map-furniture"])).expect_err("must fail");
+        let err = parse_cli(&args(&["--map-furniture", "--no-map-furniture"]))
+            .expect_err("opt-out must fail");
         assert!(
-            err.to_string().contains("--map-furniture is blocked"),
+            err.to_string().contains("--no-map-furniture is blocked"),
             "{err}"
         );
     }
@@ -2112,6 +2445,31 @@ mod tests {
         reject_env_overrides(|_| None).expect("absent env overrides are fine");
     }
 
+    /// The two H2 receipt-directory variables are gates, not outputs: each
+    /// returns `Err` when set-and-empty, when the raw readback disagrees with
+    /// the sealed receipt, and when `persist_create_new_or_equal` meets an
+    /// existing path holding different bytes (`render.rs`
+    /// `persist_snow_mud_h2_receipt` / `persist_occupation_secondary_h2_receipt`).
+    /// A frame that would otherwise render fine therefore fails whenever one is
+    /// set, so they belong in the registry with the rest of the environment
+    /// surface rather than being documented as harmless sinks.
+    #[test]
+    fn h2_receipt_dir_env_overrides_are_product_path_blocked() {
+        for name in [
+            "REPLAY_SNOW_MUD_H2_RECEIPT_DIR",
+            "REPLAY_OCCUPATION_H2_RECEIPT_DIR",
+        ] {
+            let err = reject_env_overrides(|candidate| {
+                (candidate == name).then(|| OsString::from(r"C:\receipts"))
+            })
+            .expect_err("receipt-directory env sinks must be blocked");
+            assert!(
+                err.to_string().starts_with(&format!("{name} is blocked")),
+                "{err}"
+            );
+        }
+    }
+
     #[test]
     fn cli_rejects_unknown_argument() {
         let err = parse_cli(&args(&["--frobnicate"])).expect_err("must fail");
@@ -2240,8 +2598,8 @@ mod tests {
         );
         assert_eq!(
             gate_symbols.len(),
-            11,
-            "expected 11 *_product_path_blocked gates across src/, found {gate_symbols:?}"
+            13,
+            "expected 13 *_product_path_blocked gates across src/, found {gate_symbols:?}"
         );
         // The set the registry claims to cover.
         let covered: BTreeSet<String> = blockers::REGISTRY
@@ -2275,10 +2633,16 @@ mod tests {
 
     #[test]
     fn every_blocked_cli_switch_arm_routes_through_registry() {
-        // Each blocked CLI-switch registry row must actually be rejected by
-        // parse_cli with the registry's own message (indirection is wired, and
-        // no gate was weakened). Env rows are exercised by their own unit tests.
+        // Each unconditionally blocked CLI-switch registry row must actually be
+        // rejected by parse_cli with the registry's own message (indirection is
+        // wired, and no gate was weakened). Production-recording-scoped rows
+        // are legal debug inputs here and are exercised by
+        // `cli_recording_debug_surfaces_product_path_blocked`; env rows are
+        // exercised by their own unit tests.
         for b in blockers::REGISTRY {
+            if b.scope != blockers::Scope::Always {
+                continue;
+            }
             if let blockers::Surface::CliSwitch(token) = b.surface {
                 let err = parse_cli(&args(&["--bundle", "some/dir", token]))
                     .expect_err(&format!("{token} must be rejected"));
@@ -2289,6 +2653,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// R8 claims 1+2: every production-recording-scoped registry row (the six
+    /// CLI debug/evidence inputs) is rejected by the registry-driven gate with
+    /// the row's reason verbatim whenever the invocation opens a production
+    /// recording — windowed or `--dump-frame` — and stays legal for the
+    /// bundle-based debug modes.
+    #[test]
+    fn cli_recording_debug_surfaces_product_path_blocked() {
+        let recording_args_for = |token: &str| -> Vec<String> {
+            let mut out = args(&["--recording", "portable.battleplan"]);
+            match token {
+                "--bundle" => out.extend(args(&["--bundle", "some/dir"])),
+                "--capture" => out.extend(args(&["--capture", "captures/session"])),
+                "--dump-zoom" => {
+                    out.extend(args(&["--dump-frame", "out.bmp", "--dump-zoom", "2.0"]))
+                }
+                "--dump-center" => out.extend(args(&[
+                    "--dump-frame",
+                    "out.bmp",
+                    "--dump-center",
+                    "100,200",
+                ])),
+                "--dump-hdr" => out.extend(args(&[
+                    "--dump-frame",
+                    "out.bmp",
+                    "--dump-hdr",
+                    "scene.rgba16f",
+                ])),
+                "--hour" => out.extend(args(&["--dump-frame", "out.bmp", "--hour", "0.5"])),
+                other => panic!("unmapped production-recording-scoped token {other}"),
+            }
+            out
+        };
+        let mut scoped_rows = 0;
+        for b in blockers::REGISTRY {
+            if b.scope != blockers::Scope::ProductionRecording {
+                continue;
+            }
+            let blockers::Surface::CliSwitch(token) = b.surface else {
+                panic!("scoped row {:?} is not a CLI switch", b.id);
+            };
+            scoped_rows += 1;
+            let options =
+                parse_cli(&recording_args_for(token)).expect("scoped tokens parse cleanly");
+            let err = reject_production_recording_debug_cli(&options)
+                .expect_err(&format!("{token} must be rejected with a recording"));
+            assert_eq!(
+                err.to_string(),
+                b.reason,
+                "{token}: gate must return the registry reason verbatim"
+            );
+        }
+        assert_eq!(scoped_rows, 6, "all six scoped rows exercised");
+        // A plain recording invocation passes the gate.
+        let plain = parse_cli(&args(&["--recording", "portable.battleplan"]))
+            .expect("plain recording parses");
+        reject_production_recording_debug_cli(&plain).expect("plain recording is admitted");
+        // The same debug inputs stay legal for the bundle-based debug modes.
+        let debug = parse_cli(&args(&[
+            "--bundle",
+            "some/dir",
+            "--capture",
+            "captures/session",
+        ]))
+        .expect("debug-mode inputs parse");
+        reject_production_recording_debug_cli(&debug)
+            .expect("debug inputs are admitted outside recording mode");
+    }
+
+    #[test]
+    fn validate_recording_cli_rejects_unrelated_tokens() {
+        // R8 claim 6 regression: the standalone interception must not silently
+        // ignore (and thereby appear to accept) blocked or unknown switches.
+        for extra in ["--demo-scrub", "--gb-cpu", "--frobnicate"] {
+            let err = run(&args(&["--validate-recording", "x.battleplan", extra]))
+                .expect_err("unrelated token must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("is not valid with --validate-recording"),
+                "{extra}: {err}"
+            );
+        }
+        // --logical-stream and --non-interactive remain legal companions.
+        let (path, stream) = parse_validate_recording_args(&args(&[
+            "--validate-recording",
+            "x.battleplan",
+            "--logical-stream",
+            "7",
+            "--non-interactive",
+        ]))
+        .expect("companion tokens parse");
+        assert_eq!(path, PathBuf::from("x.battleplan"));
+        assert_eq!(stream, Some(7));
+    }
+
+    #[test]
+    fn aux_product_routes_reject_env_overrides_through_the_registry() {
+        // R8 claim 6 regression: --configure, --validate-playback, and
+        // --validate-recording must refuse an environment that ordinary
+        // product startup refuses, with the registry reason verbatim. The
+        // environment is closure-injected — never real process env vars.
+        let name = "REPLAY_SNOW_MUD_OVERRIDE";
+        let reason = blockers::env_reason_by_name(name).expect("registry row exists");
+        let polluted = |candidate: &str| (candidate == name).then(|| OsString::from("1"));
+        let err = run_configure(&args(&["--configure", "--non-interactive"]), polluted)
+            .expect_err("--configure must reject the polluted environment");
+        assert_eq!(err.to_string(), reason);
+        let err = run_validate_playback(
+            &args(&["--validate-playback", "x.battleplan", "--non-interactive"]),
+            polluted,
+        )
+        .expect_err("--validate-playback must reject the polluted environment");
+        assert_eq!(err.to_string(), reason);
+        let err = run_validate_recording(std::path::Path::new("x.battleplan"), None, polluted)
+            .expect_err("--validate-recording must reject the polluted environment");
+        assert_eq!(err.to_string(), reason);
     }
 
     #[test]

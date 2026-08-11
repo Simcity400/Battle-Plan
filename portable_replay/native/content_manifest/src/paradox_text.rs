@@ -123,6 +123,332 @@ pub fn decode_text(bytes: &[u8]) -> String {
     }
 }
 
+/// Ceiling on recorded decode diagnostics per input. Content bytes are
+/// untrusted; without a ceiling a file that is invalid at every byte would
+/// materialize one diagnostic per byte — an allocation amplification the
+/// decode itself does not have. Losses past the ceiling stay COUNTED (the
+/// final [`TextDecodeLoss::Suppressed`] entry), so the total is never
+/// understated, only the per-site detail is capped.
+pub const MAX_TEXT_DECODE_DIAGNOSTICS: usize = 256;
+
+/// One byte-level event in which [`decode_text`] discarded or reinterpreted
+/// input. `line`/`column` are 1-based positions in the DECODED text (the same
+/// coordinate space as [`Recovery`]), locating the replacement character or
+/// fallback start so byte damage can be attributed next to line-level parse
+/// damage. `byte_offset` is the absolute offset in the original input,
+/// including any byte-order mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextDecodeLoss {
+    /// An invalid UTF-8 sequence after a UTF-8 BOM was replaced with U+FFFD.
+    /// `bytes` are the exact bytes that were lost (one maximal invalid
+    /// subpart, at most 3 bytes).
+    InvalidUtf8 {
+        byte_offset: usize,
+        bytes: Vec<u8>,
+        line: usize,
+        column: usize,
+    },
+    /// An unpaired UTF-16 surrogate code unit was replaced with U+FFFD.
+    UnpairedUtf16Surrogate {
+        byte_offset: usize,
+        code_unit: u16,
+        line: usize,
+        column: usize,
+    },
+    /// A UTF-16 stream had an odd byte count; the trailing byte was dropped.
+    TruncatedUtf16Unit {
+        byte_offset: usize,
+        byte: u8,
+        line: usize,
+        column: usize,
+    },
+    /// The input had no BOM and was not valid UTF-8, so every byte was
+    /// reinterpreted as one Latin-1 character. No byte is lost, but a damaged
+    /// UTF-8 file silently becomes mojibake from `byte_offset` on; this entry
+    /// attributes where the strict UTF-8 reading first failed.
+    NonUtf8DecodedAsLatin1 {
+        byte_offset: usize,
+        line: usize,
+        column: usize,
+    },
+    /// More losses occurred than [`MAX_TEXT_DECODE_DIAGNOSTICS`]; `count` of
+    /// them were counted but not individually recorded.
+    Suppressed { count: usize },
+}
+
+impl TextDecodeLoss {
+    /// Whether this event DESTROYED input, as opposed to merely attributing how
+    /// the input was interpreted.
+    ///
+    /// The distinction is the whole basis on which a decode event is allowed to
+    /// block anything, so it is drawn on one question: does the decoded text
+    /// still contain everything the bytes said?
+    ///
+    /// * `InvalidUtf8`, `UnpairedUtf16Surrogate` — bytes were replaced by
+    ///   U+FFFD. The original content is unrecoverable from the decode.
+    /// * `TruncatedUtf16Unit` — the odd tail byte was dropped outright.
+    /// * `Suppressed` — the overflow counter is only ever incremented by the
+    ///   UTF-8 and UTF-16 walks, both of which record destructive events
+    ///   exclusively; `NonUtf8DecodedAsLatin1` is emitted at most ONCE per
+    ///   input (it is a whole-file verdict) and so can never reach the
+    ///   ceiling. A suppressed count therefore always stands for destroyed
+    ///   input, and is counted as destructive rather than assumed harmless.
+    /// * `NonUtf8DecodedAsLatin1` — NOT destructive. Every byte becomes exactly
+    ///   one Latin-1 char, so byte count in equals char count out and nothing
+    ///   is lost. Latin-1 is a Paradox encoding in active use: the game 1.19.2
+    ///   itself ships `pdx_online_assets/interface/online_accountcreate.gui`
+    ///   and `previewer_assets/assetviewer_interface/previewer_interface.gui`
+    ///   with a raw `0xA7` (the `§` colour-code marker), and mods use it far
+    ///   more widely. Treating this as damage would refuse correct content on
+    ///   the strength of a diagnostic that reports no loss.
+    #[must_use]
+    pub fn discards_input(&self) -> bool {
+        match self {
+            TextDecodeLoss::InvalidUtf8 { .. }
+            | TextDecodeLoss::UnpairedUtf16Surrogate { .. }
+            | TextDecodeLoss::TruncatedUtf16Unit { .. }
+            | TextDecodeLoss::Suppressed { .. } => true,
+            TextDecodeLoss::NonUtf8DecodedAsLatin1 { .. } => false,
+        }
+    }
+}
+
+/// The subset of `losses` that destroyed input, in order.
+///
+/// Empty for every input that decodes cleanly, and empty for input that is
+/// merely non-UTF-8 (see [`TextDecodeLoss::discards_input`]). This is the
+/// predicate any admission or completeness surface must use — never
+/// `!losses.is_empty()`, which conflates lossless encoding attribution with
+/// destroyed bytes.
+#[must_use]
+pub fn destructive_losses(losses: &[TextDecodeLoss]) -> Vec<&TextDecodeLoss> {
+    losses.iter().filter(|loss| loss.discards_input()).collect()
+}
+
+/// How many destructive decode EVENTS `losses` represents.
+///
+/// This is NOT `destructive_losses(losses).len()`. The per-site detail is capped
+/// at [`MAX_TEXT_DECODE_DIAGNOSTICS`], and everything past the cap collapses
+/// into a single [`TextDecodeLoss::Suppressed`] entry carrying the residual
+/// COUNT. Counting entries would therefore report 257 for 296 destroyed sites —
+/// understating damage, which is the one direction a damage report must never
+/// err in. Every reported event count must come from here.
+#[must_use]
+pub fn destructive_event_count(losses: &[TextDecodeLoss]) -> usize {
+    losses
+        .iter()
+        .map(|loss| match loss {
+            TextDecodeLoss::Suppressed { count } => *count,
+            TextDecodeLoss::InvalidUtf8 { .. }
+            | TextDecodeLoss::UnpairedUtf16Surrogate { .. }
+            | TextDecodeLoss::TruncatedUtf16Unit { .. } => 1,
+            TextDecodeLoss::NonUtf8DecodedAsLatin1 { .. } => 0,
+        })
+        .sum()
+}
+
+impl std::fmt::Display for TextDecodeLoss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TextDecodeLoss::InvalidUtf8 {
+                byte_offset,
+                bytes,
+                line,
+                column,
+            } => write!(
+                f,
+                "{line}:{column}: invalid UTF-8 bytes {bytes:02x?} at byte offset {byte_offset} replaced with U+FFFD"
+            ),
+            TextDecodeLoss::UnpairedUtf16Surrogate {
+                byte_offset,
+                code_unit,
+                line,
+                column,
+            } => write!(
+                f,
+                "{line}:{column}: unpaired UTF-16 surrogate {code_unit:#06x} at byte offset {byte_offset} replaced with U+FFFD"
+            ),
+            TextDecodeLoss::TruncatedUtf16Unit {
+                byte_offset,
+                byte,
+                line,
+                column,
+            } => write!(
+                f,
+                "{line}:{column}: truncated UTF-16 code unit (byte {byte:#04x}) at byte offset {byte_offset} dropped"
+            ),
+            TextDecodeLoss::NonUtf8DecodedAsLatin1 {
+                byte_offset,
+                line,
+                column,
+            } => write!(
+                f,
+                "{line}:{column}: input is not UTF-8 from byte offset {byte_offset}; decoded as Latin-1"
+            ),
+            TextDecodeLoss::Suppressed { count } => {
+                write!(f, "{count} further decode losses not individually recorded")
+            }
+        }
+    }
+}
+
+/// [`decode_text`] plus a typed account of everything that decode lost or
+/// reinterpreted. The text is produced by the SAME function — byte-identical
+/// for every input, clean or damaged — and the diagnosis is a separate
+/// read-only pass, so no admitted decode result can move.
+#[must_use = "byte-level decode damage must be recorded, not dropped"]
+pub fn decode_text_diagnosed(bytes: &[u8]) -> (String, Vec<TextDecodeLoss>) {
+    (decode_text(bytes), diagnose_text_decode(bytes))
+}
+
+/// The diagnosis pass behind [`decode_text_diagnosed`]: observes exactly what
+/// [`decode_text`] discards, without building the decoded string. Empty for
+/// every input that decodes cleanly.
+pub fn diagnose_text_decode(bytes: &[u8]) -> Vec<TextDecodeLoss> {
+    if let Some(rest) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+        return diagnose_utf8_lossy(rest, 3);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        return diagnose_utf16_lossy(rest, |chunk| u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        return diagnose_utf16_lossy(rest, |chunk| u16::from_be_bytes([chunk[0], chunk[1]]));
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(_) => Vec::new(),
+        Err(error) => {
+            let byte_offset = error.valid_up_to();
+            // In the Latin-1 fallback every byte is one decoded char, so the
+            // decoded-text position of the first non-UTF-8 byte follows from
+            // the newline count of the byte prefix.
+            let line = 1 + bytes[..byte_offset]
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count();
+            let column = 1 + bytes[..byte_offset]
+                .iter()
+                .rev()
+                .take_while(|byte| **byte != b'\n')
+                .count();
+            vec![TextDecodeLoss::NonUtf8DecodedAsLatin1 {
+                byte_offset,
+                line,
+                column,
+            }]
+        }
+    }
+}
+
+/// Tracks the decoded-text cursor and the bounded diagnostic list shared by
+/// the UTF-8 and UTF-16 diagnosis walks.
+struct DecodeDiagnosisCursor {
+    line: usize,
+    column: usize,
+    losses: Vec<TextDecodeLoss>,
+    suppressed: usize,
+}
+
+impl DecodeDiagnosisCursor {
+    fn new() -> Self {
+        Self {
+            line: 1,
+            column: 1,
+            losses: Vec::new(),
+            suppressed: 0,
+        }
+    }
+
+    /// Advance past one decoded character, mirroring `Parser::bump`.
+    fn advance(&mut self, ch: char) {
+        if ch == '\n' {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += 1;
+        }
+    }
+
+    fn record(&mut self, loss: TextDecodeLoss) {
+        if self.losses.len() < MAX_TEXT_DECODE_DIAGNOSTICS {
+            self.losses.push(loss);
+        } else {
+            self.suppressed += 1;
+        }
+    }
+
+    fn finish(mut self) -> Vec<TextDecodeLoss> {
+        if self.suppressed > 0 {
+            self.losses.push(TextDecodeLoss::Suppressed {
+                count: self.suppressed,
+            });
+        }
+        self.losses
+    }
+}
+
+/// Observe what `String::from_utf8_lossy` replaces: `utf8_chunks` yields the
+/// exact maximal-invalid-subpart segmentation that `from_utf8_lossy` maps to
+/// one U+FFFD each, so walking it reproduces the decode's cursor positions
+/// without re-deriving its replacement policy.
+fn diagnose_utf8_lossy(rest: &[u8], bom_len: usize) -> Vec<TextDecodeLoss> {
+    let mut cursor = DecodeDiagnosisCursor::new();
+    let mut consumed = 0usize;
+    for chunk in rest.utf8_chunks() {
+        for ch in chunk.valid().chars() {
+            cursor.advance(ch);
+        }
+        consumed += chunk.valid().len();
+        if !chunk.invalid().is_empty() {
+            cursor.record(TextDecodeLoss::InvalidUtf8 {
+                byte_offset: bom_len + consumed,
+                bytes: chunk.invalid().to_vec(),
+                line: cursor.line,
+                column: cursor.column,
+            });
+            consumed += chunk.invalid().len();
+            cursor.advance(char::REPLACEMENT_CHARACTER);
+        }
+    }
+    cursor.finish()
+}
+
+/// Observe what `String::from_utf16_lossy` replaces (it is exactly
+/// `char::decode_utf16` with errors mapped to U+FFFD) plus the odd trailing
+/// byte that `chunks_exact(2)` silently drops before the lossy decode runs.
+fn diagnose_utf16_lossy(rest: &[u8], word: impl Fn(&[u8]) -> u16) -> Vec<TextDecodeLoss> {
+    const BOM_LEN: usize = 2;
+    let words = rest.chunks_exact(2).map(word);
+    let mut cursor = DecodeDiagnosisCursor::new();
+    let mut unit_index = 0usize;
+    for decoded in char::decode_utf16(words) {
+        match decoded {
+            Ok(ch) => {
+                cursor.advance(ch);
+                unit_index += ch.len_utf16();
+            }
+            Err(error) => {
+                cursor.record(TextDecodeLoss::UnpairedUtf16Surrogate {
+                    byte_offset: BOM_LEN + unit_index * 2,
+                    code_unit: error.unpaired_surrogate(),
+                    line: cursor.line,
+                    column: cursor.column,
+                });
+                cursor.advance(char::REPLACEMENT_CHARACTER);
+                unit_index += 1;
+            }
+        }
+    }
+    if rest.len() % 2 == 1 {
+        cursor.record(TextDecodeLoss::TruncatedUtf16Unit {
+            byte_offset: BOM_LEN + rest.len() - 1,
+            byte: rest[rest.len() - 1],
+            line: cursor.line,
+            column: cursor.column,
+        });
+    }
+    cursor.finish()
+}
+
 pub fn scalar_i32(value: &Value) -> Option<i32> {
     value.as_scalar()?.trim_end_matches('%').parse().ok()
 }
@@ -511,6 +837,247 @@ mod tests {
             .any(|recovery| recovery.message.contains("nesting depth limit exceeded")));
         // The balanced skip must resynchronize so trailing siblings still parse.
         assert_eq!(doc.root.first_scalar_ci("after"), Some("2"));
+    }
+
+    /// The diagnosis pass never changes the decode: for clean and damaged
+    /// inputs alike, `decode_text_diagnosed` returns exactly what
+    /// `decode_text` returns (it IS `decode_text` plus observation).
+    #[test]
+    fn diagnosed_decode_is_byte_identical_to_plain_decode() {
+        let samples: &[&[u8]] = &[
+            b"",
+            b"key = value",
+            b"\xef\xbb\xbfkey = value",
+            b"\xef\xbb\xbfbad \xff\xfe bytes",
+            b"\xef\xbb\xbftruncated \xe2\x82",
+            b"\xff\xfek\x00e\x00y\x00",
+            b"\xff\xfek\x00\x00\xd8y\x00",
+            b"\xff\xfek\x00e\x00y",
+            b"\xfe\xff\x00k\x00e\x00y",
+            b"\xfe\xff\x00k\xd8\x00\x00y",
+            b"\xfe\xff\x00k\x00e\x00",
+            b"latin1 caf\xe9 = value",
+            b"\xff\xfe",
+            b"\xfe\xff",
+            b"\xef\xbb\xbf",
+            b"\xff",
+        ];
+        for sample in samples {
+            let (text, _) = decode_text_diagnosed(sample);
+            assert_eq!(text, decode_text(sample), "sample {sample:02x?}");
+        }
+    }
+
+    #[test]
+    fn clean_inputs_produce_no_decode_diagnostics() {
+        for sample in [
+            &b"key = value\nnext = 1"[..],
+            b"\xef\xbb\xbfname = \"caf\xc3\xa9\"",
+            b"\xff\xfek\x00=\x00v\x00",
+            b"\xfe\xff\x00k\x00=\x00v",
+            b"",
+        ] {
+            assert_eq!(diagnose_text_decode(sample), Vec::new(), "{sample:02x?}");
+        }
+    }
+
+    #[test]
+    fn invalid_utf8_after_bom_is_attributed_with_position_and_lost_bytes() {
+        // Line 1 is clean; the damage sits on line 2 after "k = ".
+        let (text, losses) = decode_text_diagnosed(b"\xef\xbb\xbfa = 1\nk = \xe2\x82ok");
+        assert_eq!(text, "a = 1\nk = \u{fffd}ok");
+        assert_eq!(
+            losses,
+            vec![TextDecodeLoss::InvalidUtf8 {
+                byte_offset: 13,
+                bytes: vec![0xe2, 0x82],
+                line: 2,
+                column: 5,
+            }]
+        );
+        assert_eq!(
+            losses[0].to_string(),
+            "2:5: invalid UTF-8 bytes [e2, 82] at byte offset 13 replaced with U+FFFD"
+        );
+    }
+
+    #[test]
+    fn unpaired_utf16_surrogates_are_attributed_in_both_byte_orders() {
+        // LE: 'a' '\n' then an unpaired high surrogate then 'b'.
+        let (text, losses) = decode_text_diagnosed(b"\xff\xfea\x00\n\x00\x00\xd8b\x00");
+        assert_eq!(text, "a\n\u{fffd}b");
+        assert_eq!(
+            losses,
+            vec![TextDecodeLoss::UnpairedUtf16Surrogate {
+                byte_offset: 6,
+                code_unit: 0xd800,
+                line: 2,
+                column: 1,
+            }]
+        );
+
+        // BE: same stream big-endian; a supplementary-plane pair before the
+        // damage proves the byte offset counts code UNITS, not chars.
+        let (text, losses) =
+            decode_text_diagnosed(b"\xfe\xff\xd8\x3d\xde\x00\xdc\x00\x00b");
+        assert_eq!(text, "\u{1f600}\u{fffd}b");
+        assert_eq!(
+            losses,
+            vec![TextDecodeLoss::UnpairedUtf16Surrogate {
+                byte_offset: 6,
+                code_unit: 0xdc00,
+                line: 1,
+                column: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn truncated_utf16_tail_byte_is_reported_not_silently_dropped() {
+        let (text, losses) = decode_text_diagnosed(b"\xff\xfea\x00b");
+        assert_eq!(text, "a");
+        assert_eq!(
+            losses,
+            vec![TextDecodeLoss::TruncatedUtf16Unit {
+                byte_offset: 4,
+                byte: b'b',
+                line: 1,
+                column: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn latin1_fallback_is_attributed_at_the_first_non_utf8_byte() {
+        let (text, losses) = decode_text_diagnosed(b"a = 1\nk = caf\xe9");
+        assert_eq!(text, "a = 1\nk = caf\u{e9}");
+        assert_eq!(
+            losses,
+            vec![TextDecodeLoss::NonUtf8DecodedAsLatin1 {
+                byte_offset: 13,
+                line: 2,
+                column: 8,
+            }]
+        );
+    }
+
+    #[test]
+    fn decode_diagnostics_are_bounded_and_the_overflow_stays_counted() {
+        let mut bytes = vec![0xef, 0xbb, 0xbf];
+        for _ in 0..MAX_TEXT_DECODE_DIAGNOSTICS + 40 {
+            bytes.push(b'x');
+            bytes.push(0xff);
+        }
+        let (text, losses) = decode_text_diagnosed(&bytes);
+        assert_eq!(
+            text.chars().filter(|ch| *ch == '\u{fffd}').count(),
+            MAX_TEXT_DECODE_DIAGNOSTICS + 40
+        );
+        assert_eq!(losses.len(), MAX_TEXT_DECODE_DIAGNOSTICS + 1);
+        assert_eq!(
+            losses.last(),
+            Some(&TextDecodeLoss::Suppressed { count: 40 })
+        );
+    }
+
+    /// The destructive/lossless split is the sole basis on which a decode event
+    /// may block anything, so it is pinned per variant.
+    #[test]
+    fn only_events_that_destroy_input_are_classified_destructive() {
+        let destroys = [
+            TextDecodeLoss::InvalidUtf8 {
+                byte_offset: 0,
+                bytes: vec![0xff],
+                line: 1,
+                column: 1,
+            },
+            TextDecodeLoss::UnpairedUtf16Surrogate {
+                byte_offset: 0,
+                code_unit: 0xd800,
+                line: 1,
+                column: 1,
+            },
+            TextDecodeLoss::TruncatedUtf16Unit {
+                byte_offset: 0,
+                byte: b'x',
+                line: 1,
+                column: 1,
+            },
+            TextDecodeLoss::Suppressed { count: 1 },
+        ];
+        for loss in &destroys {
+            assert!(loss.discards_input(), "{loss:?}");
+        }
+        let lossless = TextDecodeLoss::NonUtf8DecodedAsLatin1 {
+            byte_offset: 0,
+            line: 1,
+            column: 1,
+        };
+        assert!(!lossless.discards_input());
+
+        let mut all = destroys.to_vec();
+        all.push(lossless);
+        assert_eq!(destructive_losses(&all).len(), 4);
+    }
+
+    /// The suppressed overflow must be COUNTED, not collapsed to one entry.
+    /// Entry count would understate the damage, which is the one direction a
+    /// damage report may never err in.
+    #[test]
+    fn suppressed_overflow_counts_every_event_not_every_entry() {
+        let mut bytes = vec![0xef, 0xbb, 0xbf];
+        for _ in 0..MAX_TEXT_DECODE_DIAGNOSTICS + 40 {
+            bytes.push(b'x');
+            bytes.push(0xff);
+        }
+        let losses = diagnose_text_decode(&bytes);
+        // 256 individual entries + 1 Suppressed{40} entry.
+        assert_eq!(destructive_losses(&losses).len(), MAX_TEXT_DECODE_DIAGNOSTICS + 1);
+        // ... but 296 actual destroyed sites.
+        assert_eq!(
+            destructive_event_count(&losses),
+            MAX_TEXT_DECODE_DIAGNOSTICS + 40
+        );
+        // Lossless attribution contributes nothing to the event count.
+        assert_eq!(
+            destructive_event_count(&diagnose_text_decode(b"caf\xe9")),
+            0
+        );
+    }
+
+    /// Latin-1 input is reported but is not damage: byte count in equals char
+    /// count out, so `destructive_losses` is empty. This is the property that
+    /// keeps a decode-based blocker from refusing the shipped game, which does
+    /// ship raw 0xA7 colour codes.
+    #[test]
+    fn latin1_fallback_reports_without_destroying_input() {
+        let bytes = b"text = \"Email\xa7R *\xa7!\"";
+        let losses = diagnose_text_decode(bytes);
+        assert_eq!(losses.len(), 1);
+        assert!(destructive_losses(&losses).is_empty());
+        let (text, _) = decode_text_diagnosed(bytes);
+        assert_eq!(
+            text.chars().count(),
+            bytes.len(),
+            "Latin-1 fallback is one char per byte, so nothing is lost"
+        );
+        assert!(!text.contains('\u{fffd}'));
+    }
+
+    /// Decode damage and parse recovery are INDEPENDENT — the fact that makes a
+    /// separate carrier necessary rather than merely tidy. Destroyed bytes can
+    /// leave the token structure perfectly well-formed.
+    #[test]
+    fn destroyed_bytes_can_leave_the_parse_completely_clean() {
+        let bytes = b"\xef\xbb\xbfname = \"a\xffb\"";
+        let document = parse_bytes(bytes);
+        assert!(
+            document.recoveries.is_empty(),
+            "{:?}",
+            document.recoveries
+        );
+        assert_eq!(document.root.first_scalar_ci("name"), Some("a\u{fffd}b"));
+        assert_eq!(destructive_losses(&diagnose_text_decode(bytes)).len(), 1);
     }
 
     #[test]

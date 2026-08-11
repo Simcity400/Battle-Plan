@@ -984,12 +984,12 @@ try {
         $interactionClosureResult = (($interactionClosureOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$interactionClosureResult.schema -cne 'battle-plan.production_interaction_closure_test.v1' -or
             [string]$interactionClosureResult.status -cne 'PASS' -or
-            # Test-ProductionInteractionClosure.ps1 emits 35. This pin said 30
+            # Test-ProductionInteractionClosure.ps1 emits 36. This pin said 30
             # for at least three commits while the test emitted 35, which means
             # every Final and Release threw here before reaching any of the
             # gates below - the case-count pin is the second pin site that gets
             # missed when cases are added, exactly like the marker census.
-            [int]$interactionClosureResult.cases -ne 35 -or
+            [int]$interactionClosureResult.cases -ne 36 -or
             [string]$interactionClosureResult.policy -cne 'passive_injected_observer') {
             throw "production interaction-closure source tests returned no authority"
         }

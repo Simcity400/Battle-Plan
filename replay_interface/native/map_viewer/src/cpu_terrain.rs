@@ -3076,8 +3076,7 @@ pub(crate) fn terrain_mipmap_level_for_pixel_step(
     map_pow2_x: f32,
     map_pow2_y: f32,
 ) -> f32 {
-    let dx_x =
-        TERRAIN_TILE_FREQ * map_pow2_x * (map_w as f32 / map_h as f32) / map_w as f32;
+    let dx_x = TERRAIN_TILE_FREQ * map_pow2_x * (map_w as f32 / map_h as f32) / map_w as f32;
     let dy_y = TERRAIN_TILE_FREQ * map_pow2_y / map_h as f32;
     terrain_mipmap_level_from_tile_repeat_derivatives(
         Vec2 { x: dx_x, y: 0.0 },

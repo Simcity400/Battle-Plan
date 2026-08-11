@@ -23,6 +23,70 @@ const MAX_RELATIVE_PATH_BYTES: usize = 1024;
 const MIN_GAME_HOUR_RAW: i32 = 60_005_999;
 const MAX_GAME_HOUR_RAW: i32 = 63_071_999;
 
+/// Typed classification of a rollover-segment authentication failure, so the
+/// product boundary can report the honest rejection class instead of
+/// flattening every rollover failure into "not playable by this build".
+///
+/// * `Integrity` — bytes disagree with the digest/length the package-set
+///   authority names for them (a tampered, corrupt, or substituted member).
+/// * `ModsetMismatch` — the selected container's manifest modset disagrees
+///   with its snapshot provenance (the same typed signal the single-file
+///   retained-container branch preserves).
+/// * `Unsupported` — "recognized but not playable by this build/request":
+///   the request cannot name a playable member (no `--logical-stream` on a
+///   set, an out-of-range stream, a recovery-only set, a direct recording),
+///   or the descriptor declares a package-set schema this build does not
+///   support. Not evidence the recording is broken.
+/// * `Structure` — the descriptor, manifest, or package set is malformed or
+///   internally inconsistent (container/schema class).
+///
+/// `Display` renders the inner message verbatim; the class lives in the type
+/// so consumers never classify by matching error text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RolloverAuthenticationError {
+    Integrity(String),
+    ModsetMismatch(String),
+    Unsupported(String),
+    Structure(String),
+}
+
+impl RolloverAuthenticationError {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Integrity(message)
+            | Self::ModsetMismatch(message)
+            | Self::Unsupported(message)
+            | Self::Structure(message) => message,
+        }
+    }
+}
+
+impl std::fmt::Display for RolloverAuthenticationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for RolloverAuthenticationError {}
+
+/// Adapt a container-open failure on the SELECTED package into the rollover
+/// authentication class it belongs to, mirroring the typed preservation the
+/// single-file retained-container branch performs.
+fn rollover_error_from_container(
+    error: &snapshot::ContainerError,
+    message: String,
+) -> RolloverAuthenticationError {
+    match error {
+        snapshot::ContainerError::ModsetMismatch { .. } => {
+            RolloverAuthenticationError::ModsetMismatch(message)
+        }
+        error if crate::source::is_container_integrity_failure(error) => {
+            RolloverAuthenticationError::Integrity(message)
+        }
+        _ => RolloverAuthenticationError::Structure(message),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolloverPackageSet {
     descriptor_path: PathBuf,
@@ -153,7 +217,34 @@ struct WirePackageSegment {
 impl RolloverPackageSet {
     /// Read and validate an explicitly named descriptor, or discover the
     /// standard descriptor directly inside `path` when `path` is a directory.
-    pub fn open(path: &Path) -> Result<Self, String> {
+    ///
+    /// A well-formed descriptor that names a schema this build does not know
+    /// is the `Unsupported` class ("recognized but not playable by this
+    /// build"), checked BEFORE the strict v1 wire decode so a future schema
+    /// is not misreported as a malformed v1 descriptor. Every other failure
+    /// here is `Structure` (the descriptor is the root of trust; no digest
+    /// authority exists above it to lose against).
+    pub fn open(path: &Path) -> Result<Self, RolloverAuthenticationError> {
+        let (descriptor_path, bytes) =
+            Self::read_descriptor(path).map_err(RolloverAuthenticationError::Structure)?;
+        let value = snapshot::parse_json_strict(&bytes).map_err(|error| {
+            RolloverAuthenticationError::Structure(format!(
+                "strict-decode rollover package-set descriptor: {error}"
+            ))
+        })?;
+        if let Some(declared) = value.get("schema").and_then(|schema| schema.as_str()) {
+            if declared != ROLLOVER_PACKAGE_SET_SCHEMA {
+                return Err(RolloverAuthenticationError::Unsupported(format!(
+                    "unsupported rollover package-set schema {declared:?}"
+                )));
+            }
+        }
+        Self::decode_v1_descriptor(descriptor_path, value)
+            .map_err(RolloverAuthenticationError::Structure)
+    }
+
+    /// Locate and read the bounded descriptor bytes (symlink-refusing).
+    fn read_descriptor(path: &Path) -> Result<(PathBuf, Vec<u8>), String> {
         let descriptor_path = if path.is_dir() {
             let metadata = fs::symlink_metadata(path).map_err(|error| {
                 format!("inspect rollover package-set root {}: {error}", path.display())
@@ -189,10 +280,17 @@ impl RolloverPackageSet {
             ));
         }
         let bytes = read_regular_capped(&descriptor_path, MAX_DESCRIPTOR_BYTES, "package-set descriptor")?;
-        let wire: WirePackageSet = serde_json::from_value(
-            snapshot::parse_json_strict(&bytes)
-                .map_err(|error| format!("strict-decode rollover package-set descriptor: {error}"))?,
-        )
+        Ok((descriptor_path, bytes))
+    }
+
+    /// Strict v1 wire decode + internal-consistency validation. The schema
+    /// string has already been classified by [`Self::open`]; the equality
+    /// check here is a retained structural invariant.
+    fn decode_v1_descriptor(
+        descriptor_path: PathBuf,
+        value: serde_json::Value,
+    ) -> Result<Self, String> {
+        let wire: WirePackageSet = serde_json::from_value(value)
             .map_err(|error| format!("decode rollover package-set descriptor: {error}"))?;
         if wire.schema != ROLLOVER_PACKAGE_SET_SCHEMA {
             return Err(format!(
@@ -327,21 +425,33 @@ impl RolloverPackageSet {
 
     /// Resolve and authenticate one logical-stream package. Both the durable
     /// source descriptor and the selected package/manifest pair are bound.
-    pub fn select(&self, logical_stream_id: u64) -> Result<AuthenticatedRolloverPackage, String> {
-        let index = usize::try_from(logical_stream_id)
-            .map_err(|_| format!("logical stream {logical_stream_id} is outside this platform's index range"))?;
+    /// Failures carry their typed rejection class
+    /// ([`RolloverAuthenticationError`]): an authentication failure on a
+    /// member is never reported as a build-capability limitation.
+    pub fn select(
+        &self,
+        logical_stream_id: u64,
+    ) -> Result<AuthenticatedRolloverPackage, RolloverAuthenticationError> {
+        let index = usize::try_from(logical_stream_id).map_err(|_| {
+            RolloverAuthenticationError::Unsupported(format!(
+                "logical stream {logical_stream_id} is outside this platform's index range"
+            ))
+        })?;
         let segment = self.ordered_streams.get(index).ok_or_else(|| {
-            format!(
+            RolloverAuthenticationError::Unsupported(format!(
                 "logical stream {logical_stream_id} is not present; available logical streams are 0..{}",
                 self.ordered_streams.len() - 1
-            )
+            ))
         })?;
         if segment.logical_stream_id != logical_stream_id {
-            return Err("rollover package-set internal ordering invariant failed".to_string());
+            return Err(RolloverAuthenticationError::Structure(
+                "rollover package-set internal ordering invariant failed".to_string(),
+            ));
         }
         if self.ordered_streams.iter().any(|member| member.recovery) {
-            return Err(format!(
+            return Err(RolloverAuthenticationError::Unsupported(
                 "rollover package set contains a recovery-only artifact and is not eligible for production playback"
+                    .to_string(),
             ));
         }
         let root = self
@@ -357,7 +467,8 @@ impl RolloverPackageSet {
             &self.source_descriptor_sha256,
             "source descriptor",
         )?;
-        validate_source_descriptor(&source_descriptor_bytes, self)?;
+        validate_source_descriptor(&source_descriptor_bytes, self)
+            .map_err(RolloverAuthenticationError::Structure)?;
         let (_, manifest_bytes) = read_bound_file(
             root,
             &segment.manifest_relative_path,
@@ -370,12 +481,14 @@ impl RolloverPackageSet {
             .checked_sub(1)
             .and_then(|index| usize::try_from(index).ok())
             .and_then(|index| self.transitions.get(index));
-        validate_selected_manifest(&manifest_bytes, segment, incoming_transition)?;
+        validate_selected_manifest(&manifest_bytes, segment, incoming_transition)
+            .map_err(RolloverAuthenticationError::Structure)?;
         let package_path = resolve_bound_regular_file(
             root,
             &segment.package_relative_path,
             "selected replay package",
-        )?;
+        )
+        .map_err(RolloverAuthenticationError::Structure)?;
         let container = validate_selected_container(&package_path, segment, &manifest_bytes)?;
         Ok(AuthenticatedRolloverPackage {
             path: package_path,
@@ -559,44 +672,70 @@ fn validate_selected_manifest(
     Ok(())
 }
 
+/// A selected package that fails the retained-handle container open is
+/// classified against the package-set's declared whole-file SHA-256: the
+/// container parser may trip on a STRUCTURAL shape first (a truncated or
+/// garbled ZIP), but when the on-disk bytes provably disagree with the digest
+/// the descriptor names, the member was tampered with or substituted and the
+/// failure is INTEGRITY. Only bytes that still match the declared digest fall
+/// through to the container error's own class (the descriptor pinned a
+/// malformed package). The open has already failed and stays failed either
+/// way — this probe classifies, it never admits.
+fn classify_selected_package_open_error(
+    path: &Path,
+    segment: &RolloverPackageSegment,
+    error: &snapshot::ContainerError,
+) -> RolloverAuthenticationError {
+    let message = format!("open selected replay package through retained handle: {error}");
+    if declared_package_sha256_matches(path, &segment.package_sha256) == Some(false) {
+        return RolloverAuthenticationError::Integrity(format!(
+            "{message}; selected replay package bytes disagree with the package-set SHA-256"
+        ));
+    }
+    rollover_error_from_container(error, message)
+}
+
+/// Streaming whole-file SHA-256 probe over the descriptor-authorized package
+/// path, used only to classify an already-failed open. `None` when the file
+/// cannot be read (classification then stays with the container error).
+fn declared_package_sha256_matches(path: &Path, expected_sha256: &str) -> Option<bool> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut reader, &mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Some(format!("{:x}", digest.finalize()) == expected_sha256)
+}
+
 fn validate_selected_container(
     path: &Path,
     segment: &RolloverPackageSegment,
     external_manifest_bytes: &[u8],
-) -> Result<snapshot::Container, String> {
+) -> Result<snapshot::Container, RolloverAuthenticationError> {
     let (container, package_bytes, package_sha256) =
         snapshot::Container::open_strict_with_file_receipt(
             path,
             &snapshot::ExpectedIdentity::default(),
         )
-        .map_err(|error| format!("open selected replay package through retained handle: {error}"))?;
+        .map_err(|error| classify_selected_package_open_error(path, segment, &error))?;
     if package_bytes == 0 || package_sha256 != segment.package_sha256 {
-        return Err("selected replay package retained-handle receipt disagrees with the package set".to_string());
+        return Err(RolloverAuthenticationError::Integrity(
+            "selected replay package retained-handle receipt disagrees with the package set".to_string(),
+        ));
     }
     let compact = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
     if compact.len() != 1 {
-        // The package-set admission proves the selected member carries the
-        // exact raw stream the set descriptor recorded. That proof is over the
-        // stream's own bytes, so it is gated on the composition rather than
-        // weakened: a cache-only member is refused here with the reason named.
-        if compact.is_empty()
-            && matches!(
-                snapshot::container_raw_stream_packaging(&container),
-                Ok(snapshot::RawStreamPackaging::Omitted)
-            )
-        {
-            return Err(format!(
-                "selected replay package {}",
-                snapshot::raw_stream_unavailable_message(
-                    "re-prove the package-set raw-stream binding from the packaged member"
-                ),
-            ));
-        }
-        return Err(format!(
+        return Err(RolloverAuthenticationError::Structure(format!(
             "selected replay package must contain exactly one {:?} entry; found {}",
             snapshot::COMPACT_STREAM_ROLE,
             compact.len()
-        ));
+        )));
     }
     let compact = &compact[0];
     // The container's compact-stream entry is canonical H4CR: the packer
@@ -606,34 +745,52 @@ fn validate_selected_container(
     if compact.bytes != segment.raw_decoded_bytes
         || compact.sha256.as_str() != segment.raw_decoded_sha256.as_str()
     {
-        return Err("selected replay package compact-stream entry disagrees with the package set".to_string());
+        return Err(RolloverAuthenticationError::Integrity(
+            "selected replay package compact-stream entry disagrees with the package set".to_string(),
+        ));
     }
     let receipt = container
         .authenticate_entry(&compact.path)
-        .map_err(|error| format!("authenticate selected compact-stream entry: {error}"))?;
-    if receipt.uncompressed_len() != segment.raw_decoded_bytes
-        || receipt.sha256() != segment.raw_decoded_sha256.as_str()
+        .map_err(|error| {
+            rollover_error_from_container(
+                &error,
+                format!("authenticate selected compact-stream entry: {error}"),
+            )
+        })?;
+    if receipt.uncompressed_len() != segment.raw_bytes
+        || receipt.sha256() != segment.raw_sha256.as_str()
     {
-        return Err("selected compact-stream authentication receipt disagrees with the package set".to_string());
+        return Err(RolloverAuthenticationError::Integrity(
+            "selected compact-stream authentication receipt disagrees with the package set".to_string(),
+        ));
     }
 
     let manifests = container.entries_by_role("recorder_manifest");
     if manifests.len() != 1 {
-        return Err(format!(
+        return Err(RolloverAuthenticationError::Structure(format!(
             "selected replay package must contain exactly one recorder_manifest entry; found {}",
             manifests.len()
-        ));
+        )));
     }
     if manifests[0].bytes != external_manifest_bytes.len() as u64
         || manifests[0].sha256.as_str() != segment.manifest_sha256.as_str()
     {
-        return Err("selected replay package recorder_manifest metadata disagrees with the package set".to_string());
+        return Err(RolloverAuthenticationError::Integrity(
+            "selected replay package recorder_manifest metadata disagrees with the package set".to_string(),
+        ));
     }
     let embedded = container
         .read_entry_bytes(&manifests[0].path)
-        .map_err(|error| format!("authenticate embedded recorder manifest: {error}"))?;
+        .map_err(|error| {
+            rollover_error_from_container(
+                &error,
+                format!("authenticate embedded recorder manifest: {error}"),
+            )
+        })?;
     if embedded.as_slice() != external_manifest_bytes {
-        return Err("selected replay package embedded recorder manifest disagrees with the package set".to_string());
+        return Err(RolloverAuthenticationError::Integrity(
+            "selected replay package embedded recorder manifest disagrees with the package set".to_string(),
+        ));
     }
     Ok(container)
 }
@@ -644,27 +801,29 @@ fn validate_selected_container(
 pub fn authenticate_rollover_segment(
     path: &Path,
     logical_stream_id: Option<u64>,
-) -> Result<AuthenticatedRolloverPackage, String> {
+) -> Result<AuthenticatedRolloverPackage, RolloverAuthenticationError> {
     let explicitly_descriptor = path.file_name().and_then(|value| value.to_str())
         == Some(ROLLOVER_PACKAGE_SET_FILE);
     let discovered_descriptor = path.is_dir() && path.join(ROLLOVER_PACKAGE_SET_FILE).is_file();
     if explicitly_descriptor || discovered_descriptor {
         let set = RolloverPackageSet::open(path)?;
         let selected = logical_stream_id.ok_or_else(|| {
-            format!(
+            RolloverAuthenticationError::Unsupported(format!(
                 "recording is an ordered CID1 rollover package set with {} logical streams; select one explicitly with --logical-stream <0..{}>",
                 set.ordered_streams.len(),
                 set.ordered_streams.len() - 1
-            )
+            ))
         })?;
         return set.select(selected);
     }
     if let Some(selected) = logical_stream_id {
-        return Err(format!(
+        return Err(RolloverAuthenticationError::Unsupported(format!(
             "--logical-stream {selected} requires a {ROLLOVER_PACKAGE_SET_FILE} descriptor or a directory containing one"
-        ));
+        )));
     }
-    Err("direct recordings do not require rollover-segment resolution".to_string())
+    Err(RolloverAuthenticationError::Unsupported(
+        "direct recordings do not require rollover-segment resolution".to_string(),
+    ))
 }
 
 fn strict_relative_path(value: &str, field: &str) -> Result<PathBuf, String> {
@@ -756,32 +915,58 @@ fn read_bound_file(
     expected_len: Option<u64>,
     expected_sha256: &str,
     label: &str,
-) -> Result<(PathBuf, Vec<u8>), String> {
-    let canonical = resolve_bound_regular_file(root, relative, label)?;
-    let mut file = fs::File::open(&canonical)
-        .map_err(|error| format!("open {label} {}: {error}", canonical.display()))?;
+) -> Result<(PathBuf, Vec<u8>), RolloverAuthenticationError> {
+    // Disagreement between the read bytes and the digest/length the
+    // package-set authority declares for them is the INTEGRITY class; every
+    // filesystem/shape failure before that comparison is structural.
+    let canonical = resolve_bound_regular_file(root, relative, label)
+        .map_err(RolloverAuthenticationError::Structure)?;
+    let mut file = fs::File::open(&canonical).map_err(|error| {
+        RolloverAuthenticationError::Structure(format!(
+            "open {label} {}: {error}",
+            canonical.display()
+        ))
+    })?;
     let handle_len = file
         .metadata()
-        .map_err(|error| format!("inspect opened {label} {}: {error}", canonical.display()))?
+        .map_err(|error| {
+            RolloverAuthenticationError::Structure(format!(
+                "inspect opened {label} {}: {error}",
+                canonical.display()
+            ))
+        })?
         .len();
     if handle_len > cap {
-        return Err(format!("{label} is {handle_len} bytes; limit is {cap}"));
+        return Err(RolloverAuthenticationError::Structure(format!(
+            "{label} is {handle_len} bytes; limit is {cap}"
+        )));
     }
     if expected_len.is_some_and(|expected| handle_len != expected) {
-        return Err(format!("{label} byte length differs from the package-set descriptor"));
+        return Err(RolloverAuthenticationError::Integrity(format!(
+            "{label} byte length differs from the package-set descriptor"
+        )));
     }
     let mut digest = Sha256::new();
     let mut bytes = Vec::with_capacity(usize::try_from(handle_len).unwrap_or(0));
     file.take(cap + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("read {label} {}: {error}", canonical.display()))?;
+        .map_err(|error| {
+            RolloverAuthenticationError::Structure(format!(
+                "read {label} {}: {error}",
+                canonical.display()
+            ))
+        })?;
     if bytes.len() as u64 != handle_len || bytes.len() as u64 > cap {
-        return Err(format!("{label} changed length while being read"));
+        return Err(RolloverAuthenticationError::Integrity(format!(
+            "{label} changed length while being read"
+        )));
     }
     digest.update(&bytes);
     let actual = format!("{:x}", digest.finalize());
     if actual != expected_sha256 {
-        return Err(format!("{label} SHA-256 differs from the package-set descriptor"));
+        return Err(RolloverAuthenticationError::Integrity(format!(
+            "{label} SHA-256 differs from the package-set descriptor"
+        )));
     }
     Ok((canonical, bytes))
 }
@@ -1141,7 +1326,12 @@ mod tests {
             .unwrap()
             .select(0)
             .unwrap_err();
-        assert!(error.contains("compact-stream entry disagrees"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("compact-stream entry disagrees"),
+            "{error}"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1149,7 +1339,11 @@ mod tests {
     fn descriptor_never_defaults_to_segment_zero() {
         let (root, descriptor) = fixture("explicit");
         let error = authenticate_rollover_segment(&descriptor, None).unwrap_err();
-        assert!(error.contains("select one explicitly"), "{error}");
+        assert!(
+            matches!(error, RolloverAuthenticationError::Unsupported(_)),
+            "missing explicit selection is a usage refusal, not an integrity failure: {error:?}"
+        );
+        assert!(error.to_string().contains("select one explicitly"), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1180,8 +1374,16 @@ mod tests {
         .unwrap();
         fs::write(root.join("native_session.battleplan"), replacement).unwrap();
         let error = set.select(0).unwrap_err();
+        // R7 F1 regression: a SUBSTITUTED member is an integrity failure, not
+        // "recognized but unplayable by this build".
         assert!(
-            error.contains("selected replay package retained-handle receipt disagrees"),
+            matches!(error, RolloverAuthenticationError::Integrity(_)),
+            "substituted package member must classify as Integrity: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("selected replay package retained-handle receipt disagrees"),
             "{error}"
         );
         fs::remove_dir_all(root).unwrap();
@@ -1208,7 +1410,14 @@ mod tests {
             .unwrap()
             .select(0)
             .unwrap_err();
-        assert!(error.contains("recorder_manifest metadata disagrees"), "{error}");
+        assert!(
+            matches!(error, RolloverAuthenticationError::Integrity(_)),
+            "post-pack manifest substitution must classify as Integrity: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("recorder_manifest metadata disagrees"),
+            "{error}"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1220,7 +1429,11 @@ mod tests {
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
         let set = RolloverPackageSet::open(&descriptor).unwrap();
         let error = set.select(0).unwrap_err();
-        assert!(error.contains("recovery-only artifact"), "{error}");
+        assert!(
+            matches!(error, RolloverAuthenticationError::Unsupported(_)),
+            "a recovery-only set is a selection refusal, not a broken recording: {error:?}"
+        );
+        assert!(error.to_string().contains("recovery-only artifact"), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1237,7 +1450,129 @@ mod tests {
     #[test]
     fn direct_recording_rejects_irrelevant_segment_selector() {
         let error = authenticate_rollover_segment(Path::new("ordinary.battleplan"), Some(0)).unwrap_err();
-        assert!(error.contains("requires a logical-stream-package-set.json"), "{error}");
+        assert!(
+            matches!(error, RolloverAuthenticationError::Unsupported(_)),
+            "an irrelevant segment selector is a usage refusal: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("requires a logical-stream-package-set.json"),
+            "{error}"
+        );
+    }
+
+    /// R7 F1 regression: a TAMPERED rollover member (bytes disagree with the
+    /// SHA-256 the package-set authority names for them) must classify as an
+    /// integrity failure — never as a selection/capability refusal that the
+    /// product boundary would headline "recording not playable by this build".
+    #[test]
+    fn tampered_manifest_member_classifies_as_integrity() {
+        let (root, descriptor) = fixture("manifest_tamper");
+        let manifest_path = root.join("native_session_manifest.json");
+        let mut bytes = fs::read(&manifest_path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        fs::write(&manifest_path, &bytes).unwrap();
+        let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
+        assert!(
+            matches!(error, RolloverAuthenticationError::Integrity(_)),
+            "tampered manifest bytes must classify as Integrity: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("selected recorder manifest SHA-256 differs"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// R7 F1 regression: a tampered durable source descriptor (its SHA-256 is
+    /// pinned by the package-set descriptor) is likewise an integrity failure.
+    #[test]
+    fn tampered_source_descriptor_classifies_as_integrity() {
+        let (root, descriptor) = fixture("source_tamper");
+        let source_path = root.join("logical-streams/logical-stream-set.json");
+        let mut bytes = fs::read(&source_path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        fs::write(&source_path, &bytes).unwrap();
+        let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
+        assert!(
+            matches!(error, RolloverAuthenticationError::Integrity(_)),
+            "tampered source descriptor must classify as Integrity: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("source descriptor SHA-256 differs"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Codex round-1 catch: a well-formed descriptor naming a schema this
+    /// build does not know is "recognized but not playable by this build" —
+    /// the Unsupported class, exactly as the pre-typed boundary reported it —
+    /// never a malformed-descriptor Structure error.
+    #[test]
+    fn unknown_package_set_schema_classifies_as_unsupported() {
+        let (root, descriptor) = fixture("future_schema");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+        value["schema"] = json!("cid1-rollover-package-set-v2");
+        fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
+        let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
+        assert!(
+            matches!(error, RolloverAuthenticationError::Unsupported(_)),
+            "an unknown package-set schema is a build-capability refusal: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported rollover package-set schema"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Codex round-1 catch: a package member tampered so badly its ZIP no
+    /// longer parses fails the container open STRUCTURALLY before the
+    /// whole-file receipt exists — but the bytes still lost against the
+    /// package-set's declared SHA-256, so the classification must be
+    /// Integrity, not Structure.
+    #[test]
+    fn unparseable_tampered_package_member_classifies_as_integrity() {
+        let (root, descriptor) = fixture("zip_structure_tamper");
+        fs::write(
+            root.join("native_session.battleplan"),
+            b"these bytes are not a zip container at all",
+        )
+        .unwrap();
+        let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
+        assert!(
+            matches!(error, RolloverAuthenticationError::Integrity(_)),
+            "tampered member bytes must classify as Integrity even when the \
+             container parser fails structurally first: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("bytes disagree with the package-set SHA-256"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A malformed package-set descriptor stays in the container/schema class:
+    /// integrity is reserved for bytes that lost against a declared digest.
+    #[test]
+    fn malformed_descriptor_classifies_as_structure() {
+        let (root, descriptor) = fixture("malformed_descriptor");
+        fs::write(&descriptor, b"{ not json").unwrap();
+        let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
+        assert!(
+            matches!(error, RolloverAuthenticationError::Structure(_)),
+            "malformed descriptor must classify as Structure: {error:?}"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

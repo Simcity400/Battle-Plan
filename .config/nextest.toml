@@ -42,6 +42,21 @@ not (
       | unsupported_physical_viewport_rejects_before_any_pixel_resampling
       | vanilla_admission_matches_all_frozen_o05_semantics
       | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
+      | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer
+      | capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader
+      | draw_time_cull_matches_the_captured_drawn_set
+      | engine_underwater_terrain_diffuse_is_the_shipped_seabed_dds
+      | frame(?:162662|4700)_.*
+      | gate_fixture_.*
+      | gate_tree_season_cb1_vs_live_trees_measure
+      | glyph_.*
+      | mapname_discriminator_matches_live_captured_vertex_shader
+      | no_captured_draw_binds_the_low_gfx_pixel_shader
+      | oracle63_engine_baseline_reproduces
+      | perf_reduction_over_full_res_scene
+      | retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order
+      | shipped_gui_scene_and_compositor_accept_exact_trade_cards
+      | vanilla_(?:combat|counter|division|faction|land|map_counter|naval)_.*
       | wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes
     )$/)
 )
@@ -97,6 +112,21 @@ not (
       | unsupported_physical_viewport_rejects_before_any_pixel_resampling
       | vanilla_admission_matches_all_frozen_o05_semantics
       | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
+      | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer
+      | capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader
+      | draw_time_cull_matches_the_captured_drawn_set
+      | engine_underwater_terrain_diffuse_is_the_shipped_seabed_dds
+      | frame(?:162662|4700)_.*
+      | gate_fixture_.*
+      | gate_tree_season_cb1_vs_live_trees_measure
+      | glyph_.*
+      | mapname_discriminator_matches_live_captured_vertex_shader
+      | no_captured_draw_binds_the_low_gfx_pixel_shader
+      | oracle63_engine_baseline_reproduces
+      | perf_reduction_over_full_res_scene
+      | retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order
+      | shipped_gui_scene_and_compositor_accept_exact_trade_cards
+      | vanilla_(?:combat|counter|division|faction|land|map_counter|naval)_.*
       | wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes
     )$/)
 )
@@ -121,12 +151,13 @@ slow-timeout = "5m"
 
 [profile.evidence]
 default-filter = '''
-binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
+binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters|xui22_installed_game_evidence)$/)
 | test(/(?x)(^|::)(
     admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
     | captured_pixel_shader_prefilter_covers_full_family_classifiers
     | corpus_.*_when_session_available
     | fx_naval_air_activity_region_statuses
+    | frame_owned_xui23_carrier_reaches_the_actual_production_renderer
     | gate_a_all_vanilla_mesh_and_anim_files_parse
     | gate_all_vanilla_.*
     | gate_b_diverse_mesh_semantic_checks
@@ -160,6 +191,21 @@ binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_preced
     | unsupported_physical_viewport_rejects_before_any_pixel_resampling
     | vanilla_admission_matches_all_frozen_o05_semantics
     | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
+    | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer
+    | capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader
+    | draw_time_cull_matches_the_captured_drawn_set
+    | engine_underwater_terrain_diffuse_is_the_shipped_seabed_dds
+    | frame(?:162662|4700)_.*
+    | gate_fixture_.*
+    | gate_tree_season_cb1_vs_live_trees_measure
+    | glyph_.*
+    | mapname_discriminator_matches_live_captured_vertex_shader
+    | no_captured_draw_binds_the_low_gfx_pixel_shader
+    | oracle63_engine_baseline_reproduces
+    | perf_reduction_over_full_res_scene
+    | retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order
+    | shipped_gui_scene_and_compositor_accept_exact_trade_cards
+    | vanilla_(?:combat|counter|division|faction|land|map_counter|naval)_.*
     | wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes
   )$/)
 '''

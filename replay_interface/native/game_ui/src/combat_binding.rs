@@ -23,7 +23,7 @@
 //! bombardment/air-superiority selectors, leaders, effective modifier stacks,
 //! and terminal result/loss joins remain external and fail closed.
 
-use replay_core::{CombatRow, LandCombatSideDetail, Leaf, WorldFrame};
+use replay_core::{CombatRow, LandCombatSideDetail, Leaf, ViewStatus, WorldFrame};
 
 /// One active-combat row bound from a [`CombatRow`]. Producer-owned typed
 /// values are populated; only genuinely external selectors remain `None`.
@@ -71,20 +71,36 @@ impl CombatPanelRow {
 }
 
 /// Read-only combat-detail panel binding for one world frame (U1). `available`
-/// is `true` only when at least one active combat exists this hour — i.e. the
-/// detail window would open.
+/// is `true` only when the combats collection is `Present` AND at least one
+/// active combat exists this hour — i.e. the detail window would open.
 ///
-/// Fail-closed honesty note: `replay_core`'s combats view carries **no**
-/// `ViewStatus`, so a domain-absent recording is indistinguishable from "no
-/// active combats" — both yield `available: false` and an empty `combats`
-/// list. The combat-detail window only appears when a combat is active, so this
-/// conflation is benign for this panel.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Availability is owned by [`WorldFrame::combats_status`]: `Present` with an
+/// empty `combats` is the MEASURED "no combats were running", while
+/// `DomainAbsent`/`DomainUnavailable` mean the hour carried no readable
+/// collection at all — the panel fails closed (no rows, `available: false`)
+/// and the status says which fact that is, instead of deriving availability
+/// from vector non-emptiness.
+#[derive(Clone, Debug, PartialEq)]
 pub struct CombatPanelBinding {
-    /// `true` iff at least one active combat row exists this hour.
+    /// `true` iff the collection is `Present` and at least one active combat
+    /// row exists this hour.
     pub available: bool,
-    /// One row per active combat (empty = no active combats / domain absent).
+    /// Availability of the active-combat collection itself
+    /// ([`WorldFrame::combats_status`]).
+    pub combats_status: ViewStatus,
+    /// One row per active combat. Empty under `Present` means measured
+    /// no-active-combats; empty under any other status means fail-closed.
     pub combats: Vec<CombatPanelRow>,
+}
+
+impl Default for CombatPanelBinding {
+    fn default() -> Self {
+        CombatPanelBinding {
+            available: false,
+            combats_status: ViewStatus::DomainAbsent,
+            combats: Vec::new(),
+        }
+    }
 }
 
 fn combat_row(row: &CombatRow) -> CombatPanelRow {
@@ -113,10 +129,19 @@ fn measured_ids(leaf: &Leaf<Vec<i64>>) -> Option<Vec<i64>> {
 }
 
 /// Build the read-only combat-detail panel binding for one world frame (U1).
+/// Availability comes from [`WorldFrame::combats_status`], never from vector
+/// non-emptiness: a non-`Present` collection binds no rows even if the frame
+/// retained state.
 pub fn combat_panel_from_frame(frame: &WorldFrame) -> CombatPanelBinding {
-    let combats: Vec<CombatPanelRow> = frame.combats().iter().map(combat_row).collect();
+    let combats_status = frame.combats_status();
+    let combats: Vec<CombatPanelRow> = if combats_status == ViewStatus::Present {
+        frame.combats().iter().map(combat_row).collect()
+    } else {
+        Vec::new()
+    };
     CombatPanelBinding {
-        available: !combats.is_empty(),
+        available: combats_status == ViewStatus::Present && !combats.is_empty(),
+        combats_status,
         combats,
     }
 }
@@ -134,6 +159,7 @@ mod tests {
     ) -> CombatRow {
         CombatRow {
             combat_id: id,
+            generation: Leaf::Measured(0),
             kind,
             location_province: loc,
             attackers: att,

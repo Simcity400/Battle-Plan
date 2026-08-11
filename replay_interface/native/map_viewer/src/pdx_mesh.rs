@@ -1557,8 +1557,6 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
     // --- synthetic byte builders (mirror the verified grammar) ---
 
     fn push_prop_f(bytes: &mut Vec<u8>, name: &str, values: &[f32]) {
@@ -1920,21 +1918,17 @@ mod tests {
 
     // --- vanilla install gates (skipped when the install is absent) ---
 
-    fn vanilla_dir() -> Option<PathBuf> {
-        let dir = PathBuf::from(VANILLA_GAME_DIR);
-        if dir.is_dir() {
-            Some(dir)
-        } else {
-            eprintln!("skipping vanilla pdxasset gate: {VANILLA_GAME_DIR} is absent");
-            None
-        }
+    fn vanilla_dir() -> PathBuf {
+        replay_test_gates::require_vanilla_game_root()
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_a_all_vanilla_mesh_and_anim_files_parse() {
-        let Some(game_dir) = vanilla_dir() else {
-            return;
-        };
+        let game_dir = vanilla_dir();
         let resolver = crate::GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let report =
             scan_pdx_assets_from_resolver(&resolver, PDX_MODELS_ROOT).expect("vanilla scan");
@@ -1979,10 +1973,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_b_diverse_mesh_semantic_checks() {
-        let Some(game_dir) = vanilla_dir() else {
-            return;
-        };
+        let game_dir = vanilla_dir();
         let resolver = crate::GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let picks = [
             ("building", "gfx/models/buildings/bunker.mesh"),

@@ -5,9 +5,7 @@
 //! selected Present. This module derives that identity only from typed,
 //! current-hour recorder carriers and rejects disagreement between them.
 
-use replay_core::{
-    AuthenticatedUiPass, HudPaintCommand, Leaf, UiPassOperation, ViewStatus, WorldFrame,
-};
+use replay_core::{AuthenticatedUiPass, HudPaintCommand, Leaf, UiPassOperation, WorldFrame};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,62 +42,15 @@ pub fn recorded_ui_owner(
 
     if let Leaf::Measured(companion) = &frame.diplomacy().intelligence_controller_companion {
         if companion.frame_hour != frame_hour
-            || companion.selected_present_receipt_sha256
-                != pass.selected_present_receipt_sha256
+            || companion.selected_present_receipt_sha256 != pass.selected_present_receipt_sha256
         {
-            return Err(
-                "A30 UI owner companion does not name the current selected Present".into(),
-            );
+            return Err("A30 UI owner companion does not name the current selected Present".into());
         }
         insert_country(
             &mut country_candidates,
             &companion.owner,
             "A30 controller companion",
         )?;
-    }
-
-    let focus = frame.national_focus_presentation_exact();
-    if focus.status == ViewStatus::Present {
-        let presentation = focus
-            .presentation
-            .as_ref()
-            .ok_or("d89 Present UI owner view omitted its typed presentation")?;
-        if presentation.frame_hour != frame_hour
-            || presentation
-                .selected_present
-                .selected_present_receipt_sha256
-                != pass.selected_present_receipt_sha256
-        {
-            return Err("d89 focus owner does not name the current selected Present".into());
-        }
-        insert_country(
-            &mut country_candidates,
-            &presentation.country_tag,
-            "d89 focus presentation",
-        )?;
-    }
-
-    let power_balance = frame.power_balance_presentation_exact();
-    if power_balance.status == ViewStatus::Present {
-        let presentation = power_balance
-            .presentation
-            .as_ref()
-            .ok_or("d74 Present UI owner view omitted its typed presentation")?;
-        if presentation.frame_hour != frame_hour
-            || presentation
-                .selected_present
-                .selected_present_receipt_sha256
-                != pass.selected_present_receipt_sha256
-        {
-            return Err("d74 power-balance owner does not name the current selected Present".into());
-        }
-        for row in &presentation.balances {
-            insert_country(
-                &mut country_candidates,
-                &row.country_tag,
-                "d74 power-balance presentation",
-            )?;
-        }
     }
 
     // d94 is a current-frame, authenticated POV census. It is an owner
@@ -174,7 +125,9 @@ fn insert_country(
     source: &str,
 ) -> Result<(), String> {
     if !valid_country(value) {
-        return Err(format!("{source} carries invalid country identity {value:?}"));
+        return Err(format!(
+            "{source} carries invalid country identity {value:?}"
+        ));
     }
     candidates.insert(value.to_owned());
     Ok(())
@@ -186,4 +139,3 @@ fn valid_country(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
 }
-

@@ -106,7 +106,40 @@ pub struct Transport {
     recorded_clock: Option<RecordedClockState>,
 }
 
+/// Constant-size Present transaction snapshot. Lazy date-cache observations
+/// are immutable input knowledge and may be retained; only viewer-visible
+/// transport selection/cadence state rolls back when a frame is undisplayed.
+#[derive(Debug, Clone, Copy)]
+pub struct TransportPresentationCheckpoint {
+    index: usize,
+    playing: bool,
+    speed_step: usize,
+    accum: f64,
+    recorded_clock: Option<RecordedClockState>,
+}
+
 impl Transport {
+    pub fn presentation_checkpoint(&self) -> TransportPresentationCheckpoint {
+        TransportPresentationCheckpoint {
+            index: self.index,
+            playing: self.playing,
+            speed_step: self.speed_step,
+            accum: self.accum,
+            recorded_clock: self.recorded_clock,
+        }
+    }
+
+    pub fn restore_presentation_checkpoint(
+        &mut self,
+        checkpoint: TransportPresentationCheckpoint,
+    ) {
+        self.index = checkpoint.index;
+        self.playing = checkpoint.playing;
+        self.speed_step = checkpoint.speed_step;
+        self.accum = checkpoint.accum;
+        self.recorded_clock = checkpoint.recorded_clock;
+    }
+
     /// Build over recorded hours and their parallel date strings. `hours` must
     /// be non-empty and the two slices equal length; otherwise `Err` (the
     /// caller has a malformed timeline and must fail closed).
@@ -621,6 +654,18 @@ mod tests {
         // Further advance is a no-op once paused.
         assert!(!t.advance(1.0));
         assert_eq!(t.current_index(), 2);
+    }
+
+    #[test]
+    fn highest_speed_advance_reports_one_exact_skipped_hour_destination() {
+        let hours = (0_i64..=100).collect::<Vec<_>>();
+        let mut transport = Transport::without_dates(hours).unwrap();
+        transport.set_speed_step(SPEED_STEPS_HOURS_PER_SEC.len() - 1);
+        transport.set_playing(true);
+        assert!(transport.advance(1.0));
+        assert_eq!(transport.current_index(), 48);
+        assert_eq!(transport.current_hour(), 48);
+        assert!(transport.is_playing());
     }
 
     #[test]

@@ -1,6 +1,10 @@
 //! Administrative map modes — **States** (engine layer `game_map_mode_states`,
 //! mode 13), **Ideology** (`game_map_mode_ideology`, mode 16), and **Players**
-//! (`game_map_mode_players`, mode 15) from `MAPMODE_COVERAGE_MATRIX.md` §2.
+//! (`game_map_mode_players`, mode 15).
+//! XMAP00_VIEWER_VISUAL_INPUT: viewer.map_mode_selection
+//! The engine mode set and its selection law are in
+//! `replay_interface/documents/UI_LAYOUT_LAW.md` §6.2 "Map-mode
+//! manager".
 //!
 //! This module owns the *data law* for those three fills: the per-state RGBA the
 //! GradientBorder field is keyed with, plus (for States) the state-boundary
@@ -8,7 +12,8 @@
 //! and follows the same three contracts:
 //!
 //! 1. **Colours are computed replay-side from recorded inputs, never recorded**
-//!    (standing override, `MAPMODE_COVERAGE_MATRIX.md` line 7-8). Every
+//!    (standing override; UI_LAYOUT_LAW.md §6.2 marks the per-scope colour
+//!    result runtime/recording-gated, not file-carried). Every
 //!    colour/threshold below is FILE-cited to a shipped game file or fails
 //!    **closed** (no fill) — never an invented colour.
 //! 2. **Decoupled from `replay_core`.** The fill functions take neutral input
@@ -37,7 +42,7 @@
 //!   province->state topology (`history/states/*.txt`), exactly the inputs the
 //!   border/label laws already consume (`LabelLawInputs::province_ids`). Pixel
 //!   rasterisation + parity vs a captured States-mode frame is capture-gated and
-//!   deferred (see `LANE_REPORT.md`), as with `naval_supremacy_tint`.
+//!   deferred, as with `naval_supremacy_tint`.
 //!
 //! ### Ideology (mode 16, `game_map_mode_ideology`)
 //! - **4 ideology colours** are read from the scriptable ideology defs
@@ -222,7 +227,7 @@ pub fn parse_ideology_colors_into(source: &str, out: &mut IdeologyColorTable) ->
                     if let Some(close) = group_close {
                         let inner = &text[group_open + 1..close];
                         if let Some(rgb) = parse_group_color(inner) {
-                            out.colors.entry(name).or_insert(rgb);
+                            out.colors.insert(name, rgb);
                         }
                         i = close + 1;
                         continue;
@@ -247,7 +252,7 @@ pub fn ideology_colors_from_source(source: &str) -> Result<IdeologyColorTable> {
 /// Load + parse the ideology colour table via the mod-aware resolver, folding
 /// every `common/ideologies/*.txt` (mods may split/extend the set).
 pub fn ideology_colors_from_resolver(resolver: &GameFileResolver) -> Result<IdeologyColorTable> {
-    let files = resolver.resolve_dir_files(IDEOLOGIES_DIR, Some("txt"))?;
+    let files = resolver.resolve_dir_files_recursive(IDEOLOGIES_DIR, Some("txt"))?;
     let mut out = IdeologyColorTable::default();
     for (_, path) in &files {
         let source = crate::read_latin1(path)?;
@@ -818,16 +823,10 @@ ideologies = {
             .join("../../fixtures/positive")
             .join(format!("{name}.battleplan"))
     }
-    fn open_fixture(name: &str) -> Option<WorldTimeline> {
+    fn open_fixture(name: &str) -> WorldTimeline {
         let path = fixture_path(name);
-        if !path.exists() {
-            eprintln!("fixture {name} missing; gate skipped");
-            return None;
-        }
-        Some(
-            WorldTimeline::open(open_recording(&path).expect("open recording"))
-                .expect("open timeline"),
-        )
+        replay_test_gates::require_existing_file(&path);
+        WorldTimeline::open(open_recording(&path).expect("open recording")).expect("open timeline")
     }
 
     /// Read the owner-by-state map from a frame (mirrors keying.rs).
@@ -861,10 +860,12 @@ ideologies = {
     /// GER owns state 10 in the base snapshot. The fill must flip EXACTLY at
     /// the generator's tick boundaries, using the FILE ideology colours.
     #[test]
+    #[cfg_attr(
+        not(gate_replay_fixtures),
+        ignore = "the replay fixtures directory at replay_interface/fixtures/positive"
+    )]
     fn gate_fixture_ideology_flip_reaches_fill() {
-        let Some(t) = open_fixture("fx_cosmetic_ideology") else {
-            return;
-        };
+        let t = open_fixture("fx_cosmetic_ideology");
         let hours = t.hours().to_vec();
         let h = |tick: usize| hours[tick];
         let colors = vanilla_ideology_colors();
@@ -899,10 +900,12 @@ ideologies = {
     /// law with a synthetic owner map that includes a non-player owner (FRA,
     /// generator `is_human=false`) so the 0.15 fade path is covered.
     #[test]
+    #[cfg_attr(
+        not(gate_replay_fixtures),
+        ignore = "the replay fixtures directory at replay_interface/fixtures/positive"
+    )]
     fn gate_fixture_players_session_and_fade() {
-        let Some(t) = open_fixture("fx_owner_controller_flip") else {
-            return;
-        };
+        let t = open_fixture("fx_owner_controller_flip");
         let frame = t.state_at(t.hours()[0]).expect("state_at");
         let players: BTreeSet<String> = match &frame.session_metadata().player_countries {
             Leaf::Measured(list) => list
@@ -941,13 +944,12 @@ ideologies = {
     // VANILLA file gates (skip without BATTLE_PLAN_GAME_DIR).
     // ===================================================================
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_admin_defines_and_ideology_colors() {
-        let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!(
-                "gate_vanilla_admin_defines_and_ideology_colors: BATTLE_PLAN_GAME_DIR unset; skipped"
-            );
-            return;
-        };
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = crate::mod_resolver::GameFileResolver::vanilla(game_dir).expect("resolver");
         let defines = admin_mapmode_defines_from_resolver(&resolver).expect("defines");
         assert_eq!(defines, VANILLA_ADMIN_MAPMODE_DEFINES);

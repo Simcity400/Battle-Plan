@@ -198,19 +198,15 @@ Domain-51 lane-owned mini stack:
 `scripted_state_domain51_collector.rs`, `scripted_state_compact.rs`,
 `scripted_state_domain51_gate.rs`, and `scripted_state_domain51_stream.rs`.
 
-The stream verifier remains a dependency-free, direct-`rustc` binary. It uses
-source-relative `#[path]` modules for the canonical H4CR parser, base status
-flags, and build-profile bounds under `../../compact_contract/src`, so these
-commands work from the repository root without Cargo or `--extern`:
+The historical stream verifier used dependency-free, source-relative `#[path]`
+modules for the canonical H4CR parser, base status flags, and build-profile
+bounds under `../../compact_contract/src`.
+
+The former standalone `rustc` verifier commands are historical and are not
+runnable candidate-validation instructions. Current lane tests run through:
 
 ```powershell
-$source = 'extractor\native\lanes\scripted_state_flags_variables_live\scripted_state_domain51_stream.rs'
-$verifier = Join-Path $env:TEMP 'scripted_state_domain51_stream.exe'
-$tests = Join-Path $env:TEMP 'scripted_state_domain51_stream_tests.exe'
-rustc --edition=2021 $source -o $verifier
-& $verifier --verify-json 'C:\path\to\collector_stream.bin' --min-game-hours 48
-rustc --edition=2021 --test $source -o $tests
-& $tests --nocapture
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Test -Workspace Extractor -Package scripted_state_flags_variables_live_lane -CacheMode Iterative
 ```
 
 The lane-local unresolved delayed-event and scripted-GUI bits remain legacy

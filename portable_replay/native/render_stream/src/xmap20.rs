@@ -49,6 +49,8 @@ pub struct Xmap20DependencyReceipts {
     pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
     /// Viewer camera/projection provider. Recorder camera state is forbidden.
+    /// Its descriptor digest is the exact 64-byte viewer projection CB1
+    /// payload digest bound during native execution.
     pub camera: Xmap20DependencyReceipt,
     pub lighting: Xmap20DependencyReceipt,
     /// XMAP10's pre-particle SceneCB0/MainScene state. This receipt must not

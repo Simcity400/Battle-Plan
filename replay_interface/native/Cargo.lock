@@ -34,9 +34,9 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "cc"
-version = "1.3.0"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89588d05638b5b4594a3348a2d6c20277e43a7f5c5202b05cc56888475a47b8"
+checksum = "5d262e149917187838d5b42777c8253bcb64500067342904e7d429499a6f277e"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -107,13 +107,13 @@ dependencies = [
 
 [[package]]
 name = "displaydoc"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
+checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -124,9 +124,9 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
 
 [[package]]
 name = "flate2"
@@ -142,10 +142,12 @@ dependencies = [
 name = "game_ui"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "map_viewer",
  "portable_content_manifest",
  "portable_replay_format",
  "replay_core",
+ "replay_test_gates",
  "serde",
  "serde_json",
 ]
@@ -220,11 +222,15 @@ name = "map_viewer"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "portable_content_manifest",
+ "portable_render_stream",
  "portable_replay_format",
  "portable_terrain_fixture",
  "replay_core",
+ "replay_test_gates",
  "serde",
  "serde_json",
+ "sha2",
  "winapi",
  "zip",
 ]
@@ -339,6 +345,7 @@ dependencies = [
  "portable_content_manifest",
  "portable_replay_format",
  "replay_core",
+ "replay_test_gates",
  "serde",
  "serde_json",
  "sha2",
@@ -380,6 +387,10 @@ dependencies = [
 
 [[package]]
 name = "replay_qa"
+version = "0.1.0"
+
+[[package]]
+name = "replay_test_gates"
 version = "0.1.0"
 
 [[package]]
@@ -472,18 +483,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.19"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
+checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.19"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd"
+checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -1,4 +1,5 @@
-//! Timeline → topbar / ideology bindings (REPLAY_PRODUCTION_PLAN D1 + D2).
+//! Timeline → topbar / ideology bindings (D1 + D2 lane). The chrome law the
+//! layout side is gated against is `replay_interface/documents/UI_LAYOUT_LAW.md`.
 //!
 //! This module is the *population* seam: it maps `replay_core`'s typed
 //! `WorldFrame` views (topbar scalars, country identity) onto the
@@ -9,20 +10,26 @@
 //! the **fail-closed absent form** (a `None` field / empty candidate set),
 //! never a default like `0` (Constraint 3).
 //!
-//! ## Number formatting is UNKNOWN → rendered raw
+//! ## Number formatting is UNKNOWN
 //!
 //! the game's topbar number formatting (thousands separators, rounding,
 //! percent-vs-fraction display, +/- coloring) is engine-computed and is not
 //! cited from any shipped `.gui`/localisation file in this decoupled context.
-//! Per Constraint 3 ("cited from files or labelled UNKNOWN and rendered
-//! raw"), every scalar here is rendered as the **raw measured value** via
-//! `format!("{}")` on the typed leaf — no invented percent scaling, grouping,
-//! or sign coloring. When a shipped-file citation for a field's format is
-//! found, replace the raw renderer for that field and cite it. See
-//! `LANE_REPORT.md` for the per-field FILE/UNKNOWN table.
+//! The legacy data-only binding retains each raw measured value. The shipping
+//! observer never displays that provisional string: it replaces every
+//! UNKNOWN-formatted value with exact A25 final setter bytes for the same
+//! frame, selected country, view and element, or omits the element and reports
+//! a named gap.
+//!
+//! The data-only binding retains proven percent projections for
+//! `world_tension_percent`, `stability` and `war_support` (see
+//! `apply_scalars`). The shipping observer still requires A25 final bytes for
+//! their actual labels, so even a proven unit conversion is not mistaken for
+//! proof of the engine's string formatting.
 
 use crate::hud::{OutlinerBinding, OutlinerRowBinding};
 use crate::loc::Localisation;
+use crate::text_law::{join_exact_runtime_text_view, RuntimeTextContext};
 use crate::topbar::{
     flag_candidates_for_size, format_percent, month_name_english, FactoryCounts, FlagSizeFolder,
     TopbarBinding,
@@ -30,8 +37,9 @@ use crate::topbar::{
 use replay_core::world::FactionRosterStatus;
 use replay_core::{
     CountryIdentity, DiplomacyView, Leaf, SubjectAutonomyDirection, TopbarRatios, TopbarScalars,
-    ViewStatus, WorldFrame,
+    RuntimeTextCatalog, ViewStatus, WorldFrame,
 };
+use std::collections::BTreeMap;
 
 /// Render an `f64` leaf as its raw shortest round-trip decimal, or `None`
 /// (the fail-closed absent form) when the value was never measured.
@@ -78,11 +86,22 @@ fn measured_ratio(leaf: &Leaf<f64>) -> Option<f32> {
 /// identity fields are filled separately by [`apply_identity`].
 ///
 /// Every field is the raw measured value or `None`; see the module header for
-/// the UNKNOWN-formatting rationale and `LANE_REPORT.md` for the field table.
+/// the UNKNOWN-formatting rationale.
 fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     binding.political_power = raw_f64(&scalars.political_power);
-    binding.stability_percent = raw_f64(&scalars.stability);
-    binding.war_support_percent = raw_f64(&scalars.war_support);
+    // stability / war_support are recorded as 0.0..=1.0 ratios
+    // (REPLAY_SCHEMA.md "stability"/"war_support") and the shipped topbar
+    // shows them as percentages. They therefore take the SAME percent
+    // projection as the sibling `world_tension_percent` below
+    // (`topbar::format_percent`), not the generic raw fallback.
+    binding.stability_percent = scalars
+        .stability
+        .measured()
+        .map(|value| format_percent(*value as f32));
+    binding.war_support_percent = scalars
+        .war_support
+        .measured()
+        .map(|value| format_percent(*value as f32));
     binding.command_power = raw_f64(&scalars.command_power);
     binding.manpower = raw_i64(&scalars.manpower_available);
     binding.army_experience = raw_f64(&scalars.xp_army);
@@ -278,6 +297,370 @@ pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBin
     binding
 }
 
+/// One observer-HUD field which cannot be populated from replay gamestate.
+///
+/// This is deliberately a named data boundary instead of an empty string or a
+/// plausible zero. The viewer owns which country is displayed, but that does
+/// not create controller results which the recording never carried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObserverTopbarGap {
+    pub field: &'static str,
+    pub required_domain: &'static str,
+    pub reason: &'static str,
+}
+
+/// State-first topbar result for the replay observer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObserverTopbarBinding {
+    pub binding: TopbarBinding,
+    pub gaps: Vec<ObserverTopbarGap>,
+}
+
+fn exact_observer_topbar_text(
+    catalog: &RuntimeTextCatalog,
+    frame_hour: i64,
+    country_tag: &str,
+) -> BTreeMap<String, RuntimeTextContext> {
+    join_exact_runtime_text_view(
+        catalog,
+        frame_hour,
+        country_tag,
+        crate::topbar::TOPBAR_WINDOW_NAME,
+    )
+    .map(|joined| joined.by_element)
+    .unwrap_or_default()
+}
+
+fn require_exact_observer_format(
+    provisional: &mut Option<String>,
+    runtime_rows: &BTreeMap<String, RuntimeTextContext>,
+    element: &'static str,
+    field: &'static str,
+    gaps: &mut Vec<ObserverTopbarGap>,
+) {
+    if provisional.is_none() {
+        return;
+    }
+    if let Some(runtime) = runtime_rows.get(element) {
+        // The final bytes are used only to establish element visibility here;
+        // Compositor consumes the authenticated context itself.
+        *provisional = runtime
+            .exact
+            .as_ref()
+            .map(|exact| exact.engine_utf8.clone());
+    } else {
+        *provisional = None;
+        gaps.push(ObserverTopbarGap {
+            field,
+            required_domain: "runtime_text",
+            reason: "the game-formatted topbar value has no unique complete A25 row for this frame, country, view and element",
+        });
+    }
+}
+
+/// Build the observer-selected country's topbar without recorded
+/// selected-Present controller state.
+///
+/// In particular this path does not consult d79's recorder-owned alert bag or
+/// d87's selected-Present decision panel. Scalars, identity, exact stockpile,
+/// and the clock are ordinary gamestate. A25 is admitted only as the exact
+/// final-text producer for UNKNOWN scalar formatting; its frame/country/view/
+/// element join cannot select controller state for another owner. Alert
+/// controller outputs are admitted only when an independently typed gamestate
+/// family proves the displayed value. Today D65 proves unread prototype
+/// rewards; the other alert badges remain named, feature-local gaps.
+pub fn topbar_binding_from_observer_frame(
+    frame: &WorldFrame,
+    country_tag: &str,
+) -> ObserverTopbarBinding {
+    let mut binding = TopbarBinding::default();
+
+    if frame.country_identities_status() == ViewStatus::Present {
+        if let Some(identity) = frame.country_identity(country_tag) {
+            apply_identity(&mut binding, country_tag, identity);
+        } else {
+            binding.country_tag = Some(country_tag.to_string());
+        }
+    } else {
+        binding.country_tag = Some(country_tag.to_string());
+    }
+
+    if frame.topbar_status() == ViewStatus::Present {
+        if let Some(scalars) = frame.topbar_scalars(country_tag) {
+            apply_scalars(&mut binding, scalars);
+            apply_exact_nuke_stockpile(&mut binding, frame, scalars);
+        }
+    }
+
+    let mut gaps = vec![
+            ObserverTopbarGap {
+                field: "initiative",
+                required_domain: "initiative",
+                reason: "no replay gamestate family carries the engine-evaluated initiative alert count",
+            },
+            ObserverTopbarGap {
+                field: "decision_available_items",
+                required_domain: "d14",
+                reason: "d16 active aggregates do not prove evaluated available-decision membership",
+            },
+            ObserverTopbarGap {
+                field: "decision_timeout_items",
+                required_domain: "d14",
+                reason: "no non-presentation gamestate family carries the evaluated decision timeout alert count",
+            },
+            ObserverTopbarGap {
+                field: "intel_available",
+                required_domain: "d30/d53",
+                reason: "operation rows do not prove the intelligence controller's displayed available count",
+            },
+            ObserverTopbarGap {
+                field: "intel_prepared_or_completed",
+                required_domain: "d30/d53",
+                reason: "no admitted semantic leaf carries the intelligence controller's prepared-or-completed count",
+            },
+            ObserverTopbarGap {
+                field: "non_delivering_contracts",
+                required_domain: "d43",
+                reason: "trade relations do not carry the engine-evaluated non-delivering contract alert count",
+            },
+            ObserverTopbarGap {
+                field: "ongoing_contracts",
+                required_domain: "d43",
+                reason: "trade relations do not carry the engine-evaluated ongoing contract alert count",
+            },
+        ];
+
+    let runtime_rows = match frame.runtime_text() {
+        Ok(Leaf::Measured(catalog)) => {
+            exact_observer_topbar_text(&catalog, frame.hour_index(), country_tag)
+        }
+        Ok(Leaf::Absent | Leaf::Unobtained) | Err(_) => BTreeMap::new(),
+    };
+    require_exact_observer_format(
+        &mut binding.political_power,
+        &runtime_rows,
+        "pol_power",
+        "political_power",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.manpower,
+        &runtime_rows,
+        "manpower",
+        "manpower",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.stability_percent,
+        &runtime_rows,
+        "stability",
+        "stability_percent",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.war_support_percent,
+        &runtime_rows,
+        "war_support",
+        "war_support_percent",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.command_power,
+        &runtime_rows,
+        "command_power_value",
+        "command_power",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.army_experience,
+        &runtime_rows,
+        "experience_value",
+        "army_experience",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.navy_experience,
+        &runtime_rows,
+        "navy_experience_value",
+        "navy_experience",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.air_experience,
+        &runtime_rows,
+        "air_experience_value",
+        "air_experience",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.nukes,
+        &runtime_rows,
+        "nukes_value",
+        "nukes",
+        &mut gaps,
+    );
+    let mut factory_text = binding
+        .factory_text
+        .take()
+        .or_else(|| {
+            binding.factory_counts.take().map(|counts| {
+                format!("{}/{}/{}", counts.civilian, counts.military, counts.naval)
+            })
+        });
+    require_exact_observer_format(
+        &mut factory_text,
+        &runtime_rows,
+        "industrial_capacity",
+        "factory_counts",
+        &mut gaps,
+    );
+    binding.factory_text = factory_text;
+    require_exact_observer_format(
+        &mut binding.convoys,
+        &runtime_rows,
+        "convoys_count",
+        "convoys",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.fuel,
+        &runtime_rows,
+        "fuel_value",
+        "fuel",
+        &mut gaps,
+    );
+    require_exact_observer_format(
+        &mut binding.supply,
+        &runtime_rows,
+        "supply_value",
+        "supply",
+        &mut gaps,
+    );
+    let mut threat_text = binding
+        .world_tension_percent
+        .take()
+        .or_else(|| binding.world_tension.map(format_percent))
+        .or_else(|| {
+            binding.world_tension_fixed5.map(|raw| {
+                format_percent((raw.clamp(0, 100_000) as f32) / 100_000.0)
+            })
+        });
+    require_exact_observer_format(
+        &mut threat_text,
+        &runtime_rows,
+        "threat_value",
+        "world_tension_percent",
+        &mut gaps,
+    );
+    binding.world_tension_percent = threat_text;
+    binding.runtime_text_by_element = runtime_rows.clone();
+    binding.runtime_text_required_elements = [
+        "pol_power",
+        "manpower",
+        "stability",
+        "war_support",
+        "command_power_value",
+        "experience_value",
+        "navy_experience_value",
+        "air_experience_value",
+        "nukes_value",
+        "industrial_capacity",
+        "convoys_count",
+        "fuel_value",
+        "supply_value",
+        "threat_value",
+        "initiative_text",
+        "decisionview_amount_timeout_items",
+        "decisionview_amount_to_take_items",
+        "intelview_ops_prepared_or_completed_items",
+        "intelview_ops_available_items",
+        "prototype_rewards_aquired",
+        "non_delivering_contract_amount",
+        "ongoing_contract_amount",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+
+    // D65 is ordinary per-country gamestate and carries the exact unread
+    // count. Overflow is an unavailable value, never a saturated badge.
+    let prototype_total = if frame.special_project_programs_status() == ViewStatus::Present {
+        match frame.special_project_programs(country_tag) {
+            Leaf::Measured(programs) => programs.iter().try_fold(0u64, |sum, row| {
+                sum.checked_add(u64::from(row.unread_prototype_rewards))
+            }),
+            Leaf::Absent | Leaf::Unobtained => None,
+        }
+    } else {
+        None
+    };
+    match prototype_total {
+        Some(total) => {
+            binding.prototype_rewards = (total > 0).then(|| total.to_string());
+        }
+        None => gaps.push(ObserverTopbarGap {
+            field: "prototype_rewards",
+            required_domain: "d65",
+            reason: "complete selected-country unread prototype rewards are unavailable or overflowed",
+        }),
+    }
+    for (value, element, field) in [
+        (
+            &mut binding.initiative,
+            "initiative_text",
+            "initiative",
+        ),
+        (
+            &mut binding.decision_timeout_items,
+            "decisionview_amount_timeout_items",
+            "decision_timeout_items",
+        ),
+        (
+            &mut binding.decision_available_items,
+            "decisionview_amount_to_take_items",
+            "decision_available_items",
+        ),
+        (
+            &mut binding.intel_prepared_or_completed,
+            "intelview_ops_prepared_or_completed_items",
+            "intel_prepared_or_completed",
+        ),
+        (
+            &mut binding.intel_available,
+            "intelview_ops_available_items",
+            "intel_available",
+        ),
+        (
+            &mut binding.prototype_rewards,
+            "prototype_rewards_aquired",
+            "prototype_rewards",
+        ),
+        (
+            &mut binding.non_delivering_contracts,
+            "non_delivering_contract_amount",
+            "non_delivering_contracts",
+        ),
+        (
+            &mut binding.ongoing_contracts,
+            "ongoing_contract_amount",
+            "ongoing_contracts",
+        ),
+    ] {
+        require_exact_observer_format(
+            value,
+            &runtime_rows,
+            element,
+            field,
+            &mut gaps,
+        );
+    }
+
+    ObserverTopbarBinding {
+        binding,
+        gaps,
+    }
+}
+
 /// Exact D57 WT3X tooltip/popup population seam. This deliberately returns
 /// one complete optional binding: a partial ledger, unresolved D18 identity,
 /// missing policy threshold, or missing decay input keeps both consumers
@@ -290,7 +673,8 @@ pub fn world_tension_consumers_from_frame(
 }
 
 /// The LAB4 ideology-resolved country **display-name** localisation key
-/// candidates, most specific first (FIDELITY_LEDGER §label law):
+/// candidates, most specific first (the label law in
+/// `replay_interface/documents/MAP_LABEL_LAW.md`):
 /// `<cosmetic>_<ideology>` → `<cosmetic>` → `<tag>_<ideology>` → `<tag>` →
 /// bare `<tag>`. A key is only emitted when its inputs exist; the bare tag is
 /// always the final fail-closed fallback.
@@ -371,7 +755,7 @@ pub fn resolve_country_name(
 //     the game's outliner shows a formatted unit *name* + status; no shipped file
 //     citation for that formatter exists in this decoupled context, so the row
 //     label is the raw stable identity string (UNKNOWN formatting, rendered
-//     raw per Constraint 3). See `LANE_REPORT.md`.
+//     raw per Constraint 3).
 //   * Row *progress* is fail-closed `None` — no cited law maps unit
 //     strength/org onto the outliner progress bar.
 //
@@ -497,7 +881,7 @@ pub fn outliner_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> Outline
 //     no unproven display-name or formatting join is introduced here.
 //
 // KNOWN VIEW GAPS (data present in the recording but NOT surfaced by the
-// read-only `DiplomacyView`, so absent here — recorded in `LANE_REPORT.md`):
+// read-only `DiplomacyView`, so absent here):
 //   * `diplomacy_world.wars` war objects (attackers/defenders/front/start) —
 //     the view exposes only per-pair `at_war` booleans, so a war's belligerent
 //     grouping is reconstructed from directional pairs, not read as an object.
@@ -643,14 +1027,47 @@ fn relation_rows(view: &DiplomacyView, pov_tag: &str) -> Vec<RelationRow> {
     rows
 }
 
+/// Resolve the POV tag's numeric database identity for the D53 subject-
+/// autonomy join, namespace-safely.
+///
+/// The d18 `_r2_tag_db_id` map is authoritative: when the frame carries a
+/// measured id for `pov_tag`, that id is the ONLY numeric identity used. The
+/// canonical-numeric-spelling fallback (REPLAY_SCHEMA.md, subject-autonomy
+/// identity law) applies only when `pov_tag` is NOT a recorded country tag —
+/// a real three-character tag may be all digits (e.g. `"123"`), and parsing
+/// it would otherwise match unrelated rows whose `*_tag_db_id` happens to
+/// equal that spelling while the tag's own database id differs.
+fn resolve_pov_numeric_identity(
+    frame: &WorldFrame,
+    view: &DiplomacyView,
+    pov_tag: &str,
+) -> Option<u32> {
+    if let Some(id) = frame
+        .politics_detail(pov_tag)
+        .and_then(|detail| detail.tag_db_id.measured().copied())
+    {
+        return Some(id);
+    }
+    let recorded_tag = view.countries.contains_key(pov_tag)
+        || frame.politics_detail(pov_tag).is_some()
+        || frame.countries().contains_key(pov_tag);
+    if recorded_tag {
+        // A recorded tag whose database id is unmeasured this hour: numeric
+        // matching is disabled rather than guessed from the spelling.
+        None
+    } else {
+        pov_tag.parse::<u32>().ok()
+    }
+}
+
 fn subject_autonomy_rows(
     view: &DiplomacyView,
     pov_tag: &str,
+    pov_id: Option<u32>,
 ) -> (bool, Vec<SubjectAutonomyPanelRow>) {
     let Leaf::Measured(rows) = &view.subject_autonomy_current else {
         return (false, Vec::new());
     };
-    let pov_id = pov_tag.parse::<u32>().ok();
     let mut projected = rows
         .iter()
         .filter_map(|row| {
@@ -714,8 +1131,11 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
         .map(|r| r.other_tag.clone())
         .collect();
     let (faction_roster_status, factions) = faction_rows(view);
-    let (subject_autonomy_available, subject_autonomy) =
-        subject_autonomy_rows(view, pov_tag);
+    let (subject_autonomy_available, subject_autonomy) = subject_autonomy_rows(
+        view,
+        pov_tag,
+        resolve_pov_numeric_identity(frame, view, pov_tag),
+    );
     DiplomacyPanelBinding {
         pov_tag: pov_tag.to_string(),
         available: true,
@@ -750,8 +1170,10 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
 // a separate datum this clock deliberately does not display.
 
 /// Month-name localisation keys the clock resolves, index 0..=11 == the shipped
-/// `core_l_english.yml` `January`..`December` keys (FILE). The key IS the
-/// English display value, so a missing loc entry falls back to the key itself.
+/// `core_l_english.yml` `January`..`December` keys (FILE). Shipping playback
+/// keeps the selected key inside the `$KEY$` template until the compositor so
+/// its exact, unambiguous source is checked and recorded with every other
+/// resolved localisation key.
 pub const TOPBAR_CLOCK_MONTH_LOC_KEYS: [&str; 12] = [
     "January",
     "February",
@@ -767,7 +1189,7 @@ pub const TOPBAR_CLOCK_MONTH_LOC_KEYS: [&str; 12] = [
     "December",
 ];
 
-/// A parsed Clausewitz `Y.M.D[.H]` recording date.
+/// A parsed Clausewitz `Y.M.D.H` recording date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClockDate {
     pub year: i64,
@@ -776,9 +1198,11 @@ pub struct ClockDate {
     pub hour: u32,
 }
 
-/// Parse a Clausewitz date string (`Y.M.D` or `Y.M.D.H`). Fail-closed: returns
-/// `None` unless year/month/day parse, `month` is 1..=12, `day` is 1..=31, and
-/// (when present) `hour` is 0..=23. Never fabricates a date.
+/// Parse a Clausewitz recording date string (`Y.M.D.H`, the REPLAY_SCHEMA
+/// `date` shape). Fail-closed: returns `None` unless year/month/day/hour all
+/// parse, `month` is 1..=12, `day` is 1..=31, and `hour` is 0..=23. A
+/// date-only `Y.M.D` string is refused — the clock renders the hour, and a
+/// missing hour must not become a fabricated midnight.
 pub fn parse_clock_date(date: &str) -> Option<ClockDate> {
     let mut parts = date.trim().split('.');
     let year: i64 = parts.next()?.trim().parse().ok()?;
@@ -787,10 +1211,7 @@ pub fn parse_clock_date(date: &str) -> Option<ClockDate> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
-    let hour: u32 = match parts.next() {
-        Some(h) => h.trim().parse().ok()?,
-        None => 0,
-    };
+    let hour: u32 = parts.next()?.trim().parse().ok()?;
     if hour > 23 {
         return None;
     }
@@ -811,12 +1232,22 @@ fn format_clock_date(date: ClockDate, month_name: &str) -> String {
     )
 }
 
-/// Format a recording date string for the topbar clock using the recording's
-/// localisation for the month name. Fail-closed `None` on an unparseable date.
+/// Build the authored topbar date template while preserving its month
+/// localisation key for the compositor's normal provenance gate.
+fn format_topbar_date_template(date: &str) -> Option<String> {
+    let parsed = parse_clock_date(date)?;
+    let key = TOPBAR_CLOCK_MONTH_LOC_KEYS[(parsed.month - 1) as usize];
+    Some(format_clock_date(parsed, &format!("${key}$")))
+}
+
+/// Format a recording date string for non-product callers which explicitly
+/// need a final string. The month must have one exact source; missing or
+/// ambiguous definitions fail closed instead of fabricating the English key.
 pub fn format_topbar_date(date: &str, loc: &Localisation) -> Option<String> {
     let parsed = parse_clock_date(date)?;
     let key = TOPBAR_CLOCK_MONTH_LOC_KEYS[(parsed.month - 1) as usize];
-    let month = loc.get(key).unwrap_or(key);
+    loc.source_file_for_key(key)?;
+    let month = loc.get(key)?;
     Some(format_clock_date(parsed, month))
 }
 
@@ -832,9 +1263,10 @@ pub fn format_topbar_date_english(date: &str) -> Option<String> {
 }
 
 /// Replay-native clock binding (D6): the recording's current time (FILE-
-/// formatted) + the replay app's playback speed step, ready to merge onto a
-/// [`TopbarBinding`]. Fail-closed: a frame with no/unparseable date leaves
-/// `date_time` `None`.
+/// template) + the replay app's playback speed step, ready to merge onto a
+/// [`TopbarBinding`]. The compositor resolves that template so the month's
+/// exact localisation source is included in `ComposeReport`. Fail-closed: a
+/// frame with no/unparseable date leaves `date_time` `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClockBinding {
     pub date_time: Option<String>,
@@ -853,10 +1285,10 @@ pub fn playback_speed_button(speed_step: usize) -> u8 {
 pub fn clock_binding_from_frame(
     frame: &WorldFrame,
     playback_speed_step: usize,
-    loc: &Localisation,
+    _loc: &Localisation,
 ) -> ClockBinding {
     ClockBinding {
-        date_time: frame.date().and_then(|date| format_topbar_date(date, loc)),
+        date_time: frame.date().and_then(format_topbar_date_template),
         speed: Some(playback_speed_button(playback_speed_step)),
     }
 }
@@ -876,7 +1308,7 @@ pub fn apply_clock(binding: &mut TopbarBinding, clock: &ClockBinding) {
 // the game's state tooltip is computed-not-stored (a localised sentence + building
 // breakdown). Only the *data* it keys on — the state's owner and controller
 // tags — is timeline-derived; this seam surfaces exactly that, fail-closed, and
-// leaves the localised sentence composition descoped (plan D7 / LANE_REPORT).
+// leaves the localised sentence composition descoped (D7 lane).
 // Row text formatting is UNKNOWN → the raw stable tag is carried, never a
 // fabricated localised phrase (Constraint 3).
 
@@ -917,6 +1349,84 @@ pub fn state_tooltip_from_frame(frame: &WorldFrame, state_id: u32) -> StateToolt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn runtime_text_record(
+        context_id: &str,
+        hour: i64,
+        country: &str,
+        view: &str,
+        element: &str,
+        text: &str,
+    ) -> replay_core::RuntimeTextRecord {
+        replay_core::RuntimeTextRecord {
+            context_id: context_id.to_string(),
+            frame_hour: hour,
+            pov_country_or_global: country.to_string(),
+            view_id: view.to_string(),
+            element_id: element.to_string(),
+            source: replay_core::RuntimeTextSource::SetterCallerRva(0x188_A0DE),
+            final_text_bytes: text.as_bytes().to_vec(),
+            final_text_utf8: text.to_string(),
+            final_text_sha256: "fixture".to_string(),
+            variables: BTreeMap::new(),
+            data_functions: BTreeMap::new(),
+            dynamic_colors: BTreeMap::new(),
+            layout: replay_core::RuntimeTextLayout::AuthoredReproducible,
+            producer: replay_core::RuntimeTextProducer {
+                setter_entry_rva: replay_core::A729_TEXT_SETTER_RVA,
+                setter_caller_rva: Some(0x188_A0DE),
+                formatter_entry_rva: Some(replay_core::A729_FORMATTER_RVA),
+                identity_source: replay_core::RuntimeTextIdentitySource::ProvenSetterCaller,
+            },
+        }
+    }
+
+    #[test]
+    fn observer_runtime_text_join_is_exact_complete_and_unambiguous() {
+        let mut contexts = BTreeMap::new();
+        contexts.insert(
+            "good".to_string(),
+            runtime_text_record("good", 42, "GER", "topbar", "manpower", "1.20M"),
+        );
+        contexts.insert(
+            "wrong-country".to_string(),
+            runtime_text_record("wrong-country", 42, "ENG", "topbar", "pol_power", "7"),
+        );
+        contexts.insert(
+            "duplicate-a".to_string(),
+            runtime_text_record("duplicate-a", 42, "GER", "topbar", "fuel_value", "1K"),
+        );
+        contexts.insert(
+            "duplicate-b".to_string(),
+            runtime_text_record("duplicate-b", 42, "GER", "topbar", "fuel_value", "2K"),
+        );
+        let selected = exact_observer_topbar_text(
+            &RuntimeTextCatalog {
+                contexts_complete: true,
+                contexts: contexts.clone(),
+            },
+            42,
+            "GER",
+        );
+        assert_eq!(
+            selected
+                .get("manpower")
+                .and_then(|row| row.exact.as_ref())
+                .map(|row| row.engine_utf8.as_str()),
+            Some("1.20M")
+        );
+        assert!(!selected.contains_key("pol_power"));
+        assert!(!selected.contains_key("fuel_value"));
+        assert!(exact_observer_topbar_text(
+            &RuntimeTextCatalog {
+                contexts_complete: false,
+                contexts,
+            },
+            42,
+            "GER",
+        )
+        .is_empty());
+    }
 
     fn identity(ideology: Option<&str>, cosmetic: Option<&str>) -> CountryIdentity {
         CountryIdentity {
@@ -1061,16 +1571,15 @@ mod tests {
             format_topbar_date_english("1936.1.1.0").as_deref(),
             Some("0:00 1, January 1936")
         );
-        // Date-only (no hour) defaults the hour to 0.
-        assert_eq!(
-            format_topbar_date_english("1944.12.25").as_deref(),
-            Some("0:00 25, December 1944")
-        );
     }
 
     #[test]
     fn topbar_date_fail_closed_on_bad_input() {
         assert_eq!(format_topbar_date_english(""), None);
+        // Date-only (no hour) is refused — a missing hour must not render as
+        // a fabricated midnight.
+        assert_eq!(format_topbar_date_english("1944.12.25"), None);
+        assert_eq!(parse_clock_date("1944.12.25"), None);
         assert_eq!(format_topbar_date_english("hour:5"), None);
         assert_eq!(format_topbar_date_english("1936.13.1.0"), None); // month OOR
         assert_eq!(format_topbar_date_english("1936.1.0.0"), None); // day 0
@@ -1082,15 +1591,26 @@ mod tests {
         let mut loc = Localisation::default();
         loc.entries
             .insert("September".to_string(), "Septembre".to_string());
+        loc.source_by_key.insert(
+            "September".to_string(),
+            "localisation/french/core_l_french.yml".to_string(),
+        );
         assert_eq!(
             format_topbar_date("1939.9.29.7", &loc).as_deref(),
             Some("7:00 29, Septembre 1939")
         );
-        // A month with no loc entry falls back to the (English) key.
-        assert_eq!(
-            format_topbar_date("1939.1.1.0", &loc).as_deref(),
-            Some("0:00 1, January 1939")
+        assert_eq!(format_topbar_date("1939.1.1.0", &loc), None);
+
+        loc.entries
+            .insert("January".to_string(), "Janvier".to_string());
+        loc.ambiguous_sources_by_key.insert(
+            "January".to_string(),
+            vec![
+                "localisation/french/a_l_french.yml".to_string(),
+                "localisation/french/b_l_french.yml".to_string(),
+            ],
         );
+        assert_eq!(format_topbar_date("1939.1.1.0", &loc), None);
     }
 
     #[test]
@@ -1139,5 +1659,182 @@ mod tests {
         assert_eq!(binding.army_experience.as_deref(), Some("27.500427"));
         assert_eq!(binding.navy_experience.as_deref(), Some("422.10611"));
         assert_eq!(binding.air_experience.as_deref(), Some("500"));
+    }
+
+    /// The stability / war-support topbar ratios are percent-projected via the
+    /// SAME rule as the sibling `world_tension_percent`: `format_percent` of
+    /// the measured 0..=1 fraction, string-exact. Unmeasured leaves stay the
+    /// fail-closed `None`, never `"0%"`.
+    #[test]
+    fn stability_and_war_support_project_percent_like_world_tension() {
+        let mut scalars = all_absent_scalars();
+        scalars.stability = Leaf::Measured(0.74);
+        scalars.war_support = Leaf::Measured(0.305);
+        scalars.world_tension = Leaf::Measured(0.74);
+        let mut binding = TopbarBinding::default();
+        apply_scalars(&mut binding, &scalars);
+        // Pin the exact projected strings...
+        assert_eq!(binding.stability_percent.as_deref(), Some("74%"));
+        assert_eq!(binding.war_support_percent.as_deref(), Some("31%"));
+        // ...and pin the rule itself against the sibling projection: the same
+        // fraction renders identically through both fields.
+        assert_eq!(binding.stability_percent, binding.world_tension_percent);
+        assert_eq!(
+            binding.war_support_percent,
+            Some(format_percent(0.305f32))
+        );
+
+        let mut absent = TopbarBinding::default();
+        apply_scalars(&mut absent, &all_absent_scalars());
+        assert_eq!(absent.stability_percent, None);
+        assert_eq!(absent.war_support_percent, None);
+        let mut unobtained_scalars = all_absent_scalars();
+        unobtained_scalars.stability = Leaf::Unobtained;
+        unobtained_scalars.war_support = Leaf::Unobtained;
+        let mut unobtained = TopbarBinding::default();
+        apply_scalars(&mut unobtained, &unobtained_scalars);
+        assert_eq!(unobtained.stability_percent, None);
+        assert_eq!(unobtained.war_support_percent, None);
+    }
+
+    // ---- D53 subject-autonomy POV identity (namespace-safe numeric join) ----
+
+    fn autonomy_view(
+        rows: Vec<replay_core::SubjectAutonomyCurrentRow>,
+    ) -> DiplomacyView {
+        DiplomacyView {
+            status: ViewStatus::Present,
+            pairs: Default::default(),
+            countries: Default::default(),
+            war_relations: Leaf::Absent,
+            wars: Leaf::Absent,
+            faction_members: Leaf::Absent,
+            operation_instances: Leaf::Absent,
+            operation_token_memberships: Leaf::Absent,
+            intel_levels: Leaf::Absent,
+            intel_network_graphs: Leaf::Absent,
+            subject_autonomy_current: Leaf::Measured(rows),
+            agency_upgrade_controller_refresh: Leaf::Absent,
+            cipher_controller_refresh: Leaf::Absent,
+            intelligence_controller_companion: Leaf::Absent,
+            domain53_snapshot_payload_sha256: Leaf::Absent,
+            relation_flags: Default::default(),
+        }
+    }
+
+    fn autonomy_row(
+        overlord_id: u32,
+        subject_id: u32,
+    ) -> replay_core::SubjectAutonomyCurrentRow {
+        replay_core::SubjectAutonomyCurrentRow {
+            overlord: Leaf::Unobtained,
+            subject: Leaf::Unobtained,
+            overlord_tag_db_id: overlord_id,
+            subject_tag_db_id: subject_id,
+            current_state_hash: 1,
+            previous_state_hash: None,
+            next_state_hash: None,
+            ratio_raw: 0,
+            current_score_raw: 0,
+            lower_score_raw: 0,
+            upper_score_raw: 0,
+            last_modified_date: Leaf::Unobtained,
+            last_modified_date_raw: 0,
+            direction: Leaf::Unobtained,
+        }
+    }
+
+    /// A POV whose resolved database id is 456 must join ONLY id-456 rows —
+    /// never a row whose id happens to equal the POV tag's numeric spelling
+    /// (the `"123"`-as-real-TAG collision), and a POV with no numeric
+    /// identity joins no row at all.
+    #[test]
+    fn subject_autonomy_numeric_join_uses_resolved_id_not_tag_spelling() {
+        let view = autonomy_view(vec![autonomy_row(123, 7), autonomy_row(456, 8)]);
+
+        let (available, rows) = subject_autonomy_rows(&view, "123", Some(456));
+        assert!(available);
+        assert_eq!(rows.len(), 1, "only the resolved-id row joins: {rows:?}");
+        assert!(rows[0].pov_is_overlord);
+        assert_eq!(rows[0].counterpart_tag_db_id, 8);
+
+        let (available, rows) = subject_autonomy_rows(&view, "123", None);
+        assert!(available, "the collection stays available");
+        assert!(
+            rows.is_empty(),
+            "no numeric identity => no spelling-guessed join: {rows:?}"
+        );
+    }
+
+    struct MemorySource {
+        hours: Vec<i64>,
+        frames: std::collections::BTreeMap<i64, serde_json::Value>,
+    }
+
+    impl replay_core::ReplaySource for MemorySource {
+        fn game_id(&self) -> &str {
+            "binding_unit_test"
+        }
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+        fn frame(
+            &self,
+            hour_index: i64,
+        ) -> Result<replay_core::RawFrame, replay_core::SourceError> {
+            let rest = self
+                .frames
+                .get(&hour_index)
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .ok_or_else(|| {
+                    replay_core::SourceError::Open(format!("no frame at {hour_index}"))
+                })?;
+            Ok(replay_core::RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest,
+            })
+        }
+    }
+
+    fn frame_from_json(rest: serde_json::Value) -> replay_core::WorldTimeline {
+        let source = MemorySource {
+            hours: vec![0],
+            frames: [(0, rest)].into_iter().collect(),
+        };
+        replay_core::WorldTimeline::open(Box::new(source)).expect("open memory timeline")
+    }
+
+    #[test]
+    fn pov_numeric_identity_resolves_through_d18_map_before_spelling() {
+        // A real recorded tag "123" whose d18 database id is 456.
+        let timeline = frame_from_json(serde_json::json!({
+            "countries": { "123": { "_r2_tag_db_id": 456 } }
+        }));
+        let frame = timeline.frame(0).expect("frame");
+        let view = frame.diplomacy();
+        assert_eq!(
+            resolve_pov_numeric_identity(&frame, view, "123"),
+            Some(456),
+            "the d18 map is authoritative over the numeric spelling"
+        );
+        // A numeric spelling that is NOT a recorded tag keeps the deliberate
+        // canonical-numeric-spelling fallback identity.
+        assert_eq!(resolve_pov_numeric_identity(&frame, view, "789"), Some(789));
+
+        // A recorded tag with an unmeasured id disables numeric matching
+        // rather than guessing from the spelling.
+        let timeline = frame_from_json(serde_json::json!({
+            "countries": { "123": {} }
+        }));
+        let frame = timeline.frame(0).expect("frame");
+        let view = frame.diplomacy();
+        assert_eq!(resolve_pov_numeric_identity(&frame, view, "123"), None);
     }
 }

@@ -694,14 +694,28 @@ fn build_segment(
     validate_raw_identity(&raw.first_record, entry)?;
     let frames = &raw.frames;
     let mut snapshots = BTreeMap::new();
+    let mut dates = BTreeMap::new();
     for indexed in &container.index().snapshots {
         let hour = indexed
             .hour_index
             .ok_or("standalone snapshot index entry has no hour")?;
+        // The source index is the only authority for an hour's date. Carry it
+        // into the stitch so the published playback index can date every
+        // visible hour; never re-derive it from a snapshot body later.
+        let date = indexed
+            .date
+            .as_deref()
+            .map(str::trim)
+            .filter(|date| !date.is_empty())
+            .ok_or_else(|| {
+                format!("standalone snapshot index entry for hour {hour} carries no date")
+            })?
+            .to_string();
         let path = format!("payload/{}/{}", container.game_id(), indexed.file);
         let receipt = container
             .authenticate_entry(&path)
             .map_err(|error| format!("authenticate standalone snapshot {hour} failed: {error}"))?;
+        dates.insert(hour, date);
         if snapshots
             .insert(
                 hour,
@@ -743,6 +757,12 @@ fn build_segment(
     for (hour, snapshot) in &snapshots {
         let disposition = CoverageDisposition::Snapshot {
             sha256: snapshot.receipt.sha256().to_string(),
+            date: Some(
+                dates
+                    .get(hour)
+                    .ok_or("standalone snapshot date disappeared after index admission")?
+                    .clone(),
+            ),
         };
         let extent = frames
             .get(hour)

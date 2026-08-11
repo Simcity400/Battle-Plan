@@ -1,14 +1,10 @@
-//! Decisions-panel chrome (U2 wave — UI_COVERAGE_MATRIX §1 "Decisions" row,
-//! REPLAY_PRODUCTION_PLAN §6a).
+//! Decisions-panel chrome. Generic element geometry follows
+//! `replay_interface/documents/UI_LAYOUT_LAW.md` §§3 and 6.1; shipping XUI19
+//! presentation is governed by its packet-local production contract.
 //!
-//! the game renders **all** decisions/missions through a single small chrome panel
-//! (`interface/countrydecisionview.gui`): a scrolling grid of *category tabs*
-//! (`category_header`) each holding *decision cards* (`decision_item` /
-//! `targeted_decision_item` / `timed_decision_item` /
-//! `on_map_decision_locator_item`). The card *content* is data-driven from the
-//! script (`common/decisions/*.txt` + `common/decisions/categories/*.txt`) and
-//! its localisation/GFX. This module does two file-derived jobs and one binding
-//! seam:
+//! the game renders decisions and missions through the authored
+//! `interface/countrydecisionview.gui` category and card templates. This module
+//! provides two file-derived utilities plus a carrier-neutral card projection:
 //!
 //!   1. **Layout** ([`parse_decision_layout`]) — parse the shipped `.gui` via the
 //!      shared [`crate::gui`] parser and surface the chrome windows + card
@@ -18,8 +14,10 @@
 //!      `id → {category, name-loc-key, icon-sprite}` and resolve those against
 //!      the recording's localisation + sprite registry (the `N resolve / total`
 //!      gate).
-//!   3. **Binding** ([`decision_card_binding`]) — fold the per-decision dynamic
-//!      STATE (available / active / on-cooldown / cost / timer) onto a card.
+//!   3. **Card projection** ([`decision_card_binding`]) — fold caller-supplied
+//!      state onto one card. The helper grants no carrier authority: XUI18 uses
+//!      it only after power-balance admission, while XUI19 owns its independent
+//!      all-country decision carrier.
 //!
 //! ## Data label discipline (Constraint 3)
 //!
@@ -28,13 +26,10 @@
 //!     (`GFX_decision_<icon>` / category `GFX_decision_category_<icon>`), and the
 //!     card-icon fail-closed default (`GFX_decision_unknown`, the `decision_item`
 //!     `icon` element's shipped `spriteType`). All cited from shipped files.
-//!   * **CAPTURE / NEW** — the per-decision dynamic STATE (which decisions are
-//!     available/active/on-cooldown, their remaining timers and PP/other costs)
-//!     is *simulation* state, one of the inventory's 14 NEW streams
-//!     (REPLAY_DATA_REQUIREMENTS §9c / EXTRACTION_NEEDS A18). It is not yet a
-//!     `replay_core` view, so [`decision_card_binding`] takes it as an explicit
-//!     input and renders the **fail-closed absent form** (dynamic fields `None`)
-//!     when no state is supplied.
+//!   * **RUNTIME** — shipping XUI19 state comes from its strict passive
+//!     all-country decision-evaluation carrier; XUI18 supplies state only after
+//!     its own authenticated power-balance admission. [`decision_card_binding`]
+//!     remains carrier-neutral and fails closed when state is not supplied.
 //!   * **UNKNOWN** — cost/timer NUMBER formatting (PP glyph, +/- colouring,
 //!     day/week rendering) is engine-computed; any supplied text is carried raw
 //!     (never fabricated).
@@ -44,7 +39,7 @@ use crate::gfx::SpriteRegistry;
 use crate::gui::{GuiElement, LayoutSet};
 use crate::loc::Localisation;
 use crate::paradox_text::{parse_file, Value};
-use crate::Result;
+use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
 // ===========================================================================
@@ -64,6 +59,10 @@ pub const ROOT_WINDOW: &str = "countrydecisionview";
 pub const DECISION_GRID: &str = "decision_grid";
 /// The category-tab header template.
 pub const CATEGORY_HEADER_WINDOW: &str = "category_header";
+/// Authored category-description child inserted immediately after a native
+/// category header when no category-owned scripted GUI replaces it.
+pub const CATEGORY_DESCRIPTION_WINDOW: &str = "decision_category_desc";
+pub const CUSTOM_ICON_ITEM_WINDOW: &str = "custom_icon_item";
 
 /// The four decision-card templates, in shipped declaration order. Each renders
 /// one decision instance; which template a decision uses is classified from its
@@ -121,6 +120,19 @@ pub struct DecisionPanelLayout {
     /// The four card templates, in [`CARD_TEMPLATES`] order.
     pub cards: Vec<DecisionCardTemplate>,
     pub recoveries: usize,
+}
+
+/// Exact effective-VFS authored trees consumed by the shipping XUI19 compositor.
+/// This contains no runtime rows or recorder geometry.
+#[derive(Clone, Debug)]
+pub struct DecisionAuthoredScene {
+    pub source_file: String,
+    pub root: GuiElement,
+    pub decision_grid: GuiElement,
+    pub category_header: GuiElement,
+    pub category_description: GuiElement,
+    pub custom_icon_item: GuiElement,
+    pub card_templates: BTreeMap<String, GuiElement>,
 }
 
 impl DecisionPanelLayout {
@@ -228,7 +240,92 @@ pub struct DecisionCategoryDef {
     pub icon_token: Option<String>,
     /// A full `picture = GFX_...` sprite (takes precedence over `icon`).
     pub picture: Option<String>,
+    /// Exact authored `scripted_gui = <definition-id>` binding, when present.
+    /// Runtime scripted-GUI rows never infer their decision-category parent.
+    pub scripted_gui: Option<String>,
+    /// Whether this category declares dynamic custom-icon children. Their
+    /// runtime rows need a separate authenticated carrier.
+    pub has_custom_icons: bool,
+    /// Exact authored declarations in file order. Runtime trigger results and
+    /// final formatted text come from the passive XUI19 carrier.
+    pub custom_icons: Vec<DecisionCategoryCustomIconDef>,
     pub source_file: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionCategoryCustomIconDef {
+    pub source_ordinal: u32,
+    pub tag: String,
+    pub value_loc_key: String,
+    pub desc_loc_key: String,
+}
+
+fn unique_named_kind(layouts: &LayoutSet, name: &str, kind: &str) -> Result<GuiElement> {
+    let matches = layouts
+        .find_by_name(name)
+        .into_iter()
+        .filter(|element| element.element_type.eq_ignore_ascii_case(kind))
+        .cloned()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [element] => Ok(element.clone()),
+        [] => Err(GameUiError::missing(format!(
+            "{DECISION_VIEW_GUI}: required {kind} {name:?} is absent"
+        ))),
+        _ => Err(GameUiError::parse(format!(
+            "{DECISION_VIEW_GUI}: required {kind} {name:?} is ambiguous in the effective file"
+        ))),
+    }
+}
+
+/// Load the authored roots/templates which dynamic XUI19 rows will clone.
+/// The grid must be uniquely owned by the returned panel root.
+pub fn load_decision_authored_scene(resolver: &AssetResolver) -> Result<DecisionAuthoredScene> {
+    let resolved = resolver.resolve_file(DECISION_VIEW_GUI)?;
+    let doc = parse_file(&resolved.path)?;
+    if !doc.recoveries.is_empty() {
+        return Err(GameUiError::parse(format!(
+            "{} required parser recovery",
+            resolved.rel_path
+        )));
+    }
+    let mut layouts = LayoutSet::default();
+    layouts.add_document(&resolved.rel_path, &doc);
+    let root = unique_named_kind(&layouts, ROOT_WINDOW, "containerWindowType")?;
+    let decision_grid = unique_named_kind(&layouts, DECISION_GRID, "gridBoxType")?;
+    let category_header =
+        unique_named_kind(&layouts, CATEGORY_HEADER_WINDOW, "containerWindowType")?;
+    let category_description =
+        unique_named_kind(&layouts, CATEGORY_DESCRIPTION_WINDOW, "containerWindowType")?;
+    let custom_icon_item =
+        unique_named_kind(&layouts, CUSTOM_ICON_ITEM_WINDOW, "containerWindowType")?;
+    let mut owned_grid = Vec::new();
+    root.find_by_name(DECISION_GRID, &mut owned_grid);
+    if owned_grid.len() != 1
+        || !owned_grid[0]
+            .element_type
+            .eq_ignore_ascii_case("gridBoxType")
+    {
+        return Err(GameUiError::parse(
+            "XUI19 countrydecisionview does not uniquely own decision_grid",
+        ));
+    }
+    let card_templates = CARD_TEMPLATES
+        .iter()
+        .map(|name| {
+            unique_named_kind(&layouts, name, "containerWindowType")
+                .map(|element| ((*name).to_string(), element))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    Ok(DecisionAuthoredScene {
+        source_file: resolved.rel_path,
+        root,
+        decision_grid,
+        category_header,
+        category_description,
+        custom_icon_item,
+        card_templates,
+    })
 }
 
 /// One decision definition (the card content source).
@@ -327,6 +424,85 @@ fn is_categories_path(rel: &str) -> bool {
         .contains("/categories/")
 }
 
+fn decision_category_def(
+    id: &str,
+    value: &Value,
+    source_file: &str,
+) -> Result<DecisionCategoryDef> {
+    let mut custom_icons = Vec::new();
+    if let Some(object) = value.as_object() {
+        for (ordinal, entry) in object
+            .iter()
+            .filter(|entry| {
+                entry
+                    .key
+                    .as_deref()
+                    .is_some_and(|key| key.eq_ignore_ascii_case("custom_icon"))
+            })
+            .enumerate()
+        {
+            let block = entry.value.as_object().ok_or_else(|| {
+                GameUiError::parse(format!(
+                    "decision category {id:?} custom_icon #{ordinal} in {source_file:?} is not an object"
+                ))
+            })?;
+            let scalar = |field: &str| {
+                block
+                    .iter()
+                    .find(|entry| {
+                        entry
+                            .key
+                            .as_deref()
+                            .is_some_and(|key| key.eq_ignore_ascii_case(field))
+                    })
+                    .and_then(|entry| entry.value.as_scalar())
+                    .ok_or_else(|| {
+                    GameUiError::parse(format!(
+                        "decision category {id:?} custom_icon #{ordinal} in {source_file:?} lacks {field:?}"
+                    ))
+                })
+            };
+            custom_icons.push(DecisionCategoryCustomIconDef {
+                source_ordinal: u32::try_from(ordinal).map_err(|_| {
+                    GameUiError::parse(format!(
+                        "decision category {id:?} has too many custom_icon declarations"
+                    ))
+                })?,
+                tag: scalar("tag")?.to_string(),
+                value_loc_key: scalar("value")?.to_string(),
+                desc_loc_key: scalar("desc")?.to_string(),
+            });
+        }
+    }
+    Ok(DecisionCategoryDef {
+        id: id.to_string(),
+        icon_token: value.first_scalar_ci("icon").map(str::to_string),
+        picture: value.first_scalar_ci("picture").map(str::to_string),
+        scripted_gui: value.first_scalar_ci("scripted_gui").map(str::to_string),
+        has_custom_icons: !custom_icons.is_empty(),
+        custom_icons,
+        source_file: source_file.to_string(),
+    })
+}
+
+fn insert_effective_decision_category(
+    out: &mut BTreeMap<String, DecisionCategoryDef>,
+    definition: DecisionCategoryDef,
+) -> Result<()> {
+    let id = definition.id.clone();
+    match out.entry(id.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(definition);
+            Ok(())
+        }
+        std::collections::btree_map::Entry::Occupied(previous) => Err(GameUiError::parse(format!(
+            "decision category {id:?} is defined more than once in the effective VFS: {:?} and {:?}; no exact cross-file override law is admitted",
+            previous.get().source_file,
+            definition.source_file
+        ))),
+    }
+}
+
 /// Parse every decision *category* definition under
 /// `common/decisions/categories/`.
 pub fn parse_decision_categories(
@@ -343,13 +519,10 @@ pub fn parse_decision_categories(
             if entry.value.as_object().is_none() || id.starts_with('@') {
                 continue;
             }
-            out.entry(id.to_string())
-                .or_insert_with(|| DecisionCategoryDef {
-                    id: id.to_string(),
-                    icon_token: entry.value.first_scalar_ci("icon").map(str::to_string),
-                    picture: entry.value.first_scalar_ci("picture").map(str::to_string),
-                    source_file: file.rel_path.clone(),
-                });
+            insert_effective_decision_category(
+                &mut out,
+                decision_category_def(id, &entry.value, &file.rel_path)?,
+            )?;
         }
     }
     Ok(out)
@@ -369,6 +542,7 @@ pub fn parse_decisions(resolver: &AssetResolver) -> Result<DecisionSet> {
     };
 
     let files = resolver.list_files_recursive(DECISIONS_DIR, Some("txt"))?;
+    let mut decision_sources = BTreeMap::<String, String>::new();
     for file in files {
         if is_categories_path(&file.rel_path) {
             continue;
@@ -398,6 +572,14 @@ pub fn parse_decisions(resolver: &AssetResolver) -> Result<DecisionSet> {
                 };
                 if id.starts_with('@') {
                     continue;
+                }
+                if let Some(previous) =
+                    decision_sources.insert(id.to_string(), file.rel_path.clone())
+                {
+                    return Err(GameUiError::parse(format!(
+                        "decision {id:?} is defined more than once in the effective VFS: {previous:?} and {:?}; no exact cross-file override law is admitted",
+                        file.rel_path
+                    )));
                 }
                 set.decisions.push(DecisionDef {
                     id: id.to_string(),
@@ -498,12 +680,12 @@ pub fn resolve_decisions(
 }
 
 // ===========================================================================
-// Binding (decision-state stream → card) — fail-closed
+// Carrier-neutral state → card projection (fail-closed)
 // ===========================================================================
 
-/// A decision's dynamic availability in the recording (the NEW "decision state"
-/// stream). `Unknown` is the fail-closed value when the stream carries a
-/// decision but not a decodable status.
+/// A decision's dynamic availability for card projection. `Unknown` is the
+/// fail-closed value when the supplying authenticated route or diagnostic
+/// caller has no decodable status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DecisionAvailability {
     /// Available to take (passes `available`).
@@ -518,10 +700,10 @@ pub enum DecisionAvailability {
     Unknown,
 }
 
-/// One decision's dynamic STATE as the NEW recording stream must carry it
-/// (REPLAY_DATA_REQUIREMENTS §9c / EXTRACTION_NEEDS A18). This is the shape
-/// the binding consumes; it is NOT yet a `replay_core` view. `cost_text` /
-/// `timer_text` are raw engine strings (UNKNOWN formatting → carried verbatim).
+/// Optional dynamic state consumed by [`decision_card_binding`]. This shape is
+/// not carrier authority; callers must authenticate their own route.
+/// `cost_text` / `timer_text` are raw engine strings (UNKNOWN formatting →
+/// carried verbatim).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionStateEntry {
     pub decision_id: String,
@@ -552,9 +734,9 @@ pub struct DecisionCardBinding {
 }
 
 /// Build a decision card for `def`, folding in an optional [`DecisionStateEntry`].
-/// The static chrome is always filled from files; every dynamic field is `Some`
-/// only when the state stream supplies it, else `None` (fail-closed — never a
-/// fabricated "Available"/cost/timer).
+/// The helper authenticates no carrier. Static chrome is filled from files;
+/// every dynamic field is `Some` only when the caller supplies it, else `None`
+/// (fail-closed — never a fabricated "Available"/cost/timer).
 pub fn decision_card_binding(
     def: &DecisionDef,
     state: Option<&DecisionStateEntry>,
@@ -628,6 +810,9 @@ mod tests {
             id: "c".into(),
             icon_token: Some("generic_research".into()),
             picture: Some("GFX_decision_cat_picture_naval_treaties".into()),
+            scripted_gui: None,
+            has_custom_icons: false,
+            custom_icons: Vec::new(),
             source_file: "c.txt".into(),
         };
         assert_eq!(
@@ -650,6 +835,84 @@ mod tests {
     }
 
     #[test]
+    fn nested_scripted_gui_never_overrides_top_level_binding() {
+        let doc = parse_str(
+            r#"
+            USA_congress = {
+                icon = usa_congress
+                scripted_gui = usa_congress_decision_ui
+                visible = { scripted_gui = nested_value_must_not_leak }
+                custom_icon = {
+                    tag = USA
+                    value = usa_congress_value
+                    desc = usa_congress_desc
+                }
+            }
+            "#,
+        );
+        let value = doc.root.first_value_ci("USA_congress").unwrap();
+        let category = decision_category_def(
+            "USA_congress",
+            value,
+            "common/decisions/categories/USA_decision_categories.txt",
+        )
+        .unwrap();
+        assert_eq!(
+            category.scripted_gui.as_deref(),
+            Some("usa_congress_decision_ui")
+        );
+        assert!(category.has_custom_icons);
+        assert_eq!(category.custom_icons.len(), 1);
+        assert_eq!(category.custom_icons[0].source_ordinal, 0);
+        assert_eq!(category.custom_icons[0].tag, "USA");
+        assert_eq!(category.custom_icons[0].value_loc_key, "usa_congress_value");
+        assert_eq!(category.custom_icons[0].desc_loc_key, "usa_congress_desc");
+    }
+
+    #[test]
+    fn malformed_custom_icon_is_rejected_instead_of_partially_rendered() {
+        for body in [
+            "custom_icon = USA",
+            "custom_icon = { value = v desc = d }",
+            "custom_icon = { tag = USA desc = d }",
+            "custom_icon = { tag = USA value = v }",
+        ] {
+            let doc = parse_str(&format!("category = {{ {body} }}"));
+            let error = decision_category_def(
+                "category",
+                doc.root.first_value_ci("category").unwrap(),
+                "common/decisions/categories/test.txt",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("custom_icon"));
+        }
+    }
+
+    #[test]
+    fn duplicate_effective_category_id_is_rejected_without_override_guess() {
+        let mut categories = BTreeMap::new();
+        for source in ["first.txt", "second.txt"] {
+            let result = insert_effective_decision_category(
+                &mut categories,
+                DecisionCategoryDef {
+                    id: "duplicate".into(),
+                    icon_token: None,
+                    picture: None,
+                    scripted_gui: None,
+                    has_custom_icons: false,
+                    custom_icons: Vec::new(),
+                    source_file: source.into(),
+                },
+            );
+            if source == "first.txt" {
+                result.unwrap();
+            } else {
+                assert!(result.unwrap_err().to_string().contains("defined more than once"));
+            }
+        }
+    }
+
+    #[test]
     fn template_classifier_reads_declared_fields() {
         let targeted = parse_str("d = { targets = { GER } }")
             .root
@@ -669,6 +932,62 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(classify_template(&plain), "decision_item");
+    }
+
+    #[test]
+    fn category_scripted_gui_binding_is_exact_and_non_recursive() {
+        let doc = parse_str(
+            r#"
+            USA_congress = {
+                icon = usa_congress
+                scripted_gui = usa_congress_decision_ui
+                visible = { scripted_gui = nested_value_must_not_leak }
+            }
+            "#,
+        );
+        let value = doc.root.first_value_ci("USA_congress").unwrap();
+        let category = decision_category_def(
+            "USA_congress",
+            value,
+            "common/decisions/categories/USA_decision_categories.txt",
+        )
+        .unwrap();
+        assert_eq!(
+            category.scripted_gui.as_deref(),
+            Some("usa_congress_decision_ui")
+        );
+    }
+
+    #[test]
+    fn duplicate_effective_category_id_is_rejected_without_an_override_guess() {
+        let mut categories = BTreeMap::new();
+        insert_effective_decision_category(
+            &mut categories,
+            DecisionCategoryDef {
+                id: "duplicate".into(),
+                icon_token: None,
+                picture: None,
+                scripted_gui: Some("first".into()),
+                has_custom_icons: false,
+                custom_icons: Vec::new(),
+                source_file: "common/decisions/categories/first.txt".into(),
+            },
+        )
+        .unwrap();
+        let error = insert_effective_decision_category(
+            &mut categories,
+            DecisionCategoryDef {
+                id: "duplicate".into(),
+                icon_token: None,
+                picture: None,
+                scripted_gui: Some("second".into()),
+                has_custom_icons: false,
+                custom_icons: Vec::new(),
+                source_file: "common/decisions/categories/second.txt".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("defined more than once"));
     }
 
     #[test]
@@ -727,6 +1046,9 @@ mod tests {
                 id: "my_category".into(),
                 icon_token: None,
                 picture: None,
+                scripted_gui: None,
+                has_custom_icons: false,
+                custom_icons: Vec::new(),
                 source_file: "c.txt".into(),
             },
         )]);

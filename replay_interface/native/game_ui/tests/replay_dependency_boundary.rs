@@ -274,6 +274,26 @@ fn names_extractor_path(code: &str) -> bool {
 
 /// Every reach that is allowed to survive, keyed on the exact surviving text.
 fn is_allowed_extractor_path_mention(relative: &str, code: &str) -> bool {
+    // XUI27 is repository certification tooling, not a Replay product runtime.
+    // It is required to invoke the repository's one canonical validation
+    // wrapper, which is owned by the acquisition tree, and it also carries
+    // negative assertions that exclude acquisition sources from Replay's
+    // content-addressed closure. Keep this exception lexical and narrow: it
+    // admits only that wrapper or the explicit negative-test spellings.
+    if relative.starts_with("replay_interface/re_evidence/rendering_laws/xui27/") {
+        let validator = format!(
+            "{ACQUISITION_TREE}/native/scripts/Invoke-CentralRustValidation.ps1"
+        );
+        let prefix_check = format!("startswith(\"{ACQUISITION_TREE}/\")");
+        let exclusion_check = format!("\"{ACQUISITION_TREE}/\" not in");
+        let nested_check = format!("\"/{ACQUISITION_TREE}/\" in");
+        let refusal_fixture = format!("REPO / \"{ACQUISITION_TREE}\" / \"pass.json\"");
+        return code.contains(&validator)
+            || code.contains(&prefix_check)
+            || code.contains(&exclusion_check)
+            || code.contains(&nested_check)
+            || code.contains(&refusal_fixture);
+    }
     match relative {
         // Module-docstring prose. Python docstrings are scanned rather than
         // skipped (a triple-quoted string can hold executable text), so the

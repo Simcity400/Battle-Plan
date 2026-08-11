@@ -12,18 +12,19 @@ use crate::{
 };
 use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{
-    BufferSource, FamilyDisposition, FoundationOperationIdentity, MapVisualFamily, ParentAnchor,
-    ParticlePacket, TextureBinding, Xmap20ActiveEffect,
-    Xmap20DependencyReceipts, Xmap20EffectAdmission, Xmap20EffectFrame,
-    XMAP20_EXECUTABLE_SHA256, XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA,
-    XMAP20_PARTICLE_REGISTRY_RVA, XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA,
+    BufferSource, FamilyDisposition, MapVisualFamily, ParentAnchor, ParticlePacket, TextureBinding,
+    Xmap20ActiveEffect, Xmap20DependencyReceipts, Xmap20EffectAdmission, Xmap20EffectFrame,
+    XMAP20_EXECUTABLE_SHA256, XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA, XMAP20_PARTICLE_REGISTRY_RVA,
+    XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA,
 };
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeSet;
 
 pub const XMAP20_PREPARED_FRAME_SCHEMA: &str = "hoi4.xmap20.prepared-effects.a729.v1";
-pub const XMAP20_TRIGGER_RECEIPT_SCHEMA: &str = "hoi4.xmap20.authored-trigger.a729.v1";
+pub const XMAP20_TRIGGER_RECEIPT_SCHEMA: &str = "hoi4.xmap20.authored-trigger.a729.v2";
+pub const XMAP20_ASSIGNED_STAGE_NAME: &str = "particles_effects";
+pub const XMAP20_ASSIGNED_OPERATION_NAME: &str = "particles.effects.draw";
 
 /// Exact authored row selected by the semantic owner of one effect.
 ///
@@ -36,6 +37,7 @@ pub struct Xmap20TriggerReceipt {
     pub schema: String,
     pub semantic_owner_packet: String,
     pub semantic_source_id: String,
+    pub entity_instance_id: Option<u64>,
     pub source_content: UsedContentKey,
     pub entity_name: Option<String>,
     pub state_name: Option<String>,
@@ -84,9 +86,9 @@ impl Xmap20TriggerReceipt {
                 .node_token
                 .as_ref()
                 .is_some_and(|node| node.trim().is_empty())
-            || self.time_f32_bits.is_some_and(|bits| {
-                !f32::from_bits(bits).is_finite() || f32::from_bits(bits) < 0.0
-            })
+            || self
+                .time_f32_bits
+                .is_some_and(|bits| !f32::from_bits(bits).is_finite() || f32::from_bits(bits) < 0.0)
             || !valid_sha256(&self.owner_admission_sha256)
         {
             return Err("XMAP20 authored-trigger receipt is incomplete".into());
@@ -95,13 +97,22 @@ impl Xmap20TriggerReceipt {
             .validate()
             .map_err(|error| format!("XMAP20 trigger content identity: {error}"))?;
         match (&self.entity_name, &self.state_name) {
-            (Some(entity), Some(state)) if !entity.trim().is_empty() && !state.trim().is_empty() => {}
+            (Some(entity), Some(state))
+                if !entity.trim().is_empty() && !state.trim().is_empty() => {}
             (None, None) if self.semantic_owner_packet != "XMAP13" => {}
             _ => {
                 return Err(
                     "XMAP20 trigger entity/state identity disagrees with its semantic owner".into(),
                 )
             }
+        }
+        match (self.semantic_owner_packet.as_str(), self.entity_instance_id) {
+            ("XMAP13", Some(entity_instance_id)) if entity_instance_id != 0 => {}
+            ("XMAP13", _) => {
+                return Err("XMAP20 XMAP13 trigger omitted its exact entity instance".into())
+            }
+            (_, None) => {}
+            _ => return Err("XMAP20 non-XMAP13 trigger claimed an entity instance".into()),
         }
         if self.semantic_owner_packet == "XMAP13"
             && self
@@ -111,9 +122,7 @@ impl Xmap20TriggerReceipt {
         {
             return Err("XMAP20 XMAP13 trigger omitted its authored entity node".into());
         }
-        let xmap19_identity = self
-            .semantic_source_id
-            .starts_with("xmap19.weather:");
+        let xmap19_identity = self.semantic_source_id.starts_with("xmap19.weather:");
         if (self.semantic_owner_packet == "XMAP19") != xmap19_identity {
             return Err("XMAP20 weather source identity is not owned exactly by XMAP19".into());
         }
@@ -126,6 +135,48 @@ impl Xmap20TriggerReceipt {
 
 pub trait Xmap20TriggerProvider {
     fn trigger_for_effect(&self, effect: &Xmap20ActiveEffect) -> Result<Xmap20TriggerReceipt>;
+}
+
+/// Exact production trigger router. Entity anchors are authenticated by the
+/// presentation-independent XMAP13 census; world/weather anchors are
+/// authenticated by XMAP19. No generic or recorder-derived fallback exists.
+pub struct Xmap20ProductionTriggerProvider<'a> {
+    pub entity_identities: &'a crate::Xmap13EffectIdentityProvider,
+    pub weather: &'a crate::PreparedXmap19WeatherFrame,
+}
+
+impl Xmap20TriggerProvider for Xmap20ProductionTriggerProvider<'_> {
+    fn trigger_for_effect(&self, effect: &Xmap20ActiveEffect) -> Result<Xmap20TriggerReceipt> {
+        match &effect.parent_anchor {
+            ParentAnchor::Entity { .. } => self.entity_identities.trigger_for_effect(effect),
+            ParentAnchor::World { .. } => {
+                let trigger = self.weather.weather_trigger(
+                    &effect.producer_instance_id,
+                    effect.authored_event_index,
+                    effect.authored_effect_index,
+                )?;
+                Xmap20TriggerReceipt {
+                    schema: XMAP20_TRIGGER_RECEIPT_SCHEMA.into(),
+                    semantic_owner_packet: "XMAP19".into(),
+                    semantic_source_id: trigger.semantic_source_id,
+                    entity_instance_id: None,
+                    source_content: trigger.source_content,
+                    entity_name: None,
+                    state_name: None,
+                    authored_event_index: trigger.authored_event_index,
+                    authored_effect_index: trigger.authored_effect_index,
+                    particle_token: trigger.particle_token,
+                    node_token: trigger.node_token,
+                    time_f32_bits: trigger.time_f32_bits,
+                    keep_particle: trigger.keep_particle,
+                    trigger_once: trigger.trigger_once,
+                    owner_admission_sha256: trigger.owner_admission_sha256,
+                    deterministic_sha256: String::new(),
+                }
+                .seal()
+            }
+        }
+    }
 }
 
 pub struct Xmap20EffectsAdapter {
@@ -157,6 +208,8 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
         {
             return Err("XMAP20 semantic-lifecycle authority gap is absent".into());
         }
+        let assigned = context
+            .require_assigned_stage(XMAP20_ASSIGNED_STAGE_NAME, XMAP20_ASSIGNED_OPERATION_NAME)?;
         let producer_registration_sha256 = Sha256::hex(
             format!(
                 "XMAP20\0{XMAP20_PREPARED_FRAME_SCHEMA}\0{XMAP20_EXECUTABLE_SHA256}\0{XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA:08x}\0{XMAP20_PARTICLE_REGISTRY_RVA:08x}\0{XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA:08x}"
@@ -175,39 +228,30 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
                     .clone(),
             }
         } else {
-            let ordered_operations = self
-                .prepared
-                .ordered_particles
-                .iter()
-                .enumerate()
-                .map(|(order, packet)| {
-                    Ok(FoundationOperationIdentity {
-                        operation_id: format!(
-                            "xmap20.particle.{}.{}.{}.{}",
-                            packet.effect_instance_id,
-                            packet.bucket,
-                            packet.packet_ordinal,
-                            packet.draw_order
-                        ),
-                        global_order: u32::try_from(order)?,
-                        program_sha256: Sha256::hex(&serde_json::to_vec(&packet.shader_program)?),
-                        ordered_resources_sha256: Sha256::hex(&serde_json::to_vec(&(
-                            &packet.content_identity,
-                            &packet.packet_matrix_4x4_f32_bits,
-                            &packet.gpu_instance_records_sha256,
-                            &packet.ordered_texture_bindings,
-                            &packet.geometry,
-                            &packet.ordered_constant_buffers,
-                        ))?),
-                        target_sha256: self.prepared.admission.provider_receipts_sha256.clone(),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let program_sha256 = Sha256::hex(&serde_json::to_vec(
+                &self
+                    .prepared
+                    .ordered_particles
+                    .iter()
+                    .map(|packet| &packet.shader_program)
+                    .collect::<Vec<_>>(),
+            )?);
+            let ordered_resources_sha256 = Sha256::hex(&serde_json::to_vec(&(
+                &self.prepared.trigger_receipts,
+                &self.prepared.ordered_used_content,
+                &self.prepared.admission.ordered_particle_submissions,
+                &self.prepared.ordered_particles,
+            ))?);
+            let operation = assigned.foundation_operation_identity(
+                program_sha256,
+                ordered_resources_sha256,
+                self.prepared.admission.provider_receipts_sha256.clone(),
+            )?;
             FamilyDisposition::Present {
                 payload_schema: XMAP20_PREPARED_FRAME_SCHEMA.into(),
                 producer_registration_sha256,
                 payload_sha256: self.prepared.deterministic_sha256.clone(),
-                ordered_operations,
+                ordered_operations: vec![operation],
                 ordered_used_content: self.prepared.ordered_used_content.clone(),
             }
         };
@@ -215,7 +259,17 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
             disposition,
             prepared_terrain: None,
             prepared_political: None,
+            prepared_thin_borders: None,
+            prepared_rivers_straits: None,
+            prepared_water: None,
+            prepared_lighting: None,
+            prepared_weather: None,
             prepared_effects: Some(self.prepared.clone()),
+            prepared_units: None,
+            prepared_combat: None,
+            prepared_orders: None,
+            prepared_rail_supply: None,
+            prepared_map_modes: None,
             consumed_gap_ids: vec![gap_id.into()],
         })
     }
@@ -355,15 +409,24 @@ fn validate_trigger_join(
         return Err("XMAP20 authored trigger differs from lifecycle identity".into());
     }
     match &effect.parent_anchor {
-        ParentAnchor::Entity { node_token, .. } => {
+        ParentAnchor::Entity {
+            entity_instance_id,
+            node_token,
+        } => {
             if trigger.semantic_owner_packet != "XMAP13"
+                || effect.producer_kind != "unit"
+                || trigger.entity_instance_id != Some(*entity_instance_id)
                 || trigger.node_token.as_deref() != Some(node_token.as_str())
             {
                 return Err("XMAP20 entity trigger differs from XMAP13 node identity".into());
             }
         }
         ParentAnchor::World { .. } => {
-            if trigger.semantic_owner_packet == "XMAP13" || trigger.node_token.is_some() {
+            if effect.producer_kind != "weather"
+                || trigger.semantic_owner_packet == "XMAP13"
+                || trigger.entity_instance_id.is_some()
+                || trigger.node_token.is_some()
+            {
                 return Err(
                     "XMAP20 world trigger cannot claim XMAP13 ownership or an entity node".into(),
                 );
@@ -410,9 +473,7 @@ fn valid_sha256(value: &str) -> bool {
 
 fn valid_xmap19_source_id(value: &str) -> bool {
     let parts = value.split(':').collect::<Vec<_>>();
-    if parts.len() != 6
-        || parts[0] != "xmap19.weather"
-        || !matches!(parts[5], "primary" | "fading")
+    if parts.len() != 6 || parts[0] != "xmap19.weather" || !matches!(parts[5], "primary" | "fading")
     {
         return false;
     }
@@ -490,6 +551,7 @@ mod tests {
             schema: XMAP20_TRIGGER_RECEIPT_SCHEMA.into(),
             semantic_owner_packet: "XMAP13".into(),
             semantic_source_id: "division:12".into(),
+            entity_instance_id: Some(12),
             source_content: content(),
             entity_name: Some("GER_infantry".into()),
             state_name: Some("idle".into()),
@@ -514,6 +576,15 @@ mod tests {
         wrong.particle_token = "different".into();
         wrong = wrong.seal().unwrap();
         assert!(validate_trigger_join(&effect(), &wrong).is_err());
+
+        let mut wrong_entity = trigger();
+        wrong_entity.entity_instance_id = Some(13);
+        wrong_entity = wrong_entity.seal().unwrap();
+        assert!(validate_trigger_join(&effect(), &wrong_entity).is_err());
+
+        let mut wrong_kind = effect();
+        wrong_kind.producer_kind = "weather".into();
+        assert!(validate_trigger_join(&wrong_kind, &trigger()).is_err());
     }
 
     #[test]
@@ -528,8 +599,7 @@ mod tests {
     fn world_weather_trigger_preserves_omitted_node_and_flags() {
         let mut weather_effect = effect();
         weather_effect.producer_kind = "weather".into();
-        weather_effect.producer_instance_id =
-            "xmap19.weather:r12:e3:c2:p1:primary".into();
+        weather_effect.producer_instance_id = "xmap19.weather:r12:e3:c2:p1:primary".into();
         weather_effect.authored_event_index = 0;
         weather_effect.authored_effect_index = 0;
         weather_effect.parent_anchor = ParentAnchor::World {
@@ -539,6 +609,7 @@ mod tests {
             schema: XMAP20_TRIGGER_RECEIPT_SCHEMA.into(),
             semantic_owner_packet: "XMAP19".into(),
             semantic_source_id: weather_effect.producer_instance_id.clone(),
+            entity_instance_id: None,
             source_content: content(),
             entity_name: Some("weather_rain_light".into()),
             state_name: Some("default".into()),

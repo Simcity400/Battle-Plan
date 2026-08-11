@@ -5,7 +5,9 @@
 //! the exact formatted substitution selected by the engine. Static `$KEY$`
 //! references may recurse through the effective localisation table.
 
-use replay_core::{RuntimeTextLayout, RuntimeTextRecord, RuntimeTextSource};
+use replay_core::{
+    RuntimeTextCatalog, RuntimeTextLayout, RuntimeTextRecord, RuntimeTextSource,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_EXPANSION_DEPTH: usize = 32;
@@ -58,6 +60,54 @@ impl RuntimeTextContext {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeTextViewJoin {
+    /// Unique exact owner rows. Ambiguous elements are deliberately absent.
+    pub by_element: BTreeMap<String, RuntimeTextContext>,
+    /// Elements with more than one same-frame/scope/view candidate. The
+    /// carrier has no lawful last-writer ordering field, so callers must not
+    /// choose one.
+    pub ambiguous_elements: BTreeSet<String>,
+}
+
+/// Select exact runtime text for one observer-owned view.
+///
+/// `None` means the catalog does not claim complete coverage. Matching is
+/// byte-exact on frame, scope and view; no country/global or view-name fallback
+/// is permitted. Duplicate element candidates are removed and named in the
+/// result instead of being resolved by map iteration order.
+pub fn join_exact_runtime_text_view(
+    catalog: &RuntimeTextCatalog,
+    frame_hour: i64,
+    pov_country_or_global: &str,
+    view_id: &str,
+) -> Option<RuntimeTextViewJoin> {
+    if !catalog.contexts_complete {
+        return None;
+    }
+    let mut joined = RuntimeTextViewJoin::default();
+    for record in catalog.contexts.values().filter(|record| {
+        record.frame_hour == frame_hour
+            && record.pov_country_or_global == pov_country_or_global
+            && record.view_id == view_id
+    }) {
+        if joined
+            .by_element
+            .insert(
+                record.element_id.clone(),
+                RuntimeTextContext::from(record),
+            )
+            .is_some()
+        {
+            joined.ambiguous_elements.insert(record.element_id.clone());
+        }
+    }
+    for element in &joined.ambiguous_elements {
+        joined.by_element.remove(element);
+    }
+    Some(joined)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TextIssueKind {
     MissingLocalisationKey,
@@ -67,6 +117,9 @@ pub enum TextIssueKind {
     MissingDynamicColor,
     InlineIconRequiresSpriteLayout,
     RuntimeTextIdentityMismatch,
+    MissingLocalisationProvenance,
+    AmbiguousLocalisationProvenance,
+    EngineTextLayoutRefused,
     LocalisationCycle,
     ExpansionDepthExceeded,
     UnterminatedToken,
@@ -96,6 +149,28 @@ pub fn resolve_localisation(
     key: &str,
     runtime: &RuntimeTextContext,
 ) -> ResolvedText {
+    resolve_localisation_inner(entries, key, runtime, false)
+}
+
+/// Resolve localisation while preserving authored U+00A3 inline-icon tokens
+/// for a downstream engine-layout consumer that performs the effective-VFS
+/// sprite/metrics join. This is deliberately separate from
+/// [`resolve_localisation`]: consumers without that join keep the existing
+/// typed refusal and cannot silently erase icons.
+pub fn resolve_localisation_preserving_inline_icons(
+    entries: &BTreeMap<String, String>,
+    key: &str,
+    runtime: &RuntimeTextContext,
+) -> ResolvedText {
+    resolve_localisation_inner(entries, key, runtime, true)
+}
+
+fn resolve_localisation_inner(
+    entries: &BTreeMap<String, String>,
+    key: &str,
+    runtime: &RuntimeTextContext,
+    preserve_inline_icons: bool,
+) -> ResolvedText {
     if let Some(exact) = &runtime.exact {
         return exact_result(
             exact,
@@ -109,7 +184,7 @@ pub fn resolve_localisation(
             true,
         );
     }
-    let mut state = ExpansionState::new(entries, runtime);
+    let mut state = ExpansionState::new(entries, runtime, preserve_inline_icons);
     state.expand_key(key, 0);
     state.finish()
 }
@@ -132,9 +207,69 @@ pub fn resolve_template(
             false,
         );
     }
-    let mut state = ExpansionState::new(entries, runtime);
+    let mut state = ExpansionState::new(entries, runtime, false);
     state.expand(template, 0);
     state.finish()
+}
+
+/// Resolve an authored literal/template while retaining U+00A3 icon tokens
+/// for a compositor that owns the exact sprite/frame/metric join.
+pub fn resolve_template_preserving_inline_icons(
+    entries: &BTreeMap<String, String>,
+    template: &str,
+    runtime: &RuntimeTextContext,
+) -> ResolvedText {
+    if let Some(exact) = &runtime.exact {
+        return exact_result(
+            exact,
+            matches!(
+                &exact.source,
+                RuntimeTextSource::Literal(identity)
+                    | RuntimeTextSource::AuthoredToken(identity)
+                    if identity == template
+            ),
+            template,
+            false,
+        );
+    }
+    let mut state = ExpansionState::new(entries, runtime, true);
+    state.expand(template, 0);
+    state.finish()
+}
+
+/// Consume an exact runtime row after the caller has already authenticated its
+/// `(view_id, element_id)` owner binding.
+///
+/// A setter-caller identity has no authored string to compare. The A25 carrier
+/// instead proves which registered widget received the final bytes, so this
+/// seam is intentionally usable only by an element-keyed compositor lookup.
+/// It performs no localisation or formatter emulation.
+pub fn resolve_element_bound_exact_runtime(runtime: &RuntimeTextContext) -> ResolvedText {
+    let Some(exact) = runtime.exact.as_ref() else {
+        return ResolvedText {
+            text: String::new(),
+            issues: vec![TextIssue {
+                kind: TextIssueKind::RuntimeTextIdentityMismatch,
+                token: "missing exact element-bound runtime text".to_string(),
+            }],
+            source_keys: BTreeSet::new(),
+        };
+    };
+    if !matches!(&exact.source, RuntimeTextSource::SetterCallerRva(_)) {
+        return ResolvedText {
+            text: String::new(),
+            issues: vec![TextIssue {
+                kind: TextIssueKind::RuntimeTextIdentityMismatch,
+                token: "element-bound bypass requires a setter-caller source".to_string(),
+            }],
+            source_keys: BTreeSet::new(),
+        };
+    }
+    ResolvedText {
+        text: normalize_engine_markup(&exact.engine_utf8),
+        issues: Vec::new(),
+        source_keys: BTreeSet::new(),
+    }
 }
 
 fn exact_result(
@@ -184,10 +319,15 @@ struct ExpansionState<'a> {
     issues: Vec<TextIssue>,
     source_keys: BTreeSet<String>,
     key_stack: Vec<String>,
+    preserve_inline_icons: bool,
 }
 
 impl<'a> ExpansionState<'a> {
-    fn new(entries: &'a BTreeMap<String, String>, runtime: &'a RuntimeTextContext) -> Self {
+    fn new(
+        entries: &'a BTreeMap<String, String>,
+        runtime: &'a RuntimeTextContext,
+        preserve_inline_icons: bool,
+    ) -> Self {
         Self {
             entries,
             runtime,
@@ -195,6 +335,7 @@ impl<'a> ExpansionState<'a> {
             issues: Vec::new(),
             source_keys: BTreeSet::new(),
             key_stack: Vec::new(),
+            preserve_inline_icons,
         }
     }
 
@@ -285,6 +426,14 @@ impl<'a> ExpansionState<'a> {
     where
         I: Iterator<Item = char>,
     {
+        // Composition may not erase an icon token. The engine text-layout
+        // primitive can place one only after an effective-content resolver
+        // supplies its exact sprite, decoded frame, frame width and texture
+        // height
+        // (`engine_text_layout::ResolvedInlineIconMetrics`). This localisation
+        // layer owns no such admitted sprite join, so it preserves the existing
+        // typed refusal instead of passing through a glyph-less token or
+        // assuming square/font-sized metrics.
         let mut key = String::new();
         while let Some(next) = chars.peek().copied() {
             if next.is_ascii_alphanumeric() || next == '_' {
@@ -305,7 +454,12 @@ impl<'a> ExpansionState<'a> {
                 }
             }
         }
-        self.issue(TextIssueKind::InlineIconRequiresSpriteLayout, key);
+        if self.preserve_inline_icons {
+            self.output.push('\u{00a3}');
+            self.output.push_str(&key);
+        } else {
+            self.issue(TextIssueKind::InlineIconRequiresSpriteLayout, key);
+        }
     }
 
     fn expand_variable<I>(&mut self, chars: &mut std::iter::Peekable<I>, depth: usize)
@@ -433,6 +587,52 @@ mod tests {
     }
 
     #[test]
+    fn layout_specific_resolution_preserves_icons_but_not_other_runtime_gaps() {
+        let entries = BTreeMap::from([
+            (
+                "ICON".to_string(),
+                "Before \u{00a3}political_power|2 after".to_string(),
+            ),
+            (
+                "MIXED".to_string(),
+                "\u{00a3}army_experience [GetValue]".to_string(),
+            ),
+        ]);
+        let ordinary = resolve_localisation(&entries, "ICON", &RuntimeTextContext::default());
+        assert_eq!(
+            ordinary.issues,
+            vec![TextIssue {
+                kind: TextIssueKind::InlineIconRequiresSpriteLayout,
+                token: "political_power|2".into(),
+            }]
+        );
+        let layout = resolve_localisation_preserving_inline_icons(
+            &entries,
+            "ICON",
+            &RuntimeTextContext::default(),
+        );
+        assert!(layout.admitted(), "{:?}", layout.issues);
+        assert_eq!(layout.text, "Before \u{00a3}political_power|2 after");
+
+        let mixed = resolve_localisation_preserving_inline_icons(
+            &entries,
+            "MIXED",
+            &RuntimeTextContext::default(),
+        );
+        assert_eq!(
+            mixed.issues,
+            vec![TextIssue {
+                kind: TextIssueKind::MissingDataFunction,
+                token: "GetValue".into(),
+            }]
+        );
+        assert_eq!(mixed.text, "\u{00a3}army_experience ");
+        // Production change that makes this fail: globally allowing icons
+        // without a sprite-layout join, erasing the icon token before TEXT1,
+        // or broadening the exception to data functions.
+    }
+
+    #[test]
     fn exact_authored_token_matches_key_or_template_but_caller_identity_fails_closed() {
         let entries = BTreeMap::new();
         let authored_key = RuntimeTextContext {
@@ -482,5 +682,9 @@ mod tests {
                 token: "$VAL|%0$".into(),
             }]
         );
+        let element_bound = resolve_element_bound_exact_runtime(&caller_only);
+        assert!(element_bound.admitted());
+        assert_eq!(element_bound.text, "74%");
+        assert!(element_bound.source_keys.is_empty());
     }
 }

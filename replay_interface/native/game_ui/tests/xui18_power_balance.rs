@@ -2,21 +2,23 @@ use game_ui::compose::{progress_minmax_uses_front, ComposeOptions};
 use game_ui::decision_chrome::{DecisionAvailability, DecisionDef, DecisionSet};
 use game_ui::power_balance::{
     admit_power_balance_screen, apply_power_balance_launcher_to_compose_options,
-    apply_power_balance_to_compose_options, sample_panel_transition,
-    AdmittedPowerBalanceScreen, BarState, ChangeCadence, PanelTransition,
-    PowerBalanceAdmissionRequest, PowerBalanceDecisionInput, PowerBalanceDefinitionCatalog,
-    PowerBalanceDecisionTextRole, PowerBalanceRejection, PowerBalanceRuntimeProvenance,
-    PowerBalanceRuntimeSupplement, PowerBalanceRuntimeTextBinding,
-    PowerBalanceRuntimeTextProvenance, PowerBalanceRuntimeTextSlot, PowerBalanceTrendInput,
-    ResolvedPowerBalanceText,
-    PANEL_HIDDEN_POSITION, PANEL_SHOWN_POSITION,
+    apply_power_balance_to_compose_options, sample_panel_transition, AdmittedPowerBalanceScreen,
+    BarState, ChangeCadence, PanelTransition, PowerBalanceAdmissionRequest,
+    PowerBalanceDecisionInput, PowerBalanceDecisionTextRole, PowerBalanceDefinitionCatalog,
+    PowerBalanceRejection, PowerBalanceRuntimeProvenance, PowerBalanceRuntimeSupplement,
+    PowerBalanceRuntimeTextBinding, PowerBalanceRuntimeTextProvenance, PowerBalanceRuntimeTextSlot,
+    PowerBalanceTrendInput, ResolvedPowerBalanceText, PANEL_HIDDEN_POSITION, PANEL_SHOWN_POSITION,
 };
 use game_ui::power_balance_assets::{
     PowerBalanceAssetCatalog, PowerBalanceAssetError, PowerBalanceAssetRole,
 };
-use replay_core::{Leaf, PowerBalanceRow, PowerBalanceView, RuntimeTextIdentitySource, ViewStatus};
-use std::path::PathBuf;
+use replay_core::{
+    PowerBalanceStateCadenceExact, PowerBalanceStateCountryExact, PowerBalanceStateExact,
+    PowerBalanceStateExactView, PowerBalanceStateRecordExact, PowerBalanceStateRosterExact,
+    RuntimeTextIdentitySource, ViewStatus,
+};
 use snapshot::sha256::Sha256;
+use std::path::PathBuf;
 
 fn portable_asset_manifest() -> String {
     fn row(name: &str, kind: &str, frames: Option<u32>, slots: &[&str]) -> serde_json::Value {
@@ -178,10 +180,10 @@ fn portable_asset_manifest() -> String {
         "sprites": sprites,
     });
     let artifact = Sha256::hex(&serde_json::to_vec(&manifest).unwrap());
-    manifest
-        .as_object_mut()
-        .unwrap()
-        .insert("artifact_sha256".into(), serde_json::Value::String(artifact));
+    manifest.as_object_mut().unwrap().insert(
+        "artifact_sha256".into(),
+        serde_json::Value::String(artifact),
+    );
     serde_json::to_string(&manifest).unwrap()
 }
 
@@ -193,7 +195,7 @@ fn committed_ita_catalog() -> PowerBalanceDefinitionCatalog {
         .expect("valid committed XUI18 ITA catalog fixture")
 }
 
-fn live_row(countries: &[&str], value: f64) -> PowerBalanceRow {
+fn live_row(countries: &[&str], value: f64) -> PowerBalanceStateRecordExact {
     live_row_trending(countries, value, "ITA_grand_council_side")
 }
 
@@ -201,21 +203,62 @@ fn live_row_trending(
     countries: &[&str],
     value: f64,
     trending_side: &str,
-) -> PowerBalanceRow {
-    PowerBalanceRow {
-        template: Leaf::Measured("ITA_power_balance".into()),
-        value: Leaf::Measured(value),
-        left_side: Leaf::Measured("ITA_grand_council_side".into()),
-        right_side: Leaf::Measured("ITA_mussolini_side".into()),
-        trending_side: Leaf::Measured(trending_side.into()),
-        countries: Leaf::Measured(countries.iter().map(|tag| (*tag).into()).collect()),
+) -> PowerBalanceStateRecordExact {
+    PowerBalanceStateRecordExact {
+        source_record_id: "d74s:42:0:ITA_power_balance".into(),
+        manager_ordinal: 0,
+        balance_id: "ITA_power_balance".into(),
+        left_side_id: "ITA_grand_council_side".into(),
+        right_side_id: "ITA_mussolini_side".into(),
+        trending_side_id: trending_side.into(),
+        active_range_id: if value < -0.3 {
+            "ITA_grand_council_medium_control_range"
+        } else if value < 0.0 {
+            "ITA_grand_council_low_control_range"
+        } else {
+            "ITA_mussolini_medium_control_range"
+        }
+        .into(),
+        effective_catalog_sha256: "cd".repeat(32),
+        value_raw_fixed5: (value * 100_000.0).round() as i64,
+        daily_sum_raw_fixed5: -1_000,
+        weekly_sum_raw_fixed5: 0,
+        weekly_equivalent_raw_fixed5: -7_000,
+        change_cadence: PowerBalanceStateCadenceExact::Daily,
+        member_tag_db_ids: countries.iter().map(|_| 1).collect(),
+        member_accumulators: Vec::new(),
+        side_gfx_overrides: Vec::new(),
     }
 }
 
-fn view(countries: &[&str], value: f64) -> PowerBalanceView {
-    PowerBalanceView {
+fn view(countries: &[&str], value: f64) -> PowerBalanceStateExactView {
+    PowerBalanceStateExactView {
         status: ViewStatus::Present,
-        balances: vec![live_row(countries, value)],
+        state: Some(PowerBalanceStateExact {
+            schema_version: 1,
+            authority: "exact_a729_all_country_power_balance_state".into(),
+            elapsed_wall_ms: 1,
+            frame_hour: 42,
+            static_authority_manifest_sha256: replay_core::A729_POWER_BALANCE_STATE_MANIFEST_SHA256
+                .into(),
+            effective_content_manifest_sha256: "cd".repeat(32),
+            semantic_receipt_sha256: "ef".repeat(32),
+            d18_country_roster: PowerBalanceStateRosterExact {
+                frame_hour: 42,
+                domain_id: 18,
+                expected_country_count: 1,
+                roster_identity_sha256: "12".repeat(32),
+            },
+            completeness_record_identity: "d74-state:42".into(),
+            expected_country_count: 1,
+            expected_record_count: 1,
+            expected_country_balance_pair_count: countries.len() as u32,
+            countries: vec![PowerBalanceStateCountryExact {
+                tag_db_id: 1,
+                country_tag: "ITA".into(),
+            }],
+            records: vec![live_row(countries, value)],
+        }),
     }
 }
 
@@ -247,23 +290,21 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
     let mut runtime = PowerBalanceRuntimeSupplement {
         provenance: PowerBalanceRuntimeProvenance {
             producer_manifest_sha256:
-                "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2"
-                    .into(),
+                replay_core::A729_POWER_BALANCE_ALL_COUNTRY_PRESENTATION_MANIFEST_SHA256.into(),
             completeness_record_identity: "d74-complete:42".into(),
+            effective_content_manifest_sha256: "cd".repeat(32),
+            state_semantic_receipt_sha256: "ef".repeat(32),
+            presentation_semantic_receipt_sha256: "ab".repeat(32),
             frame_hour: 42,
-            materialization_qpc_ticks: 90,
-            selected_present_candidate_id: 1,
-            selected_present_ordinal: 0,
-            selected_present_qpc_ticks: 100,
-            selected_present_cutoff_qpc_ticks: 100,
-            qpc_frequency_hz: 10_000_000,
-            selected_present_receipt_sha256: "ab".repeat(32),
+            expected_country_count: 1,
+            expected_balance_count: 1,
             runtime_text_contexts: Vec::new(),
             runtime_text_bindings: Vec::new(),
         },
         source_record_id: "d-bop:hour=42:country=ITA:id=ITA_power_balance".into(),
         country_tag: "ITA".into(),
         balance_id: "ITA_power_balance".into(),
+        manager_ordinal: 0,
         display_ordinal: 0,
         active_side_id: "ITA_grand_council_side".into(),
         trending_side_id: "ITA_grand_council_side".into(),
@@ -275,7 +316,6 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
         launcher_levels_text: Some("3/5".into()),
         launcher_icon_sprite: Some("GFX_bop_ITA_grand_council_side".into()),
         launcher_glow_visible: true,
-        panel_open: true,
         bar_state: BarState::MovingLeft,
         range_indicator_frame: 0,
         range_indicator_top_left: [198, 101],
@@ -295,6 +335,7 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
                 cost_text: Some("50".into()),
                 timer_text: Some("12 days".into()),
                 target_tag: None,
+                target_flag_sprite: None,
             },
             PowerBalanceDecisionInput {
                 decision_id: "ITA_bop_decision_a".into(),
@@ -304,6 +345,7 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
                 cost_text: Some("25".into()),
                 timer_text: None,
                 target_tag: None,
+                target_flag_sprite: None,
             },
         ],
         resolved_text: ResolvedPowerBalanceText {
@@ -321,45 +363,97 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
 
 fn attach_runtime_text_provenance(runtime: &mut PowerBalanceRuntimeSupplement) {
     let mut fields = vec![
-        (PowerBalanceRuntimeTextSlot::LauncherPercentage, runtime.launcher_percentage_text.as_deref()),
-        (PowerBalanceRuntimeTextSlot::LauncherLevels, runtime.launcher_levels_text.as_deref()),
-        (PowerBalanceRuntimeTextSlot::Trend, runtime.trend.as_ref().map(|v| v.resolved_text.as_str())),
-        (PowerBalanceRuntimeTextSlot::ModifierDescription, Some(runtime.power_balance_modifier_desc.as_str())),
-        (PowerBalanceRuntimeTextSlot::BalanceName, Some(runtime.resolved_text.balance_name.as_str())),
-        (PowerBalanceRuntimeTextSlot::LeftSideName, Some(runtime.resolved_text.left_side_name.as_str())),
-        (PowerBalanceRuntimeTextSlot::RightSideName, Some(runtime.resolved_text.right_side_name.as_str())),
-        (PowerBalanceRuntimeTextSlot::ActiveRangeName, Some(runtime.resolved_text.active_range_name.as_str())),
-        (PowerBalanceRuntimeTextSlot::BalanceTooltip, Some(runtime.resolved_text.balance_tooltip.as_str())),
-        (PowerBalanceRuntimeTextSlot::ActiveRangeTooltip, Some(runtime.resolved_text.active_range_tooltip.as_str())),
+        (
+            PowerBalanceRuntimeTextSlot::LauncherPercentage,
+            runtime.launcher_percentage_text.as_deref(),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::LauncherLevels,
+            runtime.launcher_levels_text.as_deref(),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::Trend,
+            runtime.trend.as_ref().map(|v| v.resolved_text.as_str()),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::ModifierDescription,
+            Some(runtime.power_balance_modifier_desc.as_str()),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::BalanceName,
+            Some(runtime.resolved_text.balance_name.as_str()),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::LeftSideName,
+            Some(runtime.resolved_text.left_side_name.as_str()),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::RightSideName,
+            Some(runtime.resolved_text.right_side_name.as_str()),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::ActiveRangeName,
+            Some(runtime.resolved_text.active_range_name.as_str()),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::BalanceTooltip,
+            Some(runtime.resolved_text.balance_tooltip.as_str()),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::ActiveRangeTooltip,
+            Some(runtime.resolved_text.active_range_tooltip.as_str()),
+        ),
     ];
     for decision in &runtime.decisions {
         for (role, text) in [
-            (PowerBalanceDecisionTextRole::Name, Some(decision.resolved_name.as_str())),
-            (PowerBalanceDecisionTextRole::Cost, decision.cost_text.as_deref()),
-            (PowerBalanceDecisionTextRole::Timer, decision.timer_text.as_deref()),
+            (
+                PowerBalanceDecisionTextRole::Name,
+                Some(decision.resolved_name.as_str()),
+            ),
+            (
+                PowerBalanceDecisionTextRole::Cost,
+                decision.cost_text.as_deref(),
+            ),
+            (
+                PowerBalanceDecisionTextRole::Timer,
+                decision.timer_text.as_deref(),
+            ),
         ] {
-            fields.push((PowerBalanceRuntimeTextSlot::Decision {
-                decision_id: decision.decision_id.clone(),
-                source_record_id: decision.source_record_id.clone(),
-                role,
-            }, text));
+            fields.push((
+                PowerBalanceRuntimeTextSlot::Decision {
+                    decision_id: decision.decision_id.clone(),
+                    source_record_id: decision.source_record_id.clone(),
+                    role,
+                },
+                text,
+            ));
         }
     }
-    for (ordinal, (slot, text)) in fields.into_iter().filter_map(|(slot, text)| text.map(|text| (slot, text))).enumerate() {
+    for (ordinal, (slot, text)) in fields
+        .into_iter()
+        .filter_map(|(slot, text)| text.map(|text| (slot, text)))
+        .enumerate()
+    {
         let context_id = format!("a25:42:ITA:power-balance:{ordinal}");
-        runtime.provenance.runtime_text_contexts.push(PowerBalanceRuntimeTextProvenance {
-            context_id: context_id.clone(),
-            frame_hour: 42,
-            pov_country_or_global: "ITA".into(),
-            view_id: "power_balance_view".into(),
-            element_id: format!("power_balance_field_{ordinal}"),
-            setter_entry_rva: replay_core::A729_TEXT_SETTER_RVA,
-            setter_caller_rva: Some(0x01c4_baa0),
-            formatter_entry_rva: Some(replay_core::A729_FORMATTER_RVA),
-            identity_source: RuntimeTextIdentitySource::ProvenSetterCaller,
-            final_text_sha256: Sha256::hex(text.as_bytes()),
-        });
-        runtime.provenance.runtime_text_bindings.push(PowerBalanceRuntimeTextBinding { slot, context_id });
+        runtime
+            .provenance
+            .runtime_text_contexts
+            .push(PowerBalanceRuntimeTextProvenance {
+                context_id: context_id.clone(),
+                frame_hour: 42,
+                pov_country_or_global: "ITA".into(),
+                view_id: "power_balance_view".into(),
+                element_id: format!("power_balance_field_{ordinal}"),
+                setter_entry_rva: replay_core::A729_TEXT_SETTER_RVA,
+                setter_caller_rva: Some(0x01c4_baa0),
+                formatter_entry_rva: Some(replay_core::A729_FORMATTER_RVA),
+                identity_source: RuntimeTextIdentitySource::ProvenSetterCaller,
+                final_text_sha256: Sha256::hex(text.as_bytes()),
+            });
+        runtime
+            .provenance
+            .runtime_text_bindings
+            .push(PowerBalanceRuntimeTextBinding { slot, context_id });
     }
 }
 
@@ -386,7 +480,7 @@ fn committed_fixture_preserves_all_ita_balance_ranges_and_dynamic_side_choices()
 }
 
 #[test]
-fn exact_live_static_runtime_join_preserves_geometry_decisions_and_modifier_order() {
+fn exact_live_static_runtime_join_preserves_normalized_geometry_decisions_and_modifier_order() {
     let catalog = committed_ita_catalog();
     let view = view(&["ITA"], -0.35);
     let decisions = decisions();
@@ -403,8 +497,6 @@ fn exact_live_static_runtime_join_preserves_geometry_decisions_and_modifier_orde
     };
     let row = &rows[0];
     assert_eq!(row.normalized_value, 0.325);
-    assert_eq!(row.marker_center_x, 212.0);
-    assert_eq!(row.marker_top_left, [200.0, 119.0]);
     assert_eq!(row.bar_sprite, "GFX_power_balance_left_moving");
     assert_eq!(row.active_range_modifier["war_support_factor"], "-0.05");
     assert_eq!(
@@ -430,7 +522,7 @@ fn exact_live_static_runtime_join_preserves_geometry_decisions_and_modifier_orde
     );
     assert_eq!(options.progress_overrides["power_balance_value"], 0.325);
     assert_eq!(options.frame_overrides["range_indicator"], 0);
-    assert_eq!(options.position_overrides["position_marker"], [200, 119]);
+    assert!(!options.position_overrides.contains_key("position_marker"));
     assert_eq!(options.position_overrides["range_indicator"], [198, 101]);
     assert_eq!(
         options.text_overrides["active_range_name"],
@@ -481,12 +573,10 @@ fn portable_asset_join_keeps_every_a37_role_and_both_progress_textures() {
     let AdmittedPowerBalanceScreen::Visible(rows) = admitted else {
         panic!("active measured balance must be visible")
     };
-    let assets = PowerBalanceAssetCatalog::from_static_manifest_json(
-        &portable_asset_manifest(),
-    )
-    .unwrap()
-    .resolve(&rows[0])
-    .unwrap();
+    let assets = PowerBalanceAssetCatalog::from_static_manifest_json(&portable_asset_manifest())
+        .unwrap()
+        .resolve(&rows[0])
+        .unwrap();
 
     assert_eq!(assets.bindings.len(), 17);
     assert!(assets.bindings.iter().all(|binding| {
@@ -588,10 +678,9 @@ fn portable_asset_join_accepts_authenticated_mod_sprite_overrides_from_gui_roles
 
 #[test]
 fn portable_asset_join_refuses_manifest_tampering_and_incomplete_progress_roles() {
-    let mut tampered: serde_json::Value =
-        serde_json::from_str(&portable_asset_manifest()).unwrap();
-    tampered["sprites"]["GFX_bop_indicator"]["texture_slots"][0]
-        ["texture_bytes"] = serde_json::json!(999);
+    let mut tampered: serde_json::Value = serde_json::from_str(&portable_asset_manifest()).unwrap();
+    tampered["sprites"]["GFX_bop_indicator"]["texture_slots"][0]["texture_bytes"] =
+        serde_json::json!(999);
     assert_eq!(
         PowerBalanceAssetCatalog::from_static_manifest_json(
             &serde_json::to_string(&tampered).unwrap()
@@ -602,19 +691,19 @@ fn portable_asset_join_refuses_manifest_tampering_and_incomplete_progress_roles(
 
     let mut incomplete: serde_json::Value =
         serde_json::from_str(&portable_asset_manifest()).unwrap();
-    incomplete
-        ["sprites"]
-        ["GFX_power_balance_left_moving"]
-        ["texture_slots"]
+    incomplete["sprites"]["GFX_power_balance_left_moving"]["texture_slots"]
         .as_array_mut()
         .unwrap()
         .pop();
-    incomplete.as_object_mut().unwrap().remove("artifact_sha256");
+    incomplete
+        .as_object_mut()
+        .unwrap()
+        .remove("artifact_sha256");
     let digest = Sha256::hex(&serde_json::to_vec(&incomplete).unwrap());
-    incomplete.as_object_mut().unwrap().insert(
-        "artifact_sha256".into(),
-        serde_json::Value::String(digest),
-    );
+    incomplete
+        .as_object_mut()
+        .unwrap()
+        .insert("artifact_sha256".into(), serde_json::Value::String(digest));
     let asset_catalog = PowerBalanceAssetCatalog::from_static_manifest_json(
         &serde_json::to_string(&incomplete).unwrap(),
     )
@@ -646,7 +735,10 @@ fn portable_asset_join_refuses_manifest_tampering_and_incomplete_progress_roles(
         .as_object_mut()
         .unwrap()
         .remove("panel_background");
-    missing_role.as_object_mut().unwrap().remove("artifact_sha256");
+    missing_role
+        .as_object_mut()
+        .unwrap()
+        .remove("artifact_sha256");
     let digest = Sha256::hex(&serde_json::to_vec(&missing_role).unwrap());
     missing_role["artifact_sha256"] = serde_json::Value::String(digest);
     assert_eq!(
@@ -659,11 +751,14 @@ fn portable_asset_join_refuses_manifest_tampering_and_incomplete_progress_roles(
 
     let mut case_folded: serde_json::Value =
         serde_json::from_str(&portable_asset_manifest()).unwrap();
-    case_folded["power_balance_gui"]["roles"]["panel_background"]
-        ["hierarchy_path"] = serde_json::json!("powerbalanceview/Background");
-    case_folded["power_balance_gui"]["roles"]["panel_background"]
-        ["widget_name"] = serde_json::json!("Background");
-    case_folded.as_object_mut().unwrap().remove("artifact_sha256");
+    case_folded["power_balance_gui"]["roles"]["panel_background"]["hierarchy_path"] =
+        serde_json::json!("powerbalanceview/Background");
+    case_folded["power_balance_gui"]["roles"]["panel_background"]["widget_name"] =
+        serde_json::json!("Background");
+    case_folded
+        .as_object_mut()
+        .unwrap()
+        .remove("artifact_sha256");
     let digest = Sha256::hex(&serde_json::to_vec(&case_folded).unwrap());
     case_folded["artifact_sha256"] = serde_json::Value::String(digest);
     assert_eq!(
@@ -825,9 +920,9 @@ fn all_irreducible_runtime_inputs_fail_closed() {
         Err(PowerBalanceRejection::InvalidResolvedText)
     );
 
-    let unavailable = PowerBalanceView {
+    let unavailable = PowerBalanceStateExactView {
         status: ViewStatus::DomainUnavailable,
-        balances: Vec::new(),
+        state: None,
     };
     assert_eq!(
         admit_power_balance_screen(PowerBalanceAdmissionRequest {
@@ -896,14 +991,8 @@ fn active_side_moving_direction_and_trending_identity_remain_independent() {
     let catalog = committed_ita_catalog();
     let decision_defs = decisions();
 
-    let right_active = PowerBalanceView {
-        status: ViewStatus::Present,
-        balances: vec![live_row_trending(
-            &["ITA"],
-            0.35,
-            "ITA_mussolini_side",
-        )],
-    };
+    let mut right_active = view(&["ITA"], 0.35);
+    right_active.state.as_mut().unwrap().records[0].trending_side_id = "ITA_mussolini_side".into();
     let mut moving_left_with_right_trend_identity = runtime();
     moving_left_with_right_trend_identity.active_side_id = "ITA_mussolini_side".into();
     moving_left_with_right_trend_identity.active_range_id =
@@ -925,10 +1014,7 @@ fn active_side_moving_direction_and_trending_identity_remain_independent() {
     assert_eq!(rows[0].trending_side_id, "ITA_mussolini_side");
     assert_eq!(rows[0].bar_sprite, "GFX_power_balance_left_moving");
 
-    let left_active = PowerBalanceView {
-        status: ViewStatus::Present,
-        balances: vec![live_row_trending(&["ITA"], -0.35, "ITA_grand_council_side")],
-    };
+    let left_active = view(&["ITA"], -0.35);
     let mut moving_right_with_left_trend_identity = runtime();
     moving_right_with_left_trend_identity.trending_side_id = "ITA_grand_council_side".into();
     moving_right_with_left_trend_identity.bar_state = BarState::MovingRight;
@@ -952,14 +1038,11 @@ fn active_side_moving_direction_and_trending_identity_remain_independent() {
 fn controller_selected_identity_excludes_other_applicable_balances() {
     let catalog = committed_ita_catalog();
     let decision_defs = decisions();
+    let mut view = view(&["ITA"], -0.35);
     let mut later = live_row(&["ITA"], -0.1);
-    later.template = Leaf::Measured("ITA_unrendered_second_balance".into());
-    let view = PowerBalanceView {
-        status: ViewStatus::Present,
-        // Save/world order is not controller-selection authority. The exact
-        // runtime balance id identifies the engine's first matching record.
-        balances: vec![later, live_row(&["ITA"], -0.35)],
-    };
+    later.manager_ordinal = 1;
+    later.balance_id = "ITA_unrendered_second_balance".into();
+    view.state.as_mut().unwrap().records.push(later);
     let mut measured = runtime();
     measured.power_balance_modifier_desc.clear();
     measured.provenance.runtime_text_contexts.clear();
@@ -993,12 +1076,13 @@ fn controller_selected_identity_excludes_other_applicable_balances() {
 #[test]
 fn supplied_active_range_disambiguates_shared_threshold_boundaries() {
     let catalog = committed_ita_catalog();
-    let view = view(&["ITA"], -0.3);
     let decision_defs = decisions();
     for range in [
         "ITA_grand_council_low_control_range",
         "ITA_grand_council_medium_control_range",
     ] {
+        let mut view = view(&["ITA"], -0.3);
+        view.state.as_mut().unwrap().records[0].active_range_id = range.into();
         let mut runtime = runtime();
         runtime.active_range_id = range.into();
         assert!(admit_power_balance_screen(PowerBalanceAdmissionRequest {

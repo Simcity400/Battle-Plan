@@ -10,12 +10,14 @@
 
 use crate::assets::{normalize_rel_path, AssetResolver};
 use crate::compose::{
-    draw_image, draw_nine_slice, draw_progress_minmax, draw_scaled, draw_scaled_crop,
+    draw_engine_text_no_icons, draw_image, draw_nine_slice, draw_progress_minmax, draw_scaled,
+    draw_scaled_crop, unique_inline_sprite_definition,
 };
 use crate::dds::RgbaImage;
 use crate::font::{blank_image, BitmapFont, TextAlign};
 use crate::gfx::SpriteRegistry;
 use crate::topbar::apply_mask;
+use crate::{layout_engine_text, EngineTextBorder};
 use crate::{GameUiError, Result};
 use replay_core::{
     AuthenticatedUiPass, FontBinding, HudCommand, HudCommandExecution, HudPaintCommand,
@@ -114,6 +116,29 @@ pub fn prepare_selected_present_ui_pass(
     runtime_text: Option<&RuntimeTextCatalog>,
     playback_context: SelectedPresentPlaybackContext<'_>,
 ) -> Result<PreparedUiPass> {
+    prepare_selected_present_ui_pass_excluding(
+        resolver,
+        registry,
+        pass,
+        m02,
+        runtime_text,
+        playback_context,
+        |_| false,
+    )
+}
+
+/// Prepare an authenticated pass while deliberately retiring a named HUD
+/// command family. The complete original pass is validated first; exclusion
+/// can suppress pixels but cannot create, reorder, or re-authorize commands.
+pub fn prepare_selected_present_ui_pass_excluding(
+    resolver: &AssetResolver,
+    registry: &SpriteRegistry,
+    pass: &AuthenticatedUiPass,
+    m02: Option<&M02CombatFrame>,
+    runtime_text: Option<&RuntimeTextCatalog>,
+    playback_context: SelectedPresentPlaybackContext<'_>,
+    mut excluded: impl FnMut(&HudCommand) -> bool,
+) -> Result<PreparedUiPass> {
     pass.validate().map_err(|error| {
         GameUiError::parse(format!(
             "invalid authenticated selected-Present UI pass: {error}"
@@ -125,6 +150,9 @@ pub fn prepare_selected_present_ui_pass(
     let height = pass.target.height;
     let mut operations = Vec::with_capacity(pass.ui_pass_operations.len());
     for operation in &pass.ui_pass_operations {
+        if matches!(operation, UiPassOperation::HudCommand { command } if excluded(command)) {
+            continue;
+        }
         operations.push(match operation {
             UiPassOperation::M02 {
                 ui_pass_ordinal,
@@ -163,12 +191,11 @@ pub fn prepare_selected_present_ui_pass(
         });
     }
     if operations
-        .iter()
-        .enumerate()
-        .any(|(ordinal, operation)| operation.ordinal() != ordinal as u32)
+        .windows(2)
+        .any(|pair| pair[0].ordinal() >= pair[1].ordinal())
     {
         return Err(GameUiError::parse(
-            "prepared UI-pass operation order changed after authentication",
+            "prepared UI-pass operation order changed after authenticated exclusion",
         ));
     }
     Ok(PreparedUiPass {
@@ -357,34 +384,34 @@ fn render_text(
             let layout_width = max_width
                 .map(|value| value as i32)
                 .unwrap_or(rect.right_i32 - rect.left_i32);
-            let text = if *wrap {
-                crate::gui_scene_util::wrap_text_greedy(
-                    &record.final_text_utf8,
-                    layout_width,
-                    |candidate| font.measure_text(candidate),
-                )
-            } else {
-                record.final_text_utf8.clone()
-            };
-            let report = font.draw_text(
+            let engine_max_width = if *wrap { layout_width } else { i32::MAX };
+            let layout = layout_engine_text(
+                font,
+                &record.final_text_utf8,
+                engine_max_width,
+                EngineTextBorder::ExplicitlyAbsent,
+            )
+            .map_err(|error| {
+                GameUiError::missing(format!(
+                    "authenticated HUD text {} TEXT1 layout refused: {error}",
+                    command.ordinal
+                ))
+            })?;
+            draw_engine_text_no_icons(
+                font,
+                &layout,
                 &mut image,
                 rect.left_i32,
                 rect.top_i32,
-                Some(layout_width),
+                layout_width,
                 match horizontal_alignment {
                     TextHorizontalAlignment::Left => TextAlign::Left,
                     TextHorizontalAlignment::Center => TextAlign::Center,
                     TextHorizontalAlignment::Right => TextAlign::Right,
                 },
-                &text,
+                &record.final_text_utf8,
                 rgba,
-            );
-            if !report.missing_glyphs.is_empty() {
-                return Err(GameUiError::missing(format!(
-                    "authenticated HUD text {} primary font {} lacks glyphs {:?}",
-                    command.ordinal, primary.font_identity, report.missing_glyphs
-                )));
-            }
+            )?;
             if let Some(clip) = clip_rect_offsets {
                 apply_rect_clip(&mut image, offset_rect(destination, *clip)?);
             }
@@ -428,13 +455,9 @@ fn render_text(
                                 command.ordinal, glyph.font
                             ))
                         })?;
-                        let (x, y) = captured_owner_relative_point(
-                            destination,
-                            glyph.x,
-                            glyph.y,
-                            "glyph",
-                        )?;
-                        if !font.draw_runtime_glyph(
+                        let (x, y) =
+                            captured_owner_relative_point(destination, glyph.x, glyph.y, "glyph")?;
+                        match font.draw_runtime_glyph(
                             &mut image,
                             glyph.glyph_id,
                             x,
@@ -442,10 +465,20 @@ fn render_text(
                             glyph.rgba,
                             glyph_clip,
                         ) {
-                            return Err(GameUiError::missing(format!(
-                                "captured HUD text {} font {} lacks glyph {}",
-                                command.ordinal, glyph.font, glyph.glyph_id
-                            )));
+                            crate::font::RuntimeGlyphDraw::Drawn => {}
+                            crate::font::RuntimeGlyphDraw::GlyphAbsent => {
+                                return Err(GameUiError::missing(format!(
+                                    "captured HUD text {} font {} lacks glyph {}",
+                                    command.ordinal, glyph.font, glyph.glyph_id
+                                )));
+                            }
+                            crate::font::RuntimeGlyphDraw::PageAbsent { page } => {
+                                return Err(GameUiError::missing(format!(
+                                    "captured HUD text {} font {} has glyph {} on atlas page \
+                                     {page}, which is not loaded",
+                                    command.ordinal, glyph.font, glyph.glyph_id
+                                )));
+                            }
                         }
                     }
                     CapturedRun::InlineIcon(icon) => {
@@ -458,12 +491,14 @@ fn render_text(
                                     command.ordinal, icon.sprite
                                 ))
                             })?;
-                        let definition = registry.get(&binding.sprite_identity).ok_or_else(|| {
-                            GameUiError::missing(format!(
-                                "captured HUD text {} references missing inline sprite {}",
-                                command.ordinal, binding.sprite_identity
-                            ))
-                        })?;
+                        let definition =
+                            unique_inline_sprite_definition(registry, &binding.sprite_identity)
+                                .map_err(|error| {
+                                    GameUiError::missing(format!(
+                                        "captured HUD text {} cannot resolve inline sprite {}: {}",
+                                        command.ordinal, binding.sprite_identity, error.message
+                                    ))
+                                })?;
                         let decoded = resolver.decode_sprite(definition)?;
                         let frame = decoded.frames.get(icon.frame as usize).ok_or_else(|| {
                             GameUiError::parse(format!(
@@ -541,12 +576,13 @@ fn validate_inline_icon_bindings(
     bindings: &[InlineIconBinding],
 ) -> Result<()> {
     for binding in bindings {
-        let definition = registry.get(&binding.sprite_identity).ok_or_else(|| {
-            GameUiError::missing(format!(
-                "authenticated HUD text references missing inline sprite {}",
-                binding.sprite_identity
-            ))
-        })?;
+        let definition =
+            unique_inline_sprite_definition(registry, &binding.sprite_identity).map_err(|error| {
+                GameUiError::missing(format!(
+                    "authenticated HUD text cannot resolve inline sprite {}: {}",
+                    binding.sprite_identity, error.message
+                ))
+            })?;
         require_indexed_command_content(
             command,
             binding.definition_content_index,
@@ -1048,6 +1084,23 @@ fn apply_clip(image: &mut RgbaImage, clip: UiPassClip) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_runtime_text_uses_text1_and_never_the_greedy_wrapper() {
+        let source = include_str!("selected_present.rs");
+        let start = source
+            .find("\nfn render_text(")
+            .expect("selected-Present text boundary");
+        let end = source[start..]
+            .find("\nfn load_bound_fonts(")
+            .map(|offset| start + offset)
+            .expect("selected-Present text boundary end");
+        let route = &source[start..end];
+        assert!(route.contains("layout_engine_text("));
+        assert!(route.contains("draw_engine_text_no_icons("));
+        assert!(!route.contains("wrap_text_greedy"));
+        assert!(!route.contains("font.draw_text("));
+    }
 
     fn used(path: &str) -> replay_core::UsedContentKey {
         replay_core::UsedContentKey {

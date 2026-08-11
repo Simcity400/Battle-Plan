@@ -7,13 +7,20 @@
 //! bytes 48..56 of buffer 647577 CB-write blobs; the corrected evidence chunks
 //! are 35813/35824 and 36070/36081, not their following draw chunks.
 
+/// The crate's gate table, included so this test resolves the evidence store
+/// through EXACTLY the candidate list the build-time probe used.
+#[allow(dead_code)]
+mod corpus {
+    include!("../test_gates.rs");
+}
+
 use flate2::read::{DeflateDecoder, GzDecoder};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 type TestResult<T> = Result<T, Box<dyn Error>>;
 
@@ -192,16 +199,13 @@ fn counter_frame_evidence(frame_dir: &Path) -> TestResult<CounterFrameEvidence> 
     Ok(evidence)
 }
 
+// Was a static `#[ignore]`, so it never ran under the standing `Mode Final`
+// gate even on a machine that holds the mined store.
 #[test]
-#[ignore = "requires the read-only BATTLE_PLAN_RENDERDOC_MINED evidence store"]
+#[cfg_attr(not(gate_renderdoc_mined), ignore = "the mined RenderDoc evidence store (set BATTLE_PLAN_RENDERDOC_MINED, else %LOCALAPPDATA%\\hoi4_renderdoc\\mined)")]
 fn wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes() {
-    let root = std::env::var("BATTLE_PLAN_RENDERDOC_MINED").or_else(|_| std::env::var("HOI4_RENDERDOC_MINED"))
-        .map(PathBuf::from)
-        .or_else(|_| {
-            std::env::var("LOCALAPPDATA")
-                .map(|local| PathBuf::from(local).join("hoi4_renderdoc").join("mined"))
-        })
-        .expect("BATTLE_PLAN_RENDERDOC_MINED/LOCALAPPDATA evidence root");
+    let root = corpus::renderdoc_mined_root()
+        .expect("the mined RenderDoc evidence store is absent, but this test was compiled as runnable");
     let on = counter_frame_evidence(&root.join("hoi4_frame69592"))
         .expect("analyze FoW-ON counter evidence");
     let off = counter_frame_evidence(&root.join("hoi4_frame71288"))

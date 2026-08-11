@@ -7,9 +7,7 @@ use map_viewer::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
-
-const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
+use std::path::PathBuf;
 
 fn evidence(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -70,13 +68,10 @@ fn any_fixed_source_drift_blocks_all_fixed_objects() {
 }
 
 #[test]
+#[cfg_attr(not(gate_hoi4_install), ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path")]
 fn vanilla_admission_matches_all_frozen_o05_semantics() {
-    let game_dir = Path::new(VANILLA_GAME_DIR);
-    if !game_dir.is_dir() {
-        eprintln!("skipping O05 vanilla promotion gate: {VANILLA_GAME_DIR} is absent");
-        return;
-    }
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf()).expect("vanilla resolver");
+    let game_dir = replay_test_gates::require_vanilla_game_root();
+    let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
 
     let actual_static = o05_static_building_source_identities_from_resolver(&resolver)
         .expect("O05 static source identities");

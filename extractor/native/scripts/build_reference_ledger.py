@@ -33,6 +33,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -113,10 +114,58 @@ def discovered_by_convention(path: str) -> bool:
     return False
 
 
+def _git_env() -> dict:
+    """Environment for every git call: the caller's git control variables removed.
+
+    GIT_DIR/GIT_WORK_TREE and friends take precedence over `-C`, so an inherited
+    value (a git hook, a wrapper script, another tool's shell) would silently
+    redirect a git query at a different checkout than the one being described.
+    """
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith(("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+                                 "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"))}
+
+
+def default_repo() -> Path:
+    """The tree this script itself lives in -- never a hard-coded checkout.
+
+    The old default was the literal path of the main checkout, so the generator
+    ignored the invoking tree entirely: run from a worktree it still read AND
+    rewrote the main checkout's tracked files, silently describing and mutating
+    a tree nobody asked about. A generator must read from and write to ONE
+    consistent tree, and the only anchor that is always right is the script's
+    own location -- the copy of the generator you ran is the copy that describes
+    its own tree.
+
+    `git rev-parse --show-toplevel` runs with the script's directory as cwd (not
+    the caller's), with the git control variables stripped from the environment:
+    GIT_DIR/GIT_WORK_TREE take precedence over `-C` and would otherwise let an
+    inherited variable (a hook, a wrapper, another tool's shell) redirect the
+    answer at another checkout. The result is then required to actually contain
+    this script, so a wrong answer falls back to the plain parent walk rather
+    than being trusted.
+    """
+    here = Path(__file__).resolve().parent            # <repo>/extractor/native/scripts
+    walked = here.parents[2]                          # <repo>
+    try:
+        out = subprocess.run(["git", "-C", str(here), "rev-parse", "--show-toplevel"],
+                             check=True, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", env=_git_env())
+        top = out.stdout.strip()
+        if top:
+            root = Path(top).resolve()
+            # Only trust a root this script actually lives under.
+            if root == here or root in here.parents:
+                return root
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return walked
+
+
 def tracked_files(repo: Path) -> list[str]:
     out = subprocess.run(
         ["git", "-C", str(repo), "ls-files"],
-        check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", env=_git_env(),
     )
     return [
         line
@@ -164,12 +213,15 @@ def normalize(token: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default=r"")
+    parser.add_argument("--repo", default=None,
+                        help="tree to describe; defaults to the tree this script "
+                             "lives in, so running from a worktree can never write "
+                             "into another checkout")
     parser.add_argument("--out-dir", default=None,
                         help="defaults to <repo>/extractor/coverage_audit/reference_ledger")
     args = parser.parse_args()
 
-    repo = Path(args.repo).resolve()
+    repo = Path(args.repo).resolve() if args.repo else default_repo()
     out_dir = Path(args.out_dir) if args.out_dir else repo / "extractor" / "coverage_audit" / "reference_ledger"
     out_dir.mkdir(parents=True, exist_ok=True)
 

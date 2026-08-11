@@ -2,10 +2,11 @@
 //!
 //! Static balance/range/modifier structure comes from the effective
 //! `common/bop` catalog. Live value, side identities and country membership
-//! come only from `replay_core::PowerBalanceView`. Engine-resolved runtime
+//! come only from `replay_core::PowerBalanceStateExactView`. Engine-resolved runtime
 //! leaves that cannot be reconstructed from those sources are supplied by an
-//! authenticated supplement and are rejected when incomplete.
+//! authenticated all-country supplement and are rejected when incomplete.
 
+use crate::assets::AssetResolver;
 use crate::compose::ComposeOptions;
 use crate::decision_chrome::{
     decision_card_binding, DecisionAvailability, DecisionCardBinding, DecisionSet,
@@ -16,8 +17,8 @@ use crate::gui_runtime_law::{
     PositionAnimationState, PositionAxis,
 };
 use replay_core::{
-    Leaf, PowerBalanceRow, PowerBalanceView, RuntimeTextIdentitySource, ViewStatus,
-    A729_POWER_BALANCE_CONTROLLER_MANIFEST_SHA256,
+    PowerBalanceStateExactView, PowerBalanceStateRecordExact, RuntimeTextIdentitySource,
+    ViewStatus, A729_POWER_BALANCE_ALL_COUNTRY_PRESENTATION_MANIFEST_SHA256,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,10 +28,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PANEL_SHOWN_POSITION: [i32; 2] = [45, 0];
 pub const PANEL_HIDDEN_POSITION: [i32; 2] = [545, 0];
 pub const PANEL_ANIMATION_DURATION: f64 = 300.0;
-pub const BAR_POSITION: [i32; 2] = [95, 125];
-pub const BAR_SIZE: [i32; 2] = [360, 16];
-pub const MARKER_OFFSET: [i32; 2] = [-12, -6];
-pub const RANGE_SPLITTER_OFFSET: [i32; 2] = [-6, -4];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Threshold {
@@ -103,6 +100,41 @@ impl PowerBalanceDefinitionCatalog {
         }
         if balances.is_empty() {
             return Err(StaticCatalogError::EmptyCatalog);
+        }
+        Ok(Self { balances })
+    }
+
+    pub fn from_effective_vfs(resolver: &AssetResolver) -> crate::Result<Self> {
+        let files = resolver.list_files_recursive("common/bop", Some("txt"))?;
+        let mut balances = BTreeMap::new();
+        for file in files {
+            let doc = crate::paradox_text::parse_file(&file.path)?;
+            if !doc.recoveries.is_empty() {
+                return Err(crate::GameUiError::parse(format!(
+                    "XUI18 effective definition {:?} required parser recovery",
+                    file.rel_path
+                )));
+            }
+            for entry in doc.root.fields() {
+                let Some(id) = entry.key.as_deref() else {
+                    continue;
+                };
+                if id.starts_with('@') || entry.value.as_object().is_none() {
+                    continue;
+                }
+                let definition = parse_effective_definition(id, &entry.value, &file.rel_path)?;
+                if let Some(previous) = balances.insert(id.to_string(), definition) {
+                    return Err(crate::GameUiError::parse(format!(
+                        "XUI18 balance {id:?} is defined more than once in the effective VFS: {:?} and {:?}",
+                        previous.source_file, file.rel_path
+                    )));
+                }
+            }
+        }
+        if balances.is_empty() {
+            return Err(crate::GameUiError::missing(
+                "XUI18 effective common/bop catalog is empty",
+            ));
         }
         Ok(Self { balances })
     }
@@ -391,6 +423,7 @@ pub struct PowerBalanceDecisionInput {
     pub cost_text: Option<String>,
     pub timer_text: Option<String>,
     pub target_tag: Option<String>,
+    pub target_flag_sprite: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -447,14 +480,12 @@ pub struct PowerBalanceRuntimeTextBinding {
 pub struct PowerBalanceRuntimeProvenance {
     pub producer_manifest_sha256: String,
     pub completeness_record_identity: String,
+    pub effective_content_manifest_sha256: String,
+    pub state_semantic_receipt_sha256: String,
+    pub presentation_semantic_receipt_sha256: String,
     pub frame_hour: i64,
-    pub materialization_qpc_ticks: u64,
-    pub selected_present_candidate_id: u64,
-    pub selected_present_ordinal: u32,
-    pub selected_present_qpc_ticks: u64,
-    pub selected_present_cutoff_qpc_ticks: u64,
-    pub qpc_frequency_hz: u64,
-    pub selected_present_receipt_sha256: String,
+    pub expected_country_count: u32,
+    pub expected_balance_count: u32,
     pub runtime_text_contexts: Vec<PowerBalanceRuntimeTextProvenance>,
     pub runtime_text_bindings: Vec<PowerBalanceRuntimeTextBinding>,
 }
@@ -465,6 +496,7 @@ pub struct PowerBalanceRuntimeSupplement {
     pub source_record_id: String,
     pub country_tag: String,
     pub balance_id: String,
+    pub manager_ordinal: u32,
     pub display_ordinal: usize,
     pub active_side_id: String,
     pub trending_side_id: String,
@@ -476,7 +508,6 @@ pub struct PowerBalanceRuntimeSupplement {
     pub launcher_levels_text: Option<String>,
     pub launcher_icon_sprite: Option<String>,
     pub launcher_glow_visible: bool,
-    pub panel_open: bool,
     pub bar_state: BarState,
     pub range_indicator_frame: usize,
     /// Engine-resolved final local top-left for the code-positioned
@@ -494,7 +525,7 @@ pub struct PowerBalanceRuntimeSupplement {
 
 pub struct PowerBalanceAdmissionRequest<'a> {
     pub country_tag: &'a str,
-    pub view: &'a PowerBalanceView,
+    pub view: &'a PowerBalanceStateExactView,
     pub catalog: &'a PowerBalanceDefinitionCatalog,
     pub decisions: &'a DecisionSet,
     pub runtime: &'a [PowerBalanceRuntimeSupplement],
@@ -504,14 +535,13 @@ pub struct PowerBalanceAdmissionRequest<'a> {
 pub struct RangeBoundaryPresentation {
     pub value: f64,
     pub normalized: f32,
-    pub center_x: f64,
-    pub splitter_top_left: [f64; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecisionPresentation {
     pub source_record_id: String,
     pub resolved_name: String,
+    pub target_flag_sprite: Option<String>,
     pub card: DecisionCardBinding,
 }
 
@@ -524,8 +554,6 @@ pub struct PowerBalancePresentation {
     pub display_ordinal: usize,
     pub value: f64,
     pub normalized_value: f32,
-    pub marker_center_x: f64,
-    pub marker_top_left: [f64; 2],
     pub active_side_id: String,
     pub trending_side_id: String,
     pub active_range_id: String,
@@ -537,7 +565,6 @@ pub struct PowerBalancePresentation {
     pub launcher_levels_text: Option<String>,
     pub launcher_icon_sprite: Option<String>,
     pub launcher_glow_visible: bool,
-    pub panel_open: bool,
     pub bar_sprite: String,
     pub range_indicator_frame: usize,
     pub range_indicator_top_left: [i32; 2],
@@ -589,22 +616,23 @@ pub fn admit_power_balance_screen(
     if request.view.status != ViewStatus::Present {
         return Err(PowerBalanceRejection::DomainUnavailable);
     }
-    let mut ids = BTreeSet::new();
-    let mut applicable = BTreeMap::new();
-    for row in &request.view.balances {
-        let parsed = measured_live_row(row)?;
-        if !ids.insert(parsed.template) {
-            return Err(PowerBalanceRejection::DuplicateLiveBalance);
-        }
-        if parsed
-            .countries
-            .iter()
-            .any(|tag| tag == request.country_tag)
-        {
-            applicable.insert(parsed.template, parsed);
-        }
-    }
-    if applicable.is_empty() && request.runtime.is_empty() {
+
+    let state = request
+        .view
+        .state
+        .as_ref()
+        .ok_or(PowerBalanceRejection::DomainUnavailable)?;
+    let country = state
+        .countries
+        .iter()
+        .find(|country| country.country_tag == request.country_tag)
+        .ok_or(PowerBalanceRejection::InvalidCountry)?;
+    let first = state
+        .records
+        .iter()
+        .filter(|record| record.member_tag_db_ids.contains(&country.tag_db_id))
+        .min_by_key(|record| record.manager_ordinal);
+    if first.is_none() && request.runtime.is_empty() {
         return Ok(AdmittedPowerBalanceScreen::HiddenNoActiveBalance);
     }
     if request.runtime.len() != 1 {
@@ -614,12 +642,19 @@ pub fn admit_power_balance_screen(
     if runtime.display_ordinal != 0 {
         return Err(PowerBalanceRejection::InvalidDisplayOrder);
     }
-    let row = applicable
-        .get(runtime.balance_id.as_str())
-        .ok_or(PowerBalanceRejection::RuntimeSetMismatch)?;
+    let row = measured_live_row(first.ok_or(PowerBalanceRejection::RuntimeSetMismatch)?)?;
+    if runtime.provenance.frame_hour != state.frame_hour as i64
+        || runtime.provenance.effective_content_manifest_sha256
+            != state.effective_content_manifest_sha256
+        || runtime.provenance.state_semantic_receipt_sha256 != state.semantic_receipt_sha256
+        || runtime.provenance.expected_country_count != state.expected_country_count
+        || runtime.manager_ordinal != row.manager_ordinal
+    {
+        return Err(PowerBalanceRejection::MissingRuntimeProvenance);
+    }
     let presentation = admit_one(
         request.country_tag,
-        row,
+        &row,
         request
             .catalog
             .get(&runtime.balance_id)
@@ -632,50 +667,209 @@ pub fn admit_power_balance_screen(
 
 struct MeasuredLiveRow<'a> {
     template: &'a str,
+    manager_ordinal: u32,
     value: f64,
     left_side: &'a str,
     right_side: &'a str,
     trending_side: &'a str,
-    countries: &'a [String],
+    active_range: &'a str,
+    effective_catalog_sha256: &'a str,
 }
 
-fn measured_live_row(row: &PowerBalanceRow) -> Result<MeasuredLiveRow<'_>, PowerBalanceRejection> {
-    let Some(template) = measured_string(&row.template) else {
-        return Err(PowerBalanceRejection::InvalidLiveRow);
+fn parse_effective_definition(
+    id: &str,
+    value: &crate::paradox_text::Value,
+    source_file: &str,
+) -> crate::Result<PowerBalanceDefinition> {
+    let required = |key: &str| {
+        value
+            .first_scalar_ci(key)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| crate::GameUiError::parse(format!("XUI18 {id}.{key} is missing")))
     };
-    let Some(value) = row.value.measured().copied() else {
-        return Err(PowerBalanceRejection::InvalidLiveRow);
+    let left_side = required("left_side")?;
+    let right_side = required("right_side")?;
+    if left_side == right_side {
+        return Err(crate::GameUiError::parse(format!(
+            "XUI18 {id} has identical default sides"
+        )));
+    }
+    let initial_value = effective_threshold(
+        value.first_scalar_ci("initial_value").ok_or_else(|| {
+            crate::GameUiError::parse(format!("XUI18 {id}.initial_value is missing"))
+        })?,
+        &format!("{id}.initial_value"),
+    )?;
+    let mut range_ids = BTreeSet::new();
+    let neutral_ranges =
+        parse_effective_ranges(value.values_ci("range"), None, source_file, &mut range_ids)?;
+    let mut sides = Vec::new();
+    for (order, side) in value.values_ci("side").enumerate() {
+        let side_id = side
+            .first_scalar_ci("id")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| crate::GameUiError::parse(format!("XUI18 {id} side id is missing")))?;
+        let icon = side
+            .first_scalar_ci("icon")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                crate::GameUiError::parse(format!("XUI18 {id}.{side_id} icon is missing"))
+            })?;
+        sides.push(PowerBalanceSideDefinition {
+            id: side_id.to_string(),
+            order,
+            authored_icon: icon.to_string(),
+            ranges: parse_effective_ranges(
+                side.values_ci("range"),
+                Some(side_id),
+                source_file,
+                &mut range_ids,
+            )?,
+            source_file: source_file.to_string(),
+        });
+    }
+    if !sides.iter().any(|side| side.id == left_side)
+        || !sides.iter().any(|side| side.id == right_side)
+    {
+        return Err(crate::GameUiError::parse(format!(
+            "XUI18 {id} default sides are absent from the effective definition"
+        )));
+    }
+    Ok(PowerBalanceDefinition {
+        id: id.to_string(),
+        initial_value,
+        left_side,
+        right_side,
+        decision_category: value
+            .first_scalar_ci("decision_category")
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string),
+        neutral_ranges,
+        sides,
+        source_file: source_file.to_string(),
+    })
+}
+
+fn parse_effective_ranges<'a>(
+    values: impl Iterator<Item = &'a crate::paradox_text::Value>,
+    side_id: Option<&str>,
+    source_file: &str,
+    range_ids: &mut BTreeSet<String>,
+) -> crate::Result<Vec<PowerBalanceRangeDefinition>> {
+    let mut ranges = Vec::new();
+    for (order, range) in values.enumerate() {
+        let id = range
+            .first_scalar_ci("id")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| crate::GameUiError::parse("XUI18 range id is missing"))?;
+        if !range_ids.insert(id.to_string()) {
+            return Err(crate::GameUiError::parse(format!(
+                "XUI18 duplicate range {id:?}"
+            )));
+        }
+        let parse_bound = |key: &str| {
+            effective_threshold(
+                range.first_scalar_ci(key).ok_or_else(|| {
+                    crate::GameUiError::parse(format!("XUI18 {id}.{key} is missing"))
+                })?,
+                &format!("{id}.{key}"),
+            )
+        };
+        let min = parse_bound("min")?;
+        let max = parse_bound("max")?;
+        if min.value > max.value {
+            return Err(crate::GameUiError::parse(format!(
+                "XUI18 {id} has min greater than max"
+            )));
+        }
+        ranges.push(PowerBalanceRangeDefinition {
+            id: id.to_string(),
+            side_id: side_id.map(str::to_string),
+            order,
+            min,
+            max,
+            modifier: clausewitz_object_to_json_map(range.first_value_ci("modifier"))?,
+            on_activate: clausewitz_to_json(range.first_value_ci("on_activate")),
+            on_deactivate: clausewitz_to_json(range.first_value_ci("on_deactivate")),
+            source_file: source_file.to_string(),
+        });
+    }
+    Ok(ranges)
+}
+
+fn effective_threshold(raw: &str, context: &str) -> crate::Result<Threshold> {
+    let value = raw.parse::<f64>().map_err(|_| {
+        crate::GameUiError::parse(format!("XUI18 {context} has invalid threshold {raw:?}"))
+    })?;
+    if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
+        return Err(crate::GameUiError::parse(format!(
+            "XUI18 {context} threshold {raw:?} is outside [-1,1]"
+        )));
+    }
+    Ok(Threshold {
+        raw: raw.to_string(),
+        value,
+    })
+}
+
+fn clausewitz_object_to_json_map(
+    value: Option<&crate::paradox_text::Value>,
+) -> crate::Result<BTreeMap<String, Value>> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
     };
-    let Some(left_side) = measured_string(&row.left_side) else {
-        return Err(PowerBalanceRejection::InvalidLiveRow);
+    let object = clausewitz_to_json(Some(value));
+    serde_json::from_value(object)
+        .map_err(|error| crate::GameUiError::parse(format!("XUI18 modifier parse failed: {error}")))
+}
+
+fn clausewitz_to_json(value: Option<&crate::paradox_text::Value>) -> Value {
+    let Some(value) = value else {
+        return Value::Object(Default::default());
     };
-    let Some(right_side) = measured_string(&row.right_side) else {
-        return Err(PowerBalanceRejection::InvalidLiveRow);
-    };
-    let Some(trending_side) = measured_string(&row.trending_side) else {
-        return Err(PowerBalanceRejection::InvalidLiveRow);
-    };
-    let Some(countries) = row.countries.measured() else {
-        return Err(PowerBalanceRejection::InvalidLiveRow);
-    };
-    if template.trim().is_empty()
-        || left_side.trim().is_empty()
-        || right_side.trim().is_empty()
-        || left_side == right_side
-        || (trending_side != left_side && trending_side != right_side)
+    match value {
+        crate::paradox_text::Value::Scalar(value) => Value::String(match value {
+            crate::paradox_text::Scalar::Bare(value)
+            | crate::paradox_text::Scalar::Quoted(value) => value.clone(),
+        }),
+        crate::paradox_text::Value::Object(entries) => {
+            let mut out = serde_json::Map::new();
+            for entry in entries {
+                if let Some(key) = entry.key.as_ref() {
+                    out.insert(key.clone(), clausewitz_to_json(Some(&entry.value)));
+                }
+            }
+            Value::Object(out)
+        }
+    }
+}
+
+fn measured_live_row(
+    row: &PowerBalanceStateRecordExact,
+) -> Result<MeasuredLiveRow<'_>, PowerBalanceRejection> {
+    let value = row.value_raw_fixed5 as f64 / 100_000.0;
+    if row.balance_id.trim().is_empty()
+        || row.left_side_id.trim().is_empty()
+        || row.right_side_id.trim().is_empty()
+        || row.left_side_id == row.right_side_id
+        || (row.trending_side_id != row.left_side_id && row.trending_side_id != row.right_side_id)
         || !value.is_finite()
         || !(-1.0..=1.0).contains(&value)
-        || countries.iter().any(|tag| tag.trim().is_empty())
+        || row.active_range_id.trim().is_empty()
+        || !crate::is_lowercase_sha256(&row.effective_catalog_sha256)
     {
         return Err(PowerBalanceRejection::InvalidLiveRow);
     }
     Ok(MeasuredLiveRow {
-        template,
+        template: &row.balance_id,
+        manager_ordinal: row.manager_ordinal,
         value,
-        left_side,
-        right_side,
-        trending_side,
-        countries,
+        left_side: &row.left_side_id,
+        right_side: &row.right_side_id,
+        trending_side: &row.trending_side_id,
+        active_range: &row.active_range_id,
+        effective_catalog_sha256: &row.effective_catalog_sha256,
     })
 }
 
@@ -689,46 +883,46 @@ fn admit_one(
     let mut context_ids = BTreeSet::new();
     let mut context_hour = None;
     let provenance_valid = runtime.provenance.producer_manifest_sha256
-        == A729_POWER_BALANCE_CONTROLLER_MANIFEST_SHA256
+        == A729_POWER_BALANCE_ALL_COUNTRY_PRESENTATION_MANIFEST_SHA256
         && !runtime
             .provenance
             .completeness_record_identity
             .trim()
             .is_empty()
-        && runtime.provenance.materialization_qpc_ticks > 0
-        && runtime.provenance.selected_present_candidate_id > 0
-        && runtime.provenance.selected_present_qpc_ticks
-            >= runtime.provenance.materialization_qpc_ticks
-        && runtime.provenance.selected_present_cutoff_qpc_ticks
-            >= runtime.provenance.selected_present_qpc_ticks
-        && runtime.provenance.qpc_frequency_hz > 0
-        && crate::is_lowercase_sha256(
-            &runtime.provenance.selected_present_receipt_sha256,
-        )
+        && runtime.provenance.effective_content_manifest_sha256 == row.effective_catalog_sha256
+        && crate::is_lowercase_sha256(&runtime.provenance.state_semantic_receipt_sha256)
+        && crate::is_lowercase_sha256(&runtime.provenance.presentation_semantic_receipt_sha256)
+        && runtime.provenance.expected_country_count > 0
+        && runtime.provenance.expected_balance_count > 0
         && !runtime.provenance.runtime_text_contexts.is_empty()
-        && runtime.provenance.runtime_text_contexts.iter().all(|context| {
-            let same_hour = match context_hour {
-                Some(hour) => hour == context.frame_hour,
-                None => {
-                    context_hour = Some(context.frame_hour);
-                    true
-                }
-            };
-            !context.context_id.trim().is_empty()
-                && context_ids.insert(context.context_id.as_str())
-                && same_hour
-                && (context.pov_country_or_global == country_tag
-                    || context.pov_country_or_global == "global")
-                && !context.view_id.trim().is_empty()
-                && !context.element_id.trim().is_empty()
-                && context.setter_entry_rva == replay_core::A729_TEXT_SETTER_RVA
-                && crate::is_lowercase_sha256(&context.final_text_sha256)
-        })
+        && runtime
+            .provenance
+            .runtime_text_contexts
+            .iter()
+            .all(|context| {
+                let same_hour = match context_hour {
+                    Some(hour) => hour == context.frame_hour,
+                    None => {
+                        context_hour = Some(context.frame_hour);
+                        true
+                    }
+                };
+                !context.context_id.trim().is_empty()
+                    && context_ids.insert(context.context_id.as_str())
+                    && same_hour
+                    && (context.pov_country_or_global == country_tag
+                        || context.pov_country_or_global == "global")
+                    && !context.view_id.trim().is_empty()
+                    && !context.element_id.trim().is_empty()
+                    && context.setter_entry_rva == replay_core::A729_TEXT_SETTER_RVA
+                    && crate::is_lowercase_sha256(&context.final_text_sha256)
+            })
         && context_hour == Some(runtime.provenance.frame_hour);
     if !provenance_valid
         || runtime.source_record_id.trim().is_empty()
         || runtime.country_tag != country_tag
         || runtime.balance_id != row.template
+        || runtime.display_ordinal != 0
     {
         return Err(PowerBalanceRejection::MissingRuntimeProvenance);
     }
@@ -755,13 +949,15 @@ fn admit_one(
                 .is_none_or(|side| side == row.left_side || side == row.right_side)
         })
         .ok_or(PowerBalanceRejection::InvalidActiveRange)?;
+    if runtime.active_range_id != row.active_range {
+        return Err(PowerBalanceRejection::InvalidActiveRange);
+    }
     if runtime.effective_left_icon.trim().is_empty()
         || runtime.effective_right_icon.trim().is_empty()
     {
         return Err(PowerBalanceRejection::InvalidRuntimeIcon);
     }
     let launcher_values_valid = runtime.launcher_visible
-        && runtime.panel_open
         && [
             runtime.launcher_percentage_text.as_deref(),
             runtime.launcher_levels_text.as_deref(),
@@ -808,6 +1004,11 @@ fn admit_one(
             || decision.availability == DecisionAvailability::Unknown
             || !decision_ids.insert(decision.decision_id.as_str())
             || !decision_source_ids.insert(decision.source_record_id.as_str())
+            || decision.target_tag.is_some() != decision.target_flag_sprite.is_some()
+            || decision
+                .target_flag_sprite
+                .as_deref()
+                .is_some_and(|sprite| sprite.trim().is_empty())
         {
             return Err(PowerBalanceRejection::InvalidDecision);
         }
@@ -828,6 +1029,7 @@ fn admit_one(
         decision_presentations.push(DecisionPresentation {
             source_record_id: decision.source_record_id.clone(),
             resolved_name: decision.resolved_name.clone(),
+            target_flag_sprite: decision.target_flag_sprite.clone(),
             card: decision_card_binding(definition, Some(&state)),
         });
     }
@@ -849,7 +1051,6 @@ fn admit_one(
         return Err(PowerBalanceRejection::InvalidRuntimeTextBinding);
     }
     let normalized = normalize_value(row.value);
-    let marker_center_x = f64::from(BAR_POSITION[0]) + row.value.mul_add(180.0, 180.0);
     let range_boundaries = current_boundaries(definition, row.left_side, row.right_side);
     Ok(PowerBalancePresentation {
         provenance: runtime.provenance.clone(),
@@ -859,11 +1060,6 @@ fn admit_one(
         display_ordinal: runtime.display_ordinal,
         value: row.value,
         normalized_value: normalized,
-        marker_center_x,
-        marker_top_left: [
-            marker_center_x + f64::from(MARKER_OFFSET[0]),
-            f64::from(BAR_POSITION[1] + MARKER_OFFSET[1]),
-        ],
         active_side_id: runtime.active_side_id.clone(),
         trending_side_id: runtime.trending_side_id.clone(),
         active_range_id: runtime.active_range_id.clone(),
@@ -875,7 +1071,6 @@ fn admit_one(
         launcher_levels_text: runtime.launcher_levels_text.clone(),
         launcher_icon_sprite: runtime.launcher_icon_sprite.clone(),
         launcher_glow_visible: runtime.launcher_glow_visible,
-        panel_open: runtime.panel_open,
         bar_sprite: runtime.bar_state.sprite().to_string(),
         range_indicator_frame: runtime.range_indicator_frame,
         range_indicator_top_left: runtime.range_indicator_top_left,
@@ -1016,27 +1211,15 @@ fn current_boundaries(
     values
         .into_iter()
         .filter(|value| *value > -1.0 && *value < 1.0)
-        .map(|value| {
-            let center_x = f64::from(BAR_POSITION[0]) + value.mul_add(180.0, 180.0);
-            RangeBoundaryPresentation {
-                value,
-                normalized: normalize_value(value),
-                center_x,
-                splitter_top_left: [
-                    center_x + f64::from(RANGE_SPLITTER_OFFSET[0]),
-                    f64::from(BAR_POSITION[1] + RANGE_SPLITTER_OFFSET[1]),
-                ],
-            }
+        .map(|value| RangeBoundaryPresentation {
+            value,
+            normalized: normalize_value(value),
         })
         .collect()
 }
 
 fn normalize_value(value: f64) -> f32 {
     ((value + 1.0) * 0.5) as f32
-}
-
-fn measured_string(value: &Leaf<String>) -> Option<&str> {
-    value.measured().map(String::as_str)
 }
 
 /// Bind one admitted panel to the authored element names. Range splitters and
@@ -1069,13 +1252,6 @@ pub fn apply_power_balance_to_compose_options(
     options
         .frame_overrides
         .insert("range_indicator".to_string(), panel.range_indicator_frame);
-    options.position_overrides.insert(
-        "position_marker".to_string(),
-        [
-            panel.marker_top_left[0].round() as i32,
-            panel.marker_top_left[1].round() as i32,
-        ],
-    );
     options.position_overrides.insert(
         "range_indicator".to_string(),
         panel.range_indicator_top_left,

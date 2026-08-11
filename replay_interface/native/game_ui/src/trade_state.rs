@@ -21,6 +21,16 @@ use replay_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+pub const TRADE_RESOURCE_ORDER: [&str; 7] = [
+    "oil",
+    "aluminium",
+    "rubber",
+    "tungsten",
+    "steel",
+    "chromium",
+    "coal",
+];
+
 /// The frame's resource set, in visible order, taken from `TradeView`.
 ///
 /// This replaced a compiled-in list of vanilla's seven resource names.
@@ -134,6 +144,31 @@ pub struct ProductionLicenseVariantCard {
     pub source_tag_db_id: u32,
 }
 
+/// An agreement's end-date lifecycle, trichotomy-preserving. `Absent` (the
+/// stream carries no end date — an open-ended agreement / pre-carrier stream)
+/// and `Unavailable` (explicitly unobtained this hour) are DIFFERENT display
+/// states: composition renders `Absent` as the authentic empty form and
+/// `Unavailable` as the `"--"` unavailable marker used by the sibling
+/// factory/count fields. A mixed raw/formatted authority pair rejects the row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgreementEndDate {
+    Measured { raw: i64, date: String },
+    Absent,
+    Unavailable,
+}
+
+impl AgreementEndDate {
+    /// The composed textbox value: measured date, authentic-empty for a
+    /// measured absence of an end date, `"--"` for unavailable data.
+    pub fn display_text(&self) -> String {
+        match self {
+            AgreementEndDate::Measured { date, .. } => date.clone(),
+            AgreementEndDate::Absent => String::new(),
+            AgreementEndDate::Unavailable => "--".to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionLicenseAgreementCard {
     pub agreement_id: String,
@@ -142,8 +177,7 @@ pub struct ProductionLicenseAgreementCard {
     pub partner: String,
     pub start_date_raw: i64,
     pub start_date: String,
-    pub end_date_raw: Option<i64>,
-    pub end_date: Option<String>,
+    pub end_date: AgreementEndDate,
     pub variants: Vec<ProductionLicenseVariantCard>,
 }
 
@@ -158,8 +192,7 @@ pub struct EquipmentPurchaseContractCard {
     pub buyer: String,
     pub start_date_raw: i64,
     pub start_date: String,
-    pub end_date_raw: Option<i64>,
-    pub end_date: Option<String>,
+    pub end_date: AgreementEndDate,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -597,13 +630,11 @@ fn measured_equipment_purchase_contract(
     {
         return None;
     }
-    let (end_date_raw, end_date) = match (&row.relation_end_date_raw, &row.relation_end_date) {
-        (Leaf::Measured(raw), Leaf::Measured(date)) if *raw >= start_date_raw && !date.is_empty() => {
-            (Some(*raw), Some(date.clone()))
-        }
-        (Leaf::Unobtained | Leaf::Absent, Leaf::Unobtained | Leaf::Absent) => (None, None),
-        _ => return None,
-    };
+    let end_date = agreement_end_date(
+        &row.relation_end_date_raw,
+        &row.relation_end_date,
+        start_date_raw,
+    )?;
     Some(EquipmentPurchaseContractCard {
         contract_id,
         visible_order,
@@ -614,7 +645,6 @@ fn measured_equipment_purchase_contract(
         buyer,
         start_date_raw,
         start_date,
-        end_date_raw,
         end_date,
     })
 }
@@ -693,13 +723,7 @@ fn measured_production_license_agreement(
     for variant in variants {
         variant_cards.push(measured_production_license_variant(variant, partner_id)?);
     }
-    let (end_date_raw, end_date) = match (&row.end_date_raw, &row.end_date) {
-        (Leaf::Measured(raw), Leaf::Measured(date)) if *raw >= start_date_raw && !date.is_empty() => {
-            (Some(*raw), Some(date.clone()))
-        }
-        (Leaf::Unobtained | Leaf::Absent, Leaf::Unobtained | Leaf::Absent) => (None, None),
-        _ => return None,
-    };
+    let end_date = agreement_end_date(&row.end_date_raw, &row.end_date, start_date_raw)?;
     Some(ProductionLicenseAgreementCard {
         agreement_id,
         visible_order,
@@ -707,10 +731,34 @@ fn measured_production_license_agreement(
         partner,
         start_date_raw,
         start_date,
-        end_date_raw,
         end_date,
         variants: variant_cards,
     })
+}
+
+/// Convert an agreement's raw/formatted end-date leaf pair, trichotomy-
+/// preserving. Both leaves must agree on authority: measured pairs must be a
+/// valid lifecycle (`raw >= start`, non-empty date), uniformly-absent pairs
+/// are the measured absence of an end date, uniformly-unobtained pairs are
+/// unavailable data, and any mixed pair is inconsistent — the row rejects.
+fn agreement_end_date(
+    raw_leaf: &Leaf<i64>,
+    date_leaf: &Leaf<String>,
+    start_date_raw: i64,
+) -> Option<AgreementEndDate> {
+    match (raw_leaf, date_leaf) {
+        (Leaf::Measured(raw), Leaf::Measured(date))
+            if *raw >= start_date_raw && !date.is_empty() =>
+        {
+            Some(AgreementEndDate::Measured {
+                raw: *raw,
+                date: date.clone(),
+            })
+        }
+        (Leaf::Absent, Leaf::Absent) => Some(AgreementEndDate::Absent),
+        (Leaf::Unobtained, Leaf::Unobtained) => Some(AgreementEndDate::Unavailable),
+        _ => None,
+    }
 }
 
 fn measured_production_license_variant(
@@ -864,6 +912,16 @@ pub fn build_trade_compose_scene(
     promote_show_position(&mut country_trade);
     let mut children = vec![country_trade];
     let localisation = Localisation::load_english(resolver)?;
+    // `load_english` records byte-level damage instead of failing, so this
+    // consumer must read it: composing a screen from mojibake would render
+    // strings the content never contained. Line-level `parse_failures` stay
+    // tolerated, exactly as before.
+    if !localisation.decode_lossy_files.is_empty() {
+        return Err(crate::GameUiError::parse(format!(
+            "XUI15 trade localisation decode destroyed bytes in {:?}",
+            localisation.decode_lossy_files
+        )));
+    }
     let mut options =
         ComposeOptions::new(viewport_width, viewport_height).with_localisation(&localisation);
 
@@ -1094,7 +1152,7 @@ pub fn apply_trade_to_compose_options(
                 set_text(
                     options,
                     &format!("{prefix}end_date"),
-                    row.end_date.clone().unwrap_or_default(),
+                    row.end_date.display_text(),
                 );
             }
         }
@@ -1112,7 +1170,7 @@ pub fn apply_trade_to_compose_options(
                 set_text(
                     options,
                     &format!("{prefix}end_date"),
-                    row.end_date.clone().unwrap_or_default(),
+                    row.end_date.display_text(),
                 );
                 set_text(
                     options,
@@ -1127,9 +1185,9 @@ pub fn apply_trade_to_compose_options(
     }
 }
 
-fn format_needed(row: &TradeResourceCard) -> String {
-    // Keyed on the row's own semantics, not on a resource name.
-    if row.needed_type == "current_max" {
+    pub(crate) fn format_needed(row: &TradeResourceCard) -> String {
+        // Keyed on the row's own semantics, not on a resource name.
+        if row.needed_type == "current_max" {
         match (row.needed_current, row.needed_max) {
             (Some(current), Some(maximum)) => {
                 format!(

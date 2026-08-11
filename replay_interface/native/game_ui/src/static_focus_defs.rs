@@ -4,10 +4,9 @@ use crate::national_focus::{
     FocusCatalog, FocusDefinitionKind, FocusNodeDefinition, FocusStateBackgroundSprites,
     FocusTreeTopology,
 };
-use replay_core::{
-    AdmittedStaticFocusDefinitions, StaticFocusDefinitionKind,
-};
+use replay_core::{AdmittedStaticFocusDefinitions, StaticFocusDefinitionKind};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaticFocusConversionError {
@@ -30,6 +29,108 @@ impl std::fmt::Display for StaticFocusConversionError {
 
 impl std::error::Error for StaticFocusConversionError {}
 
+/// One manifest-sealed static XUI10 content identity. The catalog is derived
+/// from the same authenticated definitions and can never be caller-substituted.
+#[derive(Clone, Debug)]
+pub struct AdmittedStaticFocusUiContent {
+    #[cfg(not(test))]
+    definitions: Arc<AdmittedStaticFocusDefinitions>,
+    #[cfg(test)]
+    definitions: Option<Arc<AdmittedStaticFocusDefinitions>>,
+    catalog: FocusCatalog,
+    #[cfg(test)]
+    fixture: Option<StaticFocusUiFixture>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct StaticFocusUiFixture {
+    content_manifest_digest_sha256: String,
+    topology: FocusTreeTopology,
+}
+
+impl AdmittedStaticFocusUiContent {
+    pub fn new(
+        definitions: Arc<AdmittedStaticFocusDefinitions>,
+        expected_content_manifest_digest_sha256: &str,
+    ) -> Result<Self, StaticFocusConversionError> {
+        if definitions.content_manifest_digest_sha256() != expected_content_manifest_digest_sha256 {
+            return Err(StaticFocusConversionError::new(
+                "focus_defs_static content identity differs from the renderer manifest",
+            ));
+        }
+        let catalog = focus_catalog_from_static(&definitions);
+        Ok(Self {
+            #[cfg(not(test))]
+            definitions,
+            #[cfg(test)]
+            definitions: Some(definitions),
+            catalog,
+            #[cfg(test)]
+            fixture: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(
+        content_manifest_digest_sha256: String,
+        topology: FocusTreeTopology,
+        catalog: FocusCatalog,
+    ) -> Self {
+        Self {
+            definitions: None,
+            catalog,
+            fixture: Some(StaticFocusUiFixture {
+                content_manifest_digest_sha256,
+                topology,
+            }),
+        }
+    }
+
+    pub fn definitions(&self) -> &AdmittedStaticFocusDefinitions {
+        #[cfg(not(test))]
+        return &self.definitions;
+        #[cfg(test)]
+        self.definitions
+            .as_deref()
+            .expect("test fixture has no packaged focus definitions")
+    }
+
+    pub fn catalog(&self) -> &FocusCatalog {
+        &self.catalog
+    }
+
+    pub fn content_manifest_digest_sha256(&self) -> &str {
+        #[cfg(test)]
+        if let Some(fixture) = self.fixture.as_ref() {
+            return &fixture.content_manifest_digest_sha256;
+        }
+        self.definitions()
+            .content_manifest_digest_sha256()
+    }
+
+    pub fn topology_for_runtime_visible(
+        &self,
+        tree_id: &str,
+        visible_order: &[String],
+    ) -> Result<FocusTreeTopology, StaticFocusConversionError> {
+        #[cfg(test)]
+        if let Some(fixture) = self.fixture.as_ref() {
+            let visible = visible_order.iter().cloned().collect::<BTreeSet<_>>();
+            if tree_id != fixture.topology.tree_id
+                || visible.len() != visible_order.len()
+                || visible != fixture.topology.effective_node_ids
+            {
+                return Err(StaticFocusConversionError::new(
+                    "runtime focus tree or visible order differs from the fixture authority",
+                ));
+            }
+            return Ok(fixture.topology.clone());
+        }
+        focus_topology_for_runtime_visible(self.definitions(), tree_id, visible_order)
+    }
+}
+
 /// Build exact XUI10 static inputs for one D89-selected tree and visible order.
 ///
 /// Local nodes must belong to the selected tree. Shared nodes must belong to
@@ -42,15 +143,12 @@ pub fn focus_inputs_for_runtime_visible(
     tree_id: &str,
     visible_order: &[String],
 ) -> Result<(FocusTreeTopology, FocusCatalog), StaticFocusConversionError> {
-    let topology =
-        focus_topology_for_runtime_visible(definitions, tree_id, visible_order)?;
+    let topology = focus_topology_for_runtime_visible(definitions, tree_id, visible_order)?;
     Ok((topology, focus_catalog_from_static(definitions)))
 }
 
 /// Build the immutable focus catalog once per packaged artifact/content epoch.
-pub fn focus_catalog_from_static(
-    definitions: &AdmittedStaticFocusDefinitions,
-) -> FocusCatalog {
+pub fn focus_catalog_from_static(definitions: &AdmittedStaticFocusDefinitions) -> FocusCatalog {
     let mut nodes = BTreeMap::new();
     for (id, definition) in definitions.definitions() {
         let kind = match definition.kind {
@@ -93,15 +191,8 @@ pub fn focus_topology_for_runtime_visible(
     let imported_shared = definitions
         .imported_shared_node_ids(tree_id)
         .ok_or_else(|| StaticFocusConversionError::new("tree lacks imported-shared topology"))?;
-    if visible_order.is_empty() {
-        return Err(StaticFocusConversionError::new(
-            "runtime visible focus order is empty",
-        ));
-    }
     let visible: BTreeSet<String> = visible_order.iter().cloned().collect();
-    if visible.len() != visible_order.len()
-        || visible_order.iter().any(|id| id.trim().is_empty())
-    {
+    if visible.len() != visible_order.len() || visible_order.iter().any(|id| id.trim().is_empty()) {
         return Err(StaticFocusConversionError::new(
             "runtime visible focus order has empty or duplicate ids",
         ));

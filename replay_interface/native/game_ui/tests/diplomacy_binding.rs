@@ -1,5 +1,4 @@
-//! D4 country/diplomacy-panel population gates (REPLAY_PRODUCTION_PLAN Phase D,
-//! item D4).
+//! D4 country/diplomacy-panel population gates.
 //!
 //! Drives the `fx_war_faction_matrix` packed fixture through the real
 //! `replay_core` `ReplaySource`/`WorldTimeline` and asserts that

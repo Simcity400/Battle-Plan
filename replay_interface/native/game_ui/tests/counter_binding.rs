@@ -1,4 +1,5 @@
-//! U1 counter-content binding gates (REPLAY_PRODUCTION_PLAN §6a / C1 content).
+//! U1 counter-content binding gates (C1 content; the counter law is
+//! `replay_interface/documents/UNIT_COUNTER_LAW.md`).
 //!
 //! Drives the packed snapshot-flavor fixtures through the real `replay_core`
 //! `ReplaySource`/`WorldTimeline` and asserts that
@@ -16,8 +17,8 @@
 //!     `in_combat = true` for ticks 6..=9 (mutate override), else false.
 //!     Div 201: not moving, never in combat.
 //!   * `fx_naval_air_activity` — base divisions `101:1`/`201:1` (unchanged),
-//!     one task force `501:1` (owner ENG, `ship_count = 8+tick`, hull "capital"),
-//!     one air wing `800:1` (owner ENG, `name="Fighter Wing"`,
+//!     one task force `501` (owner ENG, `ship_count = 8+tick`, hull "capital"),
+//!     one air wing `800` (owner ENG, `name="Fighter Wing"`,
 //!     `plane_count = 100+tick`, `mission="air_superiority"`).
 //!
 //! Tick↔hour: `fixture_time(base_offset+tick)` is strictly increasing in tick,
@@ -162,7 +163,7 @@ fn naval_air_counter_content_per_pov_per_hour() {
         assert_eq!(eng.air.len(), 1);
 
         let tf = &eng.naval[0];
-        assert_eq!(tf.uid, "501:1");
+        assert_eq!(tf.uid, "501");
         assert_eq!(tf.domain, CounterDomain::Naval);
         assert_eq!(tf.owner.as_deref(), Some("ENG"));
         assert_eq!(tf.country_color_key.as_deref(), Some("ENG"));
@@ -189,7 +190,7 @@ fn naval_air_counter_content_per_pov_per_hour() {
         }
 
         let wing = &eng.air[0];
-        assert_eq!(wing.uid, "800:1");
+        assert_eq!(wing.uid, "800");
         assert_eq!(wing.domain, CounterDomain::Air);
         assert_eq!(wing.owner.as_deref(), Some("ENG"));
         assert_eq!(wing.name.as_deref(), Some("Fighter Wing"));

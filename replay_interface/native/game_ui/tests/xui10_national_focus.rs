@@ -1,6 +1,6 @@
 use game_ui::national_focus::{
     admit_exact_national_focus_presentation, admit_national_focus_presentation,
-    FocusAdmissionCode, FocusCatalog, FocusDefinitionKind,
+    admit_observer_national_focus_presentation, FocusAdmissionCode, FocusCatalog, FocusDefinitionKind,
     FocusNodeDefinition, FocusNodeState, FocusStateBackgroundSprites, FocusTreeTopology,
     DEFAULT_FOCUS_ICON_SPRITE, STANDARD_FOCUS_AVAILABLE_SPRITE, STANDARD_FOCUS_COMPLETED_SPRITE,
     STANDARD_FOCUS_CURRENT_SPRITE, STANDARD_FOCUS_UNAVAILABLE_SPRITE,
@@ -248,6 +248,22 @@ fn exact_sets_icons_order_pause_and_progress_are_admitted() {
         admitted.nodes[3].definition_kind,
         FocusDefinitionKind::Joint
     );
+}
+
+#[test]
+fn observer_route_uses_d12_and_files_without_a_selected_present_canvas() {
+    let admitted =
+        admit_observer_national_focus_presentation(&focus(), &topology(), &catalog())
+            .expect("D12/FILE observer presentation");
+    assert_eq!(admitted.progress_days, Some(12.5));
+    assert!(admitted.paused);
+    assert!(admitted.nodes.iter().all(|node| {
+        node.display_progress_percent.is_none()
+            && node.continuous_glow_visible.is_none()
+            && node.highlight_glow_visible.is_none()
+            && node.historical_marker_visible.is_none()
+            && node.joint_viewing_country_tag.is_none()
+    }));
 }
 
 #[test]

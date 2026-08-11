@@ -370,11 +370,7 @@ fn read_runtime_texture_capture_sidecar(
     if schema != RUNTIME_TEXTURE_CAPTURE_SCHEMA {
         return Ok(None);
     }
-    let sidecar = crate::json_store::decode_json_value(
-        value,
-        path,
-        RUNTIME_TEXTURE_CAPTURE_ROLE,
-    )?;
+    let sidecar = crate::json_store::decode_json_value(value, path, RUNTIME_TEXTURE_CAPTURE_ROLE)?;
     Ok(Some(sidecar))
 }
 
@@ -534,6 +530,10 @@ pub(crate) fn terrain_chunk_frame_from_draws(
         runtime_files: manifest.runtime_files.clone(),
         blockers: Vec::new(),
         synthetic_payloads: BTreeMap::new(),
+        // This frame is assembled from the chunk-library manifest, not run
+        // through `validate_map_frame_vanilla_sources`; no verification
+        // outcome has been established for it.
+        vanilla_source_verification: None,
     })
 }
 
@@ -563,12 +563,15 @@ fn validate_terrain_chunk_draw_payloads(
             }
         }
     }
-    let replay_blockers = native_d3d11_replay_payload_blockers(frame, false)
-        .into_iter()
-        .filter(|blocker| !blocker.contains("post-pass output-merger"))
-        .filter(|blocker| !blocker.contains("captured ClearRenderTargetView provenance"))
-        .filter(|blocker| !blocker.contains("captured ClearDepthStencilView provenance"))
-        .collect::<Vec<_>>();
+    // The chunk library is itself the terrain reference, so an absent post-pass
+    // output-merger capture is not a blocker here; an integrity failure of a
+    // post-pass capture that IS present still is. Clear provenance is likewise
+    // waived only where it is absent, never where it is present and invalid.
+    let replay_blockers =
+        native_d3d11_replay_payload_blockers_without_post_pass_reference(frame, false)
+            .into_iter()
+            .filter(|blocker| !is_clear_provenance_blocker(blocker))
+            .collect::<Vec<_>>();
     blockers.extend(replay_blockers);
     if blockers.is_empty() {
         Ok(())
@@ -985,8 +988,7 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
         let path = root.join("probe_capture.json");
 
-        fs::write(&path, br#"{"schema":"unrelated-capture-v1"}"#)
-            .expect("write unrelated sidecar");
+        fs::write(&path, br#"{"schema":"unrelated-capture-v1"}"#).expect("write unrelated sidecar");
         assert!(read_runtime_texture_capture_sidecar(&path)
             .expect("other well-formed capture schema is not a runtime texture")
             .is_none());

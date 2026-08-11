@@ -15,13 +15,19 @@
 //! replacement for the old in-RAM "packed stream bytes == pipe bytes" compare).
 
 use crate::canon::manifest_canonical_bytes;
+use crate::container::{MAX_ENTRIES, MAX_TOTAL_BYTES};
 use crate::sha256::{to_hex, Sha256};
 use crate::zip::{
     legacy_path_key, portable_path_key, validate_path, validate_path_legacy_v1,
     validate_payload_path, validate_payload_path_legacy_v1, INITIAL_ENTRY_RESERVE,
-    MAX_CONTAINER_ENTRY_BYTES, MAX_READER_ENTRIES, STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+    MAX_CONTAINER_ENTRY_BYTES, MAX_MANIFEST_BYTES, STREAMING_MAX_CONTAINER_ENTRY_BYTES,
     ZIP32_MAX_FIELD_VALUE, ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
+/// The generic ZIP reader ceiling. Container admission uses the stricter
+/// product policy above; this stays reachable for the low-level tests that pin
+/// the generic parser's own behaviour.
+#[cfg(test)]
+use crate::zip::MAX_READER_ENTRIES;
 use flate2::read::DeflateDecoder;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -145,7 +151,7 @@ impl FileBackedArchive {
         &self,
         index: usize,
         calculate_sha256: bool,
-    ) -> Result<(Vec<u8>, Option<String>), String> {
+    ) -> Result<(Vec<u8>, Option<String>), EntryFailure> {
         let entry = self
             .entries
             .get(index)
@@ -171,13 +177,16 @@ impl FileBackedArchive {
     /// the same CRC/size/SHA evidence as an ordinary authenticated read. This
     /// path is intentionally available only on the retained file-backed
     /// archive: it never materializes the complete entry in memory.
+    /// As above, preserving the typed failure CLASS ([`EntryFailure`]) so a
+    /// corrupted payload does not reach the container layer as an untyped
+    /// string alongside every other refusal reason.
     pub(crate) fn copy_entry_to_writer<W: Write>(
         &self,
         index: usize,
         writer: &mut W,
         calculate_sha256: bool,
         maximum_uncompressed_bytes: u64,
-    ) -> Result<(Option<String>, u64), String> {
+    ) -> Result<(Option<String>, u64), EntryFailure> {
         let entry = self
             .entries
             .get(index)
@@ -357,8 +366,23 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
     // structural pass must begin with the historical grammar. It rejects
     // traversal/absolute/device paths but deliberately does not impose NFC or
     // full Unicode-caseless identity before the manifest version is known.
+    //
+    // The entry-count ceiling is the PRODUCT-OPEN one, not the generic ZIP
+    // reader's: this function is the recorder's pre-promotion gate, and a gate
+    // that admits more than `Container::open` will accept green-lights
+    // containers the viewer deterministically refuses (FW4 / R1-6).
     let (entries, central_directory_off) =
-        read_central_directory_with_limit_policy(&mut file, file_len, MAX_READER_ENTRIES, false)?;
+        read_central_directory_with_limit_policy(&mut file, file_len, MAX_ENTRIES as u64, false)?;
+    // Same total-uncompressed admission the viewer applies at open.
+    let mut total_uncompressed: u64 = 0;
+    for entry in &entries {
+        total_uncompressed = total_uncompressed.saturating_add(entry.uncomp_size);
+    }
+    if total_uncompressed > MAX_TOTAL_BYTES {
+        return Err(format!(
+            "total uncompressed size {total_uncompressed} exceeds the container cap {MAX_TOTAL_BYTES}"
+        ));
+    }
     validate_local_headers_file(&mut file, &entries, file_len, central_directory_off)?;
 
     // --- manifest.json (read + parse + digest) ---
@@ -366,12 +390,10 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
         .iter()
         .find(|e| e.name == "manifest.json")
         .ok_or_else(|| "container has no manifest.json (unfinalized/recovery-only)".to_string())?;
-    if man_entry.uncomp_size > MAX_CONTAINER_ENTRY_BYTES
-        || man_entry.comp_size > MAX_CONTAINER_ENTRY_BYTES
-    {
+    if man_entry.uncomp_size > MAX_MANIFEST_BYTES || man_entry.comp_size > MAX_MANIFEST_BYTES {
         return Err(format!(
-            "entry manifest.json exceeds per-entry reader cap (compressed {}, uncompressed {}, cap {})",
-            man_entry.comp_size, man_entry.uncomp_size, MAX_CONTAINER_ENTRY_BYTES
+            "entry manifest.json exceeds the manifest cap (compressed {}, uncompressed {}, cap {MAX_MANIFEST_BYTES})",
+            man_entry.comp_size, man_entry.uncomp_size
         ));
     }
     let man_bytes = read_entry_bytes(&mut file, man_entry)?;
@@ -929,11 +951,6 @@ fn find_zip64_locator(tail: &[u8], eocd: usize) -> Option<usize> {
     (rd_u32(tail, off) == Some(ZIP64_LOCATOR_SIG)).then_some(off)
 }
 
-/// Bytes allowed between a Zip64 EOCD record's start and its locator: the
-/// 56-byte fixed prefix plus the record's zip64 extensible data sector. Real
-/// sectors are tiny; the cap only bounds the verifier's window fail-closed.
-const ZIP64_EOCD_MAX_SPAN: u64 = 1024 * 1024;
-
 /// Returns `(total_entries, cd_size, cd_off, zip64_eocd_abs)` — the last is the
 /// ABSOLUTE file offset of the Zip64 EOCD record, i.e. where the central
 /// directory must end. The record is located by FOLLOWING the locator's
@@ -959,20 +976,9 @@ fn parse_zip64_eocd(
         return Err("multi-disk Zip64 archives are not supported".to_string());
     }
     let locator_abs = tail_start + locator as u64;
-    if zip64_eocd_abs >= locator_abs {
-        return Err(format!(
-            "Zip64 EOCD offset {zip64_eocd_abs} does not precede its locator at {locator_abs}"
-        ));
-    }
-    let span = locator_abs - zip64_eocd_abs;
-    if span < ZIP64_EOCD_MIN_LEN {
-        return Err("truncated Zip64 EOCD".to_string());
-    }
-    if span > ZIP64_EOCD_MAX_SPAN {
-        return Err(format!(
-            "Zip64 EOCD record spans {span} bytes before its locator, beyond the verifier cap {ZIP64_EOCD_MAX_SPAN}"
-        ));
-    }
+    // Shared placement policy (see `zip::validate_zip64_eocd_placement`): the
+    // record_size half runs below, once the record has been materialized.
+    crate::zip::validate_zip64_eocd_placement(zip64_eocd_abs, locator_abs, None)?;
     let mut record = [0u8; ZIP64_EOCD_MIN_LEN as usize];
     if zip64_eocd_abs >= tail_start {
         // Fast path: the record's fixed prefix already sits inside the scanned
@@ -991,9 +997,7 @@ fn parse_zip64_eocd(
         return Err("bad Zip64 EOCD signature".to_string());
     }
     let record_size = rd_u64(&record, 4).ok_or("truncated zip64 eocd")?;
-    if record_size < 44 {
-        return Err("truncated Zip64 EOCD size".to_string());
-    }
+    crate::zip::validate_zip64_eocd_placement(zip64_eocd_abs, locator_abs, Some(record_size))?;
     let disk_no = rd_u32(&record, 16).ok_or("truncated zip64 eocd")?;
     let cd_disk = rd_u32(&record, 20).ok_or("truncated zip64 eocd")?;
     if disk_no != 0 || cd_disk != 0 {
@@ -1023,7 +1027,10 @@ fn parse_zip64_extra(
 }
 
 /// Validate every local header and complete physical entry region without
-/// decoding payload bytes, including central-directory order and overlap.
+/// decoding payload bytes, including central-directory order and EXACT physical
+/// coverage. Mirrors `ZipArchive::validate_local_headers` (FW4 / R1-3): only
+/// rejecting overlap left prefixes and gaps outside every integrity layer, and
+/// this is the recorder's own pre-promotion gate.
 fn validate_local_headers_file(
     file: &mut File,
     entries: &[CdEntry],
@@ -1039,7 +1046,18 @@ fn validate_local_headers_file(
                 entry.name
             ));
         }
+        if region.header_start != previous_end {
+            return Err(format!(
+                "unaccounted archive bytes: {} starts at {} but entry coverage reaches only {previous_end}",
+                entry.name, region.header_start
+            ));
+        }
         previous_end = region.region_end;
+    }
+    if previous_end != central_directory_off {
+        return Err(format!(
+            "unaccounted archive bytes: entry coverage ends at {previous_end} but the central directory starts at {central_directory_off}"
+        ));
     }
     Ok(())
 }
@@ -1161,11 +1179,83 @@ fn validate_entry_structure(
     })
 }
 
+/// True when a decompressor's `io::Error` is a CODEC failure over the declared
+/// payload bytes rather than an underlying source/destination I/O failure.
+///
+/// `flate2` and `zstd` synthesize their decode failures with
+/// `io::Error::new(..)`, which carries NO raw OS error code; a genuine read
+/// failure on the retained file handle always propagates one. The presence of
+/// an OS error code is therefore the discriminator: without it the failure
+/// describes the declared payload bytes, with it the failure describes the
+/// source handle and says nothing about the stored bytes.
+///
+/// (The `kind()` is deliberately not used: `zstd` reports checksum/format
+/// failures as `ErrorKind::Other`, so keying on `InvalidData` would silently
+/// reclassify real payload corruption as malformation.)
+fn decoder_error_is_payload(error: &std::io::Error) -> bool {
+    error.raw_os_error().is_none()
+}
+
+/// One file-backed entry-verification failure, carrying its CLASS alongside the
+/// reason text.
+///
+/// The file-backed reader reports every reason as a string, which merged a
+/// corrupted payload (a failed CRC-32 / declared length over these exact bytes)
+/// with an ordinary malformed-archive refusal. Callers that must tell those
+/// apart — the container layer, and the product surface above it — read
+/// [`EntryFailure::is_integrity`] instead of matching on the message.
+#[derive(Debug)]
+pub(crate) struct EntryFailure {
+    reason: String,
+    integrity: bool,
+}
+
+impl EntryFailure {
+    /// A malformed / unsupported / unreadable archive: the bytes were never
+    /// authenticated against a declared digest.
+    pub(crate) fn malformed(reason: String) -> Self {
+        Self {
+            reason,
+            integrity: false,
+        }
+    }
+    /// The stored bytes disagree with the archive's own declared integrity
+    /// fields for this entry.
+    pub(crate) fn integrity(reason: String) -> Self {
+        Self {
+            reason,
+            integrity: true,
+        }
+    }
+    pub(crate) fn is_integrity(&self) -> bool {
+        self.integrity
+    }
+    pub(crate) fn into_reason(self) -> String {
+        self.reason
+    }
+}
+
+impl From<String> for EntryFailure {
+    /// Every reason that reaches this conversion came from a helper that does
+    /// not authenticate bytes against a digest, so it is malformation.
+    fn from(reason: String) -> Self {
+        Self::malformed(reason)
+    }
+}
+
+impl std::fmt::Display for EntryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Renders the EXACT text the pre-typed String produced.
+        f.write_str(&self.reason)
+    }
+}
+
 /// Read + decompress one entry FULLY into RAM. Only used for small entries
 /// (manifest.json); large entries go through [`hash_entry_streaming`].
 fn read_entry_bytes(file: &mut File, e: &CdEntry) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    entry_integrity_inner(file, e, Some(&mut out), false, MAX_CONTAINER_ENTRY_BYTES)?;
+    entry_integrity_inner(file, e, Some(&mut out), false, MAX_CONTAINER_ENTRY_BYTES)
+        .map_err(EntryFailure::into_reason)?;
     Ok(out)
 }
 
@@ -1173,7 +1263,8 @@ fn read_entry_bytes(file: &mut File, e: &CdEntry) -> Result<Vec<u8>, String> {
 /// without holding the decompressed bytes.
 fn hash_entry_streaming(file: &mut File, e: &CdEntry) -> Result<(String, u64), String> {
     let (digest, len) =
-        entry_integrity_inner(file, e, None, true, STREAMING_MAX_CONTAINER_ENTRY_BYTES)?;
+        entry_integrity_inner(file, e, None, true, STREAMING_MAX_CONTAINER_ENTRY_BYTES)
+            .map_err(EntryFailure::into_reason)?;
     Ok((
         digest.ok_or_else(|| format!("entry {}: internal SHA-256 state missing", e.name))?,
         len,
@@ -1189,12 +1280,12 @@ fn entry_integrity_inner(
     output: Option<&mut dyn Write>,
     calculate_sha256: bool,
     output_cap: u64,
-) -> Result<(Option<String>, u64), String> {
+) -> Result<(Option<String>, u64), EntryFailure> {
     if e.uncomp_size > output_cap || e.comp_size > STREAMING_MAX_CONTAINER_ENTRY_BYTES {
-        return Err(format!(
+        return Err(EntryFailure::malformed(format!(
             "entry {} exceeds verifier cap (compressed {}, uncompressed {}, output cap {})",
             e.name, e.comp_size, e.uncomp_size, output_cap
-        ));
+        )));
     }
     // local file header: read fixed 30 bytes, then name+extra len to find data.
     let mut lfh = [0u8; 30];
@@ -1203,7 +1294,7 @@ fn entry_integrity_inner(
     file.read_exact(&mut lfh)
         .map_err(|err| format!("read local header {}: {err}", e.name))?;
     if rd_u32(&lfh, 0) != Some(LFH_SIG) {
-        return Err(format!("entry {}: bad local header signature", e.name));
+        return Err(EntryFailure::malformed(format!("entry {}: bad local header signature", e.name)));
     }
     let lh_version_needed = rd_u16(&lfh, 4).unwrap();
     let lh_flags = rd_u16(&lfh, 6).unwrap();
@@ -1217,25 +1308,25 @@ fn entry_integrity_inner(
     // (zip.rs validate_local_entry) exactly: a container the product reader
     // refuses must never pass the recorder-side streaming verifier.
     if lh_version_needed != e.version_needed {
-        return Err(format!(
+        return Err(EntryFailure::malformed(format!(
             "entry {}: local/central version-needed mismatch (local {lh_version_needed}, central {})",
             e.name, e.version_needed
-        ));
+        )));
     }
     if lh_flags != e.flags {
-        return Err(format!(
+        return Err(EntryFailure::malformed(format!(
             "entry {}: local/central flags mismatch (local 0x{lh_flags:04x}, central 0x{:04x})",
             e.name, e.flags
-        ));
+        )));
     }
     if lh_method != e.method {
-        return Err(format!("entry {}: local/central method mismatch", e.name));
+        return Err(EntryFailure::malformed(format!("entry {}: local/central method mismatch", e.name)));
     }
     if lh_mod_time != e.mod_time || lh_mod_date != e.mod_date {
-        return Err(format!(
+        return Err(EntryFailure::malformed(format!(
             "entry {}: local/central timestamp mismatch",
             e.name
-        ));
+        )));
     }
     let lh_name_len = rd_u16(&lfh, 26).unwrap() as u64;
     let lh_extra_len = rd_u16(&lfh, 28).unwrap() as u64;
@@ -1258,7 +1349,7 @@ fn entry_integrity_inner(
     file.read_exact(&mut local_extra)
         .map_err(|err| format!("read local extra {}: {err}", e.name))?;
     if local_name != e.name.as_bytes() {
-        return Err(format!("entry {}: local/central name mismatch", e.name));
+        return Err(EntryFailure::malformed(format!("entry {}: local/central name mismatch", e.name)));
     }
     if e.flags & 0x0008 == 0 {
         let need_uncomp = lh_uncomp_size == u32::MAX as u64;
@@ -1282,18 +1373,18 @@ fn entry_integrity_inner(
             || local_comp_size != e.comp_size
             || local_uncomp_size != e.uncomp_size
         {
-            return Err(format!(
+            return Err(EntryFailure::malformed(format!(
                 "entry {}: local/central crc or size mismatch",
                 e.name
-            ));
+            )));
         }
     } else if lh_crc32 != 0 || lh_comp_size != 0 || lh_uncomp_size != 0 {
         // Same rule as the in-RAM reader: with general-purpose bit 3 the local
         // crc/size fields carry no authority and MUST be zero.
-        return Err(format!(
+        return Err(EntryFailure::malformed(format!(
             "entry {}: data-descriptor local crc/size fields must be zero",
             e.name
-        ));
+        )));
     }
     file.seek(SeekFrom::Start(data_start))
         .map_err(|err| format!("seek entry data {}: {err}", e.name))?;
@@ -1310,6 +1401,12 @@ fn entry_integrity_inner(
     let final_sink = match e.method {
         ZIP_METHOD_STORE => {
             // STORE: comp_size == uncomp_size; stream raw bytes through the sink.
+            // Deliberately NOT the integrity class: this can fail because the
+            // source file changed underneath the retained handle (which
+            // `validate_file_length` brackets) or because the caller-owned
+            // destination writer failed. Neither proves the stored bytes are
+            // corrupt. A STORE payload that IS corrupt reads fine and then
+            // fails the declared length/CRC checks below, which are typed.
             let mut s = sink;
             stream_n(file, e.comp_size, |chunk| {
                 s.write_all(chunk).map_err(|e| e.to_string())
@@ -1322,21 +1419,28 @@ fn entry_integrity_inner(
             let mut dec = DeflateDecoder::new(compressed);
             let mut out = vec![0u8; VERIFY_CHUNK];
             loop {
-                let n = dec
-                    .read(&mut out)
-                    .map_err(|error| format!("entry {}: inflate failed: {error}", e.name))?;
+                let n = dec.read(&mut out).map_err(|error| {
+                    let reason = format!("entry {}: inflate failed: {error}", e.name);
+                    if decoder_error_is_payload(&error) {
+                        EntryFailure::integrity(reason)
+                    } else {
+                        EntryFailure::malformed(reason)
+                    }
+                })?;
                 if n == 0 {
                     break;
                 }
+                // The sink is caller-owned; a write failure is not evidence
+                // about the stored bytes.
                 s.write_all(&out[..n]).map_err(|error| error.to_string())?;
             }
             // Match the in-memory reader: every byte inside the declared
             // compressed region must belong to the deflate stream.
             if dec.total_in() != e.comp_size {
-                return Err(format!(
+                return Err(EntryFailure::malformed(format!(
                     "entry {}: trailing bytes after deflate stream",
                     e.name
-                ));
+                )));
             }
             drop(dec);
             file.seek(SeekFrom::Start(
@@ -1350,20 +1454,63 @@ fn entry_integrity_inner(
         ZIP_METHOD_ZSTD => {
             let mut s = sink;
             {
+                // Peek the frame magic before decoding: libzstd consumes a
+                // skippable frame silently, so consumption accounting alone
+                // cannot see it. Rewind to data_start afterwards.
+                let mut magic = [0u8; 4];
+                let peeked = read_up_to(file, &mut magic, e.comp_size)?;
+                crate::zip::reject_leading_zstd_skippable_frame(
+                    (peeked == 4).then_some(magic),
+                    &e.name,
+                )
+                .map_err(|err| err.to_string())?;
+                file.seek(SeekFrom::Start(data_start))
+                    .map_err(|err| format!("entry {}: rewind zstd data: {err}", e.name))?;
+
                 let limited = std::io::Read::by_ref(file).take(e.comp_size);
                 let mut dec = zstd::stream::read::Decoder::new(limited)
-                    .map_err(|err| format!("entry {}: zstd decoder: {err}", e.name))?;
+                    .map_err(|err| {
+                        let reason = format!("entry {}: zstd decoder: {err}", e.name);
+                        if decoder_error_is_payload(&err) {
+                            EntryFailure::integrity(reason)
+                        } else {
+                            EntryFailure::malformed(reason)
+                        }
+                    })?
+                    .single_frame();
                 dec.window_log_max(ZSTD_WINDOW_LOG)
                     .map_err(|err| format!("entry {}: zstd decoder: {err}", e.name))?;
                 let mut out = vec![0u8; VERIFY_CHUNK];
                 loop {
-                    let n = dec
-                        .read(&mut out)
-                        .map_err(|err| format!("entry {}: zstd decode failed: {err}", e.name))?;
+                    let n = dec.read(&mut out).map_err(|err| {
+                        let reason = format!("entry {}: zstd decode failed: {err}", e.name);
+                        if decoder_error_is_payload(&err) {
+                            EntryFailure::integrity(reason)
+                        } else {
+                            EntryFailure::malformed(reason)
+                        }
+                    })?;
                     if n == 0 {
                         break;
                     }
                     s.write_all(&out[..n]).map_err(|err| err.to_string())?;
+                }
+                // Match the in-memory reader: every byte inside the declared
+                // compressed region must belong to the single zstd frame,
+                // whether it is still buffered in the decoder's window or
+                // never pulled from the bounded reader behind it.
+                let buffered = dec.finish();
+                let still_buffered = buffered.buffer().len() as u64;
+                let never_read = buffered.into_inner().limit();
+                if still_buffered != 0 || never_read != 0 {
+                    // Structural, not payload-integrity: the region's shape is
+                    // wrong, no stored hash/CRC claim has been contradicted.
+                    // Same class as the deflate arm's trailing-bytes refusal.
+                    return Err(EntryFailure::malformed(format!(
+                        "entry {}: {} bytes inside the declared zstd region follow its single frame",
+                        e.name,
+                        still_buffered + never_read
+                    )));
                 }
             }
             file.seek(SeekFrom::Start(
@@ -1374,25 +1521,34 @@ fn entry_integrity_inner(
             .map_err(|err| format!("entry {}: seek after zstd data: {err}", e.name))?;
             s
         }
-        m => return Err(format!("entry {}: unsupported method {m}", e.name)),
+        m => {
+            return Err(EntryFailure::malformed(format!(
+                "entry {}: unsupported method {m}",
+                e.name
+            )))
+        }
     };
 
     let uncomp_len = final_sink.len;
+    // The two checks below are PAYLOAD-INTEGRITY failures: the archive's own
+    // declared length/CRC-32 for these exact bytes did not hold. Typed apart
+    // from every other reason so the container layer can classify a corrupted
+    // payload without matching on error text.
     if uncomp_len != e.uncomp_size {
-        return Err(format!(
+        return Err(EntryFailure::integrity(format!(
             "entry {}: decompressed {uncomp_len} bytes != declared {}",
             e.name, e.uncomp_size
-        ));
+        )));
     }
     let crc32 = final_sink.crc32.finalize();
     if crc32 != e.crc32 {
         // Keep the historical "crc32 mismatch" phrase — the negative-fixture
         // manifest and replay_app's fixture table pin it as the stable
         // substring for this refusal class.
-        return Err(format!(
+        return Err(EntryFailure::integrity(format!(
             "entry {}: crc32 mismatch: {crc32:08x} != central {:08x}",
             e.name, e.crc32
-        ));
+        )));
     }
     if e.flags & 0x0008 != 0 {
         let descriptor_start = data_start
@@ -1404,6 +1560,24 @@ fn entry_integrity_inner(
         final_sink.hasher.map(|hasher| to_hex(&hasher.finalize())),
         uncomp_len,
     ))
+}
+
+/// Read at most `buf.len()` bytes, never crossing `available`. Returns how many
+/// landed. Used only to peek a frame magic; the caller re-seeks afterwards.
+fn read_up_to(file: &mut File, buf: &mut [u8], available: u64) -> Result<usize, String> {
+    let want = usize::try_from(available.min(buf.len() as u64))
+        .map_err(|_| "peek length does not fit usize".to_string())?;
+    let mut filled = 0usize;
+    while filled < want {
+        let read = file
+            .read(&mut buf[filled..want])
+            .map_err(|error| format!("peek compressed region: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        filled += read;
+    }
+    Ok(filled)
 }
 
 fn data_descriptor_end_file(file: &mut File, e: &CdEntry, start: u64) -> Result<u64, String> {
@@ -1916,6 +2090,62 @@ mod tests {
         );
     }
 
+    /// FW4 / R1-1, streaming half. The recorder's own pre-promotion gate runs
+    /// through this path, so it must refuse exactly what the in-RAM reader
+    /// refuses (`zip::tests::zstd_skippable_frames_inside_comp_region_are_refused`).
+    #[test]
+    fn streaming_reader_rejects_zstd_skippable_frames_inside_comp_region() {
+        use crate::zip::ZstdSmuggle;
+
+        let dir = TmpDir::new("zstd_skippable");
+        let clean_path = dir.join("clean.zip");
+        fs::write(
+            &clean_path,
+            crate::zip::test_zstd_zip_with_skippable(ZstdSmuggle::None),
+        )
+        .unwrap();
+        let mut file = fs::File::open(&clean_path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len).expect("clean CD parses");
+        hash_entry_streaming(&mut file, &entries[0]).expect("clean zstd entry hashes");
+
+        for smuggle in [ZstdSmuggle::Trailing, ZstdSmuggle::Leading] {
+            let path = dir.join(&format!("dirty_{smuggle:?}.zip"));
+            fs::write(&path, crate::zip::test_zstd_zip_with_skippable(smuggle)).unwrap();
+            let mut file = fs::File::open(&path).unwrap();
+            let len = file.metadata().unwrap().len();
+            let entries = read_central_directory(&mut file, len).expect("structure still parses");
+            let err = hash_entry_streaming(&mut file, &entries[0])
+                .expect_err("a smuggled skippable frame must be refused");
+            assert!(
+                err.contains("follow its single frame") || err.contains("skippable frame"),
+                "unexpected error for {smuggle:?}: {err}"
+            );
+        }
+    }
+
+    /// FW4 / R1-6. The recorder's pre-promotion gate must not admit what the
+    /// viewer refuses. It used to allow 10,000,000 entries (the generic ZIP
+    /// reader ceiling) and had no total-uncompressed rejection at all, while
+    /// `Container::open_strict` caps at 2,000,000 entries and 64 GiB.
+    #[test]
+    fn streaming_verifier_applies_the_product_open_entry_ceiling() {
+        let dir = TmpDir::new("verifier_admission_parity");
+        let path = dir.join("too_many_entries.battleplan");
+        // Between the product ceiling and the generic ZIP ceiling: the old gate
+        // accepted this structure, the viewer never would.
+        let hostile_count = MAX_ENTRIES as u64 + 1;
+        assert!(hostile_count < MAX_READER_ENTRIES);
+        fs::write(&path, zip64_empty_with_entry_count(hostile_count, 0)).unwrap();
+
+        let err = verify_replay_container_streaming(&path, "g", "collector_raw_stream")
+            .expect_err("the verifier must apply the product entry ceiling");
+        assert!(
+            err.contains("entry count") && err.contains("reader cap"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn streaming_reader_rejects_zip64_entry_count_above_reader_cap() {
         let dir = TmpDir::new("entry_count_cap");
@@ -2025,7 +2255,125 @@ mod tests {
         let len = file.metadata().unwrap().len();
         let err = read_central_directory(&mut file, len)
             .expect_err("a record spanning past the sane cap is a typed refusal");
-        assert!(err.contains("verifier cap"), "{err}");
+        // The cap is now SHARED with the in-RAM reader, so the phrase is
+        // "reader cap" rather than the verifier-only wording it once had.
+        assert!(err.contains("reader cap"), "{err}");
+
+        // FW4 / R1-5: the in-RAM reader must refuse the identical bytes. Before
+        // the parsers were shared it followed the locator offset with no
+        // precedence requirement and no span cap, so `Container::from_bytes*`
+        // (production, via the stitch publisher) admitted what `Container::open`
+        // deterministically refused.
+        let err = match crate::zip::ZipArchive::parse(zip64_empty_with_extensible_sector(
+            2 * 1024 * 1024,
+            0,
+        )) {
+            Ok(_) => panic!("the in-RAM reader must apply the same span cap"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("reader cap"), "{err}");
+    }
+
+    /// Shift a whole single-entry ZIP32 archive forward by `prefix` bytes of
+    /// carrier data, rewriting the central-directory local-header offset and the
+    /// EOCD central-directory offset so every declared value stays consistent.
+    /// Nothing in the ZIP grammar itself objects; only exact physical coverage
+    /// notices the bytes.
+    fn archive_with_unaccounted_prefix(prefix: usize) -> Vec<u8> {
+        let base = crate::zip::test_deflate_zip_with_trailing(0);
+        let eocd = base.len() - 22;
+        let cd_off = u32::from_le_bytes(base[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+
+        let mut out = vec![0x5Au8; prefix];
+        out.extend_from_slice(&base);
+        let eocd = out.len() - 22;
+        let shifted_cd_off = (cd_off + prefix) as u32;
+        out[eocd + 16..eocd + 20].copy_from_slice(&shifted_cd_off.to_le_bytes());
+        // Central-directory record local-header offset lives at cd + 42.
+        let cdh = cd_off + prefix;
+        out[cdh + 42..cdh + 46].copy_from_slice(&(prefix as u32).to_le_bytes());
+        out
+    }
+
+    /// FW4 / R1-3. A 77-byte prefix with consistently shifted offsets was
+    /// accepted by BOTH readers: the in-RAM validator rejected only reversal and
+    /// overlap, and the streaming one started `previous_end` at 0 and only
+    /// checked for overlap. The carrier bytes are covered by no CRC, no
+    /// SHA-256, and no size field.
+    #[test]
+    fn unaccounted_prefix_bytes_are_refused_by_both_readers() {
+        // Control: the unshifted archive still validates in both readers.
+        let clean = archive_with_unaccounted_prefix(0);
+        crate::zip::ZipArchive::parse(clean.clone())
+            .expect("control archive parses")
+            .validate_local_headers()
+            .expect("control archive covers itself exactly");
+
+        let dir = TmpDir::new("unaccounted_prefix");
+        let clean_path = dir.join("clean.zip");
+        fs::write(&clean_path, &clean).unwrap();
+        let mut file = fs::File::open(&clean_path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let (entries, cd_off) = read_central_directory_with_limit(&mut file, len, MAX_READER_ENTRIES).unwrap();
+        validate_local_headers_file(&mut file, &entries, len, cd_off)
+            .expect("control archive covers itself exactly (streaming)");
+
+        let hostile = archive_with_unaccounted_prefix(77);
+        let err = crate::zip::ZipArchive::parse(hostile.clone())
+            .expect("the shifted archive is structurally well-formed")
+            .validate_local_headers()
+            .expect_err("77 unaccounted prefix bytes must be refused in RAM");
+        assert!(
+            err.to_string().contains("unaccounted archive bytes"),
+            "unexpected in-RAM error: {err}"
+        );
+
+        let path = dir.join("prefixed.zip");
+        fs::write(&path, &hostile).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let (entries, cd_off) =
+            read_central_directory_with_limit(&mut file, len, MAX_READER_ENTRIES)
+                .expect("the shifted archive is structurally well-formed");
+        let err = validate_local_headers_file(&mut file, &entries, len, cd_off)
+            .expect_err("77 unaccounted prefix bytes must be refused streaming");
+        assert!(
+            err.contains("unaccounted archive bytes"),
+            "unexpected streaming error: {err}"
+        );
+    }
+
+    /// FW4 / R1-5 + R1-3 extension: neither Zip64 parser used to check the
+    /// DECLARED record size against the locator, so an undeclared gap between
+    /// the record's declared end and its locator was accepted by both. Both
+    /// readers must now refuse it.
+    #[test]
+    fn zip64_record_size_must_reach_its_locator_in_both_readers() {
+        // Sector bytes are physically present but NOT declared by record_size.
+        let mut bytes = zip64_empty_with_extensible_sector(64, 0);
+        // Rewrite the declared record size back down to the bare 44 bytes.
+        bytes[4..12].copy_from_slice(&44u64.to_le_bytes());
+
+        let err = match crate::zip::ZipArchive::parse(bytes.clone()) {
+            Ok(_) => panic!("an undeclared gap before the locator must be refused in RAM"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("record bytes ending at"),
+            "unexpected in-RAM error: {err}"
+        );
+
+        let dir = TmpDir::new("zip64_undeclared_gap");
+        let path = dir.join("gap.battleplan");
+        fs::write(&path, &bytes).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let err = read_central_directory(&mut file, len)
+            .expect_err("an undeclared gap before the locator must be refused streaming");
+        assert!(
+            err.contains("record bytes ending at"),
+            "unexpected streaming error: {err}"
+        );
     }
 
     #[test]
@@ -2537,6 +2885,115 @@ mod tests {
             .unwrap();
         assert_eq!(got.len(), raw.len());
         assert!(got == raw, "level-19 round-trip must be byte-identical");
+    }
+
+    /// The decompressor-error discriminator itself. A codec failure is
+    /// synthesized with `io::Error::new` and carries no OS code; a genuine read
+    /// failure on the retained handle always carries one and says nothing about
+    /// the stored bytes.
+    #[test]
+    fn only_decoder_errors_without_an_os_code_describe_the_payload() {
+        for kind in [
+            std::io::ErrorKind::Other,
+            std::io::ErrorKind::InvalidData,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            let codec = std::io::Error::new(kind, "Restored data does not match checksum");
+            assert!(
+                decoder_error_is_payload(&codec),
+                "a synthesized codec failure ({kind:?}) describes the payload"
+            );
+        }
+        // A real handle failure, not evidence about the stored bytes.
+        for code in [5, 38, 1117] {
+            let io = std::io::Error::from_raw_os_error(code);
+            assert!(
+                !decoder_error_is_payload(&io),
+                "an OS-level read failure (code {code}) is not payload evidence"
+            );
+        }
+    }
+
+    /// R5-H3. The archive's own declared length/CRC failing, and the declared
+    /// payload region failing to be READ or DECOMPRESSED, are both the
+    /// payload-INTEGRITY class. Structural refusals must stay malformed —
+    /// otherwise "these bytes are corrupt" stops meaning anything.
+    #[test]
+    fn payload_data_failures_are_the_integrity_class_and_structural_ones_are_not() {
+        let dir = TmpDir::new("entry_failure_class");
+        let (container_path, _, _) = build_zstd_streaming_container(&dir, "entry_failure_class");
+        let name = "payload/g/collector_raw/collector_stream.bin";
+        let (data_start, comp_size) = entry_data_range(&container_path, name);
+        assert!(comp_size > 64);
+
+        let archive_for = |bytes: &[u8], tag: &str| -> FileBackedArchive {
+            let path = dir.join(&format!("{tag}.battleplan"));
+            fs::write(&path, bytes).unwrap();
+            let file = fs::File::open(&path).unwrap();
+            FileBackedArchive::open(file, crate::zip::MAX_READER_ENTRIES)
+                .unwrap_or_else(|error| panic!("{tag} must still open: {error}"))
+        };
+        let index_of = |archive: &FileBackedArchive| -> usize {
+            archive
+                .entries()
+                .iter()
+                .position(|entry| entry.name == name)
+                .expect("stream entry")
+        };
+
+        // (1) Corrupt compressed bytes: the zstd decoder fails inside the
+        // declared region. This is the class the earlier revision lost.
+        let mut corrupt = fs::read(&container_path).unwrap();
+        corrupt[(data_start + comp_size / 2) as usize] ^= 0x40;
+        let archive = archive_for(&corrupt, "corrupt_payload");
+        let index = index_of(&archive);
+        let failure = archive
+            .copy_entry_to_writer(index, &mut std::io::sink(), true, u64::MAX)
+            .expect_err("mutated compressed bytes must fail");
+        assert!(
+            failure.is_integrity(),
+            "a mutated payload is the integrity class: {failure}"
+        );
+
+        // (2) A mutated zstd FRAME HEADER: the decoder cannot even be built
+        // over the declared region. Same class — the payload does not decode.
+        let mut bad_header = fs::read(&container_path).unwrap();
+        for offset in 0..4u64 {
+            bad_header[(data_start + offset) as usize] ^= 0x5a;
+        }
+        let archive = archive_for(&bad_header, "bad_frame_header");
+        let index = index_of(&archive);
+        let failure = archive
+            .copy_entry_to_writer(index, &mut std::io::sink(), true, u64::MAX)
+            .expect_err("a mutated zstd frame header must fail");
+        assert!(
+            failure.is_integrity(),
+            "an undecodable payload is the integrity class: {failure}"
+        );
+
+        // (3) Structural control: a local file header whose signature is gone
+        // is a malformed archive, NOT corrupt authenticated bytes.
+        let mut structural = fs::read(&container_path).unwrap();
+        let header_off = {
+            let mut file = fs::File::open(&container_path).unwrap();
+            let file_len = file.metadata().unwrap().len();
+            let entries = read_central_directory(&mut file, file_len).unwrap();
+            entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap()
+                .local_header_off as usize
+        };
+        structural[header_off] ^= 0xff;
+        let archive = archive_for(&structural, "structural");
+        let index = index_of(&archive);
+        let failure = archive
+            .copy_entry_to_writer(index, &mut std::io::sink(), true, u64::MAX)
+            .expect_err("a broken local header must fail");
+        assert!(
+            !failure.is_integrity(),
+            "a malformed archive is not the integrity class: {failure}"
+        );
     }
 
     #[test]

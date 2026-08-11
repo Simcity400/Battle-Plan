@@ -1,11 +1,12 @@
-//! XUI14 fail-closed intelligence/operative UI admission.
+//! Legacy controller-bound intelligence diagnostics.
 //!
 //! Static GUI and definition files identify chrome and catalog entries, while
-//! save/domain-53 data supplies gameplay rows. Engine-authored lists carry the
-//! exact XUI03 dynamic-collection trace used by their producer. Intel networks
-//! are the deliberate exception: the installed a729 UI has no network
-//! collection, so replay exposes a product-authored deterministic summary and
-//! never labels its stable content-key order as engine UI order.
+//! save/domain-53 data supplies gameplay rows. The selected client controller
+//! and its XUI03 dynamic-collection trace are retained only as authenticated
+//! diagnostics: they are recorder-POV presentation state and are not replay
+//! render authority. Shipping XUI14 uses the passive all-country presentation
+//! carrier and `intelligence_presentation`; this module cannot promote, demote
+//! or substitute for that product route.
 
 use crate::dynamic_collection::DynamicCollectionTrace;
 use crate::{ErrorKind, GameUiError, Result};
@@ -19,8 +20,9 @@ use replay_core::intelligence_controller_companion::{
     admit_intelligence_controller_companion, IntelligenceControllerCompanionExact,
     IntelligenceSurfaceId, IntelligenceVisibilityExact,
 };
-use replay_core::SelectedPresentReceipt;
+use replay_core::{Leaf, SelectedPresentReceipt, ViewStatus, WorldFrame};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 pub const FIXED_ONE: i64 = 100_000;
 
@@ -263,6 +265,888 @@ pub struct IntelligenceUiTrace {
     /// summary. There is no corresponding a729 authored list/controller order.
     pub networks: ProducerValue<IntelNetworkSummary>,
     pub visibility: Vec<VisibilityGate>,
+    /// Foreign-owner rows excluded while deriving this POV-scoped authority.
+    /// Keeping the audit on the admitted trace prevents a successful
+    /// composition from silently discarding evidence of the filter.
+    pub pov_scope_drops: Vec<PovScopedDrop>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IntelligenceComponent {
+    Agency,
+    Upgrades,
+    Operatives,
+    Operations,
+    Ciphers,
+    IntelLevels,
+    Networks,
+}
+
+impl IntelligenceComponent {
+    pub const ALL: [Self; 7] = [
+        Self::Agency,
+        Self::Upgrades,
+        Self::Operatives,
+        Self::Operations,
+        Self::Ciphers,
+        Self::IntelLevels,
+        Self::Networks,
+    ];
+
+    pub fn field_name(self) -> &'static str {
+        match self {
+            Self::Agency => "agency",
+            Self::Upgrades => "upgrades",
+            Self::Operatives => "operatives",
+            Self::Operations => "operations",
+            Self::Ciphers => "ciphers",
+            Self::IntelLevels => "intel_levels",
+            Self::Networks => "networks",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PovScopedDrop {
+    pub component: IntelligenceComponent,
+    pub row_identity: String,
+    pub recorded_owner: Option<String>,
+    pub pov_country: String,
+}
+
+/// The seven independently assembled semantic components retained when the
+/// whole XUI14 trace cannot pass its selected-Present admission gate.
+///
+/// This is deliberately not an `IntelligenceUiTrace`: rejected components
+/// cannot be mistaken for render authority. It exists so absence remains
+/// machine-readable per component and per leaf.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntelligenceComponentAssembly {
+    pub agency: ProducerValue<AgencyState>,
+    pub upgrades: ProducerValue<MeasuredList<AgencyUpgradeRow>>,
+    pub operatives: ProducerValue<MeasuredList<OperativeUiRow>>,
+    pub operations: ProducerValue<MeasuredList<OperationUiRow>>,
+    pub ciphers: ProducerValue<MeasuredList<CipherUiRow>>,
+    pub intel_levels: ProducerValue<MeasuredList<IntelLevelUiRow>>,
+    pub networks: ProducerValue<IntelNetworkSummary>,
+    /// Exact seven-surface companion visibility retained for rejection
+    /// diagnostics. It is copied, never recomputed from replay-local state.
+    pub visibility: Vec<VisibilityGate>,
+    pub pov_scope_drops: Vec<PovScopedDrop>,
+}
+
+impl IntelligenceComponentAssembly {
+    pub fn value_is_measured(&self, component: IntelligenceComponent) -> bool {
+        match component {
+            IntelligenceComponent::Agency => matches!(self.agency, ProducerValue::Measured(_)),
+            IntelligenceComponent::Upgrades => {
+                matches!(self.upgrades, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Operatives => {
+                matches!(self.operatives, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Operations => {
+                matches!(self.operations, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Ciphers => {
+                matches!(self.ciphers, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::IntelLevels => {
+                matches!(self.intel_levels, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Networks => {
+                matches!(self.networks, ProducerValue::Measured(_))
+            }
+        }
+    }
+
+    pub fn unobtained_reason(&self, component: IntelligenceComponent) -> Option<&str> {
+        match component {
+            IntelligenceComponent::Agency => producer_value_reason(&self.agency),
+            IntelligenceComponent::Upgrades => producer_value_reason(&self.upgrades),
+            IntelligenceComponent::Operatives => producer_value_reason(&self.operatives),
+            IntelligenceComponent::Operations => producer_value_reason(&self.operations),
+            IntelligenceComponent::Ciphers => producer_value_reason(&self.ciphers),
+            IntelligenceComponent::IntelLevels => producer_value_reason(&self.intel_levels),
+            IntelligenceComponent::Networks => producer_value_reason(&self.networks),
+        }
+    }
+
+    fn from_trace(trace: IntelligenceUiTrace) -> Self {
+        Self {
+            agency: trace.agency,
+            upgrades: trace.upgrades,
+            operatives: trace.operatives,
+            operations: trace.operations,
+            ciphers: trace.ciphers,
+            intel_levels: trace.intel_levels,
+            networks: trace.networks,
+            visibility: trace.visibility,
+            pov_scope_drops: trace.pov_scope_drops,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IntelligenceAdapterRejection {
+    PovCountryEmpty,
+    CompanionAbsent,
+    CompanionUnobtained,
+    SnapshotPayloadIdentityAbsent,
+    SnapshotPayloadIdentityUnobtained,
+    SnapshotPayloadIdentityMismatch {
+        snapshot_payload_sha256: String,
+        producer_record_identity: String,
+    },
+    ProductionRenderAbsent,
+    CompanionOwnerMismatch {
+        companion_owner: String,
+        pov_country: String,
+    },
+    CompanionAdmissionRejected {
+        reason: String,
+    },
+    ComponentAdmissionRejected {
+        reason: String,
+        assembly: Box<IntelligenceComponentAssembly>,
+    },
+}
+
+impl IntelligenceAdapterRejection {
+    pub fn component_assembly(&self) -> Option<&IntelligenceComponentAssembly> {
+        match self {
+            Self::ComponentAdmissionRejected { assembly, .. } => Some(assembly),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for IntelligenceAdapterRejection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PovCountryEmpty => write!(formatter, "pov_tag is empty"),
+            Self::CompanionAbsent => write!(
+                formatter,
+                "DiplomacyView.intelligence_controller_companion is Leaf::Absent"
+            ),
+            Self::CompanionUnobtained => write!(
+                formatter,
+                "DiplomacyView.intelligence_controller_companion is Leaf::Unobtained"
+            ),
+            Self::SnapshotPayloadIdentityAbsent => write!(
+                formatter,
+                "DiplomacyView.domain53_snapshot_payload_sha256 is Leaf::Absent"
+            ),
+            Self::SnapshotPayloadIdentityUnobtained => write!(
+                formatter,
+                "DiplomacyView.domain53_snapshot_payload_sha256 is Leaf::Unobtained"
+            ),
+            Self::SnapshotPayloadIdentityMismatch {
+                snapshot_payload_sha256,
+                producer_record_identity,
+            } => write!(
+                formatter,
+                "DiplomacyView.domain53_snapshot_payload_sha256 ({snapshot_payload_sha256}) does not match IntelligenceControllerCompanionExact.producer_record_identity ({producer_record_identity})"
+            ),
+            Self::ProductionRenderAbsent => {
+                write!(formatter, "WorldFrame.production_render is absent")
+            }
+            Self::CompanionOwnerMismatch {
+                companion_owner,
+                pov_country,
+            } => write!(
+                formatter,
+                "IntelligenceControllerCompanionExact.owner ({companion_owner}) does not match pov_tag ({pov_country})"
+            ),
+            Self::CompanionAdmissionRejected { reason } => {
+                write!(formatter, "selected-Present companion rejected: {reason}")
+            }
+            Self::ComponentAdmissionRejected { reason, assembly } => {
+                write!(formatter, "{reason}")?;
+                for component in IntelligenceComponent::ALL {
+                    if let Some(component_reason) = assembly.unobtained_reason(component) {
+                        write!(
+                            formatter,
+                            "; {}: {component_reason}",
+                            component.field_name()
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for IntelligenceAdapterRejection {}
+
+const AGENCY_UPGRADES_COLLECTION_ID: &str =
+    "interface/countryintelligenceagencyview.gui#collection-0008";
+
+/// Build XUI14 semantic input from the exact current `WorldFrame`.
+///
+/// Every successful return is immediately checked by the selected-Present
+/// admitter. A component-level failure retains the seven typed producer values
+/// in `IntelligenceComponentAssembly`; it never returns a partial trace.
+pub fn intelligence_trace_from_world(
+    frame: &WorldFrame,
+    pov_tag: &str,
+) -> std::result::Result<IntelligenceUiTrace, IntelligenceAdapterRejection> {
+    if pov_tag.trim().is_empty() {
+        return Err(IntelligenceAdapterRejection::PovCountryEmpty);
+    }
+
+    let exact_sources = frame.intelligence_ui_exact_sources();
+    let companion = match exact_sources.controller_companion {
+        Leaf::Measured(companion) => companion,
+        Leaf::Absent => return Err(IntelligenceAdapterRejection::CompanionAbsent),
+        Leaf::Unobtained => return Err(IntelligenceAdapterRejection::CompanionUnobtained),
+    };
+    match exact_sources.domain53_snapshot_payload_sha256 {
+        Leaf::Absent => return Err(IntelligenceAdapterRejection::SnapshotPayloadIdentityAbsent),
+        Leaf::Unobtained => {
+            return Err(IntelligenceAdapterRejection::SnapshotPayloadIdentityUnobtained)
+        }
+        Leaf::Measured(snapshot_payload_sha256)
+            if exact_sources
+                .snapshot_bound_controller_companion()
+                .is_none() =>
+        {
+            return Err(
+                IntelligenceAdapterRejection::SnapshotPayloadIdentityMismatch {
+                    snapshot_payload_sha256: snapshot_payload_sha256.clone(),
+                    producer_record_identity: companion.producer_record_identity.clone(),
+                },
+            )
+        }
+        Leaf::Measured(_) => {}
+    }
+
+    let render = frame
+        .production_render()
+        .ok_or(IntelligenceAdapterRejection::ProductionRenderAbsent)?;
+    if companion.owner != pov_tag {
+        return Err(IntelligenceAdapterRejection::CompanionOwnerMismatch {
+            companion_owner: companion.owner.clone(),
+            pov_country: pov_tag.to_string(),
+        });
+    }
+    admit_intelligence_controller_companion(companion, &render.selected_present).map_err(
+        |error| IntelligenceAdapterRejection::CompanionAdmissionRejected {
+            reason: error.message,
+        },
+    )?;
+
+    let frame_hour = companion.frame_hour;
+    let mut pov_scope_drops = Vec::new();
+    let agency = build_agency(frame, pov_tag);
+    let upgrades = build_upgrades(frame, pov_tag, frame_hour, &mut pov_scope_drops);
+    let operatives = build_operatives(frame, pov_tag);
+    let operations = build_operations(frame, pov_tag, &mut pov_scope_drops);
+    let ciphers = build_ciphers(frame, pov_tag, frame_hour, &mut pov_scope_drops);
+    let intel_levels = build_intel_levels(frame, pov_tag, &mut pov_scope_drops);
+    let networks = build_networks(frame, pov_tag, &mut pov_scope_drops);
+    let visibility = companion
+        .visibility
+        .iter()
+        .map(|gate| VisibilityGate {
+            surface: map_surface(gate.surface),
+            disposition: map_visibility(gate.disposition),
+            reason: gate.reason.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let trace = IntelligenceUiTrace {
+        authority: IntelligenceTraceAuthority::ExactA729ExtractorController,
+        frame_hour,
+        producer_record_identity: companion.producer_record_identity.clone(),
+        pov_country: pov_tag.to_string(),
+        owner_country: companion.owner.clone(),
+        agency,
+        upgrades,
+        operatives,
+        operations,
+        ciphers,
+        intel_levels,
+        networks,
+        visibility,
+        pov_scope_drops,
+    };
+
+    if let Some(reason) = availability_gate_mismatch(&trace) {
+        return Err(IntelligenceAdapterRejection::ComponentAdmissionRejected {
+            reason,
+            assembly: Box::new(IntelligenceComponentAssembly::from_trace(trace)),
+        });
+    }
+
+    let admission = admit_intelligence_ui_with_selected_present_companion(
+        &trace,
+        companion,
+        &render.selected_present,
+    )
+    .map(|_| ());
+    match admission {
+        Ok(()) => Ok(trace),
+        Err(error) => Err(IntelligenceAdapterRejection::ComponentAdmissionRejected {
+            reason: format!(
+                "assembled IntelligenceUiTrace failed selected-Present admission: {}",
+                error.message
+            ),
+            assembly: Box::new(IntelligenceComponentAssembly::from_trace(trace)),
+        }),
+    }
+}
+
+fn build_agency(frame: &WorldFrame, pov_tag: &str) -> ProducerValue<AgencyState> {
+    let intel_status = frame.intel(pov_tag).map_or_else(
+        || "WorldFrame.intel(pov_tag) is absent".to_string(),
+        |intel| {
+            format!(
+                "IntelView.agency_name={}, IntelView.agency_created={}, IntelView.agency_upgrade_progress={}",
+                leaf_state(&intel.agency_name),
+                leaf_state(&intel.agency_created),
+                leaf_state(&intel.agency_upgrade_progress),
+            )
+        },
+    );
+    ProducerValue::Unobtained {
+        reason: format!(
+            "missing AgencyState.agency_instance_id, AgencyState.icon_sprite, AgencyState.current_upgrade_id, AgencyState.max_operatives, AgencyState.usable_slots, AgencyState.defense_raw, AgencyState.defense_denominator_raw [C-RAW]; {intel_status}; Domain53AgencyScalarsRaw and Domain53AgencyCapacityRaw are deliberately unresolved and are not semantic inputs"
+        ),
+    }
+}
+
+fn build_upgrades(
+    frame: &WorldFrame,
+    pov_tag: &str,
+    frame_hour: u64,
+    pov_scope_drops: &mut Vec<PovScopedDrop>,
+) -> ProducerValue<MeasuredList<AgencyUpgradeRow>> {
+    let refresh = match &frame.diplomacy().agency_upgrade_controller_refresh {
+        Leaf::Absent => {
+            return unobtained(
+                "DiplomacyView.agency_upgrade_controller_refresh is Leaf::Absent [C-DORMANT]; missing AgencyUpgradeRow.level and AgencyUpgradeRow.icon_sprite",
+            )
+        }
+        Leaf::Unobtained => {
+            return unobtained(
+                "DiplomacyView.agency_upgrade_controller_refresh is Leaf::Unobtained [C-DORMANT]; missing AgencyUpgradeRow.level and AgencyUpgradeRow.icon_sprite",
+            )
+        }
+        Leaf::Measured(refresh) => refresh,
+    };
+    if refresh.owner != pov_tag {
+        pov_scope_drops.push(PovScopedDrop {
+            component: IntelligenceComponent::Upgrades,
+            row_identity: refresh.producer_record_identity.clone(),
+            recorded_owner: Some(refresh.owner.clone()),
+            pov_country: pov_tag.to_string(),
+        });
+        return unobtained(
+            "AgencyUpgradeControllerRefreshExact.owner does not match pov_tag; all foreign-owner upgrade rows were dropped",
+        );
+    }
+    let admitted = match admit_agency_upgrade_controller_refresh(refresh, frame_hour) {
+        Ok(admitted) => admitted,
+        Err(error) => return unobtained(error.message),
+    };
+    let ordered = admitted.ordered_upgrades();
+    if !ordered.is_empty() {
+        return unobtained(
+            "missing AgencyUpgradeRow.level and AgencyUpgradeRow.icon_sprite [C-DORMANT row content]",
+        );
+    }
+    let collection = match exact_collection(frame, AGENCY_UPGRADES_COLLECTION_ID, frame_hour) {
+        Ok(collection) => collection,
+        Err(reason) => return unobtained(reason),
+    };
+    if !collection.source_items.is_empty() || !collection.ordered_item_ids.is_empty() {
+        return unobtained(
+            "AgencyUpgradeControllerRefreshExact is measured-empty but DynamicCollectionTrace source_items/ordered_item_ids are nonempty",
+        );
+    }
+    ProducerValue::Measured(MeasuredList {
+        rows: Vec::new(),
+        collection,
+    })
+}
+
+fn build_operatives(
+    frame: &WorldFrame,
+    pov_tag: &str,
+) -> ProducerValue<MeasuredList<OperativeUiRow>> {
+    let intel_status = frame.intel(pov_tag).map_or_else(
+        || "WorldFrame.intel(pov_tag) is absent".to_string(),
+        |intel| {
+            format!(
+                "IntelView.operatives={}, IntelView.domain53_operative_lifecycle_raw={}",
+                leaf_state(&intel.operatives),
+                leaf_state(&intel.domain53_operative_lifecycle_raw),
+            )
+        },
+    );
+    unobtained(format!(
+        "missing OperativeUiRow.name_text, OperativeUiRow.traits, OperativeUiRow.nationalities [C-DROP], OperativeUiRow.experience_fixed denominator, and replay product-stable list-order authority [C-ORDER]; {intel_status}; IntelView.operatives is source S (save/oracle, development-offline only) and is not an acceptable shipped-live runtime source; runtime name/traits/nationalities must be carried by the whole-world per-country domain-53 producer, whose current production fold drops them"
+    ))
+}
+
+fn build_operations(
+    frame: &WorldFrame,
+    pov_tag: &str,
+    pov_scope_drops: &mut Vec<PovScopedDrop>,
+) -> ProducerValue<MeasuredList<OperationUiRow>> {
+    let rows = match &frame.diplomacy().operation_instances {
+        Leaf::Absent => {
+            return unobtained(
+                "DiplomacyView.operation_instances is Leaf::Absent; missing MeasuredList.collection DynamicCollectionTrace [C-XUI03]",
+            )
+        }
+        Leaf::Unobtained => {
+            return unobtained(
+                "DiplomacyView.operation_instances is Leaf::Unobtained; missing MeasuredList.collection DynamicCollectionTrace [C-XUI03]",
+            )
+        }
+        Leaf::Measured(rows) => rows,
+    };
+    let mut semantic_issues = Vec::new();
+    for row in rows {
+        if row.owner_country != pov_tag {
+            pov_scope_drops.push(PovScopedDrop {
+                component: IntelligenceComponent::Operations,
+                row_identity: format!("operation:{}", row.stable_operation_id),
+                recorded_owner: Some(row.owner_country.clone()),
+                pov_country: pov_tag.to_string(),
+            });
+            continue;
+        }
+        if scaled_fixed(
+            row.progress_fixed,
+            row.progress_scale,
+            "OperationRuntimeRow.progress_fixed/OperationRuntimeRow.progress_scale",
+        )
+        .is_err()
+        {
+            semantic_issues.push(format!(
+                "OperationRuntimeRow[{}].progress_fixed/progress_scale",
+                row.stable_operation_id
+            ));
+        }
+    }
+    let measured_state = if rows.is_empty() {
+        "DiplomacyView.operation_instances is Leaf::Measured(vec![])"
+    } else {
+        "DiplomacyView.operation_instances is Leaf::Measured"
+    };
+    let issues = if semantic_issues.is_empty() {
+        String::new()
+    } else {
+        format!("; invalid leaves: {}", semantic_issues.join(", "))
+    };
+    unobtained(format!(
+        "{measured_state}; missing MeasuredList.collection DynamicCollectionTrace for OperationUiRow [C-XUI03]{issues}"
+    ))
+}
+
+fn build_ciphers(
+    frame: &WorldFrame,
+    pov_tag: &str,
+    frame_hour: u64,
+    pov_scope_drops: &mut Vec<PovScopedDrop>,
+) -> ProducerValue<MeasuredList<CipherUiRow>> {
+    let controller = match &frame.diplomacy().cipher_controller_refresh {
+        Leaf::Absent => {
+            return unobtained(
+                "DiplomacyView.cipher_controller_refresh is Leaf::Absent [C-DORMANT]; missing CipherUiRow.progress_denominator_raw, CipherUiRow.progress_fixed, CipherUiRow.cipher_broken, and MeasuredList.collection DynamicCollectionTrace [C-RAW/C-XUI03]",
+            )
+        }
+        Leaf::Unobtained => {
+            return unobtained(
+                "DiplomacyView.cipher_controller_refresh is Leaf::Unobtained [C-DORMANT]; missing CipherUiRow.progress_denominator_raw, CipherUiRow.progress_fixed, CipherUiRow.cipher_broken, and MeasuredList.collection DynamicCollectionTrace [C-RAW/C-XUI03]",
+            )
+        }
+        Leaf::Measured(controller) => controller,
+    };
+    if controller.owner != pov_tag {
+        pov_scope_drops.push(PovScopedDrop {
+            component: IntelligenceComponent::Ciphers,
+            row_identity: controller.producer_record_identity.clone(),
+            recorded_owner: Some(controller.owner.clone()),
+            pov_country: pov_tag.to_string(),
+        });
+        return unobtained(
+            "CipherControllerRefreshExact.owner does not match pov_tag; all foreign-owner cipher rows were dropped",
+        );
+    }
+    if let Err(error) = admit_cipher_controller_refresh(controller, frame_hour) {
+        return unobtained(error.message);
+    }
+    let raw_state = frame.intel(pov_tag).map_or_else(
+        || "WorldFrame.intel(pov_tag) is absent".to_string(),
+        |intel| {
+            format!(
+                "IntelView.domain53_cryptology_targets_raw={}",
+                leaf_state(&intel.domain53_cryptology_targets_raw)
+            )
+        },
+    );
+    unobtained(format!(
+        "missing CipherUiRow.progress_denominator_raw, CipherUiRow.progress_fixed, CipherUiRow.cipher_broken [C-RAW] and MeasuredList.collection DynamicCollectionTrace [C-XUI03]; {raw_state}"
+    ))
+}
+
+fn build_intel_levels(
+    frame: &WorldFrame,
+    pov_tag: &str,
+    pov_scope_drops: &mut Vec<PovScopedDrop>,
+) -> ProducerValue<MeasuredList<IntelLevelUiRow>> {
+    let rows = match &frame.diplomacy().intel_levels {
+        Leaf::Absent => {
+            return unobtained(
+                "DiplomacyView.intel_levels is Leaf::Absent; missing MeasuredList.collection DynamicCollectionTrace [C-XUI03]",
+            )
+        }
+        Leaf::Unobtained => {
+            return unobtained(
+                "DiplomacyView.intel_levels is Leaf::Unobtained; missing MeasuredList.collection DynamicCollectionTrace [C-XUI03]",
+            )
+        }
+        Leaf::Measured(rows) => rows,
+    };
+    let mut invalid = Vec::new();
+    for row in rows {
+        if row.owner != pov_tag {
+            pov_scope_drops.push(PovScopedDrop {
+                component: IntelligenceComponent::IntelLevels,
+                row_identity: format!("intel:{}:{}", row.owner, row.target),
+                recorded_owner: Some(row.owner.clone()),
+                pov_country: pov_tag.to_string(),
+            });
+            continue;
+        }
+        for (value, field) in [
+            (i64::from(row.civilian_raw), "IntelLevelRow.civilian_raw"),
+            (i64::from(row.army_raw), "IntelLevelRow.army_raw"),
+            (i64::from(row.navy_raw), "IntelLevelRow.navy_raw"),
+            (i64::from(row.air_raw), "IntelLevelRow.air_raw"),
+        ] {
+            if scaled_fixed(value, row.scale, field).is_err() {
+                invalid.push(format!("{} for target {}", field, row.target));
+            }
+        }
+    }
+    let measured_state = if rows.is_empty() {
+        "DiplomacyView.intel_levels is Leaf::Measured(vec![])"
+    } else {
+        "DiplomacyView.intel_levels is Leaf::Measured"
+    };
+    let invalid = if invalid.is_empty() {
+        String::new()
+    } else {
+        format!("; invalid scaled leaves: {}", invalid.join(", "))
+    };
+    unobtained(format!(
+        "{measured_state}; missing MeasuredList.collection DynamicCollectionTrace for IntelLevelUiRow [C-XUI03]{invalid}"
+    ))
+}
+
+fn build_networks(
+    frame: &WorldFrame,
+    pov_tag: &str,
+    pov_scope_drops: &mut Vec<PovScopedDrop>,
+) -> ProducerValue<IntelNetworkSummary> {
+    let rows = match &frame.diplomacy().intel_network_graphs {
+        Leaf::Absent => return unobtained("DiplomacyView.intel_network_graphs is Leaf::Absent"),
+        Leaf::Unobtained => {
+            return unobtained("DiplomacyView.intel_network_graphs is Leaf::Unobtained")
+        }
+        Leaf::Measured(rows) => rows,
+    };
+    let mut built = Vec::new();
+    let mut missing = Vec::new();
+    for row in rows {
+        let row_identity = format!("network-slot:{}", row.network_slot);
+        let owner = match row.owner.as_deref() {
+            Some(owner) if owner != pov_tag => {
+                pov_scope_drops.push(PovScopedDrop {
+                    component: IntelligenceComponent::Networks,
+                    row_identity,
+                    recorded_owner: Some(owner.to_string()),
+                    pov_country: pov_tag.to_string(),
+                });
+                continue;
+            }
+            Some(owner) => owner,
+            None => {
+                missing.push(format!(
+                    "IntelNetworkGraphRow[slot={}].owner",
+                    row.network_slot
+                ));
+                continue;
+            }
+        };
+        let Some(owner_tag_db_id) = row.owner_tag_db_id else {
+            missing.push(format!(
+                "IntelNetworkGraphRow[slot={}].owner_tag_db_id",
+                row.network_slot
+            ));
+            continue;
+        };
+        let Some(operative_ids) = row.operative_ids.as_ref() else {
+            missing.push(format!(
+                "IntelNetworkGraphRow[slot={}].operative_ids",
+                row.network_slot
+            ));
+            continue;
+        };
+        let Some(state_strengths) = row.state_strengths.as_ref() else {
+            missing.push(format!(
+                "IntelNetworkGraphRow[slot={}].state_strengths",
+                row.network_slot
+            ));
+            continue;
+        };
+        let Some(state_strength_scale) = row.state_strength_scale else {
+            missing.push(format!(
+                "IntelNetworkGraphRow[slot={}].state_strength_scale",
+                row.network_slot
+            ));
+            continue;
+        };
+        let Some(national_coverage) = row.national_coverage.as_ref() else {
+            missing.push(format!(
+                "IntelNetworkGraphRow[slot={}].national_coverage",
+                row.network_slot
+            ));
+            continue;
+        };
+        if state_strengths.len() != row.state_ids.len()
+            || !state_strengths
+                .iter()
+                .zip(&row.state_ids)
+                .all(|(strength, state_id)| strength.state_id == *state_id)
+        {
+            missing.push(format!(
+                "IntelNetworkGraphRow[slot={}].state_strengths exact state_ids join",
+                row.network_slot
+            ));
+            continue;
+        }
+        let mut scaled_strengths = Vec::with_capacity(state_strengths.len());
+        let mut row_invalid = false;
+        for strength in state_strengths {
+            match scaled_fixed(
+                strength.strength_raw,
+                state_strength_scale,
+                "IntelNetworkStateStrength.strength_raw/IntelNetworkGraphRow.state_strength_scale",
+            ) {
+                Ok(strength_fixed) => {
+                    scaled_strengths.push(IntelNetworkStateStrengthUiRow {
+                        state_id: strength.state_id,
+                        strength_fixed,
+                    });
+                }
+                Err(reason) => {
+                    missing.push(format!(
+                        "IntelNetworkGraphRow[slot={}].{reason}",
+                        row.network_slot
+                    ));
+                    row_invalid = true;
+                    break;
+                }
+            }
+        }
+        if row_invalid {
+            continue;
+        }
+        let national_coverage_fixed = match scaled_fixed(
+            national_coverage.national_coverage_raw,
+            national_coverage.scale,
+            "IntelNetworkNationalCoverage.national_coverage_raw/IntelNetworkNationalCoverage.scale",
+        ) {
+            Ok(value) => value,
+            Err(reason) => {
+                missing.push(format!(
+                    "IntelNetworkGraphRow[slot={}].{reason}",
+                    row.network_slot
+                ));
+                continue;
+            }
+        };
+        let network_id = format!("network:{owner_tag_db_id}:{}", row.network_slot);
+        built.push(IntelNetworkUiRow {
+            stable_item_id: network_id.clone(),
+            network_id,
+            owner_country: owner.to_string(),
+            target_country: row.target.clone(),
+            operative_ids: operative_ids
+                .iter()
+                .map(|operative_id| format!("operative:{operative_id}"))
+                .collect(),
+            state_ids: row.state_ids.clone(),
+            state_strengths: scaled_strengths,
+            national_coverage_fixed,
+        });
+    }
+    if !missing.is_empty() {
+        return unobtained(format!(
+            "missing typed network leaves: {}",
+            missing.join(", ")
+        ));
+    }
+    ProducerValue::Measured(IntelNetworkSummary {
+        order_authority: NetworkSummaryOrderAuthority::ProductStableContentKeyV1,
+        rows: built,
+    })
+}
+
+fn exact_collection(
+    frame: &WorldFrame,
+    collection_id: &str,
+    frame_hour: u64,
+) -> std::result::Result<DynamicCollectionTrace, String> {
+    let view = frame.dynamic_collection_trace();
+    match view.status {
+        ViewStatus::DomainAbsent => {
+            return Err(format!(
+                "DynamicCollectionTraceView for {collection_id} is DomainAbsent [C-XUI03]"
+            ))
+        }
+        ViewStatus::DomainUnavailable => {
+            return Err(format!(
+                "DynamicCollectionTraceView for {collection_id} is DomainUnavailable [C-XUI03]"
+            ))
+        }
+        ViewStatus::Present => {}
+    }
+    if view.frame_hour != Some(frame_hour) {
+        return Err(format!(
+            "DynamicCollectionTraceView.frame_hour for {collection_id} does not match IntelligenceControllerCompanionExact.frame_hour [C-XUI03]"
+        ));
+    }
+    let matches = view
+        .collections
+        .iter()
+        .filter(|row| row.collection_instance_id == collection_id)
+        .collect::<Vec<_>>();
+    let [row] = matches.as_slice() else {
+        return Err(format!(
+            "DynamicCollectionTraceView.collections has {} rows for {collection_id}, expected exactly one [C-XUI03]",
+            matches.len()
+        ));
+    };
+    DynamicCollectionTrace::try_from(*row).map_err(|error| error.message)
+}
+
+fn availability_gate_mismatch(trace: &IntelligenceUiTrace) -> Option<String> {
+    for gate in &trace.visibility {
+        let component = match gate.surface {
+            IntelligenceSurface::Agency => IntelligenceComponent::Agency,
+            IntelligenceSurface::Upgrades => IntelligenceComponent::Upgrades,
+            IntelligenceSurface::Operatives => IntelligenceComponent::Operatives,
+            IntelligenceSurface::Operations => IntelligenceComponent::Operations,
+            IntelligenceSurface::Ciphers => IntelligenceComponent::Ciphers,
+            IntelligenceSurface::IntelLedger => IntelligenceComponent::IntelLevels,
+            IntelligenceSurface::Networks => IntelligenceComponent::Networks,
+        };
+        let measured = match component {
+            IntelligenceComponent::Agency => matches!(trace.agency, ProducerValue::Measured(_)),
+            IntelligenceComponent::Upgrades => {
+                matches!(trace.upgrades, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Operatives => {
+                matches!(trace.operatives, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Operations => {
+                matches!(trace.operations, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Ciphers => {
+                matches!(trace.ciphers, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::IntelLevels => {
+                matches!(trace.intel_levels, ProducerValue::Measured(_))
+            }
+            IntelligenceComponent::Networks => {
+                matches!(trace.networks, ProducerValue::Measured(_))
+            }
+        };
+        let gate_available = gate.disposition != VisibilityDisposition::Unavailable;
+        if measured != gate_available {
+            let detail = match component {
+                IntelligenceComponent::Agency => producer_value_reason(&trace.agency),
+                IntelligenceComponent::Upgrades => producer_value_reason(&trace.upgrades),
+                IntelligenceComponent::Operatives => producer_value_reason(&trace.operatives),
+                IntelligenceComponent::Operations => producer_value_reason(&trace.operations),
+                IntelligenceComponent::Ciphers => producer_value_reason(&trace.ciphers),
+                IntelligenceComponent::IntelLevels => producer_value_reason(&trace.intel_levels),
+                IntelligenceComponent::Networks => producer_value_reason(&trace.networks),
+            }
+            .unwrap_or("component is measured while companion gate is Unavailable");
+            return Some(format!(
+                "{} availability disagrees with mirrored companion gate: {detail}",
+                component.field_name()
+            ));
+        }
+    }
+    None
+}
+
+fn map_surface(surface: IntelligenceSurfaceId) -> IntelligenceSurface {
+    match surface {
+        IntelligenceSurfaceId::Agency => IntelligenceSurface::Agency,
+        IntelligenceSurfaceId::Upgrades => IntelligenceSurface::Upgrades,
+        IntelligenceSurfaceId::Operatives => IntelligenceSurface::Operatives,
+        IntelligenceSurfaceId::Operations => IntelligenceSurface::Operations,
+        IntelligenceSurfaceId::Ciphers => IntelligenceSurface::Ciphers,
+        IntelligenceSurfaceId::IntelLedger => IntelligenceSurface::IntelLedger,
+        IntelligenceSurfaceId::Networks => IntelligenceSurface::Networks,
+    }
+}
+
+fn map_visibility(visibility: IntelligenceVisibilityExact) -> VisibilityDisposition {
+    match visibility {
+        IntelligenceVisibilityExact::Visible => VisibilityDisposition::Visible,
+        IntelligenceVisibilityExact::Hidden => VisibilityDisposition::Hidden,
+        IntelligenceVisibilityExact::Unavailable => VisibilityDisposition::Unavailable,
+    }
+}
+
+fn scaled_fixed(numerator: i64, denominator: i64, field: &str) -> std::result::Result<i64, String> {
+    if denominator <= 0 || numerator < 0 || numerator > denominator {
+        return Err(format!(
+            "{field} has invalid numerator or carried denominator"
+        ));
+    }
+    let scaled = i128::from(numerator)
+        .checked_mul(i128::from(FIXED_ONE))
+        .and_then(|value| value.checked_div(i128::from(denominator)))
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| format!("{field} fixed-point conversion overflowed"))?;
+    if !(0..=FIXED_ONE).contains(&scaled) {
+        return Err(format!("{field} fixed-point conversion is out of range"));
+    }
+    Ok(scaled)
+}
+
+fn leaf_state<T>(leaf: &Leaf<T>) -> &'static str {
+    match leaf {
+        Leaf::Absent => "Leaf::Absent",
+        Leaf::Unobtained => "Leaf::Unobtained",
+        Leaf::Measured(_) => "Leaf::Measured",
+    }
+}
+
+fn producer_value_reason<T>(value: &ProducerValue<T>) -> Option<&str> {
+    match value {
+        ProducerValue::Measured(_) => None,
+        ProducerValue::Unobtained { reason } => Some(reason),
+    }
+}
+
+fn unobtained<T>(reason: impl Into<String>) -> ProducerValue<T> {
+    ProducerValue::Unobtained {
+        reason: reason.into(),
+    }
 }
 
 /// Derive the operative -> operation relationship from the exact operation
@@ -320,9 +1204,10 @@ pub fn project_operation_assignments(
 }
 
 /// Join the dormant exact-a729 selected-agency refresh carrier to semantic
-/// upgrade rows. This does not activate the producer or replace the required
-/// XUI03 materialization trace; it is the pointer-free identity/order seam the
-/// future domain-53 fold must satisfy before that trace can be admitted.
+/// upgrade rows for diagnostic comparison. This does not activate the producer
+/// or make its recorder-POV XUI03 materialization trace render authority. This
+/// diagnostic comparison requires an explicit stable row order and does
+/// not infer one from the selected-controller trace.
 pub fn project_agency_upgrade_refresh_order(
     refresh: &AgencyUpgradeControllerRefreshExact,
     expected_frame_hour: u64,
@@ -417,7 +1302,9 @@ pub fn project_cipher_controller_order(
     let mut ordered = Vec::with_capacity(refresh.targets.len());
     for target in admitted.ordered_targets() {
         let Some(row) = rows.get(target.target.as_str()) else {
-            return Err(fail("cipher controller references an unjoined semantic row"));
+            return Err(fail(
+                "cipher controller references an unjoined semantic row",
+            ));
         };
         ordered.push(row.stable_item_id.clone());
     }
@@ -617,9 +1504,7 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
                         return Err(fail("pre-start operation carries runtime timing"));
                     }
                 }
-                OperationStatus::Running
-                | OperationStatus::Finished
-                | OperationStatus::Aborted => {
+                OperationStatus::Running | OperationStatus::Finished | OperationStatus::Aborted => {
                     if row.start_hour <= 0 || row.duration_hours == 0 {
                         return Err(fail("started operation lacks runtime timing"));
                     }
@@ -653,11 +1538,15 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
                     nonempty(country, "captured_by")?
                 }
                 (true, _, _, _) => {
-                    return Err(fail("captured operative lacks exact captured-by/date identity"))
+                    return Err(fail(
+                        "captured operative lacks exact captured-by/date identity",
+                    ))
                 }
                 (false, None, None, None) => {}
                 (false, _, _, _) => {
-                    return Err(fail("uncaptured operative carries captured-by/date identity"))
+                    return Err(fail(
+                        "uncaptured operative carries captured-by/date identity",
+                    ))
                 }
             }
             if row.captured && row.recruitable_pool_member {
@@ -1036,7 +1925,9 @@ pub fn admit_intelligence_ui_with_selected_present_companion<'a>(
         || trace.owner_country != exact.owner
         || trace.producer_record_identity != exact.producer_record_identity
     {
-        return Err(fail("selected-Present companion semantic identity mismatch"));
+        return Err(fail(
+            "selected-Present companion semantic identity mismatch",
+        ));
     }
 
     let operative_order = match &trace.operatives {
@@ -1050,7 +1941,9 @@ pub fn admit_intelligence_ui_with_selected_present_companion<'a>(
     if operative_order != admitted.operative_order()
         || operation_order != admitted.operation_order()
     {
-        return Err(fail("operative or operation controller order companion mismatch"));
+        return Err(fail(
+            "operative or operation controller order companion mismatch",
+        ));
     }
     match &trace.operatives {
         ProducerValue::Measured(rows) => {
@@ -1114,9 +2007,7 @@ pub fn admit_intelligence_ui_with_selected_present_companion<'a>(
                 return Err(fail("operative mission product coverage mismatch"));
             }
         }
-        ProducerValue::Unobtained { .. }
-            if !admitted.operative_mission_products().is_empty() =>
-        {
+        ProducerValue::Unobtained { .. } if !admitted.operative_mission_products().is_empty() => {
             return Err(fail("unobtained operatives carry mission product rows"));
         }
         ProducerValue::Unobtained { .. } => {}
@@ -1141,30 +2032,38 @@ pub fn admit_intelligence_ui_with_selected_present_companion<'a>(
             }
         }
         ProducerValue::Unobtained { .. } => {
-            return Err(fail("unobtained operatives carry capture/recruitable companion rows"));
+            return Err(fail(
+                "unobtained operatives carry capture/recruitable companion rows",
+            ));
         }
     }
 
-    let companion_gates = exact.visibility.iter().map(|gate| {
-        let surface = match gate.surface {
-            IntelligenceSurfaceId::Agency => IntelligenceSurface::Agency,
-            IntelligenceSurfaceId::Upgrades => IntelligenceSurface::Upgrades,
-            IntelligenceSurfaceId::Operatives => IntelligenceSurface::Operatives,
-            IntelligenceSurfaceId::Operations => IntelligenceSurface::Operations,
-            IntelligenceSurfaceId::Ciphers => IntelligenceSurface::Ciphers,
-            IntelligenceSurfaceId::IntelLedger => IntelligenceSurface::IntelLedger,
-            IntelligenceSurfaceId::Networks => IntelligenceSurface::Networks,
-        };
-        let disposition = match gate.disposition {
-            IntelligenceVisibilityExact::Visible => VisibilityDisposition::Visible,
-            IntelligenceVisibilityExact::Hidden => VisibilityDisposition::Hidden,
-            IntelligenceVisibilityExact::Unavailable => VisibilityDisposition::Unavailable,
-        };
-        (surface, (disposition, gate.reason.as_deref()))
-    }).collect::<BTreeMap<_,_>>();
+    let companion_gates = exact
+        .visibility
+        .iter()
+        .map(|gate| {
+            let surface = match gate.surface {
+                IntelligenceSurfaceId::Agency => IntelligenceSurface::Agency,
+                IntelligenceSurfaceId::Upgrades => IntelligenceSurface::Upgrades,
+                IntelligenceSurfaceId::Operatives => IntelligenceSurface::Operatives,
+                IntelligenceSurfaceId::Operations => IntelligenceSurface::Operations,
+                IntelligenceSurfaceId::Ciphers => IntelligenceSurface::Ciphers,
+                IntelligenceSurfaceId::IntelLedger => IntelligenceSurface::IntelLedger,
+                IntelligenceSurfaceId::Networks => IntelligenceSurface::Networks,
+            };
+            let disposition = match gate.disposition {
+                IntelligenceVisibilityExact::Visible => VisibilityDisposition::Visible,
+                IntelligenceVisibilityExact::Hidden => VisibilityDisposition::Hidden,
+                IntelligenceVisibilityExact::Unavailable => VisibilityDisposition::Unavailable,
+            };
+            (surface, (disposition, gate.reason.as_deref()))
+        })
+        .collect::<BTreeMap<_, _>>();
     for gate in &trace.visibility {
         let Some((disposition, reason)) = companion_gates.get(&gate.surface).copied() else {
-            return Err(fail("selected-Present companion visibility surface missing"));
+            return Err(fail(
+                "selected-Present companion visibility surface missing",
+            ));
         };
         if gate.disposition != disposition || gate.reason.as_deref() != reason {
             return Err(fail("selected-Present companion visibility gate mismatch"));
@@ -1184,9 +2083,7 @@ fn validate_network_summary(
         }
         ProducerValue::Measured(summary) => {
             require_available(gates, IntelligenceSurface::Networks, true)?;
-            if summary.order_authority
-                != NetworkSummaryOrderAuthority::ProductStableContentKeyV1
-            {
+            if summary.order_authority != NetworkSummaryOrderAuthority::ProductStableContentKeyV1 {
                 return Err(fail("unknown network summary order authority"));
             }
             let mut stable_ids = BTreeSet::new();

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use replay_core::{
     CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest, ContentManifest,
-    PackagedDecisionCatalog, PackagedG2EngineCapture, PackagedStaticArtifact,
+    PackagedDecisionCatalog, PackagedStaticArtifact,
     PortableDesignCatalog, PrefoldDecodeError, PrefoldSourceReceipt, PrefoldStreamIdentityMode,
     PrefoldedSpool, PrefoldedSpoolEntry, RawFrame, RecordedCampaignIdentity, ReplaySource,
     SourceError,
@@ -969,7 +969,7 @@ fn open_product_recording_segment_impl(
         || (path.is_dir() && path.join(replay_core::ROLLOVER_PACKAGE_SET_FILE).is_file());
     let (source, authority_sha256) = if is_rollover {
         let selected = replay_core::authenticate_rollover_segment(path, logical_stream_id)
-            .map_err(SourceError::Unsupported)?;
+            .map_err(map_rollover_authentication_error)?;
         let sha256 = selected.package_sha256().to_string();
         let source = replay_core::open_container_with_spooled_decoder(
             selected.into_container(),
@@ -1026,16 +1026,54 @@ fn open_product_recording_segment_impl(
     })
 }
 
+/// Preserve the typed rejection class of a rollover-member authentication
+/// failure at the product boundary. A tampered or substituted member is an
+/// INTEGRITY failure ("recording failed payload integrity validation"), a
+/// malformed set is container/schema, and only a genuine capability refusal
+/// (missing `--logical-stream`, recovery-only set, direct recording, or a
+/// package-set schema this build does not know) reports as "not playable by
+/// this build" — symmetric with the single-file branch's
+/// `map_retained_container_error`.
+fn map_rollover_authentication_error(
+    error: replay_core::RolloverAuthenticationError,
+) -> SourceError {
+    let message = format!("authenticate rollover package-set member: {error}");
+    match error {
+        replay_core::RolloverAuthenticationError::Integrity(_) => SourceError::Integrity(message),
+        replay_core::RolloverAuthenticationError::ModsetMismatch(_) => {
+            SourceError::ModsetMismatch(message)
+        }
+        replay_core::RolloverAuthenticationError::Structure(_) => SourceError::Open(message),
+        replay_core::RolloverAuthenticationError::Unsupported(_) => {
+            SourceError::Unsupported(message)
+        }
+    }
+}
+
 fn map_retained_container_error(error: snapshot::ContainerError) -> SourceError {
     let message = format!("open retained replay container: {error}");
     // The retained-handle product path opens the snapshot container directly,
-    // bypassing replay_core's Store adapter. Preserve the typed modset signal.
+    // bypassing replay_core's Store adapter. Preserve BOTH typed signals the
+    // adapter preserves — modset mismatch and payload integrity — so this route
+    // classifies identically to the ordinary one.
     match error {
         snapshot::ContainerError::ModsetMismatch { .. } => SourceError::ModsetMismatch(message),
+        snapshot::ContainerError::PayloadIntegrity(_) => SourceError::Integrity(message),
+        snapshot::ContainerError::Zip(
+            snapshot::zip::ZipError::PayloadIntegrity(_)
+            | snapshot::zip::ZipError::SizeMismatch { .. }
+            | snapshot::zip::ZipError::Decompress(_),
+        ) => SourceError::Integrity(message),
         _ => SourceError::Open(message),
     }
 }
 
+/// Test-only seam: identical to the product open except the spool root and
+/// certified decoder are supplied by the test fixture. `#[cfg(test)]` keeps it
+/// out of the product binary — the module doc's "no ordinary-open or
+/// raw-stream fallback" claim stays enforced by the compiler, not by
+/// convention.
+#[cfg(test)]
 fn open_product_recording_at(
     path: &Path,
     spool_root: ProductSpoolRoot,
@@ -1346,14 +1384,17 @@ impl ReplaySource for ProductReplaySource {
     fn warnings(&self) -> &[String] {
         self.inner.warnings()
     }
+    fn declared_coverage(&self) -> Option<&replay_core::DeclaredCoverage> {
+        // The shipped product path wraps the admitted source; every accessor
+        // here must forward, or evidence admitted at ingest silently becomes
+        // the trait default on exactly the route players use.
+        self.inner.declared_coverage()
+    }
     fn content_manifest(&self) -> Option<&ContentManifest> {
         self.inner.content_manifest()
     }
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         self.inner.campaign_identity()
-    }
-    fn g2_engine_capture(&self) -> Option<&PackagedG2EngineCapture> {
-        self.inner.g2_engine_capture()
     }
     fn design_catalog(&self) -> Option<&Arc<PortableDesignCatalog>> {
         self.inner.design_catalog()
@@ -1383,6 +1424,31 @@ mod tests {
     };
     use snapshot::{pack, PackEntry, PackIdentity};
 
+    /// R7 F1 regression: each typed rollover authentication class keeps its
+    /// honest `SourceError` class at the product boundary. Only a genuine
+    /// selection/usage refusal may reach the "recording not playable by this
+    /// build" headline; a tampered member is an integrity failure.
+    #[test]
+    fn rollover_authentication_classes_map_to_their_source_error_classes() {
+        use replay_core::RolloverAuthenticationError as E;
+        assert!(matches!(
+            map_rollover_authentication_error(E::Integrity("member sha differs".into())),
+            SourceError::Integrity(message) if message.contains("member sha differs")
+        ));
+        assert!(matches!(
+            map_rollover_authentication_error(E::ModsetMismatch("modset disagrees".into())),
+            SourceError::ModsetMismatch(_)
+        ));
+        assert!(matches!(
+            map_rollover_authentication_error(E::Structure("descriptor malformed".into())),
+            SourceError::Open(_)
+        ));
+        assert!(matches!(
+            map_rollover_authentication_error(E::Unsupported("select one explicitly".into())),
+            SourceError::Unsupported(_)
+        ));
+    }
+
     fn temp_root(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "replay_app_product_spool_{tag}_{}_{}",
@@ -1394,6 +1460,47 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    /// The shipped product source is a WRAPPER: every `ReplaySource` accessor
+    /// with a default body silently becomes that default if the wrapper forgets
+    /// to forward it, and the default answers "there is nothing here". A
+    /// forgotten forward is therefore evidence loss on exactly the route
+    /// players use, with no compile error and no failing behaviour test.
+    #[test]
+    fn the_product_source_wrapper_forwards_every_replay_source_accessor() {
+        // Normalize line endings first: include_str! sees the file exactly as
+        // checked out, and a CRLF checkout would otherwise never match "\n}\n".
+        let source = include_str!("recording_open.rs").replace("\r\n", "\n");
+        let start = source
+            .find("impl ReplaySource for ProductReplaySource {")
+            .expect("the product wrapper must exist");
+        let block = &source[start..];
+        let end = block.find("\n}\n").expect("wrapper impl must close") + 1;
+        let block = &block[..end];
+        for accessor in [
+            "game_id",
+            "hours",
+            "warnings",
+            "declared_coverage",
+            "content_manifest",
+            "campaign_identity",
+            "design_catalog",
+            "decision_catalog",
+            "static_artifact",
+            "prefold_receipt",
+            "date_at",
+            "frame",
+        ] {
+            assert!(
+                block.contains(&format!("fn {accessor}(")),
+                "ProductReplaySource must forward {accessor}; the trait default would drop it"
+            );
+            assert!(
+                block.contains(&format!("self.inner.{accessor}(")),
+                "ProductReplaySource::{accessor} must delegate to the admitted source"
+            );
+        }
     }
 
     #[test]
@@ -1706,9 +1813,11 @@ mod tests {
             pack(game, &entries, &identity, true).unwrap(),
         )
         .unwrap();
+        // R18-5: ordinary open refuses the compact-stream-only container with
+        // the typed subclass (compact evidence present in the manifest role).
         assert!(matches!(
             replay_core::open_recording(&container_path),
-            Err(SourceError::Unsupported(_))
+            Err(SourceError::UnsupportedCompactStreamOnly(_))
         ));
 
         let spool_path = parent.join("product-spool");

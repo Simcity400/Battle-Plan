@@ -12,6 +12,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub(crate) const MAX_LISTED_FILES: usize = 1 << 18;
+pub(crate) const MAX_LISTED_TOTAL_BYTES: u64 = 2 << 30;
+
 #[derive(Clone, Debug)]
 pub struct EffectiveVfsLayerMount {
     pub ordinal: u32,
@@ -192,6 +195,21 @@ impl EffectiveVfs {
         logical_prefix: &str,
         extension: Option<&str>,
     ) -> Result<Vec<EffectiveVfsResolvedFile>, String> {
+        self.list_recursive_bounded(
+            logical_prefix,
+            extension,
+            MAX_LISTED_FILES,
+            MAX_LISTED_TOTAL_BYTES,
+        )
+    }
+
+    pub(crate) fn list_recursive_bounded(
+        &self,
+        logical_prefix: &str,
+        extension: Option<&str>,
+        max_files: usize,
+        max_total_bytes: u64,
+    ) -> Result<Vec<EffectiveVfsResolvedFile>, String> {
         let prefix = normalize_game_relative_path(logical_prefix)?;
         let extension = extension.map(|value| value.trim_start_matches('.').to_ascii_lowercase());
         let mut effective = BTreeMap::<String, String>::new();
@@ -201,15 +219,27 @@ impl EffectiveVfs {
             }
             for path in list_layer_files(layer, &prefix, extension.as_deref())? {
                 effective.insert(path.to_ascii_lowercase(), path);
+                if effective.len() > max_files.min(MAX_LISTED_FILES) {
+                    return Err("effective VFS listing exceeds its file ceiling".into());
+                }
             }
         }
-        effective
-            .into_values()
-            .map(|path| {
-                self.resolve(&path)?
-                    .ok_or_else(|| format!("effective VFS winner disappeared for {path}"))
-            })
-            .collect()
+        let byte_ceiling = max_total_bytes.min(MAX_LISTED_TOTAL_BYTES);
+        let mut total_bytes = 0u64;
+        let mut resolved = Vec::with_capacity(effective.len());
+        for path in effective.into_values() {
+            let file = self
+                .resolve(&path)?
+                .ok_or_else(|| format!("effective VFS winner disappeared for {path}"))?;
+            total_bytes = total_bytes
+                .checked_add(file.content.payload_bytes)
+                .ok_or_else(|| "effective VFS listing byte count overflowed".to_string())?;
+            if total_bytes > byte_ceiling {
+                return Err("effective VFS listing exceeds its byte ceiling".into());
+            }
+            resolved.push(file);
+        }
+        Ok(resolved)
     }
 
     pub fn list_all(

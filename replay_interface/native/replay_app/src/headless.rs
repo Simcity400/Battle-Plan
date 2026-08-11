@@ -1,17 +1,16 @@
-//! Headless frame dump: render one timeline hour into an offscreen D3D11
-//! target and write it as a BMP. No window, no screen interaction.
+//! A product recording dump executes the same XMAP22 packet-native composition used by windowed playback.
+//! It selects one timeline hour before publishing the final BMP and its
+//! content-bound composition receipt.
 //!
-//! This is the screen-free verification path for the map renderer and the
-//! renders that can be diffed across hours, builds, and eventually against
-//! real the game screenshots.
+//! Retained bundle-based and explicit evidence helpers remain non-product
+//! screen-free tooling; they may render/read back evidence without authorizing
+//! product-map output.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use map_viewer::GameFileResolver;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::bundle::MapBundle;
@@ -28,234 +27,174 @@ const DUMP_WIDTH: u32 = 1408;
 const DUMP_HEIGHT: u32 = 512;
 static IMMUTABLE_PUBLISH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Machine-readable product-render observation consumed by the close-zoom
-/// golden/pixel gate.  The execution receipt and BGRA pixels are bound in the
-/// same record so a pixel hash can never be promoted from a different ordered
-/// D3D execution. When the selected recording carries an admitted G2 engine
-/// readback, the enclosing v5 receipt is published only after exact scene and
-/// byte-for-byte engine/replay pixel admission succeeds.
-#[derive(Debug, Serialize)]
-struct ProductionG2CaptureBinding {
-    selected_game_id: String,
-    selected_index_path: String,
-    selected_index_sha256: String,
-    schema: &'static str,
-    witness_path: String,
-    witness_sha256: String,
-    witness_bytes: u64,
-    bmp_path: String,
-    bmp_sha256: String,
-    bmp_bytes: u64,
-    capture_content_manifest_digest_sha256: String,
-    replay_content_manifest_digest_sha256: String,
-}
-
-impl From<&replay_core::PackagedG2EngineCapture> for ProductionG2CaptureBinding {
-    fn from(capture: &replay_core::PackagedG2EngineCapture) -> Self {
-        Self {
-            selected_game_id: capture.selected_game_id.clone(),
-            selected_index_path: capture.selected_index_path.clone(),
-            selected_index_sha256: capture.selected_index_sha256.clone(),
-            schema: "hoi4-g2-packaged-engine-capture-v1",
-            witness_path: capture.witness_path.clone(),
-            witness_sha256: capture.witness_sha256.clone(),
-            witness_bytes: capture.witness_bytes,
-            bmp_path: capture.bmp_path.clone(),
-            bmp_sha256: capture.bmp_sha256.clone(),
-            bmp_bytes: capture.bmp_bytes,
-            capture_content_manifest_digest_sha256: capture
-                .capture_content_manifest_digest_sha256
-                .clone(),
-            replay_content_manifest_digest_sha256: capture
-                .replay_content_manifest_digest_sha256
-                .clone(),
-        }
-    }
-}
-
-/// Typed companion consumption bound to the same headless pixel-gate receipt
-/// as the authenticated selected-Present operation frontier. These values do
-/// not authorize extra drawing: the UI pass remains the sole pixel owner.
-#[derive(Debug, Serialize)]
-struct ProductionSelectedPresentCompanionReceipt {
-    decision_panel_item_count: Option<usize>,
-    power_balance_item_count: Option<usize>,
-    intelligence_panel_count: Option<usize>,
-    intelligence_unavailable_reason: Option<String>,
-    agency_upgrade_count: Option<usize>,
-    cipher_target_count: Option<usize>,
-    trade_license_count: Option<usize>,
-    xui15_surface_drawn: bool,
-    xui15_unavailable_reason: Option<String>,
-    occupation_state_count: Option<usize>,
-    occupation_unavailable_reason: Option<String>,
-    battleplan_order_count: Option<usize>,
-    battleplan_selected_order_present: Option<bool>,
-    remaining: crate::ui_runtime::SelectedPresentTypedConsumption,
-}
-
-/// Product-owned admission of the synchronized recorder engine readback
-/// against the replay render produced from that same recording. This record is
-/// emitted only after every scene identity joins and every BGRA channel is
-/// byte-identical. A mismatch fails the production dump before either the BMP
-/// or its completion receipt is published.
-#[derive(Debug, Serialize)]
-struct ProductionG2ExactPixelAdmission {
-    schema: &'static str,
-    status: &'static str,
-    engine_observation_id: String,
-    selected_present_sequence: u32,
-    engine_bgra_sha256: String,
-    replay_bgra_sha256: String,
-    pixel_byte_len: usize,
-    mismatch_pixels: usize,
-    max_channel_delta: u8,
-}
-
-#[derive(Debug, Serialize)]
-struct ProductionPixelGateReceipt {
-    schema: &'static str,
-    render_boundary: &'static str,
-    authority_exe_sha256: String,
-    recording_sha256: String,
-    production_render_sha256: String,
-    selected_present_sha256: String,
-    launch_epoch_sha256: String,
-    capture_receipt_sha256: String,
-    product_modset_sha256: String,
-    effective_vfs_manifest_sha256: String,
-    content_manifest_digest_sha256: String,
-    settings_file_sha256: String,
-    localisation_language: String,
-    camera_payload_sha256: Option<String>,
-    pov_country_or_global: &'static str,
-    selected_hour: i64,
-    viewport_width: u32,
-    viewport_height: u32,
-    map_operations: usize,
-    selected_present_operations: usize,
-    selected_present_m02_draws: usize,
-    /// The G2 parity route suppresses selected-Present writers and therefore
-    /// omits this key, preserving the exact v5 G2 receipt schema. Ordinary
-    /// selected-Present dumps carry it as an additive typed-consumption
-    /// extension of the same product observation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selected_present_typed_companions: Option<ProductionSelectedPresentCompanionReceipt>,
-    map_presented: bool,
-    selected_present_executed: bool,
-    receipt_sha256: Option<String>,
-    bgra_sha256: String,
-    pixel_byte_len: usize,
-    g2_engine_capture: Option<ProductionG2CaptureBinding>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    g2_exact_pixel_admission: Option<ProductionG2ExactPixelAdmission>,
-}
-
-struct G2ReplayScene<'a> {
-    authority_exe_sha256: &'a str,
-    launch_epoch_sha256: &'a str,
-    capture_receipt_sha256: &'a str,
-    effective_vfs_manifest_sha256: &'a str,
-    content_manifest_digest_sha256: &'a str,
-    settings_file_sha256: &'a str,
-    localisation_language: &'a str,
-    camera_payload_sha256: Option<&'a str>,
-    selected_hour: i64,
-    viewport_width: u32,
-    viewport_height: u32,
-}
-
-fn admit_g2_exact_pixels(
-    capture: &replay_core::PackagedG2EngineCapture,
-    scene: G2ReplayScene<'_>,
-    replay_bgra: &[u8],
-) -> Result<ProductionG2ExactPixelAdmission> {
-    let witness = &capture.witness;
-    if witness.authority_exe_sha256 != scene.authority_exe_sha256
-        || witness.launch_epoch_sha256 != scene.launch_epoch_sha256
-        || witness.capture_receipt_sha256 != scene.capture_receipt_sha256
-        || witness.effective_vfs_manifest_sha256 != scene.effective_vfs_manifest_sha256
-        || capture.replay_content_manifest_digest_sha256 != scene.content_manifest_digest_sha256
-        || witness.settings_file_sha256 != scene.settings_file_sha256
-        || witness.localisation_language != scene.localisation_language
-        || Some(witness.camera_payload_sha256.as_str()) != scene.camera_payload_sha256
-        || witness.pov_country_or_global != "global"
-        || witness.selected_hour != scene.selected_hour
-        || witness.viewport_width != scene.viewport_width
-        || witness.viewport_height != scene.viewport_height
-    {
-        return Err(
-            "G2 engine readback does not join the selected replay scene exactly".into(),
-        );
-    }
-    let engine_bgra = capture.engine_bgra();
-    if engine_bgra.len() != replay_bgra.len()
-        || u64::try_from(engine_bgra.len()).ok() != Some(witness.pixel_byte_len)
-    {
-        return Err("G2 engine/replay pixel plane lengths differ".into());
-    }
-    let mut mismatch_pixels = 0usize;
-    let mut max_channel_delta = 0u8;
-    for (engine, replay) in engine_bgra
-        .chunks_exact(4)
-        .zip(replay_bgra.chunks_exact(4))
-    {
-        let mut pixel_differs = false;
-        for (&engine_channel, &replay_channel) in engine.iter().zip(replay) {
-            let delta = engine_channel.abs_diff(replay_channel);
-            pixel_differs |= delta != 0;
-            max_channel_delta = max_channel_delta.max(delta);
-        }
-        if pixel_differs {
-            mismatch_pixels += 1;
-        }
-    }
-    if mismatch_pixels != 0 || max_channel_delta != 0 {
+/// Verify the immutable XMAP22 dump pair published by `--dump-frame`.
+///
+/// The composition receipt is decoded through its deny-unknown-fields Rust
+/// type and re-sealed by `validate`.  The BMP is then decoded back to the
+/// top-down BGRA byte order hashed by the compositor.  This is the product
+/// replacement for the retired selected-Present/pixel-gate sidecar check.
+pub(crate) fn verify_xmap22_dump(path: &Path) -> Result<()> {
+    let receipt_path = xmap22_receipt_path(path);
+    let receipt_bytes = std::fs::read(&receipt_path).map_err(|error| {
+        format!(
+            "read XMAP22 composition receipt {}: {error}",
+            receipt_path.display()
+        )
+    })?;
+    let receipt: crate::app::ProductMapCompositionReceipt = serde_json::from_slice(&receipt_bytes)
+        .map_err(|error| {
+            format!(
+                "decode XMAP22 composition receipt {}: {error}",
+                receipt_path.display()
+            )
+        })?;
+    receipt.validate()?;
+    let (width, height, pixels) = read_xmap22_bmp(path)?;
+    if width != receipt.viewport_width || height != receipt.viewport_height {
         return Err(format!(
-            "G2 exact pixel admission failed: {mismatch_pixels} mismatched pixels, maximum channel delta {max_channel_delta}"
+            "XMAP22 BMP dimensions {width}x{height} disagree with receipt {}x{}",
+            receipt.viewport_width, receipt.viewport_height
         )
         .into());
     }
-    let engine_bgra_sha256 = format!("{:x}", Sha256::digest(engine_bgra));
-    let replay_bgra_sha256 = format!("{:x}", Sha256::digest(replay_bgra));
-    if engine_bgra_sha256 != witness.engine_bgra_sha256
-        || engine_bgra_sha256 != replay_bgra_sha256
-    {
-        return Err(
-            "G2 exact pixels passed byte comparison but their authenticated digests differ".into(),
-        );
+    let observed = snapshot::sha256::Sha256::hex(&pixels);
+    if observed != receipt.final_pixels_sha256 {
+        return Err(format!(
+            "XMAP22 BMP pixels hash to {observed}, expected {}",
+            receipt.final_pixels_sha256
+        )
+        .into());
     }
-    Ok(ProductionG2ExactPixelAdmission {
-        schema: "hoi4-g2-production-exact-pixel-admission-v1",
-        status: "PASS_AUTHENTICATED_SYNCHRONIZED_ENGINE_REPLAY_EXACT_PIXELS",
-        engine_observation_id: witness.observation_id.clone(),
-        selected_present_sequence: witness.selected_present_sequence,
-        engine_bgra_sha256,
-        replay_bgra_sha256,
-        pixel_byte_len: replay_bgra.len(),
-        mismatch_pixels,
-        max_channel_delta,
-    })
+    println!(
+        "verified XMAP22 dump: {} (receipt {})",
+        path.display(),
+        receipt.deterministic_sha256
+    );
+    Ok(())
 }
 
-fn production_pixel_gate_receipt_path(out: &Path) -> PathBuf {
-    let mut path = out.as_os_str().to_os_string();
-    path.push(".pixel-gate-receipt.json");
-    PathBuf::from(path)
+fn xmap22_receipt_path(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".xmap22.json");
+    PathBuf::from(value)
 }
 
-fn write_production_pixel_gate_receipt(
-    out: &Path,
-    receipt: &ProductionPixelGateReceipt,
-) -> Result<PathBuf> {
-    let path = production_pixel_gate_receipt_path(out);
-    let mut bytes = serde_json::to_vec_pretty(receipt)?;
-    bytes.push(b'\n');
-    // The BMP is published first.  The receipt is the authority/completion
-    // marker, so expose it only after its complete durable bytes exist and
-    // never replace a prior receipt with different content.
-    write_create_new_or_equal(&path, &bytes, "production pixel-gate receipt")?;
-    Ok(path)
+fn read_xmap22_bmp(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("read XMAP22 BMP {}: {error}", path.display()))?;
+    if bytes.len() < 54 || &bytes[..2] != b"BM" {
+        return Err("XMAP22 dump is not a complete BMP".into());
+    }
+    let u16_at = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+    let u32_at = |offset: usize| {
+        u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    let i32_at = |offset: usize| {
+        i32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    let pixel_offset = usize::try_from(u32_at(10))?;
+    let width_i32 = i32_at(18);
+    let height_i32 = i32_at(22);
+    if u32_at(14) != 40
+        || width_i32 <= 0
+        || height_i32 <= 0
+        || u16_at(26) != 1
+        || u16_at(28) != 32
+        || u32_at(30) != 0
+    {
+        return Err("XMAP22 dump is not the canonical 32-bit bottom-up BI_RGB BMP".into());
+    }
+    let width = u32::try_from(width_i32)?;
+    let height = u32::try_from(height_i32)?;
+    let row_bytes = usize::try_from(width)?
+        .checked_mul(4)
+        .ok_or("XMAP22 BMP row size overflow")?;
+    let image_bytes = row_bytes
+        .checked_mul(usize::try_from(height)?)
+        .ok_or("XMAP22 BMP image size overflow")?;
+    let canonical_header = canonical_bmp_header(
+        width,
+        height,
+        u32::try_from(image_bytes).map_err(|_| "XMAP22 BMP image exceeds u32")?,
+    )?;
+    if bytes[..54] != canonical_header {
+        return Err("XMAP22 BMP header differs from the canonical producer header".into());
+    }
+    let end = pixel_offset
+        .checked_add(image_bytes)
+        .ok_or("XMAP22 BMP extent overflow")?;
+    if end != bytes.len() || u32_at(2) as usize != bytes.len() || pixel_offset != 54 {
+        return Err("XMAP22 BMP byte extent is noncanonical or truncated".into());
+    }
+    let mut pixels = Vec::with_capacity(image_bytes);
+    for y in (0..usize::try_from(height)?).rev() {
+        let start = pixel_offset + y * row_bytes;
+        pixels.extend_from_slice(&bytes[start..start + row_bytes]);
+    }
+    Ok((width, height, pixels))
+}
+
+/// Typed failure of a post-publication evidence sink (R18-4). The two
+/// retained non-product frame-dump evidence writers
+/// ([`write_snow_mud_h2_receipt`] and
+/// [`write_occupation_secondary_h2_evidence`]) run AFTER `write_bmp` has
+/// already published the frame BMP; a create-new collision, serialization,
+/// or I/O failure there fails the non-product evidence dump while its BMP
+/// stays on disk. Unlike
+/// the env-gated interactive twins in `render.rs` — which are registered
+/// blocker surfaces the product refuses to start with — these sinks are on
+/// the retained evidence path, so their failure carries a type naming the sink
+/// and the partial-publication state instead of a bare prose string. Consumers
+/// treat a BMP missing its requested companion evidence as incomplete.
+#[derive(Debug)]
+pub(crate) struct ProductionEvidenceSinkError {
+    sink: &'static str,
+    dump: PathBuf,
+    source: Box<dyn std::error::Error>,
+}
+
+impl ProductionEvidenceSinkError {
+    fn wrap(
+        sink: &'static str,
+        dump: &Path,
+    ) -> impl FnOnce(Box<dyn std::error::Error>) -> Box<dyn std::error::Error> {
+        let dump = dump.to_path_buf();
+        move |source| Box::new(Self { sink, dump, source }) as Box<dyn std::error::Error>
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink(&self) -> &'static str {
+        self.sink
+    }
+}
+
+impl std::fmt::Display for ProductionEvidenceSinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "frame-dump evidence sink '{}' failed after the frame BMP {} was already published; \
+             the dump fails closed with its completion evidence withheld: {}",
+            self.sink,
+            self.dump.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for ProductionEvidenceSinkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 fn snow_mud_h2_receipt_path(out: &Path) -> PathBuf {
@@ -265,6 +204,16 @@ fn snow_mud_h2_receipt_path(out: &Path) -> PathBuf {
 }
 
 fn write_snow_mud_h2_receipt(
+    out: &Path,
+    receipt: &replay_core::SnowMudReplayReadbackReceipt,
+) -> Result<PathBuf> {
+    write_snow_mud_h2_receipt_inner(out, receipt).map_err(ProductionEvidenceSinkError::wrap(
+        "SnowMudData H2 receipt",
+        out,
+    ))
+}
+
+fn write_snow_mud_h2_receipt_inner(
     out: &Path,
     receipt: &replay_core::SnowMudReplayReadbackReceipt,
 ) -> Result<PathBuf> {
@@ -294,6 +243,43 @@ fn write_snow_mud_h2_receipt(
     Ok(path)
 }
 
+fn snow_mud_h2_payload_path(out: &Path) -> PathBuf {
+    let mut path = out.as_os_str().to_os_string();
+    path.push(".snow-mud-h2.tight-bgra8");
+    PathBuf::from(path)
+}
+
+/// Durable publication of the snow/mud H2 raw plane next to its receipt.
+///
+/// The production dump is the only shipping invocation that produces the
+/// tight readback bytes, and (unlike the registry-blocked
+/// `REPLAY_SNOW_MUD_H2_RECEIPT_DIR` diagnostic sink) this is its only durable
+/// outlet, exactly mirroring the occupation secondary H2 evidence pair: the
+/// sidecar bytes must re-verify against the sealed receipt before either file
+/// is published, and both files are immutable create-new-or-equal.
+fn write_snow_mud_h2_evidence(
+    out: &Path,
+    receipt: &replay_core::SnowMudReplayReadbackReceipt,
+    tight_readback_bytes: &[u8],
+) -> Result<(PathBuf, PathBuf)> {
+    if tight_readback_bytes.len() as u64 != receipt.verified_tight_byte_count
+        || format!("{:x}", Sha256::digest(tight_readback_bytes)) != receipt.readback_sha256
+    {
+        return Err("SnowMudData H2 sidecar bytes differ from the receipt".into());
+    }
+    let receipt_path = snow_mud_h2_receipt_path(out);
+    let payload_path = snow_mud_h2_payload_path(out);
+    let mut receipt_bytes = serde_json::to_vec_pretty(receipt)?;
+    receipt_bytes.push(b'\n');
+    write_create_new_or_equal(
+        &payload_path,
+        tight_readback_bytes,
+        "SnowMudData H2 payload",
+    )?;
+    write_create_new_or_equal(&receipt_path, &receipt_bytes, "SnowMudData H2 receipt")?;
+    Ok((receipt_path, payload_path))
+}
+
 fn occupation_secondary_h2_receipt_path(out: &Path) -> PathBuf {
     let mut path = out.as_os_str().to_os_string();
     path.push(".occupation-secondary-h2-receipt.json");
@@ -307,6 +293,16 @@ fn occupation_secondary_h2_payload_path(out: &Path) -> PathBuf {
 }
 
 fn write_occupation_secondary_h2_evidence(
+    out: &Path,
+    receipt: &replay_core::OccupationSecondaryReplayReadbackReceipt,
+    tight_readback_bytes: &[u8],
+) -> Result<(PathBuf, PathBuf)> {
+    write_occupation_secondary_h2_evidence_inner(out, receipt, tight_readback_bytes).map_err(
+        ProductionEvidenceSinkError::wrap("occupation secondary H2 evidence", out),
+    )
+}
+
+fn write_occupation_secondary_h2_evidence_inner(
     out: &Path,
     receipt: &replay_core::OccupationSecondaryReplayReadbackReceipt,
     tight_readback_bytes: &[u8],
@@ -371,35 +367,32 @@ pub(crate) fn write_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) 
         Ok(())
     })();
     drop(file);
-    let result = staged.and_then(|()| {
-        match std::fs::hard_link(&temporary, path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if std::fs::read(path)? == bytes {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "{label} path was concurrently published with different bytes: {}",
-                        path.display()
-                    )
-                    .into())
-                }
+    let result = staged.and_then(|()| match std::fs::hard_link(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::read(path)? == bytes {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{label} path was concurrently published with different bytes: {}",
+                    path.display()
+                )
+                .into())
             }
-            Err(error) => Err(format!(
-                "atomically publish {label} {}: {error}",
-                path.display()
-            )
-            .into()),
         }
+        Err(error) => Err(format!("atomically publish {label} {}: {error}", path.display()).into()),
     });
     let _ = std::fs::remove_file(&temporary);
     result
 }
 
-/// Render `hour` (default: the timeline's first hour) and write a 32-bit BMP.
-/// A supplied bundle selects the debug/capture renderer and overlay. A
-/// bundle-less recording selects only the strict product D3D carrier and reads
-/// the app-owned offscreen RTV; it never substitutes the debug renderer.
+/// Select `hour` (default: the timeline's first hour).
+///
+/// A supplied bundle is an explicitly non-product debug/evidence renderer and
+/// may write a 32-bit BMP. Bundle-less recording playback is a product route:
+/// it binds semantic/content authority, executes the complete packet-native
+/// map composition, and requires every applicable native execution receipt
+/// before map pixels, BMP, or a success receipt.
 
 struct FrameKeying {
     owners: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
@@ -416,15 +409,6 @@ fn load_frame_keying(provider: &dyn OwnerProvider, hour: i64) -> Result<FrameKey
         controllers: provider.controllers_at(hour)?,
         world_frame: provider.world_frame_at(hour)?,
     })
-}
-
-/// DERIVED diagnostic formatting for geometry counts only. This is not a
-/// rendered-pixel or parity assertion.
-fn format_counter_geometry_counts(counts: [usize; 3]) -> String {
-    format!(
-        "counters {}/{}/{} inputs/instances/quads",
-        counts[0], counts[1], counts[2]
-    )
 }
 
 pub fn dump_frame(
@@ -476,12 +460,13 @@ pub fn dump_frame(
     }
 }
 
+/// Seam-level defense in depth behind `main.rs`'s registry-driven
+/// `reject_production_recording_debug_cli` gate: a non-CLI caller of
+/// `dump_frame` gets the same registry rejection, with the
+/// `blockers::REGISTRY` row's reason verbatim.
 fn reject_recording_dump_debug_bundle(mode: &TimelineMode, has_bundle: bool) -> Result<()> {
     if matches!(mode, TimelineMode::Recording { .. }) && has_bundle {
-        return Err(
-            "production recording --dump-frame forbids --bundle; no debug renderer substitute is permitted"
-                .into(),
-        );
+        return Err(crate::blockers::reason(crate::blockers::BlockerId::RecordingBundle).into());
     }
     Ok(())
 }
@@ -662,10 +647,9 @@ fn dump_debug_frame(
     Ok(())
 }
 
-/// Render one portable recording hour through the same app-owned D3D11
-/// device/context/RTV route as the product window, then read that exact RTV.
-/// No debug bundle, captured pass, proxy map, camera, HUD, or overlay is
-/// admitted into this path.
+/// Select one portable recording hour and execute the packet-native map chain
+/// used by normal windowed playback on an offscreen target. Incomplete map
+/// families prevent map pixels, BMP output, and a success receipt.
 fn dump_production_recording_frame(
     mode: &TimelineMode,
     hour: Option<i64>,
@@ -678,34 +662,27 @@ fn dump_production_recording_frame(
     capture_dir: Option<&Path>,
     day_night_hour_override: Option<f32>,
 ) -> Result<()> {
-    let (provider, label, recording_sha256) = match mode {
+    let provider = match mode {
         TimelineMode::Recording {
             path,
             logical_stream_id,
             timeline,
         } => {
-            let opened = crate::recording_open::open_product_recording_segment_with_authority(
-                path,
-                *logical_stream_id,
-            )
-            .map_err(|error| format!("open recording {}: {error}", path.display()))?;
-            let recording_sha256 = opened.authority_sha256.ok_or(
-                "production frame receipt requires a single retained replay-container authority",
-            )?;
-            let (provider, label) = crate::timeline::build_recording_provider(
+            let source =
+                crate::recording_open::open_product_recording_segment(path, *logical_stream_id)
+                    .map_err(|error| format!("open recording {}: {error}", path.display()))?;
+            let (provider, _label) = crate::timeline::build_recording_provider(
                 None,
-                opened.source,
+                source,
                 *timeline,
                 &path.display().to_string(),
             )?;
-            (provider, label, recording_sha256)
+            provider
         }
-        TimelineMode::Static1936 => {
-            return Err(
-                "bundle-less --dump-frame is a production recording command and requires --recording"
-                    .into(),
-            )
-        }
+        TimelineMode::Static1936 => return Err(
+            "bundle-less --dump-frame is a production recording command and requires --recording"
+                .into(),
+        ),
     };
     reject_production_dump_debug_inputs(
         dump_zoom,
@@ -721,33 +698,6 @@ fn dump_production_recording_frame(
     let content_manifest = provider
         .content_manifest()
         .ok_or("portable playback has no admitted content manifest after binding")?;
-    let static_unit_catalogs = game_ui::static_unit_catalogs::admit_static_unit_catalogs(
-        provider.static_artifact(
-            game_ui::static_unit_catalogs::TEMPLATES_EQUIPMENT_ARTIFACT,
-        ),
-        provider.static_artifact(game_ui::static_unit_catalogs::SHIP_DEFINITIONS_ARTIFACT),
-    )
-    .map_err(|error| format!("admit packaged static unit catalogs: {error}"))?;
-    let static_research_catalogs = Arc::new(
-        game_ui::static_research::admit_static_research_catalogs(
-            provider.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
-            provider.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
-            provider.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
-        )
-        .map_err(|error| format!("admit packaged static research catalogs: {error}"))?,
-    );
-    let static_focus_definitions = Arc::new(
-        replay_core::admit_static_focus_definitions(
-            provider
-                .static_artifact(replay_core::FOCUS_DEFS_STATIC_ARTIFACT)
-                .ok_or("portable playback has no authenticated focus_defs_static artifact")?,
-        )
-        .map_err(|error| format!("admit packaged static focus definitions: {error}"))?,
-    );
-    let static_focus_catalog = Arc::new(
-        game_ui::static_focus_defs::focus_catalog_from_static(&static_focus_definitions),
-    );
-    let admitted_g2_capture = provider.g2_engine_capture();
     let hours = provider.hours();
     let selected_hour = match (hour, nth_hour) {
         (Some(hour), None) => resolve_dump_hour(hours, DumpHourRequest::Canonical(hour))?,
@@ -757,422 +707,76 @@ fn dump_production_recording_frame(
             return Err("competing canonical and ordinal dump-hour selectors".into())
         }
     };
-    let initial_frame = provider
-        .world_frame_at(hours[0])?
-        .ok_or("initial replay frame is unavailable")?;
-    let initial_display = initial_frame
-        .session_metadata()
-        .display_variant
-        .measured()
-        .ok_or("replay lacks authenticated initial display_variant")?;
-    let output_width = initial_display.physical_width;
-    let output_height = initial_display.physical_height;
-    if output_width == 0 || output_height == 0 {
-        return Err("recorded physical client extent is empty".into());
-    }
-
     let frame = provider
         .world_frame_at(selected_hour)?
-        .ok_or("selected exact replay frame is unavailable")?;
-    let static_unit_frame_bindings = static_unit_catalogs.bind_frame(&frame);
-    let static_research_frame_bindings = static_research_catalogs
-        .bind_frame(&frame)
-        .map_err(|error| {
-            format!(
-                "bind packaged static research catalogs at hour {selected_hour}: {error}"
-            )
-        })?;
-    let production_render = frame
-        .production_render()
-        .ok_or("selected replay hour has no authenticated production_render carrier")?;
-    let production_render_sha256 =
-        format!("{:x}", Sha256::digest(production_render.encode_json()?));
-    let selected_present_sha256 = production_render.selected_present.computed_sha256()?;
-    let selected_submit = production_render
-        .submit(production_render.selected_present.selected_candidate_id)
-        .ok_or("authenticated selected Present has no retained submit")?;
-    let camera_payload_sha256 = selected_submit
-        .camera_carrier
-        .as_ref()
-        .map(|camera| camera.payload_sha256.clone());
-    let content_manifest_digest_sha256 = content_manifest
-        .manifest_digest_sha256
-        .clone()
-        .ok_or("portable playback content manifest has no finalized digest")?;
-    let mut production_map = map_viewer::ProductionMapRenderer::new(
+        .ok_or_else(|| map_viewer::refuse_missing_xmap00_authority("world_frame"))?;
+    let (map_width, map_height) =
+        map_viewer::foundation_map_dimensions(&game_resolver, &content_admission)?;
+    let camera = map_viewer::ViewerMapCameraState::from_admitted_content(
+        &game_resolver,
+        &content_admission,
+        map_width,
+        map_height,
+        DUMP_WIDTH,
+        DUMP_HEIGHT,
+        map_viewer::DEFAULT_VIEWER_CAMERA_SPEED_SETTING,
+    )?;
+    let viewer = map_viewer::ViewerOwnedMapState {
+        viewport_width: DUMP_WIDTH,
+        viewport_height: DUMP_HEIGHT,
+        input_revision: camera.input_revision,
+        camera: Some(camera),
+        observer_country_id: None,
+        map_mode_id: map_viewer::ViewerMapModeSelection::default().viewer_token(),
+        map_mode_selection_epoch: 0,
+        selected_object_ids: Vec::new(),
+        animation_time_f32_bits: 0.0f32.to_bits(),
+        frame_delta_seconds_f32_bits: 0.0f32.to_bits(),
+    };
+    let terrain_options =
+        crate::install_paths::playback_terrain_lod_options_from_paths(product_paths)?;
+    let mut composition = crate::app::ProductMapCompositionSession::start_for_headless(
         &game_resolver,
         &content_admission,
         content_manifest,
+        terrain_options,
+        DUMP_WIDTH,
+        DUMP_HEIGHT,
     )?;
-    let production_plan = production_map
-        .prepare_frame_with_rail(
-            Some(production_render),
-            Some(frame.rail_replay()),
-            Some(frame.production_by_country()),
-        )?;
-    let prepared =
-        map_viewer::prepare_production_d3d_frame(&production_plan, production_map.resources())?;
-    for message in production_optional_omission_messages(&production_plan, &prepared) {
-        eprintln!("replay_app: {message}");
+    let ui_profile = crate::install_paths::playback_ui_profile_from_paths(
+        product_paths,
+        &game_resolver,
+        crate::win32::actual_client_input_variant(),
+    )?;
+    let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None);
+    let receipt = composition.execute(
+        &game_resolver,
+        &content_admission,
+        content_manifest,
+        &frame,
+        &viewer,
+        &xmap15_selection,
+        ui_profile.localisation_language(),
+        0.0,
+        false,
+        false,
+        ui_profile.key().gui_scale(),
+    )?;
+    let pixels = composition.read_target()?;
+    if snapshot::sha256::Sha256::hex(&pixels) != receipt.final_pixels_sha256 {
+        return Err("XMAP22 headless readback changed after the sealed composition".into());
     }
-    let gfx = Gfx::create_offscreen(output_width, output_height)?;
-    gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
-    let has_map_route = prepared.target.is_some() && !prepared.ordered_render_operations.is_empty();
-    let (
-        map_operations,
-        map_receipt,
-        map_presented,
-        snow_mud_proof,
-        occupation_secondary_proof,
-    ) = if has_map_route {
-        let mut runtime = crate::app::ProductProductionD3dRuntime::default();
-        let outcome =
-            runtime.execute_with_snow_mud_h2(
-                &gfx,
-                &game_resolver,
-                production_map.resources(),
-                &prepared,
-            )?;
-        (
-            outcome.executed_operations,
-            outcome.receipt_sha256,
-            outcome.presented_to_app_target,
-            outcome.snow_mud_proof,
-            outcome.occupation_secondary_proof,
-        )
-    } else {
-        (0, "none".into(), false, None, None)
-    };
-    let snow_mud_h2_receipt = match (
-        production_render.snow_mud_texture.as_ref(),
-        snow_mud_proof.as_ref(),
-    ) {
-        (None, None) => None,
-        (Some(packet), Some(proof)) => {
-            let receipt = crate::render::seal_product_snow_mud_h2_receipt(
-                packet,
-                &production_render.selected_present,
-                proof,
-            )?;
-            crate::render::persist_snow_mud_h2_receipt(
-                &receipt,
-                &proof.tight_readback_bytes,
-            )?;
-            Some(receipt)
-        }
-        (Some(_), None) => {
-            return Err("production SnowMudData H packet produced no product H2 proof".into())
-        }
-        (None, Some(_)) => {
-            return Err("production SnowMudData product H2 proof has no H packet".into())
-        }
-    };
-    let mut occupation_packets = production_render
-        .submits
-        .iter()
-        .flat_map(|submit| submit.political_textures.iter())
-        .filter(|packet| {
-            packet.kind == replay_core::PoliticalTextureKind::Secondary
-                && packet.target_binding_identity
-                    == replay_core::OCCUPATION_SECONDARY_TARGET_BINDING
-        });
-    let occupation_packet = occupation_packets.next();
-    if occupation_packets.next().is_some() {
-        return Err("production recording has repeated occupation secondary packets".into());
-    }
-    let occupation_secondary_h2_receipt =
-        match (occupation_packet, occupation_secondary_proof.as_ref()) {
-            (None, None) => None,
-            (Some(packet), Some(proof)) => {
-                let receipt = crate::render::seal_product_occupation_secondary_h2_receipt(
-                    packet,
-                    &production_render.selected_present,
-                    proof,
-                )?;
-                crate::render::persist_occupation_secondary_h2_receipt(
-                    &receipt,
-                    &proof.tight_readback_bytes,
-                )?;
-                Some(receipt)
-            }
-            (Some(_), None) => {
-                return Err(
-                    "production occupation secondary packet produced no product H2 proof".into(),
-                )
-            }
-            (None, Some(_)) => {
-                return Err(
-                    "production occupation secondary H2 proof has no portable packet".into(),
-                )
-            }
-        };
-
-    let mut selected_present_operations = 0usize;
-    let mut selected_present_m02_draws = 0usize;
-    let mut selected_present_typed_companions = None;
-    let mut selected_present_executed = false;
-    if admitted_g2_capture.is_none() {
-        let pass = prepared.authenticated_ui_pass.as_ref().ok_or(
-            "production recording dump has no complete authenticated selected-Present UI pass",
-        )?;
-        let mut runtime =
-            crate::ui_runtime::ProductSelectedPresentRuntime::new_with_decision_catalog_bytes(
-                &gfx,
-                &game_resolver,
-                &content_admission,
-                pass,
-                provider.decision_catalog().map(|catalog| catalog.bytes()),
-                provider
-                    .static_artifact("gfx_icon_asset_manifest_static")
-                    .map(|artifact| artifact.bytes()),
-                Arc::clone(&static_research_catalogs),
-                Arc::clone(&static_focus_definitions),
-                Arc::clone(&static_focus_catalog),
-            )?;
-        let runtime_text = match frame.runtime_text()? {
-            replay_core::Leaf::Measured(catalog) => Some(catalog),
-            replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
-        };
-        let recorded_ui = crate::recorded_ui_owner::recorded_ui_owner(frame.as_ref(), pass)
-            .map_err(|error| {
-                format!(
-                    "production dump recorder-owned selected-Present UI identity is unavailable: {error}"
-                )
-            })?;
-        match runtime.execute(
-            &gfx,
-            &game_resolver,
-            &prepared,
-            frame.as_ref(),
-            recorded_ui.country.as_deref(),
-            recorded_ui.runtime_text_pov_country_or_global.as_str(),
-            runtime_text.as_ref(),
-            crate::ui_runtime::ArmyBattleplanUiSupplementalInputs::default(),
-            crate::ui_runtime::IntelligenceUiSupplementalInputs::default(),
-            crate::ui_runtime::OccupationUiSupplementalInputs::default(),
-        )? {
-                crate::ui_runtime::SelectedPresentUiOutcome::Executed {
-                    operation_count,
-                    m02_draw_count,
-                    decision_panel_item_count,
-                    power_balance_item_count,
-                    intelligence_panel_count,
-                    intelligence_unavailable_reason,
-                    agency_upgrade_count,
-                    cipher_target_count,
-                    trade_license_count,
-                    xui15_surface_drawn,
-                    xui15_unavailable_reason,
-                    occupation_state_count,
-                    occupation_unavailable_reason,
-                    battleplan_order_count,
-                    battleplan_selected_order_present,
-                    typed_consumption,
-                } => {
-                    selected_present_operations = operation_count;
-                    selected_present_m02_draws = m02_draw_count;
-                    selected_present_typed_companions = Some(
-                        ProductionSelectedPresentCompanionReceipt {
-                            decision_panel_item_count,
-                            power_balance_item_count,
-                            intelligence_panel_count,
-                            intelligence_unavailable_reason,
-                            agency_upgrade_count,
-                            cipher_target_count,
-                            trade_license_count,
-                            xui15_surface_drawn,
-                            xui15_unavailable_reason,
-                            occupation_state_count,
-                            occupation_unavailable_reason,
-                            battleplan_order_count,
-                            battleplan_selected_order_present,
-                            remaining: typed_consumption,
-                        },
-                    );
-                    selected_present_executed = true;
-                }
-            crate::ui_runtime::SelectedPresentUiOutcome::Omitted(reason) => {
-                return Err(format!(
-                    "production recording dump could not execute its complete authenticated selected-Present UI frontier: {reason}"
-                )
-                .into());
-            }
-        }
-    }
-    if !map_presented && !selected_present_executed {
-        return Err(
-            "production recording dump has neither authenticated map output nor executable selected-Present UI output"
-                .into(),
-        );
-    }
-    if map_operations == 0 && selected_present_operations == 0 {
-        return Err("production recording dump executed zero authenticated draws".into());
-    }
-    let pixels = gfx.read_target()?;
-    let pixel_sha256 = format!("{:x}", Sha256::digest(&pixels));
-    let g2_exact_pixel_admission = admitted_g2_capture
-        .map(|capture| {
-            admit_g2_exact_pixels(
-                capture,
-                G2ReplayScene {
-                    authority_exe_sha256: &content_manifest.source_game.executable_sha256,
-                    launch_epoch_sha256: &production_render.authority.launch_epoch_sha256,
-                    capture_receipt_sha256: &production_render.authority.capture_receipt_sha256,
-                    effective_vfs_manifest_sha256: &content_manifest
-                        .effective_vfs_manifest_sha256,
-                    content_manifest_digest_sha256: &content_manifest_digest_sha256,
-                    settings_file_sha256: &initial_display.settings_file_sha256,
-                    localisation_language: &content_manifest.localisation_language,
-                    camera_payload_sha256: camera_payload_sha256.as_deref(),
-                    selected_hour,
-                    viewport_width: output_width,
-                    viewport_height: output_height,
-                },
-                &pixels,
-            )
-        })
-        .transpose()?;
-    write_bmp(out, output_width, output_height, &pixels)?;
-    let snow_mud_h2_receipt_path = snow_mud_h2_receipt
-        .as_ref()
-        .map(|receipt| write_snow_mud_h2_receipt(out, receipt))
-        .transpose()?;
-    let occupation_secondary_h2_paths = occupation_secondary_h2_receipt
-        .as_ref()
-        .zip(occupation_secondary_proof.as_ref())
-        .map(|(receipt, proof)| {
-            write_occupation_secondary_h2_evidence(
-                out,
-                receipt,
-                &proof.tight_readback_bytes,
-            )
-        })
-        .transpose()?;
-    let pixel_gate_receipt = ProductionPixelGateReceipt {
-        schema: if admitted_g2_capture.is_some() {
-            "battle-plan-production-pixel-gate-receipt-v5"
-        } else {
-            "battle-plan-production-pixel-gate-receipt-v4"
-        },
-        render_boundary: "post_authenticated_map_bgra8_no_selected_present_writers",
-        authority_exe_sha256: content_manifest.source_game.executable_sha256.clone(),
-        recording_sha256,
-        production_render_sha256,
-        selected_present_sha256,
-        launch_epoch_sha256: production_render.authority.launch_epoch_sha256.clone(),
-        capture_receipt_sha256: production_render.authority.capture_receipt_sha256.clone(),
-        product_modset_sha256: content_manifest.product_modset_sha256.clone(),
-        effective_vfs_manifest_sha256: content_manifest
-            .effective_vfs_manifest_sha256
-            .clone(),
-        content_manifest_digest_sha256,
-        settings_file_sha256: initial_display.settings_file_sha256.clone(),
-        localisation_language: content_manifest.localisation_language.clone(),
-        camera_payload_sha256,
-        // The headless production command has no POV selector and invokes the
-        // selected-Present runtime with `None`; its only admissible POV is the
-        // explicit omniscient/global route.
-        pov_country_or_global: "global",
-        selected_hour,
-        viewport_width: output_width,
-        viewport_height: output_height,
-        map_operations,
-        selected_present_operations,
-        selected_present_m02_draws,
-        selected_present_typed_companions,
-        map_presented,
-        selected_present_executed,
-        receipt_sha256: (map_receipt != "none").then(|| map_receipt.clone()),
-        bgra_sha256: pixel_sha256.clone(),
-        pixel_byte_len: pixels.len(),
-        g2_engine_capture: admitted_g2_capture.map(ProductionG2CaptureBinding::from),
-        g2_exact_pixel_admission,
-    };
-    let pixel_gate_receipt_path =
-        write_production_pixel_gate_receipt(out, &pixel_gate_receipt)?;
-    println!(
-        "wrote production recording frame dump: {} ({label}, hour {selected_hour}, {}x{}, {} map operations, {} selected-Present operations including {} M02 draws, map receipt {}, bgra_sha256 {}, pixel gate receipt {})",
-        out.display(),
-        output_width,
-        output_height,
-        map_operations,
-        selected_present_operations,
-        selected_present_m02_draws,
-        map_receipt,
-        pixel_sha256,
-        pixel_gate_receipt_path.display(),
-    );
-    println!(
-        "consumed packaged static unit catalogs {} and {}: templates {}/{}, equipment archetypes {}/{}, ship definitions {}/{}; unresolved dynamic identities templates={:?} equipment={:?} ships={:?}",
-        static_unit_catalogs.templates_equipment.identity.payload_sha256,
-        static_unit_catalogs.ships.identity.payload_sha256,
-        static_unit_frame_bindings.authored_template_matches,
-        static_unit_frame_bindings.measured_template_names,
-        static_unit_frame_bindings.authored_equipment_matches,
-        static_unit_frame_bindings.measured_equipment_archetypes,
-        static_unit_frame_bindings.authored_ship_hull_matches,
-        static_unit_frame_bindings.measured_ship_definitions,
-        static_unit_frame_bindings.unresolved_template_names,
-        static_unit_frame_bindings.unresolved_equipment_archetypes,
-        static_unit_frame_bindings.unresolved_ship_definitions,
-    );
-    println!(
-        "consumed packaged static research catalogs: focus labels {} across {} countries, technology labels {} across {} countries, technology-sharing groups {}; unavailable focus={:?} research={:?} sharing definition ordinals={:?}",
-        static_research_frame_bindings.focus_labels,
-        static_research_frame_bindings.focus_countries,
-        static_research_frame_bindings.technology_labels,
-        static_research_frame_bindings.research_countries,
-        static_research_frame_bindings.technology_sharing_groups,
-        static_research_frame_bindings.focus_unavailable,
-        static_research_frame_bindings.research_unavailable,
-        static_research_frame_bindings
-            .technology_sharing_definition_unavailable_ordinals,
-    );
-    if let Some(path) = snow_mud_h2_receipt_path {
-        println!(
-            "wrote product SnowMudData H2 immutable-upload/readback receipt: {}",
-            path.display()
-        );
-    }
-    if let Some((receipt_path, payload_path)) = occupation_secondary_h2_paths {
-        println!(
-            "wrote product occupation secondary H2 receipt {} and raw readback {}",
-            receipt_path.display(),
-            payload_path.display()
-        );
-    }
-    Ok(())
+    write_bmp(out, DUMP_WIDTH, DUMP_HEIGHT, &pixels)?;
+    let receipt_path = xmap22_receipt_path(out);
+    let mut receipt_bytes = serde_json::to_vec_pretty(&receipt)?;
+    receipt_bytes.push(b'\n');
+    write_create_new_or_equal(&receipt_path, &receipt_bytes, "XMAP22 composition receipt")
 }
 
-fn production_optional_omission_messages(
-    plan: &map_viewer::PreparedProductionMapFrame,
-    prepared: &map_viewer::PreparedProductionD3dFrame,
-) -> Vec<String> {
-    let mut messages = plan
-        .omitted_data_needs
-        .iter()
-        .map(|need| {
-            format!(
-                "production dump feature omitted [{}] {}: {}",
-                need.packet, need.feature, need.reason
-            )
-        })
-        .chain(prepared.omissions.iter().map(|omission| {
-            format!(
-                "production dump feature omitted [PRODUCTION_MAP_D3D] {}: {}",
-                omission.pass, omission.reason
-            )
-        }))
-        .collect::<Vec<_>>();
-    if prepared.authenticated_ui_pass.is_none() {
-        messages.push(
-            "production dump feature omitted [SELECTED_PRESENT_UI] authenticated selected-Present UI/M02 carrier is absent"
-                .into(),
-        );
-    }
-    messages
-}
-
+/// Seam-level defense in depth behind `main.rs`'s registry-driven
+/// `reject_production_recording_debug_cli` gate: a non-CLI caller of the
+/// production dump gets the same per-input registry rejection, with each
+/// `blockers::REGISTRY` row's reason verbatim.
 fn reject_production_dump_debug_inputs(
     dump_zoom: Option<f64>,
     dump_center: Option<(f64, f64)>,
@@ -1180,16 +784,21 @@ fn reject_production_dump_debug_inputs(
     capture_dir: Option<&Path>,
     day_night_hour_override: Option<f32>,
 ) -> Result<()> {
-    if dump_zoom.is_some()
-        || dump_center.is_some()
-        || dump_hdr.is_some()
-        || capture_dir.is_some()
-        || day_night_hour_override.is_some()
-    {
-        return Err(
-            "production recording --dump-frame forbids debug camera, HDR, capture, and day/night inputs"
-                .into(),
-        );
+    use crate::blockers::{reason, BlockerId};
+    if dump_zoom.is_some() {
+        return Err(reason(BlockerId::RecordingDumpZoom).into());
+    }
+    if dump_center.is_some() {
+        return Err(reason(BlockerId::RecordingDumpCenter).into());
+    }
+    if dump_hdr.is_some() {
+        return Err(reason(BlockerId::RecordingDumpHdr).into());
+    }
+    if capture_dir.is_some() {
+        return Err(reason(BlockerId::RecordingCapture).into());
+    }
+    if day_night_hour_override.is_some() {
+        return Err(reason(BlockerId::RecordingDayNightHour).into());
     }
     Ok(())
 }
@@ -1207,29 +816,40 @@ fn write_bmp(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> 
         .into());
     }
     let image_bytes = pixels.len() as u32;
+    let header = canonical_bmp_header(width, height, image_bytes)?;
     let file_bytes = 54 + image_bytes;
     let mut out = Vec::with_capacity(file_bytes as usize);
-    // BITMAPFILEHEADER
-    out.extend_from_slice(b"BM");
-    out.extend_from_slice(&file_bytes.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
-    out.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
-                                                 // BITMAPINFOHEADER
-    out.extend_from_slice(&40u32.to_le_bytes());
-    out.extend_from_slice(&(width as i32).to_le_bytes());
-    out.extend_from_slice(&(height as i32).to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes()); // planes
-    out.extend_from_slice(&32u16.to_le_bytes()); // bpp
-    out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
-    out.extend_from_slice(&image_bytes.to_le_bytes());
-    out.extend_from_slice(&2835i32.to_le_bytes()); // 72 dpi
-    out.extend_from_slice(&2835i32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // palette
-    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&header);
     for y in (0..height as usize).rev() {
         out.extend_from_slice(&pixels[y * row_bytes..(y + 1) * row_bytes]);
     }
     write_create_new_or_equal(path, &out, "headless BGRA BMP")
+}
+
+fn canonical_bmp_header(width: u32, height: u32, image_bytes: u32) -> Result<[u8; 54]> {
+    let file_bytes = 54u32
+        .checked_add(image_bytes)
+        .ok_or("XMAP22 BMP file size overflow")?;
+    let width = i32::try_from(width).map_err(|_| "XMAP22 BMP width exceeds i32")?;
+    let height = i32::try_from(height).map_err(|_| "XMAP22 BMP height exceeds i32")?;
+    let mut out = Vec::with_capacity(54);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&file_bytes.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&54u32.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&image_bytes.to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.try_into()
+        .map_err(|_| "XMAP22 canonical BMP header length is not 54".into())
 }
 
 #[cfg(test)]
@@ -1238,9 +858,40 @@ mod tests {
     use snapshot::{pack, PackEntry, PackIdentity};
 
     #[test]
+    fn xmap22_bmp_decoder_round_trips_top_down_bgra_and_rejects_trailing_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan-xmap22-bmp-{}-{}",
+            std::process::id(),
+            IMMUTABLE_PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("frame.bmp");
+        let pixels = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        write_bmp(&path, 2, 2, &pixels).unwrap();
+        let (width, height, decoded) = read_xmap22_bmp(&path).unwrap();
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(decoded, pixels);
+
+        let mut corrupt = std::fs::read(&path).unwrap();
+        corrupt.push(0);
+        let corrupt_path = root.join("corrupt.bmp");
+        std::fs::write(&corrupt_path, corrupt).unwrap();
+        assert!(read_xmap22_bmp(&corrupt_path).is_err());
+
+        for offset in [6usize, 34, 38, 42, 46, 50] {
+            let mut corrupt = std::fs::read(&path).unwrap();
+            corrupt[offset] ^= 1;
+            let corrupt_path = root.join(format!("corrupt-header-{offset}.bmp"));
+            std::fs::write(&corrupt_path, corrupt).unwrap();
+            assert!(read_xmap22_bmp(&corrupt_path).is_err(), "offset {offset}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn immutable_authority_publication_is_atomic_idempotent_and_no_replace() {
         let root = std::env::temp_dir().join(format!(
-            "battle-plan-g2-publish-{}-{}",
+            "battle-plan-receipt-publish-{}-{}",
             std::process::id(),
             IMMUTABLE_PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -1251,6 +902,152 @@ mod tests {
         assert!(write_create_new_or_equal(&path, b"different\n", "test receipt").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"complete receipt bytes\n");
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn post_publication_h2_evidence_sink_failure_is_typed() {
+        // R18-4: the retained non-product H2 evidence sinks run after the BMP
+        // is already published. Their failures carry a typed
+        // ProductionEvidenceSinkError naming the partial-publication state.
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan-evidence-sink-{}-{}",
+            std::process::id(),
+            IMMUTABLE_PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let out = root.join("frame.bmp");
+        // The dump's BMP is already on disk when the sinks run.
+        std::fs::write(&out, b"published bmp bytes").unwrap();
+        std::fs::write(snow_mud_h2_receipt_path(&out), b"different\n").unwrap();
+        let snow_receipt = replay_core::SnowMudReplayReadbackReceipt {
+            schema: "test".to_string(),
+            process_start_nonce: 1,
+            hook_epoch_nonce: 1,
+            producer_ordinal: 1,
+            producer_game_hour_raw: 0,
+            display_game_hour_raw: 0,
+            selected_candidate_id: 1,
+            selected_qpc_ticks: 1,
+            selected_present_sha256: String::new(),
+            snow_mud_fade_f32_bits: 0,
+            snow_mud_fade_consumer_count: 0,
+            snow_mud_fade_consumer_set_sha256: String::new(),
+            observation_sha256: String::new(),
+            payload_sha256: String::new(),
+            readback_sha256: String::new(),
+            width: 1,
+            height: 1,
+            source_row_pitch: 4,
+            mapped_row_pitch: 4,
+            verified_row_count: 1,
+            verified_tight_byte_count: 4,
+            replaced_binding_count: 1,
+            receipt_sha256: String::new(),
+        };
+        let error = write_snow_mud_h2_receipt(&out, &snow_receipt)
+            .expect_err("a colliding snow/mud receipt with different bytes must refuse");
+        let typed = error
+            .downcast_ref::<ProductionEvidenceSinkError>()
+            .expect("the snow/mud sink failure must be the typed classification");
+        assert_eq!(typed.sink(), "SnowMudData H2 receipt");
+        assert!(typed.to_string().contains("already published"), "{typed}");
+        assert!(
+            std::error::Error::source(typed).is_some(),
+            "the underlying collision error must be preserved as the source"
+        );
+        assert_eq!(std::fs::read(&out).unwrap(), b"published bmp bytes");
+
+        let payload = b"bgra"; // 4 bytes, matching the receipt below
+        std::fs::write(occupation_secondary_h2_payload_path(&out), b"other\n").unwrap();
+        let occupation_receipt = replay_core::OccupationSecondaryReplayReadbackReceipt {
+            schema: "test".to_string(),
+            target_binding_identity: String::new(),
+            upload_order: 1,
+            selected_present_sha256: String::new(),
+            payload_sha256: String::new(),
+            readback_sha256: format!("{:x}", Sha256::digest(payload)),
+            width: 1,
+            height: 1,
+            source_row_pitch: 4,
+            mapped_row_pitch: 4,
+            verified_row_count: 1,
+            verified_tight_byte_count: payload.len() as u64,
+            terrain_t6_binding_count: 1,
+            water_t3_binding_count: 0,
+            receipt_sha256: String::new(),
+        };
+        let error = write_occupation_secondary_h2_evidence(&out, &occupation_receipt, payload)
+            .expect_err("a colliding occupation payload with different bytes must refuse");
+        let typed = error
+            .downcast_ref::<ProductionEvidenceSinkError>()
+            .expect("the occupation sink failure must be the typed classification");
+        assert_eq!(typed.sink(), "occupation secondary H2 evidence");
+        assert!(typed.to_string().contains("already published"), "{typed}");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snow_mud_h2_evidence_publishes_raw_plane_with_receipt_and_refuses_mismatched_bytes() {
+        let bytes: Vec<u8> = (0..64u8).collect();
+        let receipt = replay_core::SnowMudReplayReadbackReceipt {
+            schema: replay_core::SNOW_MUD_H2_READBACK_SCHEMA.into(),
+            process_start_nonce: 1,
+            hook_epoch_nonce: 2,
+            producer_ordinal: 3,
+            producer_game_hour_raw: 4,
+            display_game_hour_raw: 4,
+            selected_candidate_id: 5,
+            selected_qpc_ticks: 6,
+            selected_present_sha256: "11".repeat(32),
+            snow_mud_fade_f32_bits: 0,
+            snow_mud_fade_consumer_count: 1,
+            snow_mud_fade_consumer_set_sha256: "22".repeat(32),
+            observation_sha256: "33".repeat(32),
+            payload_sha256: "44".repeat(32),
+            readback_sha256: format!("{:x}", Sha256::digest(&bytes)),
+            width: 4,
+            height: 4,
+            source_row_pitch: 16,
+            mapped_row_pitch: 16,
+            verified_row_count: 4,
+            verified_tight_byte_count: bytes.len() as u64,
+            replaced_binding_count: 1,
+            receipt_sha256: String::new(),
+        };
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan-snow-mud-h2-evidence-{}-{}",
+            std::process::id(),
+            IMMUTABLE_PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let out = root.join("hour-00000000.bmp");
+
+        // Sidecar bytes that disagree with the sealed receipt never publish
+        // either half of the evidence pair.
+        let mut wrong = bytes.clone();
+        wrong[0] ^= 0xff;
+        assert!(write_snow_mud_h2_evidence(&out, &receipt, &wrong).is_err());
+        assert!(!snow_mud_h2_receipt_path(&out).exists());
+        assert!(!snow_mud_h2_payload_path(&out).exists());
+
+        // Verified bytes publish the raw plane AND the receipt, idempotently.
+        let (receipt_path, payload_path) =
+            write_snow_mud_h2_evidence(&out, &receipt, &bytes).unwrap();
+        assert_eq!(std::fs::read(&payload_path).unwrap(), bytes);
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
+        assert_eq!(
+            written["readback_sha256"],
+            serde_json::Value::from(receipt.readback_sha256.as_str())
+        );
+        write_snow_mud_h2_evidence(&out, &receipt, &bytes).unwrap();
+
+        // A different sealed receipt can never silently replace the published one.
+        let mut altered = receipt.clone();
+        altered.replaced_binding_count += 1;
+        assert!(write_snow_mud_h2_evidence(&out, &altered, &bytes).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1377,28 +1174,32 @@ mod tests {
 
     #[test]
     fn production_recording_dump_rejects_every_debug_substitute() {
+        use crate::blockers::{reason, BlockerId};
         assert!(reject_production_dump_debug_inputs(None, None, None, None, None).is_ok());
-        assert!(reject_production_dump_debug_inputs(Some(1.0), None, None, None, None).is_err());
-        assert!(
-            reject_production_dump_debug_inputs(None, Some((1.0, 2.0)), None, None, None).is_err()
-        );
-        assert!(reject_production_dump_debug_inputs(
+        // Each rejection is the corresponding registry row's reason verbatim
+        // (the registry stays the single source of the message text).
+        let err = reject_production_dump_debug_inputs(Some(1.0), None, None, None, None)
+            .expect_err("zoom");
+        assert_eq!(err.to_string(), reason(BlockerId::RecordingDumpZoom));
+        let err = reject_production_dump_debug_inputs(None, Some((1.0, 2.0)), None, None, None)
+            .expect_err("center");
+        assert_eq!(err.to_string(), reason(BlockerId::RecordingDumpCenter));
+        let err = reject_production_dump_debug_inputs(
             None,
             None,
             Some(Path::new("scene.hdr")),
             None,
-            None
+            None,
         )
-        .is_err());
-        assert!(reject_production_dump_debug_inputs(
-            None,
-            None,
-            None,
-            Some(Path::new("capture")),
-            None
-        )
-        .is_err());
-        assert!(reject_production_dump_debug_inputs(None, None, None, None, Some(0.5)).is_err());
+        .expect_err("hdr");
+        assert_eq!(err.to_string(), reason(BlockerId::RecordingDumpHdr));
+        let err =
+            reject_production_dump_debug_inputs(None, None, None, Some(Path::new("capture")), None)
+                .expect_err("capture");
+        assert_eq!(err.to_string(), reason(BlockerId::RecordingCapture));
+        let err = reject_production_dump_debug_inputs(None, None, None, None, Some(0.5))
+            .expect_err("day/night");
+        assert_eq!(err.to_string(), reason(BlockerId::RecordingDayNightHour));
     }
 
     #[test]
@@ -1409,143 +1210,159 @@ mod tests {
             timeline: replay_core::TimelineConfig::default(),
         };
         assert!(reject_recording_dump_debug_bundle(&mode, false).is_ok());
-        assert!(reject_recording_dump_debug_bundle(&mode, true).is_err());
+        let err = reject_recording_dump_debug_bundle(&mode, true).expect_err("bundle");
+        assert_eq!(
+            err.to_string(),
+            crate::blockers::reason(crate::blockers::BlockerId::RecordingBundle),
+            "bundle rejection is the registry row's reason verbatim"
+        );
         assert!(reject_recording_dump_debug_bundle(&TimelineMode::Static1936, true).is_ok());
     }
 
     #[test]
-    fn optional_packet_and_d3d_omissions_are_reported_without_rejecting_the_frame() {
-        let plan = map_viewer::PreparedProductionMapFrame {
-            content_manifest_sha256: "11".repeat(32),
-            product_modset_sha256: "99".repeat(32),
-            effective_vfs_manifest_sha256: "22".repeat(32),
-            selected_submit_index: None,
-            selected_submit_global_order: None,
-            c03_camera_replay: None,
-            ordered_scene_constant_buffers: Vec::new(),
-            ordered_static_map_programs: Vec::new(),
-            authenticated_texture_snapshots: Vec::new(),
-            rail_ribbon: None,
-            snow_mud_texture: None,
-            tree_runtime: None,
-            s1_shadow: None,
-            ordered_render_operations: Vec::new(),
-            political_textures: Vec::new(),
-            tiled_lights: Vec::new(),
-            ordered_runtime_draws: Vec::new(),
-            m02_combat: None,
-            authenticated_ui_pass: None,
-            m03_arrows: None,
-            rail_supply_arrows: None,
-            o04_cities: None,
-            o05_buildings: None,
-            omitted_data_needs: vec![map_viewer::ProductionMapDataNeed {
-                packet: "M02".into(),
-                feature: "combat indicators".into(),
-                reason: "carrier absent".into(),
-            }],
-        };
-        let mut prepared = map_viewer::PreparedProductionD3dFrame {
-            content_manifest_sha256: "11".repeat(32),
-            product_modset_sha256: "99".repeat(32),
-            effective_vfs_manifest_sha256: "22".repeat(32),
-            c03_camera_replay: None,
-            target: None,
-            ordered_scene_constant_buffers: Vec::new(),
-            ordered_render_operations: Vec::new(),
-            snow_mud_texture: None,
-            political_textures: Vec::new(),
-            tiled_lights: Vec::new(),
-            ordered_static_used_content: Vec::new(),
-            ordered_static_programs: Vec::new(),
-            authenticated_texture_snapshots: Vec::new(),
-            rail_ribbon: None,
-            mapname_d80_state: replay_core::MapnameD80State::Missing,
-            tree_runtime: None,
-            tree_materialized_execution_sha256: None,
-            s1_shadow: None,
-            ordered_runtime_draws: Vec::new(),
-            m02_combat: None,
-            authenticated_ui_pass: None,
-            m03_arrows: None,
-            rail_supply_arrows: None,
-            omissions: vec![map_viewer::ProductionD3dOmission {
-                pass: "optional-pass".into(),
-                reason: "unsupported optional interpreter".into(),
-            }],
-        };
-        let messages = production_optional_omission_messages(&plan, &prepared);
-        assert_eq!(messages.len(), 3);
-        assert!(messages[0].contains("[M02]"));
-        assert!(messages[1].contains("[PRODUCTION_MAP_D3D]"));
-        assert!(messages[2].contains("[SELECTED_PRESENT_UI]"));
-        assert!(messages[2].contains("carrier is absent"));
+    fn headless_product_dump_executes_the_shared_xmap22_composition() {
+        let (topology, schedule) =
+            crate::validate::product_foundation_assigned_stage_plan().unwrap();
+        assert_eq!(topology.ordered_stages().len(), 22);
+        assert_eq!(topology.ordered_edges().len(), 18);
+        schedule
+            .require(
+                map_viewer::XMAP06_EARLY_STAGE_NAME,
+                map_viewer::XMAP06_EARLY_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP06");
+        schedule
+            .require(
+                map_viewer::XMAP08_RIVER_STAGE_NAME,
+                map_viewer::XMAP08_RIVER_OPERATION_ID,
+            )
+            .expect("headless product foundation includes XMAP08 rivers");
+        schedule
+            .require(
+                map_viewer::XMAP08_STRAIT_STAGE_NAME,
+                map_viewer::XMAP08_STRAIT_OPERATION_ID,
+            )
+            .expect("headless product foundation includes XMAP08 straits");
+        schedule
+            .require(
+                map_viewer::XMAP11_TREE_STAGE_NAME,
+                map_viewer::XMAP11_TREE_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP11 trees");
+        schedule
+            .require(
+                map_viewer::XMAP17_EXECUTE_STAGE,
+                map_viewer::XMAP17_EXECUTE_OPERATION,
+            )
+            .expect("headless product foundation includes XMAP17 labels");
+        schedule
+            .require(
+                map_viewer::XMAP09_PREPARE_STAGE_NAME,
+                map_viewer::XMAP09_PREPARE_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP09");
+        schedule
+            .require(
+                map_viewer::XMAP19_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP19_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP19");
+        schedule
+            .require(
+                map_viewer::XMAP07_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP07_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP07");
+        schedule
+            .require(
+                map_viewer::XMAP13_UNIT_ENTITY_STAGE_NAME,
+                map_viewer::XMAP13_UNIT_ENTITY_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP13 entities");
+        schedule
+            .require(
+                map_viewer::XMAP13_COUNTER_QUAD_STAGE_NAME,
+                map_viewer::XMAP13_COUNTER_QUAD_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP13 counters");
+        schedule
+            .require(
+                map_viewer::XMAP14_COMBAT_STAGE_NAME,
+                map_viewer::XMAP14_COMBAT_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP14 combat indicators");
+        schedule
+            .require(
+                map_viewer::XMAP15_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP15_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP15 orders");
+        schedule
+            .require(
+                map_viewer::XMAP20_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP20_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP20");
+        schedule
+            .require(
+                map_viewer::XMAP16_RAIL_STAGE_NAME,
+                map_viewer::XMAP16_RAIL_OPERATION_ID,
+            )
+            .expect("headless product foundation includes XMAP16");
+        schedule
+            .require(
+                map_viewer::XMAP21_PREPARE_STAGE_NAME,
+                map_viewer::XMAP21_PREPARE_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP21 prepare");
+        schedule
+            .require(
+                map_viewer::XMAP21_EXECUTE_STAGE_NAME,
+                map_viewer::XMAP21_EXECUTE_OPERATION_NAME,
+            )
+            .expect("headless product foundation includes XMAP21 execute");
 
-        prepared.authenticated_ui_pass = Some(replay_core::AuthenticatedUiPass {
-            schema: replay_core::UI_PASS_SCHEMA.into(),
-            update_index: 1,
-            first_sequence: 1,
-            last_sequence: 1,
-            ui_pass_draw_count: 0,
-            target: replay_core::RenderTargetDesc {
-                prepared_target: replay_core::PreparedRenderTarget::SwapchainBackBuffer,
-                width: 1920,
-                height: 1080,
-                dxgi_format_u32: 28,
-                mip_level: 0,
-                sample_count: 1,
-                sample_quality: 0,
-                persistent_content: None,
-                exact_resource: None,
-            },
-            selected_present_receipt_sha256: "00".repeat(32),
-            producer_selection_receipt_sha256: "00".repeat(32),
-            source_frontier_sha256: "00".repeat(32),
-            recorded_input_receipt_sha256: "00".repeat(32),
-            active_mapmode_state: None,
-            ui_pass_operations: Vec::new(),
-            pass_identity_sha256: "00".repeat(32),
-        });
-        let messages = production_optional_omission_messages(&plan, &prepared);
-        assert_eq!(messages.len(), 2);
-        assert!(messages
-            .iter()
-            .all(|message| !message.contains("[SELECTED_PRESENT_UI]")));
-    }
-
-    #[test]
-    fn headless_source_suppresses_selected_present_for_admitted_g2_and_orders_non_g2_ui() {
-        let source = include_str!("headless.rs");
-        let production = &source[source
+        let source = include_str!("headless.rs").replace("\r\n", "\n");
+        let start = source
             .find("fn dump_production_recording_frame(")
-            .expect("production recording dump function")..];
-        let g2_guard = production
-            .find("if admitted_g2_capture.is_none()")
-            .expect("admitted G2 selected-Present suppression guard");
-        let selected_start = production
-            .find("ProductSelectedPresentRuntime::new")
-            .expect("headless selected-Present runtime");
-        let execute = selected_start
-            + production[selected_start..]
-                .find("runtime.execute(")
-                .expect("headless selected-Present execution route");
-        let readback = production
-            .find("let pixels = gfx.read_target()?")
-            .expect("headless exact target readback");
-        let exact_admission = production
-            .find("admit_g2_exact_pixels(")
-            .expect("product-owned G2 exact pixel admission");
-        let publish = production
-            .find("write_bmp(out, output_width, output_height, &pixels)?")
-            .expect("headless BMP publication");
-        assert!(g2_guard < selected_start && execute < readback);
-        assert!(readback < exact_admission && exact_admission < publish);
-        assert!(production.contains(
-            "g2_engine_capture: admitted_g2_capture.map(ProductionG2CaptureBinding::from)"
-        ));
-        assert!(production.contains("g2_exact_pixel_admission,"));
-        let forbidden_legacy_omission = ["interactive Present", "-stage surface"].concat();
-        assert!(!production.contains(&forbidden_legacy_omission));
-        assert!(production.contains("selected_present_m02_draws"));
+            .expect("production recording dump function");
+        let end = source[start..]
+            .find("fn reject_production_dump_debug_inputs(")
+            .expect("next headless function boundary");
+        let production = &source[start..start + end];
+        let composition = production
+            .find("ProductMapCompositionSession::start_for_headless(")
+            .expect("shared XMAP22 product compositor");
+        let ui_profile = production
+            .find("playback_ui_profile_from_paths(")
+            .expect("presentation profile load");
+        let execute = production
+            .find("composition.execute(")
+            .expect("shared XMAP22 execution");
+        assert!(production[..composition].contains("foundation_map_dimensions("));
+        assert!(
+            composition < ui_profile,
+            "foundation admission must precede UI profile loading"
+        );
+        assert!(
+            ui_profile < execute,
+            "UI profile must be available before composition execution"
+        );
+        assert!(production[composition..].contains("write_bmp("));
+        assert!(production[composition..].contains("xmap22_receipt_path(out)"));
+        assert_eq!(
+            xmap22_receipt_path(Path::new("frame.bmp")),
+            PathBuf::from("frame.bmp.xmap22.json")
+        );
+        for forbidden in [
+            "production_render",
+            "selected_present",
+            "ProductObserverUiRuntime",
+        ] {
+            assert!(
+                !production[composition..].contains(forbidden),
+                "headless product composition consumed {forbidden}"
+            );
+        }
     }
 }

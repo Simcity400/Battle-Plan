@@ -67,6 +67,7 @@ fn snap_seg(play_order: u64, range: std::ops::RangeInclusive<i64>) -> SegmentInp
     for (index, h) in hours.iter().copied().enumerate() {
         let disposition = CoverageDisposition::Snapshot {
             sha256: Sha256::hex(&snap_payload(play_order, h)),
+            date: Some(format!("1936.1.1.{h}")),
         };
         coverage.insert(h, disposition.clone());
         observations.insert(

@@ -1,4 +1,4 @@
-//! U1 alerts-strip binding + layout gates (REPLAY_PRODUCTION_PLAN §6a).
+//! U1 alerts-strip binding + layout gates.
 //!
 //! Binding gates drive the packed snapshot-flavor fixture through the real
 //! `replay_core` `ReplaySource`/`WorldTimeline` and assert that
@@ -14,9 +14,10 @@
 //!   intel = tick % 2, market_contracts = tick % 5   (identical for every tag).
 //!
 //! The layout gate parses `interface/topbar.gui` + `interface/alerts.gui`
-//! through the shared `game_ui` parser and asserts the four alert count-badge
-//! elements + the feed window/sprite resolve (skipped when the game root is
-//! absent, matching `topbar::topbar_rects_follow_engine_layout_law`).
+//! through the shared `game_ui` parser and asserts every count-badge element in
+//! [`AlertKind::ALL`] plus the feed window/sprite resolves (skipped when the
+//! the game root is absent, matching
+//! `topbar::topbar_rects_follow_engine_layout_law`).
 
 use game_ui::alerts::{
     alert_feed_binding, alerts_strip_from_frame, AlertKind, ALERTS_GUI, ALERT_BADGE_BG_SPRITE,
@@ -63,7 +64,11 @@ fn alert_counts_render_generator_values_per_pov() {
         for tag in ["GER", "ENG", "SOV"] {
             let strip = alerts_strip_from_frame(&frame, tag);
             assert!(strip.available, "{tag} extras view present @t{t}");
-            assert_eq!(strip.badges.len(), 8, "{tag} eight badges @t{t}");
+            assert_eq!(
+                strip.badges.len(),
+                AlertKind::ALL.len(),
+                "{tag} canonical badges @t{t}"
+            );
 
             for kind in AlertKind::ALL {
                 let exp = expected_count(kind, t);
@@ -107,8 +112,9 @@ fn market_contracts_probe_endpoint_is_exact() {
     assert!(badge.badge_shown);
     assert_eq!(badge.count_text.as_deref(), Some("1"));
 
-    // t=0: all four categories are zero → every badge suppressed (present/absent
-    // coverage) while the view is still available.
+    // t=0: every measured fixture category is zero and omitted fixture leaves
+    // remain absent, so every canonical badge is suppressed while the view is
+    // still available.
     let f0 = tl.frame(hours[0]).unwrap();
     let s0 = alerts_strip_from_frame(&f0, "GER");
     assert!(s0.available);
@@ -129,7 +135,7 @@ fn absent_pov_renders_fail_closed_strip() {
     let frame = tl.frame(tl.first_hour()).unwrap();
     let strip = alerts_strip_from_frame(&frame, "USA"); // not in the fixture
     assert_eq!(strip.pov_tag, "USA");
-    assert_eq!(strip.badges.len(), 8);
+    assert_eq!(strip.badges.len(), AlertKind::ALL.len());
     for badge in &strip.badges {
         assert_eq!(badge.count, None, "{:?} fail-closed None", badge.kind);
         assert!(!badge.badge_shown);
@@ -137,13 +143,180 @@ fn absent_pov_renders_fail_closed_strip() {
     }
 }
 
-/// GATE 4 — the scrolling alert feed is fail-closed absent (recording-Absent
-/// stream; data gap filed in EXTRACTION_NEEDS §A).
+/// GATE 4 — the fixture omits the D79 current-active alert snapshot, so the
+/// scrolling feed is fail-closed absent.
 #[test]
 fn alert_feed_is_fail_closed_absent() {
     let feed = alert_feed_binding();
     assert!(!feed.available);
     assert!(feed.icons.is_empty());
+}
+
+// ===========================================================================
+// FW1 status consumer — availability is owned by `topbar_alerts_status`
+// ===========================================================================
+
+struct MemorySource {
+    hours: Vec<i64>,
+    frames: std::collections::BTreeMap<i64, serde_json::Value>,
+}
+
+impl replay_core::ReplaySource for MemorySource {
+    fn game_id(&self) -> &str {
+        "alerts_status_test"
+    }
+    fn hours(&self) -> &[i64] {
+        &self.hours
+    }
+    fn warnings(&self) -> &[String] {
+        &[]
+    }
+    fn frame(
+        &self,
+        hour_index: i64,
+    ) -> Result<replay_core::RawFrame, replay_core::SourceError> {
+        let rest = self
+            .frames
+            .get(&hour_index)
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .ok_or_else(|| replay_core::SourceError::Open(format!("no frame {hour_index}")))?;
+        Ok(replay_core::RawFrame {
+            hour_index,
+            date: None,
+            save_version: None,
+            schema_version: None,
+            rest,
+        })
+    }
+}
+
+/// The general alert view never borrows availability from the broader
+/// countries domain. Independent d87 and D65 availability is covered by the
+/// source-specific tests in `alerts.rs` and below.
+#[test]
+fn general_alert_availability_is_not_borrowed_from_countries_domain() {
+    let source = MemorySource {
+        hours: vec![0, 1],
+        frames: [
+            // Countries present, ratio data present, but no alerts anywhere:
+            // topbar_extras_status is Present while topbar_alerts_status is not.
+            (
+                0,
+                serde_json::json!({
+                    "countries": { "GER": { "scalars": { "industrial_ratio": 0.5 } } }
+                }),
+            ),
+            // A measured alert datum: the alerts surface is genuinely present.
+            (
+                1,
+                serde_json::json!({
+                    "countries": { "GER": { "scalars": { "alerts": { "initiative": 2 } } } }
+                }),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let tl = replay_core::WorldTimeline::open(Box::new(source)).expect("open memory timeline");
+
+    let no_alert_datum = tl.frame(0).unwrap();
+    assert_eq!(
+        no_alert_datum.topbar_extras_status(),
+        replay_core::ViewStatus::Present,
+        "precondition: the countries-derived status still claims Present"
+    );
+    assert_ne!(
+        no_alert_datum.topbar_alerts_status(),
+        replay_core::ViewStatus::Present
+    );
+    let strip = alerts_strip_from_frame(&no_alert_datum, "GER");
+    assert!(
+        !strip.available,
+        "no alert datum anywhere => the strip must not claim availability"
+    );
+    assert!(strip
+        .badges
+        .iter()
+        .all(|badge| badge.count.is_none() && !badge.badge_shown));
+    let feed = game_ui::alerts::alert_feed_from_frame(&no_alert_datum, "GER");
+    assert!(!feed.available, "the feed is gated on the same status");
+
+    let with_alerts = tl.frame(1).unwrap();
+    assert_eq!(
+        with_alerts.topbar_alerts_status(),
+        replay_core::ViewStatus::Present
+    );
+    let strip = alerts_strip_from_frame(&with_alerts, "GER");
+    assert!(strip.available);
+    assert_eq!(strip.badge(AlertKind::Initiative).count, Some(2));
+}
+
+#[test]
+fn prototype_reward_badge_requires_complete_owner_joined_d65_rows() {
+    let malformed = MemorySource {
+        hours: vec![0],
+        frames: [(
+            0,
+            serde_json::json!({
+                "countries": {
+                    "GER": {
+                        "_r2_tag_db_id": 7,
+                        "special_project_programs": [{ "unread_prototype_rewards": 5 }]
+                    }
+                }
+            }),
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let malformed = replay_core::WorldTimeline::open(Box::new(malformed))
+        .expect("open malformed D65 timeline");
+    let malformed = malformed.frame(0).unwrap();
+    assert_eq!(
+        malformed.special_project_programs("GER"),
+        replay_core::Leaf::Unobtained,
+        "missing program identity/province is not a complete D65 row"
+    );
+    let strip = alerts_strip_from_frame(&malformed, "GER");
+    let badge = strip.badge(AlertKind::PrototypeRewards);
+    assert_eq!(badge.count, None);
+    assert!(!badge.badge_shown);
+
+    let complete = MemorySource {
+        hours: vec![0],
+        frames: [(
+            0,
+            serde_json::json!({
+                "countries": {
+                    "GER": {
+                        "_r2_tag_db_id": 7,
+                        "special_project_programs": [{
+                            "owner_tag_db_id": 7,
+                            "program_id": 11,
+                            "province": 42,
+                            "unread_prototype_rewards": 5
+                        }]
+                    }
+                }
+            }),
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let complete = replay_core::WorldTimeline::open(Box::new(complete))
+        .expect("open complete D65 timeline");
+    let complete = complete.frame(0).unwrap();
+    assert!(matches!(
+        complete.special_project_programs("GER"),
+        replay_core::Leaf::Measured(_)
+    ));
+    let strip = alerts_strip_from_frame(&complete, "GER");
+    let badge = strip.badge(AlertKind::PrototypeRewards);
+    assert!(strip.available);
+    assert_eq!(badge.count, Some(5));
+    assert!(badge.badge_shown);
+    assert_eq!(badge.count_text.as_deref(), Some("5"));
 }
 
 // ===========================================================================
@@ -157,14 +330,13 @@ mod layout_gate {
     use game_ui::compose::{resolve_element_rect, ComposeOptions, Rect};
     use game_ui::gui::LayoutSet;
     use game_ui::paradox_text::parse_file;
-    use game_ui::probe::DEFAULT_GAME_ROOT;
     use game_ui::topbar::{resolve_topbar_rects_pure, TopbarLayout, TOPBAR_WINDOW_NAME};
 
-    fn hoi4_root() -> Option<PathBuf> {
-        let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-        root.is_dir().then_some(root)
+    /// The vanilla install root. Panics rather than returning `None`: every
+    /// caller is gated on `gate_hoi4_install`, so an absent install here is a
+    /// failure, never a silent skip that libtest would report as a pass.
+    fn hoi4_root() -> PathBuf {
+        replay_test_gates::require_vanilla_game_root()
     }
 
     fn load_set(resolver: &AssetResolver, rel: &str) -> LayoutSet {
@@ -177,15 +349,16 @@ mod layout_gate {
         set
     }
 
-    /// GATE L1 — the four topbar alert count-badge elements resolve to a rect
-    /// through the shared parser + engine layout law, and the shared badge
+    /// GATE L1 — every [`AlertKind::ALL`] count-badge element resolves to a
+    /// rect through the shared parser + engine layout law, and the shared badge
     /// background sprite is cited by `topbar.gui`.
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+    )]
     fn topbar_alert_badges_resolve_via_shared_parser() {
-        let Some(root) = hoi4_root() else {
-            eprintln!("SKIP alerts layout gate: the game root missing");
-            return;
-        };
+        let root = hoi4_root();
         let resolver = AssetResolver::new(vec![root]);
         let set = load_set(&resolver, TOPBAR_GUI);
         let root_el = set
@@ -228,11 +401,12 @@ mod layout_gate {
     /// GATE L2 — the alerts feed window (`global_alerticon_window`) parses,
     /// cites its feed icon sprite, and resolves to its declared 43x38 rect.
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+    )]
     fn alerts_feed_window_resolves_via_shared_parser() {
-        let Some(root) = hoi4_root() else {
-            eprintln!("SKIP alerts feed layout gate: the game root missing");
-            return;
-        };
+        let root = hoi4_root();
         let resolver = AssetResolver::new(vec![root]);
         let set = load_set(&resolver, ALERTS_GUI);
 

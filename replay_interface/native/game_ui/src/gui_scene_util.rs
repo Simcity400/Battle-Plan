@@ -33,6 +33,25 @@ pub(crate) fn find_named_element(
         .ok_or_else(|| GameUiError::missing(format!("{source_label}: element {name} not found")))
 }
 
+fn find_last_top_level_named_element(
+    layouts: &LayoutSet,
+    source_label: &str,
+    name: &str,
+) -> Result<GuiElement> {
+    layouts
+        .documents
+        .iter()
+        .flat_map(|document| document.roots.iter())
+        .rev()
+        .find(|element| element.name.eq_ignore_ascii_case(name))
+        .cloned()
+        .ok_or_else(|| {
+            GameUiError::missing(format!(
+                "{source_label}: top-level element {name} not found"
+            ))
+        })
+}
+
 /// Load a named element from an already-resolved file path.
 pub(crate) fn load_named_element_from_file(
     path: &Path,
@@ -40,6 +59,20 @@ pub(crate) fn load_named_element_from_file(
     name: &str,
 ) -> Result<GuiElement> {
     find_named_element(&parse_layout_set(path, rel)?, rel, name)
+}
+
+/// Load the last top-level declaration with `name` from one parsed file.
+///
+/// GUI roots are entered into the engine registry in parse order, so a later
+/// same-name top-level declaration in the same file replaces the earlier one.
+/// Recursive `find_by_name(...).next()` can instead select a descendant or the
+/// shadowed first declaration.
+pub(crate) fn load_last_top_level_named_element_from_file(
+    path: &Path,
+    rel: &str,
+    name: &str,
+) -> Result<GuiElement> {
+    find_last_top_level_named_element(&parse_layout_set(path, rel)?, rel, name)
 }
 
 /// Load a named element through the resolver, caching the parsed
@@ -60,6 +93,22 @@ pub(crate) fn load_named_element(
         cache.insert(file.to_string(), layouts);
     }
     find_named_element(cache.get(file).expect("cache populated"), file, name)
+}
+
+/// Load the engine-winning last top-level declaration through the resolver,
+/// caching the parsed file for root/template pairs from the same source.
+pub(crate) fn load_last_top_level_named_element(
+    cache: &mut BTreeMap<String, LayoutSet>,
+    resolver: &AssetResolver,
+    file: &str,
+    name: &str,
+) -> Result<GuiElement> {
+    if !cache.contains_key(file) {
+        let resolved = resolver.resolve_file(file)?;
+        let layouts = parse_layout_set(&resolved.path, &resolved.rel_path)?;
+        cache.insert(file.to_string(), layouts);
+    }
+    find_last_top_level_named_element(cache.get(file).expect("cache populated"), file, name)
 }
 
 /// Promote an authored `show_position` field to the element's position.
@@ -129,4 +178,48 @@ where
         out.push(current);
     }
     out.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn top_level_loader_uses_same_file_last_parsed_winner() {
+        let root = std::env::temp_dir().join(format!(
+            "game_ui_last_top_level_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let interface = root.join("interface");
+        fs::create_dir_all(&interface).unwrap();
+        let path = interface.join("unitleaderwindow.gui");
+        fs::write(
+            &path,
+            b"guiTypes = {
+                containerWindowType = { name = \"shared\" position = { x = 1 y = 2 } }
+                containerWindowType = { name = \"SHARED\" position = { x = 9 y = 8 } }
+            }",
+        )
+        .unwrap();
+        let winner =
+            load_last_top_level_named_element_from_file(&path, "interface/test.gui", "shared")
+                .unwrap();
+        assert_eq!(winner.name, "SHARED");
+        assert_eq!(winner.position.as_ref().unwrap().x.raw, "9");
+
+        let resolver = AssetResolver::new(vec![root.clone()]);
+        let mut cache = BTreeMap::new();
+        let cached = load_last_top_level_named_element(
+            &mut cache,
+            &resolver,
+            "interface/unitleaderwindow.gui",
+            "shared",
+        )
+        .unwrap();
+        assert_eq!(cached.name, "SHARED");
+        assert_eq!(cached.position.as_ref().unwrap().x.raw, "9");
+        fs::remove_dir_all(root).ok();
+    }
 }

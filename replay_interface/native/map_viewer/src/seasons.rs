@@ -149,68 +149,25 @@ impl SeasonsTable {
     }
 }
 
-/// The eight tree-season blocks in the same file order as `map/seasons.txt`
-/// and the column order sampled by `gfx/FX/tree.shader`.
-const TREE_SEASON_FILE_ORDER: [TreeSeasonId; 8] = [
-    TreeSeasonId::Winter,
-    TreeSeasonId::Winter2,
-    TreeSeasonId::Spring,
-    TreeSeasonId::Spring2,
-    TreeSeasonId::Summer,
-    TreeSeasonId::Summer2,
-    TreeSeasonId::Autumn,
-    TreeSeasonId::Autumn2,
-];
-
-const TREE_SEASON_YEAR_DAYS: u32 = 365;
-const TREE_SEASON_MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const TREE_SEASON_CB1_LERP_OFFSET: usize = 64;
 const TREE_SEASON_CB1_COLUMN_OFFSET: usize = 68;
 const TREE_SEASON_CB1_OVERRIDE_END: usize = 72;
 
-/// Best-hypothesis tree-season CB1 law for `gfx/FX/tree.shader`.
+/// Exact a729 `gfx/FX/tree.shader` CB1 season lanes.
 ///
-/// Hypothesis: `vSeasonColumn` is the raw 0..7 tree-season block index in the
-/// file order above, not the shader's centered U coordinate. The shader itself
-/// computes `vSeasonColumn / 8 + 1 / 16`. `vSeasonLerp` is 0 inside a block. In
-/// a gap, the previous column stays active and `vSeasonLerp` linearly ramps
-/// from 0 at block N end toward 1 at block N+1 start, wrapping across year-end.
+/// then writes one 64-bit zero at byte 64 before writing `vTreeFade` at byte
+/// 72. That store is exactly `vSeasonLerp = 0.0` and
+/// `vSeasonColumn = 0.0`; it does not read replay date or `map/seasons.txt`.
+/// The same zero pair is present in every retained 80-byte tree CB1 capture.
 ///
-/// This remains a hypothesis pending broader dated capture evidence. Current
-/// constraint set from the local 2026-07-04 capture census:
-/// valid 80-byte `tree_pixel_shader_277b7b5e8964214f` tree captures all had
-/// `(vSeasonLerp=0, vSeasonColumn=0)` with varying `vTreeFade`; their PS t4 was
-/// `ColorMap` and PS t5 `ColorMapSecond` was null. Older 112-byte captures
-/// decoded as `(2048, 1024, 8)` at these offsets while binding unrelated t4/t5
-/// resources, so they are reported as observed tuples but are not constraints
-/// for this verified 80-byte `tree.shader` CB layout.
-pub fn tree_season_cb_values(seasons: &SeasonsTable, month: u32, day: u32) -> Option<(f32, f32)> {
+/// The parsed seasons table remains production input for the other seasonal
+/// map laws, but it is deliberately ignored here. A date-derived tree value
+/// would invent behavior absent from hoi4.exe 1.19.2.0.a729.
+pub fn tree_season_cb_values(_seasons: &SeasonsTable, month: u32, day: u32) -> Option<(f32, f32)> {
     let month = u8::try_from(month).ok()?;
     let day = u8::try_from(day).ok()?;
-    let date = SeasonDate::new(month, day).ok()?;
-    let date_day = tree_date_to_day_of_year(date)?;
-    let ranges = tree_season_ranges_by_file_order(seasons)?;
-
-    for (index, range) in ranges.iter().enumerate() {
-        if tree_range_contains_day(*range, date_day) {
-            return Some((0.0, index as f32));
-        }
-    }
-
-    for index in 0..ranges.len() {
-        let current = ranges[index];
-        let next = ranges[(index + 1) % ranges.len()];
-        let total = tree_forward_days(current.end, next.start);
-        if total <= 1 {
-            continue;
-        }
-        let elapsed = tree_forward_days(current.end, date_day);
-        if (1..total).contains(&elapsed) {
-            return Some((elapsed as f32 / total as f32, index as f32));
-        }
-    }
-
-    None
+    SeasonDate::new(month, day).ok()?;
+    Some((0.0, 0.0))
 }
 
 /// Apply an already-computed tree-season override to captured tree CB1 bytes.
@@ -230,72 +187,6 @@ pub fn apply_tree_season_cb_override(cb1_bytes: &mut [u8], values: Option<(f32, 
         .copy_from_slice(&lerp.to_le_bytes());
     cb1_bytes[TREE_SEASON_CB1_COLUMN_OFFSET..TREE_SEASON_CB1_OVERRIDE_END]
         .copy_from_slice(&column.to_le_bytes());
-    true
-}
-
-#[derive(Clone, Copy)]
-struct TreeSeasonRangeDays {
-    start: u32,
-    end: u32,
-}
-
-fn tree_season_ranges_by_file_order(seasons: &SeasonsTable) -> Option<[TreeSeasonRangeDays; 8]> {
-    let ranges = TREE_SEASON_FILE_ORDER.map(|id| {
-        let range = seasons.tree_range(id);
-        Some(TreeSeasonRangeDays {
-            start: tree_date_to_day_of_year(range.start)?,
-            end: tree_date_to_day_of_year(range.end)?,
-        })
-    });
-    let ranges: [TreeSeasonRangeDays; 8] = [
-        ranges[0]?, ranges[1]?, ranges[2]?, ranges[3]?, ranges[4]?, ranges[5]?, ranges[6]?,
-        ranges[7]?,
-    ];
-    tree_season_ranges_are_non_overlapping(&ranges).then_some(ranges)
-}
-
-fn tree_date_to_day_of_year(date: SeasonDate) -> Option<u32> {
-    let month_index = usize::from(date.month.checked_sub(1)?);
-    let month_days = *TREE_SEASON_MONTH_DAYS.get(month_index)?;
-    let day = u32::from(date.day);
-    if day == 0 || day > month_days {
-        return None;
-    }
-    Some(TREE_SEASON_MONTH_DAYS[..month_index].iter().sum::<u32>() + day - 1)
-}
-
-fn tree_range_contains_day(range: TreeSeasonRangeDays, day: u32) -> bool {
-    if range.start <= range.end {
-        range.start <= day && day <= range.end
-    } else {
-        day >= range.start || day <= range.end
-    }
-}
-
-fn tree_forward_days(from: u32, to: u32) -> u32 {
-    if to >= from {
-        to - from
-    } else {
-        TREE_SEASON_YEAR_DAYS - from + to
-    }
-}
-
-fn tree_season_ranges_are_non_overlapping(ranges: &[TreeSeasonRangeDays; 8]) -> bool {
-    let mut covered = [false; TREE_SEASON_YEAR_DAYS as usize];
-    for range in ranges {
-        let mut day = range.start;
-        loop {
-            let slot = &mut covered[day as usize];
-            if *slot {
-                return false;
-            }
-            *slot = true;
-            if day == range.end {
-                break;
-            }
-            day = (day + 1) % TREE_SEASON_YEAR_DAYS;
-        }
-    }
     true
 }
 
@@ -731,52 +622,22 @@ tree_autumn2 = {
     }
 
     #[test]
-    fn tree_season_cb_law_maps_inside_each_block_to_file_order_columns() {
+    fn tree_season_cb_law_is_exact_a729_zero_pair_for_every_valid_date() {
         let table = seasons_table_from_source(VANILLA_SEASONS_TXT).expect("parse vanilla seasons");
-        for (month, day, expected_column) in [
-            (11, 20, 0.0),
-            (1, 1, 1.0),
-            (2, 25, 2.0),
-            (4, 1, 3.0),
-            (5, 25, 4.0),
-            (7, 1, 5.0),
-            (10, 5, 6.0),
-            (10, 30, 7.0),
-        ] {
-            let (lerp, column) =
-                tree_season_cb_values(&table, month, day).expect("tree season cb values");
-            assert_eq!(lerp, 0.0, "{month}.{day}");
-            assert_eq!(column, expected_column, "{month}.{day}");
+        for (month, day) in [(1, 1), (4, 1), (7, 1), (10, 30), (12, 31)] {
+            assert_eq!(
+                tree_season_cb_values(&table, month, day),
+                Some((0.0, 0.0)),
+                "{month}.{day}"
+            );
         }
     }
 
     #[test]
-    fn tree_season_cb_law_ramps_across_winter_gap() {
+    fn tree_season_cb_law_rejects_only_invalid_replay_dates() {
         let table = seasons_table_from_source(VANILLA_SEASONS_TXT).expect("parse vanilla seasons");
-        let (lerp, column) =
-            tree_season_cb_values(&table, 12, 10).expect("winter gap tree season cb values");
-
-        assert_eq!(column, 0.0);
-        assert!((lerp - 0.5).abs() < 0.05, "{lerp}");
-    }
-
-    #[test]
-    fn tree_season_cb_law_ramps_across_year_wrap_gap() {
-        let table = seasons_table_from_source(VANILLA_SEASONS_TXT).expect("parse vanilla seasons");
-        let (lerp, column) =
-            tree_season_cb_values(&table, 11, 8).expect("year wrap tree season cb values");
-
-        assert_eq!(column, 7.0);
-        assert!((lerp - 0.5).abs() < f32::EPSILON, "{lerp}");
-    }
-
-    #[test]
-    fn tree_season_cb_law_fails_closed_on_invalid_tree_table() {
-        let mut table =
-            seasons_table_from_source(VANILLA_SEASONS_TXT).expect("parse vanilla seasons");
-        table.tree_winter.start = SeasonDate { month: 2, day: 31 };
-
-        assert_eq!(tree_season_cb_values(&table, 1, 1), None);
+        assert_eq!(tree_season_cb_values(&table, 2, 32), None);
+        assert_eq!(tree_season_cb_values(&table, 13, 1), None);
     }
 
     #[test]

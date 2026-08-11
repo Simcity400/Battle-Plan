@@ -1,7 +1,8 @@
 use game_ui::compose::Rect;
 use game_ui::scrollbar_law::{
-    extended_displayed_value, extended_thumb_pixel, legacy_thumb_rect, ExtendedScrollbarCarrier,
-    LegacyScrollbarCarrier, ScrollbarAxis, ScrollbarCarrierAuthority,
+    extended_displayed_value, extended_thumb_pixel, extended_value_for_pixel, legacy_thumb_rect,
+    ExtendedScrollbarCarrier, ExtendedScrollbarInverseCarrier, LegacyScrollbarCarrier,
+    ScrollbarAxis, ScrollbarCarrierAuthority,
 };
 
 const A729: ScrollbarCarrierAuthority = ScrollbarCarrierAuthority::ExactA729Runtime;
@@ -117,6 +118,67 @@ fn smooth_update_uses_integer_order_and_exact_snap_boundary() {
     assert_eq!(
         extended_displayed_value(0, 100_000, 25_000, false).unwrap(),
         100_000
+    );
+}
+
+#[test]
+fn extended_inverse_is_bounded_and_round_trips_exact_thumb_pixels() {
+    let carrier = ExtendedScrollbarCarrier {
+        authority: A729,
+        axis: ScrollbarAxis::Vertical,
+        min_fixed: 0,
+        max_fixed: 9_000_000,
+        value_fixed: 4_500_000,
+        base_pixel: (7, 100),
+        travel_pixels: (0, 91),
+    };
+    let pixel = extended_thumb_pixel(carrier).unwrap();
+    let value = extended_value_for_pixel(ExtendedScrollbarInverseCarrier {
+        authority: A729,
+        axis: ScrollbarAxis::Vertical,
+        min_fixed: carrier.min_fixed,
+        max_fixed: carrier.max_fixed,
+        base_pixel: carrier.base_pixel,
+        travel_pixels: carrier.travel_pixels,
+        desired_pixel: pixel,
+    })
+    .expect("invert exact mapped pixel");
+    assert_eq!(
+        extended_thumb_pixel(ExtendedScrollbarCarrier {
+            value_fixed: value,
+            ..carrier
+        })
+        .unwrap(),
+        pixel
+    );
+    assert_eq!(
+        extended_value_for_pixel(ExtendedScrollbarInverseCarrier {
+            desired_pixel: (7, -10_000),
+            ..ExtendedScrollbarInverseCarrier {
+                authority: A729,
+                axis: ScrollbarAxis::Vertical,
+                min_fixed: carrier.min_fixed,
+                max_fixed: carrier.max_fixed,
+                base_pixel: carrier.base_pixel,
+                travel_pixels: carrier.travel_pixels,
+                desired_pixel: pixel,
+            }
+        })
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        extended_value_for_pixel(ExtendedScrollbarInverseCarrier {
+            authority: A729,
+            axis: ScrollbarAxis::Vertical,
+            min_fixed: 0,
+            max_fixed: 100_000,
+            base_pixel: (0, 20),
+            travel_pixels: (0, -4),
+            desired_pixel: (0, 16),
+        })
+        .expect("invert exact signed short-track travel"),
+        87_500
     );
 }
 

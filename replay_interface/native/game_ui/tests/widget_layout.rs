@@ -1,18 +1,16 @@
 use game_ui::compose::{measure_to_pixels_for_parent, ComposeOptions, Orientation, Rect};
 use game_ui::gui::{GuiElement, LayoutSet};
 use game_ui::widget_layout::{
-    gridbox_layout, listbox_layout, scrollbar_layout, GridBoxLayout, ListBoxLayout, ListFlow,
-    ScrollbarAxis, ScrollbarFamily,
+    gridbox_layout, listbox_layout, scrollbar_layout, GridBoxFormat, GridBoxLayout, ListBoxLayout,
+    ListFlow, ScrollbarAxis, ScrollbarFamily,
 };
 use std::path::{Path, PathBuf};
 
-const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
-fn game_root() -> Option<PathBuf> {
-    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-    root.is_dir().then_some(root)
+/// The vanilla install root. Panics rather than returning `None`: every
+/// caller is gated on `gate_hoi4_install`, so an absent install here is a
+/// failure, never a silent skip that libtest would report as a pass.
+fn game_root() -> PathBuf {
+    replay_test_gates::require_vanilla_game_root()
 }
 
 fn parse_layout(root: &Path, rel: &str) -> LayoutSet {
@@ -32,11 +30,12 @@ fn find<'a>(layouts: &'a LayoutSet, name: &str, kind: &str) -> &'a GuiElement {
 }
 
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn backend_listbox_declares_vertical_rows_from_file_template_size() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP backend_listbox_declares_vertical_rows_from_file_template_size: the game root missing");
-        return;
-    };
+    let root = game_root();
     let layouts = parse_layout(&root, "interface/backend.gui");
     let kings = find(&layouts, "kings", "listboxType");
     let row_template = find(&layouts, "king_entry", "windowType");
@@ -68,11 +67,12 @@ fn backend_listbox_declares_vertical_rows_from_file_template_size() {
 }
 
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn achievements_gridbox_slots_follow_declared_slot_size() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP achievements_gridbox_slots_follow_declared_slot_size: the game root missing");
-        return;
-    };
+    let root = game_root();
     let layouts = parse_layout(&root, "interface/achievements.gui");
     let list = find(&layouts, "list", "gridBoxType");
     let options = ComposeOptions::new(760, 470).with_root_size(760, 470);
@@ -125,10 +125,11 @@ fn listbox_row_index_overflow_is_a_typed_refusal() {
 fn gridbox_slot_index_overflow_is_a_typed_refusal() {
     let layout = GridBoxLayout {
         rect: Rect::new(0, 0, 100, 100),
-        format: Orientation::UpperLeft,
+        format: GridBoxFormat::UpperLeft,
         slot_size: (10, 20),
         max_slots_x: Some(3),
         max_slots_y: None,
+        add_horizontal: Some(false),
     };
     // Unbounded rows (max_slots_y = None): row does not fit in i32.
     let err = layout
@@ -146,11 +147,110 @@ fn gridbox_slot_index_overflow_is_a_typed_refusal() {
 }
 
 #[test]
-fn scrollbar_declared_parts_are_resolved_but_thumb_travel_fails_closed() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP scrollbar_declared_parts_are_resolved_but_thumb_travel_fails_closed: the game root missing");
-        return;
+fn production_variable_height_grid_accumulates_resolved_child_heights() {
+    let layout = GridBoxLayout {
+        rect: Rect::new(7, 11, 83, 300),
+        format: GridBoxFormat::UpperLeft,
+        slot_size: (83, 1),
+        max_slots_x: Some(1),
+        max_slots_y: None,
+        add_horizontal: Some(false),
     };
+    assert_eq!(
+        layout
+            .production_variable_height_slot_rects(&[(71, 17), (73, 29), (79, 31)])
+            .expect("exact-a729 production path"),
+        [
+            Rect::new(7, 11, 71, 17),
+            Rect::new(7, 28, 73, 29),
+            Rect::new(7, 57, 79, 31),
+        ]
+    );
+}
+
+#[test]
+fn production_variable_height_grid_uses_modded_authored_grid_values() {
+    let layout = GridBoxLayout {
+        rect: Rect::new(7, 11, 200, 100),
+        format: GridBoxFormat::UpperLeft,
+        slot_size: (10, 3),
+        max_slots_x: Some(4),
+        max_slots_y: None,
+        add_horizontal: Some(true),
+    };
+    assert_eq!(
+        layout
+            .production_variable_height_slot_rects(&[(71, 17), (73, 29)])
+            .expect("direct production coordinates use authored grid values"),
+        [Rect::new(7, 11, 71, 17), Rect::new(7, 62, 73, 29)]
+    );
+}
+
+#[test]
+fn production_variable_height_grid_follows_all_engine_format_cases() {
+    let mut layout = GridBoxLayout {
+        rect: Rect::new(7, 11, 200, 100),
+        format: GridBoxFormat::Up,
+        slot_size: (10, 3),
+        max_slots_x: None,
+        max_slots_y: None,
+        add_horizontal: None,
+    };
+    let cases = [
+        (GridBoxFormat::Up, (102, 62)),
+        (GridBoxFormat::Down, (102, 57)),
+        (GridBoxFormat::Left, (177, 59)),
+        (GridBoxFormat::Right, (27, 59)),
+        (GridBoxFormat::UpperLeft, (7, 62)),
+        (GridBoxFormat::LowerLeft, (7, 57)),
+        (GridBoxFormat::UpperRight, (197, 62)),
+    ];
+    for (format, expected_origin) in cases {
+        layout.format = format;
+        let rects = layout
+            .production_variable_height_slot_rects(&[(71, 17), (73, 29)])
+            .expect("exact engine format case");
+        assert_eq!(
+            (rects[1].x(), rects[1].y()),
+            expected_origin,
+            "{format:?}"
+        );
+        assert_eq!((rects[1].w(), rects[1].h()), (73, 29), "{format:?}");
+    }
+}
+
+#[test]
+fn gridbox_format_parser_matches_the_engine_table_and_default() {
+    assert_eq!(GridBoxFormat::parse(Some("UP")), GridBoxFormat::Up);
+    assert_eq!(GridBoxFormat::parse(Some("DOWN")), GridBoxFormat::Down);
+    assert_eq!(GridBoxFormat::parse(Some("LEFT")), GridBoxFormat::Left);
+    assert_eq!(GridBoxFormat::parse(Some("RIGHT")), GridBoxFormat::Right);
+    assert_eq!(
+        GridBoxFormat::parse(Some("UPPER_LEFT")),
+        GridBoxFormat::UpperLeft
+    );
+    assert_eq!(
+        GridBoxFormat::parse(Some("LOWER_LEFT")),
+        GridBoxFormat::LowerLeft
+    );
+    assert_eq!(
+        GridBoxFormat::parse(Some("UPPER_RIGHT")),
+        GridBoxFormat::UpperRight
+    );
+    assert_eq!(GridBoxFormat::parse(None), GridBoxFormat::Up);
+    assert_eq!(
+        GridBoxFormat::parse(Some("unsupported_mod_value")),
+        GridBoxFormat::Up
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
+fn scrollbar_declared_parts_are_resolved_but_thumb_travel_fails_closed() {
+    let root = game_root();
     let layouts = parse_layout(&root, "interface/airwingreorganization.gui");
     let split = find(&layouts, "split_slider", "scrollbarType");
     let options = ComposeOptions::new(1024, 768);

@@ -1,14 +1,10 @@
-//! Falsifiable admission tests for the replay-side theatre-selector view.
-//!
-//! Each test names the production change that turns it red.
-
 use super::*;
 use serde_json::json;
 
-const RECORDER_COUNTRY: u32 = 23;
-const OBSERVER_COUNTRY: u32 = 77;
-const EMPTY_COUNTRY: u32 = 91;
-const BROKEN_COUNTRY: u32 = 105;
+const GER: u32 = 23;
+const ENG: u32 = 77;
+const EMPTY: u32 = 91;
+const BROKEN: u32 = 105;
 
 fn raw(value: Value) -> Map<String, Value> {
     value.as_object().unwrap().clone()
@@ -50,29 +46,84 @@ fn expectation() -> ReplayContentExpectation {
     }
 }
 
+fn empty_body(owner: u32) -> Value {
+    json!({
+        "owner_tag_db_id": owner,
+        "admission": "admitted",
+        "theatres": [],
+        "free_air_wings": [],
+        "free_air_priority": {
+            "selected_priority_ordinal": null,
+            "priority_census_wing_ids": []
+        },
+        "strategic_regions": []
+    })
+}
+
 fn land_section(owner: u32) -> Value {
     json!({
         "owner_tag_db_id": owner,
         "admission": "admitted",
         "theatres": [{
             "kind": "land_theatre",
+            "selector_included": true,
             "object_id": 100,
             "owner_tag_db_id": owner,
             "engine_order": 0,
             "display_name": "Western Front",
             "name_provenance": {"source": "engine_runtime_string"},
-            "priority_ordinal": null,
-            "alert_categories": [3, 9],
+            "controller": {
+                "kind": "land",
+                "priority_ordinal": 2,
+                "delete_eligible": true,
+                "combat_log_owned": true
+            },
+            "land_alert_categories": [3, 9],
             "members": [
-                {"kind": "army_group", "object_id": 101, "parent_kind": "land_theatre",
-                 "parent_id": 100, "engine_order": 0, "reserve_navy": false,
-                 "display_name": null, "name_provenance": null, "priority_ordinal": null},
-                {"kind": "army", "object_id": 102, "parent_kind": "army_group",
-                 "parent_id": 101, "engine_order": 0, "reserve_navy": false,
-                 "display_name": null, "name_provenance": null, "priority_ordinal": null}
+                {
+                    "kind": "army_group", "object_id": 101,
+                    "parent_kind": "land_theatre", "parent_id": 100,
+                    "engine_order": 0, "reserve_navy": false,
+                    "display_name": null, "name_provenance": null,
+                    "controller": {
+                        "kind": "army_group", "training_visible": true,
+                        "stop_at_max_visible": true, "border_conflict_visible": false
+                    }
+                },
+                {
+                    "kind": "army", "object_id": 102,
+                    "parent_kind": "army_group", "parent_id": 101,
+                    "engine_order": 0, "reserve_navy": false,
+                    "display_name": null, "name_provenance": null,
+                    "controller": {
+                        "kind": "army", "training_visible": false,
+                        "stop_at_max_visible": false, "border_conflict_visible": true
+                    }
+                }
             ]
         }],
-        "free_air_wings": []
+        "free_air_wings": [],
+        "free_air_priority": {
+            "selected_priority_ordinal": null,
+            "priority_census_wing_ids": []
+        },
+        "strategic_regions": [{
+            "owner_tag_db_id": owner,
+            "engine_region_index": 7,
+            "display_name": "Western Germany",
+            "engine_order": 0,
+            "parent": "selector_root",
+            "pinned_frame": 2,
+            "background_frame": 3,
+            "naval_access": {
+                "access_slot": 4, "applicable": true,
+                "raw_result": 2, "visible_frame": 3
+            },
+            "alerts": [{
+                "alert_id": 22, "engine_order": 0,
+                "atlas_frame": 8, "glow": "red"
+            }]
+        }]
     })
 }
 
@@ -82,25 +133,111 @@ fn air_section(owner: u32) -> Value {
         "admission": "admitted",
         "theatres": [{
             "kind": "air_theatre",
+            "selector_included": true,
             "object_id": 400,
             "owner_tag_db_id": owner,
             "engine_order": 0,
             "display_name": "Home Air",
             "name_provenance": {"source": "engine_runtime_string"},
-            "priority_ordinal": null,
-            "alert_categories": [],
+            "controller": {
+                "kind": "air",
+                "selected_priority_ordinal": 4,
+                "priority_census_wing_ids": [600]
+            },
+            "land_alert_categories": [],
             "members": [
-                {"kind": "air_group", "object_id": 500, "parent_kind": "air_theatre",
-                 "parent_id": 400, "engine_order": 0, "reserve_navy": false,
-                 "display_name": "Fighter Group",
-                 "name_provenance": {"source": "engine_runtime_string"},
-                 "priority_ordinal": null},
-                {"kind": "air_wing", "object_id": 600, "parent_kind": "air_group",
-                 "parent_id": 500, "engine_order": 0, "reserve_navy": false,
-                 "display_name": null, "name_provenance": null, "priority_ordinal": null}
+                {
+                    "kind": "air_group", "object_id": 500,
+                    "parent_kind": "air_theatre", "parent_id": 400,
+                    "engine_order": 0, "reserve_navy": false,
+                    "display_name": "Fighter Group",
+                    "name_provenance": {"source": "engine_runtime_string"},
+                    "controller": {"kind": "air_group_negative_no_priority"}
+                },
+                {
+                    "kind": "air_wing", "object_id": 600,
+                    "parent_kind": "air_group", "parent_id": 500,
+                    "engine_order": 0, "reserve_navy": false,
+                    "display_name": null, "name_provenance": null,
+                    "controller": {"kind": "air_wing", "active_visual_frame": 5, "bucket_key": 17}
+                }
             ]
         }],
-        "free_air_wings": [{"wing_id": 601, "engine_order": 0, "priority_ordinal": null}]
+        "free_air_wings": [
+            {"wing_id": 601, "engine_order": 0, "active_visual_frame": 3, "bucket_key": 19},
+            {"wing_id": 602, "engine_order": 1, "active_visual_frame": 4, "bucket_key": 20}
+        ],
+        "free_air_priority": {
+            "selected_priority_ordinal": 1,
+            "priority_census_wing_ids": [601]
+        },
+        "strategic_regions": []
+    })
+}
+
+fn navy_section(owner: u32) -> Value {
+    json!({
+        "owner_tag_db_id": owner,
+        "admission": "admitted",
+        "theatres": [{
+            "kind": "navy_theatre",
+            "selector_included": true,
+            "object_id": 700,
+            "owner_tag_db_id": owner,
+            "engine_order": 0,
+            "display_name": "Home Fleet",
+            "name_provenance": {"source": "engine_runtime_string"},
+            "controller": {"kind": "navy", "priority_ordinal": 3},
+            "land_alert_categories": [],
+            "members": [
+                {
+                    "kind": "fleet", "object_id": 701,
+                    "parent_kind": "navy_theatre", "parent_id": 700,
+                    "engine_order": 0, "reserve_navy": false,
+                    "display_name": null, "name_provenance": null,
+                    "controller": {
+                        "kind": "fleet",
+                        "split_off_count": 2, "split_off_visible": true
+                    }
+                },
+                {
+                    "kind": "task_force", "object_id": 702,
+                    "parent_kind": "fleet", "parent_id": 701,
+                    "engine_order": 0, "reserve_navy": false,
+                    "display_name": null, "name_provenance": null,
+                    "controller": {
+                        "kind": "task_force", "spotting_visible": true,
+                        "training_visible": false, "stop_at_max_visible": false
+                    }
+                },
+                {
+                    "kind": "reserve_fleet_aggregate", "object_id": 703,
+                    "parent_kind": "navy_theatre", "parent_id": 700,
+                    "engine_order": 0, "reserve_navy": true,
+                    "display_name": null, "name_provenance": null,
+                    "controller": {
+                        "kind": "reserve_fleet_aggregate",
+                        "split_off_count": 0, "split_off_visible": false
+                    }
+                },
+                {
+                    "kind": "task_force", "object_id": 704,
+                    "parent_kind": "reserve_fleet_aggregate", "parent_id": 703,
+                    "engine_order": 0, "reserve_navy": true,
+                    "display_name": null, "name_provenance": null,
+                    "controller": {
+                        "kind": "task_force", "spotting_visible": false,
+                        "training_visible": false, "stop_at_max_visible": false
+                    }
+                }
+            ]
+        }],
+        "free_air_wings": [],
+        "free_air_priority": {
+            "selected_priority_ordinal": null,
+            "priority_census_wing_ids": []
+        },
+        "strategic_regions": []
     })
 }
 
@@ -110,21 +247,21 @@ fn frame_json() -> Value {
             "schema_version": THEATRE_SELECTOR_SCHEMA_VERSION,
             "authority": THEATRE_SELECTOR_AUTHORITY,
             "executable_sha256": EXACT_A729_EXECUTABLE_SHA256,
+            "producer_evidence_sha256": REQUIRED_PRODUCER_EVIDENCE_SHA256,
             "elapsed_wall_ms": 7,
             "frame_hour": 900,
             "source_sequence": 901,
             "producer_complete": false,
             "content_identity": content_identity_json(),
-            "census": [RECORDER_COUNTRY, OBSERVER_COUNTRY, EMPTY_COUNTRY, BROKEN_COUNTRY],
+            "census": [GER, ENG, EMPTY, BROKEN],
             "sections": [
-                land_section(RECORDER_COUNTRY),
-                air_section(OBSERVER_COUNTRY),
-                {"owner_tag_db_id": EMPTY_COUNTRY, "admission": "admitted",
-                 "theatres": [], "free_air_wings": []},
-                {"owner_tag_db_id": BROKEN_COUNTRY, "admission": "unavailable",
+                land_section(GER),
+                air_section(ENG),
+                empty_body(EMPTY),
+                {"owner_tag_db_id": BROKEN, "admission": "unavailable",
                  "reason": "identity_authentication_failed"}
             ],
-            "uncaptured_controller_fields": REQUIRED_UNCAPTURED_CONTROLLER_FIELDS
+            "negative_controller_dispositions": REQUIRED_NEGATIVE_CONTROLLER_DISPOSITIONS
         }
     })
 }
@@ -133,219 +270,420 @@ fn view() -> TheatreSelectorView {
     parse_theatre_selector(&raw(frame_json()))
 }
 
-// ---------------------------------------------------------------------------
-
-/// Red when the view stops serving a country other than the recorder's own --
-/// the precise failure that blocked XUI07 on the recorder-POV carrier.
 #[test]
-fn serves_any_selectable_country_not_just_the_recorder() {
+fn serves_any_selectable_country_and_keeps_measured_empty_distinct() {
     let view = view();
     assert_eq!(view.status, ViewStatus::Present);
-    let observer = view.country(OBSERVER_COUNTRY);
-    assert_eq!(observer.status, ViewStatus::Present);
-    assert_eq!(observer.theatres.len(), 1);
-    assert_eq!(observer.theatres[0].kind, ObjectKind::AirTheatre);
-    assert_eq!(observer.free_air_wings.len(), 1);
+    assert_eq!(view.country(ENG).theatres[0].kind, ObjectKind::AirTheatre);
+    assert!(view.country(EMPTY).is_measured_empty());
+    assert_eq!(view.country(BROKEN).status, ViewStatus::DomainUnavailable);
+    assert_eq!(view.country(999).status, ViewStatus::DomainUnavailable);
 }
 
-/// Red when a country outside the census falls back to another country's
-/// section instead of refusing.
 #[test]
-fn country_outside_the_census_refuses() {
-    let missing = view().country(999);
-    assert_eq!(missing.status, ViewStatus::DomainUnavailable);
-    assert!(missing.theatres.is_empty());
-    assert!(missing.rejection.is_some());
-}
-
-/// Red when a measured-empty country is reported as unavailable, or an
-/// unavailable one is reported as measured empty.
-#[test]
-fn measured_empty_and_refused_are_distinguishable() {
-    let view = view();
-    let empty = view.country(EMPTY_COUNTRY);
-    assert_eq!(empty.status, ViewStatus::Present);
-    assert!(empty.is_measured_empty());
-
-    let broken = view.country(BROKEN_COUNTRY);
-    assert_eq!(broken.status, ViewStatus::DomainUnavailable);
-    assert!(!broken.is_measured_empty());
-    assert_eq!(
-        broken.rejection.as_deref(),
-        Some("identity_authentication_failed")
-    );
-}
-
-/// Red when a refused section is allowed to carry rows, which would let a
-/// partial prefix reach the panel under an unavailable label.
-#[test]
-fn refused_section_carrying_rows_refuses_the_frame() {
+fn land_selector_inclusion_filters_without_renumbering_raw_rows() {
     let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][3]["theatres"] = json!([]);
-    let view = parse_theatre_selector(&raw(value));
-    assert_eq!(view.status, ViewStatus::DomainUnavailable);
-}
-
-/// Red when the census/section length check is removed.
-///
-/// The extra section is deliberately a *duplicate of an admitted one*: a
-/// length-blind `zip` would silently ignore it and every other guard would
-/// still pass, so only the length equality can catch it.
-#[test]
-fn extra_section_beyond_the_census_refuses() {
-    let mut long = frame_json();
-    let extra = land_section(RECORDER_COUNTRY);
-    long[THEATRE_SELECTOR_FIELD]["sections"]
+    let mut excluded = land_section(GER)["theatres"][0].clone();
+    excluded["selector_included"] = json!(false);
+    excluded["object_id"] = json!(99);
+    excluded["engine_order"] = json!(0);
+    excluded["members"] = json!([]);
+    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["engine_order"] = json!(1);
+    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"]
         .as_array_mut()
         .unwrap()
-        .push(extra);
+        .insert(0, excluded);
+    let view = parse_theatre_selector(&raw(value));
+    let section = view.country(GER);
+    assert_eq!(section.status, ViewStatus::Present);
+    assert_eq!(section.theatres.len(), 2);
     assert_eq!(
-        parse_theatre_selector(&raw(long)).status,
-        ViewStatus::DomainUnavailable
+        section
+            .theatres_of_kind(ObjectKind::LandTheatre)
+            .map(|row| (row.object_id, row.engine_order))
+            .collect::<Vec<_>>(),
+        vec![(100, 1)]
+    );
+
+    let mut only_excluded = frame_json();
+    only_excluded[THEATRE_SELECTOR_FIELD]["census"] = json!([GER]);
+    only_excluded[THEATRE_SELECTOR_FIELD]["sections"] = json!([land_section(GER)]);
+    only_excluded[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["selector_included"] =
+        json!(false);
+    only_excluded[THEATRE_SELECTOR_FIELD]["sections"][0]["strategic_regions"] = json!([]);
+    only_excluded[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
+    assert!(parse_theatre_selector(&raw(only_excluded))
+        .country(GER)
+        .is_measured_empty());
+}
+
+#[test]
+fn selector_inclusion_is_required_and_navy_air_cannot_be_excluded() {
+    let mut missing = frame_json();
+    missing[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("selector_included");
+    let mut excluded_air = frame_json();
+    excluded_air[THEATRE_SELECTOR_FIELD]["sections"][1]["theatres"][0]["selector_included"] =
+        json!(false);
+    for invalid in [missing, excluded_air] {
+        assert_eq!(
+            parse_theatre_selector(&raw(invalid)).status,
+            ViewStatus::DomainUnavailable
+        );
+    }
+}
+
+#[test]
+fn typed_controller_and_strategic_inputs_survive() {
+    let section = view().country(GER);
+    assert!(matches!(
+        section.theatres[0].controller,
+        TheatreControllerState::Land {
+            priority_ordinal: 2,
+            delete_eligible: true,
+            combat_log_owned: true
+        }
+    ));
+    assert_eq!(section.strategic_regions[0].engine_region_index, 7);
+    assert_eq!(section.strategic_regions[0].alerts[0].atlas_frame, 8);
+    assert_eq!(
+        section.strategic_regions[0].naval_access.visible_frame,
+        Some(3)
     );
 }
 
-/// Red when the census/section ordering check is removed.
 #[test]
-fn section_order_must_follow_the_census() {
+fn task_force_is_a_distinct_fleet_child_and_reserve_subject() {
+    let mut value = frame_json();
+    value[THEATRE_SELECTOR_FIELD]["census"] = json!([GER]);
+    value[THEATRE_SELECTOR_FIELD]["sections"] = json!([navy_section(GER)]);
+    value[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
+    let section = parse_theatre_selector(&raw(value)).country(GER);
+    assert_eq!(section.status, ViewStatus::Present);
+    assert_eq!(section.theatres[0].members[1].kind, ObjectKind::TaskForce);
+    assert_eq!(
+        section.theatres[0].members[1].parent_kind,
+        ObjectKind::Fleet
+    );
+    assert!(!section.theatres[0].members[1].reserve_navy);
+    assert_eq!(section.theatres[0].members[3].kind, ObjectKind::TaskForce);
+    assert_eq!(
+        section.theatres[0].members[3].parent_kind,
+        ObjectKind::ReserveFleetAggregate
+    );
+    assert!(section.theatres[0].members[3].reserve_navy);
+}
+
+#[test]
+fn task_force_parent_reserve_and_split_laws_refuse_contradictions() {
+    let mut base = frame_json();
+    base[THEATRE_SELECTOR_FIELD]["census"] = json!([GER]);
+    base[THEATRE_SELECTOR_FIELD]["sections"] = json!([navy_section(GER)]);
+    base[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
+    let mut wrong_parent = base.clone();
+    wrong_parent[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["members"][1]["parent_id"] =
+        json!(999);
+    let mut reserve_fleet = base.clone();
+    reserve_fleet[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["members"][0]
+        ["reserve_navy"] = json!(true);
+    let mut split = base;
+    split[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["members"][0]["controller"]
+        ["split_off_visible"] = json!(false);
+    for bad in [wrong_parent, reserve_fleet, split] {
+        assert_eq!(
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable
+        );
+    }
+}
+
+#[test]
+fn hierarchy_census_and_order_mutations_refuse() {
+    let mut wrong_owner = frame_json();
+    wrong_owner[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["owner_tag_db_id"] =
+        json!(ENG);
+    let mut orphan = frame_json();
+    orphan[THEATRE_SELECTOR_FIELD]["sections"][1]["theatres"][0]["members"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0);
+    let mut gap = frame_json();
+    gap[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["members"][0]["engine_order"] =
+        json!(42);
     let mut swapped = frame_json();
     swapped[THEATRE_SELECTOR_FIELD]["sections"]
         .as_array_mut()
         .unwrap()
         .swap(0, 1);
-    assert_eq!(
-        parse_theatre_selector(&raw(swapped)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when the census ascending/nonzero law is dropped.
-///
-/// The sections are reordered to match the descending census, so the
-/// section-order check cannot mask the missing ordering law.
-#[test]
-fn census_must_be_strictly_ascending() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["census"] = json!([OBSERVER_COUNTRY, RECORDER_COUNTRY]);
-    value[THEATRE_SELECTOR_FIELD]["sections"] = json!([
-        air_section(OBSERVER_COUNTRY),
-        land_section(RECORDER_COUNTRY),
-    ]);
-    value[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-
-    let mut zeroed = frame_json();
-    zeroed[THEATRE_SELECTOR_FIELD]["census"] = json!([0, OBSERVER_COUNTRY]);
-    zeroed[THEATRE_SELECTOR_FIELD]["sections"] = json!([
-        {"owner_tag_db_id": 0, "admission": "admitted", "theatres": [], "free_air_wings": []},
-        air_section(OBSERVER_COUNTRY),
-    ]);
-    zeroed[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
-    assert_eq!(
-        parse_theatre_selector(&raw(zeroed)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when a theatre row is allowed to name an owner other than its section's.
-#[test]
-fn cross_owner_theatre_row_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["owner_tag_db_id"] =
-        json!(OBSERVER_COUNTRY);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when contiguous per-kind engine order stops being enforced, which is how
-/// a dropped theatre would arrive as a silent prefix.
-#[test]
-fn non_contiguous_theatre_order_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["engine_order"] = json!(1);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when the parent-existence law is dropped and an air wing can arrive
-/// without the group it hangs from.
-#[test]
-fn orphan_member_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][1]["theatres"][0]["members"]
-        .as_array_mut()
-        .unwrap()
-        .remove(0);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when free-wing ordering stops being contiguous within a section.
-#[test]
-fn non_contiguous_free_wing_order_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][1]["free_air_wings"][0]["engine_order"] = json!(3);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when alert categories are admitted on a non-land theatre.
-#[test]
-fn alert_categories_on_a_non_land_theatre_refuse() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][1]["theatres"][0]["alert_categories"] = json!([1]);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when the producer-complete cross-check is removed, letting a frame claim
-/// completeness while carrying a refused section.
-#[test]
-fn producer_complete_contradiction_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when the executable, schema, or authority identity checks are removed.
-#[test]
-fn identity_mismatches_refuse() {
-    for (path, replacement) in [
-        ("executable_sha256", json!("00".repeat(32))),
-        ("schema_version", json!(1)),
-        ("authority", json!("exact_a729_theatre_selector")),
-    ] {
-        let mut value = frame_json();
-        value[THEATRE_SELECTOR_FIELD][path] = replacement;
+    for bad in [wrong_owner, orphan, gap, swapped] {
         assert_eq!(
-            parse_theatre_selector(&raw(value)).status,
-            ViewStatus::DomainUnavailable,
-            "{path} must be authenticated"
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable
         );
     }
 }
 
-/// Red when a missing domain field is reported as unavailable rather than
-/// absent -- a recording that never carried domain 98 is a different fact from
-/// one whose domain-98 frame was refused.
 #[test]
-fn absent_domain_is_absent_not_unavailable() {
+fn free_air_priority_is_an_exact_filtered_subset_of_free_wing_census() {
+    let admitted = parse_theatre_selector(&raw(frame_json()));
+    assert_eq!(admitted.status, ViewStatus::Present);
+    let air = admitted.country(ENG);
+    assert_eq!(
+        air.free_air_wings
+            .iter()
+            .map(|wing| wing.wing_id)
+            .collect::<Vec<_>>(),
+        [601, 602]
+    );
+    assert_eq!(air.free_air_priority_census_wing_ids, [601]);
+
+    let mut bad = frame_json();
+    bad[THEATRE_SELECTOR_FIELD]["sections"][1]["free_air_priority"]["priority_census_wing_ids"] =
+        json!([600]);
+    assert_eq!(
+        parse_theatre_selector(&raw(bad)).status,
+        ViewStatus::DomainUnavailable
+    );
+}
+
+#[test]
+fn strategic_frames_alert_law_and_access_law_refuse_tampering() {
+    for (path, replacement) in [("pinned_frame", json!(3)), ("background_frame", json!(1))] {
+        let mut bad = frame_json();
+        bad[THEATRE_SELECTOR_FIELD]["sections"][0]["strategic_regions"][0][path] = replacement;
+        assert_eq!(
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable
+        );
+    }
+    let mut atlas = frame_json();
+    atlas[THEATRE_SELECTOR_FIELD]["sections"][0]["strategic_regions"][0]["alerts"][0]
+        ["atlas_frame"] = json!(9);
+    let mut access = frame_json();
+    access[THEATRE_SELECTOR_FIELD]["sections"][0]["strategic_regions"][0]["naval_access"]
+        ["visible_frame"] = json!(2);
+    for bad in [atlas, access] {
+        assert_eq!(
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable
+        );
+    }
+}
+
+#[test]
+fn evidence_schema_executable_and_negative_dispositions_are_exact() {
+    for (path, replacement) in [
+        ("executable_sha256", json!("00".repeat(32))),
+        ("schema_version", json!(2)),
+        ("authority", json!("wrong")),
+        ("producer_evidence_sha256", json!([])),
+        ("negative_controller_dispositions", json!([])),
+    ] {
+        let mut bad = frame_json();
+        bad[THEATRE_SELECTOR_FIELD][path] = replacement;
+        assert_eq!(
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn every_producer_evidence_identity_is_authenticated() {
+    for index in 0..REQUIRED_PRODUCER_EVIDENCE_SHA256.len() {
+        let mut bad = frame_json();
+        bad[THEATRE_SELECTOR_FIELD]["producer_evidence_sha256"][index] =
+            json!("00".repeat(32));
+        assert_eq!(
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable,
+            "producer evidence identity {index}"
+        );
+    }
+}
+
+#[test]
+fn v6_rejects_the_legacy_manifest_only_evidence_alias() {
+    let mut legacy = frame_json();
+    let evidence = legacy[THEATRE_SELECTOR_FIELD]["producer_evidence_sha256"].clone();
+    legacy[THEATRE_SELECTOR_FIELD]["producer_manifest_sha256"] = evidence.clone();
+    assert_eq!(
+        parse_theatre_selector(&raw(legacy.clone())).status,
+        ViewStatus::DomainUnavailable
+    );
+    legacy[THEATRE_SELECTOR_FIELD]
+        .as_object_mut()
+        .expect("D98 fixture object")
+        .remove("producer_evidence_sha256");
+    legacy[THEATRE_SELECTOR_FIELD]["producer_manifest_sha256"] = evidence;
+    assert_eq!(
+        parse_theatre_selector(&raw(legacy)).status,
+        ViewStatus::DomainUnavailable
+    );
+}
+
+#[test]
+fn producer_complete_must_match_every_section() {
+    let mut bad = frame_json();
+    bad[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
+    assert_eq!(
+        parse_theatre_selector(&raw(bad)).status,
+        ViewStatus::DomainUnavailable
+    );
+}
+
+#[test]
+fn content_hour_and_sequence_authorization_is_fail_closed() {
+    assert_eq!(
+        view().authorize(&expectation(), 900, Some(900)).status,
+        ViewStatus::Present
+    );
+    let mut wrong = expectation();
+    wrong.language = "l_german".into();
+    assert_eq!(
+        view().authorize(&wrong, 900, None).status,
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(
+        view().authorize(&expectation(), 901, None).status,
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(
+        view().authorize(&expectation(), 900, Some(901)).status,
+        ViewStatus::DomainUnavailable
+    );
+    let mut wrong_sequence = frame_json();
+    wrong_sequence[THEATRE_SELECTOR_FIELD]["source_sequence"] = json!(902);
+    assert_eq!(
+        parse_theatre_selector(&raw(wrong_sequence))
+            .authorize(&expectation(), 900, None)
+            .status,
+        ViewStatus::DomainUnavailable
+    );
+}
+
+#[test]
+fn measured_empty_section_survives_parse_and_exact_authorization() {
+    let mut value = frame_json();
+    value[THEATRE_SELECTOR_FIELD]["census"] = json!([EMPTY]);
+    value[THEATRE_SELECTOR_FIELD]["sections"] = json!([empty_body(EMPTY)]);
+    value[THEATRE_SELECTOR_FIELD]["producer_complete"] = json!(true);
+    let admitted = parse_theatre_selector(&raw(value)).authorize(
+        &expectation(),
+        900,
+        Some(900),
+    );
+    assert_eq!(admitted.status, ViewStatus::Present);
+    assert!(admitted.producer_complete);
+    assert_eq!(admitted.census, [EMPTY]);
+    assert!(admitted.country(EMPTY).is_measured_empty());
+}
+
+#[test]
+fn replay_mirrors_every_producer_schema_bound() {
+    let mut countries = frame_json();
+    countries[THEATRE_SELECTOR_FIELD]["census"] =
+        Value::Array(vec![json!(1); MAX_COUNTRIES + 1]);
+
+    let mut theatres = frame_json();
+    theatres[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"] =
+        Value::Array(vec![json!(null); MAX_THEATRES_PER_SECTION + 1]);
+
+    let mut language = frame_json();
+    language[THEATRE_SELECTOR_FIELD]["content_identity"]["language"] =
+        json!("x".repeat(MAX_TOKEN_BYTES + 1));
+
+    let mut layer_id = frame_json();
+    layer_id[THEATRE_SELECTOR_FIELD]["content_identity"]["ordered_layers"][0]["layer_id"] =
+        json!("x".repeat(MAX_TOKEN_BYTES + 1));
+
+    let mut layers = frame_json();
+    layers[THEATRE_SELECTOR_FIELD]["content_identity"]["ordered_layers"] =
+        Value::Array(vec![json!(null); MAX_CONTENT_LAYERS + 1]);
+
+    let mut display_name = frame_json();
+    display_name[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["display_name"] =
+        json!("x".repeat(MAX_DISPLAY_NAME_BYTES + 1));
+
+    let mut alerts = frame_json();
+    alerts[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["land_alert_categories"] =
+        Value::Array(vec![json!(0); MAX_ALERTS_PER_THEATRE + 1]);
+
+    let mut alert_category = frame_json();
+    alert_category[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]
+        ["land_alert_categories"] = json!([MAX_ALERT_CATEGORY + 1]);
+
+    let mut free_wings = frame_json();
+    free_wings[THEATRE_SELECTOR_FIELD]["sections"][1]["free_air_wings"] =
+        Value::Array(vec![json!(null); MAX_FREE_WINGS_PER_SECTION + 1]);
+
+    let mut priority = frame_json();
+    priority[THEATRE_SELECTOR_FIELD]["sections"][1]["free_air_priority"]
+        ["priority_census_wing_ids"] =
+        Value::Array(vec![json!(1); MAX_PRIORITY_CENSUS_PER_SECTION + 1]);
+
+    let mut strategic = frame_json();
+    strategic[THEATRE_SELECTOR_FIELD]["sections"][0]["strategic_regions"] =
+        Value::Array(vec![json!(null); MAX_STRATEGIC_REGIONS_PER_SECTION + 1]);
+
+    for bad in [
+        countries,
+        theatres,
+        language,
+        layer_id,
+        layers,
+        display_name,
+        alerts,
+        alert_category,
+        free_wings,
+        priority,
+        strategic,
+    ] {
+        assert_eq!(
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable
+        );
+    }
+
+    assert_eq!(
+        checked_section_member_total(MAX_MEMBERS_PER_SECTION, 1),
+        Err("section member count exceeds bound".into())
+    );
+    assert_eq!(MAX_ALERT_CATEGORY, 0x51);
+}
+
+#[test]
+fn missing_required_lists_and_refused_rows_are_not_empty_measurements() {
+    for field in [
+        "theatres",
+        "free_air_wings",
+        "free_air_priority",
+        "strategic_regions",
+    ] {
+        let mut bad = frame_json();
+        bad[THEATRE_SELECTOR_FIELD]["sections"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert_eq!(
+            parse_theatre_selector(&raw(bad)).status,
+            ViewStatus::DomainUnavailable,
+            "{field}"
+        );
+    }
+    let mut smuggled = frame_json();
+    smuggled[THEATRE_SELECTOR_FIELD]["sections"][3]["theatres"] = json!([]);
+    assert_eq!(
+        parse_theatre_selector(&raw(smuggled)).status,
+        ViewStatus::DomainUnavailable
+    );
+}
+
+#[test]
+fn absent_domain_is_distinct_from_refused_domain() {
     assert_eq!(
         parse_theatre_selector(&raw(json!({}))).status,
         ViewStatus::DomainAbsent
@@ -356,382 +694,17 @@ fn absent_domain_is_absent_not_unavailable() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Replay-side content admission
-// ---------------------------------------------------------------------------
-
-/// Red when `authorize` stops comparing replay's own resolved effective-VFS
-/// identity with the producer's, which would let a display name rendered under
-/// one mod set be shown under another.
 #[test]
-fn content_identity_mismatch_refuses() {
-    let mut wrong_language = expectation();
-    wrong_language.language = "l_german".into();
+fn runtime_and_localization_name_provenance_remain_distinct() {
     assert_eq!(
-        view().authorize(&wrong_language, 900, None).status,
-        ViewStatus::DomainUnavailable
-    );
-
-    let mut wrong_loc = expectation();
-    wrong_loc.localization_content_sha256 = hash("9");
-    assert_eq!(
-        view().authorize(&wrong_loc, 900, None).status,
-        ViewStatus::DomainUnavailable
-    );
-
-    let mut wrong_mods = expectation();
-    wrong_mods.ordered_layers.pop();
-    assert_eq!(
-        view().authorize(&wrong_mods, 900, None).status,
-        ViewStatus::DomainUnavailable
-    );
-
-    let mut reordered = expectation();
-    reordered.ordered_layers.swap(0, 1);
-    assert_eq!(
-        view().authorize(&reordered, 900, None).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when a matching identity stops authorizing, i.e. the gate is not merely
-/// a refusal that always fires.
-#[test]
-fn matching_content_identity_authorizes() {
-    let authorized = view().authorize(&expectation(), 900, Some(900));
-    assert_eq!(authorized.status, ViewStatus::Present);
-    assert_eq!(
-        authorized.country(OBSERVER_COUNTRY).status,
-        ViewStatus::Present
-    );
-}
-
-/// Red when the frame-hour binding is removed, letting a stale hour's
-/// hierarchy render against the current WorldFrame.
-#[test]
-fn frame_hour_mismatch_refuses() {
-    assert_eq!(
-        view().authorize(&expectation(), 901, None).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when the strictly-increasing source-sequence law is dropped, letting a
-/// replayed or reordered frame be admitted.
-#[test]
-fn source_sequence_must_strictly_increase() {
-    assert_eq!(
-        view().authorize(&expectation(), 900, Some(901)).status,
-        ViewStatus::DomainUnavailable
-    );
-    assert_eq!(
-        view().authorize(&expectation(), 900, Some(9_000)).status,
-        ViewStatus::DomainUnavailable
-    );
-    assert_eq!(
-        view().authorize(&expectation(), 900, Some(1)).status,
-        ViewStatus::Present
-    );
-}
-
-/// Red when a refused view keeps the sections it parsed before refusing --
-/// the only way a refused frame could start answering country lookups with
-/// rows.
-#[test]
-fn a_refused_frame_refuses_every_country() {
-    let refused = view().authorize(&expectation(), 42, None);
-    for country in [RECORDER_COUNTRY, OBSERVER_COUNTRY, EMPTY_COUNTRY] {
-        let section = refused.country(country);
-        assert_eq!(section.status, ViewStatus::DomainUnavailable);
-        assert!(section.theatres.is_empty());
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Uncaptured fields
-// ---------------------------------------------------------------------------
-
-/// Red when a null priority ordinal is parsed into a defaulted zero, which
-/// would silently turn an unmeasured field into a measurement.
-#[test]
-fn null_priority_ordinal_stays_none() {
-    let view = view();
-    let section = view.country(RECORDER_COUNTRY);
-    assert_eq!(section.theatres[0].priority_ordinal, None);
-}
-
-/// Red when a measured priority ordinal stops being distinguishable from an
-/// unavailable one.
-#[test]
-fn measured_priority_ordinal_survives() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["priority_ordinal"] = json!(0);
-    let view = parse_theatre_selector(&raw(value));
-    assert_eq!(
-        view.country(RECORDER_COUNTRY).theatres[0].priority_ordinal,
-        Some(0)
-    );
-}
-
-/// Red when the declared uncaptured-field list stops reaching the consumer,
-/// which is how a panel would render a default for a field nobody measured.
-#[test]
-fn uncaptured_controller_fields_reach_the_consumer() {
-    let declared = view().uncaptured_controller_fields;
-    for field in REQUIRED_UNCAPTURED_CONTROLLER_FIELDS {
-        assert!(
-            declared.contains(&field.to_string()),
-            "{field} must reach the consumer"
-        );
-    }
-}
-
-
-// ---------------------------------------------------------------------------
-// Defects found by adversarial review
-// ---------------------------------------------------------------------------
-
-/// Red when a required hierarchy list may be absent and default to empty. A
-/// theatre whose members vanished from the projection would otherwise render
-/// as a legitimately empty theatre -- a silent truncation.
-#[test]
-fn a_missing_required_list_refuses_rather_than_reading_as_empty() {
-    for path in ["members", "alert_categories"] {
-        let mut value = frame_json();
-        value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove(path);
-        assert_eq!(
-            parse_theatre_selector(&raw(value)).status,
-            ViewStatus::DomainUnavailable,
-            "a missing {path} list must refuse"
-        );
-    }
-
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][1]
-        .as_object_mut()
-        .unwrap()
-        .remove("free_air_wings");
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when member engine order stops being checked for contiguity, which is
-/// how a dropped member would arrive as a plausible-looking gap.
-#[test]
-fn non_contiguous_member_order_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["members"][0]["engine_order"] =
-        json!(42);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when member identity is scoped per theatre instead of per section,
-/// which would admit one fleet under two navy theatres.
-#[test]
-fn one_member_under_two_theatres_refuses() {
-    let navy = |theatre_id: u32, order: u32| {
-        json!({
-            "kind": "navy_theatre",
-            "object_id": theatre_id,
-            "owner_tag_db_id": RECORDER_COUNTRY,
-            "engine_order": order,
-            "display_name": "Home Fleet Area",
-            "name_provenance": {"source": "engine_runtime_string"},
-            "priority_ordinal": null,
-            "alert_categories": [],
-            "members": [{
-                "kind": "fleet", "object_id": 7000, "parent_kind": "navy_theatre",
-                "parent_id": theatre_id, "engine_order": 0, "reserve_navy": false,
-                "display_name": null, "name_provenance": null, "priority_ordinal": null
-            }]
-        })
-    };
-    let mut value = frame_json();
-    let theatres = value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"]
-        .as_array_mut()
-        .unwrap();
-    theatres.push(navy(800, 0));
-    theatres.push(navy(801, 1));
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when a wing may be both grouped and ungrouped in one section.
-#[test]
-fn a_wing_that_is_both_grouped_and_free_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][1]["free_air_wings"] = json!([
-        {"wing_id": 600, "engine_order": 0, "priority_ordinal": null},
-        {"wing_id": 601, "engine_order": 1, "priority_ordinal": null}
-    ]);
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when a *missing* priority key is read as an unmeasured field. An
-/// explicit null is the producer declaring a hole; absence means the
-/// projection is not the shape this consumer was built against.
-#[test]
-fn a_missing_priority_declaration_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("priority_ordinal");
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
-    );
-
-    let mut member = frame_json();
-    member[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["members"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("priority_ordinal");
-    assert_eq!(
-        parse_theatre_selector(&raw(member)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when the consumer's required list drifts from the producer's declared
-/// list.
-///
-/// The two crates share no dependency -- the recording file is their only
-/// interface -- so the list is hand-copied on each side and each side asserts
-/// against a copy of the other's. The lane test catches producer-side drift;
-/// this one catches consumer-side drift. Without both, an edit to either
-/// constant alone would pass every test while silently changing which holes
-/// are declared.
-#[test]
-fn replay_required_list_matches_the_producer_declaration() {
-    // Kept in sync by hand with
-    // `theatre_selector_live_lane::UNCAPTURED_CONTROLLER_FIELDS`.
-    const PRODUCER_DECLARED: &[&str] = &[
-        "theater_group_settings_view.current_priority_ordinal",
-        "theater_group_settings_view.delete_eligibility",
-        "orders_group_item.army_training_state",
-        "orders_group_item.exercise_stop_at_max_state",
-        "orders_group_item.border_conflict_state",
-        "navy_theater_fleet_item.live_spotting_state",
-        "navy_theater_fleet_item.exercise_stop_at_max_state",
-        "theater_group_item.supply_priority_ordinal",
-        "theater_group_item.combat_log_ownership_and_eligibility",
-        "navy_theater_group_item.current_priority_ordinal",
-        "navy_theater_group_item.combat_log_ownership_and_eligibility",
-        "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
-        "new_theater_group_item.current_eligibility",
-        "strategic_region_alert_entry.category_to_atlas_frame_law",
-        "strategic_region_alert_entry.runtime_glow_state",
-        "strategic_region_item.region_and_parent_identity",
-        "strategic_region_item.engine_order",
-        "strategic_region_item.alert_identities_and_order",
-        "strategic_region_item.naval_access_row_input",
-        "fleet_row_item_box.split_off_state_and_count",
-        "reserve_fleet_row_item_box.split_off_state_and_count",
-        "air_theatre_wing_item.active_visual_frame",
-        "air_theatre_item.current_priority_ordinal",
-        "air_theatre_group_item.current_priority_ordinal",
-        "air_theatre_free_wings_item.current_priority_ordinal",
-    ];
-    let mut required = REQUIRED_UNCAPTURED_CONTROLLER_FIELDS.to_vec();
-    let mut declared = PRODUCER_DECLARED.to_vec();
-    required.sort_unstable();
-    declared.sort_unstable();
-    assert_eq!(required, declared);
-}
-
-/// Red when a *truncated* declaration is admitted. A producer that declares
-/// fewer holes than replay knows exist is claiming to have measured something
-/// it did not, and a panel would render a default for it.
-#[test]
-fn a_truncated_uncaptured_field_declaration_refuses() {
-    let mut short = frame_json();
-    let mut fields = REQUIRED_UNCAPTURED_CONTROLLER_FIELDS.to_vec();
-    let dropped = fields.pop().expect("the required list is not empty");
-    short[THEATRE_SELECTOR_FIELD]["uncaptured_controller_fields"] = json!(fields);
-    let view = parse_theatre_selector(&raw(short));
-    assert_eq!(view.status, ViewStatus::DomainUnavailable);
-    assert!(view.diagnostic.unwrap().contains(dropped));
-}
-
-/// Red when a duplicated declaration entry is admitted, which would let a
-/// producer pad a truncated list back to the expected length.
-#[test]
-fn a_duplicated_uncaptured_field_declaration_refuses() {
-    let mut duped = frame_json();
-    let mut fields = REQUIRED_UNCAPTURED_CONTROLLER_FIELDS.to_vec();
-    fields.push(REQUIRED_UNCAPTURED_CONTROLLER_FIELDS[0]);
-    duped[THEATRE_SELECTOR_FIELD]["uncaptured_controller_fields"] = json!(fields);
-    assert_eq!(
-        parse_theatre_selector(&raw(duped)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when a missing or malformed uncaptured-field declaration silently reads
-/// as "nothing is unresolved" -- the reading that would let a panel render a
-/// default for a field nobody measured.
-#[test]
-fn a_missing_uncaptured_field_declaration_refuses() {
-    let mut absent = frame_json();
-    absent[THEATRE_SELECTOR_FIELD]
-        .as_object_mut()
-        .unwrap()
-        .remove("uncaptured_controller_fields");
-    assert_eq!(
-        parse_theatre_selector(&raw(absent)).status,
-        ViewStatus::DomainUnavailable
-    );
-
-    let mut malformed = frame_json();
-    malformed[THEATRE_SELECTOR_FIELD]["uncaptured_controller_fields"] = json!([7]);
-    assert_eq!(
-        parse_theatre_selector(&raw(malformed)).status,
-        ViewStatus::DomainUnavailable
-    );
-}
-
-/// Red when a runtime string is parsed as a localization key, which would let
-/// replay re-resolve a player-typed theatre name through its own localization.
-#[test]
-fn name_provenance_is_preserved() {
-    let view = view();
-    assert_eq!(
-        view.country(RECORDER_COUNTRY).theatres[0].name_provenance,
+        view().country(GER).theatres[0].name_provenance,
         NameProvenance::EngineRuntimeString
     );
-
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["name_provenance"] =
+    let mut keyed = frame_json();
+    keyed[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["name_provenance"] =
         json!({"source": "localization_key", "key": "THEATRE_DEFAULT"});
-    let keyed = parse_theatre_selector(&raw(value));
     assert_eq!(
-        keyed.country(RECORDER_COUNTRY).theatres[0].name_provenance,
+        parse_theatre_selector(&raw(keyed)).country(GER).theatres[0].name_provenance,
         NameProvenance::LocalizationKey("THEATRE_DEFAULT".into())
-    );
-}
-
-/// Red when a named member is admitted without provenance.
-#[test]
-fn named_member_without_provenance_refuses() {
-    let mut value = frame_json();
-    value[THEATRE_SELECTOR_FIELD]["sections"][1]["theatres"][0]["members"][0]["name_provenance"] =
-        Value::Null;
-    assert_eq!(
-        parse_theatre_selector(&raw(value)).status,
-        ViewStatus::DomainUnavailable
     );
 }

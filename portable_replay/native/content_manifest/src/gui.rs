@@ -1,13 +1,47 @@
 use crate::content_parse::Result;
-use crate::paradox_text::{first_scalar_any, parse_file, Document, Value};
+use crate::paradox_text::{
+    destructive_event_count, destructive_losses, diagnose_text_decode, first_scalar_any,
+    parse_bytes, Document, Scalar, Value,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+/// Byte-level decode damage observed for one file.
+///
+/// `events` and `entries.len()` are DIFFERENT numbers and the distinction is
+/// load-bearing: per-site detail is capped at
+/// `paradox_text::MAX_TEXT_DECODE_DIAGNOSTICS`, past which the remainder
+/// collapses into a single counted entry. Any figure reported as a damage count
+/// must come from `events`, which never understates.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DecodeLossReport {
+    /// Total destructive decode events.
+    pub events: usize,
+    /// Per-site detail, bounded.
+    pub entries: Vec<String>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutDocument {
     pub source_file: String,
     pub roots: Vec<GuiElement>,
     pub recoveries: Vec<String>,
+    /// Byte-level decode damage, on a channel of its own — NOT folded into
+    /// `recoveries`, which means only "the Clausewitz parse recovered" and is
+    /// independent of decode damage in both directions (a U+FFFD parses
+    /// perfectly; a missing brace decodes perfectly).
+    ///
+    /// `None` means decode was NOT OBSERVED for this document, which is the
+    /// honest answer for every [`LayoutSet::add_document`] caller: it is handed
+    /// an already-decoded [`Document`] and the bytes are gone, so it cannot
+    /// distinguish clean from damaged. `Some(vec![])` means decode WAS observed
+    /// and was clean. Reporting `None` as "clean" would manufacture exactly the
+    /// silent approximation this channel exists to prevent.
+    ///
+    /// Only destructive loss is listed (see
+    /// `paradox_text::TextDecodeLoss::discards_input`); lossless Latin-1
+    /// attribution is not damage.
+    pub decode_losses: Option<DecodeLossReport>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -47,6 +81,12 @@ pub struct GuiParseStats {
     pub recovery_count: usize,
     pub unknown_element_histogram: BTreeMap<String, usize>,
     pub files_with_recoveries: Vec<String>,
+    /// Files whose bytes were DESTROYED at decode, among those actually
+    /// observed at the byte level (i.e. parsed through
+    /// [`LayoutSet::parse_file`]). Separate from `files_with_recoveries`: the
+    /// two describe different damage at different layers.
+    pub files_with_decode_loss: Vec<String>,
+    pub decode_loss_count: usize,
     pub failures: Vec<String>,
 }
 
@@ -57,13 +97,36 @@ pub struct LayoutSet {
 }
 
 impl LayoutSet {
+    /// Parse one `.gui` file from disk. This is the byte-owning entry point, so
+    /// it is the only one that CAN observe decode damage, and it does.
     pub fn parse_file(&mut self, path: &Path, rel: &str) -> Result<()> {
-        let doc = parse_file(path)?;
-        self.add_document(rel, &doc);
+        let bytes = std::fs::read(path)?;
+        let all = diagnose_text_decode(&bytes);
+        let report = DecodeLossReport {
+            events: destructive_event_count(&all),
+            entries: destructive_losses(&all)
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
+        };
+        let doc = parse_bytes(&bytes);
+        self.add_document_diagnosed(rel, &doc, Some(report));
         Ok(())
     }
 
+    /// Add an already-decoded document whose bytes are no longer available.
+    /// Decode damage is recorded as NOT OBSERVED — see
+    /// [`LayoutDocument::decode_losses`].
     pub fn add_document(&mut self, source_file: &str, doc: &Document) {
+        self.add_document_diagnosed(source_file, doc, None);
+    }
+
+    fn add_document_diagnosed(
+        &mut self,
+        source_file: &str,
+        doc: &Document,
+        decode_losses: Option<DecodeLossReport>,
+    ) {
         let roots = parse_gui_document(doc);
         let mut stats = DocumentStats::default();
         for root in &roots {
@@ -85,6 +148,12 @@ impl LayoutSet {
                 .entry(kind)
                 .or_insert(0) += count;
         }
+        if let Some(report) = decode_losses.as_ref().filter(|report| report.events != 0) {
+            self.stats.decode_loss_count += report.events;
+            self.stats
+                .files_with_decode_loss
+                .push(source_file.to_string());
+        }
         self.documents.push(LayoutDocument {
             source_file: source_file.to_string(),
             roots,
@@ -95,6 +164,7 @@ impl LayoutSet {
                     format!("{}:{} {}", recovery.line, recovery.column, recovery.message)
                 })
                 .collect(),
+            decode_losses,
         });
     }
 
@@ -140,13 +210,23 @@ impl GuiElement {
 }
 
 pub fn parse_gui_document(doc: &Document) -> Vec<GuiElement> {
+    let variables = doc
+        .root
+        .fields()
+        .iter()
+        .filter_map(|entry| {
+            let key = entry.key.as_deref()?.strip_prefix('@')?;
+            let value = entry.value.as_scalar()?;
+            (!key.trim().is_empty()).then(|| (format!("@{key}"), value.to_string()))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut roots = Vec::new();
     for gui_types in doc.root.values_ci("guiTypes") {
         for entry in gui_types.fields() {
             let Some(kind) = entry.key.as_deref() else {
                 continue;
             };
-            if let Some(element) = parse_element(kind, &entry.value) {
+            if let Some(element) = parse_element_with_variables(kind, &entry.value, &variables) {
                 roots.push(element);
             }
         }
@@ -155,6 +235,14 @@ pub fn parse_gui_document(doc: &Document) -> Vec<GuiElement> {
 }
 
 pub fn parse_element(element_type: &str, value: &Value) -> Option<GuiElement> {
+    parse_element_with_variables(element_type, value, &BTreeMap::new())
+}
+
+fn parse_element_with_variables(
+    element_type: &str,
+    value: &Value,
+    variables: &BTreeMap<String, String>,
+) -> Option<GuiElement> {
     value.as_object()?;
     let name = value
         .first_scalar_ci("name")
@@ -165,7 +253,18 @@ pub fn parse_element(element_type: &str, value: &Value) -> Option<GuiElement> {
         .and_then(parse_measure_pair);
     let size = value.first_value_ci("size").and_then(parse_measure_pair);
     let orientation = value.first_scalar_ci("Orientation").map(str::to_string);
-    let font = value.first_scalar_ci("font").map(str::to_string);
+    // a729 GUI buttons use `buttonFont`; text boxes use `font`. File-scoped
+    // `@name = value` substitutions are resolved before the role index derives
+    // the immutable font dependency. The raw tree remains untouched for
+    // consumers that need to inspect authored syntax.
+    let font = ["font", "buttonFont"]
+        .iter()
+        .find_map(|key| value.first_value_ci(key))
+        .and_then(|font| match font {
+            Value::Scalar(Scalar::Bare(font)) => Some(resolve_file_variable(font, variables)),
+            Value::Scalar(Scalar::Quoted(font)) => Some(font.clone()),
+            Value::Object(_) => None,
+        });
     let text = value.first_scalar_ci("text").map(str::to_string);
     let format = value.first_scalar_ci("format").map(str::to_string);
     let sprite_refs = sprite_refs(value);
@@ -181,7 +280,7 @@ pub fn parse_element(element_type: &str, value: &Value) -> Option<GuiElement> {
         {
             continue;
         }
-        if let Some(child) = parse_element(child_type, &entry.value) {
+        if let Some(child) = parse_element_with_variables(child_type, &entry.value, variables) {
             children.push(child);
         }
     }
@@ -198,6 +297,18 @@ pub fn parse_element(element_type: &str, value: &Value) -> Option<GuiElement> {
         children,
         raw: value.clone(),
     })
+}
+
+fn resolve_file_variable(raw: &str, variables: &BTreeMap<String, String>) -> String {
+    let mut value = raw.to_string();
+    let mut seen = BTreeSet::new();
+    while value.starts_with('@') && seen.insert(value.clone()) {
+        let Some(next) = variables.get(&value) else {
+            break;
+        };
+        value = next.clone();
+    }
+    value
 }
 
 pub fn parse_measure_pair(value: &Value) -> Option<MeasurePair> {
@@ -257,12 +368,15 @@ fn is_child_block(key: &str) -> bool {
             | "minimumsize"
             | "maximumsize"
             | "border"
+            | "bordersize"
             | "margin"
             | "padding"
             | "color"
             | "colortwo"
             | "text_color_code"
             | "offset"
+            | "slotsize"
+            | "max_slots"
             | "scale"
             | "pdx_tooltip_delayed"
     )
@@ -354,5 +468,59 @@ mod tests {
         roots[0].collect_sprite_refs(&mut refs);
         assert!(refs.contains("GFX_bg"));
         assert!(refs.contains("GFX_ok"));
+    }
+
+    #[test]
+    fn resolves_file_scoped_button_font_variables_without_rewriting_raw_syntax() {
+        let doc = parse_str(
+            r#"
+            @button_font = "hoi_16mbs"
+            guiTypes = {
+              containerWindowType = {
+                name = "root"
+                buttonType = {
+                  name = "ok"
+                  buttonFont = @button_font
+                }
+              }
+            }
+            "#,
+        );
+        let roots = parse_gui_document(&doc);
+        let button = &roots[0].children[0];
+        assert_eq!(button.font.as_deref(), Some("hoi_16mbs"));
+        assert_eq!(
+            button.raw.first_scalar_ci("buttonFont"),
+            Some("@button_font")
+        );
+    }
+
+    #[test]
+    fn grid_and_text_geometry_objects_are_fields_not_child_widgets() {
+        let doc = parse_str(
+            r#"
+            guiTypes = {
+              gridBoxType = {
+                name = "rows"
+                slotsize = { width = 100 height = 1 }
+                max_slots = { x = 1 y = 10 }
+                instantTextBoxType = {
+                  name = "label"
+                  borderSize = { x = 1 y = 2 }
+                }
+              }
+            }
+            "#,
+        );
+        let roots = parse_gui_document(&doc);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].children.len(), 1);
+        assert_eq!(roots[0].children[0].element_type, "instantTextBoxType");
+        assert!(roots[0].raw.first_value_ci("slotsize").is_some());
+        assert!(roots[0].raw.first_value_ci("max_slots").is_some());
+        assert!(roots[0].children[0]
+            .raw
+            .first_value_ci("borderSize")
+            .is_some());
     }
 }

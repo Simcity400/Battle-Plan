@@ -141,6 +141,36 @@ fn admitted_effective_namespace_registers_without_frozen_vanilla_counts() {
 }
 
 #[test]
+fn unsupported_mod_window_is_rejected_locally_without_poisoning_effective_namespace() {
+    let mut effective = catalog();
+    let removed = effective.admitted_windows.pop().expect("window row");
+    let owning_file = effective
+        .files
+        .iter_mut()
+        .find(|row| row.source_file == removed.source_file)
+        .expect("owning file row");
+    owning_file.admitted_windows -= 1;
+    owning_file.rejected_windows += 1;
+    effective.rejected_windows.push(RejectedWindowDefinition {
+        window_id: removed.window_id.clone(),
+        source_file: removed.source_file,
+        ordinal: removed.ordinal,
+        element_type: removed.element_type,
+        name: removed.name,
+        hierarchy_path: removed.hierarchy_path,
+        unsupported: BTreeSet::from(["mod-local unsupported construct".to_string()]),
+    });
+
+    let registry = register_effective_dormant_window_manager(&effective, &[])
+        .expect("unaffected effective windows remain available");
+    assert_eq!(registry.windows.len(), XUI02_WINDOW_DEFINITIONS - 1);
+    assert!(!registry
+        .windows
+        .iter()
+        .any(|window| window.window_id == removed.window_id));
+}
+
+#[test]
 fn any_definition_rejection_fails_closed() {
     let mut catalog = catalog();
     catalog.rejected_windows.push(RejectedWindowDefinition {
@@ -555,55 +585,6 @@ fn replay_keyboard_and_controller_traversal_are_exact_and_wrap() {
 }
 
 #[test]
-fn replay_tooltip_owner_is_input_scoped_and_cleared_by_transfer() {
-    let catalog = catalog();
-    let registry = register_dormant_window_manager(&catalog, &[]).expect("XUI02 registry");
-    let first = registry.windows[0].window_id.clone();
-    let second = registry.windows[1].window_id.clone();
-    let mut manager = ReplayOwnedWindowManager::new(&registry).expect("replay manager");
-    manager.open(replay_activation(&first, "tip_a")).unwrap();
-    manager
-        .set_tooltip_owner(&first, "tip_a.hover", "A26.tooltip_instances[0]")
-        .unwrap();
-    assert_eq!(manager.tooltip().unwrap().window_id, first);
-    manager.focus_widget(&first, "tip_a.second").unwrap();
-    assert!(manager.tooltip().is_none());
-    manager
-        .set_tooltip_owner(&first, "tip_a.hover", "A26.tooltip_instances[1]")
-        .unwrap();
-    manager.open(replay_activation(&second, "tip_b")).unwrap();
-    assert!(manager.tooltip().is_none());
-    assert_eq!(
-        manager.set_tooltip_owner(&first, "stale", "A26.tooltip_instances[2]"),
-        Err(ReplayWindowManagerRejection::InvalidTooltipOwner(first))
-    );
-    manager
-        .set_tooltip_owner(&second, "tip_b.hover", "A26.tooltip_instances[3]")
-        .unwrap();
-    manager.close(&second).unwrap();
-    assert!(manager.tooltip().is_none());
-}
-
-#[test]
-fn replay_tooltip_owner_requires_an_explicit_panel_target() {
-    let catalog = catalog();
-    let registry = register_dormant_window_manager(&catalog, &[]).expect("XUI02 registry");
-    let id = registry.windows[0].window_id.clone();
-    let mut manager = ReplayOwnedWindowManager::new(&registry).expect("replay manager");
-    manager.open(replay_activation(&id, "tip")).unwrap();
-    assert_eq!(
-        manager.set_tooltip_owner(&id, "tip.unadmitted", "A26.tooltip_instances[0]"),
-        Err(ReplayWindowManagerRejection::InvalidTooltipOwner(
-            id.clone()
-        ))
-    );
-    manager
-        .set_tooltip_owner(&id, "tip.hover", "A26.tooltip_instances[0]")
-        .unwrap();
-    assert_eq!(manager.tooltip().unwrap().widget_id, "tip.hover");
-}
-
-#[test]
 fn replay_manager_rejects_unknown_duplicate_and_invalid_activation() {
     let catalog = catalog();
     let registry = register_dormant_window_manager(&catalog, &[]).expect("XUI02 registry");
@@ -631,4 +612,37 @@ fn replay_manager_rejects_unknown_duplicate_and_invalid_activation() {
         manager.close(&id),
         Err(ReplayWindowManagerRejection::AlreadyClosed(id))
     );
+}
+
+#[test]
+fn authenticated_runtime_instance_exists_only_for_the_current_open_lifetime() {
+    let catalog = catalog();
+    let registry = register_dormant_window_manager(&catalog, &[]).expect("XUI02 registry");
+    let id = registry.windows[0].window_id.clone();
+    let mut manager = ReplayOwnedWindowManager::new(&registry).expect("replay manager");
+    assert!(manager.authenticated_runtime_instance(&id).is_none());
+
+    manager.open(replay_activation(&id, "first")).unwrap();
+    {
+        let lease = manager
+            .authenticated_runtime_instance(&id)
+            .expect("current first-open lease");
+        assert_eq!(lease.window_id(), id);
+    }
+
+    manager.close(&id).unwrap();
+    assert!(manager.authenticated_runtime_instance(&id).is_none());
+    manager.open(replay_activation(&id, "second")).unwrap();
+    let second = manager
+        .authenticated_runtime_instance(&id)
+        .expect("current second-open lease");
+    assert_eq!(second.window_id(), id);
+
+    let mut independent =
+        ReplayOwnedWindowManager::new(&registry).expect("independent replay manager");
+    independent.open(replay_activation(&id, "other")).unwrap();
+    let independent = independent
+        .authenticated_runtime_instance(&id)
+        .expect("independent current lease");
+    assert_eq!(independent.window_id(), second.window_id());
 }

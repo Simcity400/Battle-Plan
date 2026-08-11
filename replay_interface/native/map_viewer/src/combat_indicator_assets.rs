@@ -3,16 +3,14 @@
 //! This is the same treatment C1 gave unit counters (`unit_counter_assets.rs`):
 //! decode the shipped asset/layout chain for the land/naval combat map icons
 //! from interface `*.gfx` + `*.gui` files, resolve every referenced sprite to a
-//! real `.dds` with a resolution gate, and expose the layout element tree via the
-//! existing `.gui` parser. The **screen-space visual law** (rendered quad size,
-//! world/province anchor, zoom scaling, depth ordering, frame/colour selection,
-//! progress-bar fill mapping) stays CAPTURE-gated — see `COMBAT_INDICATOR_LAW.md`
-//! and the CAP row in the production plan.
+//! real `.dds` with a resolution gate, and expose the layout element tree via
+//! the existing `.gui` parser. XMAP14 combines this FILE authority with the
+//! exact-a729 `CMapIcon`/combat-controller laws and the minimum state carrier;
+//! no recorded UI draw or capture-space geometry is a product input.
 //!
-//! No product renderer should draw combat indicators from this module yet; it is
-//! the FILE half of C3. All shipped-file reads go through `GameFileResolver`
-//! keyed by the recording modset (`MOD_COMPATIBILITY.md`), reusing the C1
-//! parser/DDS-resolution helpers verbatim (no forked parser).
+//! All shipped-file reads go through `GameFileResolver` keyed by the recording
+//! modset (`MOD_COMPATIBILITY.md`), reusing the C1 parser/DDS-resolution helpers
+//! verbatim (no forked parser).
 
 use crate::unit_counter_assets::{
     container_layout_from_text, parse_bitmap_fonts, parse_progress_bar_assets,
@@ -69,8 +67,6 @@ const UNITVIEW_PROGRESS_BAR_NAMES: &[&str] = &["GFX_land_unit_combat_progressbar
 
 /// Font used by both the land combat `combat_progress` textbox and the naval
 /// fleet-status combat count textboxes.
-const COMBAT_INDICATOR_FONT_NAMES: &[&str] = &["hoi_16mbs"];
-
 /// On-map combat containers in `mapicons.gui`.
 const COMBAT_INDICATOR_GUI_CONTAINERS: &[&str] = &[
     "land_combat_mapicon",
@@ -78,6 +74,7 @@ const COMBAT_INDICATOR_GUI_CONTAINERS: &[&str] = &[
     "naval_combat_results_mapicon",
     "ongoing_combat_container",
     "combat_results_container",
+    "GFX_mapicon_tiny_unit_counter",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +130,9 @@ pub struct CombatIndicatorGuiLayouts {
     pub naval_combat_results_mapicon: GuiContainerLayout,
     pub ongoing_combat_container: GuiContainerLayout,
     pub combat_results_container: GuiContainerLayout,
+    /// Exact FILE template constructed by `CTinyUnitCounter` for the naval
+    /// `*_adds_grid` summaries.
+    pub tiny_unit_counter: GuiContainerLayout,
 }
 
 impl CombatIndicatorGuiLayouts {
@@ -143,6 +143,7 @@ impl CombatIndicatorGuiLayouts {
             "naval_combat_results_mapicon" => Some(&self.naval_combat_results_mapicon),
             "ongoing_combat_container" => Some(&self.ongoing_combat_container),
             "combat_results_container" => Some(&self.combat_results_container),
+            "GFX_mapicon_tiny_unit_counter" => Some(&self.tiny_unit_counter),
             _ => None,
         }
     }
@@ -166,30 +167,25 @@ impl CombatIndicatorKind {
     }
 }
 
-/// FILE-derived placement stub keyed by province.
+/// Legacy FILE-derived inventory placement keyed by province.
 ///
-/// The container declared size and the file `position` are FILE facts. The
-/// world/province anchor point, rendered quad size, zoom-scaling, depth ordering
-/// against terrain, and the mapping of combat state onto frame/colour/progress
-/// are all CAPTURE-gated (see `COMBAT_INDICATOR_LAW.md`). Those fields stay
-/// `None`/unset until CAP11 evidence lands; this stub only exposes the FILE part.
+/// XMAP14 production does not consume this helper: it projects and aligns the
+/// live FILE container against the viewer camera from its exact state carrier.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CombatIndicatorPlacement {
     pub province_id: u32,
     pub kind: CombatIndicatorKind,
     /// Declared container size from the `.gui` (`size = { width height }`).
-    /// FILE fact; NOT the rendered screen quad (capture-gated).
+    /// FILE fact; not the prepared production screen quad.
     pub declared_size: Option<GuiSize>,
-    /// Screen-space rendered quad size (CAPTURE-gated; always `None` here).
+    /// Screen-space rendered quad size (not part of this inventory helper).
     pub screen_quad_size: Option<GuiSize>,
-    /// Whether the world/province anchor law is known (CAPTURE-gated; always
-    /// `false` here — the file gives no province anchor).
+    /// Whether this FILE-only helper contains an anchor law (always false).
     pub anchor_law_known: bool,
 }
 
 impl CombatIndicatorAssetManifest {
-    /// Build a FILE-only placement stub for a province + combat kind. The
-    /// screen-space fields are intentionally left unresolved (capture-gated).
+    /// Build a FILE-only inventory stub for a province + combat kind.
     pub fn placement_stub(
         &self,
         province_id: u32,
@@ -212,17 +208,158 @@ impl CombatIndicatorAssetManifest {
 pub fn combat_indicator_assets_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<CombatIndicatorAssetManifest> {
-    let (land_sprites, mut unresolved) = land_combat_indicator_sprite_inventory(resolver)?;
-    let (naval_sprites, naval_unresolved) = naval_combat_indicator_sprite_inventory(resolver)?;
+    let gui_layouts = combat_indicator_gui_layouts_from_resolver(resolver)?;
+    let (land_names, naval_names, progress_names) = referenced_combat_assets(&gui_layouts)?;
+    let (land_sprites, mut unresolved) = referenced_sprite_inventory(resolver, &land_names)?;
+    let (naval_sprites, naval_unresolved) = referenced_sprite_inventory(resolver, &naval_names)?;
+    let fonts = referenced_combat_fonts_from_resolver(resolver, &gui_layouts)?;
     unresolved.extend(naval_unresolved);
     Ok(CombatIndicatorAssetManifest {
         land_combat_sprites: land_sprites,
         naval_combat_sprites: naval_sprites,
         unresolved_sprites: unresolved,
-        progress_bars: combat_indicator_progress_bars_from_resolver(resolver)?,
-        gui_layouts: combat_indicator_gui_layouts_from_resolver(resolver)?,
-        fonts: combat_indicator_fonts_from_resolver(resolver)?,
+        progress_bars: referenced_progress_bars(resolver, &progress_names)?,
+        gui_layouts,
+        fonts,
     })
+}
+
+fn referenced_combat_assets(
+    layouts: &CombatIndicatorGuiLayouts,
+) -> Result<(BTreeSet<String>, BTreeSet<String>, BTreeSet<String>)> {
+    // The map-icon controllers select several surfaces directly in native code
+    // (for example the land urban/backing variants and naval result variants),
+    // so they are not all reachable by walking the authored GUI controls.  Keep
+    // that exact engine-selected closure, then union the effective FILE aliases
+    // so a mod-selected control cannot be silently omitted.
+    let mut land = LAND_COMBAT_MAPICONS_GFX_SPRITES
+        .iter()
+        .chain(LAND_COMBAT_LANDCOMBAT_GFX_SPRITES)
+        .map(|name| (*name).to_string())
+        .collect::<BTreeSet<_>>();
+    let mut naval = NAVAL_COMBAT_MAPICONS_GFX_SPRITES
+        .iter()
+        .chain(NAVAL_COMBAT_NAVAL_LEADER_GFX_SPRITES)
+        .map(|name| (*name).to_string())
+        .collect::<BTreeSet<_>>();
+    let mut progress = NAVALCOMBAT_PROGRESS_BAR_NAMES
+        .iter()
+        .chain(UNITVIEW_PROGRESS_BAR_NAMES)
+        .map(|name| (*name).to_string())
+        .collect::<BTreeSet<_>>();
+    for control in &layouts.land_combat_mapicon.controls {
+        if let Some(alias) = control_asset_alias(control)? {
+            land.insert(alias.to_string());
+        }
+    }
+    for control in &layouts.naval_combat_mapicon.controls {
+        if let Some(alias) = control_asset_alias(control)? {
+            if matches!(control.name.as_str(), "progress" | "progress_small") {
+                progress.insert(alias.to_string());
+            } else {
+                naval.insert(alias.to_string());
+            }
+        }
+    }
+    for control in &layouts.naval_combat_results_mapicon.controls {
+        if let Some(alias) = control_asset_alias(control)? {
+            naval.insert(alias.to_string());
+        }
+    }
+    for control in &layouts.tiny_unit_counter.controls {
+        if let Some(alias) = control_asset_alias(control)? {
+            naval.insert(alias.to_string());
+        }
+    }
+    Ok((land, naval, progress))
+}
+
+fn control_asset_alias(
+    control: &crate::unit_counter_assets::GuiControlLayout,
+) -> Result<Option<&str>> {
+    match (
+        control.sprite_type.as_deref(),
+        control.quad_texture_sprite.as_deref(),
+    ) {
+        (Some(left), Some(right)) if left != right => Err(format!(
+            "combat control {} declares two different drawable aliases",
+            control.name
+        )
+        .into()),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn referenced_sprite_inventory(
+    resolver: &GameFileResolver,
+    wanted: &BTreeSet<String>,
+) -> Result<SpriteInventory> {
+    let mut assets = BTreeMap::new();
+    let mut unresolved = Vec::new();
+    for (source_file, path) in resolver.resolve_dir_files_recursive("interface", Some("gfx"))? {
+        // Preserve the complete effective-registry census (and therefore
+        // definitions placed by a mod in any .gfx file), but do not feed an
+        // unrelated file through the expensive braced-block parser. The
+        // admission below compares parsed aliases to `wanted` byte-for-byte,
+        // so an exact substring check cannot discard a definition that the
+        // existing admission could accept. Comments and other false positives
+        // deliberately fall through to the exact parser.
+        let text = read_latin1(&path)?;
+        if !mentions_wanted_alias(&text, wanted) {
+            continue;
+        }
+        let inventory = sprite_inventory_from_resolver(resolver, &source_file, |def| {
+            wanted.contains(&def.name) && def.texture_file.is_some()
+        })?;
+        for asset in inventory.resolved {
+            if assets.insert(asset.name.clone(), asset).is_some() {
+                return Err(
+                    "combat drawable alias is defined by multiple effective GFX files".into(),
+                );
+            }
+        }
+        unresolved.extend(inventory.unresolved);
+    }
+    let resolved = assets.keys().cloned().collect::<BTreeSet<_>>();
+    for name in wanted.difference(&resolved) {
+        return Err(format!("effective interface registry omitted combat sprite {name}").into());
+    }
+    Ok((assets, unresolved))
+}
+
+fn referenced_progress_bars(
+    resolver: &GameFileResolver,
+    wanted: &BTreeSet<String>,
+) -> Result<BTreeMap<String, ProgressBarAsset>> {
+    let mut bars = BTreeMap::new();
+    for (source_file, path) in resolver.resolve_dir_files_recursive("interface", Some("gfx"))? {
+        let text = read_latin1(&path)?;
+        if !mentions_wanted_alias(&text, wanted) {
+            continue;
+        }
+        for bar in parse_progress_bar_assets(&text, &source_file)
+            .into_iter()
+            .filter(|bar| wanted.contains(&bar.name))
+        {
+            if bars.insert(bar.name.clone(), bar).is_some() {
+                return Err(
+                    "combat progress alias is defined by multiple effective GFX files".into(),
+                );
+            }
+        }
+    }
+    let resolved = bars.keys().cloned().collect::<BTreeSet<_>>();
+    for name in wanted.difference(&resolved) {
+        return Err(
+            format!("effective interface registry omitted combat progress bar {name}").into(),
+        );
+    }
+    Ok(bars)
+}
+
+fn mentions_wanted_alias(text: &str, wanted: &BTreeSet<String>) -> bool {
+    wanted.iter().any(|name| text.contains(name))
 }
 
 pub fn land_combat_indicator_sprites_from_resolver(
@@ -351,22 +488,55 @@ pub fn combat_indicator_gui_layouts_from_resolver(
         naval_combat_results_mapicon: container("naval_combat_results_mapicon")?,
         ongoing_combat_container: container("ongoing_combat_container")?,
         combat_results_container: container("combat_results_container")?,
+        tiny_unit_counter: container("GFX_mapicon_tiny_unit_counter")?,
     })
 }
 
 pub fn combat_indicator_fonts_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<Vec<BitmapFontBinding>> {
+    let layouts = combat_indicator_gui_layouts_from_resolver(resolver)?;
+    referenced_combat_fonts_from_resolver(resolver, &layouts)
+}
+
+fn referenced_combat_fonts_from_resolver(
+    resolver: &GameFileResolver,
+    layouts: &CombatIndicatorGuiLayouts,
+) -> Result<Vec<BitmapFontBinding>> {
     let path = resolver.resolve_required(COMBAT_INDICATOR_CORE_GFX_SOURCE, "core gfx")?;
     let text = read_latin1(&path)?;
-    let wanted = COMBAT_INDICATOR_FONT_NAMES
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    Ok(parse_bitmap_fonts(&text, COMBAT_INDICATOR_CORE_GFX_SOURCE)
+    let wanted = [
+        (&layouts.land_combat_mapicon, "combat_progress"),
+        (&layouts.ongoing_combat_container, "count"),
+        (&layouts.combat_results_container, "count"),
+        (&layouts.tiny_unit_counter, "count"),
+    ]
+    .into_iter()
+    .map(|(layout, control)| {
+        layout
+            .control(control)
+            .and_then(|value| value.font.as_deref())
+            .ok_or_else(|| {
+                format!(
+                    "combat font control {}.{} has no effective FILE font",
+                    layout.name, control
+                )
+                .into()
+            })
+    })
+    .collect::<Result<BTreeSet<_>>>()?;
+    let fonts = parse_bitmap_fonts(&text, COMBAT_INDICATOR_CORE_GFX_SOURCE)
         .into_iter()
         .filter(|font| wanted.contains(font.name.as_str()))
-        .collect())
+        .collect::<Vec<_>>();
+    let resolved = fonts
+        .iter()
+        .map(|font| font.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for name in wanted.difference(&resolved) {
+        return Err(format!("effective core.gfx omitted combat bitmapfont {name}").into());
+    }
+    Ok(fonts)
 }
 
 /// Number of GUI containers this module gates (for tests / callers).
@@ -381,15 +551,9 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
-    fn vanilla_resolver() -> Option<GameFileResolver> {
-        let root = Path::new(VANILLA_GAME_DIR);
-        if !root.is_dir() {
-            eprintln!("skipping real-install combat indicator test; missing {VANILLA_GAME_DIR}");
-            return None;
-        }
-        Some(GameFileResolver::vanilla(root).expect("vanilla resolver"))
+    fn vanilla_resolver() -> GameFileResolver {
+        GameFileResolver::vanilla(replay_test_gates::require_vanilla_game_root())
+            .expect("vanilla resolver")
     }
 
     fn write_fixture(root: &Path, rel: &str, bytes: &[u8]) {
@@ -501,10 +665,58 @@ mod tests {
     }
 
     #[test]
+    fn combat_registry_prefilter_keeps_arbitrary_sources_and_duplicate_rejection() {
+        let root = crate::test_support::temp_test_dir("combat_registry_prefilter");
+        let vanilla = root.join("vanilla");
+        let alias = "GFX_xmap14_prefilter_probe";
+        let texture = "gfx/interface/mapicons/xmap14_prefilter_probe.dds";
+        write_fixture(
+            &vanilla,
+            "interface/unrelated_malformed.gfx",
+            br#"spriteTypes = { spriteType = { texturefile = "ignored.dds" } }"#,
+        );
+        write_fixture(
+            &vanilla,
+            "interface/custom/xmap14_probe.gfx",
+            format!(
+                "spriteTypes = {{ spriteType = {{ name = \"{alias}\" texturefile = \"{texture}\" }} }}"
+            )
+            .as_bytes(),
+        );
+        write_test_dds(&vanilla, texture, 8, 4);
+
+        let resolver = GameFileResolver::vanilla(&vanilla).expect("resolver");
+        let wanted = BTreeSet::from([alias.to_string()]);
+        let (assets, unresolved) =
+            referenced_sprite_inventory(&resolver, &wanted).expect("filtered registry");
+        assert!(unresolved.is_empty());
+        assert_eq!(
+            assets.get(alias).expect("custom alias").source_file,
+            "interface/custom/xmap14_probe.gfx"
+        );
+
+        write_fixture(
+            &vanilla,
+            "interface/custom/xmap14_probe_duplicate.gfx",
+            format!(
+                "spriteTypes = {{ spriteType = {{ name = \"{alias}\" texturefile = \"{texture}\" }} }}"
+            )
+            .as_bytes(),
+        );
+        let error = referenced_sprite_inventory(&resolver, &wanted)
+            .expect_err("duplicate aliases must remain fatal")
+            .to_string();
+        assert!(error.contains("defined by multiple effective GFX files"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn vanilla_land_combat_sprites_resolve_and_frame_split() {
-        let Some(resolver) = vanilla_resolver() else {
-            return;
-        };
+        let resolver = vanilla_resolver();
         let manifest = combat_indicator_assets_from_resolver(&resolver).expect("manifest");
 
         // N/N resolution gate: every declared land sprite resolves, none unresolved.
@@ -562,13 +774,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn vanilla_naval_combat_sprites_resolve_and_frame_split() {
-        let Some(resolver) = vanilla_resolver() else {
-            return;
-        };
+        let resolver = vanilla_resolver();
         let manifest = combat_indicator_assets_from_resolver(&resolver).expect("manifest");
 
-        assert_eq!(manifest.naval_combat_sprites.len(), 10);
+        assert_eq!(manifest.naval_combat_sprites.len(), 14);
 
         let naval = manifest
             .naval_combat_sprite("GFX_mapicon_naval_combat")
@@ -610,15 +824,27 @@ mod tests {
         );
         assert_eq!((hq_frame.texture_width, hq_frame.texture_height), (53, 43));
 
-        // Full inventory sanity: 17 resolved combat sprites, 12 unique textures.
-        assert_eq!(manifest.resolved_sprite_count(), 17);
+        let tiny = manifest
+            .naval_combat_sprite("GFX_mapicon_tiny_unit_counter")
+            .expect("tiny naval counter backing");
+        assert_eq!(
+            tiny.texture_file,
+            "gfx/interface/mapicons/mapicon_tiny_unit_counter.dds"
+        );
+        assert_eq!((tiny.texture_width, tiny.texture_height), (66, 20));
+
+        // Full inventory sanity: the 17 combat-bubble surfaces plus the four
+        // CTinyUnitCounter surfaces used by the naval adds grids.
+        assert_eq!(manifest.resolved_sprite_count(), 21);
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn vanilla_combat_progress_bars_decode() {
-        let Some(resolver) = vanilla_resolver() else {
-            return;
-        };
+        let resolver = vanilla_resolver();
         let bars = combat_indicator_progress_bars_from_resolver(&resolver).expect("bars");
         assert_eq!(bars.len(), 2);
 
@@ -654,10 +880,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn vanilla_combat_gui_layouts_and_placement_stub_decode() {
-        let Some(resolver) = vanilla_resolver() else {
-            return;
-        };
+        let resolver = vanilla_resolver();
         let layouts = combat_indicator_gui_layouts_from_resolver(&resolver).expect("layouts");
 
         assert_eq!(
@@ -721,8 +949,36 @@ mod tests {
             naval_progress.sprite_type.as_deref(),
             Some("GFX_navalcombat_bar_progress_attacker_154")
         );
+        assert_eq!(naval_progress.center_position, Some(true));
+        assert_eq!(naval_progress.orientation.as_deref(), Some("center"));
+        let direction = layouts
+            .land_combat_mapicon
+            .control("battle_indicator_direction")
+            .expect("land direction");
+        assert_eq!(direction.center_position, Some(true));
+        assert_eq!(direction.orientation.as_deref(), Some("UPPER_LEFT"));
 
-        // Placement stub: FILE size present, screen-space fields capture-gated.
+        let tiny = &layouts.tiny_unit_counter;
+        assert_eq!(
+            tiny.size,
+            Some(GuiSize {
+                width: 66,
+                height: 120
+            })
+        );
+        assert_eq!(
+            tiny.control("background")
+                .and_then(|control| control.sprite_type.as_deref()),
+            Some("GFX_mapicon_tiny_unit_counter")
+        );
+        let tiny_count = tiny.control("count").expect("tiny count");
+        assert_eq!(tiny_count.font.as_deref(), Some("Main_14"));
+        assert_eq!(tiny_count.position, Some(GuiPoint { x: 36, y: 3 }));
+        assert_eq!(tiny_count.max_width, Some(20));
+        assert_eq!(tiny_count.max_height, Some(14));
+
+        // Legacy inventory helper: FILE size present, production placement is
+        // owned by the XMAP14 adapter rather than this stub.
         let manifest = combat_indicator_assets_from_resolver(&resolver).expect("manifest");
         let stub = manifest.placement_stub(4242, CombatIndicatorKind::Land);
         assert_eq!(stub.province_id, 4242);
@@ -736,14 +992,16 @@ mod tests {
         assert_eq!(stub.screen_quad_size, None);
         assert!(!stub.anchor_law_known);
 
-        assert_eq!(combat_indicator_gui_container_count(), 5);
+        assert_eq!(combat_indicator_gui_container_count(), 6);
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn vanilla_combat_fonts_decode() {
-        let Some(resolver) = vanilla_resolver() else {
-            return;
-        };
+        let resolver = vanilla_resolver();
         let fonts = combat_indicator_fonts_from_resolver(&resolver).expect("fonts");
         assert!(fonts.iter().any(|font| {
             font.name == "hoi_16mbs"
@@ -752,5 +1010,6 @@ mod tests {
                     .iter()
                     .any(|file| file == "gfx/fonts/hoi_16mbs")
         }));
+        assert!(fonts.iter().any(|font| font.name == "Main_14"));
     }
 }

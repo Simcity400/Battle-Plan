@@ -1,8 +1,11 @@
 //! Portable, path-independent used-content requirements for a replay.
 //! Absolute install/profile paths never cross this boundary.
 
+pub mod authored_ui;
+pub mod authored_ui_closure;
 pub mod content_parse;
 pub mod effective_vfs;
+pub mod foundation;
 pub mod gfx;
 pub mod gui;
 pub mod hud_emitter;
@@ -13,9 +16,45 @@ pub mod symbol_manifest;
 use crate::hud_role::validate_sha256;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+pub const MAX_CONTENT_PAYLOAD_BYTES: u64 = 2 << 30;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SCHEMA: &str = "hoi4.portable-content-manifest.v2";
+pub const AUTHORED_GUI_NAMESPACE_CONSUMER: &str =
+    "replay.authored_gui_effective_namespace.complete.v1";
+pub const AUTHORED_GFX_NAMESPACE_CONSUMER: &str =
+    "replay.authored_gfx_effective_namespace.complete.v1";
+pub const AUTHORED_LOCALISATION_NAMESPACES_CONSUMER: &str =
+    "replay.authored_localisation_effective_namespaces.all.complete.v1";
+/// Upper bound for rows emitted by one complete authored-content census.
+pub const MAX_REQUIRED_CONTENT_ROWS: usize = 1 << 20;
+
+/// Stable case-insensitive key used by the authored-content closure census.
+pub fn filesystem_case_key(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+pub fn is_playback_local_presentation_setting(key: &str) -> bool {
+    matches!(
+        key,
+        "physical_width"
+            | "physical_height"
+            | "min_gui_width"
+            | "min_gui_height"
+            | "gui_scale_f32_bits"
+            | "refresh_rate_hz"
+            | "max_refresh_rate_hz"
+            | "fullscreen"
+            | "borderless"
+            | "display_mode"
+            | "input_variant"
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -257,6 +296,8 @@ pub struct ContentValidationReport {
 pub struct ValidatedContentAdmission {
     manifest_digest_sha256: String,
     product_modset_sha256: String,
+    ordered_layers: Vec<RecordedContentLayer>,
+    localisation_language: String,
     required_by_path: BTreeMap<String, UsedContentKey>,
     required_by_consumer: BTreeMap<String, Vec<UsedContentKey>>,
 }
@@ -268,6 +309,14 @@ impl ValidatedContentAdmission {
 
     pub fn product_modset_sha256(&self) -> &str {
         &self.product_modset_sha256
+    }
+
+    pub fn ordered_layers(&self) -> &[RecordedContentLayer] {
+        &self.ordered_layers
+    }
+
+    pub fn localisation_language(&self) -> &str {
+        &self.localisation_language
     }
 
     pub fn used_content(&self, game_relative_path: &str) -> Option<&UsedContentKey> {
@@ -1022,6 +1071,17 @@ impl ContentManifest {
                     invalid = true;
                 }
             }
+            if content.payload_bytes > MAX_CONTENT_PAYLOAD_BYTES {
+                issues.push(issue(
+                    ContentIssueCode::PayloadLengthMismatch,
+                    key.clone(),
+                    format!(
+                        "resolved payload exceeds the {MAX_CONTENT_PAYLOAD_BYTES}-byte ceiling: {}",
+                        content.payload_bytes
+                    ),
+                ));
+                invalid = true;
+            }
             // Two rows are "the same row" when the playback host would open the
             // same file, which is the collision key, not the canonical form.
             // An undecidable spelling is refused rather than admitted as
@@ -1252,6 +1312,8 @@ impl ContentManifest {
         Ok(ValidatedContentAdmission {
             manifest_digest_sha256,
             product_modset_sha256: self.product_modset_sha256.clone(),
+            ordered_layers: self.ordered_layers.clone(),
+            localisation_language: self.localisation_language.clone(),
             required_by_path: self
                 .required_content
                 .iter()
@@ -1265,6 +1327,16 @@ impl ContentManifest {
             required_by_consumer,
         })
     }
+}
+
+/// Pointer-free identity for one ordered content layer.
+pub fn content_layer_identity_sha256(layer: &RecordedContentLayer) -> Result<String, String> {
+    let canonical = serde_json::json!({
+        "schema": "hoi4.portable-content-layer-identity.v1",
+        "layer": layer,
+    });
+    let bytes = serde_json::to_vec(&canonical).map_err(|err| err.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 pub fn compute_selection_sha256(
@@ -2244,6 +2316,12 @@ fn validate_used_content_key(content: &UsedContentKey) -> Result<(), String> {
     )?;
     validate_sha256(&content.source_sha256, "content source")?;
     validate_sha256(&content.payload_sha256, "content payload")?;
+    if content.payload_bytes > MAX_CONTENT_PAYLOAD_BYTES {
+        return Err(format!(
+            "content payload exceeds the {MAX_CONTENT_PAYLOAD_BYTES}-byte ceiling: {}",
+            content.payload_bytes
+        ));
+    }
     let normalized = normalize_game_relative_path(&content.normalized_game_relative_path)?;
     if normalized != content.normalized_game_relative_path {
         return Err(format!(

@@ -941,8 +941,12 @@ mod tests {
     /// + capture session being present (real-file evidence test, same
     /// pattern as the other capture-gated tests).
     #[test]
+    #[cfg_attr(
+        not(gate_underwater_evidence_with_hoi4),
+        ignore = "the captured underwater TerrainDiffuse payload at C:\\Users\\Example\\AppData\\Local\\hoi4_captures\\session_CAPFIX2_GAPS_4, plus the game install"
+    )]
     fn engine_underwater_terrain_diffuse_is_the_shipped_seabed_dds() {
-        let game = std::path::Path::new(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
+        let game = replay_test_gates::require_vanilla_game_root();
         let session = std::path::Path::new(
             r"C:\Users\Example\AppData\Local\hoi4_captures\session_CAPFIX2_GAPS_4",
         );
@@ -950,12 +954,8 @@ mod tests {
         let payload_path = session.join(
             "underwater_frame_draw_map_frame_shared_payload_ps_srv_TerrainDiffuse_c09909744edaab9c.d3d11",
         );
-        if !dds_path.is_file() || !payload_path.is_file() {
-            eprintln!(
-                "engine_underwater_terrain_diffuse_is_the_shipped_seabed_dds skipped: evidence files absent"
-            );
-            return;
-        }
+        replay_test_gates::require_existing_file(&dds_path);
+        replay_test_gates::require_existing_file(&payload_path);
         let dds = std::fs::read(&dds_path).expect("read shipped seabed DDS");
         let payload = std::fs::read(&payload_path).expect("read captured payload");
         assert_eq!(&dds[0..4], b"DDS ", "shipped file must be a DDS");

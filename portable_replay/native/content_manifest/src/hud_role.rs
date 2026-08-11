@@ -75,6 +75,16 @@ pub enum HudSemanticRole {
         sprite_id: String,
         texture_slot: String,
     },
+    SpriteEffect {
+        element: String,
+        sprite_id: String,
+        effect_token: String,
+    },
+    SpriteEffectInclude {
+        element: String,
+        sprite_id: String,
+        include_slot: String,
+    },
     Font {
         element: String,
         font_id: String,
@@ -100,6 +110,9 @@ impl HudSemanticRole {
             Self::GuiRoot { .. } => RequiredContentKind::GuiDefinition,
             Self::Sprite { .. } => RequiredContentKind::Catalog,
             Self::SpriteTexture { .. } | Self::FontTexture { .. } => RequiredContentKind::Texture,
+            Self::SpriteEffect { .. } | Self::SpriteEffectInclude { .. } => {
+                RequiredContentKind::ShaderSource
+            }
             Self::Font { .. } => RequiredContentKind::Font,
             Self::Localisation { .. } => RequiredContentKind::Localisation,
             Self::DefineOrScriptedConsumer { .. } => RequiredContentKind::Definition,
@@ -130,6 +143,26 @@ impl HudSemanticRole {
                 validate_token(sprite_id, "HUD sprite-texture id")?;
                 validate_token(texture_slot, "HUD sprite-texture slot")?;
                 format!("sprite_texture/{element}/{sprite_id}/{texture_slot}")
+            }
+            Self::SpriteEffect {
+                element,
+                sprite_id,
+                effect_token,
+            } => {
+                validate_token(element, "HUD sprite-effect element")?;
+                validate_token(sprite_id, "HUD sprite-effect id")?;
+                validate_token(effect_token, "HUD sprite-effect token")?;
+                format!("sprite_effect/{element}/{sprite_id}/{effect_token}")
+            }
+            Self::SpriteEffectInclude {
+                element,
+                sprite_id,
+                include_slot,
+            } => {
+                validate_token(element, "HUD sprite-effect-include element")?;
+                validate_token(sprite_id, "HUD sprite-effect-include id")?;
+                validate_token(include_slot, "HUD sprite-effect-include slot")?;
+                format!("sprite_effect_include/{element}/{sprite_id}/{include_slot}")
             }
             Self::Font { element, font_id } => {
                 validate_token(element, "HUD font element")?;
@@ -473,6 +506,16 @@ mod tests {
         assert_eq!(
             root.consumer(HudSurface::Minimap).unwrap(),
             format!("hud_role/v1/minimap/gui/hud_root/{}", "b".repeat(64))
+        );
+        let effect = HudSemanticRole::SpriteEffect {
+            element: "topbar_e0_icon".into(),
+            sprite_id: "GFX_topbar".into(),
+            effect_token: "gfx_FX_buttonstate_shader".into(),
+        };
+        assert_eq!(effect.required_kind(), RequiredContentKind::ShaderSource);
+        assert_eq!(
+            effect.consumer(HudSurface::Topbar).unwrap(),
+            "hud_role/v1/topbar/sprite_effect/topbar_e0_icon/GFX_topbar/gfx_FX_buttonstate_shader"
         );
     }
 }

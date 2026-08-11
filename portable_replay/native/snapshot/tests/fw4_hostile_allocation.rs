@@ -1,0 +1,204 @@
+//! Hostile-input allocation regressions for the certified replay cache
+//! (FW4 / R2-1, R2-2).
+//!
+//! Both cases are authenticated, self-consistent artifacts: the index binds the
+//! cache length and SHA-256, and the cache header carries the source digest. The
+//! only hostile field is a declared collection count. Before the fix each count
+//! was checked against a global constant only and then handed straight to
+//! `Vec::with_capacity`, so a few hundred bytes could request multiple GiB and
+//! take the process down through `handle_alloc_error` — an ABORT, not a typed
+//! refusal. These tests pin the typed refusal.
+
+use portable_replay_format::replay_cache::{CertifiedReplayCache, ReplayHourIndex};
+use portable_replay_format::sha256::Sha256;
+
+const INDEX_MAGIC: &[u8; 4] = b"H4IX";
+const CACHE_MAGIC: &[u8; 4] = b"H4CP";
+const FORMAT_VERSION: u16 = 1;
+const RECORD_CHECKPOINT: u8 = 1;
+/// `H4CP` + version + flags + 32-byte source digest.
+const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
+
+fn hex32(byte: u8) -> String {
+    format!("{byte:02x}").repeat(32)
+}
+
+fn digest_of(hex: &str) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |c: u8| match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => unreachable!("test digest is lowercase hex"),
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    out
+}
+
+fn put_string(out: &mut Vec<u8>, value: &str) {
+    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+}
+
+/// One authenticated cache holding a single checkpoint record whose binary-JSON
+/// payload is exactly `[tag][count]` — a declared collection with no elements.
+fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
+    let source_sha = hex32(0xcd);
+    let source_len = 100u64;
+
+    let mut payload = Vec::new();
+    payload.push(tag);
+    payload.extend_from_slice(&count.to_le_bytes());
+
+    let mut cache = Vec::new();
+    cache.extend_from_slice(CACHE_MAGIC);
+    cache.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    cache.extend_from_slice(&0u16.to_le_bytes());
+    cache.extend_from_slice(&digest_of(&source_sha));
+    assert_eq!(cache.len() as u64, CACHE_HEADER_LEN);
+
+    let record_offset = cache.len() as u64;
+    cache.push(RECORD_CHECKPOINT);
+    cache.extend_from_slice(&[0, 0, 0]);
+    cache.extend_from_slice(&0i64.to_le_bytes()); // hour index
+    cache.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    cache.push(0);
+    cache.extend_from_slice(&payload);
+    let record_len = cache.len() as u64 - record_offset;
+    let cache_len = cache.len() as u64;
+    let cache_sha = Sha256::hex(&cache);
+
+    let mut index = Vec::new();
+    index.extend_from_slice(INDEX_MAGIC);
+    index.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    index.extend_from_slice(&0u16.to_le_bytes());
+    index.push(1); // IdentityV1
+    index.extend_from_slice(&[0, 0, 0]);
+    index.extend_from_slice(&2u32.to_le_bytes()); // checkpoint interval hours
+    index.extend_from_slice(&source_len.to_le_bytes());
+    index.extend_from_slice(&cache_len.to_le_bytes());
+    index.extend_from_slice(&digest_of(&source_sha));
+    index.extend_from_slice(&digest_of(&cache_sha));
+    put_string(&mut index, "g");
+    put_string(&mut index, "1");
+    index.extend_from_slice(&1u64.to_le_bytes()); // hour count
+    index.extend_from_slice(&0i64.to_le_bytes()); // hour_index
+    index.extend_from_slice(&0u64.to_le_bytes()); // h4cr start
+    index.extend_from_slice(&source_len.to_le_bytes()); // h4cr end
+    index.extend_from_slice(&record_offset.to_le_bytes());
+    index.extend_from_slice(&record_len.to_le_bytes());
+    index.extend_from_slice(&0u32.to_le_bytes()); // checkpoint position
+    index.extend_from_slice(&0u32.to_le_bytes()); // delta steps
+    index.extend_from_slice(&digest_of(&hex32(0x00))); // world json sha
+    put_string(&mut index, "1936.1.1.1");
+
+    (index, cache, source_len, source_sha)
+}
+
+/// R2-1: `decode_value`'s array arm. `268,435,456 * size_of::<Value>()` is
+/// 8 GiB on a 64-bit target; the whole cache is a few hundred bytes.
+#[test]
+fn array_count_beyond_remaining_input_is_a_typed_refusal_not_an_abort() {
+    let (index_bytes, cache, source_len, source_sha) = hostile_cache(5, 0x1000_0000);
+    assert!(
+        index_bytes.len() + cache.len() < 1024,
+        "the hostile artifact must stay tiny to make the amplification the point"
+    );
+    let certified =
+        CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
+    let error = certified
+        .reconstruct_json(0)
+        .expect_err("a 268M-element array declared by a sub-kilobyte cache must be refused");
+    assert!(
+        error.message().contains("input bytes remain"),
+        "refusal must name the remaining-input bound, got {error}"
+    );
+}
+
+/// R2-1: the same shape through `decode_value`'s object arm.
+#[test]
+fn object_count_beyond_remaining_input_is_a_typed_refusal() {
+    let (index_bytes, cache, source_len, source_sha) = hostile_cache(6, 0x1000_0000);
+    let certified =
+        CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
+    let error = certified.reconstruct_json(0).expect_err("must be refused");
+    assert!(
+        error.message().contains("input bytes remain"),
+        "refusal must name the remaining-input bound, got {error}"
+    );
+}
+
+/// R2-2: `ReplayHourIndex::from_bytes` reserved `hour_count` entries (96 bytes
+/// each) before proving a single entry followed the count.
+#[test]
+fn hour_count_beyond_remaining_input_is_a_typed_refusal() {
+    // Declare the global maximum hour count and supply zero entry bytes.
+    let source_sha = hex32(0xcd);
+    let mut hostile = Vec::new();
+    hostile.extend_from_slice(INDEX_MAGIC);
+    hostile.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    hostile.extend_from_slice(&0u16.to_le_bytes());
+    hostile.push(1);
+    hostile.extend_from_slice(&[0, 0, 0]);
+    hostile.extend_from_slice(&2u32.to_le_bytes());
+    hostile.extend_from_slice(&100u64.to_le_bytes()); // source len
+    hostile.extend_from_slice(&CACHE_HEADER_LEN.to_le_bytes()); // cache len
+    hostile.extend_from_slice(&digest_of(&source_sha));
+    hostile.extend_from_slice(&digest_of(&hex32(0x11)));
+    put_string(&mut hostile, "g");
+    put_string(&mut hostile, "1");
+    hostile.extend_from_slice(&2_000_000u64.to_le_bytes());
+    assert!(
+        hostile.len() < 200,
+        "the truncated index must stay tiny, got {} bytes",
+        hostile.len()
+    );
+    let error = ReplayHourIndex::from_bytes(&hostile)
+        .expect_err("2,000,000 hours declared by a ~114-byte index must be refused");
+    assert!(
+        error.message().contains("input bytes remain"),
+        "refusal must name the remaining-input bound, got {error}"
+    );
+}
+
+/// The bound must not refuse an ordinary artifact: a real encoder round-trip
+/// still parses and reconstructs.
+#[test]
+fn ordinary_encoder_output_still_round_trips() {
+    use portable_replay_format::replay_cache::{
+        CacheBuildHour, CacheIdentityMode, ReplayCacheEncoder,
+    };
+
+    let source_sha = hex32(0xab);
+    let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 3).unwrap();
+    for hour in 0i64..5 {
+        let date = format!("1936.1.1.{}", hour + 1);
+        encoder
+            .push(CacheBuildHour {
+                hour_index: hour,
+                date: date.clone(),
+                h4cr_start_offset: (hour as u64) * 100,
+                h4cr_end_offset: (hour as u64 + 1) * 100,
+                world_json: serde_json::to_vec(&serde_json::json!({
+                    "date": date,
+                    "hour_index": hour,
+                    "world": {"rows": [1, 2, hour], "tag": format!("t{hour}")},
+                }))
+                .unwrap(),
+            })
+            .unwrap();
+    }
+    let (cache, index) = encoder
+        .finish("g", "1", CacheIdentityMode::IdentityV1, 500)
+        .unwrap();
+    let index_bytes = index.to_bytes().unwrap();
+    assert_eq!(
+        ReplayHourIndex::from_bytes(&index_bytes).unwrap().hours().len(),
+        5
+    );
+    let certified = CertifiedReplayCache::open(&index_bytes, cache, 500, &source_sha).unwrap();
+    for hour in 0..5 {
+        certified.reconstruct_json(hour).unwrap();
+    }
+}

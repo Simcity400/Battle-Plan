@@ -28,7 +28,7 @@ fn payloads() -> BTreeMap<String, Vec<u8>> {
             "gfx/fx/runtime.shader".into(),
             b"shader-source-from-base".to_vec(),
         ),
-        ("gfx/particles/cloud.dds".into(), vec![41, 42, 43, 44]),
+        ("gfx/textures/cloud.dds".into(), vec![41, 42, 43, 44]),
         ("gfx/models/unit.mesh".into(), (0u8..60).collect()),
     ])
 }
@@ -165,12 +165,12 @@ fn manifest() -> ContentManifest {
             ),
             required(
                 "texture",
-                "gfx/particles/cloud.dds",
+                "gfx/textures/cloud.dds",
                 RequiredContentKind::Texture,
                 1,
                 ContentLayerKind::Dlc,
                 "dlc-used",
-                &bytes["gfx/particles/cloud.dds"],
+                &bytes["gfx/textures/cloud.dds"],
             ),
             required(
                 "shader",
@@ -184,6 +184,16 @@ fn manifest() -> ContentManifest {
         ],
         manifest_digest_sha256: None,
     };
+    // A row won by a ZipArchive layer carries the layer's archive digest as
+    // its source digest - that is the only shape the recorder's admission
+    // emits, and manifest validation now binds it (content_manifest R3-2).
+    // Directory-layer wins keep source == payload, which required() already
+    // produces.
+    for row in value.required_content.iter_mut() {
+        if row.content.winning_layer_ordinal == 1 {
+            row.content.source_sha256 = hash("archive:dlc-used".as_bytes());
+        }
+    }
     value.source_profile.selection_sha256 = value.computed_selection_sha256().unwrap();
     value.with_computed_digest().unwrap()
 }
@@ -530,9 +540,9 @@ fn input_layout(pointer: usize, per_instance: bool) -> RawInputLayoutCreation {
 
 fn capture(manifest: &ContentManifest) -> RawRenderCatalogCapture {
     let shader = observed(&content(manifest, "gfx/fx/runtime.shader"));
-    let texture = content(manifest, "gfx/particles/cloud.dds");
+    let texture = content(manifest, "gfx/textures/cloud.dds");
     let mesh = content(manifest, "gfx/models/unit.mesh");
-    let texture_bytes = payloads()["gfx/particles/cloud.dds"].clone();
+    let texture_bytes = payloads()["gfx/textures/cloud.dds"].clone();
     let mesh_bytes = payloads()["gfx/models/unit.mesh"].clone();
     let packet = packet();
     let mut captures = RawRenderCatalogCapture {
@@ -1198,7 +1208,7 @@ fn builder_rejects_fabrication_tamper_stale_missing_extra_order_and_vfs_drift() 
     let mut missing_dlc_content = manifest.clone();
     missing_dlc_content
         .required_content
-        .retain(|row| row.content.normalized_game_relative_path != "gfx/particles/cloud.dds");
+        .retain(|row| row.content.normalized_game_relative_path != "gfx/textures/cloud.dds");
     missing_dlc_content.manifest_digest_sha256 = None;
     missing_dlc_content.source_profile.selection_sha256 =
         missing_dlc_content.computed_selection_sha256().unwrap();

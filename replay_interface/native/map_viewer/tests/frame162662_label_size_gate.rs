@@ -186,15 +186,10 @@ fn matching_instance<'a>(
 }
 
 #[test]
+#[cfg_attr(not(gate_map_bundle), ignore = "the map bundle directory at map_viewer/out/map_bundle")]
 fn frame162662_cross_session_label_sizes_reproduce() {
-    let dir = bundle_dir();
-    let Some(bundle) = load_bundle(&dir) else {
-        eprintln!(
-            "SKIP frame162662 label size gate: no map bundle at {}",
-            dir.display()
-        );
-        return;
-    };
+    let dir = replay_test_gates::require_existing_dir(bundle_dir());
+    let bundle = load_bundle(&dir).expect("load map bundle");
     let inputs = LabelLawInputs {
         province_ids: &bundle.province_ids,
         width: bundle.width,

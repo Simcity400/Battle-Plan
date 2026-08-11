@@ -42,8 +42,8 @@ const FEATURE_PORTABLE_CONTENT_MANIFEST_V2: &str = "portable_content_manifest_v2
 const STITCH_INDEX_SCHEMA: &str = "stitched-main-v1";
 const STITCH_ENTRY_ORDER: &str = "lexicographic-path-manifest-last-v1";
 /// Zip-bomb structural caps (spec §4.1). Generous for a real campaign yet bounded.
-const MAX_ENTRIES: usize = 2_000_000;
-const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // 64 GiB total
+pub(crate) const MAX_ENTRIES: usize = 2_000_000;
+pub(crate) const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // 64 GiB total
 static SPOOL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical digest domain shared by the stitch planner and the v2 reader. The
@@ -150,6 +150,8 @@ pub enum ContainerError {
     NoManifest,
     /// A semantic/integrity/identity rejection, with a human-readable reason.
     Reject(String),
+    /// Retained payload bytes disagree with the manifest digest that names them.
+    PayloadIntegrity(String),
     /// The manifest's mod identity disagrees with snapshot provenance. Typed
     /// (rather than a [`ContainerError::Reject`] string) so downstream layers
     /// can classify a modset mismatch without matching on error text.
@@ -171,7 +173,9 @@ impl std::fmt::Display for ContainerError {
                 f,
                 "no manifest.json: unfinalized/recovery-only .battleplan (refused by the normal reader)"
             ),
-            ContainerError::Reject(s) => write!(f, "container rejected: {s}"),
+            ContainerError::Reject(s) | ContainerError::PayloadIntegrity(s) => {
+                write!(f, "container rejected: {s}")
+            }
             // Renders the EXACT text the pre-typed Reject produced, so every
             // existing message contract (fixtures, product surfaces) holds.
             ContainerError::ModsetMismatch { manifest, snapshot } => write!(
@@ -319,7 +323,7 @@ impl ContainerArchive {
             }
             ContainerArchive::File(archive) => archive
                 .read_entry(index, calculate_sha256)
-                .map_err(file_archive_error),
+                .map_err(file_archive_entry_error),
         }
     }
 
@@ -336,7 +340,7 @@ impl ContainerArchive {
             ContainerArchive::File(archive) => {
                 let (digest, len) = archive
                     .copy_entry_to_writer(index, writer, true, maximum_uncompressed_bytes)
-                    .map_err(file_archive_error)?;
+                    .map_err(file_archive_entry_error)?;
                 let digest = digest.ok_or_else(|| {
                     ContainerError::Reject(
                         "file-backed archive omitted requested spool SHA-256".to_string(),
@@ -372,6 +376,16 @@ impl ContainerArchive {
 
 fn file_archive_error(error: String) -> ContainerError {
     ContainerError::Reject(format!("file-backed zip: {error}"))
+}
+
+fn file_archive_entry_error(error: crate::stream_verify::EntryFailure) -> ContainerError {
+    let integrity = error.is_integrity();
+    let message = format!("file-backed zip: {}", error.into_reason());
+    if integrity {
+        ContainerError::PayloadIntegrity(message)
+    } else {
+        ContainerError::Reject(message)
+    }
 }
 
 fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
@@ -3540,7 +3554,7 @@ fn verify_streamed(
         STREAMING_MAX_CONTAINER_ENTRY_BYTES,
     )?;
     if actual_sha256 != rec.expected_sha256 {
-        return Err(ContainerError::Reject(format!(
+        return Err(ContainerError::PayloadIntegrity(format!(
             "entry {path}: sha256 {actual_sha256} != manifest {}",
             rec.expected_sha256
         )));
@@ -3571,7 +3585,7 @@ fn verify_and_read(
             ))
         })?;
         if got != rec.expected_sha256 {
-            return Err(ContainerError::Reject(format!(
+            return Err(ContainerError::PayloadIntegrity(format!(
                 "entry {path}: sha256 {got} != manifest {}",
                 rec.expected_sha256
             )));

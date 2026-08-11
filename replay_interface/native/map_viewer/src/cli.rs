@@ -274,21 +274,47 @@ pub fn run_cli() -> Result<()> {
             if let Some(resolver) = resolver.clone() {
                 renderer = renderer.with_reflection_resolver(resolver);
             }
+            // RES2: the optional layers take the SAME resolver as the terrain
+            // bundle. They used to load resolver-less even when `--game` was
+            // supplied, which left their vanilla sources uncertified for no
+            // reason and (once the production vanilla-source gate exists) would
+            // refuse a legitimate pre-FW7 multilayer capture that the local
+            // effective VFS can verify perfectly well.
             let water_bundle = water_map_frame_bundle
                 .as_ref()
-                .map(NativeD3d11TerrainBundle::load_water)
+                .map(|path| match resolver.as_ref() {
+                    Some(resolver) => {
+                        NativeD3d11TerrainBundle::load_water_with_resolver(path, resolver)
+                    }
+                    None => NativeD3d11TerrainBundle::load_water(path),
+                })
                 .transpose()?;
             let rivers_bundle = rivers_map_frame_bundle
                 .as_ref()
-                .map(NativeD3d11TerrainBundle::load_rivers)
+                .map(|path| match resolver.as_ref() {
+                    Some(resolver) => {
+                        NativeD3d11TerrainBundle::load_rivers_with_resolver(path, resolver)
+                    }
+                    None => NativeD3d11TerrainBundle::load_rivers(path),
+                })
                 .transpose()?;
             let borders_bundle = borders_map_frame_bundle
                 .as_ref()
-                .map(NativeD3d11TerrainBundle::load_borders)
+                .map(|path| match resolver.as_ref() {
+                    Some(resolver) => {
+                        NativeD3d11TerrainBundle::load_borders_with_resolver(path, resolver)
+                    }
+                    None => NativeD3d11TerrainBundle::load_borders(path),
+                })
                 .transpose()?;
             let trees_bundle = trees_map_frame_bundle
                 .as_ref()
-                .map(NativeD3d11TerrainBundle::load_trees)
+                .map(|path| match resolver.as_ref() {
+                    Some(resolver) => {
+                        NativeD3d11TerrainBundle::load_trees_with_resolver(path, resolver)
+                    }
+                    None => NativeD3d11TerrainBundle::load_trees(path),
+                })
                 .transpose()?;
             let mut prepared = if map_clock_time.is_some() {
                 renderer.prepare_production_map_with_layers(

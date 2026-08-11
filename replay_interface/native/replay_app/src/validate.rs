@@ -14,14 +14,244 @@ use std::path::Path;
 
 use replay_core::{SourceError, WorldTimeline};
 
+/// Shared normal-product caller for windowed, bundle-less headless, and
+/// recording-benchmark routes. The mandatory content operation executes before
+/// the exhaustive viewer-owned adapter graph is admitted. Recorder presentation
+/// is not an argument and cannot become a fallback.
+#[cfg(windows)]
+pub(crate) struct ProductMapFoundationSession {
+    content_receipt: map_viewer::FoundationContentExecutionReceipt,
+    adapters: map_viewer::ProductionMapFeatureAdapters<'static>,
+    playback: map_viewer::FoundationPlaybackState,
+}
+
+#[cfg(windows)]
+pub(crate) fn product_foundation_assigned_stage_plan() -> crate::Result<(
+    map_viewer::AssignedStageTopology,
+    map_viewer::AssignedStageSchedule,
+)> {
+    let topology = map_viewer::product_foundation_assigned_stage_topology()?;
+    let schedule = map_viewer::AssignedStageSchedule::from_topology(&topology)
+        .map_err(|error| format!("product foundation assigned-stage schedule: {error}"))?;
+    Ok((topology, schedule))
+}
+
+#[cfg(windows)]
+impl ProductMapFoundationSession {
+    pub(crate) fn start(
+        resolver: &map_viewer::GameFileResolver,
+        content_admission: &replay_core::ValidatedContentAdmission,
+        manifest: &replay_core::ContentManifest,
+        terrain_options: map_viewer::TerrainLodCullOptions,
+    ) -> crate::Result<Self> {
+        let (topology, schedule) = product_foundation_assigned_stage_plan()?;
+        Self::start_with_assigned_stage_schedule(
+            resolver,
+            content_admission,
+            manifest,
+            terrain_options,
+            &topology,
+            schedule,
+        )
+    }
+
+    /// Required product entry path for any promoted adapter that consumes a
+    /// named assigned stage. The complete topology is authenticated before the
+    /// adapter graph can observe its derived ordinals.
+    pub(crate) fn start_with_assigned_stage_schedule(
+        resolver: &map_viewer::GameFileResolver,
+        content_admission: &replay_core::ValidatedContentAdmission,
+        manifest: &replay_core::ContentManifest,
+        terrain_options: map_viewer::TerrainLodCullOptions,
+        topology: &map_viewer::AssignedStageTopology,
+        schedule: map_viewer::AssignedStageSchedule,
+    ) -> crate::Result<Self> {
+        let content_authority = crate::content_compatibility::derive_bundle_content_authority(
+            manifest,
+            resolver,
+            content_admission,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+        let content_receipt = map_viewer::execute_foundation_content_preflight(
+            resolver,
+            content_admission,
+            &content_authority.authority_sha256,
+        )?;
+        Ok(Self {
+            content_receipt,
+            adapters: map_viewer::product_feature_adapters_with_assigned_stage_schedule(
+                resolver,
+                content_admission,
+                terrain_options,
+                &topology,
+                schedule,
+                &manifest.localisation_language,
+            )?,
+            playback: map_viewer::FoundationPlaybackState::default(),
+        })
+    }
+
+    /// Exact per-frame XMAP12 entry point. The product caller supplies only
+    /// current carriers decoded from the same authenticated WorldFrame.
+    /// Authenticated absence remains typed unavailable and never reuses prior
+    /// output.
+    pub(crate) fn prepare_with_xmap12_inputs(
+        &mut self,
+        frame: &replay_core::WorldFrame,
+        viewer: &map_viewer::ViewerOwnedMapState,
+        manifest: &replay_core::ContentManifest,
+        building_visual: Option<&map_viewer::Xmap12BuildingVisualFrame>,
+        fixed_runtime: Option<&map_viewer::Xmap12FixedRuntimeState>,
+    ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
+        let projection = map_viewer::map_authority_projection_from_world_frame(frame, manifest)?;
+        let admission = map_viewer::admit_map_authority_projection(&projection)?;
+        let candidate = self.adapters.prepare_with_xmap12_inputs(
+            frame,
+            viewer,
+            manifest,
+            &admission,
+            &self.content_receipt,
+            building_visual,
+            fixed_runtime,
+        )?;
+        let fresh = map_viewer::require_fresh_foundation_frame(
+            self.playback
+                .admit_allowing_xmap16_unavailable(candidate.envelope.clone())?,
+        )?;
+        if fresh != candidate.envelope {
+            return Err("foundation playback admitted a different terrain frame envelope".into());
+        }
+        // Validate the exact RailSupply disposition/payload pairing without
+        // converting schema-v1/v2 typed unavailability into a session error.
+        // The renderer consumes this same typed state and withholds only
+        // XMAP16 execution/product-complete advertisement for the hour.
+        let _ = candidate.xmap16_rail_supply_state()?;
+        Ok(candidate)
+    }
+
+    /// Current-frame product entry with the explicit viewer-owned XMAP15
+    /// order selection. The selected identity is checked by the XMAP15
+    /// adapter against the same authenticated frame and is never carried
+    /// forward when the order disappears.
+    pub(crate) fn prepare_with_xmap12_and_xmap15_inputs(
+        &mut self,
+        frame: &replay_core::WorldFrame,
+        viewer: &map_viewer::ViewerOwnedMapState,
+        manifest: &replay_core::ContentManifest,
+        building_visual: Option<&map_viewer::Xmap12BuildingVisualFrame>,
+        fixed_runtime: Option<&map_viewer::Xmap12FixedRuntimeState>,
+        selection: &map_viewer::Xmap15ViewerSelection,
+    ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
+        let projection = map_viewer::map_authority_projection_from_world_frame(frame, manifest)?;
+        let admission = map_viewer::admit_map_authority_projection(&projection)?;
+        let candidate = self.adapters.prepare_with_xmap12_and_xmap15_inputs(
+            frame,
+            viewer,
+            manifest,
+            &admission,
+            &self.content_receipt,
+            building_visual,
+            fixed_runtime,
+            selection,
+        )?;
+        let fresh = map_viewer::require_fresh_foundation_frame(
+            self.playback
+                .admit_allowing_xmap16_unavailable(candidate.envelope.clone())?,
+        )?;
+        if fresh != candidate.envelope {
+            return Err("foundation playback admitted a different terrain frame envelope".into());
+        }
+        let _ = candidate.xmap16_rail_supply_state()?;
+        Ok(candidate)
+    }
+}
+
+pub(crate) const XMAP12_BUILDING_VISUAL_WORLD_INPUT_KEY: &str = "xmap12_building_visual";
+pub(crate) const XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY: &str = "xmap12_fixed_runtime";
+
+pub(crate) struct AuthenticatedXmap12FrameInputs {
+    pub(crate) building_visual: Option<map_viewer::Xmap12BuildingVisualFrame>,
+    pub(crate) fixed_runtime: Option<map_viewer::Xmap12FixedRuntimeState>,
+}
+
+pub(crate) fn authenticated_xmap12_frame_inputs(
+    frame: &replay_core::WorldFrame,
+) -> crate::Result<AuthenticatedXmap12FrameInputs> {
+    let replay_frame_identity_sha256 = map_viewer::xmap04_replay_frame_identity_sha256(frame)?;
+    let building_visual = frame
+        .domain(XMAP12_BUILDING_VISUAL_WORLD_INPUT_KEY)
+        .map(|value| {
+            serde_json::from_value::<map_viewer::Xmap12BuildingVisualFrame>(value.clone()).map_err(
+                |error| -> Box<dyn std::error::Error> {
+                    format!(
+                        "authenticated {XMAP12_BUILDING_VISUAL_WORLD_INPUT_KEY} payload: {error}"
+                    )
+                    .into()
+                },
+            )
+        })
+        .transpose()?;
+    let fixed_runtime = frame
+        .domain(XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY)
+        .map(|value| {
+            serde_json::from_value::<map_viewer::Xmap12FixedRuntimeState>(value.clone()).map_err(
+                |error| -> Box<dyn std::error::Error> {
+                    format!("authenticated {XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY} payload: {error}")
+                        .into()
+                },
+            )
+        })
+        .transpose()?;
+    if let Some(value) = &building_visual {
+        value.validate()?;
+        if value.replay_frame_identity_sha256 != replay_frame_identity_sha256 {
+            return Err("XMAP12 building visual input belongs to another replay frame".into());
+        }
+    }
+    if let Some(value) = &fixed_runtime {
+        value.validate_for_replay(&replay_frame_identity_sha256)?;
+    }
+    Ok(AuthenticatedXmap12FrameInputs {
+        building_visual,
+        fixed_runtime,
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn prepare_product_map_foundation(
+    frame: &replay_core::WorldFrame,
+    viewer: &map_viewer::ViewerOwnedMapState,
+    resolver: &map_viewer::GameFileResolver,
+    content_admission: &replay_core::ValidatedContentAdmission,
+    manifest: &replay_core::ContentManifest,
+    terrain_options: map_viewer::TerrainLodCullOptions,
+) -> crate::Result<map_viewer::PreparedFoundationFrame> {
+    let inputs = authenticated_xmap12_frame_inputs(frame)?;
+    ProductMapFoundationSession::start(resolver, content_admission, manifest, terrain_options)?
+        .prepare_with_xmap12_inputs(
+            frame,
+            viewer,
+            manifest,
+            inputs.building_visual.as_ref(),
+            inputs.fixed_runtime.as_ref(),
+        )
+}
+
 /// Category of a rejected recording, for a readable headline. The precise
 /// underlying message is carried alongside in [`OpenOutcome::Rejected::message`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectionKind {
     /// The path is not a `.battleplan` file or snapshot-store directory.
     NotFound,
-    /// Container/manifest/schema/hash validation failed.
+    /// Container/manifest/schema validation failed.
     ContainerOrSchema,
+    /// Retained payload bytes disagree with the digest/length naming them: a
+    /// failed SHA-256 or CRC-32, a truncated payload, or a spooled object that
+    /// changed underneath an authenticated read. Distinct from
+    /// [`RejectionKind::ContainerOrSchema`]: the recording is well formed and
+    /// its bytes are corrupt or substituted, which is a different thing to tell
+    /// a player and a different thing to act on.
+    Integrity,
     /// Manifest modset disagrees with the snapshot provenance.
     Modset,
     /// Recognized but unplayable by this build (e.g. compact-stream-only).
@@ -37,6 +267,7 @@ impl RejectionKind {
         match self {
             RejectionKind::NotFound => "recording not found",
             RejectionKind::ContainerOrSchema => "recording failed container/schema validation",
+            RejectionKind::Integrity => "recording failed payload integrity validation",
             RejectionKind::Modset => "recording modset mismatch",
             RejectionKind::Unsupported => "recording not playable by this build",
             RejectionKind::MultipleGames => "recording holds multiple games",
@@ -108,10 +339,18 @@ impl OpenOutcome {
 }
 
 /// Run the shared validator on `path` and classify the result. The whole
-/// recording is opened (container + snapshot index + timeline), so this is the
-/// same acceptance the playback path performs — a positive fixture that opens
-/// here will open for playback, and a negative that is rejected here is
-/// rejected for playback.
+/// recording is opened (container + snapshot index + timeline) through the
+/// exact playback open path, then EVERY indexed frame payload is decoded and
+/// authenticated ([`validate_all_frame_payloads`]).
+///
+/// The equivalence with playback is one-way: a positive fixture that
+/// validates here will open for playback, and a recording that playback's
+/// open rejects is rejected here too. The converse does NOT hold for frame
+/// payloads — playback authentication is deliberately lazy/incremental (the
+/// F4 policy), so a recording whose LATER payload is corrupt fails this
+/// whole-recording certification yet still opens for playback and plays every
+/// hour before the corrupt one, refusing (fail-closed) only when playback
+/// reaches it.
 pub fn open_and_validate(path: &Path) -> OpenOutcome {
     open_and_validate_segment(path, None)
 }
@@ -122,15 +361,15 @@ pub fn open_and_validate_segment(path: &Path, logical_stream_id: Option<u64>) ->
         Ok(timeline) => {
             let receipt = timeline.prefold_receipt();
             OpenOutcome::Opened(OpenReport {
-            game_id: timeline.game_id().to_string(),
-            hour_count: timeline.hours().len(),
-            first_hour: timeline.first_hour(),
-            last_hour: timeline.last_hour(),
-            warnings: timeline.warnings().to_vec(),
-            prefold_decoder_id: receipt.map(|value| value.decoder_id().to_string()),
-            prefold_source_len: receipt.map(|value| value.source_len()),
-            prefold_source_sha256: receipt.map(|value| value.source_sha256().to_string()),
-        })
+                game_id: timeline.game_id().to_string(),
+                hour_count: timeline.hours().len(),
+                first_hour: timeline.first_hour(),
+                last_hour: timeline.last_hour(),
+                warnings: timeline.warnings().to_vec(),
+                prefold_decoder_id: receipt.map(|value| value.decoder_id().to_string()),
+                prefold_source_len: receipt.map(|value| value.source_len()),
+                prefold_source_sha256: receipt.map(|value| value.source_sha256().to_string()),
+            })
         }
         Err(outcome) => outcome,
     }
@@ -166,29 +405,46 @@ pub fn open_timeline_segment(
 /// are certification surfaces, so they must reject the whole recording.
 fn validate_all_frame_payloads(timeline: &WorldTimeline) -> Result<(), OpenOutcome> {
     for &hour in timeline.hours() {
-        timeline.frame(hour).map_err(|error| OpenOutcome::Rejected {
-            kind: RejectionKind::ContainerOrSchema,
-            message: format!(
-                "recording frame at canonical hour {hour} failed payload integrity/decode validation: {error}"
-            ),
+        timeline.frame(hour).map_err(|error| {
+            // Classify from the TYPED source error carried inside the world
+            // error, so a frame whose bytes failed their digest is reported as
+            // an integrity failure instead of being flattened into
+            // "container/schema" at the last hop.
+            let kind = match &error {
+                replay_core::WorldError::Source(source) => rejection_kind(source),
+                _ => RejectionKind::ContainerOrSchema,
+            };
+            OpenOutcome::Rejected {
+                kind,
+                message: format!(
+                    "recording frame at canonical hour {hour} failed payload integrity/decode validation: {error}"
+                ),
+            }
         })?;
     }
     Ok(())
 }
 
-fn classify_source_error(err: SourceError) -> OpenOutcome {
-    let message = err.to_string();
-    // Total match on the TYPED error — no `.contains()` on error text. The
-    // wording of an underlying message can change freely without silently
-    // reclassifying a rejection (the modset/not-found signals are typed all the
-    // way from the snapshot crate).
-    let kind = match &err {
+/// Total match on the TYPED error — no `.contains()` on error text. The wording
+/// of an underlying message can change freely without silently reclassifying a
+/// rejection (the modset / not-found / integrity signals are typed all the way
+/// from the snapshot crate).
+fn rejection_kind(err: &SourceError) -> RejectionKind {
+    match err {
         SourceError::NotFound(_) => RejectionKind::NotFound,
         SourceError::ModsetMismatch(_) => RejectionKind::Modset,
+        SourceError::Integrity(_) => RejectionKind::Integrity,
         SourceError::Open(_) => RejectionKind::ContainerOrSchema,
-        SourceError::Unsupported(_) => RejectionKind::Unsupported,
+        SourceError::Unsupported(_) | SourceError::UnsupportedCompactStreamOnly(_) => {
+            RejectionKind::Unsupported
+        }
         SourceError::MultipleGames(_) => RejectionKind::MultipleGames,
-    };
+    }
+}
+
+fn classify_source_error(err: SourceError) -> OpenOutcome {
+    let message = err.to_string();
+    let kind = rejection_kind(&err);
     OpenOutcome::Rejected { kind, message }
 }
 
@@ -262,9 +518,16 @@ mod tests {
                     let want_kind = match name {
                         "neg_empty_snapshot_index" => RejectionKind::Unsupported,
                         "neg_modset_mismatch" => RejectionKind::Modset,
+                        // A corrupted payload (CRC-32 over the stored bytes)
+                        // is an INTEGRITY failure, not a schema failure: the
+                        // recording is well formed and its bytes are not.
+                        "neg_bad_snapshot_hash" => RejectionKind::Integrity,
                         _ => RejectionKind::ContainerOrSchema,
                     };
-                    assert_eq!(kind, want_kind, "{name}: rejection category");
+                    assert_eq!(
+                        kind, want_kind,
+                        "{name}: rejection category; message={message:?}"
+                    );
                 }
             }
         }
@@ -355,6 +618,20 @@ mod tests {
             hours: vec![5, 6, 7, 8],
         }))
         .expect("timeline index opens before lazy payload read");
+        // R7 F4 regression: certification/playback equivalence is one-way.
+        // The same recording that FAILS whole-recording validation below has
+        // already opened for playback, and every hour before the corrupt
+        // payload plays; playback refuses fail-closed only at hour 7.
+        timeline
+            .frame(5)
+            .expect("hour before the corrupt payload plays");
+        timeline
+            .frame(6)
+            .expect("hour before the corrupt payload plays");
+        assert!(
+            timeline.frame(7).is_err(),
+            "playback refuses fail-closed at the corrupt hour"
+        );
         let outcome = match validate_all_frame_payloads(&timeline) {
             Err(outcome) => outcome,
             Ok(()) => panic!("lazy SHA mismatch must reject validation"),

@@ -24,13 +24,13 @@
 //! | Province → world point (fallback) | FIT | province pixel **centroid** (the `map_furniture` DERIVED_APPROXIMATION) may be injected via [`ProvinceAnchorTable::insert`] with [`AnchorProvenance::ProvinceCentroid`] for provinces missing from `unitstacks.txt`. Not auto-loaded here (raster load is heavy); it is an explicit, labelled extension. |
 //! | Which unitstacks **slot** a specific unit occupies; multi-unit **stacking**; screen-space size / anchor offset / aggregation-by-zoom | UNKNOWN / CAP6 | `unitstacks.txt` ships ~20 slot kinds per province (`type 0..=38`) but the semantic enum (land/naval/air, sub-slot order) is NOT shipped; the counter visual law is capture-gated (CAP6). This module places every unit at the province **stack centre**; slotting/stacking slots in later without changing the province→anchor seam. |
 //!
-//! # Interpolation policy (plan C2)
+//! # Interpolation policy
 //!
 //! **Step function — hold the last hourly sample until the next hour.** The
 //! recording carries `moving` / `move_target_province` / `move_progress`, but the
-//! plan forbids invented smoothing without capture evidence, so position is the
-//! `location_province` of the frame at-or-before the requested hour. Because
-//! `replay_core::WorldTimeline::state_at` already resolves to the nearest
+//! product contract forbids invented smoothing without capture evidence, so
+//! position is the `location_province` of the frame at-or-before the requested
+//! hour. Because `replay_core::WorldTimeline::state_at` already resolves to the nearest
 //! snapshot at-or-before, calling [`place_frame_inputs`] once per resolved frame
 //! yields the step-hold for free, and `seek(h) == play_to(h)` placement equality
 //! is inherited from the timeline (gated in the test). `move_*` fields are left
@@ -51,8 +51,8 @@
 //! province" but `WingUnitRow` exposes only `air_base` (an opaque id string),
 //! `state_id`, and `strategic_region_id`; none is a clean province. Until the
 //! recording carries an air-base province, wing placement is a state-centroid
-//! FIT. Filed in `REPLAY_DATA_REQUIREMENTS.md` item 8 / `EXTRACTION_NEEDS.md`
-//! A7.
+//! FIT. This legacy placement helper is not XMAP13 product authority; the
+//! shipping adapter requires its authenticated air-base-location carrier.
 
 use crate::*;
 use std::collections::BTreeMap;
@@ -280,9 +280,7 @@ pub struct WingPlacementInput {
 ///
 /// `Leaf::Unobtained` and `Leaf::Absent` both remain `None`; no state centroid
 /// or neighboring province is relabeled as exact recording data here.
-pub fn wing_placement_input_from_world_row(
-    row: &replay_core::WingUnitRow,
-) -> WingPlacementInput {
+pub fn wing_placement_input_from_world_row(row: &replay_core::WingUnitRow) -> WingPlacementInput {
     WingPlacementInput {
         uid: row.wing_uid.clone(),
         owner: row.owner.measured().cloned(),
@@ -684,6 +682,7 @@ mod tests {
 
         let row = WingUnitRow {
             wing_uid: "800:69".into(),
+            raw_wing_id: Leaf::Measured(800),
             owner: Leaf::Measured("ENG".into()),
             name: Leaf::Absent,
             plane_count: Leaf::Measured(100),

@@ -209,6 +209,7 @@ fn all_23_strings_resolve_cleanly() {
 }
 
 #[test]
+#[cfg_attr(not(gate_hoi4_install), ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path")]
 fn draw_time_cull_matches_the_captured_drawn_set() {
     // RE-EMIT §6.2a: the BUILT label set is camera-independent (the
     // visibility is a DRAW-time cull. `label_draw_visible` is that cull, and
@@ -230,11 +231,8 @@ fn draw_time_cull_matches_the_captured_drawn_set() {
     // so drawn-set PRECISION against that save cannot be measured here; recall
     // on the engine's own drawn geometry + the negative controls below are
     // what this capture can prove. SKIPS without the local game install.
-    let game = std::path::PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
-    let Ok(resolver) = GameFileResolver::vanilla(game) else {
-        eprintln!("SKIP draw-cull gate: no local the game install");
-        return;
-    };
+    let game = replay_test_gates::require_vanilla_game_root();
+    let resolver = GameFileResolver::vanilla(game).expect("vanilla resolver");
     let cutoff = draw_country_names_cutoff_from_resolver(&resolver)
         .expect("shipped defines carry DRAW_COUNTRY_NAMES_CUTOFF");
     assert!(

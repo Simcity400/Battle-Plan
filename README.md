@@ -23,12 +23,13 @@ Read them in that order. Per-domain knowledge is condensed into
 | Path | Purpose |
 | --- | --- |
 | `extractor/` | Recording half: injected DLL collector, Rust recorder host, compact domains, save-oracle validation, static parsing. Deep ledgers in `extractor/documents/`. |
-| `replay_interface/` | Playback half: replay app, map/UI rendering, container reader, RE evidence. Specs and the rendering-laws program board in `replay_interface/documents/`. |
+| `replay_interface/` | Playback half: replay app, map/UI rendering, container reader, RE evidence. Specs and the rendering-law docs in `replay_interface/documents/`; retained packet evidence under `replay_interface/re_evidence/`. |
 | `portable_replay/` | Neutral format crates both halves statically link. |
 | `documents/` | DECISIONS / STATUS / SEAM_CONTRACTS. |
 
 Anything in an `archive/` folder is historical evidence, never the current
-plan. The repo carries no process/rules docs (archived 2026-07-19).
+plan; the only one left is `extractor/documents/archive/`. The repo carries no
+process/rules docs — that history stays in git.
 
 ## Common checks
 

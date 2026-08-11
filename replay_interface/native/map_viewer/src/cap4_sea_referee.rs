@@ -1,6 +1,7 @@
 //! CAP4-SEA (2026-07-09) — clean, no-FOW open-sea base-color referee.
 //!
-//! # Why this exists (FIDELITY_LEDGER "Political sea BASE look", was UNKNOWN)
+//! # Why this exists (the political sea BASE look, formerly UNKNOWN — see
+//! `replay_interface/documents/POLITICAL_COLOR_LAW.md`)
 //!
 //! The prior sea-base referee (the political borders-pass post-RT) showed a
 //! "pale grey-green" open sea and was used to argue our dark reflective water
@@ -213,13 +214,22 @@ pub fn mine_sea_base_referee_round_dir(round_dir: &Path) -> Result<SeaBaseRefere
 mod tests {
     use super::*;
 
-    const DEFAULT_WAVE1_CAP4_ROUNDS: &str =
-        r"C:\Users\Example\hoi4_capture_corpus_preserved\session_WAVE1_CAP4_rounds";
+    /// The crate's gate table, included so this test module resolves each
+    /// corpus through EXACTLY the candidate list the build-time probe used.
+    /// Two copies of a candidate list drift; one cannot.
+    #[allow(dead_code)]
+    mod corpus {
+        include!("../test_gates.rs");
+    }
 
+    /// The CAP4 round corpus: `BATTLE_PLAN_WAVE1_CAP4_ROUNDS`, else the documented
+    /// preserved copy. Panics rather than skipping -- callers are gated on
+    /// `gate_wave1_cap4_no_fow`, which probed this same resolver.
     fn rounds_root() -> PathBuf {
-        std::env::var("BATTLE_PLAN_WAVE1_CAP4_ROUNDS").or_else(|_| std::env::var("HOI4_WAVE1_CAP4_ROUNDS"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(DEFAULT_WAVE1_CAP4_ROUNDS))
+        corpus::wave1_cap4_rounds_dir(&["fow_off_observer_front"]).expect(
+            "the CAP4 round corpus (BATTLE_PLAN_WAVE1_CAP4_ROUNDS, else the preserved copy) is absent, \
+             but this test was compiled as runnable",
+        )
     }
 
     #[test]
@@ -247,15 +257,13 @@ mod tests {
     // CAP4-SEA GATE (Target 1): the no-FOW observer round yields a fog-clean,
     // blue-dominant open-sea referee. Skip-if-absent on the read-only corpus.
     #[test]
+    #[cfg_attr(
+        not(gate_wave1_cap4_no_fow),
+        ignore = "BATTLE_PLAN_WAVE1_CAP4_ROUNDS naming a capture corpus with fow_off_observer_front"
+    )]
     fn gate_wave1_cap4_no_fow_sea_base_referee() {
-        let round = rounds_root().join("fow_off_observer_front");
-        if !round.is_dir() {
-            eprintln!(
-                "gate_wave1_cap4_no_fow_sea_base_referee: {} absent; skipped",
-                round.display()
-            );
-            return;
-        }
+        let round =
+            replay_test_gates::require_existing_dir(rounds_root().join("fow_off_observer_front"));
         let r = mine_sea_base_referee_round_dir(&round).expect("mine CAP4 no-FOW sea referee");
         eprintln!("CAP4 no-FOW sea referee: {r:#?}");
 

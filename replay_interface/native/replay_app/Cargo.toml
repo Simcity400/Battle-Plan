@@ -3,6 +3,17 @@ name = "replay_app"
 version = "0.1.0"
 edition = "2021"
 description = "Battle Plan product surface: Win32 + D3D11 swapchain app"
+build = "build.rs"
+
+# Test preconditions (the real the game install, the preserved capture corpus) are
+# decided once, at build time, by `build.rs` from the table in `test_gates.rs`,
+# and become `cfg`s that mark the affected tests `#[ignore]`. See the
+# `replay_test_gates` crate docs.
+[build-dependencies]
+replay_test_gates = { path = "../replay_test_gates" }
+
+[dev-dependencies]
+replay_test_gates = { path = "../replay_test_gates" }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

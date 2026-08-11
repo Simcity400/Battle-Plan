@@ -8,6 +8,7 @@ members = [
     "replay_app",
     "game_ui",
     "replay_qa",
+    "replay_test_gates",
 ]
 
 # Native replay-interface workspace. See documents/REPLAY_ARCHITECTURE.md:

@@ -4,6 +4,20 @@ use std::fs;
 use std::path::Path;
 
 const TGA_HEADER_LEN: usize = 18;
+/// Upper bound on header-claimed pixel count (8192x8192), mirroring
+/// `dds::DDS_MAX_PIXELS`. TGA and DDS are adjacent arms of one texture switch
+/// (`assets::AssetResolver::decode_texture`), so they must agree on allocation
+/// policy: a header-claimed size that DDS refuses must not be one TGA honours.
+///
+/// The length preflight below is necessary but NOT sufficient on its own: RLE
+/// amplifies, so a 67 MB `image_type = 11, bpp = 8, 65535x65535` file clears
+/// the minimum-encoded-length check and then asks for a 17 GB output buffer.
+/// `vec![0u8; len]` has no fallible form — a refused allocation aborts the
+/// process — so the claim must be refused before the buffer exists.
+///
+/// Measured headroom: the largest TGA shipped by the game 1.19.2 is 4096x2048
+/// (8.4 M pixels, `gfx/fonts/japanese/garamond_24.tga`), 8x under this cap.
+const TGA_MAX_PIXELS: usize = 1 << 26;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TgaImage {
@@ -39,6 +53,19 @@ pub fn decode_bytes(data: &[u8]) -> Result<TgaImage> {
         return Err(GameUiError::new(
             ErrorKind::InvalidTexture("tga_dimensions".to_string()),
             format!("invalid TGA dimensions {}x{}", header.width, header.height),
+        ));
+    }
+    if header
+        .width
+        .checked_mul(header.height)
+        .is_none_or(|pixels| pixels > TGA_MAX_PIXELS)
+    {
+        return Err(GameUiError::new(
+            ErrorKind::InvalidTexture("tga_dimensions".to_string()),
+            format!(
+                "TGA dimensions {}x{} exceed the {TGA_MAX_PIXELS}-pixel cap",
+                header.width, header.height
+            ),
         ));
     }
 
@@ -132,10 +159,30 @@ fn decode_uncompressed(
     pixel_bytes: usize,
     out: &mut [u8],
 ) -> Result<()> {
-    let needed = offset + header.width * header.height * pixel_bytes;
+    // Checked like every other header-derived size in this file: the pixel cap
+    // already makes overflow impossible, but no size expression is left to
+    // wrap silently if that cap ever moves.
+    let needed = header
+        .width
+        .checked_mul(header.height)
+        .and_then(|pixels| pixels.checked_mul(pixel_bytes))
+        .and_then(|bytes| bytes.checked_add(offset))
+        .ok_or_else(|| {
+            GameUiError::new(
+                ErrorKind::InvalidTexture("tga_dimensions".to_string()),
+                format!(
+                    "TGA size arithmetic overflows for {}x{}",
+                    header.width, header.height
+                ),
+            )
+        })?;
     require_len(data, needed, "TGA pixel data")?;
     for index in 0..header.width * header.height {
-        let rgba = decode_pixel(&data[offset..offset + pixel_bytes], header.bits_per_pixel);
+        let rgba = decode_pixel(
+            &data[offset..offset + pixel_bytes],
+            header.bits_per_pixel,
+            header.attribute_bits(),
+        );
         offset += pixel_bytes;
         write_oriented_pixel(out, header, index, rgba);
     }
@@ -162,7 +209,11 @@ fn decode_rle(
         let count = usize::from(packet & 0x7f) + 1;
         if packet & 0x80 != 0 {
             require_len(data, offset + pixel_bytes, "TGA RLE pixel")?;
-            let rgba = decode_pixel(&data[offset..offset + pixel_bytes], header.bits_per_pixel);
+            let rgba = decode_pixel(
+                &data[offset..offset + pixel_bytes],
+                header.bits_per_pixel,
+                header.attribute_bits(),
+            );
             offset += pixel_bytes;
             for _ in 0..count {
                 if index >= total {
@@ -177,7 +228,11 @@ fn decode_rle(
         } else {
             require_len(data, offset + count * pixel_bytes, "TGA raw RLE packet")?;
             for _ in 0..count {
-                let rgba = decode_pixel(&data[offset..offset + pixel_bytes], header.bits_per_pixel);
+                let rgba = decode_pixel(
+                    &data[offset..offset + pixel_bytes],
+                    header.bits_per_pixel,
+                    header.attribute_bits(),
+                );
                 offset += pixel_bytes;
                 if index >= total {
                     return Err(GameUiError::new(
@@ -193,7 +248,7 @@ fn decode_rle(
     Ok(())
 }
 
-fn decode_pixel(bytes: &[u8], bits_per_pixel: u8) -> [u8; 4] {
+fn decode_pixel(bytes: &[u8], bits_per_pixel: u8, attribute_bits: u8) -> [u8; 4] {
     match bits_per_pixel {
         8 => [bytes[0], bytes[0], bytes[0], 255],
         16 => {
@@ -201,7 +256,16 @@ fn decode_pixel(bytes: &[u8], bits_per_pixel: u8) -> [u8; 4] {
             let b = ((u32::from(raw & 0x1f) * 255 + 15) / 31) as u8;
             let g = ((u32::from((raw >> 5) & 0x1f) * 255 + 15) / 31) as u8;
             let r = ((u32::from((raw >> 10) & 0x1f) * 255 + 15) / 31) as u8;
-            let a = if raw & 0x8000 != 0 { 255 } else { 255 };
+            // TGA image-descriptor bits 3-0 are the attribute-bits-per-pixel
+            // count. The 16-bit high bit is alpha only when the file says it
+            // carries one; when the count is 0 the bit is undefined padding
+            // and the pixel is opaque. Both branches previously returned 255,
+            // discarding every transparent 5-5-5-1 pixel (R11 C10(b)).
+            let a = if attribute_bits == 0 || raw & 0x8000 != 0 {
+                255
+            } else {
+                0
+            };
             [r, g, b, a]
         }
         24 => [bytes[2], bytes[1], bytes[0], 255],
@@ -228,6 +292,11 @@ fn write_oriented_pixel(out: &mut [u8], header: &Header, src_index: usize, rgba:
 }
 
 impl Header {
+    /// Image-descriptor bits 3-0: attribute (alpha) bits per pixel.
+    fn attribute_bits(&self) -> u8 {
+        self.descriptor & 0x0f
+    }
+
     fn parse(data: &[u8]) -> Result<Self> {
         require_len(data, TGA_HEADER_LEN, "TGA header")?;
         Ok(Self {
@@ -345,12 +414,13 @@ mod tests {
     #[test]
     fn huge_uncompressed_claim_refuses_before_allocating() {
         // 18-byte file claiming 65535x65535x32bpp: must be a typed refusal,
-        // never a ~17 GB zeroed allocation.
+        // never a ~17 GB zeroed allocation. The pixel cap now refuses this
+        // one dimension check earlier than the truncation preflight did.
         let data = tga_header(2, u16::MAX, u16::MAX, 32, 0x20);
         let err = decode_bytes(&data).expect_err("truncated giant claim must be rejected");
         assert_eq!(
             err.kind,
-            ErrorKind::InvalidTexture("tga_truncated".to_string())
+            ErrorKind::InvalidTexture("tga_dimensions".to_string())
         );
     }
 
@@ -360,8 +430,66 @@ mod tests {
         let err = decode_bytes(&data).expect_err("truncated giant RLE claim must be rejected");
         assert_eq!(
             err.kind,
+            ErrorKind::InvalidTexture("tga_dimensions".to_string())
+        );
+    }
+
+    #[test]
+    fn rle_amplified_giant_claim_is_refused_before_the_output_buffer() {
+        // R11 C4: `image_type = 11, bpp = 8, 65535x65535` needs only ~67 MB of
+        // input to clear the minimum-encoded-length preflight, and then asks
+        // for a 17 GB `vec![0u8; out_len]` — an abort, not an error. Supply a
+        // payload large enough to clear that preflight and prove the refusal
+        // comes from the pixel cap, before any allocation.
+        let total = usize::from(u16::MAX) * usize::from(u16::MAX);
+        let min_encoded = total.div_ceil(128) * 2 + TGA_HEADER_LEN;
+        let mut data = tga_header(11, u16::MAX, u16::MAX, 8, 0x20);
+        data.resize(min_encoded, 0x80); // run packets, one payload byte each
+        let err = decode_bytes(&data).expect_err("amplified RLE claim must be refused");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidTexture("tga_dimensions".to_string())
+        );
+        assert!(err.message.contains("pixel cap"), "{err}");
+    }
+
+    #[test]
+    fn pixel_cap_matches_the_dds_arm_of_the_same_texture_switch() {
+        // 8193x8193 is one pixel over 2^26 on both decoders.
+        let data = tga_header(2, 8193, 8193, 32, 0x20);
+        let err = decode_bytes(&data).expect_err("over-cap claim must be refused");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidTexture("tga_dimensions".to_string())
+        );
+        // The largest TGA the game 1.19.2 ships is 4096x2048; it must still parse
+        // past the cap and fail only on its (absent) payload.
+        let data = tga_header(2, 4096, 2048, 32, 0x20);
+        let err = decode_bytes(&data).expect_err("no payload supplied");
+        assert_eq!(
+            err.kind,
             ErrorKind::InvalidTexture("tga_truncated".to_string())
         );
+    }
+
+    #[test]
+    fn sixteen_bit_attribute_bit_drives_alpha_only_when_declared() {
+        // descriptor low nibble = 1 attribute bit: the 0x8000 bit is alpha.
+        let mut data = tga_header(2, 1, 1, 16, 0x20 | 0x01);
+        data.extend_from_slice(&0x7c00u16.to_le_bytes()); // attribute bit clear
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![255, 0, 0, 0]);
+
+        let mut data = tga_header(2, 1, 1, 16, 0x20 | 0x01);
+        data.extend_from_slice(&0xfc00u16.to_le_bytes()); // attribute bit set
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![255, 0, 0, 255]);
+
+        // Zero declared attribute bits: the high bit is padding, pixel opaque.
+        let mut data = tga_header(2, 1, 1, 16, 0x20);
+        data.extend_from_slice(&0x7c00u16.to_le_bytes());
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![255, 0, 0, 255]);
     }
 
     fn tga_header(image_type: u8, width: u16, height: u16, bpp: u8, descriptor: u8) -> Vec<u8> {

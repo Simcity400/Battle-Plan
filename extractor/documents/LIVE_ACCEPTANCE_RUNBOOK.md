@@ -144,8 +144,8 @@ transcript — see the note before the launch table).
 
 ### Preconditions (whole sequence)
 
-- Main dev PC. Run the root-owned centralized `Release` for the extractor or
-  all workspaces first. It writes the five release binaries under
+- Main dev PC. From the worktree being validated, run the wrapper-only
+  `Release` for the extractor or all workspaces first. It writes the five release binaries under
   `.cargo-target/release` plus the hash-bound
   `hoi4-production-prebuilt-artifacts.json` receipt. The Safe launcher never
   invokes Cargo and refuses missing, stale, source-mismatched, or byte-mismatched

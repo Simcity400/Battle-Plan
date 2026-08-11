@@ -11,7 +11,7 @@ sidecar. Renderer routes without an authenticated runtime observer are omitted,
 not backfilled from vanilla catalogs.
 
 This document is extractor-only. It does not amend or duplicate the rendering
-law reports under `replay_interface/documents/lane_reports/rendering_laws/`.
+law reports under `replay_interface/documents/ (rendering-law docs)`.
 
 ## Boundary
 
@@ -107,6 +107,15 @@ separate integration gates; they do not reopen the assignment rule.
    finalized source inventory. Unknown or incomplete surfaces are omitted as a
    unit. No HUD sidecar, vanilla filename list, or authored-only root pairing is
    accepted.
+   Independently of recorder UI activation, XUI01 also emits three complete
+   namespace capabilities directly from that same authenticated winner
+   inventory: every effective `interface/**/*.gui`, every effective
+   `interface/**/*.gfx`, and every effective `localisation/**/*.yml` winner.
+   The replay verifies exact set equality against its independently enumerated
+   effective VFS, then selects the playback viewer's language while building
+   the authored observer catalogue. This preserves playback-local language
+   selection without admitting an unrecorded localisation file. This is
+   content authority, not recorder-POV panel state.
 6. Domain 77 also carries the exact M02 combat-indicator frame. The finalizer
    scans every authenticated production frame, validates each M02
    `UsedContentKey`, rejects winner drift across the recording, and admits only
@@ -193,11 +202,13 @@ language, and rendering-relevant settings.
 Run from the repository root:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Final -Workspace All
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Final -Workspace All
 ```
 
-The v2/product-modset boundary added on 2026-07-20 is pending the parent
-wave's single centralized validation run. No subagent build result is claimed.
+The v2/product-modset boundary added on 2026-07-20 had no lane-local build
+receipt at the time this historical note was written. Current implementation
+lanes validate their own candidates through their worktree-local wrapper before
+sequential authority integration.
 
 Historical pre-v2 verification on 2026-07-18:
 

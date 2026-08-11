@@ -1,5 +1,18 @@
 # Repository agent guidance
 
+## Agent delegation
+
+- Implementation-lane agents must not spawn, resume, or delegate to child
+  agents for research, reverse engineering, implementation, compilation,
+  testing, validation, audits, or fixes. The implementation-lane agent owns
+  all of that work itself.
+- The only permitted child agent is exactly one read-only cold reviewer for
+  the lane's complete candidate, started only after the implementation-lane
+  agent has finished the item and its required wrapper validation is green.
+- Review findings return to the same implementation-lane agent. After material
+  fixes and renewed green wrapper validation, the same sole reviewer is reused;
+  no additional reviewer or helper agent may be created.
+
 ## Current Ghidra broker authority
 
 - Always call `ghidra_status` before Ghidra work. The active exact-a729 broker

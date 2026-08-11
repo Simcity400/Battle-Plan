@@ -8,10 +8,10 @@
 use game_ui::decision_chrome::{DecisionAvailability, DecisionSet};
 use game_ui::power_balance::{
     admit_power_balance_screen, AdmittedPowerBalanceScreen, BarState, ChangeCadence,
-    PowerBalanceAdmissionRequest, PowerBalanceDecisionInput, PowerBalanceDefinitionCatalog,
-    PowerBalanceDecisionTextRole, PowerBalanceRuntimeProvenance, PowerBalanceRuntimeSupplement,
-    PowerBalanceRuntimeTextBinding, PowerBalanceRuntimeTextProvenance,
-    PowerBalanceRuntimeTextSlot, PowerBalanceTrendInput, ResolvedPowerBalanceText,
+    PowerBalanceAdmissionRequest, PowerBalanceDecisionInput, PowerBalanceDecisionTextRole,
+    PowerBalanceDefinitionCatalog, PowerBalanceRuntimeProvenance, PowerBalanceRuntimeSupplement,
+    PowerBalanceRuntimeTextBinding, PowerBalanceRuntimeTextProvenance, PowerBalanceRuntimeTextSlot,
+    PowerBalanceTrendInput, ResolvedPowerBalanceText,
 };
 use replay_core::{
     Leaf, PowerBalanceBarStateExact, PowerBalanceChangeCadenceExact,
@@ -38,6 +38,16 @@ pub fn power_balance_runtime_supplements(
         }
         _ => return Err("XUI18 exact d74 presentation is unavailable".into()),
     };
+    match (
+        frame.power_balance_state_exact().status,
+        frame.power_balance_state_exact().state.as_ref(),
+    ) {
+        (ViewStatus::Present, Some(state))
+            if state.frame_hour == presentation.frame_hour
+                && state.semantic_receipt_sha256 == presentation.state_semantic_receipt_sha256 => {}
+        (ViewStatus::DomainAbsent, _) => return Err("XUI18 exact d74 state is absent".into()),
+        _ => return Err("XUI18 exact d74 state/presentation join is unavailable".into()),
+    }
     if !presentation
         .balances
         .iter()
@@ -66,16 +76,48 @@ pub fn admit_country_power_balance_ui(
     country_tag: &str,
     catalog: &PowerBalanceDefinitionCatalog,
     decisions: &DecisionSet,
+    expected_content_manifest_sha256: &str,
 ) -> Result<AdmittedPowerBalanceScreen, String> {
+    require_effective_content_manifest(frame, expected_content_manifest_sha256)?;
     let runtime = power_balance_runtime_supplements(frame, country_tag)?;
     admit_power_balance_screen(PowerBalanceAdmissionRequest {
         country_tag,
-        view: frame.power_balance(),
+        view: frame.power_balance_state_exact(),
         catalog,
         decisions,
         runtime: &runtime,
     })
     .map_err(|error| format!("XUI18 admission rejected: {error:?}"))
+}
+
+fn require_effective_content_manifest(
+    frame: &WorldFrame,
+    expected_content_manifest_sha256: &str,
+) -> Result<(), String> {
+    if expected_content_manifest_sha256.len() != 64 {
+        return Err("XUI18 renderer content manifest identity is invalid".into());
+    }
+    let state = frame
+        .power_balance_state_exact()
+        .state
+        .as_ref()
+        .ok_or_else(|| "XUI18 exact d74 state is unavailable for content join".to_string())?;
+    let presentation = frame
+        .power_balance_presentation_exact()
+        .presentation
+        .as_ref()
+        .ok_or_else(|| {
+            "XUI18 exact d74 presentation is unavailable for content join".to_string()
+        })?;
+    if state.effective_content_manifest_sha256 != expected_content_manifest_sha256
+        || presentation.effective_content_manifest_sha256 != expected_content_manifest_sha256
+    {
+        return Err(
+            "XUI18 state/presentation content manifest differs from the renderer's admitted VFS"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn resolve_runtime_text(
@@ -90,8 +132,7 @@ fn resolve_runtime_text(
         .ok_or_else(|| format!("XUI18 missing A25 context {context_id}"))?;
     if record.context_id != context_id
         || record.frame_hour != expected_hour
-        || (record.pov_country_or_global != country_tag
-            && record.pov_country_or_global != "global")
+        || (record.pov_country_or_global != country_tag && record.pov_country_or_global != "global")
     {
         return Err(format!(
             "XUI18 A25 context {context_id} hour/POV/provenance mismatch"
@@ -261,6 +302,7 @@ where
                     decision.timer_text_ref.as_deref(),
                 )?,
                 target_tag: decision.target_tag_ref.clone(),
+                target_flag_sprite: decision.target_flag_sprite.clone(),
             });
         }
         let launcher_percentage_text = resolve_optional_text(
@@ -331,23 +373,14 @@ where
         let provenance = PowerBalanceRuntimeProvenance {
             producer_manifest_sha256: presentation.producer_manifest_sha256.clone(),
             completeness_record_identity: presentation.completeness_record_identity.clone(),
-            frame_hour: presentation_frame_hour,
-            materialization_qpc_ticks: presentation.materialization_qpc_ticks,
-            selected_present_candidate_id: presentation
-                .selected_present
-                .selected_present_candidate_id,
-            selected_present_ordinal: presentation.selected_present.selected_present_ordinal,
-            selected_present_qpc_ticks: presentation
-                .selected_present
-                .selected_present_qpc_ticks,
-            selected_present_cutoff_qpc_ticks: presentation
-                .selected_present
-                .selected_present_cutoff_qpc_ticks,
-            qpc_frequency_hz: presentation.selected_present.qpc_frequency_hz,
-            selected_present_receipt_sha256: presentation
-                .selected_present
-                .selected_present_receipt_sha256
+            effective_content_manifest_sha256: presentation
+                .effective_content_manifest_sha256
                 .clone(),
+            state_semantic_receipt_sha256: presentation.state_semantic_receipt_sha256.clone(),
+            presentation_semantic_receipt_sha256: presentation.semantic_receipt_sha256.clone(),
+            frame_hour: presentation_frame_hour,
+            expected_country_count: presentation.expected_country_count,
+            expected_balance_count: presentation.expected_balance_count,
             runtime_text_contexts: runtime_text_contexts.into_values().collect(),
             runtime_text_bindings,
         };
@@ -356,6 +389,7 @@ where
             source_record_id: balance.source_record_id.clone(),
             country_tag: balance.country_tag.clone(),
             balance_id: balance.balance_id.clone(),
+            manager_ordinal: balance.manager_ordinal,
             display_ordinal: balance.display_ordinal as usize,
             active_side_id: balance.active_side_id.clone(),
             trending_side_id: balance.trending_side_id.clone(),
@@ -367,7 +401,6 @@ where
             launcher_levels_text,
             launcher_icon_sprite: balance.launcher_icon_sprite.clone(),
             launcher_glow_visible: balance.launcher_glow_visible,
-            panel_open: balance.panel_open,
             bar_state: match balance.bar_state {
                 PowerBalanceBarStateExact::StableLeft => BarState::StableLeft,
                 PowerBalanceBarStateExact::StableRight => BarState::StableRight,
@@ -390,10 +423,9 @@ where
 mod tests {
     use super::*;
     use replay_core::{
-        PowerBalanceDecisionExact, PowerBalancePresentationExact,
-        PowerBalancePresentationRowExact, PowerBalanceTrendExact,
-        RawFrame, ReplaySource, ResolvedPowerBalanceTextRefsExact, RuntimeTextIdentitySource,
-        SourceError, WorldTimeline,
+        PowerBalanceDecisionExact, PowerBalancePresentationExact, PowerBalancePresentationRowExact,
+        PowerBalanceTrendExact, RawFrame, ReplaySource, ResolvedPowerBalanceTextRefsExact,
+        RuntimeTextIdentitySource, SourceError, WorldTimeline,
     };
     use serde_json::{json, Map, Value};
     use sha2::{Digest, Sha256};
@@ -460,6 +492,119 @@ mod tests {
         })
     }
 
+    fn exact_companions() -> (Value, Value) {
+        let effective = "11".repeat(32);
+        let mut roster_bytes = b"D18R1\0".to_vec();
+        roster_bytes.extend_from_slice(&1u32.to_le_bytes());
+        roster_bytes.extend_from_slice(&17u32.to_le_bytes());
+        roster_bytes.extend_from_slice(&3u16.to_le_bytes());
+        roster_bytes.extend_from_slice(b"ITA");
+        let roster = format!("{:x}", Sha256::digest(roster_bytes));
+        let put_string = |hash: &mut Sha256, value: &str| {
+            hash.update((value.len() as u32).to_le_bytes());
+            hash.update(value.as_bytes());
+        };
+        let mut state_hash = Sha256::new();
+        state_hash.update(b"D74S1\0");
+        put_string(
+            &mut state_hash,
+            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        );
+        put_string(
+            &mut state_hash,
+            replay_core::A729_POWER_BALANCE_STATE_MANIFEST_SHA256,
+        );
+        state_hash.update(900u64.to_le_bytes());
+        put_string(&mut state_hash, &effective);
+        state_hash.update(18u16.to_le_bytes());
+        state_hash.update(1u32.to_le_bytes());
+        put_string(&mut state_hash, &roster);
+        for value in [1u32, 1, 1, 1, 1, 0] {
+            state_hash.update(value.to_le_bytes());
+        }
+        for value in [
+            "ITA_power_balance",
+            "ITA_grand_council_side",
+            "ITA_mussolini_side",
+            "ITA_mussolini_side",
+            "ITA_mussolini_medium_control_range",
+            effective.as_str(),
+        ] {
+            put_string(&mut state_hash, value);
+        }
+        state_hash.update(35_000i64.to_le_bytes());
+        state_hash.update(1u32.to_le_bytes());
+        state_hash.update(17u32.to_le_bytes());
+        state_hash.update(1u32.to_le_bytes());
+        state_hash.update(17u32.to_le_bytes());
+        state_hash.update(1_000i64.to_le_bytes());
+        state_hash.update(0i64.to_le_bytes());
+        state_hash.update(0u32.to_le_bytes());
+        let state_receipt = format!("{:x}", state_hash.finalize());
+        let state = json!({
+            "schema_version": 1,
+            "authority": "exact_a729_all_country_power_balance_manager",
+            "elapsed_wall_ms": 5,
+            "frame_hour": 900,
+            "static_authority_manifest_sha256": replay_core::A729_POWER_BALANCE_STATE_MANIFEST_SHA256,
+            "effective_content_manifest_sha256": effective,
+            "semantic_receipt_sha256": state_receipt,
+            "d18_country_roster": {"frame_hour":900,"domain_id":18,"expected_country_count":1,"roster_identity_sha256":roster},
+            "completeness_record_identity": format!("d74-state:{state_receipt}"),
+            "expected_country_count": 1,
+            "expected_record_count": 1,
+            "expected_country_balance_pair_count": 1,
+            "countries": [{"tag_db_id":17,"country_tag":"ITA"}],
+            "records": [{
+                "source_record_id":"d74:900:0:ITA_power_balance","manager_ordinal":0,
+                "balance_id":"ITA_power_balance","left_side_id":"ITA_grand_council_side",
+                "right_side_id":"ITA_mussolini_side","trending_side_id":"ITA_mussolini_side",
+                "active_range_id":"ITA_mussolini_medium_control_range","effective_catalog_sha256":effective,
+                "value_raw_fixed5":35000,"daily_sum_raw_fixed5":1000,"weekly_sum_raw_fixed5":0,
+                "weekly_equivalent_raw_fixed5":7000,"change_cadence":"daily","member_tag_db_ids":[17],
+                "member_accumulators":[{"tag_db_id":17,"daily_raw_fixed5":1000,"weekly_raw_fixed5":0}],
+                "side_gfx_overrides":[]
+            }]
+        });
+        let mut presentation = json!({
+            "schema_version":4,"authority":"exact_a729_all_country_power_balance_presentation",
+            "elapsed_wall_ms":7,"frame_hour":900,
+            "producer_manifest_sha256":replay_core::A729_POWER_BALANCE_ALL_COUNTRY_PRESENTATION_MANIFEST_SHA256,
+            "effective_content_manifest_sha256":effective,"state_semantic_receipt_sha256":state_receipt,
+            "semantic_receipt_sha256":"","completeness_record_identity":"",
+            "expected_country_count":1,"expected_balance_count":1,
+            "balances":[{
+                "source_record_id":"d74p:900:ITA:ITA_power_balance","country_tag":"ITA","balance_id":"ITA_power_balance",
+                "manager_ordinal":0,"display_ordinal":0,"active_side_id":"ITA_mussolini_side",
+                "trending_side_id":"ITA_mussolini_side","active_range_id":"ITA_mussolini_medium_control_range",
+                "effective_left_icon":"GFX_bop_ITA_grand_council_side","effective_right_icon":"GFX_bop_ITA_mussolini_side",
+                "launcher_visible":true,"launcher_percentage_text_ref":"percentage","launcher_levels_text_ref":"levels",
+                "launcher_icon_sprite":"GFX_bop_ITA_mussolini_side","launcher_glow_visible":false,
+                "bar_state":"moving_right","range_indicator_frame":1,"range_indicator_top_left":[198,101],
+                "trend":{"cadence":"daily","magnitude":0.01,"resolved_text_ref":"trend"},
+                "power_balance_modifier_desc_text_ref":"modifier_desc","decisions_complete":true,"decisions":[],
+                "resolved_text_refs":{"balance_name":"name","left_side_name":"left","right_side_name":"right",
+                    "active_range_name":"range","balance_tooltip":"tooltip","active_range_tooltip":"range_tooltip"}
+            }]
+        });
+        let mut receipt_payload = presentation.clone();
+        receipt_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("semantic_receipt_sha256");
+        receipt_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("completeness_record_identity");
+        let mut receipt_bytes = b"D74P4\0".to_vec();
+        receipt_bytes.extend_from_slice(&serde_json::to_vec(&receipt_payload).unwrap());
+        let receipt = format!("{:x}", Sha256::digest(receipt_bytes));
+        presentation["semantic_receipt_sha256"] = Value::String(receipt.clone());
+        presentation["completeness_record_identity"] =
+            Value::String(format!("d74-presentation:{receipt}"));
+        (state, presentation)
+    }
+
     fn integration_frame(
         runtime_hour: i64,
         runtime_pov: &str,
@@ -483,66 +628,11 @@ mod tests {
             .filter(|context_id| omit_context != Some(*context_id))
             .map(|context_id| runtime_context(context_id, runtime_hour, runtime_pov))
             .collect::<Vec<_>>();
+        let (state, presentation) = exact_companions();
         let root = json!({
-            "world": {"power_balances": [{
-                "template": "ITA_power_balance",
-                "value": 0.35,
-                "left_side": "ITA_grand_council_side",
-                "right_side": "ITA_mussolini_side",
-                "trending_side": "ITA_mussolini_side",
-                "countries": ["ITA"]
-            }]},
-            "_r2_power_balance_presentation_live": {
-                "schema_version": 3,
-                "authority": "exact_a729_power_balance_controller",
-                "elapsed_wall_ms": 7,
-                "frame_hour": 900,
-                "materialization_qpc_ticks": 90,
-                "selected_present": {
-                    "frame_hour": 900,
-                    "selected_present_candidate_id": 1,
-                    "selected_present_ordinal": 0,
-                    "selected_present_qpc_ticks": 100,
-                    "selected_present_cutoff_qpc_ticks": 100,
-                    "qpc_frequency_hz": 10000000,
-                    "selected_present_receipt_sha256": "abababababababababababababababababababababababababababababababab"
-                },
-                "producer_manifest_sha256": "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2",
-                "completeness_record_identity": "d74:a729:900:complete",
-                "expected_balance_count": 1,
-                "balances": [{
-                    "source_record_id": "controller:900:ITA:ITA_power_balance",
-                    "country_tag": "ITA",
-                    "balance_id": "ITA_power_balance",
-                    "display_ordinal": 0,
-                    "active_side_id": "ITA_mussolini_side",
-                    "trending_side_id": "ITA_mussolini_side",
-                    "active_range_id": "ITA_mussolini_medium_control_range",
-                    "effective_left_icon": "GFX_bop_ITA_grand_council_side",
-                    "effective_right_icon": "GFX_bop_ITA_mussolini_side",
-                    "launcher_visible": true,
-                    "launcher_percentage_text_ref": "percentage",
-                    "launcher_levels_text_ref": "levels",
-                    "launcher_icon_sprite": "GFX_bop_ITA_mussolini_side",
-                    "launcher_glow_visible": false,
-                    "panel_open": true,
-                    "bar_state": "moving_left",
-                    "range_indicator_frame": 1,
-                    "range_indicator_top_left": [198, 101],
-                    "trend": {"cadence": "daily", "magnitude": 0.01, "resolved_text_ref": "trend"},
-                    "power_balance_modifier_desc_text_ref": "modifier_desc",
-                    "decisions_complete": true,
-                    "decisions": [],
-                    "resolved_text_refs": {
-                        "balance_name": "name",
-                        "left_side_name": "left",
-                        "right_side_name": "right",
-                        "active_range_name": "range",
-                        "balance_tooltip": "tooltip",
-                        "active_range_tooltip": "range_tooltip"
-                    }
-                }]
-            },
+            "countries": {"ITA":{"_r2_tag_db_id":17}},
+            "_r2_power_balance_state_live": state,
+            "_r2_power_balance_presentation_live": presentation,
             "runtime_text": {
                 "schema": replay_core::RUNTIME_TEXT_SCHEMA,
                 "state": "measured",
@@ -590,29 +680,23 @@ mod tests {
         PowerBalancePresentationExactView {
             status: ViewStatus::Present,
             presentation: Some(PowerBalancePresentationExact {
-                schema_version: 3,
-                authority: "exact_a729_power_balance_controller".into(),
+                schema_version: 4,
+                authority: "exact_a729_all_country_power_balance_presentation".into(),
                 elapsed_wall_ms: 7,
                 frame_hour: 900,
-                materialization_qpc_ticks: 90,
-                selected_present: replay_core::PowerBalanceSelectedPresentExact {
-                    frame_hour: 900,
-                    selected_present_candidate_id: 1,
-                    selected_present_ordinal: 0,
-                    selected_present_qpc_ticks: 100,
-                    selected_present_cutoff_qpc_ticks: 100,
-                    qpc_frequency_hz: 10_000_000,
-                    selected_present_receipt_sha256: "ab".repeat(32),
-                },
                 producer_manifest_sha256:
-                    "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2"
-                        .into(),
-                completeness_record_identity: "d74:a729:900:complete".into(),
+                    replay_core::A729_POWER_BALANCE_ALL_COUNTRY_PRESENTATION_MANIFEST_SHA256.into(),
+                effective_content_manifest_sha256: "11".repeat(32),
+                state_semantic_receipt_sha256: "22".repeat(32),
+                semantic_receipt_sha256: "33".repeat(32),
+                completeness_record_identity: format!("d74-presentation:{}", "33".repeat(32)),
+                expected_country_count: 1,
                 expected_balance_count: 1,
                 balances: vec![PowerBalancePresentationRowExact {
-                    source_record_id: "controller:900:ITA:ITA_power_balance".into(),
+                    source_record_id: "d74p:900:ITA:ITA_power_balance".into(),
                     country_tag: "ITA".into(),
                     balance_id: "ITA_power_balance".into(),
+                    manager_ordinal: 0,
                     display_ordinal: 0,
                     active_side_id: "ITA_mussolini_side".into(),
                     trending_side_id: "ITA_mussolini_side".into(),
@@ -624,7 +708,6 @@ mod tests {
                     launcher_levels_text_ref: Some("levels".into()),
                     launcher_icon_sprite: Some("GFX_right".into()),
                     launcher_glow_visible: false,
-                    panel_open: true,
                     bar_state: PowerBalanceBarStateExact::MovingLeft,
                     range_indicator_frame: 1,
                     range_indicator_top_left: [198, 101],
@@ -643,6 +726,7 @@ mod tests {
                         cost_text_ref: Some("decision_cost".into()),
                         timer_text_ref: None,
                         target_tag_ref: Some("SOV".into()),
+                        target_flag_sprite: Some("GFX_flag_SOV".into()),
                     }],
                     resolved_text_refs: ResolvedPowerBalanceTextRefsExact {
                         balance_name: "name".into(),
@@ -664,11 +748,11 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].provenance.producer_manifest_sha256,
-            "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2"
+            replay_core::A729_POWER_BALANCE_ALL_COUNTRY_PRESENTATION_MANIFEST_SHA256
         );
         assert_eq!(
             rows[0].provenance.completeness_record_identity,
-            "d74:a729:900:complete"
+            format!("d74-presentation:{}", "33".repeat(32))
         );
         assert!(rows[0]
             .provenance
@@ -678,10 +762,7 @@ mod tests {
                 && context.frame_hour == 900
                 && context.pov_country_or_global == "ITA"
                 && context.identity_source == RuntimeTextIdentitySource::ProvenSetterCaller));
-        assert_eq!(
-            rows[0].source_record_id,
-            "controller:900:ITA:ITA_power_balance"
-        );
+        assert_eq!(rows[0].source_record_id, "d74p:900:ITA:ITA_power_balance");
         assert_eq!(rows[0].active_side_id, "ITA_mussolini_side");
         assert_eq!(rows[0].trending_side_id, "ITA_mussolini_side");
         assert_eq!(rows[0].bar_state, BarState::MovingLeft);
@@ -690,8 +771,15 @@ mod tests {
             rows[0].power_balance_modifier_desc,
             "resolved:modifier_desc"
         );
-        assert_eq!(rows[0].decisions[0].source_record_id, "controller:900:ITA:decision:0");
+        assert_eq!(
+            rows[0].decisions[0].source_record_id,
+            "controller:900:ITA:decision:0"
+        );
         assert_eq!(rows[0].decisions[0].target_tag.as_deref(), Some("SOV"));
+        assert_eq!(
+            rows[0].decisions[0].target_flag_sprite.as_deref(),
+            Some("GFX_flag_SOV")
+        );
     }
 
     #[test]
@@ -709,43 +797,52 @@ mod tests {
 
     #[test]
     fn mismatched_a25_context_identity_is_rejected() {
-        let error = build_runtime_supplements(&exact_view(), "ITA", |_| Ok(resolved("wrong")))
-            .unwrap_err();
+        let error =
+            build_runtime_supplements(&exact_view(), "ITA", |_| Ok(resolved("wrong"))).unwrap_err();
         assert!(error.contains("resolver returned wrong for requested trend"));
     }
 
     #[test]
-    fn world_frame_without_selected_present_cannot_admit_a37_typed_companion() {
+    fn world_frame_all_country_companion_admits_without_selected_present() {
         let frame = integration_frame(900, "ITA", true, None);
         assert_eq!(
             frame.power_balance_presentation_exact_status(),
-            ViewStatus::DomainUnavailable
+            ViewStatus::Present
         );
-        assert!(power_balance_runtime_supplements(&frame, "ITA")
-            .unwrap_err()
-            .contains("presentation is unavailable"));
+        let rows = power_balance_runtime_supplements(&frame, "ITA").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].manager_ordinal, 0);
     }
 
     #[test]
-    fn world_frame_a37_join_fails_before_a25_when_selected_present_is_absent() {
+    fn renderer_manifest_join_rejects_a_self_consistent_foreign_modset() {
+        let frame = integration_frame(900, "ITA", true, None);
+        require_effective_content_manifest(&frame, &"11".repeat(32))
+            .expect("matching admitted renderer manifest");
+        let error = require_effective_content_manifest(&frame, &"22".repeat(32)).unwrap_err();
+        assert!(error.contains("differs from the renderer's admitted VFS"));
+    }
+
+    #[test]
+    fn world_frame_a25_join_rejects_missing_cross_hour_cross_country_and_incomplete_text() {
         let missing = integration_frame(900, "ITA", true, Some("trend"));
         assert!(power_balance_runtime_supplements(&missing, "ITA")
             .unwrap_err()
-            .contains("presentation is unavailable"));
+            .contains("missing A25 context trend"));
 
         let wrong_hour = integration_frame(901, "ITA", true, None);
         assert!(power_balance_runtime_supplements(&wrong_hour, "ITA")
             .unwrap_err()
-            .contains("presentation is unavailable"));
+            .contains("hour/POV/provenance mismatch"));
 
         let wrong_pov = integration_frame(900, "GER", true, None);
         assert!(power_balance_runtime_supplements(&wrong_pov, "ITA")
             .unwrap_err()
-            .contains("presentation is unavailable"));
+            .contains("hour/POV/provenance mismatch"));
 
         let incomplete = integration_frame(900, "ITA", false, None);
         assert!(power_balance_runtime_supplements(&incomplete, "ITA")
             .unwrap_err()
-            .contains("presentation is unavailable"));
+            .contains("context set is incomplete"));
     }
 }

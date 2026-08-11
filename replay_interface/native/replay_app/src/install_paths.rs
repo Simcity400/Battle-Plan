@@ -315,9 +315,7 @@ pub fn validate_user_data(path: &Path) -> std::result::Result<(), String> {
 /// Validate every machine-local input needed to reconstruct the launcher's
 /// effective content and material-settings profile. Callers must complete this
 /// check before persisting or reusing a product profile.
-pub fn validate_product_profile(
-    paths: &ProductPaths,
-) -> Result<map_viewer::GameFileResolver> {
+pub fn validate_product_profile(paths: &ProductPaths) -> Result<map_viewer::GameFileResolver> {
     let resolver = map_viewer::GameFileResolver::from_dlc_load(
         paths.game_install.clone(),
         paths.user_data.clone(),
@@ -425,6 +423,58 @@ pub fn playback_environment_from_paths(
         dlc_selection,
         localisation_language,
         settings,
+    })
+}
+
+/// Admit the standalone viewer's own UI presentation profile.
+///
+/// Unlike portable-content compatibility, this always requests every local
+/// setting that affects UI layout. No value is read from replay session
+/// metadata, and the input family is the one implemented by the Win32 client
+/// event pump (mouse + keyboard, with no invented traversal/controller graph).
+pub fn playback_ui_profile_from_paths(
+    paths: &ProductPaths,
+    resolver: &map_viewer::GameFileResolver,
+    actual_client_input: game_ui::variant_admission::InputVariant,
+) -> Result<game_ui::variant_admission::PlaybackUiProfile> {
+    let environment = playback_environment_from_paths(
+        paths,
+        resolver,
+        PRODUCT_PROFILE_SETTING_KEYS.into_iter().map(str::to_string),
+    )?;
+    game_ui::variant_admission::PlaybackUiProfile::admit(&environment, actual_client_input)
+        .map_err(|error| format!("admit local playback UI profile: {error:?}").into())
+}
+
+/// `draw_hires_terrain` byte from the `mapRenderingOptions` settings object;
+/// replay must use the selected profile value rather than a recorder carrier
+/// or a hard-coded default.
+pub fn playback_terrain_lod_options_from_paths(
+    paths: &ProductPaths,
+) -> Result<map_viewer::TerrainLodCullOptions> {
+    let settings_path = paths.user_data.join("settings.txt");
+    let settings = fs::read_to_string(&settings_path).map_err(|error| {
+        format!(
+            "read selected profile terrain settings {}: {error}",
+            settings_path.display()
+        )
+    })?;
+    let options = named_block(&settings, "mapRenderingOptions")?;
+    Ok(map_viewer::TerrainLodCullOptions {
+        suppress_near_stride_one: yes_no_bool(
+            assignment(options, "draw_hires_terrain")?,
+            "mapRenderingOptions.draw_hires_terrain",
+        )?,
+        high_gfx_shaders: yes_no_bool(
+            assignment(options, "high_gfx_shaders")?,
+            "mapRenderingOptions.high_gfx_shaders",
+        )?,
+        texture_quality: bounded_u8(
+            assignment(options, "texture_quality")?,
+            0,
+            2,
+            "mapRenderingOptions.texture_quality",
+        )?,
     })
 }
 
@@ -563,6 +613,17 @@ fn yes_no_bool(value: &str, label: &str) -> Result<bool> {
         "no" | "false" => Ok(false),
         other => Err(format!("{label} must be yes/no, found {other:?}").into()),
     }
+}
+
+fn bounded_u8(value: &str, min: u8, max: u8, label: &str) -> Result<u8> {
+    let parsed = value
+        .trim()
+        .parse::<u8>()
+        .map_err(|error| format!("{label} is not an integer: {error}"))?;
+    if !(min..=max).contains(&parsed) {
+        return Err(format!("{label} must be in {min}..={max}, got {parsed}").into());
+    }
+    Ok(parsed)
 }
 
 fn assignment<'a>(text: &'a str, key: &str) -> Result<&'a str> {
@@ -770,7 +831,12 @@ fn store_atomic(config: &Path, paths: &ProductPaths) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(&stored)?;
     let file_name = config
         .file_name()
-        .ok_or_else(|| format!("playback profile path has no file name: {}", config.display()))?
+        .ok_or_else(|| {
+            format!(
+                "playback profile path has no file name: {}",
+                config.display()
+            )
+        })?
         .to_string_lossy();
     let (temp, mut file) = (0..64)
         .find_map(|_| {
@@ -893,7 +959,7 @@ mod tests {
         .unwrap();
         fs::write(
             user.join("settings.txt"),
-            b"language=\"l_english\"\ngraphics={\n size={ x=1920 y=1080 }\n min_gui={ x=1280 y=720 }\n gui_scale=1.000000\n refreshRate=60\n max_refresh_rate=75\n fullScreen=no\n borderless=yes\n}\n",
+            b"language=\"l_english\"\ngraphics={\n size={ x=1920 y=1080 }\n min_gui={ x=1280 y=720 }\n gui_scale=1.000000\n refreshRate=60\n max_refresh_rate=75\n fullScreen=no\n borderless=yes\n}\nmapRenderingOptions={\n draw_terrain=yes\n draw_hires_terrain=no\n high_gfx_shaders=yes\n texture_quality=0\n}\n",
         )
         .unwrap();
         fs::write(
@@ -901,6 +967,31 @@ mod tests {
             b"\"Graphics\"={}\n\"System\"={\n \"language\"={ value=\"l_english\" version=0 }\n}\n",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn terrain_lod_option_comes_from_selected_map_rendering_profile() {
+        let root = root("terrain-lod-option");
+        let (game, user) = valid_profile_roots(&root);
+        let paths = ProductPaths {
+            game_install: game,
+            user_data: user.clone(),
+        };
+        let initial = playback_terrain_lod_options_from_paths(&paths).unwrap();
+        assert!(!initial.suppress_near_stride_one);
+        assert!(initial.high_gfx_shaders);
+        assert_eq!(initial.texture_quality, 0);
+        let settings_path = user.join("settings.txt");
+        let settings = fs::read_to_string(&settings_path)
+            .unwrap()
+            .replace("draw_hires_terrain=no", "draw_hires_terrain=yes")
+            .replace("texture_quality=0", "texture_quality=2");
+        fs::write(&settings_path, settings).unwrap();
+        let changed = playback_terrain_lod_options_from_paths(&paths).unwrap();
+        assert!(changed.suppress_near_stride_one);
+        assert!(changed.high_gfx_shaders);
+        assert_eq!(changed.texture_quality, 2);
+        let _ = fs::remove_dir_all(root);
     }
 
     fn options(game: Option<PathBuf>, user: Option<PathBuf>) -> ResolveOptions {

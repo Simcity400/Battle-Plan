@@ -109,8 +109,7 @@ pub fn load_restore_scene_bundle_session_dir(
     let retained_manifest = session_dir.join("manifest.json");
     if retained_manifest.is_file() {
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&retained_manifest)?)?;
-        if value.get("schema").and_then(serde_json::Value::as_str)
-            == Some(RETAINED_RESTORE_SCHEMA)
+        if value.get("schema").and_then(serde_json::Value::as_str) == Some(RETAINED_RESTORE_SCHEMA)
         {
             return Ok(Some(load_retained_restore_scene_bundle(
                 &retained_manifest,
@@ -207,7 +206,10 @@ fn load_retained_restore_scene_bundle(
     let source_sha = retained_string(source, "sha256", "source RDC")?;
     if !canonical_lower_sha256(source_sha)
         || source.get("bytes").and_then(serde_json::Value::as_u64) == Some(0)
-        || source.get("bytes").and_then(serde_json::Value::as_u64).is_none()
+        || source
+            .get("bytes")
+            .and_then(serde_json::Value::as_u64)
+            .is_none()
     {
         return Err("retained restore source RDC identity is incomplete or non-canonical".into());
     }
@@ -314,16 +316,12 @@ fn load_retained_restore_scene_bundle(
     }
     let block = matching_blocks[0];
     if block.get("symbol").and_then(serde_json::Value::as_str) != Some("dx11_cb1")
-        || block
-            .get("byte_offset")
-            .and_then(serde_json::Value::as_u64)
-            != Some(0)
+        || block.get("byte_offset").and_then(serde_json::Value::as_u64) != Some(0)
         || block.get("bytes").and_then(serde_json::Value::as_u64)
             != Some(RESTORE_POSTEFFECT_CB_BYTES as u64)
     {
         return Err(
-            "retained restore PS slot 1 block is not dx11_cb1 offset 0, exactly 80 bytes"
-                .into(),
+            "retained restore PS slot 1 block is not dx11_cb1 offset 0, exactly 80 bytes".into(),
         );
     }
     let block_bytes = decode_lower_hex(retained_string(block, "hex", "PostEffectBase")?)?;
@@ -343,7 +341,10 @@ fn load_retained_restore_scene_bundle(
     if draw.get("action_name").and_then(serde_json::Value::as_str)
         != Some("ID3D11DeviceContext::Draw()")
         || draw.get("chunk").and_then(serde_json::Value::as_u64) == Some(0)
-        || draw.get("chunk").and_then(serde_json::Value::as_u64).is_none()
+        || draw
+            .get("chunk")
+            .and_then(serde_json::Value::as_u64)
+            .is_none()
         || draw
             .get("pixel_shader_resource")
             .and_then(serde_json::Value::as_u64)
@@ -438,7 +439,10 @@ fn validate_retained_texture(
         && texture.get("height").and_then(serde_json::Value::as_u64) == Some(height.into())
         && texture.get("depth").and_then(serde_json::Value::as_u64) == Some(1)
         && texture.get("mips").and_then(serde_json::Value::as_u64) == Some(1)
-        && texture.get("array_size").and_then(serde_json::Value::as_u64) == Some(1)
+        && texture
+            .get("array_size")
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
         && texture.get("samples").and_then(serde_json::Value::as_u64) == Some(1)
         && texture.get("byte_size").and_then(serde_json::Value::as_u64) == Some(bytes as u64)
         && row.get("bytes").and_then(serde_json::Value::as_u64) == Some(bytes as u64)
@@ -447,13 +451,28 @@ fn validate_retained_texture(
             .and_then(|value| value.get("name"))
             .and_then(serde_json::Value::as_str)
             == Some(format)
-        && descriptor.get("first_mip").and_then(serde_json::Value::as_u64) == Some(0)
-        && descriptor.get("num_mips").and_then(serde_json::Value::as_u64) == Some(1)
-        && descriptor.get("first_slice").and_then(serde_json::Value::as_u64) == Some(0)
-        && descriptor.get("num_slices").and_then(serde_json::Value::as_u64) == Some(1)
+        && descriptor
+            .get("first_mip")
+            .and_then(serde_json::Value::as_u64)
+            == Some(0)
+        && descriptor
+            .get("num_mips")
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
+        && descriptor
+            .get("first_slice")
+            .and_then(serde_json::Value::as_u64)
+            == Some(0)
+        && descriptor
+            .get("num_slices")
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
         && subresource.get("mip").and_then(serde_json::Value::as_u64) == Some(0)
         && subresource.get("slice").and_then(serde_json::Value::as_u64) == Some(0)
-        && subresource.get("sample").and_then(serde_json::Value::as_u64) == Some(0);
+        && subresource
+            .get("sample")
+            .and_then(serde_json::Value::as_u64)
+            == Some(0);
     if !exact {
         return Err(format!(
             "retained restore {role} descriptor does not match {width}x{height} {format}, {bytes} bytes, one mip/slice/sample"
@@ -475,8 +494,9 @@ fn read_retained_payload(
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(format!("retained restore {role} payload path is not a safe relative path")
-            .into());
+        return Err(
+            format!("retained restore {role} payload path is not a safe relative path").into(),
+        );
     }
     let bytes = fs::read(bundle_dir.join(relative))?;
     let expected = row

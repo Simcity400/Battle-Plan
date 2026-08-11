@@ -328,7 +328,18 @@ pub enum CoverageDisposition {
     /// segment's assigned global ordinal + hour via
     /// [`PlannedSegment::snapshot_file`] — never stored here, so it cannot drift
     /// from the ordinal the stitch actually assigns.
-    Snapshot { sha256: String },
+    ///
+    /// `date` is the snapshot's own in-game date, carried from the source
+    /// index. It is REQUIRED on every visible main-timeline hour: the playback
+    /// index is the only authority a reader consults for date navigation
+    /// (reading a frame body to answer "what date is hour N" is not allowed at
+    /// that seam), so a stitched index without dates silently disables
+    /// jump-to-date. `Option` exists only so an imported/corrupt segment can
+    /// fail closed at `validate()` rather than be unrepresentable.
+    Snapshot {
+        sha256: String,
+        date: Option<String>,
+    },
     /// The hour was observed complete but capture/fold failed. Carries a reason
     /// and an evidence id so the failure is auditable, never invented.
     CaptureFailed { reason: String, evidence_id: String },
@@ -359,7 +370,12 @@ impl CoverageDisposition {
 
     fn to_value(&self) -> Value {
         match self {
-            CoverageDisposition::Snapshot { sha256 } => {
+            // `date` is deliberately NOT emitted here: this projection feeds
+            // the per-segment index and the observation ledger, whose rows the
+            // container's graph/index cross-check compares field for field.
+            // The visible playback date belongs to the main index row
+            // (`main_index_value`), which is what a reader navigates by.
+            CoverageDisposition::Snapshot { sha256, .. } => {
                 json!({ "kind": "snapshot", "sha256": sha256 })
             }
             CoverageDisposition::CaptureFailed {
@@ -742,9 +758,21 @@ fn validate_coverage_disposition(
     expected_evidence_id: Option<&str>,
 ) -> Result<(), String> {
     match disposition {
-        CoverageDisposition::Snapshot { sha256 } => {
+        CoverageDisposition::Snapshot { sha256, date } => {
             if !is_sha256_hex(sha256) {
                 return Err("snapshot digest is not canonical lowercase SHA-256".into());
+            }
+            // A visible snapshot hour that carries no date publishes an index
+            // a reader cannot navigate by date. Refuse at plan validation
+            // rather than emit a dateless playback index.
+            match date {
+                Some(date) if is_reason_text(date) => {}
+                Some(_) => {
+                    return Err(
+                        "snapshot date is empty, padded, oversized, or contains controls".into(),
+                    )
+                }
+                None => return Err("snapshot hour carries no date".into()),
             }
         }
         CoverageDisposition::CaptureFailed {
@@ -1836,13 +1864,20 @@ impl StitchedPlan {
         let mut coverage: Vec<Value> = Vec::new();
         for (hour, mh) in self.supersede.main.iter() {
             match &mh.disposition {
-                CoverageDisposition::Snapshot { sha256 } => {
+                CoverageDisposition::Snapshot { sha256, date } => {
                     let file = PlannedSegment::snapshot_file(mh.segment_id, *hour);
                     let mut row = Map::new();
                     row.insert("hour_index".into(), json!(hour));
                     row.insert("file".into(), json!(file));
                     row.insert("kind".into(), json!("snapshot"));
                     row.insert("sha256".into(), json!(sha256));
+                    // The playback index dates every visible hour; a reader
+                    // answers jump-to-date from here and never from a body.
+                    // `validate_coverage_disposition` has already refused a
+                    // visible snapshot without one.
+                    if let Some(date) = date {
+                        row.insert("date".into(), json!(date));
+                    }
                     add_main_ownership_fields(&mut row, mh);
                     snapshots.push(Value::Object(row));
                 }

@@ -374,11 +374,12 @@ mod tests {
     /// ordering that reproduces vanilla's line thicknesses. A game patch that
     /// re-authors a texture will fail this loudly.
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn shipped_border_textures_match_documented_profiles() {
-        let Ok(game) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!("skipping shipped_border_textures test: BATTLE_PLAN_GAME_DIR unset");
-            return;
-        };
+        let game = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(&game).expect("vanilla resolver");
         let profiles = all_border_texture_profiles_from_resolver(&resolver)
             .expect("decode all shipped border textures");

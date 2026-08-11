@@ -1157,16 +1157,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_graphics_lua_ambient_defines_compose_to_captured_rig() {
         // End-to-end: real shipped 00_graphics.lua -> parse -> compose ->
         // captured CB0 bits. Skips when the vanilla install is absent.
-        let path = std::path::Path::new(
-            r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\common\defines\00_graphics.lua",
-        );
-        let Ok(source) = std::fs::read_to_string(path) else {
-            eprintln!("skipping vanilla ambient-defines gate: {path:?} absent");
-            return;
-        };
+        let path =
+            replay_test_gates::require_vanilla_game_root().join("common/defines/00_graphics.lua");
+        let source = std::fs::read_to_string(&path).expect("read shipped 00_graphics.lua");
         let parsed = ambient_light_hsv_defines_from_graphics_source(&source)
             .expect("parse AMBIENT_LIGHT_* from the shipped 00_graphics.lua");
         assert_eq!(

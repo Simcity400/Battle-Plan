@@ -1,45 +1,52 @@
-use game_ui::compose::{ComposeOptions, Rect};
-use game_ui::dynamic_collection::{
-    CollectionItemTrace, CollectionTraceAuthority, DynamicCollectionTrace,
-};
+use game_ui::compose::ComposeOptions;
 use game_ui::occupation_binding::{
-    admit_occupation_surface, admit_occupation_surface_from_world,
+    admit_occupation_fixture_from_world, admit_occupation_fixture_surface,
     apply_occupation_state_to_compose_options, fnv1a32,
     occupation_map_mode_inputs, GarrisonActivityRow, GarrisonEquipmentLossRow,
     GarrisonEquipmentRow, GarrisonShortageEquipmentRow, GarrisonTemplateDefinition,
-    OccupationAlertRow, OccupationLawDefinition, OccupationProductionSurfaceRequest,
+    ObserverSemanticCollection, ObserverSemanticRow, OccupationAlertRow,
+    OccupationFixtureSurfaceRequest, OccupationLawDefinition, OccupationObserverCollections,
     OccupationRejection, OccupationSurfaceRequest, OccupationVisibleText,
+    OCCUPATION_COLLECTION_ACTIVITY, OCCUPATION_COLLECTION_ALERTS,
+    OCCUPATION_COLLECTION_EQUIPMENT_LOSSES, OCCUPATION_COLLECTION_STATES,
 };
 use replay_core::{open_recording, Leaf, OccupationEquipmentExactRow, OccupationRow, WorldTimeline};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-fn trace(ids: &[&str]) -> DynamicCollectionTrace {
-    DynamicCollectionTrace {
-        authority: CollectionTraceAuthority::ExactA729Runtime,
-        collection_instance_id: "xui16-test".into(),
+fn collection(
+    collection_id: &'static str,
+    ids: &[&str],
+) -> ObserverSemanticCollection {
+    ObserverSemanticCollection {
+        collection_id,
         frame_hour: 42,
-        source_items: ids
+        context_country: None,
+        rows: ids
             .iter()
             .enumerate()
-            .map(|(ordinal, id)| CollectionItemTrace {
+            .map(|(ordinal, id)| ObserverSemanticRow {
                 stable_item_id: (*id).into(),
                 source_ordinal: ordinal as u32,
-                included: true,
-                filter_reason: None,
             })
             .collect(),
-        ordered_item_ids: ids.iter().map(|id| (*id).into()).collect(),
-        group_boundaries: vec![],
-        row_template_id: "occupied_territory_state_entry".into(),
-        materialized_slots: vec![],
-        clip_rect: Rect::new(0, 0, 640, 480),
-        content_extent_pixels: (640, 480),
-        viewport_extent_pixels: (640, 480),
-        scroll_min_fixed: 0,
-        scroll_max_fixed: 0,
-        scroll_current_fixed: 0,
-        scroll_target_fixed: 0,
+    }
+}
+
+fn collections(
+    states: &[&str],
+    activities: &[&str],
+    equipment_losses: &[&str],
+    alerts: &[&str],
+) -> OccupationObserverCollections {
+    OccupationObserverCollections {
+        states: collection(OCCUPATION_COLLECTION_STATES, states),
+        activities: collection(OCCUPATION_COLLECTION_ACTIVITY, activities),
+        equipment_losses: collection(
+            OCCUPATION_COLLECTION_EQUIPMENT_LOSSES,
+            equipment_losses,
+        ),
+        alerts: collection(OCCUPATION_COLLECTION_ALERTS, alerts),
     }
 }
 
@@ -128,6 +135,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         state_id: 891,
         occupied_country_tag: "FRA".into(),
         attack_blocked: false,
+        resistance_activity: Some("resistance_attack".into()),
         lost_manpower: 20,
         lost_equipment: 15,
     }];
@@ -156,11 +164,14 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         }],
         resolved_text: "Garrison reinforcement required".into(),
     }];
-    let state_trace = trace(&["state:891"]);
-    let activity_trace = trace(&["activity:1"]);
-    let loss_trace = trace(&["equipment:12:4"]);
+    let semantic_collections = collections(
+        &["state:891"],
+        &["activity:1"],
+        &["equipment:12:4"],
+        &["alert:GER:not_enough_garrison"],
+    );
 
-    let admitted = admit_occupation_surface(OccupationSurfaceRequest {
+    let admitted = admit_occupation_fixture_surface(OccupationSurfaceRequest {
         source_record_id: "record:42",
         occupation_rows: &rows,
         visible_text_by_state: &text,
@@ -168,9 +179,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         garrison_templates: &templates,
         equipment_by_state: &BTreeMap::new(),
         equipment_complete: false,
-        occupation_collection: &state_trace,
-        activity_collection: &activity_trace,
-        equipment_loss_collection: &loss_trace,
+        collections: &semantic_collections,
         activities: &activities,
         activities_complete: true,
         equipment_losses: &equipment_losses,
@@ -180,6 +189,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
     })
     .expect("complete exact XUI16 producer inputs");
 
+    assert!(!admitted.is_product_authority());
     assert_eq!(admitted.states()[0].state_id, 891);
     assert_eq!(admitted.states()[0].law.icon_frame, 11);
     assert_eq!(admitted.states()[0].equipment[0].amount, 800.0);
@@ -202,7 +212,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
     let mut bad_encoding = occupation();
     bad_encoding.occupation_law_token_encoding = Leaf::Measured("unproven_hash".into());
     let bad_encoding_rows = BTreeMap::from([(891, bad_encoding)]);
-    let rejected = admit_occupation_surface(OccupationSurfaceRequest {
+    let rejected = admit_occupation_fixture_surface(OccupationSurfaceRequest {
         source_record_id: "record:42",
         occupation_rows: &bad_encoding_rows,
         visible_text_by_state: &text,
@@ -210,9 +220,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         garrison_templates: &templates,
         equipment_by_state: &equipment,
         equipment_complete: true,
-        occupation_collection: &state_trace,
-        activity_collection: &activity_trace,
-        equipment_loss_collection: &loss_trace,
+        collections: &semantic_collections,
         activities: &activities,
         activities_complete: true,
         equipment_losses: &equipment_losses,
@@ -225,7 +233,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
     let mut overstrength = occupation();
     overstrength.garrison_strength_ratio = Leaf::Measured(1.001);
     let overstrength_rows = BTreeMap::from([(891, overstrength)]);
-    let rejected = admit_occupation_surface(OccupationSurfaceRequest {
+    let rejected = admit_occupation_fixture_surface(OccupationSurfaceRequest {
         source_record_id: "record:42",
         occupation_rows: &overstrength_rows,
         visible_text_by_state: &text,
@@ -233,9 +241,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         garrison_templates: &templates,
         equipment_by_state: &equipment,
         equipment_complete: true,
-        occupation_collection: &state_trace,
-        activity_collection: &activity_trace,
-        equipment_loss_collection: &loss_trace,
+        collections: &semantic_collections,
         activities: &activities,
         activities_complete: true,
         equipment_losses: &equipment_losses,
@@ -250,7 +256,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
 
     let mut invalid_alerts = alerts.clone();
     invalid_alerts[0].equipment_fixed_point_divisor = 1;
-    let rejected = admit_occupation_surface(OccupationSurfaceRequest {
+    let rejected = admit_occupation_fixture_surface(OccupationSurfaceRequest {
         source_record_id: "record:42",
         occupation_rows: &rows,
         visible_text_by_state: &text,
@@ -258,9 +264,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         garrison_templates: &templates,
         equipment_by_state: &equipment,
         equipment_complete: true,
-        occupation_collection: &state_trace,
-        activity_collection: &activity_trace,
-        equipment_loss_collection: &loss_trace,
+        collections: &semantic_collections,
         activities: &activities,
         activities_complete: true,
         equipment_losses: &equipment_losses,
@@ -280,9 +284,8 @@ fn incomplete_equipment_or_history_fails_closed() {
     let empty_laws = BTreeMap::new();
     let empty_templates = BTreeMap::new();
     let empty_equipment = BTreeMap::new();
-    let trace = trace(&["state:891"]);
-    let empty_trace = self::trace(&[]);
-    let result = admit_occupation_surface(OccupationSurfaceRequest {
+    let semantic_collections = collections(&["state:891"], &[], &[], &[]);
+    let result = admit_occupation_fixture_surface(OccupationSurfaceRequest {
         source_record_id: "record:42",
         occupation_rows: &rows,
         visible_text_by_state: &empty_text,
@@ -290,9 +293,7 @@ fn incomplete_equipment_or_history_fails_closed() {
         garrison_templates: &empty_templates,
         equipment_by_state: &empty_equipment,
         equipment_complete: false,
-        occupation_collection: &trace,
-        activity_collection: &empty_trace,
-        equipment_loss_collection: &empty_trace,
+        collections: &semantic_collections,
         activities: &[],
         activities_complete: false,
         equipment_losses: &[],
@@ -348,9 +349,13 @@ fn production_owner_fixture_crosses_typed_history_alert_and_xui16_constructor() 
     let activity_id = "GER|1942.8.15.1|891|0";
     let second_activity_id = "GER|1942.8.15.2|891|1";
     let loss_id = "equipment:438:70";
-    let state_trace = trace(&["state:891"]);
-    let activity_trace = trace(&[activity_id, second_activity_id]);
-    let loss_trace = trace(&[loss_id]);
+    let alert_id = "alert_not_enough_garrison:43800041:47";
+    let semantic_collections = collections(
+        &["state:891"],
+        &[activity_id, second_activity_id],
+        &[loss_id],
+        &[alert_id],
+    );
     let location_text = BTreeMap::from([
         (activity_id.into(), "Angola".into()),
         (second_activity_id.into(), "Angola".into()),
@@ -359,26 +364,25 @@ fn production_owner_fixture_crosses_typed_history_alert_and_xui16_constructor() 
         BTreeMap::from([((438, 70), "Support Equipment".into())]);
     let alert_text =
         BTreeMap::from([("GER".into(), "Garrison reinforcement required".into())]);
-    let alert_order = BTreeMap::from([("GER".into(), 0)]);
 
-    let admitted = admit_occupation_surface_from_world(OccupationProductionSurfaceRequest {
+    let admitted = admit_occupation_fixture_from_world(OccupationFixtureSurfaceRequest {
         source_record_id: "xui16-owner-fixture:42",
         frame: &frame,
+        occupation_rows: frame.occupation_by_state(),
         visible_text_by_state: &text,
         law_definitions_by_hash: &laws,
         garrison_templates: &templates,
         equipment_by_state: &BTreeMap::new(),
         equipment_complete: false,
-        occupation_collection: &state_trace,
-        activity_collection: &activity_trace,
-        equipment_loss_collection: &loss_trace,
+        collections: &semantic_collections,
         activity_location_text: &location_text,
         equipment_display_names: &equipment_names,
         alert_resolved_text: &alert_text,
-        alert_visible_order: &alert_order,
+        controller_supplement: None,
     })
-    .expect("typed production-owner fixture must admit");
+    .expect("typed fixture must admit");
 
+    assert!(!admitted.is_product_authority());
     assert_eq!(admitted.states()[0].state_id, 891);
     assert_eq!(admitted.activities()[0].stable_id, activity_id);
     assert_eq!(admitted.activities()[0].lost_equipment, 1);
@@ -394,23 +398,25 @@ fn production_owner_fixture_crosses_typed_history_alert_and_xui16_constructor() 
     assert_eq!(admitted.alerts()[0].missing_manpower, 4_200);
     assert_eq!(admitted.alerts()[0].missing_equipment[0].whole_amount, 125);
 
-    let mut wrong_hour_activity_trace = trace(&[activity_id, second_activity_id]);
-    wrong_hour_activity_trace.frame_hour = 41;
-    let rejected = admit_occupation_surface_from_world(OccupationProductionSurfaceRequest {
+    let mut wrong_hour_collections = semantic_collections.clone();
+    wrong_hour_collections.activities.frame_hour = 41;
+    let rejected = admit_occupation_fixture_from_world(OccupationFixtureSurfaceRequest {
         source_record_id: "xui16-owner-fixture:wrong-hour",
         frame: &frame,
+        occupation_rows: frame.occupation_by_state(),
         visible_text_by_state: &text,
         law_definitions_by_hash: &laws,
         garrison_templates: &templates,
         equipment_by_state: &BTreeMap::new(),
         equipment_complete: false,
-        occupation_collection: &state_trace,
-        activity_collection: &wrong_hour_activity_trace,
-        equipment_loss_collection: &loss_trace,
+        collections: &wrong_hour_collections,
         activity_location_text: &location_text,
         equipment_display_names: &equipment_names,
         alert_resolved_text: &alert_text,
-        alert_visible_order: &alert_order,
+        controller_supplement: None,
     });
-    assert_eq!(rejected, Err(OccupationRejection::InvalidCollectionTrace));
+    assert_eq!(
+        rejected,
+        Err(OccupationRejection::InvalidSemanticCollection)
+    );
 }

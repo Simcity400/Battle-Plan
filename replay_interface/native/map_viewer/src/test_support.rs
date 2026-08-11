@@ -1049,6 +1049,8 @@ where
                     byte_len,
                     fnv1a64: hash,
                     provenance: "unit_test".to_string(),
+                    resolved_from: None,
+                    effective_vfs_verified: None,
                 },
             )
         })
@@ -1105,6 +1107,8 @@ where
                     byte_len: 16,
                     fnv1a64: terrain_hash,
                     provenance: "unit_test".to_string(),
+                    resolved_from: None,
+                    effective_vfs_verified: None,
                 },
             ),
             (
@@ -1114,6 +1118,8 @@ where
                     byte_len: 8,
                     fnv1a64: post_pass_hash,
                     provenance: "unit_test_post_pass_reference".to_string(),
+                    resolved_from: None,
+                    effective_vfs_verified: None,
                 },
             ),
             (
@@ -1123,6 +1129,8 @@ where
                     byte_len: 128,
                     fnv1a64: shader_hash,
                     provenance: "unit_test".to_string(),
+                    resolved_from: None,
+                    effective_vfs_verified: None,
                 },
             ),
             (
@@ -1132,11 +1140,14 @@ where
                     byte_len: 96,
                     fnv1a64: vertex_shader_hash,
                     provenance: "unit_test".to_string(),
+                    resolved_from: None,
+                    effective_vfs_verified: None,
                 },
             ),
         ]),
         blockers: Vec::new(),
         synthetic_payloads: BTreeMap::new(),
+        vanilla_source_verification: None,
     };
     let mut frame = mutate(frame);
     if let Some(draw) = frame
@@ -1346,6 +1357,8 @@ where
                 byte_len: fs::metadata(root.join(&copied)).unwrap().len() as usize,
                 fnv1a64: fnv1a64_file(&root.join(&copied)).unwrap(),
                 provenance: "unit_test_water".to_string(),
+                resolved_from: None,
+                effective_vfs_verified: None,
             },
         );
     }
@@ -1362,6 +1375,8 @@ where
             byte_len: 128,
             fnv1a64: water_ps_hash.clone(),
             provenance: "unit_test_water".to_string(),
+            resolved_from: None,
+            effective_vfs_verified: None,
         },
     );
     frame.runtime_files.insert(
@@ -1371,6 +1386,8 @@ where
             byte_len: 96,
             fnv1a64: water_vs_hash.clone(),
             provenance: "unit_test_water".to_string(),
+            resolved_from: None,
+            effective_vfs_verified: None,
         },
     );
     frame.capture_moment = WATER_CAPTURE_MOMENT.to_string();
@@ -1562,6 +1579,8 @@ where
                 byte_len: fs::metadata(root.join(&copied)).unwrap().len() as usize,
                 fnv1a64: fnv1a64_file(&root.join(&copied)).unwrap(),
                 provenance: "unit_test_map_layer".to_string(),
+                resolved_from: None,
+                effective_vfs_verified: None,
             },
         );
     }
@@ -1577,6 +1596,8 @@ where
             byte_len: 128,
             fnv1a64: ps_hash.clone(),
             provenance: "unit_test_map_layer".to_string(),
+            resolved_from: None,
+            effective_vfs_verified: None,
         },
     );
     frame.runtime_files.insert(
@@ -1586,6 +1607,8 @@ where
             byte_len: 96,
             fnv1a64: vs_hash.clone(),
             provenance: "unit_test_map_layer".to_string(),
+            resolved_from: None,
+            effective_vfs_verified: None,
         },
     );
 
@@ -1746,6 +1769,8 @@ pub(crate) fn attach_water_pre_draw_payloads(
                 byte_len: 8,
                 fnv1a64: hash,
                 provenance: "unit_test_water_pre_draw".to_string(),
+                resolved_from: None,
+                effective_vfs_verified: None,
             },
         );
     }
@@ -1831,6 +1856,8 @@ pub(crate) fn add_snow_mud_resource(root: &Path, frame: &mut MapFrameRuntimeBund
             byte_len: bytes.len(),
             fnv1a64: hash,
             provenance: "unit_test".to_string(),
+            resolved_from: None,
+            effective_vfs_verified: None,
         },
     );
     sync_active_shader_bindings_to_draws(frame);

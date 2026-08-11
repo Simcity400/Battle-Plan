@@ -2,7 +2,13 @@ use super::*;
 
 fn selected() -> portable_render_stream::SelectedPresentReceipt {
     portable_render_stream::SelectedPresentReceipt::sealed(
-        1, "a".repeat(64), 7, 0, 43_800_899, 100, 100,
+        1,
+        "a".repeat(64),
+        7,
+        0,
+        43_800_899,
+        100,
+        100,
     )
 }
 
@@ -51,8 +57,7 @@ fn tti2_preserves_final_blob_and_measured_empty() {
         "Exact first line\nExact second line"
     );
 
-    rest["_r2_resolved_tooltip_instances_live"]["expected_instance_count"] =
-        serde_json::json!(0);
+    rest["_r2_resolved_tooltip_instances_live"]["expected_instance_count"] = serde_json::json!(0);
     rest["_r2_resolved_tooltip_instances_live"]["instances"] = serde_json::json!([]);
     let view = build_resolved_tooltip_exact(&rest, 900, Some(&selected), &mut warnings);
     assert_eq!(view.status, ViewStatus::Present);

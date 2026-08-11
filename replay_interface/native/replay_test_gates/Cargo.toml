@@ -1,0 +1,11 @@
+[package]
+name = "replay_test_gates"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Shared, build-script-and-test-usable probes for the preconditions that gated
+# tests depend on (the real the game install, capture corpora, evidence bundles).
+# Deliberately dependency-free so it can be a `[build-dependencies]` entry of
+# every crate in the workspace without dragging a build graph behind it.
+[dependencies]

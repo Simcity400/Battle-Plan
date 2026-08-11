@@ -1,29 +1,26 @@
-# Replay Interface Documents
+# Replay Interface documentation
 
-Active replay-interface documentation is intentionally limited to specs and
-standards.
+Read `../../documents/DECISIONS.md` for product intent and
+`../../documents/STATUS.md` for current project status.
 
-| File | Purpose |
-| --- | --- |
-| `REPLAY_ARCHITECTURE.md` | Architecture of record for the replay layer: crates, data flow, ingest boundary, sequencing. |
-| `REPLAY_DATA_REQUIREMENTS.md` / `../../extractor/documents/MASTER_EXTRACTION_CONTRACT.md` | Current recording asks and extractor authority/status across the replay-extraction seam. |
-| `REPLAY_DATA_REQUIREMENTS.md` | Self-contained recorded-data contract handed to the extractor. |
-| `HOI4REPLAY_CONTAINER_SPEC.md` | `.battleplan` container format. |
-| `REPLAY_SCHEMA.md` | Canonical replay snapshot schema. |
-| `UI_SOURCE_OF_TRUTH_REPORT.md` | UI fidelity standard and evidence hierarchy. |
+## Active specifications
 
-Do not create parallel progress ledgers in this folder. If replay UI work is
-blocked by missing recorded data, update `REPLAY_DATA_REQUIREMENTS.md` and
-`../../extractor/documents/MASTER_EXTRACTION_CONTRACT.md` as appropriate. If a schema or map rule
-changes, update the relevant spec above. Superseded plans, ledgers, and lane
-reports live in `archive/`.
+- `REPLAY_ARCHITECTURE.md`: shipping crates, authority flow, lifecycle, and
+  fail-closed boundaries.
+- `REPLAY_SCHEMA.md`: recorded schema and typed carrier identities.
+- `HOI4REPLAY_CONTAINER_SPEC.md`: container format and authentication.
+- `REPLAY_DATA_REQUIREMENTS.md`: inputs Replay requires from a recording.
+- `PRODUCTION_PLAYBACK_PROFILE.md`: authenticated content and launch profile.
+- `MOD_COMPATIBILITY.md`: base-game/mod/DLC/language winner-order contract.
+- `REPLAY_UI_DATA_SOURCES.md`: UI authority boundary.
+- `MAP_GRAPHICS_PRODUCT_STATUS.md`: current non-UI map product status.
 
-## Where the evidence lives (cold-start bridge)
+Rendering laws in this directory describe current production mechanisms only.
+Packet-local evidence and contracts live beneath
+`../re_evidence/rendering_laws/`. Enumerate that directory to discover packets;
+this page intentionally does not maintain a second handwritten packet index.
+The XMAP00 and XUI27 machine-readable ledgers are the current coverage and
+external-dependency authorities.
 
-The RE-evidence program and its stores are NOT reachable from the specs above;
-start here:
-
-| Entry | Purpose |
-| --- | --- |
-| `lane_reports/rendering_laws/PROGRAM_STATUS.md` | Orchestrator status of the rendering-laws RE program + the machine-local evidence-store index (capture corpora, RenderDoc mined store, Ghidra exports). |
-| `<local-path>` (machine-local) | THE single physical root for all machine-local evidence/capture/RE stores (consolidated 2026-07-19; junctions remain at old paths). Repo-side index: `lane_reports/rendering_laws/PROGRAM_STATUS.md`. |
+Machine-local evidence is indexed by `<local-path>`. Git history,
+not dated handoff or recovery documents, preserves development chronology.

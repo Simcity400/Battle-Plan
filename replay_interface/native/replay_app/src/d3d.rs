@@ -6,7 +6,9 @@
 //! headless frame-dump path and the future visual-QA harness.
 
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use sha2::{Digest, Sha256};
 use winapi::ctypes::c_void;
 use winapi::shared::dxgi::{
     IDXGIAdapter, IDXGIDevice, IDXGISwapChain, DXGI_ADAPTER_DESC, DXGI_PRESENT_DO_NOT_WAIT,
@@ -16,6 +18,7 @@ use winapi::shared::dxgiformat::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN
 use winapi::shared::dxgitype::{
     DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
+use winapi::shared::guiddef::GUID;
 use winapi::shared::minwindef::UINT;
 use winapi::shared::windef::HWND;
 use winapi::shared::winerror::{
@@ -233,12 +236,25 @@ pub struct Gfx {
     pub device: ComPtr<ID3D11Device>,
     pub context: ComPtr<ID3D11DeviceContext>,
     swapchain: Option<ComPtr<IDXGISwapChain>>,
-    /// The offscreen color texture when this is a headless target.
-    offscreen: Option<ComPtr<ID3D11Texture2D>>,
+    /// The concrete texture behind the current product target. For a window
+    /// this is the current swapchain backbuffer; for headless it is the
+    /// retained offscreen texture.
+    target_texture: Option<ComPtr<ID3D11Texture2D>>,
     rtv: Option<ComPtr<ID3D11RenderTargetView>>,
+    target_allocation_generation: u64,
+    target_resource_identity_sha256: String,
     pub width: u32,
     pub height: u32,
 }
+
+static NEXT_PRESENTATION_ALLOCATION_SERIAL: AtomicU64 = AtomicU64::new(1);
+
+const REPLAY_PRESENTATION_RESOURCE_IDENTITY_GUID: GUID = GUID {
+    Data1: 0x7d3f2c91,
+    Data2: 0x8b2e,
+    Data3: 0x4f6d,
+    Data4: [0xa1, 0x73, 0x24, 0x68, 0x91, 0xcf, 0x52, 0x0b],
+};
 
 /// Reusable EVENT query for a bounded GPU-completion observation. Construct it
 /// outside timed loops so query allocation is not charged to every frame.
@@ -278,6 +294,47 @@ fn swapchain_desc(hwnd: HWND, width: u32, height: u32, swap_effect: u32) -> DXGI
         SwapEffect: swap_effect,
         Flags: 0,
     }
+}
+
+unsafe fn stamp_presentation_resource_identity(
+    texture: *mut ID3D11Texture2D,
+    allocation_generation: u64,
+) -> Result<String> {
+    if texture.is_null() || allocation_generation == 0 {
+        return Err("cannot identify a null presentation allocation".into());
+    }
+    let mut desc: D3D11_TEXTURE2D_DESC = std::mem::zeroed();
+    (*texture).GetDesc(&mut desc);
+    let serial = NEXT_PRESENTATION_ALLOCATION_SERIAL.fetch_add(1, Ordering::SeqCst);
+    if serial == 0 {
+        return Err("presentation allocation serial overflowed".into());
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"hoi4.replay.presentation-resource-allocation.v2\0");
+    hasher.update(serial.to_le_bytes());
+    hasher.update(allocation_generation.to_le_bytes());
+    hasher.update(desc.Width.to_le_bytes());
+    hasher.update(desc.Height.to_le_bytes());
+    hasher.update((desc.Format as u32).to_le_bytes());
+    hasher.update(desc.SampleDesc.Count.to_le_bytes());
+    hasher.update(desc.SampleDesc.Quality.to_le_bytes());
+    let identity = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let mut tag = Vec::with_capacity(72);
+    tag.extend_from_slice(&allocation_generation.to_le_bytes());
+    tag.extend_from_slice(identity.as_bytes());
+    hr_ok(
+        (*texture).SetPrivateData(
+            &REPLAY_PRESENTATION_RESOURCE_IDENTITY_GUID,
+            u32::try_from(tag.len())?,
+            tag.as_ptr().cast(),
+        ),
+        "SetPrivateData (presentation resource identity)",
+    )?;
+    Ok(identity)
 }
 
 /// Pick the hardware adapter with the most dedicated video memory. This is a
@@ -332,6 +389,21 @@ impl Gfx {
     /// than treating the channel-layout difference as implicit parity.
     pub(crate) const fn target_format(&self) -> u32 {
         DXGI_FORMAT_B8G8R8A8_UNORM
+    }
+
+    pub(crate) fn target_allocation_generation(&self) -> u64 {
+        self.target_allocation_generation
+    }
+
+    /// Identity stamped onto the concrete ID3D11Texture2D allocation backing
+    /// the current presentation target. XMAP10 re-queries this private-data
+    /// tag from the RTV resource before drawing, so a descriptor-identical
+    /// substitute cannot inherit this allocation's receipt.
+    pub(crate) fn target_resource_identity_sha256(&self) -> Result<&str> {
+        if self.target_resource_identity_sha256.len() != 64 {
+            return Err("presentation target has no concrete resource identity".into());
+        }
+        Ok(&self.target_resource_identity_sha256)
     }
 
     /// Identity of the exact DXGI adapter owning this D3D device. The weak-PC
@@ -468,8 +540,10 @@ impl Gfx {
                 device,
                 context,
                 swapchain: Some(swapchain),
-                offscreen: None,
+                target_texture: None,
                 rtv: None,
+                target_allocation_generation: 1,
+                target_resource_identity_sha256: String::new(),
                 width: width.max(1),
                 height: height.max(1),
             };
@@ -545,13 +619,17 @@ impl Gfx {
             );
             hr_ok(hr, "CreateRenderTargetView (offscreen)")?;
             let rtv = ComPtr::from_raw(rtv, "offscreen render-target view")?;
+            let target_resource_identity_sha256 =
+                stamp_presentation_resource_identity(texture.as_raw(), 1)?;
 
             Ok(Gfx {
                 device,
                 context,
                 swapchain: None,
-                offscreen: Some(texture),
+                target_texture: Some(texture),
                 rtv: Some(rtv),
+                target_allocation_generation: 1,
+                target_resource_identity_sha256,
                 width,
                 height,
             })
@@ -571,6 +649,10 @@ impl Gfx {
         );
         self.runtime_hr(hr, "IDXGISwapChain::GetBuffer(0)")?;
         let backbuffer = ComPtr::from_raw(backbuffer, "swapchain backbuffer")?;
+        let target_resource_identity_sha256 = stamp_presentation_resource_identity(
+            backbuffer.as_raw(),
+            self.target_allocation_generation,
+        )?;
         let mut rtv: *mut ID3D11RenderTargetView = ptr::null_mut();
         let hr = (*self.device.as_raw()).CreateRenderTargetView(
             backbuffer.as_raw() as *mut _,
@@ -579,6 +661,8 @@ impl Gfx {
         );
         self.runtime_hr(hr, "CreateRenderTargetView for swapchain backbuffer")?;
         self.rtv = Some(ComPtr::from_raw(rtv, "backbuffer render-target view")?);
+        self.target_texture = Some(backbuffer);
+        self.target_resource_identity_sha256 = target_resource_identity_sha256;
         Ok(())
     }
 
@@ -600,6 +684,7 @@ impl Gfx {
         unsafe {
             // The backbuffer view must be released before ResizeBuffers.
             self.rtv = None;
+            self.target_texture = None;
             (*self.context.as_raw()).ClearState();
             let swapchain = self
                 .swapchain
@@ -609,6 +694,10 @@ impl Gfx {
             self.runtime_hr(hr, "IDXGISwapChain::ResizeBuffers")?;
             self.width = width;
             self.height = height;
+            self.target_allocation_generation = self
+                .target_allocation_generation
+                .checked_add(1)
+                .ok_or("presentation target allocation generation overflowed")?;
             self.create_backbuffer_rtv()
         }
     }
@@ -636,14 +725,17 @@ impl Gfx {
         }
     }
 
-    /// Read the current render target back as tightly-packed BGRA8 rows
-    /// (top-down). Offscreen targets only.
+    /// Read the current product render target back as tightly-packed BGRA8
+    /// rows (top-down). Windowed callers observe the current swapchain
+    /// backbuffer before Present; offscreen callers observe their retained
+    /// texture. Both paths therefore hash the exact resource identified by
+    /// `target_resource_identity_sha256`.
     pub fn read_target(&self) -> Result<Vec<u8>> {
-        let source = self
-            .offscreen
-            .as_ref()
-            .ok_or("read_target is only supported on offscreen targets")?;
         unsafe {
+            let source = self
+                .target_texture
+                .as_ref()
+                .ok_or("product target texture is not retained for readback")?;
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: self.width,
                 Height: self.height,
@@ -803,11 +895,9 @@ mod tests {
         assert!(is_device_loss_error(removed.as_ref()));
 
         let unknown_reason = 0x8000_4005u32 as i32;
-        let unavailable = void_device_call_result(
-            unknown_reason,
-            "UpdateSubresource RestoreScene ColorCube",
-        )
-        .expect_err("an unknown negative device reason must reject the upload");
+        let unavailable =
+            void_device_call_result(unknown_reason, "UpdateSubresource RestoreScene ColorCube")
+                .expect_err("an unknown negative device reason must reject the upload");
         assert!(unavailable
             .downcast_ref::<DeviceUnavailableError>()
             .is_some());

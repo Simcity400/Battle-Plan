@@ -1,16 +1,17 @@
 //! F1 production headless performance acceptance.
 //!
-//! The stronger recording profile opens one admitted portable recording and
-//! executes its exact product map and selected-Present programs. The default F1
-//! profile instead runs a contract-pinned synthetic stress packet through those
-//! same production GPU paths so performance acceptance has no future-capture
-//! dependency. Stress receipts explicitly prohibit semantic, pixel, RE, and
-//! rendering-law claims. Both profiles measure GPU-completed 1920x1080 frames;
-//! neither accepts queued CPU-submit time, debug bundles, or omissions.
+//! The recording profile opens one admitted portable recording, resolves its
+//! exact selected frame, and repeatedly executes XMAP22's shared packet-native
+//! product compositor with GPU completion in the timed interval. The default F1 profile
+//! instead runs a contract-pinned synthetic stress packet through isolated GPU
+//! stress adapters so performance acceptance has no future-capture dependency.
+//! Stress receipts explicitly prohibit semantic, pixel, RE, and rendering-law
+//! claims. Both profiles measure GPU-completed 1920x1080 frames and reject
+//! queued CPU-submit time, debug bundles, or omissions; only the recording
+//! profile is evidence about the actual production map composition.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -20,11 +21,7 @@ use winapi::um::d3dcommon::ID3DBlob;
 use crate::app::ProductProductionD3dRuntime;
 use crate::d3d::{Gfx, GpuAdapterIdentity};
 use crate::timeline::{resolve_dump_hour, DumpHourRequest, OwnerProvider};
-use crate::ui_runtime::{
-    ArmyBattleplanUiSupplementalInputs, IntelligenceUiSupplementalInputs,
-    OccupationUiSupplementalInputs, ProductSelectedPresentPerformanceRuntime,
-    ProductSelectedPresentRuntime, SelectedPresentUiOutcome,
-};
+use crate::ui_runtime::ProductSelectedPresentPerformanceRuntime;
 use crate::{Result, TimelineMode};
 
 const REQUIRED_WIDTH: u32 = 1920;
@@ -35,7 +32,6 @@ const DEFAULT_WARMUP_FRAMES: usize = 120;
 const DEFAULT_SAMPLE_FRAMES: usize = 600;
 const MAX_AVERAGE_FRAME_MS: f64 = 1000.0 / 60.0;
 const MAX_P95_FRAME_MS: f64 = 33.3;
-const MIN_CERTIFICATION_RECORDING_HOURS: usize = 24;
 
 #[derive(Debug)]
 pub(crate) struct BenchOptions {
@@ -134,30 +130,35 @@ struct StressBenchReceipt {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkloadContract {
-    schema: String,
-    certification_enabled: bool,
-    workload_id: String,
-    recording_authority_sha256: String,
+struct RecordingSelectionEnvelope {
     logical_stream_id: Option<u64>,
-    recording_hour_count: usize,
-    first_hour: i64,
-    last_hour: i64,
     selected_hour: i64,
-    content_manifest_digest_sha256: String,
-    product_modset_sha256: String,
-    effective_vfs_manifest_sha256: String,
-    production_render_sha256: String,
-    selected_present_sha256: String,
-    launch_epoch_sha256: String,
-    capture_receipt_sha256: String,
-    frame_cache_entries: usize,
-    expected_map_operations: usize,
-    expected_selected_present_operations: usize,
-    expected_selected_present_m02_draws: usize,
-    approved_plan_omissions: Vec<String>,
-    approved_d3d_omissions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RecordingBenchReceipt {
+    schema: &'static str,
+    result: &'static str,
+    recording_path: String,
+    recording_identity_before_sha256: String,
+    recording_identity_after_sha256: String,
+    opened_recording_segment_trust_sha256: String,
+    logical_stream_id: Option<u64>,
+    selected_hour: i64,
+    viewport_width: u32,
+    viewport_height: u32,
+    gpu_adapter_name: String,
+    gpu_dedicated_video_memory_bytes: u64,
+    gpu_vendor_id: u32,
+    gpu_device_id: u32,
+    warmup_frames: usize,
+    sample_frames: usize,
+    gpu_completion_method: &'static str,
+    timer: &'static str,
+    last_composition: crate::app::ProductMapCompositionReceipt,
+    thresholds: Thresholds,
+    metrics: Metrics,
+    failures: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,355 +181,136 @@ struct Metrics {
     frame_times_ms: Vec<f64>,
 }
 
-#[derive(Debug, Serialize)]
-struct Workload {
-    recording_path: String,
-    recording_sha256: String,
-    workload_contract_path: String,
-    workload_contract_sha256: String,
-    workload_id: String,
-    logical_stream_id: Option<u64>,
-    recording_hour_count: usize,
-    first_hour: i64,
-    last_hour: i64,
-    selected_hour: i64,
-    content_manifest_digest_sha256: String,
-    product_modset_sha256: String,
-    effective_vfs_manifest_sha256: String,
-    production_render_sha256: String,
-    selected_present_sha256: String,
-    launch_epoch_sha256: String,
-    capture_receipt_sha256: String,
-    viewport_width: u32,
-    viewport_height: u32,
-    gpu_adapter_name: String,
-    gpu_dedicated_video_memory_bytes: u64,
-    gpu_vendor_id: u32,
-    gpu_device_id: u32,
-    frame_cache_entries: usize,
-    warmup_frames: usize,
-    sample_frames: usize,
-    map_operations_per_frame: usize,
-    selected_present_operations_per_frame: usize,
-    selected_present_m02_draws_per_frame: usize,
-    feature_local_plan_omissions: usize,
-    feature_local_d3d_omissions: usize,
-    gpu_completion_method: &'static str,
-    timer: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct BenchReceipt {
-    schema: &'static str,
-    result: &'static str,
-    workload: Workload,
-    reference_machine_contract: &'static str,
-    thresholds: Thresholds,
-    metrics: Metrics,
-    failures: Vec<String>,
-}
-
 #[derive(Clone, Copy)]
 struct FrameCounts {
     map_operations: usize,
     selected_present_operations: usize,
     selected_present_m02_draws: usize,
+    observer_ui_draws: usize,
+}
+
+fn advance_recording_benchmark_viewer_clock(
+    viewer: &mut map_viewer::ViewerOwnedMapState,
+    delta_seconds: f32,
+) -> Result<()> {
+    let elapsed = f32::from_bits(viewer.animation_time_f32_bits);
+    if !elapsed.is_finite() || !delta_seconds.is_finite() || delta_seconds < 0.0 {
+        return Err("recording benchmark viewer clock requires finite nonnegative time".into());
+    }
+    let next = elapsed + delta_seconds;
+    if !next.is_finite() {
+        return Err("recording benchmark viewer clock overflowed".into());
+    }
+    viewer.animation_time_f32_bits = next.to_bits();
+    viewer.frame_delta_seconds_f32_bits = delta_seconds.to_bits();
+    Ok(())
 }
 
 pub(crate) fn run(
     options: BenchOptions,
     product_paths: &crate::install_paths::ProductPaths,
 ) -> Result<()> {
-    validate_options(&options)?;
-    if options.output.exists() {
-        return Err(format!(
-            "performance receipt already exists; refusing to replace {}",
-            options.output.display()
-        )
-        .into());
+    if options.warmup_frames < MIN_WARMUP_FRAMES {
+        return Err(format!("--benchmark-warmup-frames must be >= {MIN_WARMUP_FRAMES}").into());
     }
-
-    let contract_bytes = std::fs::read(&options.workload_contract)?;
-    let contract_sha256 = format!("{:x}", Sha256::digest(&contract_bytes));
-    let contract: WorkloadContract = serde_json::from_slice(&contract_bytes)?;
-    validate_contract(&contract)?;
-    if options.frame_cache_entries != contract.frame_cache_entries {
-        return Err("frame-cache entries differ from the checked-in workload contract".into());
+    if options.sample_frames < MIN_SAMPLE_FRAMES {
+        return Err(format!("--benchmark-sample-frames must be >= {MIN_SAMPLE_FRAMES}").into());
     }
+    let recording_identity_before_sha256 = recording_identity_sha256(&options.recording)?;
+    let selection_bytes = std::fs::read(&options.workload_contract)?;
+    let selection: RecordingSelectionEnvelope = serde_json::from_slice(&selection_bytes)?;
     let mode = TimelineMode::Recording {
         path: options.recording.clone(),
-        logical_stream_id: contract.logical_stream_id,
+        logical_stream_id: selection.logical_stream_id,
         timeline: replay_core::TimelineConfig {
             frame_cache_entries: options.frame_cache_entries,
         },
     };
-    let (provider, recording_sha256) = open_provider(&mode)?;
-    require_eq(
-        "recording authority SHA-256",
-        &recording_sha256,
-        &contract.recording_authority_sha256,
-    )?;
+    let (provider, opened_recording_segment_trust_sha256) = open_provider(&mode)?;
     let (resolver, content_admission) =
         crate::content_compatibility::bind_provider_content(provider.as_ref(), product_paths)
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     let manifest = provider
         .content_manifest()
         .ok_or("performance benchmark recording has no admitted content manifest")?;
-    let static_research = Arc::new(
-        game_ui::static_research::admit_static_research_catalogs(
-            provider.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
-            provider.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
-            provider.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
-        )
-        .map_err(|error| format!("admit packaged static research catalogs: {error}"))?,
-    );
-    let hours = provider.hours();
-    if hours.len() != contract.recording_hour_count
-        || hours.first().copied() != Some(contract.first_hour)
-        || hours.last().copied() != Some(contract.last_hour)
-    {
-        return Err("performance recording hour census differs from the checked-in contract".into());
-    }
-    let selected_hour =
-        resolve_dump_hour(hours, DumpHourRequest::Canonical(contract.selected_hour))?;
-
-    let initial_frame = provider
-        .world_frame_at(
-            *hours
-                .first()
-                .ok_or("performance benchmark timeline has no hours")?,
-        )?
-        .ok_or("performance benchmark initial replay frame is unavailable")?;
-    let display = initial_frame
-        .session_metadata()
-        .display_variant
-        .measured()
-        .ok_or("performance benchmark lacks authenticated initial display_variant")?;
-    if (display.physical_width, display.physical_height) != (REQUIRED_WIDTH, REQUIRED_HEIGHT) {
-        return Err(format!(
-            "performance benchmark requires an authenticated 1920x1080 recording, got {}x{}",
-            display.physical_width, display.physical_height
-        )
-        .into());
-    }
-
+    let selected_hour = resolve_dump_hour(
+        provider.hours(),
+        DumpHourRequest::Canonical(selection.selected_hour),
+    )?;
     let frame = provider
         .world_frame_at(selected_hour)?
-        .ok_or("performance benchmark selected exact replay frame is unavailable")?;
-    static_research
-        .bind_frame(&frame)
-        .map_err(|error| {
-            format!(
-                "bind packaged static research catalogs at hour {selected_hour}: {error}"
-            )
-        })?;
-    let production_render = frame
-        .production_render()
-        .ok_or("performance benchmark selected frame has no authenticated production_render")?;
-    if provider.g2_engine_capture().is_some() {
-        return Err("G2 engine-capture frames cannot certify the production performance gate".into());
-    }
-    require_eq(
-        "content manifest digest",
-        manifest
-            .manifest_digest_sha256
-            .as_deref()
-            .ok_or("performance content manifest has no digest")?,
-        &contract.content_manifest_digest_sha256,
+        .ok_or_else(|| map_viewer::refuse_missing_xmap00_authority("world_frame"))?;
+    let (map_width, map_height) =
+        map_viewer::foundation_map_dimensions(&resolver, &content_admission)?;
+    let camera = map_viewer::ViewerMapCameraState::from_admitted_content(
+        &resolver,
+        &content_admission,
+        map_width,
+        map_height,
+        REQUIRED_WIDTH,
+        REQUIRED_HEIGHT,
+        map_viewer::DEFAULT_VIEWER_CAMERA_SPEED_SETTING,
     )?;
-    require_eq(
-        "product modset SHA-256",
-        &manifest.product_modset_sha256,
-        &contract.product_modset_sha256,
+    let mut viewer = map_viewer::ViewerOwnedMapState {
+        viewport_width: REQUIRED_WIDTH,
+        viewport_height: REQUIRED_HEIGHT,
+        input_revision: camera.input_revision,
+        camera: Some(camera),
+        observer_country_id: None,
+        map_mode_id: map_viewer::ViewerMapModeSelection::default().viewer_token(),
+        map_mode_selection_epoch: 0,
+        selected_object_ids: Vec::new(),
+        animation_time_f32_bits: 0.0f32.to_bits(),
+        frame_delta_seconds_f32_bits: 0.0f32.to_bits(),
+    };
+    let terrain_options =
+        crate::install_paths::playback_terrain_lod_options_from_paths(product_paths)?;
+    let mut composition = crate::app::ProductMapCompositionSession::start_for_benchmark(
+        &resolver,
+        &content_admission,
+        manifest,
+        terrain_options,
+        REQUIRED_WIDTH,
+        REQUIRED_HEIGHT,
     )?;
-    require_eq(
-        "effective VFS manifest SHA-256",
-        &manifest.effective_vfs_manifest_sha256,
-        &contract.effective_vfs_manifest_sha256,
+    let ui_profile = crate::install_paths::playback_ui_profile_from_paths(
+        product_paths,
+        &resolver,
+        crate::win32::actual_client_input_variant(),
     )?;
-    let production_render_sha256 = format!("{:x}", Sha256::digest(production_render.encode_json()?));
-    let selected_present_sha256 = production_render.selected_present.computed_sha256()?;
-    require_eq(
-        "production render SHA-256",
-        &production_render_sha256,
-        &contract.production_render_sha256,
-    )?;
-    require_eq(
-        "selected-Present SHA-256",
-        &selected_present_sha256,
-        &contract.selected_present_sha256,
-    )?;
-    require_eq(
-        "launch epoch SHA-256",
-        &production_render.authority.launch_epoch_sha256,
-        &contract.launch_epoch_sha256,
-    )?;
-    require_eq(
-        "capture receipt SHA-256",
-        &production_render.authority.capture_receipt_sha256,
-        &contract.capture_receipt_sha256,
-    )?;
-    let mut production_map =
-        map_viewer::ProductionMapRenderer::new(&resolver, &content_admission, manifest)?;
-    let plan = production_map.prepare_frame_with_rail(
-        Some(production_render),
-        Some(frame.rail_replay()),
-        Some(frame.production_by_country()),
-    )?;
-    let prepared = map_viewer::prepare_production_d3d_frame(&plan, production_map.resources())?;
-    if prepared.target.is_none() || prepared.ordered_render_operations.is_empty() {
-        return Err(
-            "performance benchmark has no authenticated product map target and operation stream"
-                .into(),
-        );
-    }
-    let plan_omissions = plan
-        .omitted_data_needs
-        .iter()
-        .map(|value| format!("{}|{}|{}", value.packet, value.feature, value.reason))
-        .collect::<Vec<_>>();
-    let d3d_omissions = prepared
-        .omissions
-        .iter()
-        .map(|value| format!("{}|{}", value.pass, value.reason))
-        .collect::<Vec<_>>();
-    if plan_omissions != contract.approved_plan_omissions
-        || d3d_omissions != contract.approved_d3d_omissions
-    {
-        return Err("performance frame has unapproved or missing omission identities".into());
-    }
-    if prepared.authenticated_ui_pass.is_none() {
-        return Err(
-            "performance benchmark frame has no authenticated selected-Present UI pass".into(),
-        );
-    }
-
-    let gfx = Gfx::create_offscreen(REQUIRED_WIDTH, REQUIRED_HEIGHT)?;
-    let gpu_adapter = gfx.adapter_identity()?;
-    validate_reference_gpu(&gpu_adapter)?;
-    let gpu_completion = gfx.create_gpu_completion_query()?;
-    let mut map_runtime = ProductProductionD3dRuntime::default();
-    let static_focus_definitions = Arc::new(
-        replay_core::admit_static_focus_definitions(
-            provider
-                .static_artifact(replay_core::FOCUS_DEFS_STATIC_ARTIFACT)
-                .ok_or("performance replay has no authenticated focus_defs_static artifact")?,
+    let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None);
+    let gpu = composition.adapter_identity()?;
+    validate_reference_gpu(&gpu)?;
+    let mut render_one = |composition: &mut crate::app::ProductMapCompositionSession| {
+        advance_recording_benchmark_viewer_clock(&mut viewer, 1.0 / 60.0)?;
+        composition.execute(
+            &resolver,
+            &content_admission,
+            manifest,
+            &frame,
+            &viewer,
+            &xmap15_selection,
+            ui_profile.localisation_language(),
+            1.0 / 60.0,
+            false,
+            false,
+            ui_profile.key().gui_scale(),
         )
-        .map_err(|error| format!("admit performance static focus definitions: {error}"))?,
-    );
-    let static_focus_catalog = Arc::new(
-        game_ui::static_focus_defs::focus_catalog_from_static(&static_focus_definitions),
-    );
-    let recorded_ui = prepared
-        .authenticated_ui_pass
-        .as_ref()
-        .map(|pass| crate::recorded_ui_owner::recorded_ui_owner(frame.as_ref(), pass))
-        .transpose()
-        .map_err(|error| {
-            format!(
-                "performance frame recorder-owned selected-Present UI identity is unavailable: {error}"
-            )
-        })?;
-    let mut ui_runtime = match prepared.authenticated_ui_pass.as_ref() {
-        Some(pass) => Some(
-            ProductSelectedPresentRuntime::new_with_decision_catalog_bytes(
-                &gfx,
-                &resolver,
-                &content_admission,
-                pass,
-                provider.decision_catalog().map(|catalog| catalog.bytes()),
-                provider
-                    .static_artifact("gfx_icon_asset_manifest_static")
-                    .map(|artifact| artifact.bytes()),
-                Arc::clone(&static_research),
-                Arc::clone(&static_focus_definitions),
-                Arc::clone(&static_focus_catalog),
-            )?,
-        ),
-        _ => None,
     };
-    let runtime_text = match frame.runtime_text()? {
-        replay_core::Leaf::Measured(catalog) => Some(catalog),
-        replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
-    };
-
-    let render_one = |map_runtime: &mut ProductProductionD3dRuntime,
-                      ui_runtime: &mut Option<ProductSelectedPresentRuntime>|
-     -> Result<FrameCounts> {
-        gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
-        let map = map_runtime.execute(&gfx, &resolver, production_map.resources(), &prepared)?;
-        if !map.presented_to_app_target || map.executed_operations == 0 {
-            return Err(
-                "performance benchmark map execution produced no authenticated app-target draws"
-                    .into(),
-            );
-        }
-        let (selected_present_operations, selected_present_m02_draws) = if let Some(runtime) =
-            ui_runtime.as_mut()
-        {
-            match runtime.execute(
-                &gfx,
-                &resolver,
-                &prepared,
-                frame.as_ref(),
-                recorded_ui.as_ref().and_then(|identity| identity.country.as_deref()),
-                recorded_ui
-                    .as_ref()
-                    .map(|identity| identity.runtime_text_pov_country_or_global.as_str())
-                    .unwrap_or("global"),
-                runtime_text.as_ref(),
-                ArmyBattleplanUiSupplementalInputs::default(),
-                IntelligenceUiSupplementalInputs::default(),
-                OccupationUiSupplementalInputs::default(),
-            )? {
-                SelectedPresentUiOutcome::Executed {
-                    operation_count,
-                    m02_draw_count,
-                    ..
-                } if operation_count > 0 => (operation_count, m02_draw_count),
-                SelectedPresentUiOutcome::Executed { .. } => {
-                    return Err(
-                        "performance benchmark selected-Present executed zero operations".into(),
-                    )
-                }
-                SelectedPresentUiOutcome::Omitted(reason) => {
-                    return Err(format!(
-                        "performance benchmark selected-Present was omitted: {reason}"
-                    )
-                    .into())
-                }
-            }
-        } else {
-            (0, 0)
-        };
-        gpu_completion.wait(&gfx)?;
-        Ok(FrameCounts {
-            map_operations: map.executed_operations,
-            selected_present_operations,
-            selected_present_m02_draws,
-        })
-    };
-
-    let mut stable_counts = None;
+    let mut last_composition = None;
     for _ in 0..options.warmup_frames {
-        let counts = render_one(&mut map_runtime, &mut ui_runtime)?;
-        require_stable_counts(&mut stable_counts, counts)?;
+        last_composition = Some(render_one(&mut composition)?);
     }
     let mut samples_ms = Vec::with_capacity(options.sample_frames);
     for _ in 0..options.sample_frames {
         let started = Instant::now();
-        let counts = render_one(&mut map_runtime, &mut ui_runtime)?;
-        require_stable_counts(&mut stable_counts, counts)?;
+        last_composition = Some(render_one(&mut composition)?);
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         if !elapsed_ms.is_finite() || elapsed_ms <= 0.0 {
-            return Err("performance benchmark observed an invalid frame duration".into());
+            return Err("recording benchmark observed an invalid frame duration".into());
         }
         samples_ms.push(elapsed_ms);
     }
-    if samples_ms.len() != options.sample_frames {
-        return Err("performance benchmark did not collect the requested sample count".into());
-    }
-
     let metrics = summarize(&samples_ms)?;
     let mut failures = Vec::new();
     if metrics.average_fps < 60.0 {
@@ -549,55 +331,34 @@ pub(crate) fn run(
             metrics.p95_frame_time_ms, MAX_P95_FRAME_MS
         ));
     }
-    let counts = stable_counts.ok_or("performance benchmark collected no frame counts")?;
-    if counts.map_operations != contract.expected_map_operations
-        || counts.selected_present_operations != contract.expected_selected_present_operations
-        || counts.selected_present_m02_draws != contract.expected_selected_present_m02_draws
-    {
-        return Err(
-            "performance operation counts differ from the checked-in workload contract".into(),
+    let recording_identity_after_sha256 = recording_identity_sha256(&options.recording)?;
+    if recording_identity_after_sha256 != recording_identity_before_sha256 {
+        failures.push(
+            "recording artifact identity changed between pre-open admission and post-sample verification"
+                .into(),
         );
     }
     let result = if failures.is_empty() { "pass" } else { "fail" };
-    let receipt = BenchReceipt {
-        schema: "battle-plan-headless-performance-bench-v1",
+    let receipt = RecordingBenchReceipt {
+        schema: "hoi4.replay-map-recording-benchmark.xmap22.v1",
         result,
-        workload: Workload {
-            recording_path: options.recording.display().to_string(),
-            recording_sha256,
-            workload_contract_path: options.workload_contract.display().to_string(),
-            workload_contract_sha256: contract_sha256,
-            workload_id: contract.workload_id,
-            logical_stream_id: contract.logical_stream_id,
-            recording_hour_count: hours.len(),
-            first_hour: contract.first_hour,
-            last_hour: contract.last_hour,
-            selected_hour,
-            content_manifest_digest_sha256: contract.content_manifest_digest_sha256,
-            product_modset_sha256: contract.product_modset_sha256,
-            effective_vfs_manifest_sha256: contract.effective_vfs_manifest_sha256,
-            production_render_sha256,
-            selected_present_sha256,
-            launch_epoch_sha256: contract.launch_epoch_sha256,
-            capture_receipt_sha256: contract.capture_receipt_sha256,
-            viewport_width: REQUIRED_WIDTH,
-            viewport_height: REQUIRED_HEIGHT,
-            gpu_adapter_name: gpu_adapter.name,
-            gpu_dedicated_video_memory_bytes: gpu_adapter.dedicated_video_memory_bytes,
-            gpu_vendor_id: gpu_adapter.vendor_id,
-            gpu_device_id: gpu_adapter.device_id,
-            frame_cache_entries: options.frame_cache_entries,
-            warmup_frames: options.warmup_frames,
-            sample_frames: options.sample_frames,
-            map_operations_per_frame: counts.map_operations,
-            selected_present_operations_per_frame: counts.selected_present_operations,
-            selected_present_m02_draws_per_frame: counts.selected_present_m02_draws,
-            feature_local_plan_omissions: plan.omitted_data_needs.len(),
-            feature_local_d3d_omissions: prepared.omissions.len(),
-            gpu_completion_method: "D3D11_QUERY_EVENT_after_each_frame",
-            timer: "std::time::Instant_wall_clock",
-        },
-        reference_machine_contract: "i5-8400_or_Ryzen_5_2600;16_GiB;GTX_1060_6_GiB_or_RX_580_8_GiB;1920x1080",
+        recording_path: options.recording.display().to_string(),
+        recording_identity_before_sha256,
+        recording_identity_after_sha256,
+        opened_recording_segment_trust_sha256,
+        logical_stream_id: selection.logical_stream_id,
+        selected_hour,
+        viewport_width: REQUIRED_WIDTH,
+        viewport_height: REQUIRED_HEIGHT,
+        gpu_adapter_name: gpu.name,
+        gpu_dedicated_video_memory_bytes: gpu.dedicated_video_memory_bytes,
+        gpu_vendor_id: gpu.vendor_id,
+        gpu_device_id: gpu.device_id,
+        warmup_frames: options.warmup_frames,
+        sample_frames: options.sample_frames,
+        gpu_completion_method: "D3D11_QUERY_EVENT_inside_shared_compositor",
+        timer: "std::time::Instant_wall_clock",
+        last_composition: last_composition.ok_or("recording benchmark executed no frames")?,
         thresholds: Thresholds {
             average_fps_min: 60.0,
             average_frame_time_ms_max: MAX_AVERAGE_FRAME_MS,
@@ -606,16 +367,15 @@ pub(crate) fn run(
         metrics,
         failures,
     };
-    write_receipt(&options.output, &receipt)?;
-    println!(
-        "wrote headless performance receipt: {} (result {}, avg {:.3} fps, p95 {:.3} ms)",
-        options.output.display(),
-        receipt.result,
-        receipt.metrics.average_fps,
-        receipt.metrics.p95_frame_time_ms
-    );
-    if receipt.result != "pass" {
-        return Err("headless performance thresholds failed; see machine-readable receipt".into());
+    let mut bytes = serde_json::to_vec_pretty(&receipt)?;
+    bytes.push(b'\n');
+    crate::headless::write_create_new_or_equal(
+        &options.output,
+        &bytes,
+        "XMAP22 recording benchmark receipt",
+    )?;
+    if result != "pass" {
+        return Err("XMAP22 recording benchmark thresholds failed; see receipt".into());
     }
     Ok(())
 }
@@ -658,17 +418,13 @@ pub(crate) fn run_stress(options: StressBenchOptions) -> Result<()> {
         &sha256_hex(&shader_bytes),
         &contract.shader_asset_sha256,
     )?;
-    let shader_source = std::str::from_utf8(&shader_bytes)
-        .map_err(|_| "stress shader asset is not UTF-8")?;
+    let shader_source =
+        std::str::from_utf8(&shader_bytes).map_err(|_| "stress shader asset is not UTF-8")?;
     let (vertex_shader, pixel_shader) = compile_stress_shaders(shader_source)?;
     let vertex_shader_sha256 = sha256_hex(&vertex_shader);
     let pixel_shader_sha256 = sha256_hex(&pixel_shader);
 
-    let source = stress_used_content(
-        &contract.shader_asset_path,
-        &shader_bytes,
-        &contract,
-    )?;
+    let source = stress_used_content(&contract.shader_asset_path, &shader_bytes, &contract)?;
     let mut prepared = build_stress_map_frame(
         &contract,
         source.clone(),
@@ -683,12 +439,8 @@ pub(crate) fn run_stress(options: StressBenchOptions) -> Result<()> {
         .payload_sha256
         .clone();
     let expected_consumer = format!("production_map.static_program/{program_payload_sha256}");
-    let (resolver, manifest) = build_stress_content(
-        contract_root,
-        &contract,
-        &source,
-        &expected_consumer,
-    )?;
+    let (resolver, manifest) =
+        build_stress_content(contract_root, &contract, &source, &expected_consumer)?;
     prepared.content_manifest_sha256 = manifest
         .manifest_digest_sha256
         .clone()
@@ -721,24 +473,28 @@ pub(crate) fn run_stress(options: StressBenchOptions) -> Result<()> {
         },
     )]);
 
-    let render_one = |map_runtime: &mut ProductProductionD3dRuntime| -> Result<(FrameCounts, String)> {
-        gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
-        let map = map_runtime.execute(&gfx, &resolver, &resources, &prepared)?;
-        if !map.presented_to_app_target || map.executed_operations == 0 {
-            return Err("performance stress map route produced no app-target operations".into());
-        }
-        let ui_operations =
-            ui_runtime.execute(&gfx, contract.selected_present_ui_operation_count)?;
-        gpu_completion.wait(&gfx)?;
-        Ok((
-            FrameCounts {
-                map_operations: map.executed_operations,
-                selected_present_operations: ui_operations,
-                selected_present_m02_draws: 0,
-            },
-            map.receipt_sha256,
-        ))
-    };
+    let render_one =
+        |map_runtime: &mut ProductProductionD3dRuntime| -> Result<(FrameCounts, String)> {
+            gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
+            let map = map_runtime.execute(&gfx, &resolver, &resources, &prepared)?;
+            if !map.presented_to_app_target || map.executed_operations == 0 {
+                return Err(
+                    "performance stress map route produced no app-target operations".into(),
+                );
+            }
+            let ui_operations =
+                ui_runtime.execute(&gfx, contract.selected_present_ui_operation_count)?;
+            gpu_completion.wait(&gfx)?;
+            Ok((
+                FrameCounts {
+                    map_operations: map.executed_operations,
+                    selected_present_operations: ui_operations,
+                    selected_present_m02_draws: 0,
+                    observer_ui_draws: 0,
+                },
+                map.receipt_sha256,
+            ))
+        };
 
     let mut stable_counts = None;
     let mut production_d3d_receipt_sha256 = None;
@@ -778,7 +534,10 @@ pub(crate) fn run_stress(options: StressBenchOptions) -> Result<()> {
     let metrics = summarize(&samples_ms)?;
     let mut failures = Vec::new();
     if metrics.average_fps < 60.0 {
-        failures.push(format!("average_fps {:.6} is below 60.0", metrics.average_fps));
+        failures.push(format!(
+            "average_fps {:.6} is below 60.0",
+            metrics.average_fps
+        ));
     }
     if metrics.average_frame_time_ms > MAX_AVERAGE_FRAME_MS {
         failures.push(format!(
@@ -832,7 +591,8 @@ pub(crate) fn run_stress(options: StressBenchOptions) -> Result<()> {
             gpu_completion_method: "D3D11_QUERY_EVENT_after_each_frame",
             timer: "std::time::Instant_wall_clock",
         },
-        reference_machine_contract: "i5-8400_or_Ryzen_5_2600;16_GiB;GTX_1060_6_GiB_or_RX_580_8_GiB;1920x1080",
+        reference_machine_contract:
+            "i5-8400_or_Ryzen_5_2600;16_GiB;GTX_1060_6_GiB_or_RX_580_8_GiB;1920x1080",
         thresholds: Thresholds {
             average_fps_min: 60.0,
             average_frame_time_ms_max: MAX_AVERAGE_FRAME_MS,
@@ -862,73 +622,16 @@ fn open_provider(mode: &TimelineMode) -> Result<(Box<dyn OwnerProvider>, String)
         *logical_stream_id,
     )
     .map_err(|error| format!("open benchmark recording {}: {error}", path.display()))?;
-    let recording_sha256 = opened
-        .authority_sha256
-        .ok_or("performance benchmark requires one retained replay-container authority SHA-256")?;
+    let segment_trust_sha256 = opened.authority_sha256.ok_or(
+        "performance benchmark recording has no exact retained-container authority receipt",
+    )?;
     let (provider, _) = crate::timeline::build_recording_provider(
         None,
         opened.source,
         *timeline,
         &path.display().to_string(),
     )?;
-    Ok((provider, recording_sha256))
-}
-
-fn validate_options(options: &BenchOptions) -> Result<()> {
-    if options.frame_cache_entries == 0 {
-        return Err("--frame-cache must be >= 1".into());
-    }
-    if options.warmup_frames < MIN_WARMUP_FRAMES {
-        return Err(format!("--benchmark-warmup-frames must be >= {MIN_WARMUP_FRAMES}").into());
-    }
-    if options.sample_frames < MIN_SAMPLE_FRAMES {
-        return Err(format!("--benchmark-sample-frames must be >= {MIN_SAMPLE_FRAMES}").into());
-    }
-    Ok(())
-}
-
-fn validate_contract(contract: &WorkloadContract) -> Result<()> {
-    if contract.schema != "battle-plan-headless-performance-workload-v1" {
-        return Err("unknown headless performance workload contract schema".into());
-    }
-    if !contract.certification_enabled {
-        return Err("headless performance workload contract is not certification-enabled".into());
-    }
-    if contract.workload_id.trim().is_empty()
-        || contract.recording_hour_count < MIN_CERTIFICATION_RECORDING_HOURS
-        || contract.first_hour >= contract.last_hour
-        || contract.selected_hour < contract.first_hour
-        || contract.selected_hour > contract.last_hour
-        || contract.expected_map_operations == 0
-        || contract.expected_selected_present_operations == 0
-        || contract.frame_cache_entries == 0
-    {
-        return Err("headless performance workload contract is sparse or incomplete".into());
-    }
-    for (label, value) in [
-        ("recording authority", &contract.recording_authority_sha256),
-        ("content manifest", &contract.content_manifest_digest_sha256),
-        ("product modset", &contract.product_modset_sha256),
-        ("effective VFS", &contract.effective_vfs_manifest_sha256),
-        ("production render", &contract.production_render_sha256),
-        ("selected-Present", &contract.selected_present_sha256),
-        ("launch epoch", &contract.launch_epoch_sha256),
-        ("capture receipt", &contract.capture_receipt_sha256),
-    ] {
-        if value.len() != 64
-            || !value
-                .bytes()
-                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        {
-            return Err(format!("workload contract {label} SHA-256 is invalid").into());
-        }
-    }
-    if !contract.approved_plan_omissions.is_empty()
-        || !contract.approved_d3d_omissions.is_empty()
-    {
-        return Err("production F1 workload approves no plan or D3D omissions".into());
-    }
-    Ok(())
+    Ok((provider, segment_trust_sha256))
 }
 
 fn require_eq(label: &str, actual: &str, expected: &str) -> Result<()> {
@@ -972,7 +675,8 @@ fn require_stable_counts(stable: &mut Option<FrameCounts>, current: FrameCounts)
         Some(expected)
             if expected.map_operations != current.map_operations
                 || expected.selected_present_operations != current.selected_present_operations
-                || expected.selected_present_m02_draws != current.selected_present_m02_draws =>
+                || expected.selected_present_m02_draws != current.selected_present_m02_draws
+                || expected.observer_ui_draws != current.observer_ui_draws =>
         {
             Err("performance benchmark operation counts changed between frames".into())
         }
@@ -1011,18 +715,6 @@ fn summarize(samples: &[f64]) -> Result<Metrics> {
 fn percentile_nearest_rank(sorted: &[f64], quantile: f64) -> f64 {
     let rank = (quantile * sorted.len() as f64).ceil() as usize;
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
-}
-
-fn write_receipt(path: &Path, receipt: &BenchReceipt) -> Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut bytes = serde_json::to_vec_pretty(receipt)?;
-    bytes.push(b'\n');
-    crate::headless::write_create_new_or_equal(path, &bytes, "headless performance receipt")
 }
 
 fn validate_stress_contract(contract: &StressWorkloadContract) -> Result<()> {
@@ -1066,7 +758,10 @@ fn validate_stress_contract(contract: &StressWorkloadContract) -> Result<()> {
     }
     for (label, value) in [
         ("shader asset", &contract.shader_asset_sha256),
-        ("synthetic product modset", &contract.synthetic_product_modset_sha256),
+        (
+            "synthetic product modset",
+            &contract.synthetic_product_modset_sha256,
+        ),
         (
             "synthetic effective VFS",
             &contract.synthetic_effective_vfs_manifest_sha256,
@@ -1169,9 +864,8 @@ fn build_stress_content(
         source_game: SourceGameIdentity {
             version: "1.19.2".into(),
             build: "a729".into(),
-            executable_sha256:
-                "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
-                    .into(),
+            executable_sha256: "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+                .into(),
             build_profile: "performance_only_non_semantic".into(),
         },
         source_profile: SourceProfileIdentity {
@@ -1179,9 +873,7 @@ fn build_stress_content(
             playset_id: "f1-performance-stress".into(),
             selection_sha256: String::new(),
         },
-        effective_vfs_manifest_sha256: contract
-            .synthetic_effective_vfs_manifest_sha256
-            .clone(),
+        effective_vfs_manifest_sha256: contract.synthetic_effective_vfs_manifest_sha256.clone(),
         ordered_layers: vec![RecordedContentLayer {
             ordinal: 0,
             layer_kind: ContentLayerKind::Base,
@@ -1238,7 +930,8 @@ fn build_stress_content(
             serde_json::to_string(&report).unwrap_or_else(|_| format!("{report:?}"))
         )
     })?;
-    let resolver = map_viewer::GameFileResolver::vanilla(root)?.with_content_admission(&admission)?;
+    let resolver =
+        map_viewer::GameFileResolver::vanilla(root)?.with_content_admission(&admission)?;
     Ok((resolver, manifest))
 }
 
@@ -1249,10 +942,10 @@ fn stress_used_content(
 ) -> Result<replay_core::UsedContentKey> {
     let source_sha256 = sha256_hex(shader_bytes);
     let used = replay_core::UsedContentKey {
-        effective_vfs_manifest_sha256: contract
-            .synthetic_effective_vfs_manifest_sha256
-            .clone(),
-        normalized_game_relative_path: relative_shader_path.replace('\\', "/"),
+        effective_vfs_manifest_sha256: contract.synthetic_effective_vfs_manifest_sha256.clone(),
+        normalized_game_relative_path: replay_core::normalize_game_relative_path(
+            relative_shader_path,
+        )?,
         winning_layer_ordinal: 0,
         layer_kind: replay_core::ContentLayerKind::Base,
         layer_id: "base".into(),
@@ -1272,11 +965,11 @@ fn build_stress_map_frame(
     manifest_sha256: &str,
 ) -> Result<map_viewer::PreparedProductionD3dFrame> {
     use replay_core::{
-        BlendDesc, BlendFactor, BlendOperation, BufferSource, Comparison,
-        CompiledShaderPayload, CullMode, DepthDesc, DrawCommand, FillMode, GeometryBinding,
-        IndexFormat, InputElementDesc, MapnameD80State, PipelineDesc, PreparedRenderTarget,
-        PrimitiveTopology, RasterizerDesc, RenderExecutionRef, RenderOutputState, RenderTargetDesc,
-        ShaderProgram, StaticGeometrySource, StaticMapCommand, StaticMapDraw, StaticMapOperation,
+        BlendDesc, BlendFactor, BlendOperation, BufferSource, Comparison, CompiledShaderPayload,
+        CullMode, DepthDesc, DrawCommand, FillMode, GeometryBinding, IndexFormat, InputElementDesc,
+        MapnameD80State, PipelineDesc, PreparedRenderTarget, PrimitiveTopology, RasterizerDesc,
+        RenderExecutionRef, RenderOutputState, RenderTargetDesc, ShaderProgram,
+        StaticGeometrySource, StaticMapCommand, StaticMapDraw, StaticMapOperation,
         StaticMapPassProgram, StencilFaceDesc, StencilOperation, VertexBufferBinding, ViewportDesc,
     };
 
@@ -1437,9 +1130,7 @@ fn build_stress_map_frame(
     Ok(map_viewer::PreparedProductionD3dFrame {
         content_manifest_sha256: manifest_sha256.into(),
         product_modset_sha256: contract.synthetic_product_modset_sha256.clone(),
-        effective_vfs_manifest_sha256: contract
-            .synthetic_effective_vfs_manifest_sha256
-            .clone(),
+        effective_vfs_manifest_sha256: contract.synthetic_effective_vfs_manifest_sha256.clone(),
         c03_camera_replay: None,
         target: Some(map_viewer::ProductionMainSceneTargetDesc {
             color_attachment_ordinal: 1,
@@ -1504,7 +1195,9 @@ fn require_stable_identity(
     label: &str,
 ) -> Result<()> {
     match stable {
-        Some(expected) if expected != &current => Err(format!("{label} changed between frames").into()),
+        Some(expected) if expected != &current => {
+            Err(format!("{label} changed between frames").into())
+        }
         Some(_) => Ok(()),
         None => {
             *stable = Some(current);
@@ -1515,6 +1208,51 @@ fn require_stable_identity(
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn recording_identity_sha256(path: &Path) -> Result<String> {
+    if path.file_name().and_then(|value| value.to_str())
+        == Some(replay_core::ROLLOVER_PACKAGE_SET_FILE)
+    {
+        return Ok(recording_identity_sha256_for_bytes(
+            b"rollover-package-set",
+            &std::fs::read(path)?,
+        ));
+    }
+    if path.is_file() {
+        return Ok(recording_identity_sha256_for_bytes(
+            b"portable-file",
+            &std::fs::read(path)?,
+        ));
+    }
+    if path.is_dir() {
+        let package_set = path.join(replay_core::ROLLOVER_PACKAGE_SET_FILE);
+        if !package_set.is_file() {
+            return Err(format!(
+                "recording directory has no {}",
+                replay_core::ROLLOVER_PACKAGE_SET_FILE
+            )
+            .into());
+        }
+        return Ok(recording_identity_sha256_for_bytes(
+            b"rollover-package-set",
+            &std::fs::read(package_set)?,
+        ));
+    }
+    Err(format!(
+        "recording path is neither a file nor a directory: {}",
+        path.display()
+    )
+    .into())
+}
+
+fn recording_identity_sha256_for_bytes(kind: &[u8], bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"hoi4.replay-recording-artifact.xmap22.v1\0");
+    digest.update(kind);
+    digest.update(b"\0");
+    digest.update(bytes);
+    format!("{:x}", digest.finalize())
 }
 
 fn write_stress_receipt(path: &Path, receipt: &StressBenchReceipt) -> Result<()> {
@@ -1542,34 +1280,6 @@ mod tests {
             .expect("checked-in stress contract parses")
     }
 
-    fn valid_recording_contract() -> WorkloadContract {
-        let hash = "a".repeat(64);
-        WorkloadContract {
-            schema: "battle-plan-headless-performance-workload-v1".into(),
-            certification_enabled: true,
-            workload_id: "deterministic-fixture".into(),
-            recording_authority_sha256: hash.clone(),
-            logical_stream_id: Some(7),
-            recording_hour_count: MIN_CERTIFICATION_RECORDING_HOURS,
-            first_hour: 100,
-            last_hour: 124,
-            selected_hour: 124,
-            content_manifest_digest_sha256: hash.clone(),
-            product_modset_sha256: hash.clone(),
-            effective_vfs_manifest_sha256: hash.clone(),
-            production_render_sha256: hash.clone(),
-            selected_present_sha256: hash.clone(),
-            launch_epoch_sha256: hash.clone(),
-            capture_receipt_sha256: hash,
-            frame_cache_entries: 1,
-            expected_map_operations: 1,
-            expected_selected_present_operations: 1,
-            expected_selected_present_m02_draws: 0,
-            approved_plan_omissions: Vec::new(),
-            approved_d3d_omissions: Vec::new(),
-        }
-    }
-
     fn repository_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
@@ -1589,6 +1299,17 @@ mod tests {
     }
 
     #[test]
+    fn recording_identity_is_kind_bound_and_deterministic() {
+        let bytes = br#"{"schema":"fixture"}"#;
+        let portable = recording_identity_sha256_for_bytes(b"portable-file", bytes);
+        let portable_again = recording_identity_sha256_for_bytes(b"portable-file", bytes);
+        let rollover = recording_identity_sha256_for_bytes(b"rollover-package-set", bytes);
+        assert_eq!(portable, portable_again);
+        assert_ne!(portable, rollover);
+        assert_eq!(portable.len(), 64);
+    }
+
+    #[test]
     fn absent_or_invalid_metrics_fail_closed() {
         assert!(summarize(&[]).is_err());
         assert!(summarize(&[0.0]).is_err());
@@ -1603,8 +1324,7 @@ mod tests {
         let root = repository_root();
         validate_count_authority(&root, &contract.map_count_authority)
             .expect("map count authority");
-        validate_count_authority(&root, &contract.ui_count_authority)
-            .expect("UI count authority");
+        validate_count_authority(&root, &contract.ui_count_authority).expect("UI count authority");
 
         let contract_root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let shader = checked_descendant(contract_root, &contract.shader_asset_path)
@@ -1640,24 +1360,264 @@ mod tests {
     }
 
     #[test]
-    fn recording_contract_schema_range_hashes_and_omissions_fail_closed() {
-        validate_contract(&valid_recording_contract()).expect("valid recording contract");
+    fn recording_selection_envelope_requires_only_stream_and_hour() {
+        let selection: RecordingSelectionEnvelope = serde_json::from_value(serde_json::json!({
+            "logical_stream_id": 7,
+            "selected_hour": 124,
+            "ignored_legacy_contract": {
+                "not_an_admission_prerequisite": true
+            }
+        }))
+        .expect("minimal recording selection parses");
+        assert_eq!(selection.logical_stream_id, Some(7));
+        assert_eq!(selection.selected_hour, 124);
 
-        let mut contract = valid_recording_contract();
-        contract.schema = "unknown".into();
-        assert!(validate_contract(&contract).is_err());
+        assert!(
+            serde_json::from_value::<RecordingSelectionEnvelope>(serde_json::json!({
+                "logical_stream_id": 7
+            }))
+            .is_err()
+        );
+    }
 
-        let mut contract = valid_recording_contract();
-        contract.selected_hour = contract.last_hour + 1;
-        assert!(validate_contract(&contract).is_err());
+    #[test]
+    fn recording_benchmark_warmups_and_samples_advance_route_equivalent_viewer_clock() {
+        let mut viewer = map_viewer::ViewerOwnedMapState {
+            viewport_width: REQUIRED_WIDTH,
+            viewport_height: REQUIRED_HEIGHT,
+            input_revision: 0,
+            camera: None,
+            observer_country_id: None,
+            map_mode_id: map_viewer::ViewerMapModeSelection::default().viewer_token(),
+            map_mode_selection_epoch: 0,
+            selected_object_ids: Vec::new(),
+            animation_time_f32_bits: 0.0f32.to_bits(),
+            frame_delta_seconds_f32_bits: 0.0f32.to_bits(),
+        };
+        let warmups = 3;
+        let samples = 4;
+        for _ in 0..warmups {
+            advance_recording_benchmark_viewer_clock(&mut viewer, 1.0 / 60.0).unwrap();
+        }
+        let after_warmups = f32::from_bits(viewer.animation_time_f32_bits);
+        let expected_after_warmups =
+            (0..warmups).fold(0.0f32, |elapsed, _| elapsed + 1.0f32 / 60.0);
+        for _ in 0..samples {
+            advance_recording_benchmark_viewer_clock(&mut viewer, 1.0 / 60.0).unwrap();
+        }
+        let expected_after_samples =
+            (0..warmups + samples).fold(0.0f32, |elapsed, _| elapsed + 1.0f32 / 60.0);
+        assert_eq!(after_warmups.to_bits(), expected_after_warmups.to_bits());
+        assert_eq!(
+            viewer.animation_time_f32_bits,
+            expected_after_samples.to_bits()
+        );
+        assert_eq!(
+            viewer.frame_delta_seconds_f32_bits,
+            (1.0f32 / 60.0).to_bits()
+        );
+    }
 
-        let mut contract = valid_recording_contract();
-        contract.capture_receipt_sha256 = "A".repeat(64);
-        assert!(validate_contract(&contract).is_err());
+    #[test]
+    fn production_recording_benchmark_executes_shared_xmap22_composition() {
+        let (topology, schedule) =
+            crate::validate::product_foundation_assigned_stage_plan().unwrap();
+        assert_eq!(topology.ordered_stages().len(), 22);
+        assert_eq!(topology.ordered_edges().len(), 18);
+        schedule
+            .require(
+                map_viewer::XMAP06_EARLY_STAGE_NAME,
+                map_viewer::XMAP06_EARLY_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP06");
+        schedule
+            .require(
+                map_viewer::XMAP08_RIVER_STAGE_NAME,
+                map_viewer::XMAP08_RIVER_OPERATION_ID,
+            )
+            .expect("recording benchmark product foundation includes XMAP08 rivers");
+        schedule
+            .require(
+                map_viewer::XMAP08_STRAIT_STAGE_NAME,
+                map_viewer::XMAP08_STRAIT_OPERATION_ID,
+            )
+            .expect("recording benchmark product foundation includes XMAP08 straits");
+        schedule
+            .require(
+                map_viewer::XMAP11_TREE_STAGE_NAME,
+                map_viewer::XMAP11_TREE_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP11 trees");
+        schedule
+            .require(
+                map_viewer::XMAP17_EXECUTE_STAGE,
+                map_viewer::XMAP17_EXECUTE_OPERATION,
+            )
+            .expect("recording benchmark product foundation includes XMAP17 labels");
+        schedule
+            .require(
+                map_viewer::XMAP09_PREPARE_STAGE_NAME,
+                map_viewer::XMAP09_PREPARE_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP09");
+        schedule
+            .require(
+                map_viewer::XMAP19_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP19_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP19");
+        schedule
+            .require(
+                map_viewer::XMAP07_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP07_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP07");
+        schedule
+            .require(
+                map_viewer::XMAP13_UNIT_ENTITY_STAGE_NAME,
+                map_viewer::XMAP13_UNIT_ENTITY_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP13 entities");
+        schedule
+            .require(
+                map_viewer::XMAP13_COUNTER_QUAD_STAGE_NAME,
+                map_viewer::XMAP13_COUNTER_QUAD_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP13 counters");
+        schedule
+            .require(
+                map_viewer::XMAP14_COMBAT_STAGE_NAME,
+                map_viewer::XMAP14_COMBAT_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP14 combat indicators");
+        schedule
+            .require(
+                map_viewer::XMAP15_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP15_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP15 orders");
+        schedule
+            .require(
+                map_viewer::XMAP20_ASSIGNED_STAGE_NAME,
+                map_viewer::XMAP20_ASSIGNED_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP20");
+        schedule
+            .require(
+                map_viewer::XMAP16_RAIL_STAGE_NAME,
+                map_viewer::XMAP16_RAIL_OPERATION_ID,
+            )
+            .expect("recording benchmark product foundation includes XMAP16");
+        schedule
+            .require(
+                map_viewer::XMAP21_PREPARE_STAGE_NAME,
+                map_viewer::XMAP21_PREPARE_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP21 prepare");
+        schedule
+            .require(
+                map_viewer::XMAP21_EXECUTE_STAGE_NAME,
+                map_viewer::XMAP21_EXECUTE_OPERATION_NAME,
+            )
+            .expect("recording benchmark product foundation includes XMAP21 execute");
 
-        let mut contract = valid_recording_contract();
-        contract.approved_d3d_omissions.push("unmeasured".into());
-        assert!(validate_contract(&contract).is_err());
+        let source = include_str!("performance_bench.rs");
+        let start = source
+            .find("pub(crate) fn run(")
+            .expect("recording benchmark entry");
+        let end = source
+            .find("pub(crate) fn run_stress(")
+            .expect("stress benchmark entry");
+        let recording = &source[start..end];
+        let composition = recording
+            .find("ProductMapCompositionSession::start_for_benchmark(")
+            .expect("shared XMAP22 product compositor");
+        let ui_profile = recording
+            .find("playback_ui_profile_from_paths(")
+            .expect("presentation profile load");
+        let execute = recording
+            .find("composition.execute(")
+            .expect("shared XMAP22 execution");
+        let identity_before = recording
+            .find("recording_identity_before_sha256 =")
+            .expect("pre-open recording identity");
+        let provider_open = recording
+            .find("open_provider(&mode)")
+            .expect("recording provider open");
+        let identity_after = recording
+            .find("recording_identity_after_sha256 =")
+            .expect("post-sample recording identity");
+        assert!(
+            composition < ui_profile,
+            "foundation admission must precede UI profile loading"
+        );
+        assert!(
+            ui_profile < execute,
+            "UI profile must be available before composition execution"
+        );
+        assert!(
+            identity_before < provider_open,
+            "recording identity must be bound before open"
+        );
+        assert!(
+            provider_open < identity_after,
+            "recording identity must be rechecked after use"
+        );
+        assert!(recording[composition..].contains("summarize(&samples_ms)"));
+        assert!(recording[composition..].contains("options.output"));
+        for forbidden in [
+            "WorkloadContract",
+            "validate_contract(",
+            "validate_options(",
+            "certification_enabled",
+            "recording_hour_count",
+            "first_hour",
+            "last_hour",
+            "content_manifest_digest_sha256",
+            "product_modset_sha256",
+            "effective_vfs_manifest_sha256",
+            "production_render",
+            "selected_present",
+            "launch_epoch",
+            "capture_receipt",
+            "expected_map_operations",
+            "expected_selected_present_operations",
+            "map_operation_count",
+            "selected_present_ui_operation_count",
+            "approved_plan_omissions",
+            "approved_d3d_omissions",
+        ] {
+            assert!(
+                !recording.contains(forbidden),
+                "recording benchmark consumes legacy authority token {forbidden}"
+            );
+        }
+        for forbidden in [
+            "ProductObserverUiRuntime::from_playback_content",
+            "ui_runtime.execute(",
+            "ProductionMapRenderer::new",
+            "prepare_production_d3d_frame(",
+            "Gfx::create_offscreen",
+            "write_receipt(",
+            "ProductSelectedPresentRuntime",
+            "LegacySelectedPresentReconstructionRuntime",
+            "recorded_ui_owner(",
+            "prepared.authenticated_ui_pass",
+            "SelectedPresentUiOutcome",
+            "LegacySelectedPresentReconstructionOutcome",
+            "compose_legacy_reconstruction_hud_frame(",
+            "production_render",
+            "selected_present",
+            ".submit(",
+            "read_target",
+            "write_bmp",
+            "pixel-gate",
+        ] {
+            assert!(
+                !recording[composition..].contains(forbidden),
+                "production benchmark must not consume {forbidden}"
+            );
+        }
     }
 
     #[test]
@@ -1679,9 +1639,7 @@ mod tests {
         assert!(validate_count_authority(&root, &drifted).is_err());
 
         let malformed_hash = StressCountAuthority {
-            repository_relative_path: contract
-                .map_count_authority
-                .repository_relative_path,
+            repository_relative_path: contract.map_count_authority.repository_relative_path,
             sha256: "0".repeat(64),
             json_pointer: contract.map_count_authority.json_pointer,
             expected_count: contract.map_count_authority.expected_count,
@@ -1695,6 +1653,7 @@ mod tests {
             map_operations: 1266,
             selected_present_operations: 1167,
             selected_present_m02_draws: 0,
+            observer_ui_draws: 0,
         };
         let mut stable_counts = None;
         require_stable_counts(&mut stable_counts, counts).expect("first count sample");
@@ -1713,11 +1672,9 @@ mod tests {
             .expect("first receipt");
         require_stable_identity(&mut stable_identity, "a".repeat(64), "fixture receipt")
             .expect("same receipt");
-        assert!(require_stable_identity(
-            &mut stable_identity,
-            "b".repeat(64),
-            "fixture receipt"
-        )
-        .is_err());
+        assert!(
+            require_stable_identity(&mut stable_identity, "b".repeat(64), "fixture receipt")
+                .is_err()
+        );
     }
 }

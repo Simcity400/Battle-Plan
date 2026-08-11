@@ -9,23 +9,22 @@ use game_ui::loc::Localisation;
 use game_ui::markup::{parse, TextColorTable, Token, SECTION};
 use std::path::PathBuf;
 
-const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
-fn game_root() -> Option<PathBuf> {
-    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-    root.is_dir().then_some(root)
+/// The vanilla install root. Panics rather than returning `None`: every
+/// caller is gated on `gate_hoi4_install`, so an absent install here is a
+/// failure, never a silent skip that libtest would report as a pass.
+fn game_root() -> PathBuf {
+    replay_test_gates::require_vanilla_game_root()
 }
 
 /// The `§`-code table decoded from `interface/core.gfx` must match the shipped
 /// values byte-for-byte, and be case-sensitive.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn text_color_table_matches_shipped_core_gfx() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP text_color_table_matches_shipped_core_gfx: the game root missing");
-        return;
-    };
+    let root = game_root();
     let resolver = AssetResolver::new(vec![root]);
     let table = TextColorTable::load(&resolver).expect("core.gfx loads");
 
@@ -77,11 +76,12 @@ fn text_color_table_matches_shipped_core_gfx() {
 /// every string must tokenise without loss (concatenated text tokens equal the
 /// markup-stripped string). Proves the parser handles real content.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn shipped_english_localisation_tokenises_cleanly() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP shipped_english_localisation_tokenises_cleanly: the game root missing");
-        return;
-    };
+    let root = game_root();
     let resolver = AssetResolver::new(vec![root]);
     let table = TextColorTable::load(&resolver).expect("core.gfx loads");
     let loc = Localisation::load_english(&resolver).expect("localisation loads");

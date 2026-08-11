@@ -14,8 +14,13 @@ fn request(path: ShadingPath) -> RuntimeGraphicsRequest {
         sprite_name: "GFX_test".into(),
         frame_count: 4,
         one_based_frame: 1,
+        interaction_effect: ButtonVisualState::Up,
         shading_path: path,
         producer_resolved_rgba: None,
+        color: RgbaF32([1.0; 4]),
+        time: 0.0,
+        animation_time: 0.0,
+        next_one_based_frame: (path == ShadingPath::ButtonStateBlendFrames).then_some(2),
         clip: ClipRect {
             left: 0,
             top: 0,
@@ -27,13 +32,27 @@ fn request(path: ShadingPath) -> RuntimeGraphicsRequest {
 }
 
 #[test]
-fn button_state_selects_exact_one_based_frame_with_hover_fallback() {
-    assert_eq!(ButtonVisualState::Up.one_based_frame(true), 1);
-    assert_eq!(ButtonVisualState::Down.one_based_frame(true), 2);
-    assert_eq!(ButtonVisualState::Over.one_based_frame(true), 3);
-    assert_eq!(ButtonVisualState::Over.one_based_frame(false), 1);
-    assert_eq!(ButtonVisualState::Disable.one_based_frame(true), 4);
+fn button_interaction_effect_is_independent_of_animation_frame() {
+    assert_eq!(ButtonVisualState::from_raw(0), Some(ButtonVisualState::Up));
+    assert_eq!(
+        ButtonVisualState::from_raw(1),
+        Some(ButtonVisualState::Down)
+    );
+    assert_eq!(
+        ButtonVisualState::from_raw(2),
+        Some(ButtonVisualState::Over)
+    );
+    assert_eq!(
+        ButtonVisualState::from_raw(3),
+        Some(ButtonVisualState::Disable)
+    );
     assert_eq!(ButtonVisualState::from_raw(4), None);
+    let mut down = request(ShadingPath::ButtonState);
+    down.interaction_effect = ButtonVisualState::Down;
+    down.one_based_frame = 3;
+    let admitted = admit_runtime_graphics(&down).unwrap();
+    assert_eq!(admitted.interaction_effect(), ButtonVisualState::Down);
+    assert_eq!(admitted.frame().one_based_frame, 3);
 }
 
 #[test]
@@ -50,6 +69,24 @@ fn static_button_modulates_sample_by_color_after_frame_selection() {
         shade_static_button(px([0.5, 0.25, 1.0, 0.8]), px([0.2, 0.4, 0.5, 0.5])),
         px([0.1, 0.1, 0.5, 0.4])
     );
+}
+
+#[test]
+fn static_button_all_four_effect_names_share_the_shipped_pixel_shader() {
+    let base = px([0.5, 0.25, 1.0, 0.8]);
+    let color = px([0.2, 0.4, 0.5, 0.5]);
+    let expected = shade_static_button(base, color);
+    for state in [
+        ButtonVisualState::Up,
+        ButtonVisualState::Down,
+        ButtonVisualState::Over,
+        ButtonVisualState::Disable,
+    ] {
+        let mut value = request(ShadingPath::StaticButton);
+        value.interaction_effect = state;
+        assert!(admit_runtime_graphics(&value).is_ok());
+        assert_eq!(shade_static_button(base, color), expected);
+    }
 }
 
 #[test]
@@ -182,7 +219,9 @@ fn opacity_changes_source_alpha_before_fixed_function_blend() {
     let out = blend_src_alpha_inv_src_alpha(px([0.0, 0.0, 1.0, 1.0]), source);
     close(out.0[0], 0.4);
     close(out.0[2], 0.6);
-    close(out.0[3], 0.76);
+    // Exact-a729 leaves the omitted separate-alpha blend factors at
+    // source=one/destination=zero, so alpha is the post-opacity source alpha.
+    close(out.0[3], 0.4);
 }
 
 #[test]
@@ -193,6 +232,7 @@ fn admitted_builtin_request_carries_exact_frame() {
     assert_eq!(admitted.clip().right, 100);
     assert_eq!(admitted.opacity(), 1.0);
     assert_eq!(admitted.producer_resolved_rgba(), None);
+    assert_eq!(admitted.interaction_effect(), ButtonVisualState::Up);
 }
 
 #[test]

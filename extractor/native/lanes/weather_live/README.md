@@ -69,11 +69,11 @@ sequence and weather-hour continuity, validates every region and province row,
 authenticates named weather-kind transitions and due-only expiry refreshes, and
 emits the pointer-free JSON receipt on stdout.
 
-Only the primary agent runs the retained evidence test, through the centralized
-runner:
+An implementation-lane agent or the primary agent may run the retained evidence
+test through the validation wrapper in its own worktree:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Evidence -Workspace Extractor -Package weather_live_lane -Bin weather_temporal_drift_gate -FilterExpression 'test(retained_a20_423_hour_stream_passes_exact_gate)' -CacheMode Reusable
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Evidence -Workspace Extractor -Package weather_live_lane -Bin weather_temporal_drift_gate -FilterExpression 'test(retained_a20_423_hour_stream_passes_exact_gate)' -CacheMode Reusable
 ```
 
 The exact retained contract is 423 weather records / 423 unique hours,
@@ -90,34 +90,20 @@ fails after the corpus and gate have both passed their integrity checks.
 
 ## Production proof
 
-Historical shared-stream proof recorded in this lane directory. Do not use this
-section alone to mark the current subagent lane complete; the current user
-acceptance boundary above keeps shared sandstorm registration/proof
-orchestrator-owned.
-
-```powershell
-cargo run --manifest-path extractor\native\lanes\compact_replay_verification_gates\Cargo.toml --bin compact_replay_gate -- --run-dir extractor\native\runs\weather_live_sandstorm_shared_20260701T185714 --require-domain weather_live --min-game-hours 5 --write-report extractor\native\runs\weather_live_sandstorm_shared_20260701T185714\compact_gate_report.json
-cargo run --manifest-path extractor\native\snapshot\Cargo.toml --bin pack_replay -- verify extractor\native\runs\weather_live_sandstorm_shared_20260701T185714\native_session.battleplan
-```
+This section records historical shared-stream proof only. Its former direct
+Cargo reproduction commands were removed because current validation must use
+the worktree-local central wrapper. The historical receipt alone does not mark a
+current implementation lane complete.
 
 Result: gate passed with no errors or warnings, `pack_replay verify` returned
 OK, and the manifest recorded `weather_region_sandstorm_rows = 1`,
 `33` game hours advanced, `34` unique game-hour samples, `0` skipped game
 hours, and no source/partial/worker/bridge failures.
 
-Additional lane decoder checks:
-
-```powershell
-rustc --edition=2021 --test extractor\native\lanes\weather_visual_drivers_live\domain24_weather_visual_v2.rs -o extractor\native\target\weather_visual_drivers_live_domain24_tests.exe
-extractor\native\target\weather_visual_drivers_live_domain24_tests.exe --nocapture
-rustc --edition=2021 extractor\native\lanes\weather_visual_drivers_live\weather_visual_gate.rs -o extractor\native\target\weather_visual_drivers_live_gate.exe
-extractor\native\target\weather_visual_drivers_live_gate.exe extractor\native\runs\weather_visual_drivers_live_870ebf_20260701_v2\domain24_weather_visual_v2_payload.bin
-cargo test --manifest-path extractor\native\Cargo.toml -p collector compact_weather --lib --no-fail-fast
-```
-
-Results: lane tests `4 passed`; payload gate decoded `439056` bytes, `13719`
+Historical additional decoder results: lane tests `4 passed`; payload gate decoded `439056` bytes, `13719`
 rows, `13414` province visual rows, no parse errors; collector weather tests
-`2 passed`.
+`2 passed`. The former direct compile/test commands were removed; reproduce
+current validation through the worktree-local central wrapper.
 
 The accepted candidate-rejection slice established the first residual
 resolution pass and sandstorm flag blocker removal. The lane-local compact/Rust

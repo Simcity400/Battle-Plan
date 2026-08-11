@@ -1,5 +1,8 @@
 use game_ui::assets::AssetResolver;
-use game_ui::mod_ui_discovery::discover_runtime_mod_ui;
+use game_ui::mod_ui_discovery::{
+    discover_admitted_runtime_mod_ui,
+    discover_runtime_mod_ui_from_userdir_for_evidence as discover_runtime_mod_ui,
+};
 use snapshot::sha256::Sha256;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -400,17 +403,16 @@ fn installed_random_list_shape_is_admitted_but_unknown_or_empty_shapes_fail_clos
 }
 
 #[test]
-fn unknown_widget_and_script_constructs_fail_closed() {
+fn unknown_widget_is_rejected_locally_while_unknown_script_construct_fails_closed() {
     let (game, user) = fixture(
         "unknown_widget",
-        "guiTypes={ containerWindowType={ name=bad futureWidget={ name=nope } } }",
+        "guiTypes={ containerWindowType={ name=good } containerWindowType={ name=bad futureWidget={ name=nope } } }",
         "defined_text={ name=MOD_DYNAMIC text={ localization_key=MOD_PANEL } }",
         false,
     );
-    let error = discover_runtime_mod_ui(&game, &user).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("unknown effective widget constructs"));
+    let discovery = discover_runtime_mod_ui(&game, &user).unwrap();
+    assert!(discovery.panels.iter().any(|panel| panel.name == "good"));
+    assert!(!discovery.panels.iter().any(|panel| panel.name == "bad"));
 
     let (game, user) = fixture(
         "unknown_script",
@@ -422,4 +424,15 @@ fn unknown_widget_and_script_constructs_fail_closed() {
     assert!(error
         .to_string()
         .contains("unknown scripted-localisation top-level construct"));
+}
+
+#[test]
+fn product_discovery_refuses_a_raw_install_resolver() {
+    let root = std::env::temp_dir().join("xui24_raw_resolver_must_not_enter_product");
+    let resolver = AssetResolver::new(vec![root]);
+    let error = discover_admitted_runtime_mod_ui(&resolver, "l_english")
+        .expect_err("raw roots must not become a product fallback");
+    assert!(error
+        .to_string()
+        .contains("portable content-admission resolver"));
 }

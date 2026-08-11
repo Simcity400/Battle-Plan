@@ -1,4 +1,6 @@
-//! U2 decisions-panel chrome gates (UI_COVERAGE_MATRIX §1 "Decisions").
+//! Decisions-panel chrome gates. Generic element geometry follows
+//! `replay_interface/documents/UI_LAYOUT_LAW.md` §§3 and 6.1; this suite does
+//! not replace XUI19's packet-local production gates.
 //!
 //! Drives the SHIPPED vanilla files through `game_ui::decision_chrome`:
 //!   * the `countrydecisionview.gui` layout parses to the full chrome (root
@@ -8,9 +10,9 @@
 //!     its name-loc-key + icon-sprite resolve against the shipped localisation +
 //!     sprite registry at the pinned rates (the `N resolve / total` gate).
 //!
-//! Counts are pinned against the vanilla install (same pattern as
-//! `tests/widget_layout.rs`); the test SKIPs when the game root is absent so CI
-//! without the game still passes.
+//! Counts are pinned against the vanilla install. The central evidence gate
+//! treats a missing install as an unmet prerequisite, not a passing result;
+//! direct libtest discovery marks the individual tests ignored when absent.
 
 use game_ui::assets::AssetResolver;
 use game_ui::decision_chrome::{
@@ -20,28 +22,27 @@ use game_ui::loc::Localisation;
 use game_ui::probe::parse_gfx_files;
 use std::path::PathBuf;
 
-const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
-fn game_root() -> Option<PathBuf> {
-    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-    root.is_dir().then_some(root)
+/// The vanilla install root. Panics rather than returning `None`: every
+/// caller is gated on `gate_hoi4_install`, so an absent install here is a
+/// failure, never a silent skip that libtest would report as a pass.
+fn game_root() -> PathBuf {
+    replay_test_gates::require_vanilla_game_root()
 }
 
-fn resolver() -> Option<AssetResolver> {
-    Some(AssetResolver::new(vec![game_root()?]))
+fn resolver() -> AssetResolver {
+    AssetResolver::new(vec![game_root()])
 }
 
 /// GATE U2-LAYOUT — the shipped decisions-panel chrome parses complete: root
 /// window, the scrolling grid, the category-tab header, and all four decision
 /// card templates, each carrying at least an icon + a name text element.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn decision_panel_layout_is_complete() {
-    let Some(resolver) = resolver() else {
-        eprintln!("SKIP decision_panel_layout_is_complete: the game root missing");
-        return;
-    };
+    let resolver = resolver();
     let layout = parse_decision_layout(&resolver).expect("parse countrydecisionview.gui");
 
     assert_eq!(layout.source_file, "interface/countrydecisionview.gui");
@@ -89,13 +90,14 @@ fn decision_panel_layout_is_complete() {
 ///
 /// Pinned counts are the vanilla ground truth (asserted exactly, like the
 /// widget-layout rects). If a game update shifts the corpus these move together
-/// and the report in LANE_REPORT.md is refreshed.
+/// and the pinned counts below are re-derived from the new corpus.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn decision_definitions_resolve_at_pinned_rates() {
-    let Some(resolver) = resolver() else {
-        eprintln!("SKIP decision_definitions_resolve_at_pinned_rates: the game root missing");
-        return;
-    };
+    let resolver = resolver();
     let set = parse_decisions(&resolver).expect("parse decisions");
     let loc = Localisation::load_english(&resolver).expect("load english loc");
     let (registry, _) = parse_gfx_files(&resolver).expect("parse gfx");
@@ -145,8 +147,8 @@ fn decision_definitions_resolve_at_pinned_rates() {
     );
 
     // The name loc-key and declared-icon resolution rates are high (the naming
-    // laws are exact); the residuals are documented vanilla anomalies (see
-    // LANE_REPORT.md): 286 decisions without a name loc entry (dev/debug +
+    // laws are exact); the residuals are vanilla corpus anomalies, enumerated
+    // here: 286 decisions without a name loc entry (dev/debug +
     // dynamic-name decisions), and 77 declared icons whose token does not map to
     // a shipped sprite (double-`decision_` typos, bare `generic`,
     // referenced-but-unshipped sprites) — all degrade to the panel's

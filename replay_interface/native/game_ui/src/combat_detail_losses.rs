@@ -15,6 +15,9 @@ use replay_core::{
     ViewStatus, WarObjectRow,
     WarRelationRow, WorldFrame,
 };
+// `LandCombatTerminalRecord` is public through `replay_core::world` but is not
+// in the crate-root re-export list, so use its canonical module path.
+use replay_core::world::LandCombatTerminalRecord;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +34,8 @@ pub struct LandCombatPanel {
     pub detail_location_province: Leaf<u32>,
     pub age_days: Leaf<u32>,
     pub duration_days: Leaf<u32>,
+    pub terminal_record: Leaf<LandCombatTerminalRecord>,
+    pub terminal_record_status: Leaf<String>,
     pub side_detail_completeness: Leaf<String>,
     pub participant_events: Leaf<Vec<CombatParticipantEvent>>,
     pub attacker: Leaf<LandCombatSideDetail>,
@@ -44,11 +49,24 @@ pub struct LandCombatPanel {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Xui20CombatDetailLosses {
     pub land: Vec<LandCombatPanel>,
+    /// Availability of the active land-combat collection itself
+    /// ([`replay_core::WorldFrame::combats_status`]) — the same status
+    /// `combat_binding` consumes for the combat panel. `Present` with an empty
+    /// `land` is the measured "no land combats were running"; any other status
+    /// means the collection was not readable this hour and the land surface
+    /// must not be treated as measured, however many rows are retained.
+    pub land_status: ViewStatus,
     /// Terminal lifecycle rows are a separate keyed collection and are never
     /// passed through the active-combat panel renderer.
     pub ended_land: BTreeMap<(i64, i64), EndedCombatRow>,
     pub ended_land_status: ViewStatus,
     pub naval: Vec<NavalCombatRow>,
+    /// Availability of the `naval_combats` collection itself
+    /// ([`replay_core::NavalAirCombatView::naval_combats_status`]). `Present`
+    /// with an empty `naval` is the measured "no naval combats"; any other
+    /// status means the collection was not readable this hour and the naval
+    /// surface must not be treated as measured.
+    pub naval_status: ViewStatus,
     pub air_losses: Leaf<Vec<AirCombatLossRow>>,
     pub air_region_combat: Leaf<Vec<AirRegionCombatRow>>,
     pub sunk_convoys: Leaf<Vec<ConvoyLossRow>>,
@@ -71,10 +89,14 @@ impl Xui20CombatDetailLosses {
     /// True only when every stream required to render at least one XUI20
     /// surface is positively measured. Missing optional rows remain empty but
     /// unavailable producer leaves remain distinguishable.
+    ///
+    /// Every status-owning collection is read through its status first: rows
+    /// retained under a non-`Present` collection are not a measured surface,
+    /// so a non-empty vector alone can never make this true.
     pub fn has_any_measured_surface(&self) -> bool {
-        !self.land.is_empty()
-            || !self.ended_land.is_empty()
-            || !self.naval.is_empty()
+        (self.land_status == ViewStatus::Present && !self.land.is_empty())
+            || (self.ended_land_status == ViewStatus::Present && !self.ended_land.is_empty())
+            || (self.naval_status == ViewStatus::Present && !self.naval.is_empty())
             || self.air_losses.measured().is_some()
             || self.air_region_combat.measured().is_some()
             || self.sunk_convoys.measured().is_some()
@@ -217,6 +239,35 @@ fn family_state(count: usize, states: &[&Xui20SurfaceState]) -> Xui20SurfaceStat
     Xui20SurfaceState::Admitted { row_count: count }
 }
 
+/// The active-land surface is gated on the collection's own status first
+/// (mirroring [`validate_ended_land_surface`] and [`validate_naval_surface`]):
+/// a non-`Present` collection is an external-input condition regardless of any
+/// retained rows, never an admitted (or measured-empty) surface.
+fn validate_land_active_surface(
+    status: ViewStatus,
+    rows: &[LandCombatPanel],
+) -> Result<(), GateFailure> {
+    match status {
+        ViewStatus::Present => validate_land_active(rows),
+        ViewStatus::DomainAbsent => Err(external("combats field absent")),
+        ViewStatus::DomainUnavailable => Err(external("combats unavailable")),
+    }
+}
+
+/// Side detail is a projection of the same active-land collection, so it is
+/// gated on the same status: an unreadable collection cannot yield a measured
+/// side-detail surface.
+fn validate_land_side_detail_surface(
+    status: ViewStatus,
+    rows: &[LandCombatPanel],
+) -> Result<(), GateFailure> {
+    match status {
+        ViewStatus::Present => validate_land_side_detail(rows),
+        ViewStatus::DomainAbsent => Err(external("combats field absent")),
+        ViewStatus::DomainUnavailable => Err(external("combats unavailable")),
+    }
+}
+
 fn validate_land_active(rows: &[LandCombatPanel]) -> Result<(), GateFailure> {
     for (index, row) in rows.iter().enumerate() {
         let prefix = format!("land[{index}]");
@@ -287,6 +338,220 @@ fn validate_ended_land_surface(
         ViewStatus::DomainAbsent => Err(external("ended_combats field absent")),
         ViewStatus::DomainUnavailable => Err(external("ended_combats unavailable")),
     }
+}
+
+fn validate_land_terminal_record(
+    record: &LandCombatTerminalRecord,
+    owning_location_province: u32,
+    prefix: &str,
+) -> Result<(), GateFailure> {
+    let record_index = *required(&record.record_index, &format!("{prefix}.record_index"))?;
+    if record_index < 0 {
+        return Err(invalid(format!("{prefix}.record_index is negative")));
+    }
+
+    let writer = required(&record.writer, &format!("{prefix}.writer"))?;
+    if writer != "normal" && writer != "overrun" {
+        return Err(invalid(format!(
+            "{prefix}.writer is unknown: {writer:?}"
+        )));
+    }
+
+    required(
+        &record.attacker_manpower_loss_raw,
+        &format!("{prefix}.attacker_manpower_loss_raw"),
+    )?;
+    required(
+        &record.defender_manpower_loss_raw,
+        &format!("{prefix}.defender_manpower_loss_raw"),
+    )?;
+
+    let end_date_raw = *required(&record.end_date_raw, &format!("{prefix}.end_date_raw"))?;
+    if end_date_raw < 0 {
+        return Err(invalid(format!("{prefix}.end_date_raw is negative")));
+    }
+
+    let terminal_location = *required(
+        &record.location_province,
+        &format!("{prefix}.location_province"),
+    )?;
+    if terminal_location == 0 {
+        return Err(invalid(format!(
+            "{prefix}.location_province is zero on terminal side"
+        )));
+    }
+    if owning_location_province == 0 {
+        return Err(invalid(format!(
+            "{prefix}.owning_location_province is zero on owning row side"
+        )));
+    }
+    if terminal_location != owning_location_province {
+        return Err(invalid(format!(
+            "{prefix}.location_province owning-vector join mismatch: terminal {terminal_location}, owning row {owning_location_province}"
+        )));
+    }
+
+    required(
+        &record.winner_side_raw,
+        &format!("{prefix}.winner_side_raw"),
+    )?;
+    required(&record.winter, &format!("{prefix}.winter"))?;
+    let result_selector_raw = *required(
+        &record.result_selector_raw,
+        &format!("{prefix}.result_selector_raw"),
+    )?;
+    required(
+        &record.layout_side_raw,
+        &format!("{prefix}.layout_side_raw"),
+    )?;
+
+    let source = required(&record.source, &format!("{prefix}.source"))?;
+    if source != "authenticated_a729_terminal_writer" {
+        return Err(invalid(format!(
+            "{prefix}.source is not authenticated_a729_terminal_writer: {source:?}"
+        )));
+    }
+
+    if !matches!(
+        (writer.as_str(), result_selector_raw),
+        ("overrun", 0) | ("normal", 1)
+    ) {
+        return Err(invalid(format!(
+            "{prefix}.writer/result_selector_raw pair is invalid: ({writer:?}, {result_selector_raw})"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_land_terminal_slot(
+    status: &Leaf<String>,
+    record: &Leaf<LandCombatTerminalRecord>,
+    owning_location: &Leaf<u32>,
+    prefix: &str,
+) -> Result<(), GateFailure> {
+    let status = required(status, &format!("{prefix}.terminal_record_status"))?;
+    match status.as_str() {
+        "exact" => {
+            let record = required(record, &format!("{prefix}.terminal_record"))?;
+            let owning_location =
+                *required(owning_location, &format!("{prefix}.owning_location_province"))?;
+            validate_land_terminal_record(record, owning_location, &format!("{prefix}.terminal_record"))
+        }
+        "unavailable" => {
+            if record.measured().is_some() {
+                Err(invalid(format!(
+                    "{prefix}.terminal_record is measured under unavailable terminal_record_status"
+                )))
+            } else {
+                Err(external(format!(
+                    "{prefix} terminal record is unavailable"
+                )))
+            }
+        }
+        unknown => Err(invalid(format!(
+            "{prefix}.terminal_record_status is unknown: {unknown:?}"
+        ))),
+    }
+}
+
+/// Validate and count the exact terminal records carried by the two producer
+/// collections.
+///
+/// `extractor/native/recorder_host/src/world_fold.rs:6689`-`:6691`:
+///
+/// > Double-emission across the two fields is impossible: an orphan is by
+/// > definition a key that did NOT match any active combat's generation, so
+/// > a key emitted inside an active record above is never re-emitted here.
+///
+/// Therefore a shared identity is recording corruption, never an overlap to
+/// deduplicate.
+fn validate_land_terminal(
+    active_rows: &[LandCombatPanel],
+    ended_rows: &BTreeMap<(i64, i64), EndedCombatRow>,
+) -> Result<usize, GateFailure> {
+    let mut validated_records = 0;
+    for ((combat_id, generation), row) in ended_rows {
+        if *combat_id != row.combat_id || *generation != row.generation {
+            return Err(invalid(format!(
+                "ended_land key/row identity mismatch: key ({combat_id}, {generation}), row ({}, {})",
+                row.combat_id, row.generation
+            )));
+        }
+        let prefix = format!("ended_land[{},{}]", row.combat_id, row.generation);
+        match &row.detail {
+            Leaf::Measured(detail) => validate_land_terminal_slot(
+                &detail.terminal_record_status,
+                &detail.terminal_record,
+                &row.location_province,
+                &prefix,
+            )?,
+            Leaf::Unobtained | Leaf::Absent => {
+                return Err(external(format!("{prefix}.terminal_record_status")));
+            }
+        }
+        validated_records += 1;
+    }
+
+    for (index, row) in active_rows.iter().enumerate() {
+        if let (Some(combat_id), Some(generation)) =
+            (row.combat_id.measured(), row.detail_generation.measured())
+        {
+            if ended_rows.values().any(|ended| {
+                ended.combat_id == *combat_id && ended.generation == *generation
+            }) {
+                return Err(invalid(format!(
+                    "impossible double-emission for identity ({combat_id}, {generation}) in combats[] and ended_combats[]"
+                )));
+            }
+        }
+
+        // `world_fold.rs:6798`-`:6803` emits this status for a record or ended phase,
+        // but `replay_core/src/world.rs:4496`-`:4504` can parse it as non-`Measured`.
+        let carries_terminal_data = row.terminal_record.measured().is_some()
+            || row.terminal_record_status.measured().is_some();
+        if !carries_terminal_data {
+            if matches!(&row.phase_event, Leaf::Measured(event) if event == "ended") {
+                return Err(external(format!(
+                    "land[{index}].terminal_record_status"
+                )));
+            }
+            continue;
+        }
+        let combat_id = required(&row.combat_id, &format!("land[{index}].combat_id"))?;
+        let generation = required(
+            &row.detail_generation,
+            &format!("land[{index}].detail_generation"),
+        )?;
+        validate_land_terminal_slot(
+            &row.terminal_record_status,
+            &row.terminal_record,
+            &row.location_province,
+            &format!("land[{combat_id},{generation}]"),
+        )?;
+        validated_records += 1;
+    }
+    Ok(validated_records)
+}
+
+/// The terminal-land surface reads both combat collections, so neither source
+/// can be treated as measured unless its own collection status is `Present`.
+fn validate_land_terminal_surface(
+    ended_status: ViewStatus,
+    land_status: ViewStatus,
+    active_rows: &[LandCombatPanel],
+    ended_rows: &BTreeMap<(i64, i64), EndedCombatRow>,
+) -> Result<usize, GateFailure> {
+    match ended_status {
+        ViewStatus::Present => Ok(()),
+        ViewStatus::DomainAbsent => Err(external("ended_combats field absent")),
+        ViewStatus::DomainUnavailable => Err(external("ended_combats unavailable")),
+    }?;
+    match land_status {
+        ViewStatus::Present => Ok(()),
+        ViewStatus::DomainAbsent => Err(external("combats field absent")),
+        ViewStatus::DomainUnavailable => Err(external("combats unavailable")),
+    }?;
+    validate_land_terminal(active_rows, ended_rows)
 }
 
 fn validate_land_side(side: &LandCombatSideDetail, prefix: &str) -> Result<(), GateFailure> {
@@ -789,6 +1054,21 @@ fn validate_land_side_detail(rows: &[LandCombatPanel]) -> Result<(), GateFailure
         validate_land_side(defender, &format!("land[{index}].defender"))?;
     }
     Ok(())
+}
+
+/// The naval-active surface is gated on the collection's own status first
+/// (mirroring [`validate_ended_land_surface`]): a non-`Present` collection is
+/// an external-input condition regardless of any retained rows, never an
+/// admitted (or measured-empty) surface.
+fn validate_naval_surface(
+    status: ViewStatus,
+    rows: &[NavalCombatRow],
+) -> Result<(), GateFailure> {
+    match status {
+        ViewStatus::Present => validate_naval(rows),
+        ViewStatus::DomainAbsent => Err(external("naval_combats field absent")),
+        ViewStatus::DomainUnavailable => Err(external("naval_combats unavailable")),
+    }
 }
 
 fn validate_naval(rows: &[NavalCombatRow]) -> Result<(), GateFailure> {
@@ -1523,13 +1803,32 @@ pub fn admit_xui20_replay(
         + binding.sunk_ships.measured().map_or(0, Vec::len)
         + binding.wars.measured().map_or(0, Vec::len)
         + binding.war_relations.measured().map_or(0, Vec::len);
-    let land_active = state(binding.land.len(), validate_land_active(&binding.land));
-    let land_side_detail = state(binding.land.len(), validate_land_side_detail(&binding.land));
+    let land_active = state(
+        binding.land.len(),
+        validate_land_active_surface(binding.land_status, &binding.land),
+    );
+    let land_side_detail = state(
+        binding.land.len(),
+        validate_land_side_detail_surface(binding.land_status, &binding.land),
+    );
     let land_ended_lifecycle = state(
         binding.ended_land.len(),
         validate_ended_land_surface(binding.ended_land_status, &binding.ended_land),
     );
-    let naval_active = state(binding.naval.len(), validate_naval(&binding.naval));
+    let land_terminal_result = validate_land_terminal_surface(
+        binding.ended_land_status,
+        binding.land_status,
+        &binding.land,
+        &binding.ended_land,
+    );
+    let land_terminal = state(
+        land_terminal_result.as_ref().copied().unwrap_or(0),
+        land_terminal_result.map(|_| ()),
+    );
+    let naval_active = state(
+        binding.naval.len(),
+        validate_naval_surface(binding.naval_status, &binding.naval),
+    );
     let air_history = state(air.as_ref().map_or(0, |count| *count), air.map(|_| ()));
     let air_region_history = state(
         air_region.as_ref().map_or(0, |count| *count),
@@ -1569,9 +1868,7 @@ pub fn admit_xui20_replay(
         land_active,
         land_side_detail,
         land_ended_lifecycle,
-        land_terminal: Xui20SurfaceState::ExternalInputRequired {
-            reason: "terminal land record owning-vector join is not carried".into(),
-        },
+        land_terminal,
         naval_active,
         naval_terminal,
         air_history,
@@ -1598,6 +1895,8 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
         detail_location_province,
         age_days,
         duration_days,
+        terminal_record,
+        terminal_record_status,
         side_detail_completeness,
         participant_events,
         attacker,
@@ -1609,6 +1908,8 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
             detail.location_province.clone(),
             detail.age_days.clone(),
             detail.duration_days.clone(),
+            detail.terminal_record.clone(),
+            detail.terminal_record_status.clone(),
             detail.side_detail_completeness.clone(),
             detail.participant_events.clone(),
             detail.attacker.clone(),
@@ -1624,8 +1925,12 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
             Leaf::Unobtained,
             Leaf::Unobtained,
             Leaf::Unobtained,
+            Leaf::Unobtained,
+            Leaf::Unobtained,
         ),
         None => (
+            Leaf::Absent,
+            Leaf::Absent,
             Leaf::Absent,
             Leaf::Absent,
             Leaf::Absent,
@@ -1676,6 +1981,8 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
         detail_location_province,
         age_days,
         duration_days,
+        terminal_record,
+        terminal_record_status,
         side_detail_completeness,
         participant_events,
         attacker,
@@ -1706,11 +2013,32 @@ pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailL
     // here: the rows and the statement about what is missing beside them come
     // from the same view, so the surface cannot show one without the other.
     let sunk_ships_completeness = frame.sunk_ship_history_exact().completeness;
+    let land_status = frame.combats_status();
+    let ended_land_status = frame.ended_combats_status();
     Xui20CombatDetailLosses {
-        land: frame.combats().iter().map(land_panel).collect(),
-        ended_land: frame.ended_combats().clone(),
-        ended_land_status: frame.ended_combats_status(),
-        naval: naval_air.naval_combats.clone(),
+        // Fail-closed, exactly as the naval sibling below: a non-Present
+        // collection binds no rows even if the frame retained state; the
+        // status names which non-measured fact it is.
+        land: if land_status == ViewStatus::Present {
+            frame.combats().iter().map(land_panel).collect()
+        } else {
+            Vec::new()
+        },
+        land_status,
+        ended_land: if ended_land_status == ViewStatus::Present {
+            frame.ended_combats().clone()
+        } else {
+            BTreeMap::new()
+        },
+        ended_land_status,
+        // Fail-closed: a non-Present collection binds no rows even if the
+        // frame retained state; the status names which non-measured fact it is.
+        naval: if naval_air.naval_combats_status == ViewStatus::Present {
+            naval_air.naval_combats.clone()
+        } else {
+            Vec::new()
+        },
+        naval_status: naval_air.naval_combats_status,
         air_losses: naval_air.air_losses.clone(),
         air_region_combat: naval_air.air_region_combat.clone(),
         sunk_convoys: naval_air.sunk_convoys.clone(),
@@ -1729,6 +2057,64 @@ mod tests {
         LandCombatCurrentLossObservation, LandCombatDetail, LandCombatEquipmentLossDelta,
         LandCombatSideDetail, LandCombatWidthObservation, LandCombatWidthWrapper,
     };
+
+    fn combat_row_with_detail(detail: Leaf<LandCombatDetail>) -> CombatRow {
+        CombatRow {
+            combat_id: Leaf::Measured(8),
+            generation: Leaf::Measured(0),
+            kind: Leaf::Measured("land".into()),
+            location_province: Leaf::Measured(42),
+            attackers: Leaf::Measured(vec![1]),
+            defenders: Leaf::Measured(vec![2]),
+            combat_width: Leaf::Measured(80.0),
+            terrain: Leaf::Measured("plains".into()),
+            progress: Leaf::Measured(0.5),
+            detail,
+        }
+    }
+
+    #[test]
+    fn land_panel_preserves_terminal_leaf_four_state_fan_out() {
+        let unobtained = land_panel(&combat_row_with_detail(Leaf::Unobtained));
+        assert_eq!(unobtained.terminal_record, Leaf::Unobtained);
+        assert_eq!(unobtained.terminal_record_status, Leaf::Unobtained);
+
+        let absent = land_panel(&combat_row_with_detail(Leaf::Absent));
+        assert_eq!(absent.terminal_record, Leaf::Absent);
+        assert_eq!(absent.terminal_record_status, Leaf::Absent);
+
+        let record = LandCombatTerminalRecord {
+            record_index: Leaf::Measured(3),
+            writer: Leaf::Measured("overrun".into()),
+            attacker_manpower_loss_raw: Leaf::Measured(0),
+            defender_manpower_loss_raw: Leaf::Measured(0),
+            end_date_raw: Leaf::Measured(9),
+            location_province: Leaf::Measured(42),
+            winner_side_raw: Leaf::Measured(7),
+            winter: Leaf::Measured(true),
+            result_selector_raw: Leaf::Measured(0),
+            layout_side_raw: Leaf::Measured(8),
+            source: Leaf::Measured("authenticated_a729_terminal_writer".into()),
+        };
+        let measured = land_panel(&combat_row_with_detail(Leaf::Measured(LandCombatDetail {
+            phase_event: Leaf::Measured("ended".into()),
+            generation: Leaf::Measured(1),
+            location_province: Leaf::Measured(42),
+            age_days: Leaf::Measured(1),
+            duration_days: Leaf::Measured(1),
+            terminal_record: Leaf::Measured(record.clone()),
+            terminal_record_status: Leaf::Measured("exact".into()),
+            participant_events: Leaf::Measured(Vec::new()),
+            side_detail_completeness: Leaf::Unobtained,
+            attacker: Leaf::Unobtained,
+            defender: Leaf::Unobtained,
+        })));
+        assert_eq!(measured.terminal_record, Leaf::Measured(record));
+        assert_eq!(
+            measured.terminal_record_status,
+            Leaf::Measured("exact".into())
+        );
+    }
 
     fn empty_side() -> LandCombatSideDetail {
         LandCombatSideDetail {
@@ -1789,6 +2175,7 @@ mod tests {
         };
         let row = CombatRow {
             combat_id: Leaf::Measured(7),
+            generation: Leaf::Measured(0),
             kind: Leaf::Measured("land".into()),
             location_province: Leaf::Measured(42),
             attackers: Leaf::Measured(vec![10, 11]),
@@ -1820,6 +2207,7 @@ mod tests {
     fn unavailable_detail_does_not_become_empty_or_zero() {
         let row = CombatRow {
             combat_id: Leaf::Measured(8),
+            generation: Leaf::Measured(0),
             kind: Leaf::Measured("land".into()),
             location_province: Leaf::Measured(9),
             attackers: Leaf::Measured(Vec::new()),

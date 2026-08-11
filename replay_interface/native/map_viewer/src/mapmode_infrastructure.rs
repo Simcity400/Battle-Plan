@@ -1,4 +1,5 @@
-//! Infrastructure map mode (MAPMODE_COVERAGE_MATRIX row 10, plan E3).
+//! Infrastructure map mode (E3 lane; the mode set and its selection law are in
+//! `replay_interface/documents/UI_LAYOUT_LAW.md` §6.2 "Map-mode manager").
 //!
 //! The infrastructure map mode (`ui_mapmode_infrastructure`, F9) fills each
 //! **state** with a gradient keyed on its infrastructure building level. This
@@ -14,7 +15,7 @@
 //!    vanilla = 5). We normalise `level` over `[0, state_max]`. The endpoint
 //!    colours + the ceiling are FILE; the *assumption* that the engine
 //!    interpolates linearly over exactly `[0, state_max]` (rather than a dynamic
-//!    per-map max) is DERIVED / capture-gated (see `LANE_REPORT.md`).
+//!    per-map max) is DERIVED / capture-gated.
 //! 3. **Infra level per state** — read from `replay_core`'s buildings view:
 //!    `world.buildings_by_state()[state].state_buildings["infrastructure"].level`
 //!    (a `Leaf<f64>`). A present measured leaf maps to `Some`; an absent/
@@ -435,11 +436,12 @@ buildings = {
     /// Vanilla parse gate (skips without `BATTLE_PLAN_GAME_DIR`). Confirms the shipped
     /// gradient colours + the infrastructure `state_max` ceiling.
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_infra_defines() {
-        let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!("gate_vanilla_infra_defines: BATTLE_PLAN_GAME_DIR unset; skipped");
-            return;
-        };
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("resolver");
         let colors = infra_gradient_colors_from_resolver(&resolver).expect("gradient colours");
         assert_eq!(colors, VANILLA_INFRA_GRADIENT_COLORS);

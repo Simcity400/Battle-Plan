@@ -1,4 +1,5 @@
-//! Factions map mode (MAPMODE_COVERAGE_MATRIX row 11 / plan E3, toolbar button
+//! Factions map mode (E3 lane; UI_LAYOUT_LAW.md §6.2 map-mode manager, toolbar
+//! button
 //! `mapmode_button_11` / `ui_mapmode_factions` / F10, engine layer
 //! `game_map_mode_factions`).
 //!
@@ -431,11 +432,12 @@ NDefines = {
 
     /// Vanilla defines parse gate (skips without `BATTLE_PLAN_GAME_DIR`).
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_factions_defines() {
-        let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!("gate_vanilla_factions_defines: BATTLE_PLAN_GAME_DIR unset; skipped");
-            return;
-        };
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("resolver");
         let defines = factions_defines_from_resolver(&resolver).expect("factions defines");
         assert_eq!(defines, VANILLA_FACTIONS_DEFINES);

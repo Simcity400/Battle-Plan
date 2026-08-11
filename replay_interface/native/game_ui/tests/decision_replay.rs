@@ -282,3 +282,157 @@ fn alert_counts_and_semantics_must_match_rows() {
     threshold.rows[1].timer_text = Some("\u{11}H31 days\u{11}!".into());
     assert!(bind_decision_panel(&catalog(), &threshold).is_err());
 }
+
+/// A34's activation matrix needs a measured-empty panel to be an ADMITTED
+/// binding with zero items, never an error. A country whose every decision
+/// category is gated off genuinely renders nothing, and the engine still
+/// materialises a grid rectangle for it, so an empty complete producer
+/// attestation is a real observation and must bind.
+#[test]
+fn measured_empty_panel_is_an_admitted_binding_not_an_error() {
+    let mut empty = valid_snapshot();
+    empty.children.clear();
+    empty.rows.clear();
+    empty.available_alert_count = 0;
+    empty.timeout_alert_count = 0;
+    empty.grid.content_extent_height = 0;
+
+    let binding = bind_decision_panel(&catalog(), &empty)
+        .expect("a complete producer attesting zero decisions is measured empty, not an error");
+    assert!(binding.items.is_empty());
+    assert!(binding.cards.is_empty());
+    assert_eq!(binding.available_alert_count, 0);
+    assert_eq!(binding.timeout_alert_count, 0);
+    assert_eq!(binding.country_tag, "GER");
+    assert_eq!(binding.frame_hour, 100);
+    // The grid rectangle is still carried, which is what separates a measured
+    // empty panel from a panel that was never measured at all.
+    assert_eq!(binding.grid.clip_right, 502);
+    assert_eq!(binding.grid.clip_bottom, 600);
+}
+
+/// An empty panel is only measured-empty when the producer attested complete.
+/// An incomplete producer that happens to have shipped zero rows stays a
+/// rejection, so "no rows" can never be manufactured by dropping the
+/// attestation.
+#[test]
+fn empty_panel_without_producer_attestation_is_still_rejected() {
+    let mut empty = valid_snapshot();
+    empty.children.clear();
+    empty.rows.clear();
+    empty.available_alert_count = 0;
+    empty.timeout_alert_count = 0;
+    empty.producer_complete = false;
+    assert!(bind_decision_panel(&catalog(), &empty).is_err());
+}
+
+/// The realistic measured-empty panel is row-empty but NOT child-empty: a
+/// category header is inserted independently of whether its category produced
+/// any rows, so a country with categories but no visible decisions renders
+/// headers over nothing. `rows == []` is the measured-empty signal;
+/// `children == []` only happens when the grid had no children at all.
+#[test]
+fn row_empty_panel_still_carries_its_materialized_category_headers() {
+    let mut empty = valid_snapshot();
+    empty.rows.clear();
+    empty.available_alert_count = 0;
+    empty.timeout_alert_count = 0;
+    empty.children = vec![
+        DecisionPanelChild {
+            presentation_index: 0,
+            kind: DecisionPanelChildKind::Category,
+            decision_row_index: None,
+            identity: "political".into(),
+            name_text: Some("Political Actions".into()),
+            secondary_text: None,
+            expanded: Some(true),
+            x: 0,
+            y: 0,
+            width: 502,
+            height: 30,
+        },
+        DecisionPanelChild {
+            presentation_index: 1,
+            kind: DecisionPanelChildKind::Category,
+            decision_row_index: None,
+            identity: "economy".into(),
+            name_text: Some("Economy".into()),
+            secondary_text: Some("no decisions available".into()),
+            expanded: Some(false),
+            x: 0,
+            y: 30,
+            width: 502,
+            height: 30,
+        },
+    ];
+
+    let binding = bind_decision_panel(&catalog(), &empty)
+        .expect("category headers over zero rows are a real materialized panel");
+    assert!(binding.cards.is_empty());
+    assert_eq!(binding.items.len(), 2);
+    match &binding.items[0] {
+        DecisionPanelItem::Category(category) => {
+            assert_eq!(category.category_id, "political");
+            assert!(category.expanded);
+        }
+        other => panic!("expected a category header, got {other:?}"),
+    }
+    match &binding.items[1] {
+        DecisionPanelItem::Category(category) => {
+            assert_eq!(category.category_id, "economy");
+            assert!(!category.expanded);
+            assert_eq!(
+                category.description_text.as_deref(),
+                Some("no decisions available")
+            );
+        }
+        other => panic!("expected a category header, got {other:?}"),
+    }
+}
+
+/// The three d87 outcomes must stay distinguishable at the product's
+/// unavailability surface: "never observed" and "observed but rejected" are
+/// different facts about a recording, and A34's nonempty/measured-empty matrix
+/// cannot be read if they collapse into one message.
+#[test]
+fn unobserved_and_rejected_decision_panels_report_distinct_reasons() {
+    let absent = replay_core::DecisionPanelExactView {
+        status: replay_core::ViewStatus::DomainAbsent,
+        panel: None,
+    };
+    let rejected = replay_core::DecisionPanelExactView {
+        status: replay_core::ViewStatus::DomainUnavailable,
+        panel: None,
+    };
+
+    let absent_reason = decision_panel_snapshot_from_world(&absent)
+        .expect_err("an absent d87 view cannot produce a snapshot")
+        .message;
+    let rejected_reason = decision_panel_snapshot_from_world(&rejected)
+        .expect_err("a rejected d87 view cannot produce a snapshot")
+        .message;
+
+    assert_ne!(absent_reason, rejected_reason);
+    assert!(
+        absent_reason.contains("never observed"),
+        "unobserved reason must say so: {absent_reason}"
+    );
+    assert!(
+        rejected_reason.contains("observed") && rejected_reason.contains("rejected"),
+        "rejected reason must say the panel was observed and rejected: {rejected_reason}"
+    );
+}
+
+/// A measured-empty panel still has to agree with the production catalog. A
+/// panel whose catalog hash disagrees is a rejection whether or not it is
+/// empty, so emptiness is never a way around the catalog join.
+#[test]
+fn measured_empty_panel_still_joins_the_production_catalog() {
+    let mut empty = valid_snapshot();
+    empty.children.clear();
+    empty.rows.clear();
+    empty.available_alert_count = 0;
+    empty.timeout_alert_count = 0;
+    empty.decision_catalog_sha256 = "0".repeat(64);
+    assert!(bind_decision_panel(&catalog(), &empty).is_err());
+}

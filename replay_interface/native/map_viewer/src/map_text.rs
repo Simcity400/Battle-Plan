@@ -79,6 +79,100 @@ pub fn merge_localisation_source(
     }
 }
 
+/// Production localisation parser for exact map consumers.
+///
+/// The effective namespace has already been fixed by `GameFileResolver`.
+/// Replay deliberately rejects duplicate effective keys instead of inventing
+/// an unproved cross-file precedence rule, and rejects malformed non-comment
+/// rows instead of silently shrinking the semantic input set.
+pub fn merge_localisation_source_exact(
+    table: &mut BTreeMap<String, String>,
+    source: &str,
+    origin: &str,
+    expected_header: &str,
+) -> Result<()> {
+    let mut saw_header = false;
+    for (line_index, raw_line) in source.lines().enumerate() {
+        let line = raw_line.trim_start_matches('\u{feff}').trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !saw_header {
+            if !line.eq_ignore_ascii_case(expected_header) {
+                return Err(format!(
+                    "production localisation {origin}:{} header {line:?} is not {expected_header:?}",
+                    line_index + 1
+                )
+                .into());
+            }
+            saw_header = true;
+            continue;
+        }
+        let colon = line.find(':').ok_or_else(|| {
+            format!(
+                "production localisation {origin}:{} has no key separator",
+                line_index + 1
+            )
+        })?;
+        let key = line[..colon].trim();
+        if key.is_empty() || key.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            return Err(format!(
+                "production localisation {origin}:{} has an invalid key",
+                line_index + 1
+            )
+            .into());
+        }
+        let mut rest = line[colon + 1..].trim_start();
+        rest = rest.trim_start_matches(|character: char| character.is_ascii_digit());
+        rest = rest.trim_start();
+        let quoted = rest.strip_prefix('"').ok_or_else(|| {
+            format!(
+                "production localisation {origin}:{} key {key:?} is not quoted",
+                line_index + 1
+            )
+        })?;
+        let mut escaped = false;
+        let mut closing = None;
+        for (index, character) in quoted.char_indices() {
+            if character == '"' && !escaped {
+                closing = Some(index);
+                break;
+            }
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+        }
+        let closing = closing.ok_or_else(|| {
+            format!(
+                "production localisation {origin}:{} key {key:?} has no closing quote",
+                line_index + 1
+            )
+        })?;
+        let trailing = quoted[closing + 1..].trim();
+        if !trailing.is_empty() && !trailing.starts_with('#') {
+            return Err(format!(
+                "production localisation {origin}:{} key {key:?} has trailing syntax",
+                line_index + 1
+            )
+            .into());
+        }
+        if table
+            .insert(key.to_string(), quoted[..closing].to_string())
+            .is_some()
+        {
+            return Err(format!(
+                "production localisation key {key:?} has multiple effective definitions"
+            )
+            .into());
+        }
+    }
+    if !saw_header {
+        return Err(format!("production localisation {origin} has no language header").into());
+    }
+    Ok(())
+}
+
 /// `NGraphics.DRAW_COUNTRY_NAMES_CUTOFF` from 00_graphics.lua (vanilla
 /// 260.0): the camera distance below which the game stops drawing country
 /// names.
@@ -94,9 +188,7 @@ mod tests {
     use super::*;
     use crate::test_support::temp_test_dir;
     use std::fs;
-    use std::path::{Path, PathBuf};
-
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
+    use std::path::Path;
 
     fn write_text(root: &Path, rel: &str, text: &str) {
         let path = rel
@@ -119,6 +211,36 @@ mod tests {
             Some("German Reich")
         );
         assert!(!table.contains_key("l_english"));
+    }
+
+    #[test]
+    fn production_localisation_rejects_duplicate_and_malformed_rows() {
+        let mut table = BTreeMap::new();
+        merge_localisation_source_exact(
+            &mut table,
+            "\u{feff}l_english:\n GER:0 \"Germany\"\n",
+            "a.yml",
+            "l_english:",
+        )
+        .expect("first exact source");
+        assert!(merge_localisation_source_exact(
+            &mut table,
+            "l_english:\n GER:0 \"German Empire\"\n",
+            "b.yml",
+            "l_english:",
+        )
+        .expect_err("duplicate effective definition must fail closed")
+        .to_string()
+        .contains("multiple effective definitions"));
+        assert!(merge_localisation_source_exact(
+            &mut BTreeMap::new(),
+            "l_english:\n malformed row\n",
+            "bad.yml",
+            "l_english:",
+        )
+        .expect_err("malformed semantic input must not be skipped")
+        .to_string()
+        .contains("no key separator"));
     }
 
     #[test]
@@ -214,12 +336,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_localisation_and_cutoff() {
-        let game_dir = PathBuf::from(VANILLA_GAME_DIR);
-        if !game_dir.is_dir() {
-            eprintln!("skipping vanilla map_text gate: {VANILLA_GAME_DIR} is absent");
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let table =
             localisation_table_from_resolver(&resolver, "english").expect("vanilla localisation");

@@ -87,8 +87,6 @@ Tree walk measured `2021` directories and `58272` files. Files outside explicit 
 | tools | 9 | 2 | .png 3, .html 2, .js 2, .json 1, .settings 1 | launcher/tooling files |
 | EmptySteamDepot | 0 | 0 | - | empty depot placeholder |
 
-One-level inventory for every top-level directory is in the appendix.
-
 ## 2. gfx/FX Shader Atlas
 
 `gfx/FX` contains `58` shader/include files (.shader and .fxh). Each row is one shipped file with effects, passes, constant buffers, texture slots/declarations, and includes.
@@ -155,7 +153,7 @@ One-level inventory for every top-level directory is in the appendix.
 
 ### constants.fxh High-Impact Constants
 
-`gfx/FX/constants.fxh` encodes zoom laws, political fill/outline thresholds, snow/ice/water/city-light constants, day/night ambient ramps, FOW removal, tree seasonal parameters, and map-arrow dimensions. Full constant table is in the appendix.
+`gfx/FX/constants.fxh` encodes zoom laws, political fill/outline thresholds, snow/ice/water/city-light constants, day/night ambient ramps, FOW removal, tree seasonal parameters, and map-arrow dimensions. The rows below are the high-impact subset; the shipped `gfx/FX/constants.fxh` is the full table.
 | Constant | Type | Value | Comment | Citation |
 | --- | --- | --- | --- | --- |
 | NIGHT_AMBIENT_BOOST | float | 3.0f | can just be baked into the below later ye? | gfx/FX/constants.fxh:14 |
@@ -296,7 +294,7 @@ One-level inventory for every top-level directory is in the appendix.
 | common/defines/00_graphics.lua:59 | NAVAL_REGION_TRANSPARENCY_RANGE = 2000.0, -- The range of naval dominance to be rendered on the strategic navy region map |
 | common/defines/00_graphics.lua:71 | RAILWAY_GUN_RANGE_INDICATOR_DEFAULT_COLOR = { 1.0, 1.0, 1.0, 1.0 }, -- On map circle indicating the railway gun bombardment range. |
 
-The appendix fully tabulates 1238 assignments parsed from `00_graphics.lua` and all graphics-relevant matches in the other define files.
+1238 assignments were parsed from `00_graphics.lua` in total; the rows above are the graphics-relevant subset, and the shipped `common/defines/` files are the full table.
 
 ### Country Color Pipeline
 
@@ -473,7 +471,7 @@ Map labels: `interface/core.gfx:713` starts animated map text declarations; `int
 
 ## 7. DLC, integrated_dlc, checksum, localisation
 
-`dlc` and `integrated_dlc` were scanned as extension/override sources. Pack rows are in the appendix; content classes include interface art/gui, entities, models, particles, flags, fonts, common text/lua, map, localisation, archives, and audio depending on pack.
+`dlc` and `integrated_dlc` were scanned as extension/override sources. Content classes include interface art/gui, entities, models, particles, flags, fonts, common text/lua, map, localisation, archives, and audio depending on pack.
 
 | Citation | Directory | Subdirectories | Extension |
 | --- | --- | --- | --- |
@@ -524,5 +522,3 @@ Localisation was scanned only where it feeds map text. Candidate files: 80. Exam
 | Map label curving/layout | Static files show fonts, animated map text, mapname shader, and localisation; precise label pathing/collision appears engine-side. |
 | GUI data binding | `.gui`/`.gfx` define sprites/layout; runtime game-state binding remains engine behavior. |
 | DLC/mod override order | Static packs are visible; active DLC/mod resolution needs launcher/runtime active content state. |
-
-Appendix: `GAME_FILES_ATLAS_APPENDIX.md` contains one-level inventory, full `constants.fxh` table, full `00_graphics.lua` assignment table, shader-function samples, map/terrain image headers, DLC content-class rows, and additional counts.

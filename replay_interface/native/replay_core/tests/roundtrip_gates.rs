@@ -520,8 +520,8 @@ fn rt_naval_air_activity() {
         let tf = f
             .fleets()
             .iter()
-            .find(|r| r.task_force_uid == "501:1")
-            .expect("task force 501:1");
+            .find(|r| r.task_force_uid == "501")
+            .expect("task force 501");
         let tfp = &["order_of_battle", "fleets", "0", "task_forces", "0"];
         let probe = |leaf_key: &str| {
             let mut path = tfp.to_vec();
@@ -562,8 +562,8 @@ fn rt_naval_air_activity() {
         let w = f
             .wings()
             .iter()
-            .find(|w| w.wing_uid == "800:1")
-            .expect("wing 800:1");
+            .find(|w| w.wing_uid == "800")
+            .expect("wing 800");
         let wp = &["order_of_battle", "air_wings", "0"];
         let wprobe = |k: &str| {
             let mut path = wp.to_vec();
@@ -1032,7 +1032,7 @@ fn rt_player_countries_from_world_scenario_players() {
 }
 
 // ---------------------------------------------------------------------------
-// fx-streams lane — the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9).
+// fx-streams lane — the 12 UI-inventory data streams.
 // Oracle for every assertion is the generator source: what the packed snapshot
 // carries at the raw JSON path == what the typed view must expose.
 // ---------------------------------------------------------------------------
@@ -1704,7 +1704,7 @@ const POSITIVE_FIXTURES: [&str; 19] = [
     "fx_building_damage",
     "fx_pov_visibility",
     "fx_dlc_language_variation",
-    // fx-streams lane: the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9).
+    // fx-streams lane: the 12 UI-inventory data streams.
     "fx_research_focus",
     "fx_country_management",
     "fx_designs_catalog",

@@ -84,91 +84,14 @@ pub enum ProductionMapPassStatus {
     Blocked,
 }
 
-/// Production disposition of each close-zoom law module.  A source-level law
-/// is not a draw authorization. `SelectedScopeWired` means an authenticated,
-/// explicitly bounded retained scope is already carried and executed, without
-/// authorizing any wider scope. `ExecutionBlocked` means an exact runtime
-/// carrier is admitted but its production geometry/pipeline/interleave
-/// consumer is absent. `CarrierWiredDataBlocked` means the exact carrier and
-/// executor exist but the current replay frame may legitimately omit the
-/// authenticated observation. `PixelEvidenceBlocked` means the exact input and
-/// execution seam exists, but a requested authenticated engine/replay pixel
-/// golden is not pinned yet. `InputBlocked` means the exact runtime carrier is
-/// still absent. Blocked states may not enable a draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProductionCloseZoomLawStatus {
-    SelectedScopeWired,
-    ExecutionBlocked,
-    CarrierWiredDataBlocked,
-    InputBlocked,
-    PixelEvidenceBlocked,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionCloseZoomLawPlan {
-    pub module: &'static str,
-    pub status: ProductionCloseZoomLawStatus,
-    pub blockers: Vec<&'static str>,
-}
-
-fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
-    use ProductionCloseZoomLawStatus::{
-        CarrierWiredDataBlocked, ExecutionBlocked, InputBlocked, PixelEvidenceBlocked,
-        SelectedScopeWired,
-    };
-
-    vec![
-        ProductionCloseZoomLawPlan {
-            module: "shadow_law",
-            status: CarrierWiredDataBlocked,
-            blockers: vec![
-                "L02/L03/W23 and S1 authenticate the selected-light matrices, ordered typed casters, target ownership, blur chain, and production executor; newly recorded frames remain data-blocked when that carrier is absent, while optional event-scoped intermediate pixel readbacks remain a regression golden",
-            ],
-        },
-        ProductionCloseZoomLawPlan {
-            module: "building_files",
-            status: InputBlocked,
-            blockers: vec![
-                "generic building_files has no complete per-hour object/state/LOD/material-variant carrier; preview_all candidates are diagnostic and must never become production instances",
-            ],
-        },
-        ProductionCloseZoomLawPlan {
-            module: "rail_files",
-            status: ExecutionBlocked,
-            blockers: vec![
-                "D81 reciprocal CRailwayGfx state now joins authenticated railroad-registration D80 draws; exact engine-built ribbon bytes, railroad.shader pipeline, and selected-Present interleave execute without CPU retessellation. Supply-hub GUI draw/placement attribution remains unjoined, and centroid polylines are forbidden",
-            ],
-        },
-        ProductionCloseZoomLawPlan {
-            module: "occupation_stripe_law",
-            status: PixelEvidenceBlocked,
-            blockers: vec![
-                "the captured shader and byte-native ProvinceSecondaryColorMap seam are exact, but no authenticated raw portable producer/consumer observation plus receipt-bound engine/replay pixel golden is admitted",
-            ],
-        },
-        ProductionCloseZoomLawPlan {
-            module: "tree_instance_synthesis",
-            status: SelectedScopeWired,
-            blockers: vec![
-                "the retained 4,781-cell selected scope has an exact pointer-free 13-buffer/three-pass visible model/LOD carrier and executes through authenticated static operations; the wider library authenticates 11,365 cells only as immutable content, while complete-pool selection remains blocked on 260 buckets/87,691 cells and collapsing batches is forbidden",
-            ],
-        },
-        ProductionCloseZoomLawPlan {
-            module: "camera_interp_law",
-            status: InputBlocked,
-            blockers: vec![
-                "dt normalization and the exact height-to-zoom multiplier remain unresolved; production must consume measured camera projection state instead of applying the partial interpolation helper",
-            ],
-        },
-        ProductionCloseZoomLawPlan {
-            module: "snow_mud_feed",
-            status: PixelEvidenceBlocked,
-            blockers: vec![
-                "the exact CPU pre-upload packet, reflected selected-Present SnowMudFade, pointer-free static consumer edges, and product D3D immutable-upload/readback route are wired; two content-changing raw H/H2 pairs and a receipt-bound engine/replay pixel golden are not admitted",
-            ],
-        },
-    ]
-}
+// The close-zoom law disposition table that used to live here was deleted.
+// It was a two-level dead chain — `close_zoom_blockers()` was reached only by
+// two `d3d11_replay` wrappers that themselves had no callers — and three of its
+// seven rows declared work "blocked" that the product route already executes
+// through its own carrier admission. A policy table that nothing consults, and
+// that would refuse shipping behaviour if anything ever did, is worse than
+// none. Whether a pass may draw is decided by the carriers and the pass status
+// in this graph, never by a source-level law label.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionMapTargetPlan {
@@ -193,7 +116,6 @@ pub struct ProductionMapPassGraph {
     pub camera: ProductionMapCamera,
     pub target: ProductionMapTargetPlan,
     pub passes: Vec<ProductionMapPassPlan>,
-    pub close_zoom_laws: Vec<ProductionCloseZoomLawPlan>,
 }
 
 pub(crate) fn production_blocked_map_pass(
@@ -402,7 +324,6 @@ impl ProductionMapPassGraph {
             camera,
             target,
             passes: production_pass_plan(ProductionMapPassKind::Terrain.capture_moment()),
-            close_zoom_laws: production_close_zoom_law_plan(),
         })
     }
 
@@ -412,10 +333,12 @@ impl ProductionMapPassGraph {
     ) -> Result<Self> {
         camera.validate()?;
         let frame = terrain_library.target_evidence_frame()?;
-        let blockers = native_d3d11_replay_payload_blockers(&frame, false)
-            .into_iter()
-            .filter(|blocker| !blocker.contains("post-pass output-merger"))
-            .collect::<Vec<_>>();
+        // This route takes its terrain reference from the chunk library, so an
+        // absent post-pass output-merger capture is not a blocker here. Every
+        // structural, bounds and hash-integrity failure of a post-pass capture
+        // that IS present still is.
+        let blockers =
+            native_d3d11_replay_payload_blockers_without_post_pass_reference(&frame, false);
         if !blockers.is_empty() {
             return Err(format!(
                 "production map renderer blocked: terrain chunk library native D3D11 replay payload is incomplete: {}",
@@ -450,33 +373,11 @@ impl ProductionMapPassGraph {
             camera,
             target,
             passes: production_pass_plan(TERRAIN_CHUNK_LIBRARY_MOMENT),
-            close_zoom_laws: production_close_zoom_law_plan(),
         })
     }
 
     pub fn pass(&self, kind: ProductionMapPassKind) -> Option<&ProductionMapPassPlan> {
         self.passes.iter().find(|pass| pass.kind == kind)
-    }
-
-    pub fn close_zoom_law(&self, module: &str) -> Option<&ProductionCloseZoomLawPlan> {
-        self.close_zoom_laws
-            .iter()
-            .find(|plan| plan.module == module)
-    }
-
-    /// There is deliberately no promotion mutator here.  A close-zoom law can
-    /// become renderable only through an authenticated carrier implementation
-    /// and a receipt-bound pixel gate, not by toggling graph state at runtime.
-    pub fn close_zoom_blockers(&self) -> Vec<(&'static str, &'static str)> {
-        self.close_zoom_laws
-            .iter()
-            .flat_map(|plan| {
-                plan.blockers
-                    .iter()
-                    .copied()
-                    .map(move |blocker| (plan.module, blocker))
-            })
-            .collect()
     }
 
     pub fn with_water_capture(&self, water_bundle: &NativeD3d11TerrainBundle) -> Result<Self> {
@@ -696,6 +597,99 @@ mod tests {
 
     use std::fs;
 
+    /// R18-1. The routes that establish their terrain reference from the chunk
+    /// library used to drop every blocker whose text contained "post-pass
+    /// output-merger" — thirteen distinct templates, of which only two are
+    /// absence notices. Bounds violations and runtime-file hash disagreement
+    /// were swallowed with them. The waiver is now a typed discriminant.
+    #[test]
+    fn post_pass_output_merger_waiver_drops_absence_but_never_integrity() {
+        let root = temp_test_dir("post_pass_typed_waiver");
+        fs::create_dir_all(&root).expect("create temp bundle dir");
+        let path = write_valid_map_frame_bundle(&root, |frame| frame);
+        let frame = validate_map_frame_runtime_bundle(&path).expect("valid map-frame bundle");
+
+        let waived = |frame: &MapFrameRuntimeBundle| {
+            native_d3d11_replay_payload_blockers_without_post_pass_reference(frame, false)
+                .into_iter()
+                .filter(|blocker| blocker.contains("post-pass output-merger"))
+                .collect::<Vec<_>>()
+        };
+
+        assert!(
+            waived(&frame).is_empty(),
+            "complete post-pass evidence raises no blocker: {:?}",
+            waived(&frame)
+        );
+
+        // Absence stays waived on this route, and is still reported on the
+        // strict one.
+        let mut absent = frame.clone();
+        absent.post_pass_output_merger = None;
+        assert!(waived(&absent).is_empty(), "{:?}", waived(&absent));
+        assert!(native_d3d11_replay_payload_blockers(&absent, false)
+            .iter()
+            .any(|blocker| blocker
+                .contains("has no post-pass output-merger terrain render target payload")));
+
+        let mut byteless = frame.clone();
+        byteless
+            .post_pass_output_merger
+            .as_mut()
+            .expect("post-pass evidence")
+            .render_targets[0]
+            .post_pass_payload = None;
+        assert!(waived(&byteless).is_empty(), "{:?}", waived(&byteless));
+
+        // A subresource extending past payload.byte_len is a structural
+        // integrity failure, never an absence notice.
+        let mut out_of_bounds = frame.clone();
+        out_of_bounds
+            .post_pass_output_merger
+            .as_mut()
+            .expect("post-pass evidence")
+            .render_targets[0]
+            .post_pass_payload
+            .as_mut()
+            .expect("post-pass payload")
+            .subresources[0]
+            .depth_pitch = 4_096;
+        let blockers = waived(&out_of_bounds);
+        assert!(
+            blockers
+                .iter()
+                .any(|blocker| blocker.contains("beyond payload byte_len")),
+            "{blockers:?}"
+        );
+
+        // So is runtime-file evidence disagreeing with the payload metadata.
+        let mut forged = frame;
+        let file = forged
+            .post_pass_output_merger
+            .as_ref()
+            .expect("post-pass evidence")
+            .render_targets[0]
+            .post_pass_payload
+            .as_ref()
+            .expect("post-pass payload")
+            .file
+            .clone();
+        forged
+            .runtime_files
+            .get_mut(&file)
+            .expect("post-pass runtime file evidence")
+            .fnv1a64 = "0".repeat(16);
+        let blockers = waived(&forged);
+        assert!(
+            blockers
+                .iter()
+                .any(|blocker| blocker.contains("does not match payload metadata")),
+            "{blockers:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn production_map_pass_graph_starts_with_app_owned_terrain_and_blocks_water() {
         let root = temp_test_dir("production_map_pass_graph_terrain_first");
@@ -735,62 +729,6 @@ mod tests {
         assert_eq!(graph.target.color_format, DXGI_FORMAT_B8G8R8A8_UNORM);
         assert_eq!(graph.target.depth_format, 45);
         assert_eq!(graph.target.sample_count, 1);
-        assert_eq!(graph.close_zoom_laws.len(), 7);
-        assert_eq!(
-            graph
-                .close_zoom_laws
-                .iter()
-                .map(|plan| plan.module)
-                .collect::<Vec<_>>(),
-            vec![
-                "shadow_law",
-                "building_files",
-                "rail_files",
-                "occupation_stripe_law",
-                "tree_instance_synthesis",
-                "camera_interp_law",
-                "snow_mud_feed",
-            ]
-        );
-        assert_eq!(
-            graph
-                .close_zoom_law("shadow_law")
-                .expect("shadow disposition")
-                .status,
-            ProductionCloseZoomLawStatus::CarrierWiredDataBlocked
-        );
-        assert_eq!(
-            graph
-                .close_zoom_law("rail_files")
-                .expect("rail disposition")
-                .status,
-            ProductionCloseZoomLawStatus::ExecutionBlocked
-        );
-        assert_eq!(
-            graph
-                .close_zoom_law("tree_instance_synthesis")
-                .expect("tree disposition")
-                .status,
-            ProductionCloseZoomLawStatus::SelectedScopeWired
-        );
-        assert_eq!(
-            graph
-                .close_zoom_law("occupation_stripe_law")
-                .expect("occupation stripe disposition")
-                .status,
-            ProductionCloseZoomLawStatus::PixelEvidenceBlocked
-        );
-        assert_eq!(
-            graph
-                .close_zoom_law("snow_mud_feed")
-                .expect("snow/mud disposition")
-                .status,
-            ProductionCloseZoomLawStatus::PixelEvidenceBlocked
-        );
-        assert!(graph
-            .close_zoom_laws
-            .iter()
-            .all(|plan| !plan.blockers.is_empty()));
         assert_eq!(
             graph
                 .passes
@@ -1046,6 +984,7 @@ mod tests {
             map_frame_bundle: water_path.clone(),
             bundle_dir: water_path.parent().expect("bundle dir").to_path_buf(),
             frame: water_frame,
+            spec: WATER_MAP_FRAME_SPEC,
         };
         let camera = terrain_bundle
             .production_camera_from_capture()

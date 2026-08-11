@@ -255,9 +255,7 @@ mod tests {
     use super::*;
     use crate::test_support::temp_test_dir;
     use std::fs;
-    use std::path::{Path, PathBuf};
-
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
+    use std::path::Path;
 
     /// Build an identity cube TGA (bottom-up, 24bpp) with edge `size`.
     fn identity_tga(size: usize) -> Vec<u8> {
@@ -396,12 +394,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_colorcorrection_inventory() {
-        let game_dir = PathBuf::from(VANILLA_GAME_DIR);
-        if !game_dir.is_dir() {
-            eprintln!("skipping vanilla color LUT gate: {VANILLA_GAME_DIR} is absent");
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let rows = scan_color_correction_luts_from_resolver(&resolver).expect("scan");
         assert!(

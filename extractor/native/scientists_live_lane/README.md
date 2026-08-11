@@ -30,11 +30,12 @@ row counts as proof. The production profile requires:
   requires exact cross-artifact equality for the loaded/staged/source DLL,
   game build/module/process identity, stream duration, and scientist route.
 
-Manifest-local build/test and a production proof are:
+Candidate build/test runs through the worktree-local wrapper. The stream proof
+is a product/diagnostic invocation after those gates:
 
 ```powershell
-cargo test --manifest-path extractor/native/scientists_live_lane/Cargo.toml --offline
-cargo build --manifest-path extractor/native/scientists_live_lane/Cargo.toml --release --offline
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Test -Workspace Extractor -Package scientists_live_lane -CacheMode Iterative
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Build -Workspace Extractor -Package scientists_live_lane -CacheMode Reusable
 cargo run --manifest-path extractor/native/scientists_live_lane/Cargo.toml --bin scientists_stream_proof --release --offline -- --stream <collector_stream.bin-or-zst> --proof <scientists_stream_proof.json> --profile production --requested-game-hours <N> --source-report <scientists_live_dll_scan_source.json> --collector-dll <exact-staged-collector.dll> --game-exe <exact-hoi4.exe>
 ```
 

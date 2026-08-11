@@ -60,17 +60,13 @@ remains subject to physical sequence/hour/final-boundary checks but is excluded
 from scheduled-domain PERF authority; DATA on domain 250 is forbidden.
 The gate includes its H4CR framing parser directly from the dependency-free
 canonical source at `../../compact_contract/src/record_header.rs` and its owner
-id bound from the dependency-free `build_profile.rs`; the commands below remain
-standalone direct-`rustc` invocations from the repository root.
+id bound from the dependency-free `build_profile.rs`. The retired standalone
+receipt used that dependency-free shape.
 
-Proof commands:
-
-```powershell
-rustc --edition=2021 --test extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact_tests.exe
-extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact_tests.exe
-rustc --edition=2021 extractor/native/lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe
-extractor/native/lanes/naval_oob_fleets_ships_live/naval_oob_gate.exe <collector_stream.bin> --min-game-hours 48
-```
+The former standalone `rustc` proof commands are historical and are not
+runnable candidate-validation instructions. Current promotion evidence must
+come from a maintained target reached through the worktree-local central
+wrapper.
 
 Lane-local gate outputs:
 
@@ -137,12 +133,9 @@ decoder/gate for the additive naval OOB extension domain. It explicitly supports
 badged/rejected/fixture-required states instead of inventing values for fields
 that are not yet production-proven.
 
-Proof commands:
-
-```powershell
-rustc --edition=2021 --test extractor/native/lanes/naval_oob_fleets_ships_live/gap_extension_compact.rs -o extractor/native/lanes/naval_oob_fleets_ships_live/gap_extension_compact_tests.exe
-extractor/native/lanes/naval_oob_fleets_ships_live/gap_extension_compact_tests.exe
-```
+The gap-extension standalone test count below is a historical receipt. Its
+direct `rustc` command is intentionally not retained as a runnable instruction;
+current promotion requires a maintained wrapper-reached target.
 
 ## Residual integration plan
 

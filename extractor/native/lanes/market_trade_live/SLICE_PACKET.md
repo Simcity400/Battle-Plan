@@ -1142,9 +1142,9 @@ fn world_fold_market_trade_mtd1_populates_trade_contract_detail_fields() {
 Run after applying the shared patch:
 
 ```powershell
-cargo test --manifest-path extractor\native\collector\Cargo.toml compact_market_trade
-cargo test --manifest-path extractor\native\recorder_host\Cargo.toml market_trade
-cargo test --manifest-path extractor\native\lanes\market_trade_live\Cargo.toml
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Test -Workspace Extractor -Package collector -CacheMode Iterative
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Test -Workspace Extractor -Package recorder_host -CacheMode Iterative
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Test -Workspace Extractor -Package market_trade_live_lane -CacheMode Iterative
 ```
 
 ## Riskiest assumptions

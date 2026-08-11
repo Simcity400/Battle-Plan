@@ -1,8 +1,9 @@
 #![recursion_limit = "512"]
 
 use portable_content_manifest::{
-    ContentLayerKind, ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
-    RequiredContentKind, SourceGameIdentity, SourceProfileIdentity, UsedContentKey, SCHEMA,
+    normalize_game_relative_path, ContentLayerKind, ContentManifest, LayerStorageKind,
+    RecordedContentLayer, RequiredContent, RequiredContentKind, SourceGameIdentity,
+    SourceProfileIdentity, UsedContentKey, SCHEMA,
 };
 use serde_json::{json, Map, Value};
 use snapshot::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
@@ -203,7 +204,7 @@ fn positive_scenarios(seed: u64) -> Vec<Scenario> {
         fx_building_damage(seed),
         fx_pov_visibility(seed),
         fx_dlc_language_variation(seed),
-        // fx-streams lane: the 12 UI-inventory data streams (UI_COVERAGE_MATRIX §9).
+        // fx-streams lane: the 12 UI-inventory data streams.
         fx_research_focus(seed),
         fx_country_management(seed),
         fx_designs_catalog(seed),
@@ -282,7 +283,7 @@ fn drop_snapshot(mut scenario: Scenario, tick: usize) -> Scenario {
 }
 
 // ---------------------------------------------------------------------------
-// F4 anomaly scenarios (plan REPLAY_PRODUCTION_PLAN.md F4).
+// F4 anomaly scenarios.
 //
 // Each carries ONE mid-playback anomaly in an otherwise-valid, container-opening
 // recording. They are packed snapshot-flavor `.battleplan` files exactly like
@@ -969,8 +970,15 @@ fn fx_naval_air_activity(seed: u64) -> Scenario {
                 "confidence": "region_proxy"
             });
             snap["order_of_battle"]["fleets"] = json!([
-                {"id": 500, "owner": "ENG", "name": "Home Fleet", "leader": 44, "task_forces": [
-                    {"id": "501:1", "name": "Channel Patrol", "location_province": 3000, "owner": "ENG", "mission": 1, "ship_count": 8 + tick as i64, "dominant_hull_class": "capital"}
+                {"id": 500, "owner": "ENG", "name": "Home Fleet", "leader": 44,
+                 "ui_eligible": true, "ui_ordinal": 0,
+                 "_r2_oob_command_capture": {
+                     "kind": 3, "member_status": 1, "owner_status": 1,
+                     "logical_member_count": 1, "member_count_engine": 1
+                 },
+                 "task_forces": [
+                    {"id": 501, "name": "Channel Patrol", "location_province": 3000, "owner": "ENG", "mission": 1, "ship_count": 8 + tick as i64, "dominant_hull_class": "capital",
+                     "_r2_oob_command_capture": {"kind": 4, "parent_status": 1, "owner_status": 1}}
                 ]}
             ]);
             snap["order_of_battle"]["extra"] = json!({
@@ -1013,7 +1021,7 @@ fn fx_naval_air_activity(seed: u64) -> Scenario {
                 {"instance_id": 7000, "definition": "battleship_1936", "category": "capital", "strength_hp": 100.0 - tick as f64, "organisation": 0.7}
             ]);
             snap["order_of_battle"]["air_wings"] = json!([
-                {"id": "800:1", "owner": "ENG", "name": "Fighter Wing", "count": 100 + tick as i64, "mission": "air_superiority", "strategic_region": 301, "air_base": "3000:1", "state_id": 30, "effective_planes": 90 + tick as i64}
+                {"id": 800, "owner": "ENG", "name": "Fighter Wing", "count": 100 + tick as i64, "mission": "air_superiority", "strategic_region": 301, "air_base": "3000:1", "state_id": 30, "effective_planes": 90 + tick as i64}
             ]);
         },
     );
@@ -1090,7 +1098,7 @@ fn fx_pov_visibility(seed: u64) -> Scenario {
         |tick, snap| {
             let ger_1000 = if tick < 5 { "visible" } else { "fogged" };
             let ger_spots = if tick < 5 {
-                json!({"divisions": ["201:1"], "fleets": ["501:1"], "wings": []})
+                json!({"divisions": ["201:1"], "fleets": ["501"], "wings": []})
             } else {
                 json!({"divisions": [], "fleets": [], "wings": []})
             };
@@ -1108,7 +1116,7 @@ fn fx_pov_visibility(seed: u64) -> Scenario {
                     },
                     "ENG": {
                         "provinces": {"1000": "fogged", "1001": "fogged", "2000": eng_2000, "3000": "visible"},
-                        "visible_foreign_units": {"divisions": if tick >= 7 { json!(["101:1"]) } else { json!([]) }, "fleets": [], "wings": ["800:1"]},
+                        "visible_foreign_units": {"divisions": if tick >= 7 { json!(["101:1"]) } else { json!([]) }, "fleets": [], "wings": ["800"]},
                         "events": []
                     },
                     "SOV": {
@@ -1186,8 +1194,8 @@ fn fx_dlc_language_variation(seed: u64) -> Scenario {
 }
 
 // ---------------------------------------------------------------------------
-// fx-streams lane fixtures — the 12 UI-inventory data streams
-// (UI_COVERAGE_MATRIX §9). Each populates one domain family per tick,
+// fx-streams lane fixtures — the 12 UI-inventory data streams.
+// Each populates one domain family per tick,
 // deterministically from the seed, leaving existing fixtures untouched.
 // ---------------------------------------------------------------------------
 
@@ -2320,13 +2328,21 @@ fn pack_identity(seed: u64, modset_id: &str) -> Result<PackIdentity> {
 /// Both payloads are real fixture bytes: one resolves from the synthetic base
 /// layer, and one from the winning mod layer after its authored `replace_path`.
 /// Generated recordings therefore use the production VFS admission contract.
+///
+/// The mod declares `replace_path` ONLY over the directory it wins
+/// (`gfx/interface/replay_fixture`). Declaring the base winner's directory
+/// (`common/replay_fixture`) too would make the base row unresolvable: every
+/// resolver in the repo (`EffectiveVfs::resolve`, the recorder_host winner
+/// derivation, and map_viewer's mod_resolver) stops at a layer that replaces
+/// the requested path's immediate parent, so a required base winner below such
+/// a declaration is a contradiction that content-manifest validation refuses.
 fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifest> {
     let base_path = "common/replay_fixture/scenario.txt";
     let mod_path = "gfx/interface/replay_fixture/icon.dds";
     let base_sha = sha256(FIXTURE_BASE_DEFINITION);
     let mod_sha = sha256(FIXTURE_MOD_TEXTURE);
     let descriptor_bytes = format!(
-        "name=Fixture Replay Mod\nid={modset_id}\nreplace_path=common/replay_fixture\nreplace_path=gfx/interface/replay_fixture\n"
+        "name=Fixture Replay Mod\nid={modset_id}\nreplace_path=gfx/interface/replay_fixture\n"
     );
     let descriptor_sha = sha256(descriptor_bytes.as_bytes());
     let base_layer_id = "base:fixture-runtime".to_string();
@@ -2350,7 +2366,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
                 "id": mod_layer_id,
                 "descriptor_sha256": descriptor_sha,
                 "storage": "directory",
-                "replace_paths": ["common/replay_fixture", "gfx/interface/replay_fixture"],
+                "replace_paths": ["gfx/interface/replay_fixture"],
             }
         ],
         "files": [
@@ -2397,10 +2413,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
                 descriptor_sha256: Some(descriptor_sha),
                 source_container_sha256: None,
                 storage_kind: LayerStorageKind::Directory,
-                replace_paths: vec![
-                    "common/replay_fixture".into(),
-                    "gfx/interface/replay_fixture".into(),
-                ],
+                replace_paths: vec!["gfx/interface/replay_fixture".into()],
                 required_for_playback: true,
             },
         ],
@@ -2419,7 +2432,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
                 &base_sha,
                 FIXTURE_BASE_DEFINITION.len(),
                 "replay_fixture_gen.snapshot_semantics",
-            ),
+            )?,
             fixture_required_content(
                 "fixture-mod-interface-texture",
                 RequiredContentKind::Texture,
@@ -2431,7 +2444,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
                 &mod_sha,
                 FIXTURE_MOD_TEXTURE.len(),
                 "replay_fixture_gen.mod_override",
-            ),
+            )?,
         ],
         manifest_digest_sha256: None,
     };
@@ -2451,13 +2464,13 @@ fn fixture_required_content(
     payload_sha: &str,
     payload_bytes: usize,
     consumer: &str,
-) -> RequiredContent {
-    RequiredContent {
+) -> Result<RequiredContent> {
+    Ok(RequiredContent {
         content_key: content_key.into(),
         kind,
         content: UsedContentKey {
             effective_vfs_manifest_sha256: vfs_sha.into(),
-            normalized_game_relative_path: path.into(),
+            normalized_game_relative_path: normalize_game_relative_path(path)?,
             winning_layer_ordinal: ordinal,
             layer_kind,
             layer_id: layer_id.into(),
@@ -2467,7 +2480,7 @@ fn fixture_required_content(
         },
         observation_count: 1,
         consumers: vec![consumer.into()],
-    }
+    })
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -2541,10 +2554,11 @@ mod tests {
         );
         let mod_layer = &manifest.ordered_layers[1];
         assert_eq!(mod_layer.layer_kind, ContentLayerKind::Mod);
-        assert_eq!(
-            mod_layer.replace_paths,
-            ["common/replay_fixture", "gfx/interface/replay_fixture"]
-        );
+        // The mod must NOT declare the base winner's directory
+        // (`common/replay_fixture`): a required base row below such a
+        // declaration is unresolvable by every resolver, and both the
+        // manifest-side and playback-side shadow rules refuse it.
+        assert_eq!(mod_layer.replace_paths, ["gfx/interface/replay_fixture"]);
 
         let base = &manifest.required_content[0];
         assert_eq!(base.content.winning_layer_ordinal, 0);

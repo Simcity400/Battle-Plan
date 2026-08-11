@@ -1,6 +1,6 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,34 @@ pub struct PoliticalColorSynthesis {
     pub source: PoliticalColorSynthesisSource,
     pub law: PoliticalColorCompositionLaw,
     class_by_texel: Vec<PoliticalColorTexelClass>,
+}
+
+/// Political topology consumed by the exact-a729 GradientBorder producer.
+/// Region zero is outside/no-controller. Every non-zero region is a stable
+/// controller tag for the current replay epoch.
+#[derive(Clone, Debug)]
+pub(crate) struct GradientBorderPoliticalInputs {
+    /// Controller region indexed by exact province database id. The engine
+    /// constructs edge records on the full-resolution province-id raster
+    /// before reducing the completed layer for the terrain texture.
+    pub(crate) province_regions: Vec<u32>,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) regions: Vec<u32>,
+    pub(crate) land_mask: Vec<bool>,
+    pub(crate) region_colors: Vec<[u8; 3]>,
+    /// Full-resolution province-raster pixel area per controller region. This
+    /// is the exact field consumed by the a729 country thickness callback.
+    pub(crate) region_areas: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Xmap05RasterInputs {
+    pub(crate) map_width: usize,
+    pub(crate) map_height: usize,
+    pub(crate) province_ids: Vec<u16>,
+    pub(crate) province_is_eligible_land: Vec<bool>,
+    pub(crate) gradient: GradientBorderPoliticalInputs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +224,270 @@ pub fn synthesize_political_colors_with_keying(
     synthesize_political_colors_impl(resolver, Some(keying))
 }
 
+fn validate_xmap05_state_authority(
+    effective_state_ids: &BTreeSet<u32>,
+    keying: &KeyingTables,
+    province_controllers: &BTreeMap<u32, String>,
+    country_roster: &BTreeSet<String>,
+) -> Result<()> {
+    let owner_state_ids = keying.state_owners.keys().copied().collect::<BTreeSet<_>>();
+    let controller_state_ids = keying
+        .state_controls
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if owner_state_ids != *effective_state_ids || controller_state_ids != *effective_state_ids {
+        return Err(format!(
+            "XMAP05 measured state census does not equal the effective history/states census (effective={}, owners={}, controllers={})",
+            effective_state_ids.len(),
+            owner_state_ids.len(),
+            controller_state_ids.len()
+        )
+        .into());
+    }
+    for (role, tag) in keying
+        .state_owners
+        .values()
+        .map(|tag| ("state owner", tag))
+        .chain(keying.state_controls.values().flat_map(|control| {
+            control
+                .owner
+                .iter()
+                .map(|tag| ("state control owner", tag))
+                .chain(
+                    control
+                        .controller
+                        .iter()
+                        .map(|tag| ("state controller", tag)),
+                )
+        }))
+        .chain(
+            province_controllers
+                .values()
+                .map(|tag| ("province controller", tag)),
+        )
+    {
+        if !country_roster.contains(tag) {
+            return Err(
+                format!("XMAP05 {role} tag {tag} is absent from the complete D18 roster").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_xmap05_province_census(
+    eligible_provinces: &BTreeSet<u32>,
+    province_controllers: &BTreeMap<u32, String>,
+) -> Result<()> {
+    let measured_provinces = province_controllers
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if measured_provinces != *eligible_provinces {
+        return Err(format!(
+            "XMAP05 measured province-controller census does not equal the effective eligible-land census (effective={}, measured={})",
+            eligible_provinces.len(),
+            measured_provinces.len()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Resolve the complete file-derived XMAP05 raster topology for one replay
+/// epoch. Political ownership/control comes from `keying`; province identity,
+/// state membership, land eligibility, and country colours come from the
+/// effective VFS. No captured presentation texture participates.
+pub(crate) fn xmap05_raster_inputs_with_keying(
+    resolver: &GameFileResolver,
+    keying: &KeyingTables,
+    province_controllers: &BTreeMap<u32, String>,
+    country_roster: &BTreeSet<String>,
+) -> Result<Xmap05RasterInputs> {
+    let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
+    let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
+    let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
+    let (definitions, color_to_id) = load_definition_csv(&definition_csv)?;
+    let provinces = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    if provinces.width == 0
+        || provinces.height == 0
+        || provinces.width % 2 != 0
+        || provinces.height % 2 != 0
+    {
+        return Err(format!(
+            "map/provinces.bmp dimensions {}x{} cannot produce half-resolution GradientBorder resources",
+            provinces.width, provinces.height
+        )
+        .into());
+    }
+    let (states, province_to_state, _) = load_states(&state_paths)?;
+    let country_colors =
+        country_colors_from_game_resolver_with_cosmetics(resolver, &keying.cosmetic_by_tag)?;
+    let effective_state_ids = states.keys().copied().collect::<BTreeSet<_>>();
+    validate_xmap05_state_authority(
+        &effective_state_ids,
+        keying,
+        province_controllers,
+        country_roster,
+    )?;
+
+    // XMAP05 owns both state- and province-control authority. the game's normal
+    // political/GradientBorder path is state-controller keyed, while the
+    // independent province mirror is consumed by country-label placement.
+    // Admit the shared political resource only when the two controller views
+    // describe the same land topology. A province-level divergence is not
+    // guessed into a state colour or silently ignored.
+    let eligible_provinces = definitions
+        .iter()
+        .filter_map(|(&province_id, definition)| {
+            (definition.province_type == "land" && province_to_state.contains_key(&province_id))
+                .then_some(province_id)
+        })
+        .collect::<BTreeSet<_>>();
+    validate_xmap05_province_census(&eligible_provinces, province_controllers)?;
+    for &province_id in &eligible_provinces {
+        let state_id = province_to_state[&province_id];
+        let state_controller = keying
+            .state_controls
+            .get(&state_id)
+            .and_then(|control| control.controller.as_deref())
+            .or_else(|| keying.state_owners.get(&state_id).map(String::as_str))
+            .ok_or_else(|| {
+                format!(
+                    "XMAP05 state {state_id} has no measured owner/controller for land province {province_id}"
+                )
+            })?;
+        let province_controller = province_controllers.get(&province_id).ok_or_else(|| {
+            format!(
+                "XMAP05 province-control census omits land province {province_id} in state {state_id}"
+            )
+        })?;
+        if province_controller != state_controller {
+            return Err(format!(
+                "XMAP05 province {province_id} controller {province_controller} disagrees with state {state_id} controller {state_controller}"
+            )
+            .into());
+        }
+    }
+
+    let max_province = definitions
+        .keys()
+        .copied()
+        .chain(provinces.ids.iter().copied())
+        .max()
+        .unwrap_or(0);
+    let mut province_is_eligible_land = vec![false; usize::try_from(max_province)? + 1];
+    let mut province_regions = vec![0u32; usize::try_from(max_province)? + 1];
+    for (&province_id, definition) in &definitions {
+        if definition.province_type == "land" {
+            province_is_eligible_land[usize::try_from(province_id)?] = true;
+        }
+    }
+    let province_ids = provinces
+        .ids
+        .iter()
+        .map(|value| {
+            u16::try_from(*value).map_err(|_| -> Box<dyn std::error::Error> {
+                format!(
+                    "province database id {value} exceeds exact-a729 IntelMap u16 coverage storage"
+                )
+                .into()
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut tag_regions = BTreeMap::<String, u32>::new();
+    let mut region_colors = vec![[0u8; 3]];
+    let max_state = states.keys().copied().max().unwrap_or(0) as usize;
+    let mut state_regions = vec![0u32; max_state + 1];
+    for &state_id in states.keys() {
+        let Some(control) = keying.state_controls.get(&state_id) else {
+            continue;
+        };
+        let controller = control
+            .controller
+            .as_deref()
+            .or(control.owner.as_deref())
+            .or_else(|| keying.state_owners.get(&state_id).map(String::as_str));
+        let Some(controller) = controller else {
+            continue;
+        };
+        let raw_color = require_country_color(&country_colors, controller)?;
+        let region = if let Some(region) = tag_regions.get(controller) {
+            *region
+        } else {
+            let region = u32::try_from(region_colors.len())
+                .map_err(|_| "GradientBorder controller region id overflow")?;
+            tag_regions.insert(controller.to_string(), region);
+            region_colors.push(raw_color);
+            region
+        };
+        state_regions[state_id as usize] = region;
+    }
+
+    let width = provinces.width / 2;
+    let height = provinces.height / 2;
+    let mut regions = vec![0u32; width * height];
+    let mut land_mask = vec![false; width * height];
+    let mut region_areas = vec![0u32; region_colors.len()];
+    for &province_id in &provinces.ids {
+        let Some(&state_id) = province_to_state.get(&province_id) else {
+            continue;
+        };
+        let region = state_regions.get(state_id as usize).copied().unwrap_or(0);
+        province_regions[usize::try_from(province_id)?] = region;
+        if region != 0 {
+            region_areas[region as usize] = region_areas[region as usize]
+                .checked_add(1)
+                .ok_or("GradientBorder country pixel area overflow")?;
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let texel = y * width + x;
+            // The exact half-resolution lookup samples the center-selected
+            // source pixel: x=2*x+1 and, after the engine's output-row flip,
+            // y=map_height-2*y-2. No 2x2 vote or tie-break exists.
+            let source = xmap05_half_res_source_index(provinces.width, provinces.height, x, y);
+            let province_id = provinces.ids[source];
+            let state_id = province_to_state.get(&province_id).copied().unwrap_or(0);
+            if state_id == 0 {
+                continue;
+            }
+            land_mask[texel] = true;
+            regions[texel] = state_regions.get(state_id as usize).copied().unwrap_or(0);
+        }
+    }
+
+    Ok(Xmap05RasterInputs {
+        map_width: provinces.width,
+        map_height: provinces.height,
+        province_ids,
+        province_is_eligible_land,
+        gradient: GradientBorderPoliticalInputs {
+            province_regions,
+            width,
+            height,
+            regions,
+            land_mask,
+            region_colors,
+            region_areas,
+        },
+    })
+}
+
+pub(crate) fn xmap05_half_res_source_index(
+    map_width: usize,
+    map_height: usize,
+    x: usize,
+    y: usize,
+) -> usize {
+    let source_x = x * 2 + 1;
+    let source_y = map_height - (y + 1) * 2;
+    source_y * map_width + source_x
+}
+
 /// Shared body of the static and A5 timeline-keyed synthesis entry points.
 /// Everything file-derived (province raster, definitions, state topology,
 /// dimension law) is identical between the two paths; only the political
@@ -211,18 +503,20 @@ fn synthesize_political_colors_impl(
 
     let (definitions, color_to_id) = load_definition_csv(&definition_csv)?;
     let provinces = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
-    if provinces.width != PROVINCE_COLOR_MAP_WIDTH * 2
-        || provinces.height != PROVINCE_COLOR_MAP_HEIGHT * 2
+    if provinces.width == 0
+        || provinces.height == 0
+        || provinces.width % 2 != 0
+        || provinces.height % 2 != 0
     {
         return Err(format!(
-            "map/provinces.bmp dimensions {}x{} do not match captured political color texture {}x{} at 2:1 map-space scale",
+            "map/provinces.bmp dimensions {}x{} cannot produce the exact half-resolution political texture",
             provinces.width,
             provinces.height,
-            PROVINCE_COLOR_MAP_WIDTH,
-            PROVINCE_COLOR_MAP_HEIGHT
         )
         .into());
     }
+    let texture_width = provinces.width / 2;
+    let texture_height = provinces.height / 2;
 
     let (states, province_to_state, static_owners) = load_states(&state_paths)?;
     let static_controls;
@@ -254,6 +548,8 @@ fn synthesize_political_colors_impl(
     };
 
     let (owner_color_bytes, secondary_color_bytes, class_by_texel) = render_political_texels(
+        texture_width,
+        texture_height,
         &definitions,
         &provinces,
         &province_to_state,
@@ -267,10 +563,10 @@ fn synthesize_political_colors_impl(
         symbol: PROVINCE_SECONDARY_COLOR_MAP_SYMBOL.to_string(),
         format: RUNTIME_RGBA8_FORMAT.to_string(),
         dxgi_format: PROVINCE_COLOR_MAP_DXGI_FORMAT,
-        width: PROVINCE_COLOR_MAP_WIDTH,
-        height: PROVINCE_COLOR_MAP_HEIGHT,
+        width: texture_width,
+        height: texture_height,
         byte_len: secondary_color_bytes.len(),
-        row_pitch: PROVINCE_COLOR_MAP_WIDTH * 4,
+        row_pitch: texture_width * 4,
         mip_count: 1,
         shader_slot: PROVINCE_SECONDARY_COLOR_MAP_SHADER_SLOT,
         fnv1a64: fnv1a64_bytes(&secondary_color_bytes),
@@ -278,8 +574,8 @@ fn synthesize_political_colors_impl(
     };
 
     Ok(PoliticalColorSynthesis {
-        width: PROVINCE_COLOR_MAP_WIDTH,
-        height: PROVINCE_COLOR_MAP_HEIGHT,
+        width: texture_width,
+        height: texture_height,
         owner_color_bytes,
         secondary_color_bytes,
         descriptor,
@@ -309,6 +605,8 @@ fn synthesize_political_colors_impl(
 /// construction when fed the same keying. Returns
 /// `(owner_color_bytes, secondary_color_bytes, class_by_texel)`.
 fn render_political_texels(
+    texture_width: usize,
+    texture_height: usize,
     definitions: &BTreeMap<u32, ProvinceDefinition>,
     provinces: &BmpIds,
     province_to_state: &BTreeMap<u32, u32>,
@@ -317,13 +615,10 @@ fn render_political_texels(
     state_controls: &BTreeMap<u32, InitialStateControl>,
     country_colors: &BTreeMap<String, [u8; 3]>,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<PoliticalColorTexelClass>)> {
-    let mut owner_color_bytes = vec![0u8; PROVINCE_COLOR_MAP_WIDTH * PROVINCE_COLOR_MAP_HEIGHT * 4];
-    let mut secondary_color_bytes =
-        vec![0u8; PROVINCE_COLOR_MAP_WIDTH * PROVINCE_COLOR_MAP_HEIGHT * 4];
-    let mut class_by_texel = vec![
-        PoliticalColorTexelClass::UnknownProvince;
-        PROVINCE_COLOR_MAP_WIDTH * PROVINCE_COLOR_MAP_HEIGHT
-    ];
+    let mut owner_color_bytes = vec![0u8; texture_width * texture_height * 4];
+    let mut secondary_color_bytes = vec![0u8; texture_width * texture_height * 4];
+    let mut class_by_texel =
+        vec![PoliticalColorTexelClass::UnknownProvince; texture_width * texture_height];
     // The per-texel result depends only on the province id (~13-17k distinct
     // values across ~2.9M texels), so memoize per province id. The cache is
     // filled LAZILY in raster order: only province ids an actual texel samples
@@ -333,17 +628,17 @@ fn render_political_texels(
     let mut colors_by_province =
         BTreeMap::<u32, (PoliticalColorTexelClass, Option<[u8; 4]>, Option<[u8; 4]>)>::new();
 
-    for y in 0..PROVINCE_COLOR_MAP_HEIGHT {
-        for x in 0..PROVINCE_COLOR_MAP_WIDTH {
-            let texel_index = y * PROVINCE_COLOR_MAP_WIDTH + x;
+    for y in 0..texture_height {
+        for x in 0..texture_width {
+            let texel_index = y * texture_width + x;
             let byte_offset = texel_index * 4;
             let (source_x, source_y) = political_source_pixel_for_texel(
                 x,
                 y,
                 provinces.width,
                 provinces.height,
-                PROVINCE_COLOR_MAP_WIDTH,
-                PROVINCE_COLOR_MAP_HEIGHT,
+                texture_width,
+                texture_height,
             );
             let province_id = provinces.ids[source_y * provinces.width + source_x];
             let (class, owner_color, secondary_color) = match colors_by_province.get(&province_id) {
@@ -1078,6 +1373,8 @@ mod tests {
             country_colors,
         ) = memoized_render_fixture();
         let (owner_bytes, secondary_bytes, class_by_texel) = render_political_texels(
+            PROVINCE_COLOR_MAP_WIDTH,
+            PROVINCE_COLOR_MAP_HEIGHT,
             &definitions,
             &provinces,
             &province_to_state,
@@ -1156,6 +1453,8 @@ mod tests {
         // whole render, exactly as the unmemoized loop did.
         country_colors.remove("POL");
         let err = render_political_texels(
+            PROVINCE_COLOR_MAP_WIDTH,
+            PROVINCE_COLOR_MAP_HEIGHT,
             &definitions,
             &provinces,
             &province_to_state,
@@ -1184,5 +1483,75 @@ mod tests {
         let initial = initial_history_without_dated_blocks(history);
         assert_eq!(parse_word_value(&initial, "owner").as_deref(), Some("CHI"));
         assert_eq!(parse_word_value(&initial, "controller"), None);
+    }
+
+    #[test]
+    fn xmap05_half_resolution_selects_the_center_pixel_without_a_vote() {
+        // For a 4x4 source, output (0,0) selects source (1,2). A 2x2 block
+        // may contain any three other identities; they never participate in a
+        // majority or numeric tie-break.
+        assert_eq!(xmap05_half_res_source_index(4, 4, 0, 0), 2 * 4 + 1);
+        assert_eq!(xmap05_half_res_source_index(4, 4, 1, 1), 0 * 4 + 3);
+    }
+
+    #[test]
+    fn xmap05_censuses_reject_missing_extra_and_foreign_authority() {
+        let states = BTreeSet::from([1, 2]);
+        let roster = BTreeSet::from(["AAA".to_string(), "BBB".to_string()]);
+        let mut keying = KeyingTables {
+            state_owners: BTreeMap::from([(1, "AAA".into()), (2, "BBB".into())]),
+            state_controls: BTreeMap::from([
+                (
+                    1,
+                    InitialStateControl {
+                        owner: Some("AAA".into()),
+                        controller: Some("AAA".into()),
+                    },
+                ),
+                (
+                    2,
+                    InitialStateControl {
+                        owner: Some("BBB".into()),
+                        controller: Some("BBB".into()),
+                    },
+                ),
+            ]),
+            cosmetic_by_tag: BTreeMap::new(),
+        };
+        let mut provinces = BTreeMap::from([(10, "AAA".into()), (20, "BBB".into())]);
+        validate_xmap05_state_authority(&states, &keying, &provinces, &roster).unwrap();
+        validate_xmap05_province_census(&BTreeSet::from([10, 20]), &provinces).unwrap();
+
+        keying.state_controls.remove(&2);
+        assert!(
+            validate_xmap05_state_authority(&states, &keying, &provinces, &roster)
+                .unwrap_err()
+                .to_string()
+                .contains("state census")
+        );
+        keying.state_controls.insert(
+            2,
+            InitialStateControl {
+                owner: Some("BBB".into()),
+                controller: Some("BBB".into()),
+            },
+        );
+
+        provinces.insert(30, "AAA".into());
+        assert!(
+            validate_xmap05_province_census(&BTreeSet::from([10, 20]), &provinces)
+                .unwrap_err()
+                .to_string()
+                .contains("province-controller census")
+        );
+        provinces.remove(&30);
+
+        provinces.insert(20, "ZZZ".into());
+        assert!(
+            validate_xmap05_state_authority(&states, &keying, &provinces, &roster)
+                .unwrap_err()
+                .to_string()
+                .contains("absent from the complete D18 roster")
+        );
     }
 }

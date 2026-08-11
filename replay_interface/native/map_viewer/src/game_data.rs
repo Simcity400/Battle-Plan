@@ -3,8 +3,65 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Upper bound on individual identifier gaps enumerated in a refusal message.
+/// The count is always exact; only the enumeration is bounded.
+pub(crate) const MAX_REPORTED_ID_GAPS: usize = 20;
+
+/// Fold a gap list into a single typed refusal, or `Ok(())` when there are none.
+pub(crate) fn refuse_on_id_gaps(what: &str, gaps: &[String]) -> Result<()> {
+    if gaps.is_empty() {
+        return Ok(());
+    }
+    let shown = gaps.len().min(MAX_REPORTED_ID_GAPS);
+    let elided = gaps.len() - shown;
+    let suffix = if elided == 0 {
+        String::new()
+    } else {
+        format!("; and {elided} more")
+    };
+    Err(format!(
+        "{what} refused: {} identifier gap(s) — {}{suffix}",
+        gaps.len(),
+        gaps[..shown].join("; ")
+    )
+    .into())
+}
+
+/// FW7-F6: `history/states` identifiers are loaded fail-closed.
+///
+/// The previous loop dropped any state file with no parseable `id` with a bare
+/// `continue`, and let a duplicate state id overwrite the earlier entry — but
+/// *non-atomically*: `state_owners` and `province_to_state` were mutated before
+/// `states.insert`, so the overwritten state's owner row and its province
+/// mappings survived pointing at a state whose `StateMeta` no longer listed
+/// them. A province claimed by two distinct states was likewise resolved
+/// last-writer-wins in `province_to_state` while both `StateMeta.provinces`
+/// lists kept it. None of this reached the caller; the return type carried only
+/// the maps.
+///
+/// Each of those is now a typed gap, collected across the whole directory (so
+/// one run names every defect rather than only the first) and returned as a
+/// single refusal. The mutation order is also fixed: nothing is written until
+/// the file is known to be admissible, so no partial state can survive.
+/// This mirrors the gap discipline already used by `rail_files::rail_polylines`.
 pub(crate) fn load_states(
     state_files: &[(String, PathBuf)],
+) -> Result<(
+    BTreeMap<u32, StateMeta>,
+    BTreeMap<u32, u32>,
+    BTreeMap<u32, String>,
+)> {
+    let sources = state_files
+        .iter()
+        .map(|(name, path)| Ok((name.clone(), path.display().to_string(), read_latin1(path)?)))
+        .collect::<Result<Vec<_>>>()?;
+    decode_states(&sources)
+}
+
+/// Parse already-admitted state bytes without reopening the effective files.
+/// Each tuple is `(effective name, diagnostic source, Latin-1 source)`.
+pub(crate) fn decode_states(
+    state_sources: &[(String, String, String)],
 ) -> Result<(
     BTreeMap<u32, StateMeta>,
     BTreeMap<u32, u32>,
@@ -13,12 +70,25 @@ pub(crate) fn load_states(
     let mut states = BTreeMap::new();
     let mut province_to_state = BTreeMap::new();
     let mut state_owners = BTreeMap::new();
+    let mut gaps: Vec<String> = Vec::new();
+    let mut state_source: BTreeMap<u32, String> = BTreeMap::new();
+    let mut province_source: BTreeMap<u32, (u32, String)> = BTreeMap::new();
 
-    for (_, path) in state_files {
-        let text = strip_comments(&read_latin1(&path)?);
+    for (name, source, admitted_text) in state_sources {
+        let text = strip_comments(admitted_text);
         let Some(state_id) = parse_u32_value(&text, "id") else {
+            gaps.push(format!(
+                "{name} ({}) has no parseable `id =` and would be dropped",
+                source
+            ));
             continue;
         };
+        if let Some(previous) = state_source.get(&state_id) {
+            gaps.push(format!(
+                "{name} redefines state id {state_id} already defined by {previous}"
+            ));
+            continue;
+        }
         let name_key =
             parse_quoted_value(&text, "name").unwrap_or_else(|| format!("STATE_{state_id}"));
         let state_category = parse_word_value(&text, "state_category");
@@ -45,11 +115,30 @@ pub(crate) fn load_states(
             search = next;
         }
         let vp_total = victory_points.values().sum();
+        let mut conflicts = Vec::new();
+        for province in &provinces {
+            if let Some((owner_state, owner_file)) = province_source.get(province) {
+                conflicts.push(format!(
+                    "province {province} is already claimed by state {owner_state} ({owner_file})"
+                ));
+            }
+        }
+        if !conflicts.is_empty() {
+            gaps.push(format!(
+                "{name} (state {state_id}) conflicts: {}",
+                conflicts.join(", ")
+            ));
+            continue;
+        }
+        // Admissible: only now is anything written, so no map can retain a row
+        // belonging to a state that was superseded or refused.
+        state_source.insert(state_id, name.clone());
         if let Some(owner) = parse_word_value(&text, "owner") {
             state_owners.insert(state_id, owner);
         }
         for province in &provinces {
             province_to_state.insert(*province, state_id);
+            province_source.insert(*province, (state_id, name.clone()));
         }
         states.insert(
             state_id,
@@ -65,9 +154,17 @@ pub(crate) fn load_states(
         );
     }
 
+    refuse_on_id_gaps("history/states", &gaps)?;
     Ok((states, province_to_state, state_owners))
 }
 
+/// FW7-F6: `map/strategicregions` identifiers are loaded fail-closed, on the
+/// same terms as [`load_states`]. Previously a region file with no parseable
+/// `id` was dropped silently, a duplicate region id was dropped silently
+/// first-writer-wins (the opposite of `load_states`' last-writer-wins, for no
+/// stated reason), and a province listed by two regions was resolved
+/// last-writer-wins in `province_to_region` while both regions kept it in their
+/// province list and their `province_count`.
 pub(crate) fn load_strategic_regions(
     region_files: &[(String, PathBuf)],
 ) -> Result<(
@@ -78,13 +175,23 @@ pub(crate) fn load_strategic_regions(
     let mut region_to_provinces = BTreeMap::new();
     let mut region_meta = BTreeMap::new();
     let mut province_to_region = BTreeMap::new();
+    let mut gaps: Vec<String> = Vec::new();
+    let mut region_source: BTreeMap<u32, String> = BTreeMap::new();
+    let mut province_source: BTreeMap<u32, (u32, String)> = BTreeMap::new();
 
-    for (_, path) in region_files {
+    for (name_hint, path) in region_files {
         let text = strip_comments(&read_latin1(&path)?);
         let Some(region_id) = parse_u32_value(&text, "id") else {
+            gaps.push(format!(
+                "{name_hint} ({}) has no parseable `id =` and would be dropped",
+                path.display()
+            ));
             continue;
         };
-        if region_to_provinces.contains_key(&region_id) {
+        if let Some(previous) = region_source.get(&region_id) {
+            gaps.push(format!(
+                "{name_hint} redefines strategic region id {region_id} already defined by {previous}"
+            ));
             continue;
         }
         let name = parse_quoted_value(&text, "name")
@@ -92,8 +199,25 @@ pub(crate) fn load_strategic_regions(
         let provinces = extract_block_after(&text, "provinces", 0)
             .map(|(inner, _)| parse_u32s(&inner))
             .unwrap_or_default();
+        let mut conflicts = Vec::new();
+        for province in &provinces {
+            if let Some((owner_region, owner_file)) = province_source.get(province) {
+                conflicts.push(format!(
+                    "province {province} is already claimed by strategic region {owner_region} ({owner_file})"
+                ));
+            }
+        }
+        if !conflicts.is_empty() {
+            gaps.push(format!(
+                "{name_hint} (strategic region {region_id}) conflicts: {}",
+                conflicts.join(", ")
+            ));
+            continue;
+        }
+        region_source.insert(region_id, name_hint.clone());
         for province in &provinces {
             province_to_region.insert(*province, region_id);
+            province_source.insert(*province, (region_id, name_hint.clone()));
         }
         region_meta.insert(
             region_id,
@@ -105,12 +229,13 @@ pub(crate) fn load_strategic_regions(
         region_to_provinces.insert(region_id, provinces);
     }
 
+    refuse_on_id_gaps("map/strategicregions", &gaps)?;
     Ok((region_to_provinces, region_meta, province_to_region))
 }
 
 pub(crate) fn load_country_colors(resolver: &FileResolver) -> Result<BTreeMap<String, [u8; 3]>> {
     let mut colors = BTreeMap::new();
-    let tag_paths = resolver.resolve_dir_files("common/country_tags", Some("txt"))?;
+    let tag_paths = resolver.resolve_dir_files_recursive("common/country_tags", Some("txt"))?;
     let tag_files = load_country_tag_files(&tag_paths)?;
     for (tag, rel) in &tag_files {
         if let Some(path) = resolver.resolve_optional_file(rel)? {
@@ -127,9 +252,17 @@ pub(crate) fn load_country_colors(resolver: &FileResolver) -> Result<BTreeMap<St
     // NAME1: the 1936 cosmetic-tag color overrides (see
     // apply_cosmetic_color_overrides). India must render as the BRITISH RAJ
     // red, not the RAJ base orange.
+    // FW7 (Codex addition 4): this was `.unwrap_or_default()`, which turned any
+    // resolver enumeration failure into an empty file list. Under a modded set
+    // that silently discarded the whole 1936 cosmetic-tag history and fell back
+    // to base country colors — the exact class of mod loss MOD_COMPATIBILITY.md
+    // forbids, and invisible in the output. Carry the resolver error instead.
     let history_files = resolver
-        .resolve_dir_files("history/countries", Some("txt"))
-        .unwrap_or_default();
+        .resolve_dir_files_recursive("history/countries", Some("txt"))
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            format!("history/countries could not be enumerated for cosmetic-tag colors: {error}")
+                .into()
+        })?;
     let mut cosmetic_tags = cosmetic_tags_1936_from_history_files(&history_files)?;
     // NAME1b: DLC-conditional cosmetics. The bundle is generated without a
     // recording, so it assumes all DLC present (the common install + the
@@ -178,7 +311,7 @@ pub(crate) fn load_base_country_colors_from_game_resolver(
     resolver: &GameFileResolver,
 ) -> Result<BTreeMap<String, [u8; 3]>> {
     let mut colors = BTreeMap::new();
-    let tag_paths = resolver.resolve_dir_files("common/country_tags", Some("txt"))?;
+    let tag_paths = resolver.resolve_dir_files_recursive("common/country_tags", Some("txt"))?;
     let tag_files = load_country_tag_files(&tag_paths)?;
     for (tag, rel) in &tag_files {
         if let Some(path) = resolver.resolve(&country_tag_rel_for_game_resolver(rel))? {
@@ -225,9 +358,17 @@ pub(crate) fn load_country_colors_from_game_resolver(
     resolver: &GameFileResolver,
 ) -> Result<BTreeMap<String, [u8; 3]>> {
     // NAME1: the 1936 cosmetic-tag color overrides (static-file path).
+    // FW7 (Codex addition 4): this was `.unwrap_or_default()`, which turned any
+    // resolver enumeration failure into an empty file list. Under a modded set
+    // that silently discarded the whole 1936 cosmetic-tag history and fell back
+    // to base country colors — the exact class of mod loss MOD_COMPATIBILITY.md
+    // forbids, and invisible in the output. Carry the resolver error instead.
     let history_files = resolver
-        .resolve_dir_files("history/countries", Some("txt"))
-        .unwrap_or_default();
+        .resolve_dir_files_recursive("history/countries", Some("txt"))
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            format!("history/countries could not be enumerated for cosmetic-tag colors: {error}")
+                .into()
+        })?;
     let mut cosmetic_tags = cosmetic_tags_1936_from_history_files(&history_files)?;
     // NAME1b: DLC-conditional cosmetics, all-DLC assumed for the bundle.
     merge_dlc_conditional_cosmetics(&mut cosmetic_tags, &history_files, |_| true)?;
@@ -1884,13 +2025,14 @@ set_cosmetic_tag = RAJ_UK\n";
     /// NAME1 evidence gate against the real vanilla files: India (RAJ) must
     /// resolve the BRITISH RAJ cosmetic name and color, and the DLC/event-
     /// gated cosmetic tags must NOT leak in (they live inside if/limit
-    /// blocks the replay does not evaluate — pinpointed in FIDELITY_LEDGER).
+    /// blocks the replay does not evaluate).
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_cosmetic_tag_law() {
-        let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!("gate_vanilla_cosmetic_tag_law: BATTLE_PLAN_GAME_DIR unset; skipped");
-            return;
-        };
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("resolver");
         let files = resolver
             .resolve_dir_files("history/countries", Some("txt"))
@@ -2184,52 +2326,43 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         );
     }
 
-    #[test]
-    fn load_states_parses_edge_cases() {
-        let dir = crate::test_support::temp_test_dir("load_states_edges");
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let write = |name: &str, body: &str| {
+    fn state_fixture_writer(
+        dir: &std::path::Path,
+    ) -> impl Fn(&str, &str) -> (String, PathBuf) + '_ {
+        std::fs::create_dir_all(dir).expect("create temp dir");
+        move |name: &str, body: &str| {
             let path = dir.join(name);
-            std::fs::write(&path, body).expect("write state fixture");
+            std::fs::write(&path, body).expect("write fixture");
             (name.to_string(), path)
-        };
-        // (1) A state file with no id= is skipped without error.
-        let no_id = write("0-no_id.txt", "state = { name = \"STATE_NO_ID\" }\n");
-        // (2) Two files sharing an id: last file wins (current semantics).
-        let first = write(
-            "1-first.txt",
-            "state = {\n\tid = 5\n\tname = \"STATE_5_FIRST\"\n\towner = GER\n\tprovinces = { 10 11 }\n}\n",
+        }
+    }
+
+    /// FW7-F6: well-formed state files still load, and the parsing behavior the
+    /// old test pinned alongside the silent drops (repeated `victory_points`
+    /// accumulation, `impassable = yes`, absent `owner`) is unchanged.
+    #[test]
+    fn load_states_parses_well_formed_files() {
+        let dir = crate::test_support::temp_test_dir("load_states_wellformed");
+        let write = state_fixture_writer(&dir);
+        let owned = write(
+            "1-owned.txt",
+            "state = {\n\tid = 5\n\tname = \"STATE_5\"\n\towner = GER\n\tprovinces = { 10 11 }\n}\n",
         );
-        let second = write(
-            "2-second.txt",
-            "state = {\n\tid = 5\n\tname = \"STATE_5_SECOND\"\n\towner = FRA\n\tprovinces = { 11 12 }\n}\n",
-        );
-        // (3) Repeated victory_points blocks accumulate per province; (4)
-        // impassable = yes, owner absent.
         let vp = write(
             "3-vp.txt",
             "state = {\n\tid = 7\n\timpassable = yes\n\tmanpower = 1234\n\tprovinces = { 20 21 }\n\
              \tvictory_points = { 20 3 }\n\tvictory_points = { 20 2 21 5 }\n}\n",
         );
-        let files = vec![no_id, first, second, vp];
-        let (states, province_to_state, state_owners) = load_states(&files).expect("load_states");
-
-        // Missing-id file contributed nothing.
+        let (states, province_to_state, state_owners) =
+            load_states(&[owned, vp]).expect("load_states");
         assert_eq!(states.len(), 2);
-        // Last file wins for duplicate state ids.
         let s5 = states.get(&5).expect("state 5");
-        assert_eq!(s5.name_key, "STATE_5_SECOND");
-        assert_eq!(s5.provinces, vec![11, 12]);
-        assert_eq!(state_owners.get(&5).map(String::as_str), Some("FRA"));
-        assert_eq!(province_to_state.get(&11), Some(&5));
-        assert_eq!(province_to_state.get(&12), Some(&5));
-        // Province 10 only appeared in the overwritten first file; its mapping
-        // survives (province_to_state is inserted per file, not per final
-        // state) — documented current behavior.
-        assert_eq!(province_to_state.get(&10), Some(&5));
+        assert_eq!(s5.name_key, "STATE_5");
+        assert_eq!(s5.provinces, vec![10, 11]);
         assert!(!s5.impassable);
-
-        // Victory points accumulate across repeated blocks; vp_total sums.
+        assert_eq!(state_owners.get(&5).map(String::as_str), Some("GER"));
+        assert_eq!(province_to_state.get(&10), Some(&5));
+        assert_eq!(province_to_state.get(&11), Some(&5));
         let s7 = states.get(&7).expect("state 7");
         assert_eq!(s7.victory_points.get(&20), Some(&5));
         assert_eq!(s7.victory_points.get(&21), Some(&5));
@@ -2240,42 +2373,185 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// FW7-F6 regression: a state file with no parseable `id` used to vanish
+    /// with a bare `continue`. It is now a named gap in a refusal.
     #[test]
-    fn load_strategic_regions_first_file_wins_for_duplicate_ids() {
-        let dir = crate::test_support::temp_test_dir("load_regions_edges");
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let write = |name: &str, body: &str| {
-            let path = dir.join(name);
-            std::fs::write(&path, body).expect("write region fixture");
-            (name.to_string(), path)
-        };
-        let no_id = write(
-            "0-no_id.txt",
-            "strategic_region = { name = \"NAMELESS\" }\n",
+    fn load_states_refuses_file_without_id() {
+        let dir = crate::test_support::temp_test_dir("load_states_no_id");
+        let write = state_fixture_writer(&dir);
+        let no_id = write("0-no_id.txt", "state = { name = \"STATE_NO_ID\" }\n");
+        let ok = write("1-ok.txt", "state = {\n\tid = 5\n\tprovinces = { 10 }\n}\n");
+        let err = load_states(&[no_id, ok]).expect_err("missing id must refuse");
+        let message = err.to_string();
+        assert!(message.contains("history/states refused"), "{message}");
+        assert!(message.contains("0-no_id.txt"), "{message}");
+        assert!(message.contains("no parseable `id ="), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FW7-F6 regression: duplicate state ids used to overwrite last-writer-wins
+    /// and — worse — non-atomically, so the superseded state's owner row and its
+    /// province mappings survived pointing at a `StateMeta` that no longer
+    /// listed them (the old test asserted `province_to_state[10] == 5` while
+    /// `states[5].provinces == [11, 12]`).
+    #[test]
+    fn load_states_refuses_duplicate_state_ids_without_partial_mutation() {
+        let dir = crate::test_support::temp_test_dir("load_states_dup_id");
+        let write = state_fixture_writer(&dir);
+        let first = write(
+            "1-first.txt",
+            "state = {\n\tid = 5\n\tname = \"STATE_5_FIRST\"\n\towner = GER\n\tprovinces = { 10 11 }\n}\n",
         );
+        let second = write(
+            "2-second.txt",
+            "state = {\n\tid = 5\n\tname = \"STATE_5_SECOND\"\n\towner = FRA\n\tprovinces = { 12 }\n}\n",
+        );
+        let err = load_states(&[first, second]).expect_err("duplicate id must refuse");
+        let message = err.to_string();
+        assert!(message.contains("redefines state id 5"), "{message}");
+        assert!(message.contains("1-first.txt"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FW7-F6 regression: one province listed by two distinct states used to be
+    /// resolved last-writer-wins in `province_to_state` while both
+    /// `StateMeta.provinces` lists kept it.
+    #[test]
+    fn load_states_refuses_province_claimed_by_two_states() {
+        let dir = crate::test_support::temp_test_dir("load_states_dup_province");
+        let write = state_fixture_writer(&dir);
+        let first = write(
+            "1-first.txt",
+            "state = {\n\tid = 5\n\tprovinces = { 10 11 }\n}\n",
+        );
+        let second = write(
+            "2-second.txt",
+            "state = {\n\tid = 6\n\tprovinces = { 11 12 }\n}\n",
+        );
+        let err = load_states(&[first, second]).expect_err("double claim must refuse");
+        let message = err.to_string();
+        assert!(
+            message.contains("province 11 is already claimed by state 5"),
+            "{message}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FW7-F6: every gap in the directory is named in one refusal, not just the
+    /// first — one run tells the operator the whole story.
+    #[test]
+    fn load_states_reports_every_gap_in_one_refusal() {
+        let dir = crate::test_support::temp_test_dir("load_states_all_gaps");
+        let write = state_fixture_writer(&dir);
+        let no_id = write("0-no_id.txt", "state = { name = \"NO_ID\" }\n");
+        let first = write(
+            "1-first.txt",
+            "state = {\n\tid = 5\n\tprovinces = { 10 }\n}\n",
+        );
+        let dup = write(
+            "2-dup.txt",
+            "state = {\n\tid = 5\n\tprovinces = { 11 }\n}\n",
+        );
+        let err = load_states(&[no_id, first, dup]).expect_err("must refuse");
+        let message = err.to_string();
+        assert!(message.contains("2 identifier gap(s)"), "{message}");
+        assert!(message.contains("0-no_id.txt"), "{message}");
+        assert!(message.contains("redefines state id 5"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_strategic_regions_parses_well_formed_files() {
+        let dir = crate::test_support::temp_test_dir("load_regions_wellformed");
+        let write = state_fixture_writer(&dir);
         let first = write(
             "1-first.txt",
             "strategic_region = {\n\tid = 9\n\tname = \"REGION_FIRST\"\n\tprovinces = { 100 101 }\n}\n",
         );
-        let second = write(
-            "2-second.txt",
-            "strategic_region = {\n\tid = 9\n\tname = \"REGION_SECOND\"\n\tprovinces = { 102 }\n}\n",
-        );
-        let files = vec![no_id, first, second];
         let (region_to_provinces, region_meta, province_to_region) =
-            load_strategic_regions(&files).expect("load_strategic_regions");
-
-        // Missing-id file contributed nothing; duplicate id: FIRST file wins
-        // (unlike load_states' last-file-wins — intentionally different,
-        // documented current behavior).
-        assert_eq!(region_to_provinces.len(), 1);
+            load_strategic_regions(&[first]).expect("load_strategic_regions");
         assert_eq!(region_to_provinces.get(&9), Some(&vec![100, 101]));
         let meta = region_meta.get(&9).expect("region 9");
         assert_eq!(meta.name, "REGION_FIRST");
         assert_eq!(meta.province_count, 2);
         assert_eq!(province_to_region.get(&100), Some(&9));
         assert_eq!(province_to_region.get(&101), Some(&9));
-        assert!(!province_to_region.contains_key(&102));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FW7-F6 regression: the region loader dropped a missing id silently and
+    /// resolved a duplicate id first-writer-wins — the opposite of `load_states`'
+    /// last-writer-wins, for no stated reason. Both are refusals now, and both
+    /// loaders behave identically.
+    #[test]
+    fn load_strategic_regions_refuses_missing_and_duplicate_ids() {
+        let dir = crate::test_support::temp_test_dir("load_regions_gaps");
+        let write = state_fixture_writer(&dir);
+        let no_id = write(
+            "0-no_id.txt",
+            "strategic_region = { name = \"NAMELESS\" }\n",
+        );
+        let first = write(
+            "1-first.txt",
+            "strategic_region = {\n\tid = 9\n\tprovinces = { 100 101 }\n}\n",
+        );
+        let second = write(
+            "2-second.txt",
+            "strategic_region = {\n\tid = 9\n\tprovinces = { 102 }\n}\n",
+        );
+        let err = load_strategic_regions(&[no_id, first, second]).expect_err("gaps must refuse");
+        let message = err.to_string();
+        assert!(
+            message.contains("map/strategicregions refused"),
+            "{message}"
+        );
+        assert!(message.contains("0-no_id.txt"), "{message}");
+        assert!(
+            message.contains("redefines strategic region id 9"),
+            "{message}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FW7-F6 regression: a province listed by two strategic regions.
+    #[test]
+    fn load_strategic_regions_refuses_province_claimed_twice() {
+        let dir = crate::test_support::temp_test_dir("load_regions_dup_province");
+        let write = state_fixture_writer(&dir);
+        let first = write(
+            "1-first.txt",
+            "strategic_region = {\n\tid = 9\n\tprovinces = { 100 101 }\n}\n",
+        );
+        let second = write(
+            "2-second.txt",
+            "strategic_region = {\n\tid = 10\n\tprovinces = { 101 }\n}\n",
+        );
+        let err = load_strategic_regions(&[first, second]).expect_err("double claim must refuse");
+        assert!(
+            err.to_string()
+                .contains("province 101 is already claimed by strategic region 9"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FW7-F6: the enumeration in a refusal is bounded but the count is exact.
+    #[test]
+    fn id_gap_refusal_bounds_the_enumeration_but_not_the_count() {
+        let gaps = (0..MAX_REPORTED_ID_GAPS + 5)
+            .map(|index| format!("gap-{index}"))
+            .collect::<Vec<_>>();
+        let err = refuse_on_id_gaps("history/states", &gaps).expect_err("must refuse");
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!("{} identifier gap(s)", MAX_REPORTED_ID_GAPS + 5)),
+            "{message}"
+        );
+        assert!(message.contains("and 5 more"), "{message}");
+        assert!(
+            !message.contains(&format!("gap-{}", MAX_REPORTED_ID_GAPS)),
+            "{message}"
+        );
+        assert!(refuse_on_id_gaps("history/states", &[]).is_ok());
     }
 }

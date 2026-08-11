@@ -27,6 +27,16 @@ fn fow_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
 
 pub const FOW_SHADER_SOURCE: &str = "gfx/FX/fow.fxh";
 pub const PDXMAP_SHADER_SOURCE: &str = "gfx/FX/pdxmap.shader";
+pub const PDXMAP_INCLUDE_SOURCE: &str = "gfx/FX/pdxmap.fxh";
+pub const FOW_REQUIRED_SHADER_SOURCES: [&str; 7] = [
+    "gfx/FX/fow.fxh",
+    "gfx/FX/pdxmap.shader",
+    "gfx/FX/pdxmap.fxh",
+    "gfx/FX/constants.fxh",
+    "gfx/FX/standardfuncsgfx.fxh",
+    "gfx/FX/tiled_pointlights.fxh",
+    "gfx/FX/shadow.fxh",
+];
 
 // gfx/FX/fow.fxh:11-18.
 pub const FOW_TRANSPARENCY_MIN: f32 = 0.3;
@@ -110,8 +120,9 @@ pub fn exact_a729_intel_map_texel(
         };
         sum += u32::from(sample);
     }
-    let average = sum / u32::try_from(province_ids.len())
-        .map_err(|_| fow_error("IntelMap coverage count overflow"))?;
+    let average = sum
+        / u32::try_from(province_ids.len())
+            .map_err(|_| fow_error("IntelMap coverage count overflow"))?;
     Ok(!(average as u8))
 }
 
@@ -821,10 +832,14 @@ fn percent(part: usize, whole: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    const DEFAULT_WAVE1_CAP4_ROUNDS: &str =
-        r"C:\Users\Example\hoi4_capture_corpus_preserved\session_WAVE1_CAP4_rounds";
+    /// The crate's gate table, included so this test module resolves the CAP4
+    /// corpus through EXACTLY the candidate list the build-time probe used.
+    /// Two copies of a candidate list drift; one cannot.
+    #[allow(dead_code)]
+    mod corpus {
+        include!("../test_gates.rs");
+    }
 
     #[test]
     fn apply_fow_matches_shader_closed_form() {
@@ -877,18 +892,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_wave1_cap4_fow_pair),
+        ignore = "BATTLE_PLAN_WAVE1_CAP4_ROUNDS naming a capture corpus with fow_on_pov_front and fow_off_observer_front"
+    )]
     fn gate_wave1_cap4_fow_pair_carrier_and_parity() {
-        let root = std::env::var("BATTLE_PLAN_WAVE1_CAP4_ROUNDS").or_else(|_| std::env::var("HOI4_WAVE1_CAP4_ROUNDS"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(DEFAULT_WAVE1_CAP4_ROUNDS));
-        if !root.join("fow_on_pov_front").is_dir() || !root.join("fow_off_observer_front").is_dir()
-        {
-            eprintln!(
-                "gate_wave1_cap4_fow_pair_carrier_and_parity: capture pair missing at {}; skipped",
-                root.display()
+        let root = corpus::wave1_cap4_rounds_dir(&["fow_on_pov_front", "fow_off_observer_front"])
+            .expect(
+                "the CAP4 FoW round pair (BATTLE_PLAN_WAVE1_CAP4_ROUNDS, else the preserved copy) is \
+                 absent, but this test was compiled as runnable",
             );
-            return;
-        }
 
         let report = analyze_wave1_cap4_fow_pair(&root).expect("analyze CAP4 FoW pair");
         eprintln!("CAP4 FoW report: {report:#?}");

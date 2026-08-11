@@ -407,14 +407,39 @@ impl Pipeline {
         srv: *mut ID3D11ShaderResourceView,
         vertices: &[Vertex],
     ) -> Result<()> {
-        if vertices.is_empty() || gfx.width == 0 || gfx.height == 0 {
+        if vertices.is_empty() {
             return Ok(());
+        }
+        self.draw_to_target(
+            gfx,
+            gfx.rtv()?.as_raw(),
+            gfx.width,
+            gfx.height,
+            srv,
+            vertices,
+        )
+    }
+
+    fn draw_to_target(
+        &self,
+        gfx: &Gfx,
+        render_target_view: *mut winapi::um::d3d11::ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        srv: *mut ID3D11ShaderResourceView,
+        vertices: &[Vertex],
+    ) -> Result<()> {
+        if vertices.is_empty() {
+            return Ok(());
+        }
+        if render_target_view.is_null() || width == 0 || height == 0 {
+            return Err("target-bound text draw has an invalid render target".into());
         }
         unsafe {
             let context = gfx.context.as_raw();
 
             let constants = ScreenConstants {
-                screen_size: [gfx.width as f32, gfx.height as f32],
+                screen_size: [width as f32, height as f32],
                 _pad: [0.0, 0.0],
             };
             let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
@@ -433,13 +458,13 @@ impl Pipeline {
             );
             (*context).Unmap(self.screen_cb.as_raw() as *mut _, 0);
 
-            let rtvs = [gfx.rtv()?.as_raw()];
+            let rtvs = [render_target_view];
             (*context).OMSetRenderTargets(1, rtvs.as_ptr(), ptr::null_mut());
             let viewport = D3D11_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
-                Width: gfx.width as f32,
-                Height: gfx.height as f32,
+                Width: width as f32,
+                Height: height as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
@@ -613,6 +638,26 @@ impl QuadRenderer {
         }
         self.pipeline.draw(gfx, self.white_srv.as_raw(), &vertices)
     }
+
+    /// Draw caller-authenticated textured GUI vertices through the same
+    /// screen-space quad pipeline used by the product HUD.
+    ///
+    /// # Safety
+    /// `srv` must remain live on `gfx`'s D3D11 device for this call.
+    pub(crate) unsafe fn draw_textured_vertices(
+        &self,
+        gfx: &Gfx,
+        srv: *mut ID3D11ShaderResourceView,
+        vertices: &[Vertex],
+    ) -> Result<()> {
+        if srv.is_null() {
+            return Err("textured GUI draw received a null shader resource view".into());
+        }
+        self.pipeline.draw(gfx, srv, vertices)?;
+        let null_srv = [ptr::null_mut()];
+        (*gfx.context.as_raw()).PSSetShaderResources(0, 1, null_srv.as_ptr());
+        Ok(())
+    }
 }
 
 /// Bitmap-font text renderer over a loaded game [`Font`].
@@ -687,17 +732,77 @@ impl TextRenderer {
         text: &str,
         color: u32,
     ) -> Result<Vec<char>> {
+        Ok(self.draw_text_with_page_receipts(gfx, x, y, text, color)?.0)
+    }
+
+    /// Draw one line and return the exact atlas-page indices that issued a
+    /// non-empty D3D draw. XMAP14 uses these indices in its authenticated
+    /// compositor receipt; ordinary UI callers keep the simpler API above.
+    pub(crate) fn draw_text_with_page_receipts(
+        &self,
+        gfx: &Gfx,
+        x: f32,
+        y: f32,
+        text: &str,
+        color: u32,
+    ) -> Result<(Vec<char>, Vec<usize>)> {
         let layout = self.font.layout_text(x, y, text);
         let rgba = color_to_rgba_bytes(color);
+        let mut submitted_pages = Vec::new();
         // Batch per page (the fonts in use today have a single page).
         for (page_index, (_, srv)) in self.pages.iter().enumerate() {
             let mut vertices = Vec::new();
             for quad in layout.quads.iter().filter(|quad| quad.page == page_index) {
                 push_glyph_vertices(&mut vertices, quad, rgba);
             }
-            self.pipeline.draw(gfx, srv.as_raw(), &vertices)?;
+            if !vertices.is_empty() {
+                self.pipeline.draw(gfx, srv.as_raw(), &vertices)?;
+                submitted_pages.push(page_index);
+            }
         }
-        Ok(layout.missing)
+        Ok((layout.missing, submitted_pages))
+    }
+
+    /// Submit a pre-positioned, already-authenticated text operation to a
+    /// caller-owned render target. The caller owns semantic placement; this
+    /// method only executes the effective-font glyph quads and reports the
+    /// atlas pages that issued draws.
+    pub(crate) fn draw_text_to_target_with_page_receipts(
+        &self,
+        gfx: &Gfx,
+        render_target_view: *mut winapi::um::d3d11::ID3D11RenderTargetView,
+        target_width: u32,
+        target_height: u32,
+        x: f32,
+        y: f32,
+        text: &str,
+        color: u32,
+    ) -> Result<(Vec<char>, Vec<usize>, usize)> {
+        let layout = self.font.layout_text(x, y, text);
+        let rgba = color_to_rgba_bytes(color);
+        let mut submitted_pages = Vec::new();
+        let mut submitted_glyphs = 0usize;
+        for (page_index, (_, srv)) in self.pages.iter().enumerate() {
+            let mut vertices = Vec::new();
+            for quad in layout.quads.iter().filter(|quad| quad.page == page_index) {
+                push_glyph_vertices(&mut vertices, quad, rgba);
+                submitted_glyphs = submitted_glyphs
+                    .checked_add(1)
+                    .ok_or("target-bound text glyph count overflow")?;
+            }
+            if !vertices.is_empty() {
+                self.pipeline.draw_to_target(
+                    gfx,
+                    render_target_view,
+                    target_width,
+                    target_height,
+                    srv.as_raw(),
+                    &vertices,
+                )?;
+                submitted_pages.push(page_index);
+            }
+        }
+        Ok((layout.missing, submitted_pages, submitted_glyphs))
     }
 }
 

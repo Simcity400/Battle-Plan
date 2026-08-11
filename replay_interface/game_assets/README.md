@@ -27,7 +27,9 @@ should resolve the active installed content directly or fail closed.
 
 ## Mod awareness — resolve against the SELECTED mod-set, not vanilla
 
-The replay UI must render the UI **as the recorded game's mod presents it** (plan §K).
+The replay UI must render the UI **as the recorded game's mod presents it**
+(`documents/DECISIONS.md`; the binding runtime policy is
+`replay_interface/documents/MOD_COMPATIBILITY.md`).
 Resolution is parameterized by an **active mod-set**: an ordered list of mods layered over
 vanilla, per Clausewitz rules.
 
@@ -163,15 +165,16 @@ Rules for the UI agent:
 
 ## Layouts parsed (`gui/`)
 
-All **77 in-scope core in-game views** (plan §C.4 group 2 — the replay target),
-incl. the tech/doctrine **tree** views (`tech_tree`, `doctrine_tree`) and the focus
-tree, topbar/menubar/clock/minimap/alerts, state/politics/production/construction/
-deployment, the five designers, decisions/operations, diplomacy/trade/peace, intel/
-operatives, officer-corps/leaders/trait-trees, army/navy/air mgmt + battle-plan tools,
+The in-scope core in-game views are exactly the keys of `PRIORITY_GUI` in
+`extract.py` — **77 stems** as committed, and that dict is the only definition of
+the set: add a stem there to parse another view. It covers the tech/doctrine
+**tree** views (`tech_tree`, `doctrine_tree`) and the focus tree, topbar/menubar/
+clock/minimap/alerts, state/politics/production/construction/deployment, the five
+designers, decisions/operations, diplomacy/trade/peace, intel/operatives,
+officer-corps/leaders/trait-trees, army/navy/air mgmt + battle-plan tools,
 logistics, all combat windows, unit/division detail, events/popups, war/insignia.
-The **~28 frontend/lobby** files (group 0) and the per-nation `*_scripted_gui` overlays
-(group 1) are intentionally excluded. `PRIORITY_GUI` in `extract.py` is the editable
-list — add a stem to parse another view. See `gui/_index.json` for element-type counts.
+The **~28 frontend/lobby** files and the per-nation `*_scripted_gui` overlays are
+intentionally excluded. See `gui/_index.json` for element-type counts.
 
 > **Mod-resolved:** under the user's active mod-set (AMSB - DEV), the mod overrides the
 > **vanilla `topbar`, tech-tree, doctrine-tree, battle-plan-tools, division/tank designer,

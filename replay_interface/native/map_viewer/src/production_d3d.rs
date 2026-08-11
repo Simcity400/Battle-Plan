@@ -10,24 +10,312 @@ use crate::{
     production_main_scene_desc_from_outputs,
     production_map_interpreter::{materialize_static_program, unsupported_reason},
     validate_c03_camera_replay_binding, C03CameraReplayBinding, ExactRailD80Binding,
-    PreparedProductionMapFrame,
-    PreparedRuntimeDraw, ProductionMainSceneTargetDesc,
-    ProductionMapResource, Result,
+    FoundationContentExecutionReceipt, PreparedProductionMapFrame, PreparedRuntimeDraw,
+    ProductionMainSceneTargetDesc, ProductionMapResource, Result,
+    FOUNDATION_CONTENT_EXECUTION_RECEIPT_SCHEMA,
 };
 use replay_core::{
     BufferSource, C07TreeRuntimeCarrier, ConstantBufferBinding, M03ArrowDraw, M03ArrowFrame,
-    MapnameD80State, RenderExecutionRef, RenderTargetDesc, RenderTargetInitialSource, StaticGeometrySource, StaticMapCommand,
-    StaticMapOperation, StaticMapPassProgram, StaticShaderResourceSource, UsedContentKey,
-    RailSupplyArrowFrame,
-    ViewStatus,
+    MapnameD80State, RailSupplyArrowFrame, RenderExecutionRef, RenderTargetDesc,
+    RenderTargetInitialSource, StaticGeometrySource, StaticMapCommand, StaticMapOperation,
+    StaticMapPassProgram, StaticShaderResourceSource, UsedContentKey, ViewStatus,
 };
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeMap;
 
+/// Execute the mandatory XMAP01+XMAP02 startup content operation on a real
+/// D3D11 device. This compiles the exact effective-VFS translation units,
+/// creates both shader objects, creates the exact DDS texture and its SRV, and
+/// returns only pointer-free identities. It submits no draw and creates no map
+/// pixels.
+#[cfg(windows)]
+pub fn execute_foundation_content_operation(
+    resolver: &crate::GameFileResolver,
+    resolved: &portable_content_manifest::foundation::ResolvedFoundationContent,
+    content_authority_sha256: &str,
+) -> Result<FoundationContentExecutionReceipt> {
+    use crate::shader_compile::{
+        build_stage_hlsl_with_defines, d3d_compile_stage, derive_a729_engine_map_shader_constants,
+        engine_map_shader_defines, ShaderStage, ENGINE_COMPILE_FLAGS,
+    };
+
+    resolved
+        .validate()
+        .map_err(|error| format!("invalid resolved foundation content: {error}"))?;
+    if !resolver.has_content_admission() {
+        return Err("foundation content execution requires an admission-bound VFS".into());
+    }
+    let request = &resolved.request;
+    let constants = derive_a729_engine_map_shader_constants(
+        request.map_width,
+        request.map_height,
+        request.pow2_ratio_branch,
+        request.max_texture_dimension,
+    )?;
+    let defines = engine_map_shader_defines(constants);
+    let vertex_hlsl = build_stage_hlsl_with_defines(
+        resolver,
+        &request.effect_file,
+        &request.effect_name,
+        ShaderStage::Vertex,
+        &defines,
+    )?;
+    let pixel_hlsl = build_stage_hlsl_with_defines(
+        resolver,
+        &request.effect_file,
+        &request.effect_name,
+        ShaderStage::Pixel,
+        &defines,
+    )?;
+    if Sha256::hex(vertex_hlsl.as_bytes()) != resolved.vertex_shader.translation_unit_sha256
+        || vertex_hlsl.len() as u64 != resolved.vertex_shader.translation_unit_bytes
+        || Sha256::hex(pixel_hlsl.as_bytes()) != resolved.pixel_shader.translation_unit_sha256
+        || pixel_hlsl.len() as u64 != resolved.pixel_shader.translation_unit_bytes
+    {
+        return Err(
+            "foundation shader translation unit differs from the XMAP02-resolved identity".into(),
+        );
+    }
+    let vertex_bytecode =
+        d3d_compile_stage(&vertex_hlsl, ShaderStage::Vertex, ENGINE_COMPILE_FLAGS)?;
+    let pixel_bytecode = d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
+
+    let texture_key = resolved
+        .ordered_used_content
+        .iter()
+        .find(|row| row.normalized_game_relative_path == request.texture_file)
+        .ok_or("resolved foundation closure has no requested texture")?;
+    let texture_bytes = resolver.read_admitted_used_content(texture_key)?;
+    execute_foundation_d3d_objects(
+        &vertex_bytecode,
+        &pixel_bytecode,
+        &texture_bytes,
+        &resolved.texture,
+    )?;
+
+    FoundationContentExecutionReceipt {
+        schema: FOUNDATION_CONTENT_EXECUTION_RECEIPT_SCHEMA.into(),
+        content_manifest_sha256: resolved.manifest_digest_sha256.clone(),
+        product_modset_sha256: resolved.product_modset_sha256.clone(),
+        effective_vfs_manifest_sha256: resolved.effective_vfs_manifest_sha256.clone(),
+        content_authority_sha256: content_authority_sha256.to_string(),
+        resolved_operation_sha256: resolved.operation_identity_sha256.clone(),
+        ordered_program_stage_sha256: vec![
+            Sha256::hex(&vertex_bytecode),
+            Sha256::hex(&pixel_bytecode),
+        ],
+        resource_identity_sha256: resolved.texture.resource_identity_sha256.clone(),
+        descriptor_identity_sha256: resolved
+            .texture
+            .shader_resource_view_identity_sha256
+            .clone(),
+        compiled_or_loaded_programs: 2,
+        created_resources: 1,
+        created_descriptors: 1,
+        deterministic_sha256: String::new(),
+    }
+    .seal()
+}
+
+#[cfg(windows)]
+fn execute_foundation_d3d_objects(
+    vertex_bytecode: &[u8],
+    pixel_bytecode: &[u8],
+    dds: &[u8],
+    descriptor: &portable_content_manifest::foundation::FoundationTextureDescriptor,
+) -> Result<()> {
+    use crate::d3d11_device::{native_d3d11_create_device, native_d3d11_hr, D3dPtr};
+    use std::ptr;
+    use winapi::shared::dxgitype::DXGI_SAMPLE_DESC;
+    use winapi::um::d3d11::{
+        ID3D11PixelShader, ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+        D3D11_BIND_SHADER_RESOURCE, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
+        D3D11_USAGE_DEFAULT,
+    };
+
+    if descriptor.dimension != "texture2d"
+        || descriptor.depth != 1
+        || descriptor.array_size != 1
+        || descriptor.cube
+    {
+        return Err(
+            "foundation TerrainDiffuse must resolve to one non-array, non-cube Texture2D".into(),
+        );
+    }
+    if dds.len() < 128 || dds.get(..4) != Some(b"DDS ") {
+        return Err("foundation texture bytes are not a complete DDS".into());
+    }
+    let read_u32 = |offset: usize| -> Result<u32> {
+        Ok(u32::from_le_bytes(
+            dds.get(offset..offset + 4)
+                .ok_or("foundation DDS header is truncated")?
+                .try_into()?,
+        ))
+    };
+    let (dxgi_format, block_bytes, bytes_per_pixel, payload_offset) =
+        foundation_native_format(&descriptor.format, dds)?;
+    let mut offset = payload_offset;
+    let mut initial = Vec::with_capacity(descriptor.mip_levels as usize);
+    for mip in 0..descriptor.mip_levels {
+        let width = (descriptor.width >> mip).max(1);
+        let height = (descriptor.height >> mip).max(1);
+        let (row_pitch, slice_pitch) = if block_bytes != 0 {
+            let block_width = ((width + 3) / 4).max(1);
+            let block_height = ((height + 3) / 4).max(1);
+            let row = block_width
+                .checked_mul(block_bytes)
+                .ok_or("foundation DDS row pitch overflow")?;
+            let slice = row
+                .checked_mul(block_height)
+                .ok_or("foundation DDS slice pitch overflow")?;
+            (row, slice)
+        } else {
+            let row = width
+                .checked_mul(bytes_per_pixel)
+                .ok_or("foundation DDS row pitch overflow")?;
+            let slice = row
+                .checked_mul(height)
+                .ok_or("foundation DDS slice pitch overflow")?;
+            (row, slice)
+        };
+        let end = offset
+            .checked_add(slice_pitch as usize)
+            .ok_or("foundation DDS payload range overflow")?;
+        let bytes = dds
+            .get(offset..end)
+            .ok_or("foundation DDS mip payload is truncated")?;
+        initial.push(D3D11_SUBRESOURCE_DATA {
+            pSysMem: bytes.as_ptr() as *const _,
+            SysMemPitch: row_pitch,
+            SysMemSlicePitch: slice_pitch,
+        });
+        offset = end;
+    }
+    if read_u32(16)? != descriptor.width
+        || read_u32(12)? != descriptor.height
+        || read_u32(28)?.max(1) != descriptor.mip_levels
+    {
+        return Err("foundation DDS header differs from resolved texture descriptor".into());
+    }
+
+    unsafe {
+        let device = native_d3d11_create_device()?;
+        let mut vertex = ptr::null_mut::<ID3D11VertexShader>();
+        native_d3d11_hr(
+            (*device.device.as_raw()).CreateVertexShader(
+                vertex_bytecode.as_ptr() as *const _,
+                vertex_bytecode.len(),
+                ptr::null_mut(),
+                &mut vertex,
+            ),
+            "CreateVertexShader(foundation content operation)",
+        )?;
+        let _vertex = D3dPtr::from_raw(vertex, "foundation vertex shader")?;
+
+        let mut pixel = ptr::null_mut::<ID3D11PixelShader>();
+        native_d3d11_hr(
+            (*device.device.as_raw()).CreatePixelShader(
+                pixel_bytecode.as_ptr() as *const _,
+                pixel_bytecode.len(),
+                ptr::null_mut(),
+                &mut pixel,
+            ),
+            "CreatePixelShader(foundation content operation)",
+        )?;
+        let _pixel = D3dPtr::from_raw(pixel, "foundation pixel shader")?;
+
+        let native = D3D11_TEXTURE2D_DESC {
+            Width: descriptor.width,
+            Height: descriptor.height,
+            MipLevels: descriptor.mip_levels,
+            ArraySize: 1,
+            Format: dxgi_format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture = ptr::null_mut::<ID3D11Texture2D>();
+        native_d3d11_hr(
+            (*device.device.as_raw()).CreateTexture2D(&native, initial.as_ptr(), &mut texture),
+            "CreateTexture2D(foundation content operation)",
+        )?;
+        let texture = D3dPtr::from_raw(texture, "foundation texture")?;
+        let mut view = ptr::null_mut::<ID3D11ShaderResourceView>();
+        native_d3d11_hr(
+            (*device.device.as_raw()).CreateShaderResourceView(
+                texture.as_raw() as *mut _,
+                ptr::null(),
+                &mut view,
+            ),
+            "CreateShaderResourceView(foundation content operation)",
+        )?;
+        let _view = D3dPtr::from_raw(view, "foundation texture SRV")?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn foundation_native_format(format: &str, dds: &[u8]) -> Result<(u32, u32, u32, usize)> {
+    if let Some(value) = format.strip_prefix("dxgi:") {
+        let dxgi = value.parse::<u32>()?;
+        let block_bytes = match dxgi {
+            70..=72 | 79..=81 => 8,
+            73..=78 | 82..=84 => 16,
+            _ => 0,
+        };
+        let bytes_per_pixel = match dxgi {
+            28 | 29 | 87 | 91 => 4,
+            _ if block_bytes != 0 => 0,
+            _ => {
+                return Err(format!(
+                    "foundation DDS DXGI format {dxgi} needs an exact subresource layout implementation"
+                )
+                .into())
+            }
+        };
+        return Ok((dxgi, block_bytes, bytes_per_pixel, 148));
+    }
+    match format {
+        "fourcc:DXT1" => Ok((71, 8, 0, 128)),
+        "fourcc:DXT3" => Ok((74, 16, 0, 128)),
+        "fourcc:DXT5" => Ok((77, 16, 0, 128)),
+        _ if format.starts_with("rgb:32:") => {
+            let masks = format.split(':').skip(2).collect::<Vec<_>>();
+            if masks.len() != 4 {
+                return Err("foundation RGB DDS descriptor is malformed".into());
+            }
+            let dxgi = if masks == ["000000ff", "0000ff00", "00ff0000", "ff000000"] {
+                28
+            } else if masks == ["00ff0000", "0000ff00", "000000ff", "ff000000"] {
+                87
+            } else {
+                return Err(
+                    format!("foundation RGB DDS channel masks are unsupported: {format}").into(),
+                );
+            };
+            Ok((dxgi, 0, 4, 128))
+        }
+        _ => {
+            let fourcc = String::from_utf8_lossy(
+                dds.get(84..88)
+                    .ok_or("foundation DDS pixel format is truncated")?,
+            );
+            Err(
+                format!("foundation DDS format {format:?} (fourcc {fourcc:?}) is unsupported")
+                    .into(),
+            )
+        }
+    }
+}
+
 pub type ProductionD3dStaticPassProgram = StaticMapPassProgram;
-pub const PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA: &str =
-    "hoi4.production_d3d_execution.v7";
+pub const PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA: &str = "hoi4.production_d3d_execution.v7";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductionD3dOmission {
@@ -79,8 +367,7 @@ pub struct PreparedProductionD3dFrame {
     pub tiled_lights: Vec<replay_core::TiledLightSubmission>,
     pub ordered_static_used_content: Vec<UsedContentKey>,
     pub ordered_static_programs: Vec<StaticMapPassProgram>,
-    pub authenticated_texture_snapshots:
-        Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
+    pub authenticated_texture_snapshots: Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
     /// Exact D81 semantic binding to the retained D80 railroad operations.
     pub rail_ribbon: Option<ExactRailD80Binding>,
     /// B10 compatibility/admission state of the selected submit's D80 mapname
@@ -407,16 +694,19 @@ pub fn prepare_production_d3d_frame(
         }
     }
 
-    let retained_mapname_state = ordered_static_programs.iter().try_fold(
-        MapnameD80State::Missing,
-        |state, program| state.merge(program.mapname_d80_state()?),
-    )?;
+    let retained_mapname_state = ordered_static_programs
+        .iter()
+        .try_fold(MapnameD80State::Missing, |state, program| {
+            state.merge(program.mapname_d80_state()?)
+        })?;
     match (mapname_d80_state, retained_mapname_state) {
         (MapnameD80State::Missing, MapnameD80State::Missing)
         | (MapnameD80State::LegacyUnstamped, MapnameD80State::Missing)
         | (MapnameD80State::Authenticated, MapnameD80State::Authenticated) => {}
         (MapnameD80State::Authenticated, _) => {
-            return Err("authenticated mapname program was omitted before production execution".into())
+            return Err(
+                "authenticated mapname program was omitted before production execution".into(),
+            )
         }
         _ => return Err("prepared mapname D80 state disagrees with retained programs".into()),
     }
@@ -426,8 +716,9 @@ pub fn prepare_production_d3d_frame(
         .flat_map(|program| &program.ordered_operations)
         .filter_map(|operation| match &operation.command {
             StaticMapCommand::Draw { draw } => Some(draw),
-            StaticMapCommand::ClearColor { .. }
-            | StaticMapCommand::ClearDepthStencil { .. } => None,
+            StaticMapCommand::ClearColor { .. } | StaticMapCommand::ClearDepthStencil { .. } => {
+                None
+            }
         })
         .flat_map(|draw| &draw.ordered_shader_resources)
         .filter_map(|binding| match &binding.source {
@@ -485,6 +776,7 @@ pub fn prepare_production_d3d_frame(
                     "authenticated railway supply-map arrow program cannot be partially omitted: {error}"
                 )
             })?;
+        extend_receipt_content_closure(&mut ordered_static_used_content, &rail.used_content);
         Some(rail.clone())
     } else {
         None
@@ -640,11 +932,18 @@ pub fn execute_production_d3d_frame(
     if let Some(rail) = &frame.rail_supply_arrows {
         rail.validate_against_static_programs(&frame.ordered_static_programs)
             .map_err(|error| format!("executable rail supply-arrow join is invalid: {error}"))?;
+        validate_receipt_content_closure(
+            &frame.ordered_static_used_content,
+            &rail.used_content,
+            "rail authority",
+        )?;
     }
-    let retained_mapname_state = frame.ordered_static_programs.iter().try_fold(
-        MapnameD80State::Missing,
-        |state, program| state.merge(program.mapname_d80_state()?),
-    )?;
+    let retained_mapname_state = frame
+        .ordered_static_programs
+        .iter()
+        .try_fold(MapnameD80State::Missing, |state, program| {
+            state.merge(program.mapname_d80_state()?)
+        })?;
     let legacy_omission = frame.omissions.iter().any(|omission| {
         omission
             .reason
@@ -653,8 +952,7 @@ pub fn execute_production_d3d_frame(
     match (frame.mapname_d80_state, retained_mapname_state) {
         (MapnameD80State::Missing, MapnameD80State::Missing) if !legacy_omission => {}
         (MapnameD80State::LegacyUnstamped, MapnameD80State::Missing) if legacy_omission => {}
-        (MapnameD80State::Authenticated, MapnameD80State::Authenticated)
-            if !legacy_omission => {}
+        (MapnameD80State::Authenticated, MapnameD80State::Authenticated) if !legacy_omission => {}
         _ => {
             return Err(
                 "prepared mapname D80 state/omission disagrees with executable programs".into(),
@@ -852,9 +1150,7 @@ pub fn execute_production_d3d_frame(
             .tree_runtime
             .as_ref()
             .map(|carrier| carrier.payload_sha256.clone()),
-        tree_materialized_execution_sha256: frame
-            .tree_materialized_execution_sha256
-            .clone(),
+        tree_materialized_execution_sha256: frame.tree_materialized_execution_sha256.clone(),
         s1_shadow_payload_sha256: frame
             .s1_shadow
             .as_ref()
@@ -905,13 +1201,17 @@ fn validate_c07_executor_operations(
     let mut previous_position = None;
     for operation_ordinal in required {
         if !unique.insert(operation_ordinal) || !available.contains(&operation_ordinal) {
-            return Err("C07 tree operation was duplicated or omitted during D3D preparation".into());
+            return Err(
+                "C07 tree operation was duplicated or omitted during D3D preparation".into(),
+            );
         }
         let position = *execution_positions
             .get(&operation_ordinal)
             .ok_or("C07 tree operation is absent from executor order")?;
         if previous_position.is_some_and(|previous| position <= previous) {
-            return Err("C07 tree executor order differs from the retained three-pass contract".into());
+            return Err(
+                "C07 tree executor order differs from the retained three-pass contract".into(),
+            );
         }
         previous_position = Some(position);
     }
@@ -1400,6 +1700,34 @@ fn insert_content(out: &mut BTreeMap<String, UsedContentKey>, value: &UsedConten
         value.payload_sha256
     );
     out.insert(key, value.clone());
+}
+
+fn extend_receipt_content_closure(
+    receipt_content: &mut Vec<UsedContentKey>,
+    required_content: &[UsedContentKey],
+) {
+    for content in required_content {
+        if !receipt_content.contains(content) {
+            receipt_content.push(content.clone());
+        }
+    }
+}
+
+fn validate_receipt_content_closure(
+    receipt_content: &[UsedContentKey],
+    required_content: &[UsedContentKey],
+    label: &str,
+) -> Result<()> {
+    for required in required_content {
+        if !receipt_content.contains(required) {
+            return Err(format!(
+                "prepared {label} content is absent from the execution receipt closure: {}",
+                required.normalized_game_relative_path
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn runtime_draw_token(draw: &PreparedRuntimeDraw) -> String {

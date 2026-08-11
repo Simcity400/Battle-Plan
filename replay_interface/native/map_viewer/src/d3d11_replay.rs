@@ -405,18 +405,6 @@ impl NativeD3d11PreparedProductionMap {
             .collect()
     }
 
-    /// Exact fail-closed disposition of all seven close-zoom law modules.
-    /// This is exposed from the prepared D3D object so production callers and
-    /// the golden/pixel gate cannot mistake a compiled law for an authorized
-    /// pixel route.
-    pub fn close_zoom_law_plans(&self) -> &[ProductionCloseZoomLawPlan] {
-        &self.graph.close_zoom_laws
-    }
-
-    pub fn close_zoom_blockers(&self) -> Vec<(&'static str, &'static str)> {
-        self.graph.close_zoom_blockers()
-    }
-
     pub fn target_width(&self) -> u32 {
         self.terrain.target_width
     }
@@ -580,14 +568,6 @@ impl NativeD3d11PreparedProductionMap {
 impl NativeD3d11PreparedSynthesizedProductionMap {
     pub fn graph(&self) -> &ProductionMapPassGraph {
         &self.graph
-    }
-
-    pub fn close_zoom_law_plans(&self) -> &[ProductionCloseZoomLawPlan] {
-        &self.graph.close_zoom_laws
-    }
-
-    pub fn close_zoom_blockers(&self) -> Vec<(&'static str, &'static str)> {
-        self.graph.close_zoom_blockers()
     }
 
     pub fn terrain(&self) -> &NativeD3d11PreparedTerrainChunkSynthesis {
@@ -1001,11 +981,25 @@ impl NativeD3d11TerrainRenderer {
         })
     }
 
+    /// RES2: a public entry point that turns a captured bundle into production
+    /// terrain pixels, so it admits before preparing. Without this, a caller
+    /// could build the pass graph itself, prepare here, and emit pixels through
+    /// `render_prepared`, bypassing the admitted map funnels entirely.
     pub fn prepare_production_terrain(
         &self,
         bundle: &NativeD3d11TerrainBundle,
         graph: &ProductionMapPassGraph,
     ) -> Result<NativeD3d11PreparedTerrainBundle> {
+        let admitted = bundle.admit_for_production("production terrain renderer")?;
+        self.prepare_production_terrain_admitted(&admitted, graph)
+    }
+
+    fn prepare_production_terrain_admitted(
+        &self,
+        admitted: &AdmittedProductionMapBundle<'_>,
+        graph: &ProductionMapPassGraph,
+    ) -> Result<NativeD3d11PreparedTerrainBundle> {
+        let bundle = admitted.bundle();
         graph.validate_terrain_bundle(bundle)?;
         let native = unsafe {
             native_d3d11_prepare_map_frame(
@@ -1025,17 +1019,58 @@ impl NativeD3d11TerrainRenderer {
         })
     }
 
+    /// RES2: admits the bundle, then delegates to the funnel that can only be
+    /// called with an admission proof. This is the PRODUCT path — its pixels
+    /// are presented as product output.
     pub fn prepare_production_map(
         &self,
         bundle: &NativeD3d11TerrainBundle,
         camera: Option<ProductionMapCamera>,
     ) -> Result<NativeD3d11PreparedProductionMap> {
+        let admitted = bundle.admit_for_production("production terrain renderer")?;
+        self.prepare_production_map_admitted(&admitted, camera)
+    }
+
+    /// RES2: the CAPTURE-PARITY preparation. Identical pixels, different
+    /// purpose — this output exists to be diffed against the capture it came
+    /// from (acceptance runs bind `compare_each_draw`), never to be shown as
+    /// product output.
+    ///
+    /// Deliberately UNADMITTED. Gating it would refuse every pre-FW7 capture on
+    /// the one route whose entire job is to reproduce such a capture and
+    /// compare it byte-for-byte — refusing legitimate existing evidence
+    /// artifacts to enforce a product rule that does not apply to them. The
+    /// product rule is enforced where product pixels are produced, which is
+    /// [`Self::prepare_production_map`].
+    pub fn prepare_capture_parity_map(
+        &self,
+        bundle: &NativeD3d11TerrainBundle,
+        camera: Option<ProductionMapCamera>,
+    ) -> Result<NativeD3d11PreparedProductionMap> {
+        // Constructs the proof WITHOUT the gate: legitimate here, and possible
+        // only inside `frame_bundle`, which is why this shim lives behind a
+        // named, documented parity entry point instead of being reachable by
+        // accident.
+        let parity = capture_parity_map_bundle(bundle);
+        self.prepare_production_map_admitted(&parity, camera)
+    }
+
+    /// The single-bundle production preparation funnel. Taking
+    /// [`AdmittedProductionMapBundle`] is what makes the vanilla-source gate
+    /// compiler-enforced: there is no way to reach this code with a bundle
+    /// whose sources were never certified.
+    fn prepare_production_map_admitted(
+        &self,
+        admitted: &AdmittedProductionMapBundle<'_>,
+        camera: Option<ProductionMapCamera>,
+    ) -> Result<NativeD3d11PreparedProductionMap> {
+        let bundle = admitted.bundle();
         let camera = match camera {
             Some(camera) => camera,
             None => bundle.production_camera_from_capture()?,
         };
         let graph = ProductionMapPassGraph::from_terrain_capture(bundle, camera)?;
-        let terrain = self.prepare_production_terrain(bundle, &graph)?;
+        let terrain = self.prepare_production_terrain_admitted(admitted, &graph)?;
         Ok(NativeD3d11PreparedProductionMap {
             graph,
             terrain,
@@ -1321,6 +1356,71 @@ impl NativeD3d11TerrainRenderer {
         scene_cb0: Option<&[u8]>,
         patch_tree_season_cb1: bool,
     ) -> Result<NativeD3d11PreparedSynthesizedProductionMap> {
+        // RES2: the synthesized production map composites REAL captured layer
+        // bundles over the synthesized terrain, so each supplied layer must
+        // carry certified vanilla sources exactly as in the captured funnels.
+        // Admitted up front, then handed to a funnel that cannot be called
+        // without the proofs.
+        //
+        // The chunk LIBRARY itself is deliberately not admitted: it is a
+        // different artifact class, assembled by `terrain_chunk_library` from
+        // synthesized chunk records, and it never routes through
+        // `validate_map_frame_vanilla_sources` (its
+        // `vanilla_source_verification` is always `None` by construction).
+        // Admitting it would refuse every chunk-synthesis run rather than
+        // certify anything — a gate demanding a state nothing can produce.
+        // Its provenance is a separate lane's problem, not RES2's.
+        let water_admitted = water_bundle
+            .map(|bundle| bundle.admit_for_production("production water renderer"))
+            .transpose()?;
+        let rivers_admitted = rivers_bundle
+            .map(|bundle| bundle.admit_for_production("production rivers renderer"))
+            .transpose()?;
+        let borders_admitted = borders_bundle
+            .map(|bundle| bundle.admit_for_production("production borders renderer"))
+            .transpose()?;
+        let trees_admitted = trees_bundle
+            .map(|bundle| bundle.admit_for_production("production trees renderer"))
+            .transpose()?;
+        self.prepare_terrain_chunk_synthesis_admitted(
+            library,
+            water_admitted.as_ref(),
+            rivers_admitted.as_ref(),
+            borders_admitted.as_ref(),
+            trees_admitted.as_ref(),
+            camera,
+            target_tile_size,
+            world_rect,
+            layer_synthesis,
+            tree_file_layer,
+            scene_cb0,
+            patch_tree_season_cb1,
+        )
+    }
+
+    /// The synthesized-production-map funnel. Every captured layer that can
+    /// contribute product pixels arrives as an [`AdmittedProductionMapBundle`],
+    /// so the vanilla-source gate is compiler-enforced here too.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_terrain_chunk_synthesis_admitted(
+        &self,
+        library: &NativeD3d11TerrainChunkLibrary,
+        water_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        rivers_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        borders_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        trees_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        camera: ProductionMapCamera,
+        target_tile_size: u32,
+        world_rect: TerrainChunkSynthesisWorldRect,
+        layer_synthesis: Option<&MapLayerSynthesisInputs>,
+        tree_file_layer: Option<&TreeFileDerivedLayer>,
+        scene_cb0: Option<&[u8]>,
+        patch_tree_season_cb1: bool,
+    ) -> Result<NativeD3d11PreparedSynthesizedProductionMap> {
+        let water_bundle = water_admitted.map(AdmittedProductionMapBundle::bundle);
+        let rivers_bundle = rivers_admitted.map(AdmittedProductionMapBundle::bundle);
+        let borders_bundle = borders_admitted.map(AdmittedProductionMapBundle::bundle);
+        let trees_bundle = trees_admitted.map(AdmittedProductionMapBundle::bundle);
         let mut graph = ProductionMapPassGraph::from_terrain_chunk_library(library, camera)?;
         if let Some(water_bundle) = water_bundle {
             graph = graph.with_water_capture(water_bundle)?;
@@ -1649,6 +1749,9 @@ impl NativeD3d11TerrainRenderer {
         let Some(border_pass) = prepared.borders_files.as_ref() else {
             return Ok(());
         };
+        // This legacy diagnostic path consumes the draw report only for error
+        // propagation. Production XMAP06 uses the authenticated twelve-bucket
+        // native handoff and does not omit SeaRegion.
         native_d3d11_render_border_files_pass(
             &self.device,
             border_pass,
@@ -1658,6 +1761,7 @@ impl NativeD3d11TerrainRenderer {
             prepared.graph.camera.position[1],
             options.map_clock_time.unwrap_or(0.0),
         )
+        .map(|_report| ())
     }
 
     pub fn update_prepared_terrain_chunk_synthesis_camera(
@@ -1912,6 +2016,9 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
+    /// RES2: admits terrain and EVERY supplied layer, then delegates to the
+    /// funnel that can only be called with admission proofs. A layer that is
+    /// absent needs no proof; a layer that is present cannot skip one.
     fn prepare_production_map_with_layers_for_reference(
         &self,
         terrain_bundle: &NativeD3d11TerrainBundle,
@@ -1923,6 +2030,53 @@ impl NativeD3d11TerrainRenderer {
         reference_replay: bool,
         patch_tree_season_cb1: bool,
     ) -> Result<NativeD3d11PreparedProductionMap> {
+        let terrain_admitted =
+            terrain_bundle.admit_for_production("production terrain renderer")?;
+        let water_admitted = water_bundle
+            .map(|bundle| bundle.admit_for_production("production water renderer"))
+            .transpose()?;
+        let rivers_admitted = rivers_bundle
+            .map(|bundle| bundle.admit_for_production("production rivers renderer"))
+            .transpose()?;
+        let borders_admitted = borders_bundle
+            .map(|bundle| bundle.admit_for_production("production borders renderer"))
+            .transpose()?;
+        let trees_admitted = trees_bundle
+            .map(|bundle| bundle.admit_for_production("production trees renderer"))
+            .transpose()?;
+        self.prepare_production_map_with_layers_admitted(
+            &terrain_admitted,
+            water_admitted.as_ref(),
+            rivers_admitted.as_ref(),
+            borders_admitted.as_ref(),
+            trees_admitted.as_ref(),
+            camera,
+            reference_replay,
+            patch_tree_season_cb1,
+        )
+    }
+
+    /// The layered production preparation funnel. Every parameter that
+    /// contributes product pixels is an [`AdmittedProductionMapBundle`], so the
+    /// vanilla-source gate is enforced by the type system: this body is
+    /// unreachable for an uncertified layer.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_production_map_with_layers_admitted(
+        &self,
+        terrain_admitted: &AdmittedProductionMapBundle<'_>,
+        water_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        rivers_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        borders_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        trees_admitted: Option<&AdmittedProductionMapBundle<'_>>,
+        camera: ProductionMapCamera,
+        reference_replay: bool,
+        patch_tree_season_cb1: bool,
+    ) -> Result<NativeD3d11PreparedProductionMap> {
+        let terrain_bundle = terrain_admitted.bundle();
+        let water_bundle = water_admitted.map(AdmittedProductionMapBundle::bundle);
+        let rivers_bundle = rivers_admitted.map(AdmittedProductionMapBundle::bundle);
+        let borders_bundle = borders_admitted.map(AdmittedProductionMapBundle::bundle);
+        let trees_bundle = trees_admitted.map(AdmittedProductionMapBundle::bundle);
         let mut graph = ProductionMapPassGraph::from_terrain_capture(terrain_bundle, camera)?;
         if let Some(water_bundle) = water_bundle {
             graph = graph.with_water_capture(water_bundle)?;
@@ -1936,7 +2090,7 @@ impl NativeD3d11TerrainRenderer {
         if let Some(trees_bundle) = trees_bundle {
             graph = graph.with_trees_capture(trees_bundle)?;
         }
-        let terrain = self.prepare_production_terrain(terrain_bundle, &graph)?;
+        let terrain = self.prepare_production_terrain_admitted(terrain_admitted, &graph)?;
         let pass_camera = (!reference_replay).then_some(graph.camera);
         let restore_pre_draw_outputs = reference_replay;
         // Refraction (WaterRefraction slot 5) source policy:
@@ -2038,12 +2192,15 @@ impl NativeD3d11TerrainRenderer {
             .transpose()
     }
 
+    /// RES2: capture-parity replay of a captured bundle (the acceptance /
+    /// byte-comparison route), so it uses the unadmitted parity preparation.
+    /// Its output is evidence to diff against the capture, not product pixels.
     pub fn render(
         &self,
         bundle: &NativeD3d11TerrainBundle,
         options: &NativeD3d11RenderOptions,
     ) -> Result<NativeD3d11ReplayResult> {
-        let prepared = self.prepare_production_map(bundle, None)?;
+        let prepared = self.prepare_capture_parity_map(bundle, None)?;
         self.render_prepared_production_map(&prepared, options)
     }
 
@@ -2245,6 +2402,9 @@ impl NativeD3d11TerrainRenderer {
             "--borders-from-files border pass blocked: the terrain pass has no draws to \
              borrow the scene CB0/viewport from",
         )?;
+        // See `render_border_files_overlay_synthesized`: the typed omission
+        // report is validated against the prepare-time declaration inside the
+        // render call.
         native_d3d11_render_border_files_pass(
             &self.device,
             border_pass,
@@ -2254,6 +2414,7 @@ impl NativeD3d11TerrainRenderer {
             prepared.graph.camera.position[1],
             options.map_clock_time.unwrap_or(0.0),
         )
+        .map(|_report| ())
     }
 
     /// WATER2 validation: render ONLY the underwater seafloor pass for a
@@ -2770,6 +2931,20 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
+    /// See the Windows implementation. Returns `self` unchanged off Windows
+    /// (no renderer instance can exist); kept because the cfg-agnostic CLI
+    /// wires the resolver before the renderer reports its platform refusal.
+    pub fn with_underwater_resolver(self, _resolver: GameFileResolver) -> Self {
+        self
+    }
+
+    /// See the Windows implementation. Returns `self` unchanged off Windows
+    /// (no renderer instance can exist); kept because the cfg-agnostic CLI
+    /// wires the resolver before the renderer reports its platform refusal.
+    pub fn with_reflection_resolver(self, _resolver: GameFileResolver) -> Self {
+        self
+    }
+
     /// See the Windows implementation. No-op here (no renderer instance can
     /// exist off Windows); kept for cross-platform API parity with `--water-full`.
     pub fn set_water_full(&mut self, _water_full: bool) {}
@@ -2834,6 +3009,20 @@ impl NativeD3d11TerrainRenderer {
         _bundle: &NativeD3d11TerrainBundle,
         _graph: &ProductionMapPassGraph,
     ) -> Result<NativeD3d11PreparedTerrainBundle> {
+        Err(
+            "production native D3D11 terrain replay blocked: D3D11 replay is only available on Windows"
+                .into(),
+        )
+    }
+
+    /// See the Windows implementation. RES2 capture-parity counterpart of
+    /// [`Self::prepare_production_map`]; kept here for cross-platform API
+    /// parity so `accept_terrain_d3d11` still compiles off Windows.
+    pub fn prepare_capture_parity_map(
+        &self,
+        _bundle: &NativeD3d11TerrainBundle,
+        _camera: Option<ProductionMapCamera>,
+    ) -> Result<NativeD3d11PreparedProductionMap> {
         Err(
             "production native D3D11 terrain replay blocked: D3D11 replay is only available on Windows"
                 .into(),
@@ -3213,6 +3402,10 @@ pub struct NativeD3d11TerrainBundle {
     pub(crate) map_frame_bundle: PathBuf,
     pub(crate) bundle_dir: PathBuf,
     pub(crate) frame: MapFrameRuntimeBundle,
+    /// RES2: the spec this bundle was validated under. Admission needs it to
+    /// know WHICH vanilla sources are required, so it can check the seal
+    /// against exactly that evidence.
+    pub(crate) spec: MapFrameBundleValidationSpec,
 }
 
 impl NativeD3d11TerrainBundle {
@@ -3253,6 +3446,13 @@ impl NativeD3d11TerrainBundle {
         Self::load_for(map_frame_bundle, BORDERS_MAP_FRAME_SPEC)
     }
 
+    pub fn load_borders_with_resolver(
+        map_frame_bundle: impl AsRef<Path>,
+        resolver: &GameFileResolver,
+    ) -> Result<Self> {
+        Self::load_for_with_resolver(map_frame_bundle, BORDERS_MAP_FRAME_SPEC, Some(resolver))
+    }
+
     pub fn load_trees(map_frame_bundle: impl AsRef<Path>) -> Result<Self> {
         Self::load_for(map_frame_bundle, TREES_MAP_FRAME_SPEC)
     }
@@ -3285,7 +3485,49 @@ impl NativeD3d11TerrainBundle {
             map_frame_bundle,
             bundle_dir,
             frame,
+            spec,
         })
+    }
+
+    /// RES2 strict consumer gate. Admit this bundle for PRODUCTION PLAYBACK —
+    /// output presented to a viewer as product pixels — only when its required
+    /// vanilla sources were certified against the effective VFS the engine
+    /// compiled from (`ResolverVerified` or `ProducerVerified`).
+    ///
+    /// This is deliberately NOT called by [`Self::load`] and friends: loading
+    /// stays permissive so the diagnostic/evidence routes
+    /// (`validate_*_map_frame_bundle`, the `map_viewer` inspection and
+    /// reference-render commands) keep accepting pre-FW7 bundles, which is the
+    /// whole reason FW12 left the producer-side `Unverified` state
+    /// non-refusing. Only a consumer that displays the frame as product output
+    /// calls this.
+    ///
+    /// `consumer_label` names the refusing product boundary in the error.
+    pub fn require_production_vanilla_sources(
+        &self,
+        consumer_label: &str,
+    ) -> std::result::Result<(), MapFrameVanillaSourceRefusal> {
+        self.admit_for_production(consumer_label).map(|_| ())
+    }
+
+    /// Run the gate and return the compile-time proof the production
+    /// preparation funnels require. Callers cannot reach those funnels without
+    /// this value, so the gate cannot be disabled by an attribute, a dead
+    /// branch, or a shadowed helper — only by a compile error.
+    pub fn admit_for_production(
+        &self,
+        consumer_label: &str,
+    ) -> std::result::Result<AdmittedProductionMapBundle<'_>, MapFrameVanillaSourceRefusal> {
+        admit_production_map_bundle(self, consumer_label)
+    }
+
+    /// This bundle's own recorded vanilla-source verification outcome. The
+    /// admission constructor reads it through here so a caller can never pair
+    /// one bundle with another bundle's verification state.
+    pub(crate) fn vanilla_source_verification(&self) -> Option<&MapFrameVanillaSourceVerification> {
+        // Unseals: a seal copied from another frame fails the binding and reads
+        // as absent here, which the gate refuses.
+        unseal_vanilla_source_outcome(&self.frame, self.spec.required_vanilla_sources)
     }
 
     pub fn map_frame_bundle(&self) -> &Path {
@@ -3541,7 +3783,7 @@ pub fn render_production_map_d3d11(
     request: &ProductionMapD3d11ReplayRequest,
 ) -> Result<NativeD3d11ReplayResult> {
     let terrain_bundle = NativeD3d11TerrainBundle::load(&request.terrain_map_frame_bundle)?;
-    render_production_map_d3d11_loaded(request, &terrain_bundle)
+    render_production_map_d3d11_loaded(request, &terrain_bundle, None)
 }
 
 pub fn render_production_map_d3d11_with_resolver(
@@ -3550,12 +3792,18 @@ pub fn render_production_map_d3d11_with_resolver(
 ) -> Result<NativeD3d11ReplayResult> {
     let terrain_bundle =
         NativeD3d11TerrainBundle::load_with_resolver(&request.terrain_map_frame_bundle, resolver)?;
-    render_production_map_d3d11_loaded(request, &terrain_bundle)
+    render_production_map_d3d11_loaded(request, &terrain_bundle, Some(resolver))
 }
 
 fn render_production_map_d3d11_loaded(
     request: &ProductionMapD3d11ReplayRequest,
     terrain_bundle: &NativeD3d11TerrainBundle,
+    // RES2: the optional layers must take the SAME resolver as the terrain
+    // bundle. They previously loaded resolver-less even in the
+    // `_with_resolver` entry point, leaving their vanilla sources uncertified
+    // for no reason — which the production vanilla-source gate would then
+    // refuse, wrongly, for a capture the local effective VFS can verify.
+    resolver: Option<&GameFileResolver>,
 ) -> Result<NativeD3d11ReplayResult> {
     let options = NativeD3d11RenderOptions {
         output: request.output.clone(),
@@ -3567,22 +3815,34 @@ fn render_production_map_d3d11_loaded(
     let water_bundle = request
         .water_map_frame_bundle
         .as_ref()
-        .map(NativeD3d11TerrainBundle::load_water)
+        .map(|path| match resolver {
+            Some(resolver) => NativeD3d11TerrainBundle::load_water_with_resolver(path, resolver),
+            None => NativeD3d11TerrainBundle::load_water(path),
+        })
         .transpose()?;
     let rivers_bundle = request
         .rivers_map_frame_bundle
         .as_ref()
-        .map(NativeD3d11TerrainBundle::load_rivers)
+        .map(|path| match resolver {
+            Some(resolver) => NativeD3d11TerrainBundle::load_rivers_with_resolver(path, resolver),
+            None => NativeD3d11TerrainBundle::load_rivers(path),
+        })
         .transpose()?;
     let borders_bundle = request
         .borders_map_frame_bundle
         .as_ref()
-        .map(NativeD3d11TerrainBundle::load_borders)
+        .map(|path| match resolver {
+            Some(resolver) => NativeD3d11TerrainBundle::load_borders_with_resolver(path, resolver),
+            None => NativeD3d11TerrainBundle::load_borders(path),
+        })
         .transpose()?;
     let trees_bundle = request
         .trees_map_frame_bundle
         .as_ref()
-        .map(NativeD3d11TerrainBundle::load_trees)
+        .map(|path| match resolver {
+            Some(resolver) => NativeD3d11TerrainBundle::load_trees_with_resolver(path, resolver),
+            None => NativeD3d11TerrainBundle::load_trees(path),
+        })
         .transpose()?;
     let prepared = renderer.prepare_reference_production_map_with_layers(
         terrain_bundle,
@@ -3887,7 +4147,9 @@ fn accept_terrain_d3d11_impl(
         None => NativeD3d11TerrainBundle::load(&request.map_frame_bundle)?,
     };
     let renderer = NativeD3d11TerrainRenderer::new()?;
-    let prepared = renderer.prepare_production_map(&bundle, None)?;
+    // RES2: acceptance is capture-parity evidence (`compare_each_draw`), not
+    // product output, so it must keep accepting pre-FW7 bundles.
+    let prepared = renderer.prepare_capture_parity_map(&bundle, None)?;
     let mut result = None;
     for iteration in 0..request.repeat {
         let final_iteration = iteration + 1 == request.repeat;
@@ -3970,6 +4232,37 @@ pub(crate) fn validate_native_d3d11_replay_payloads(
 }
 
 pub(crate) fn native_d3d11_replay_payload_blockers(
+    frame: &MapFrameRuntimeBundle,
+    require_pre_draw_outputs: bool,
+) -> Vec<String> {
+    let mut blockers = native_d3d11_draw_payload_blockers(frame, require_pre_draw_outputs);
+    blockers.extend(native_d3d11_post_pass_output_blockers(frame));
+    blockers
+}
+
+/// Replay payload blockers for a route that establishes its terrain reference
+/// from the chunk library instead of the post-pass output-merger capture.
+///
+/// Only the typed `EvidenceAbsent` post-pass notices are dropped. Structural,
+/// bounds and hash-integrity failures — including a subresource extending past
+/// `payload.byte_len` and runtime-file evidence disagreeing with the payload
+/// metadata — are returned like any other blocker. The substring waiver this
+/// replaced could not distinguish them and swallowed all thirteen alike.
+pub(crate) fn native_d3d11_replay_payload_blockers_without_post_pass_reference(
+    frame: &MapFrameRuntimeBundle,
+    require_pre_draw_outputs: bool,
+) -> Vec<String> {
+    let mut blockers = native_d3d11_draw_payload_blockers(frame, require_pre_draw_outputs);
+    blockers.extend(
+        native_d3d11_post_pass_output_blockers_typed(frame)
+            .into_iter()
+            .filter(|blocker| blocker.kind != PostPassOutputBlockerKind::EvidenceAbsent)
+            .map(|blocker| blocker.message),
+    );
+    blockers
+}
+
+fn native_d3d11_draw_payload_blockers(
     frame: &MapFrameRuntimeBundle,
     require_pre_draw_outputs: bool,
 ) -> Vec<String> {
@@ -4165,7 +4458,6 @@ pub(crate) fn native_d3d11_replay_payload_blockers(
             }
         }
     }
-    blockers.extend(native_d3d11_post_pass_output_blockers(frame));
     blockers
 }
 
@@ -4241,14 +4533,46 @@ pub(crate) fn production_map_camera_from_scene_cb0(
     )
 }
 
+/// Why a post-pass output-merger blocker was raised.
+///
+/// Routes that compare against the terrain chunk library instead of the
+/// post-pass reference may waive `EvidenceAbsent` — the bundle simply carries
+/// no such reference. They may never waive `IntegrityFailure`: that means
+/// evidence IS present and is structurally wrong, out of bounds, or disagrees
+/// with its own runtime-file hash. Classifying by an error-string substring
+/// could not tell those apart and swallowed all thirteen alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PostPassOutputBlockerKind {
+    EvidenceAbsent,
+    IntegrityFailure,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PostPassOutputBlocker {
+    pub(crate) kind: PostPassOutputBlockerKind,
+    pub(crate) message: String,
+}
+
 pub(crate) fn native_d3d11_post_pass_output_blockers(frame: &MapFrameRuntimeBundle) -> Vec<String> {
+    native_d3d11_post_pass_output_blockers_typed(frame)
+        .into_iter()
+        .map(|blocker| blocker.message)
+        .collect()
+}
+
+pub(crate) fn native_d3d11_post_pass_output_blockers_typed(
+    frame: &MapFrameRuntimeBundle,
+) -> Vec<PostPassOutputBlocker> {
+    let mut typed: Vec<PostPassOutputBlocker> = Vec::new();
     let mut blockers = Vec::new();
     let Some(output_merger) = frame.post_pass_output_merger.as_ref() else {
-        blockers.push(
-            "map-frame bundle has no post-pass output-merger terrain render target payload"
-                .to_string(),
-        );
-        return blockers;
+        typed.push(PostPassOutputBlocker {
+            kind: PostPassOutputBlockerKind::EvidenceAbsent,
+            message:
+                "map-frame bundle has no post-pass output-merger terrain render target payload"
+                    .to_string(),
+        });
+        return typed;
     };
     if output_merger.render_targets.len() != 1 {
         blockers.push(format!(
@@ -4257,7 +4581,7 @@ pub(crate) fn native_d3d11_post_pass_output_blockers(frame: &MapFrameRuntimeBund
         ));
     }
     let Some(target) = output_merger.render_targets.first() else {
-        return blockers;
+        return post_pass_integrity_failures(typed, blockers);
     };
     validate_output_merger_texture(
         target,
@@ -4266,10 +4590,13 @@ pub(crate) fn native_d3d11_post_pass_output_blockers(frame: &MapFrameRuntimeBund
         &mut blockers,
     );
     let Some(payload) = target.post_pass_payload.as_ref() else {
-        blockers.push(
-            "post-pass output-merger terrain render target is missing captured bytes".to_string(),
-        );
-        return blockers;
+        let mut typed = post_pass_integrity_failures(typed, blockers);
+        typed.push(PostPassOutputBlocker {
+            kind: PostPassOutputBlockerKind::EvidenceAbsent,
+            message: "post-pass output-merger terrain render target is missing captured bytes"
+                .to_string(),
+        });
+        return typed;
     };
     if payload.file.trim().is_empty() || payload.byte_len == 0 || payload.fnv1a64.trim().is_empty()
     {
@@ -4335,7 +4662,7 @@ pub(crate) fn native_d3d11_post_pass_output_blockers(frame: &MapFrameRuntimeBund
             "post-pass output-merger terrain render target payload {} is missing runtime file evidence",
             payload.file
         ));
-        return blockers;
+        return post_pass_integrity_failures(typed, blockers);
     };
     if evidence.byte_len != payload.byte_len || evidence.fnv1a64 != payload.fnv1a64 {
         blockers.push(format!(
@@ -4343,7 +4670,18 @@ pub(crate) fn native_d3d11_post_pass_output_blockers(frame: &MapFrameRuntimeBund
             payload.file
         ));
     }
-    blockers
+    post_pass_integrity_failures(typed, blockers)
+}
+
+fn post_pass_integrity_failures(
+    mut typed: Vec<PostPassOutputBlocker>,
+    messages: Vec<String>,
+) -> Vec<PostPassOutputBlocker> {
+    typed.extend(messages.into_iter().map(|message| PostPassOutputBlocker {
+        kind: PostPassOutputBlockerKind::IntegrityFailure,
+        message,
+    }));
+    typed
 }
 
 pub(crate) fn native_d3d11_validate_texture_payload_shape(

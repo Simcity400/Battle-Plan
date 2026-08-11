@@ -14,20 +14,17 @@ use std::time::{Duration, Instant};
 
 use map_viewer::{
     hoi4_map_camera_defines_from_bundle, load_restore_scene_bundle_session_dir, map_wrap_offsets,
-    scene_average_luminance, tree_second_subdraw_verdict,
-    AverageLuminanceReduction, BloomBlurKernel, BloomParams, GameFileResolver,
-    Hoi4MapCameraDefines, LuminanceClampBounds, NativeD3d11PreparedProductionMap,
-    NativeD3d11RenderOptions, NativeD3d11TerrainBundle, NativeD3d11TerrainRenderer,
-    C03CameraReplayBinding, PostEffectRegionWeightManifest, ProductionMapCamera,
-    ProductionMapCameraProjection,
-    RESTORE_PASS_BUNDLE_FILE,
+    scene_average_luminance, tree_second_subdraw_verdict, AverageLuminanceReduction,
+    BloomBlurKernel, BloomParams, C03CameraReplayBinding, GameFileResolver, Hoi4MapCameraDefines,
+    LuminanceClampBounds, NativeD3d11PreparedProductionMap, NativeD3d11RenderOptions,
+    NativeD3d11TerrainBundle, NativeD3d11TerrainRenderer, PostEffectRegionWeightManifest,
+    ProductionMapCamera, ProductionMapCameraProjection, RESTORE_PASS_BUNDLE_FILE,
 };
 use replay_core::{
     OccupationSecondaryReplayReadbackReceipt, PoliticalTextureFormat, PoliticalTextureKind,
     ProductionRenderFrame, RenderSubmit, SnowMudReplayReadbackReceipt, SnowMudTexturePacket,
-    StaticMapCommand,
-    StaticShaderResourceSource, TiledLightSubmission, ViewStatus, WeatherProvinceSnowView,
-    WorldFrame,
+    StaticMapCommand, StaticShaderResourceSource, TiledLightSubmission, ViewStatus,
+    WeatherProvinceSnowView, WorldFrame,
 };
 use sha2::{Digest, Sha256};
 use winapi::shared::dxgiformat::{
@@ -240,6 +237,18 @@ float3 hoi4_scene_restore_full(float3 inColor) {
 ///     (center tap + 4 symmetric tap pairs; `bloom.rs::blur_pass`).
 /// The kernel weights/offsets and knee constants come from the files-first
 /// resolver (`BloomBlurKernel::from_gaussian` + `BloomParams`), uploaded here.
+///
+/// PROVENANCE (R14/R15 C6a): this is HAND-WRITTEN HLSL that mirrors the
+/// shipped algorithms — it is NOT compiled from resolver-loaded shader source.
+/// The `LUMINANCE_VECTOR` (constants.fxh:119) and the `0.5` knee denominator
+/// (downsample.shader) are hard-coded in the string below rather than read
+/// through the resolver; only threshold, emissive strength, inverse sizes, and
+/// the blur-kernel law are uploaded dynamically. Reachability: this shader
+/// only runs on the legacy `MapRenderer::render` path — the non-authenticated
+/// debug branch (`app.rs`) and the headless `dump_debug_frame` route
+/// (`headless.rs`), which `reject_recording_dump_debug_bundle` forbids for
+/// production recordings. It is a debug/evidence surface, not a production
+/// render law.
 const RESTORE_BLOOM_HLSL: &str = r#"
 Texture2D<float4> BloomSource : register(t0);
 SamplerState BloomSampler : register(s0);
@@ -648,7 +657,8 @@ struct CapturedPassLayer {
     last_render: Option<Duration>,
 }
 
-/// Resolve only the exact selected-Present-bound SnowMud carrier. Per-province
+/// Legacy forensic captured-submit route only; not XMAP07 product authority.
+/// Resolve the old exact selected-Present-bound SnowMud carrier. Per-province
 /// semantic weather state is deliberately ignored: both the texture bytes and
 /// the fade bits come from the production render carrier's authenticated
 /// producer-to-D3D-consumer join.
@@ -657,8 +667,7 @@ fn recorded_snow_mud_texture<'a>(
     render_frame: Option<&'a ProductionRenderFrame>,
 ) -> Result<Option<(&'a SnowMudTexturePacket, f32)>> {
     let render_frame = render_frame.ok_or_else(|| {
-        "recorded SnowMudData blocked: displayed hour has no production render carrier"
-            .to_string()
+        "recorded SnowMudData blocked: displayed hour has no production render carrier".to_string()
     })?;
     let packet = render_frame.snow_mud_texture.as_ref().ok_or_else(|| {
         "recorded SnowMudData blocked: production render frame has no exact CPU pre-upload packet"
@@ -1028,15 +1037,14 @@ impl CapturedPassLayer {
 
     fn update_weather_province_snow(&mut self, frame: &WorldFrame) {
         if self.restore_region_weights.is_some() {
-            self.current_weather_province_snow =
-                Some(frame.weather_province_snow().clone());
+            self.current_weather_province_snow = Some(frame.weather_province_snow().clone());
             self.mark_dirty();
         }
     }
 
-    /// B13 production route: upload the portable replay's exact a729 CPU
-    /// pre-upload packet and replace every captured-pass `SnowMudTexture`
-    /// binding. Semantic per-province state is never rasterized as a fallback.
+    /// Legacy forensic captured-pass route: upload the selected-Present-bound
+    /// packet and replace its captured `SnowMudTexture` bindings. This is not
+    /// the XMAP07 product route; semantic rows are never rasterized as fallback.
     unsafe fn update_recorded_snow_mud(
         &mut self,
         gfx: &Gfx,
@@ -1053,11 +1061,7 @@ impl CapturedPassLayer {
             &packet.bytes,
             "recorded SnowMudData",
         )?;
-        let readback = verify_immutable_texture_readback(
-            gfx,
-            &texture,
-            packet,
-        )?;
+        let readback = verify_immutable_texture_readback(gfx, &texture, packet)?;
         let replacements = self.prepared.replace_snow_mud_srv(srv.as_raw())?;
         if replacements == 0 {
             return Err(
@@ -1241,7 +1245,10 @@ impl CapturedPassLayer {
             if binding.submit_index != submit.submit_index
                 || binding.submit_global_order != submit.global_order
             {
-                return Err("recorded C03 camera blocked: binding belongs to a different display submit".into());
+                return Err(
+                    "recorded C03 camera blocked: binding belongs to a different display submit"
+                        .into(),
+                );
             }
         }
         if self.displayed_submit != next || self.c03_camera_replay != next_camera_binding {
@@ -1294,9 +1301,13 @@ impl CapturedPassLayer {
                     camera,
                     gfx.width,
                 )?,
-                _ => return Err("recorded C03 camera blocked: carrier/consumer binding cardinality mismatch".into()),
+                _ => return Err(
+                    "recorded C03 camera blocked: carrier/consumer binding cardinality mismatch"
+                        .into(),
+                ),
             };
-            let frame_camera_projection = ProductionMapCameraProjection::from_camera(production_camera)?;
+            let frame_camera_projection =
+                ProductionMapCameraProjection::from_camera(production_camera)?;
             unsafe {
                 self.recompose_restore_grade_for_frame(gfx, production_camera, day_night_hour)?;
             }
@@ -1389,8 +1400,9 @@ impl CapturedPassLayer {
                     stats.weather_joins,
                 );
             }
-            // Files-first per-frame exposure adaptation (FIDELITY_LEDGER debt
-            // #2): reduce the just-rendered HDR MainScene through the ported
+            // Files-first per-frame exposure adaptation (GRADING_LAW.md
+            // "LAW 2 — adaptation / exposure"): reduce the just-rendered HDR
+            // MainScene through the ported
             // downsample_luminance.shader chain and rewrite the exposure's
             // AverageLuminance, replacing the constant MIN_HDR_ADJUSTMENT
             // floor. AvgLum depends only on the rendered scene bytes, so it is
@@ -1727,6 +1739,16 @@ impl CapturedPassLayer {
 
         // Rebuild the exposure vector: keep MiddleGrey (.x) and the LUT/exposure
         // gate (.z), swap in the measured, R16-quantized AverageLuminance (.y).
+        //
+        // KNOWN DIVERGENCE (R14/R15 C6b, debug/evidence path only): this writes
+        // the CURRENT scene's reduction directly — no previous adapted
+        // luminance is retained and no `HDR_ADJUSTMENT_SPEED` easing is
+        // applied, whereas `luminance_law.rs` documents that a frame SEQUENCE
+        // eases toward the target. A single re-rendered frame therefore adapts
+        // instantly. Like the hand-written bloom HLSL above, this runs only on
+        // the legacy/debug `MapRenderer::render` route, never in authenticated
+        // production-recording playback. An unclamped reduction continues as
+        // ordinary output (logged below), not as a typed gap.
         let mut constants = self.restore_postfx.constants;
         constants.exposure[0] = self.restore_postfx.middle_grey;
         constants.exposure[1] = reduction.r16_quantized;
@@ -2352,9 +2374,7 @@ fn seal_snow_mud_h2_receipt(
         selected_present_sha256: packet.selected_present_sha256.clone(),
         snow_mud_fade_f32_bits: packet.snow_mud_fade_f32_bits,
         snow_mud_fade_consumer_count: packet.snow_mud_fade_consumer_count,
-        snow_mud_fade_consumer_set_sha256: packet
-            .snow_mud_fade_consumer_set_sha256
-            .clone(),
+        snow_mud_fade_consumer_set_sha256: packet.snow_mud_fade_consumer_set_sha256.clone(),
         observation_sha256: packet.observation_sha256.clone(),
         payload_sha256: packet.payload_sha256.clone(),
         readback_sha256: readback.readback_sha256.clone(),
@@ -2395,9 +2415,17 @@ pub(crate) fn seal_product_snow_mud_h2_receipt(
     )
 }
 
-/// Optional evidence sink. It is output-only and never changes rendering.
-/// When requested, each producer ordinal gets a create-new, fsynced receipt so
-/// scrubbing cannot silently overwrite an earlier member of the H/H2 pair.
+/// Evidence sink for the snow/mud H/H2 pair. Each producer ordinal gets a
+/// create-new, fsynced receipt so scrubbing cannot silently overwrite an
+/// earlier member of the pair.
+///
+/// It supplies no bytes back to rendering, but it is NOT harmless: an empty
+/// directory value, a readback that disagrees with the sealed receipt, and a
+/// create-new collision holding different bytes each return `Err` and so fail a
+/// frame that would otherwise render. `REPLAY_SNOW_MUD_H2_RECEIPT_DIR` is
+/// therefore a registered [`crate::blockers::BlockerId::SnowMudH2ReceiptDir`]
+/// env surface: `reject_env_overrides` refuses to start the product with it
+/// set, and this function returns `Ok(None)` on every product path.
 pub(crate) fn persist_snow_mud_h2_receipt(
     receipt: &SnowMudReplayReadbackReceipt,
     tight_readback_bytes: &[u8],
@@ -2455,8 +2483,13 @@ pub(crate) fn seal_product_occupation_secondary_h2_receipt(
     Ok(receipt)
 }
 
-/// Optional create-new evidence sink for the replay half of the occupation
-/// H/H2 transaction. It never supplies bytes back to rendering.
+/// Create-new evidence sink for the replay half of the occupation H/H2
+/// transaction. It never supplies bytes back to rendering, but — exactly like
+/// [`persist_snow_mud_h2_receipt`] — it can fail an otherwise-good frame on an
+/// empty value, a receipt/readback disagreement, or a create-new collision.
+/// `REPLAY_OCCUPATION_H2_RECEIPT_DIR` is a registered
+/// [`crate::blockers::BlockerId::OccupationH2ReceiptDir`] env surface, so it is
+/// rejected at startup and this function returns `Ok(None)` in the product.
 pub(crate) fn persist_occupation_secondary_h2_receipt(
     receipt: &OccupationSecondaryReplayReadbackReceipt,
     tight_readback_bytes: &[u8],
@@ -2915,7 +2948,8 @@ fn restore_full_postfx_from_files(
     // height first, then ordinary-to-winter, then spatial region. NGraphics is
     // the final inheritance fallback; there is no endpoint-only bloom lookup.
     let bloom = restore_bloom_law_for_grade(&grade)?;
-    // Files-first per-frame exposure adaptation (FIDELITY_LEDGER debt #2): the
+    // Files-first per-frame exposure adaptation (GRADING_LAW.md "LAW 2 —
+    // adaptation / exposure"): the
     // `MinHdr_MaxHdr` clamp bounds come from the same resolved/blended scalar state and let
     // the composite pass recompute AvgLum from the rendered scene each frame via
     // the ported `downsample_luminance.shader` chain, instead of the
@@ -2977,13 +3011,12 @@ pub fn restore_full_postfx_validate_capture(
     let resolver = game_resolver.ok_or(
         "--postfx-validate-capture needs --game <the game install dir> to compose the file-law grade",
     )?;
-    let bundle = load_restore_scene_bundle_session_dir(capture_dir)?
-        .ok_or_else(|| {
-            format!(
-                "no {RESTORE_PASS_BUNDLE_FILE} or retained RestoreScene manifest in {}",
-                capture_dir.display()
-            )
-        })?;
+    let bundle = load_restore_scene_bundle_session_dir(capture_dir)?.ok_or_else(|| {
+        format!(
+            "no {RESTORE_PASS_BUNDLE_FILE} or retained RestoreScene manifest in {}",
+            capture_dir.display()
+        )
+    })?;
     let night = day_night_hour
         .map(|hour| !(0.25..0.75).contains(&hour))
         .unwrap_or(false);
@@ -3245,6 +3278,13 @@ fn production_camera_from_app_camera(
     camera: &Camera,
     screen_w: u32,
 ) -> Result<ProductionMapCamera> {
+    if let Some(viewer_state) = camera.viewer_state() {
+        return viewer_state.production_camera();
+    }
+
+    // Scalar reconstruction is retained only for the explicit legacy debug
+    // camera. Product rendering and every hit/projection consumer above take
+    // the same typed XMAP03 camera state through the early return.
     let screen_w = screen_w.max(1) as f32;
     let height = projection.height_for_screen_zoom(
         camera.zoom as f32,
@@ -3255,8 +3295,7 @@ fn production_camera_from_app_camera(
     // The app camera is in bmp-style map pixels (y grows south/down, like
     // provinces.bmp rows); the renderer's ground plane z grows north.
     // Flipping here (and unflipping in screen_to_map) keeps every
-    // interaction path - key pan, drag, wheel anchor, picking - in one
-    // consistent y-down space.
+    // legacy debug interaction path in one consistent y-down space.
     let ground_z = camera.map_h() as f32 - camera.center_y as f32;
     projection.camera_for_ground_center(camera.center_x as f32, ground_z, height)
 }
@@ -3301,12 +3340,10 @@ mod tests {
         let target_look = [18.0f32.to_bits(), 0.0f32.to_bits(), 19.0f32.to_bits()];
         let mut bytes = vec![0u8; replay_core::A729_CAMERA_RENDER_VIEW_BYTES];
         for (index, value) in current_eye.into_iter().enumerate() {
-            bytes[0x180 + index * 4..0x184 + index * 4]
-                .copy_from_slice(&value.to_le_bytes());
+            bytes[0x180 + index * 4..0x184 + index * 4].copy_from_slice(&value.to_le_bytes());
         }
         for (index, value) in current_look.into_iter().enumerate() {
-            bytes[0x18c + index * 4..0x190 + index * 4]
-                .copy_from_slice(&value.to_le_bytes());
+            bytes[0x18c + index * 4..0x190 + index * 4].copy_from_slice(&value.to_le_bytes());
         }
         let mut embedded = [0u8; 16];
         embedded[4..8].copy_from_slice(&4i32.to_le_bytes());
@@ -3398,23 +3435,22 @@ mod tests {
 
         let mut double_apply = binding.clone();
         double_apply.raw_event_reapplication_count = 1;
-        assert!(production_camera_from_recorded_carrier(&carrier, &double_apply, 640, 480)
-            .unwrap_err()
-            .to_string()
-            .contains("binding identity/policy mismatch"));
+        assert!(
+            production_camera_from_recorded_carrier(&carrier, &double_apply, 640, 480)
+                .unwrap_err()
+                .to_string()
+                .contains("binding identity/policy mismatch")
+        );
 
         let mut changed_raw_event = carrier.clone();
         changed_raw_event.camera_event_batches[0].input_events[0].signed_delta_i32 = 6;
         changed_raw_event.payload_sha256 = changed_raw_event.computed_payload_sha256();
-        assert!(production_camera_from_recorded_carrier(
-            &changed_raw_event,
-            &binding,
-            640,
-            480,
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("binding/state policy mismatch"));
+        assert!(
+            production_camera_from_recorded_carrier(&changed_raw_event, &binding, 640, 480,)
+                .unwrap_err()
+                .to_string()
+                .contains("binding/state policy mismatch")
+        );
     }
 
     #[test]
@@ -3586,6 +3622,7 @@ TONE_MAP_MIDDLE_GREY = 0.5,
 TONE_MAP_LUMINANCE_WHITE = 1.0,
 MIN_HDR_ADJUSTMENT = 0.5,
 MAX_HDR_ADJUSTMENT = 1.0,
+HDR_ADJUSTMENT_SPEED = 15.0,
 BLOOM_WIDTH = 1.5,
 BLOOM_SCALE = 0.9,
 BRIGHT_THRESHOLD = 0.9,
@@ -3594,6 +3631,10 @@ POSTEFFECT_PER_PROVINCE_MIN_SNOW = 0.1,
 POSTEFFECT_PER_PROVINCE_MAX_SNOW = 0.2,
 POSTEFFECT_TOTAL_MIN_SNOW = 0.0,
 POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
+POSTEFFECT_FEATHER_MIN_DISTANCE = 300.0,
+POSTEFFECT_FEATHER_MAX_DISTANCE = 2000.0,
+POSTEFFECT_FEATHER_AT_MIN = 0.03,
+POSTEFFECT_FEATHER_AT_MAX = 0.80,
 "#,
         )
         .expect("write graphics defines");
@@ -3690,8 +3731,7 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
             region_winter_factor: Some(0.5),
         };
         let first = RestoreGradeKey::from_state(state, Some([0x11; 32]));
-        let changed_snow_same_factor =
-            RestoreGradeKey::from_state(state, Some([0x22; 32]));
+        let changed_snow_same_factor = RestoreGradeKey::from_state(state, Some([0x22; 32]));
         assert_ne!(first, changed_snow_same_factor);
         assert_ne!(first, RestoreGradeKey::from_state(state, None));
     }
@@ -3729,7 +3769,10 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
         let frame = timeline.frame(hour).expect("typed frame");
         let err = recorded_snow_mud_texture(&frame, None)
             .expect_err("semantic levels cannot replace exact producer bytes");
-        assert!(err.to_string().contains("no production render carrier"), "{err}");
+        assert!(
+            err.to_string().contains("no production render carrier"),
+            "{err}"
+        );
 
         drop(frame);
         drop(timeline);
@@ -3779,19 +3822,20 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
         );
 
         let mut submit = empty_submit(1, 1, 1);
-        submit.political_textures.push(replay_core::PoliticalTexturePacket {
-            kind: PoliticalTextureKind::Secondary,
-            target_binding_identity: "ProvinceSecondaryColorMap".into(),
-            upload_order: 7,
-            width: 1,
-            height: 1,
-            row_pitch: 4,
-            format: PoliticalTextureFormat::B8g8r8a8UnormSrgb,
-            bytes: vec![1, 2, 3, 4],
-            sha256: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"
-                .into(),
-            occupation_observation: None,
-        });
+        submit
+            .political_textures
+            .push(replay_core::PoliticalTexturePacket {
+                kind: PoliticalTextureKind::Secondary,
+                target_binding_identity: "ProvinceSecondaryColorMap".into(),
+                upload_order: 7,
+                width: 1,
+                height: 1,
+                row_pitch: 4,
+                format: PoliticalTextureFormat::B8g8r8a8UnormSrgb,
+                bytes: vec![1, 2, 3, 4],
+                sha256: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a".into(),
+                occupation_observation: None,
+            });
         let err = require_secondary_political_texture(Some(&submit))
             .expect_err("an unconsumed packet must not authenticate occupation stripes");
         assert!(
@@ -3846,12 +3890,18 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_state_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         }
     }
 

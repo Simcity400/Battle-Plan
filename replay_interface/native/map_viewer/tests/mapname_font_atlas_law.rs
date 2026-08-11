@@ -27,9 +27,6 @@
 //!    uploaded as-is, not regenerated. Closes the "glyph atlas mips" residual
 //!    as FILE.
 
-use std::path::Path;
-
-const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
 const FONT_FNT: &str = "gfx/fonts/hoi_mapfont4.fnt";
 const FONT_DDS: &str = "gfx/fonts/hoi_mapfont4.dds";
 
@@ -43,12 +40,10 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 /// (1) The advance table is the `.fnt` `xadvance`; the font ships no kerning.
 #[test]
+#[cfg_attr(not(gate_hoi4_install), ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path")]
 fn glyph_advance_table_is_fnt_xadvance_with_no_kerning() {
-    let fnt = Path::new(VANILLA_GAME_DIR).join(FONT_FNT);
-    let Ok(text) = std::fs::read_to_string(&fnt) else {
-        eprintln!("SKIP glyph advance law: no font at {}", fnt.display());
-        return;
-    };
+    let fnt = replay_test_gates::require_vanilla_game_root().join(FONT_FNT);
+    let text = std::fs::read_to_string(&fnt).expect("read shipped map font");
 
     // The declared char count matches the parsed `char` lines.
     let declared = text
@@ -156,15 +151,10 @@ fn le_u32(b: &[u8], off: usize) -> u32 {
 /// (2) The atlas ships a complete 4-level mip chain (fmt 87, BGRA); the engine
 /// uploads it verbatim rather than runtime-generating it.
 #[test]
+#[cfg_attr(not(gate_hoi4_install), ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path")]
 fn glyph_atlas_ships_complete_mip_chain_not_runtime_generated() {
-    let dds_path = Path::new(VANILLA_GAME_DIR).join(FONT_DDS);
-    let Ok(f) = std::fs::read(&dds_path) else {
-        eprintln!(
-            "SKIP glyph atlas mip law: no atlas at {}",
-            dds_path.display()
-        );
-        return;
-    };
+    let dds_path = replay_test_gates::require_vanilla_game_root().join(FONT_DDS);
+    let f = std::fs::read(&dds_path).expect("read shipped map font atlas");
     assert_eq!(&f[0..4], b"DDS ", "magic");
 
     let height = le_u32(&f, 12) as usize;

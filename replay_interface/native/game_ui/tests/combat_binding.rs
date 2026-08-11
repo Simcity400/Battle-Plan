@@ -17,13 +17,11 @@ use game_ui::gui::{GuiElement, LayoutSet};
 use replay_core::{open_recording, WorldTimeline};
 use std::path::{Path, PathBuf};
 
-const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
-fn game_root() -> Option<PathBuf> {
-    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-    root.is_dir().then_some(root)
+/// The vanilla install root. Panics rather than returning `None`: every
+/// caller is gated on `gate_hoi4_install`, so an absent install here is a
+/// failure, never a silent skip that libtest would report as a pass.
+fn game_root() -> PathBuf {
+    replay_test_gates::require_vanilla_game_root()
 }
 
 fn parse_layout(root: &Path, rel: &str) -> LayoutSet {
@@ -63,11 +61,12 @@ fn fixture(name: &str) -> WorldTimeline {
 /// resolves to its file-declared rect; its direct combat-detail children
 /// resolve to engine-law pixel positions (center anchor + explicit position).
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn landcombatview_layout_resolves_from_files() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP landcombatview_layout_resolves_from_files: the game root missing");
-        return;
-    };
+    let root = game_root();
     let layouts = parse_layout(&root, "interface/landcombat.gui");
     assert_eq!(
         layouts.stats.recovery_count, 0,
@@ -161,4 +160,140 @@ fn typed_display_fields_bind_and_external_selectors_fail_closed() {
     assert_eq!(row.terrain.as_deref(), Some("plains"), "producer terrain");
     assert_eq!(row.bombardment_active, None, "A16 bombardment fail-closed");
     assert_eq!(row.air_superiority_state, None, "A16 air-sup fail-closed");
+}
+
+// ---------------------------------------------------------------------------
+// FW1 status consumer — availability is owned by `WorldFrame::combats_status`
+// ---------------------------------------------------------------------------
+
+struct MemorySource {
+    hours: Vec<i64>,
+    frames: std::collections::BTreeMap<i64, serde_json::Value>,
+}
+
+impl replay_core::ReplaySource for MemorySource {
+    fn game_id(&self) -> &str {
+        "combat_status_test"
+    }
+    fn hours(&self) -> &[i64] {
+        &self.hours
+    }
+    fn warnings(&self) -> &[String] {
+        &[]
+    }
+    fn frame(
+        &self,
+        hour_index: i64,
+    ) -> Result<replay_core::RawFrame, replay_core::SourceError> {
+        let rest = self
+            .frames
+            .get(&hour_index)
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .ok_or_else(|| replay_core::SourceError::Open(format!("no frame {hour_index}")))?;
+        Ok(replay_core::RawFrame {
+            hour_index,
+            date: None,
+            save_version: None,
+            schema_version: None,
+            rest,
+        })
+    }
+}
+
+fn memory_frames(frames: Vec<(i64, serde_json::Value)>) -> WorldTimeline {
+    let hours: Vec<i64> = frames.iter().map(|(h, _)| *h).collect();
+    let source = MemorySource {
+        hours,
+        frames: frames.into_iter().collect(),
+    };
+    WorldTimeline::open(Box::new(source)).expect("open memory timeline")
+}
+
+/// The combats collection's own status decides availability — a frame whose
+/// collection is unavailable (or absent) binds NO rows and is distinguishable
+/// from the measured "no combats were running", instead of both collapsing
+/// into the same empty vector.
+#[test]
+fn combat_panel_availability_is_status_owned_not_emptiness_derived() {
+    use replay_core::ViewStatus;
+    let tl = memory_frames(vec![
+        // Present with one active combat.
+        (
+            0,
+            serde_json::json!({ "combats": [ { "combat_id": 9001, "kind": "land" } ] }),
+        ),
+        // Present, measured empty: no combats were running.
+        (1, serde_json::json!({ "combats": [] })),
+        // Explicitly unobtained collection this hour.
+        (2, serde_json::json!({ "combats": null })),
+        // Domain absent: the hour carried no combats key at all.
+        (3, serde_json::json!({})),
+    ]);
+
+    let active = combat_panel_from_frame(&tl.frame(0).unwrap());
+    assert_eq!(active.combats_status, ViewStatus::Present);
+    assert!(active.available);
+    assert_eq!(active.combats.len(), 1);
+
+    let measured_empty = combat_panel_from_frame(&tl.frame(1).unwrap());
+    assert_eq!(measured_empty.combats_status, ViewStatus::Present);
+    assert!(!measured_empty.available, "no combat => window closed");
+    assert!(measured_empty.combats.is_empty());
+
+    let unobtained = combat_panel_from_frame(&tl.frame(2).unwrap());
+    assert_eq!(unobtained.combats_status, ViewStatus::DomainUnavailable);
+    assert!(!unobtained.available);
+    assert!(unobtained.combats.is_empty(), "fail-closed: no rows bound");
+
+    let absent = combat_panel_from_frame(&tl.frame(3).unwrap());
+    assert_eq!(absent.combats_status, ViewStatus::DomainAbsent);
+    assert!(!absent.available);
+
+    // The three empty-vector shapes are now distinguishable by status.
+    assert_ne!(measured_empty.combats_status, unobtained.combats_status);
+    assert_ne!(measured_empty.combats_status, absent.combats_status);
+}
+
+/// RES1 R1 — the XUI20 land vector consumes the same `combats_status`. The
+/// binder is fail-closed at the frame seam (no rows bound under a non-Present
+/// collection) and the bound status makes the measured-empty hour
+/// distinguishable from the unreadable one, so no XUI20 land surface can read
+/// as measured off row presence alone.
+#[test]
+fn xui20_land_binding_is_owned_by_combats_status() {
+    use game_ui::combat_detail_losses::combat_detail_losses_from_frame;
+    use replay_core::ViewStatus;
+    let tl = memory_frames(vec![
+        (
+            0,
+            serde_json::json!({ "combats": [ { "combat_id": 9001, "kind": "land" } ] }),
+        ),
+        (1, serde_json::json!({ "combats": [] })),
+        (2, serde_json::json!({ "combats": null })),
+        (3, serde_json::json!({})),
+    ]);
+
+    let active = combat_detail_losses_from_frame(&tl.frame(0).unwrap());
+    assert_eq!(active.land_status, ViewStatus::Present);
+    assert_eq!(active.land.len(), 1);
+    assert!(active.has_any_measured_surface());
+
+    let measured_empty = combat_detail_losses_from_frame(&tl.frame(1).unwrap());
+    assert_eq!(measured_empty.land_status, ViewStatus::Present);
+    assert!(measured_empty.land.is_empty());
+
+    let unobtained = combat_detail_losses_from_frame(&tl.frame(2).unwrap());
+    assert_eq!(unobtained.land_status, ViewStatus::DomainUnavailable);
+    assert!(
+        unobtained.land.is_empty(),
+        "fail-closed: an unreadable collection binds no land rows"
+    );
+
+    let absent = combat_detail_losses_from_frame(&tl.frame(3).unwrap());
+    assert_eq!(absent.land_status, ViewStatus::DomainAbsent);
+    assert!(absent.land.is_empty());
+
+    assert_ne!(measured_empty.land_status, unobtained.land_status);
+    assert_ne!(measured_empty.land_status, absent.land_status);
 }

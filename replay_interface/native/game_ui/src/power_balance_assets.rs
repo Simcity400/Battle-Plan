@@ -787,7 +787,20 @@ fn load_admitted_gui_roles(
         layout
             .parse_file(&file.path, source_file)
             .map_err(|_| PowerBalanceAssetError::InvalidGuiManifest)?;
-        if layout.documents.len() != 1 || !layout.documents[0].recoveries.is_empty() {
+        // Destroyed bytes disqualify exactly like a parse recovery does here.
+        // `LayoutSet::parse_file` RECORDS decode damage rather than refusing, so
+        // this adapter must consume the record; a destructively decoded
+        // hierarchy or authored sprite field would otherwise become an admitted
+        // GUI role.
+        let decode_damaged = layout
+            .documents
+            .first()
+            .and_then(|document| document.decode_losses.as_ref())
+            .is_some_and(|report| report.events != 0);
+        if layout.documents.len() != 1
+            || !layout.documents[0].recoveries.is_empty()
+            || decode_damaged
+        {
             return Err(PowerBalanceAssetError::InvalidGuiManifest);
         }
         layouts.insert(source_file, layout);

@@ -1,4 +1,4 @@
-//! D1 + D2 binding gates (REPLAY_PRODUCTION_PLAN Phase D).
+//! D1 + D2 binding gates.
 //!
 //! These drive the *packed snapshot-flavor* fixtures through the real
 //! `replay_core` `ReplaySource`/`WorldTimeline` and assert that the
@@ -14,7 +14,7 @@ use game_ui::assets::AssetResolver;
 use game_ui::binding::{
     country_name_key_candidates, topbar_binding_from_frame, topbar_flag_key_candidates,
 };
-use game_ui::probe::{parse_gfx_files, DEFAULT_GAME_ROOT};
+use game_ui::probe::parse_gfx_files;
 use game_ui::topbar::{compose_topbar, FactoryCounts};
 use replay_core::{open_recording, WorldTimeline};
 use std::path::PathBuf;
@@ -33,11 +33,11 @@ fn fixture_in(group: &str, name: &str) -> WorldTimeline {
     WorldTimeline::open(source).unwrap_or_else(|err| panic!("timeline {name}: {err}"))
 }
 
-fn game_root() -> Option<PathBuf> {
-    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-    root.is_dir().then_some(root)
+/// The vanilla install root. Panics rather than returning `None`: every
+/// caller is gated on `gate_hoi4_install`, so an absent install here is a
+/// failure, never a silent skip that libtest would report as a pass.
+fn game_root() -> PathBuf {
+    replay_test_gates::require_vanilla_game_root()
 }
 
 // --- generator formulas, transcribed from replay_fixture_gen::fx_topbar_scalars_sweep ---
@@ -48,21 +48,6 @@ fn base_for(tag: &str) -> i64 {
         "ENG" => 20,
         _ => 40,
     }
-}
-
-/// Assert a rendered scalar string decodes to `expected` (± 1e-9). Used for the
-/// two genuinely-fractional fields whose JSON round-trip is not bit-exact.
-fn assert_close(got: &Option<String>, expected: f64, _label: &str, tag: &str, t: i64) {
-    let s = got
-        .as_deref()
-        .unwrap_or_else(|| panic!("{tag} scalar @t{t} was fail-closed None, expected {expected}"));
-    let v: f64 = s
-        .parse()
-        .unwrap_or_else(|_| panic!("{tag} scalar @t{t} not a number: {s:?}"));
-    assert!(
-        (v - expected).abs() < 1e-9,
-        "{tag} scalar @t{t}: rendered {s:?} ({v}) != generator {expected}"
-    );
 }
 
 /// GATE 1 — every topbar scalar the view can serve renders == generator value
@@ -87,23 +72,22 @@ fn topbar_scalar_sweep_renders_generator_values() {
                 Some(format!("{}", (base + t * 3) as f64).as_str()),
                 "{tag} pp @t{t}"
             );
-            // stability / war_support are the only genuinely-fractional
-            // scalars; JSON serialization is not bit-round-trip-exact, so the
-            // raw string is validated to DECODE to the generator value (still a
-            // string the binding produced, numerically pinned to the formula).
-            assert_close(
-                &b.stability_percent,
-                0.40 + (t as f64 * 0.02),
-                "{tag} stability",
-                tag,
-                t,
+            // stability / war_support are recorded 0.0..=1.0 ratios and take
+            // the SAME percent projection as the sibling world-tension field:
+            // `topbar::format_percent` of the generator fraction, exactly.
+            assert_eq!(
+                b.stability_percent,
+                Some(game_ui::topbar::format_percent(
+                    (0.40 + (t as f64 * 0.02)) as f32
+                )),
+                "{tag} stability @t{t}"
             );
-            assert_close(
-                &b.war_support_percent,
-                0.30 + (t as f64 * 0.015),
-                "{tag} war_support",
-                tag,
-                t,
+            assert_eq!(
+                b.war_support_percent,
+                Some(game_ui::topbar::format_percent(
+                    (0.30 + (t as f64 * 0.015)) as f32
+                )),
+                "{tag} war_support @t{t}"
             );
             assert_eq!(
                 b.command_power,
@@ -217,13 +201,12 @@ fn absent_pov_renders_fail_closed_binding() {
 /// game-file composer omits those elements. This proves the renderer cannot
 /// expose `topbar.gui` placeholders or select zero/default progress frames.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn absent_world_frame_data_is_omitted_by_topbar_composition() {
-    let Some(root) = game_root() else {
-        eprintln!(
-            "SKIP absent_world_frame_data_is_omitted_by_topbar_composition: the game root missing"
-        );
-        return;
-    };
+    let root = game_root();
     let tl = fixture("fx_topbar_scalars_sweep");
     let frame = tl.frame(tl.first_hour()).unwrap();
     let binding = topbar_binding_from_frame(&frame, "USA");
@@ -304,11 +287,12 @@ fn absent_world_frame_data_is_omitted_by_topbar_composition() {
 /// the crossing hour. `WorldFrame` classifies that leaf as `Unobtained`; the
 /// composed topbar must omit only that value while retaining measured peers.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn unobtained_world_frame_leaf_is_selectively_omitted_by_topbar_composition() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP unobtained_world_frame_leaf_is_selectively_omitted_by_topbar_composition: the game root missing");
-        return;
-    };
+    let root = game_root();
     let tl = fixture_in("anomaly", "fx_anomaly_type_flip");
     let crossing_hour = tl.hours()[6];
     let frame = tl.frame(crossing_hour).unwrap();

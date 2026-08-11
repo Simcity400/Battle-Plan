@@ -1,4 +1,12 @@
-//! Strategic-air map mode (MAPMODE_COVERAGE_MATRIX row 3, plan E3).
+//! Strategic-air map mode (E3 lane; the mode set and its selection law are in
+//! `replay_interface/documents/UI_LAYOUT_LAW.md` §6.2 "Map-mode manager").
+//!
+//! This module is a legacy diagnostic surface. Production XMAP18 does not use
+//! its threshold-derived classifier: it consumes exact sparse raw friendly and
+//! enemy superiority score lanes for every observer/strategic-region cell,
+//! applies the exact-a729 ratio thresholds, and materializes the result through
+//! XMAP05. The UNKNOWN notes below therefore describe only this retained
+//! diagnostic path, not a production map-mode residual.
 //!
 //! The strategic-air map mode (`ui_mapmode_strategic_air`, F3) tints each
 //! **strategic region** by the air-superiority contest happening in it. This
@@ -33,8 +41,8 @@
 //! - The vanilla air map mode paints those good/average/bad colours **relative
 //!   to the viewed country's** air-superiority ratio in the region. The exact
 //!   ratio thresholds (what ratio reads GOOD vs AVERAGE vs BAD) are engine
-//!   runtime, NOT in the defines → **UNKNOWN / capture-gated** (see
-//!   `LANE_REPORT.md`). Only `AIR_REGION_SUPERIORITY_PIXEL_SCALE=0.04` relates
+//!   runtime, NOT in the defines → **UNKNOWN / capture-gated**. Only
+//!   `AIR_REGION_SUPERIORITY_PIXEL_SCALE=0.04` relates
 //!   the raw superiority to on-map pixels, not a status cutoff.
 //! - The **default omniscient observer** has no viewed country, so good/bad is
 //!   undefined. For it we fill an active region by the air-superiority
@@ -596,11 +604,12 @@ NDefines = {
     /// strategic region, so the count matches the naval module's
     /// `total_strategic_regions` (304) with nothing filtered out.
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_air_region_parse() {
-        let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!("gate_vanilla_air_region_parse: BATTLE_PLAN_GAME_DIR unset; skipped");
-            return;
-        };
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("resolver");
         let set = air_region_set_from_resolver(&resolver).expect("air region set");
         assert_eq!(set.total_regions, 304, "vanilla strategic (air) regions");

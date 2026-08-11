@@ -1,751 +1,90 @@
-# Replay data requirements — everything the replay needs from game memory
-
-**Audience: the extraction agent** — the one reading live the game memory and
-writing the `.battleplan` recording. This file is SELF-CONTAINED: it is the
-complete list of what the replay layer needs inside each recording, with
-the concrete shapes inlined. You own *how* to extract; this is the *what*,
-*when*, and *why it's visible on screen*. (`REPLAY_SCHEMA.md`, in this same
-folder, is the detailed field-by-field contract for the snapshot format —
-useful as the companion reference, but everything you need to plan work is
-in this file.)
-
-Everything visual that is NOT in this list comes from shipped installed content or
-one-time GPU capture on the replay side — you never need to extract it.
-The replay layer is fail-closed: anything below that hasn't landed yet
-degrades gracefully (stated per item), it never blocks your work.
-
-Priority order: items 1–3 make replays function at all; 4–8 (incl. the
-`b`-suffixed inserts) make them look real; 9–12 are polish/deferred.
-
-**Last full review: 2026-07-09**, after the engine-extraction wave (labels /
-borders / terrain / UI-chrome / furniture / code-ports lanes). New consumers
-landed on the replay side; items 7b, 8b and 9b were added for them.
-**Current extractor authority: `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`:**
-several
-items this file still called "needed" are LANDED extractor-side (statuses
-updated per item below, with code citations). Where an item says
-"extractor-side LANDED", the remaining action is replay-side: ingest a fresh
-production recording and verify the rows — flag mismatches back through
-`EXTRACTION_INTERFACE_REQUESTS.md`.
-
----
-
-## 1. Hourly decoded world snapshots in the container (FOUNDATION)
-
-Originally the production recorder packed only the raw compact domain
-stream (`role: collector_compact_stream`, empty `"snapshots"` index), which
-nothing outside `recorder_host` could decode. See the status update below --
-this landed.
-
-Need: the recorder ALSO emits decoded hourly world snapshots into the
-container — `REPLAY_SCHEMA.md`-shaped JSON, one entry per canonical game
-hour, `role: "snapshot"`, `hour_index` set, listed in `index.json` —
-alongside the compact stream (which stays as raw evidence/audit). The
-recorder already decodes every compact record for its verification gates;
-folding decoded rows into a per-hour world JSON reuses that work, keeps ONE
-decoder implementation (owned by you), and makes the file durable and
-self-describing.
-
-Acceptable alternative: expose the compact-stream decoders as a reusable
-library crate with a documented record→world fold contract (more coupling,
-second choice).
-
-**STATUS UPDATE (reconciled 2026-07-09): extractor-side LANDED.** The
-production recorder now folds the compact stream into per-game-hour world
-snapshots and packs them as `role: "snapshot"` entries with `hour_index`
-(`extractor/native/recorder_host/src/main.rs:2704`; their reconciliation doc
-marks R1 DONE). Replay-side action: verify a fresh production recording
-ingests through `replay_core` Backend 1 end-to-end. The compact-stream-only
-fail-closed error stays for OLD recordings.
-
-**X-DECODER ownership update (2026-07-20): mechanically closed.** The neutral
-portable format crate owns `CertifiedPrefoldDecoder` and the immutable
-`PrefoldedReplay` handoff. The extractor adapter drives the existing production
-fold through physical EOF; replay_core's explicit decoder open path accepts
-only the resulting closed hour set and has no extractor-library dependency.
-The ordinary product open path still rejects stream-only packages, preserving
-the release policy until a product owner explicitly supplies that portable
-decoder capability. The bounded activation route is now implemented separately:
-the authenticated stream entry is decompressed directly into an identity-marked
-private spool, the single file-backed production `WorldFold` emits one file per
-closed hour, exact cardinality and source length/SHA are certified, and replay
-loads/re-hashes one hour lazily. The shipped replay app supplies that explicit
-capability through one product-owned spool policy for interactive, headless,
-and validation opens, with no ordinary/raw fallback. The centralized Rust
-validation remains outstanding.
-
-## 2. Per-hour ownership & control (THE POLITICAL MAP)
-
-Inside item 1's snapshots: `owner` and `controller` per state and per
-province, per hour. This drives the political fill, borders, and the
-occupation stripes (replay derives stripes from owner≠controller — no
-extra extraction needed). Country colors themselves come from shipped
-files; only the tags are needed.
-
-New consumer (2026-07-09, labels lane): the on-map COUNTRY NAME labels key
-their text/color off the state's owner or controller (which of the two the
-engine uses in wartime is still capture-pending on the replay side) — the
-recording must simply carry BOTH per hour, which this item already
-specifies. No new shape needed; noting the consumer so this row never gets
-thinned to owner-only.
-
-## 3. On-map land units & battles
-
-Inside item 1's snapshots, per hour:
-- Divisions (schema §6, live-fed already per the schema's collector
-  contract): `div_id` + `div_type`, `owner` tag, `location_province`,
-  `template_role` (drives the counter icon), `strength`, `organisation`,
-  `moving` + `move_target_province` (replay interpolates movement between
-  hourly snapshots from these).
-- Active land combats (schema §7, live-fed): `combat_id`,
-  `location_province`, attacker/defender division ids. This drives battle
-  bubbles; the replay derives attack-direction arrows from participants'
-  provinces. Combat `progress` for the bubble bar is wanted but currently
-  unvalidated — flag when it becomes trustworthy.
-  - **Battle-bubble display fields (added 2026-07-09, C3 files-first).** The
-    on-map `land_combat_mapicon` (`interface/mapicons.gui`) draws more than
-    location + participants; each needs a per-combat state field, else the
-    corresponding bubble element degrades to absent/default:
-    - `progress` (0..1) — fills the `combat_progress` textbox and the reused
-      `GFX_land_unit_combat_progressbar`; same field flagged above.
-    - `bombardment_active` (bool) — shows `GFX_mapicon_land_combat_bombardment_overlay`
-      (shore/naval bombardment support on the combat).
-    - `air_superiority_state` (enum/index 0..9) — selects the frame of the
-      10-frame `GFX_battle_modifier_strip` (`air_superiority_icon` control).
-    - Urban variant (`GFX_mapicon_land_combat_urban`) is **province-terrain
-      derived** (static map data), NOT a recording field — note only.
-    Each missing field degrades to bubble-absent/default frame.
-
-Extension (2026-07-09 review): faithful COUNTER BADGES at close zoom need
-more per-division state than the row above: `supply_ratio`/`low_supply`
-(supply warning icon), `has_orders`/`current_order_kind` (plan badge),
-`dig_in` (entrenchment), `training`, attrition-active, and
-`active_ability_kinds` (the on-counter active-ability icon grid). Wanted
-hourly/on-change alongside the base division row; each missing field
-degrades to badge-absent. Same priority as the close-zoom unit lane (A7).
-
-Closure update (2026-07-22): extended D20 rows now carry the authenticated
-division `max_organisation` returned by the exact-a729 wrapper vslot `+0x130`;
-the producer reads `(*(wrapper+0x138))+0x280` and preserves pointer/vtable/range
-validation. Recorder folding, `DivisionUnitRow`, and the counter binding retain
-the value and compute `organisation / max_organisation` only when both exact
-operands validate. Retained 104-byte rows, malformed values, and failed source
-authentication remain absent/unobtained; no template or doctrine reconstruction
-is permitted. The old U1a max-organisation request is therefore closed. Naval
-note (item 8): `FleetUnitRow` still drops the task-force name (the counter name
-is `None`).
-
-## 4. Session metadata (playback pacing & player labels)
-
-Speed/pause change events with timestamps, and the player↔country mapping
-(who was human, which tag). Makes playback pacing authentic and lets the
-UI label human players. Degrades to fixed-speed playback with no player
-badges.
-
-Also once per recording (2026-07-09 review): the **active DLC list** —
-resolved DISPLAY names (plus descriptor paths if cheap) — and the
-**localisation language**. DLC gates cosmetic identities (CAN_UK vs
-CAN_ALY etc.). The production replay consumer now builds an exact
-`ActiveDlcPresentation` from authenticated `SessionMetadataView.active_dlcs`
-and feeds its display-name predicate to NAME1b; absent or unobtained metadata
-fails closed instead of reverting to the historical all-DLC default. The
-explicit predicate helper remains only for static bundle/law tooling. Long
-filed as R-DLCLIST in `EXTRACTION_INTERFACE_REQUESTS.md`; folded here so this
-list stays the single handoff.
-
-**STATUS (reconciled 2026-07-22): DLC/language delivery and NAME1b replay
-consumption are closed.** A live session header with
-player/ideology/cosmetic/DLC/start-date/save-version metadata exists; the
-replay loader authenticates the DLC display-name binding into the typed
-session view, and `map_furniture` consumes that exact measured list. The
-separate speed/pause activation evidence remains tracked by X12/D57.
-
-## 5. Naval supremacy per strategic region (SEA-ZONE BORDERS)
-
-The sea-zone borders/fills players see over ocean in MP are a
-naval-supremacy display. Measured on the replay side: with no supremacy
-data the game renders NO sea lines, and the sea-zone distance field is
-static map data the replay already has. Need: per-hour naval supremacy —
-or at minimum a contested/friendly/enemy tri-state — per strategic region
-id (ids join against `map/strategicregions`). Degrades to open ocean
-(what the game shows with no naval data).
-
-**STATUS (reconciled 2026-07-09): extractor-side LANDED.** Domain 56 naval
-supremacy rows fold into `map._r2_naval_supremacy`
-(`world_fold.rs:3950`, contract registers domain 56). Replay-side ingest +
-join against `map/strategicregions` pending.
-
-**CONSUMER LANDED 2026-07-09 (plan C6, `map_viewer::naval_supremacy_tint`).**
-The replay-side tint law is implemented + fixture-gated on
-`fx_naval_air_activity`: sea zones = strategic regions containing ≥1 `sea`
-province (vanilla: 98 naval regions / 57 all-sea / 3133 sea provinces of 304
-total regions); field geometry = each zone's sea-province set (the GB fill key,
-islands excluded); tint fill = the controller's country colour; tint alpha =
-`NAVAL_REGION_TRANSPARENCY_RATIO_MIN/MAX` interpolated over
-`NAVAL_REGION_TRANSPARENCY_RANGE` (all FILE, `00_graphics.lua`); no supremacy
-data ⇒ open ocean (fail-closed). Two extractor-contract clarifications for the
-row shape (per `EXTRACTION_NEEDS.md` A6): (1) the needed fields are
-`{region_id, controller_tag, supremacy_magnitude}` — the tri-state
-friendly/enemy/contested is POV-derived replay-side and MUST NOT be recorded
-(colours-never-recorded standing override); replay_core's `NavalSupremacyRow`
-reads `controller`/`supremacy` (used) and `state`/`status` (unused here); the
-`fx_naval_air_activity` fixture's `tri_state` key is therefore ignored by the
-tint. (2) `supremacy_magnitude` UNIT is unresolved: the fixture uses a
-normalised 0..1 value while `RANGE=2000` implies raw naval-dominance points —
-D56 must state the unit so the alpha curve is engine-correct (capture-gated).
-
-## 6. Weather state per strategic region
-
-The map's snow/mud/ice/storm visuals are driven by SIMULATED weather; the
-static files ship only probabilities. Rendering laws are fully on the
-replay side — it just needs to know which weather actually happened.
-Need: per-hour or on-change `{region_id, weather_kind, intensity}` where
-weather_kind covers clear/rain/storm/snow/blizzard/sandstorm plus any
-mud/frost ground state the sim tracks. Degrades to clear weather
-everywhere (visibly wrong for Eastern Front winters, but graceful).
-
-**Refined 2026-07-07 (SNOW_LAW.md): ground snow/mud is ACCUMULATED sim
-state, not a weather-kind function.** The engine's `SnowMudData` texture
-holds per-area accumulators (`snow_gain_on_snowing=1.0`, blizzard 5.0,
-`snow_gain_max=80`, visual floor `snow_visual_min=128`, temperature melt —
-constants in common/weather.txt; the tick algorithm is engine-side). So
-in addition to weather_kind above, the map snow/mud visual specifically
-needs the **accumulated ground state**: per hour (or on-change)
-`{region_or_province_id, snow_level_0_255, mud_level_0_255}` plus the
-current `SnowMudFade` phase (CB0 offset 248) and its fade-0/fade-1
-endpoints if obtainable. The replay rasterizes this into the quarter-res
-SnowMudData via the derived addressing law (south-origin Y-flip) and
-blends by fade. Files-only degrade: the deterministic per-region
-`min_snow_level` date floor (small Arctic/deep-winter band only —
-visibly missing Eastern-Front accumulation, but deterministic, mod-aware,
-never crashes).
-
-**STATUS (reconciled 2026-07-20):** the per-region weather stream is
-end-to-end LANDED (`map._r2_weather_live` producer/fold/schema/replay). Replay
-requires all 305 region identities and derives `weather_kind` only from the
-exact named flags; compact-v1 `+0x78` is retained as an activity diagnostic,
-not treated as an enum. The
-ACCUMULATED snow/mud ground state (the SnowMudData ask above, incl. the
-R-SNOWMUD texture-snapshot alternative) remains OPEN.
-
-**Refined 2026-07-09 (lane/c-weather B13 wiring — `snow_mud_feed.rs` +
-`weather_law::from_recording_kind`):**
-- **weather_kind vocabulary.** The WEATHER1 render law binds the airborne
-  overlay through the `common/weather.txt` `weather_effects` KEYS
-  (`no_phenomenon / rain_light / rain_heavy / snow / blizzard / sandstorm`).
-  The friendly names above (`clear / rain / storm`) are aliased in the
-  replay by an INFERENCE map (`clear→no_phenomenon`, `rain→rain_light`,
-  `storm→rain_heavy`); `snow/blizzard/sandstorm` coincide. **Preferred:
-  the recording emits the engine `weather_effects` key directly** so no
-  friendly-name inference is needed. Emit both if convenient.
-- **snow/mud fade endpoints.** With only ONE current
-  `{snow_level_0_255, mud_level_0_255}` per province, the replay writes it
-  into BOTH fade endpoints, so the displayed value is exact but the
-  `SnowMudFade` phase becomes display-irrelevant (no second keyframe to
-  blend toward). The fade phase/window only becomes visually meaningful if
-  the extractor also emits the DISTINCT fade-0/fade-1 endpoint levels (the
-  "if obtainable" ask above). Until then, one level per province is the
-  lossless-w.r.t.-recording feed.
-
-## 7. Cosmetic-tag stream (MID-GAME COLOR/NAME/FLAG CHANGES)
-
-`cosmetic_tag` exists in the schema (§3.12) but is save-sourced today.
-Cosmetic tags change a country's map color, name, and flag mid-game
-(Vichy, civil-war splinters, puppet renames) — a replay that keeps
-pre-switch colors is visibly wrong to every player. Need: on-change (or
-hourly) `{tag, cosmetic_tag}` rows from live memory. The replay resolves
-the actual colors/flags/names from shipped files — only the tag stream is
-needed. Degrades to base-tag identity.
-
-**STATUS (reconciled 2026-07-09): extractor-side LANDED** (D18;
-`countries[*].cosmetic_tag` attached at `world_fold.rs:2127`). Replay-side
-ingest pending.
-
-## 7b. Ruling party (ideology) per country (LABEL TEXT + COLOR VARIANTS)
-
-Companion to item 7, same shape and cadence: on-change (or hourly)
-`{tag, ruling_party}` rows from live memory (e.g. `"fascism"`). The schema
-already carries this (§3.3 `politics.ruling_party`, live-collector
-sourced) — the ask is that it rides into item 1's hourly snapshots.
-
-Why (proven 2026-07-09, labels lane LAB4): the engine's on-map country
-names are IDEOLOGY-RESOLVED localisation keys — `<TAG>_<ideology>` first
-("GERMAN REICH", "BRITISH RAJ"), then `<TAG>`, then the tag. A replay that
-keeps the 1936 ruling party renders wrong names after every civil war,
-coup, or election. Ideology can also select color variants. Degrades to
-game-start ideology from history files (visibly wrong mid-game).
-
-## 8. On-map naval & air presence
-
-Land is covered by item 3; oceans and skies are empty without:
-1. Naval (higher priority): per-hour `{task_force_id, owner_tag, location
-   (sea province or naval-base province), ship_count,
-   dominant_hull_class}` — enough for fleet icons/counters at sea. Full
-   composition can stay in raw streams.
-2. Air: per-hour `{wing_or_group_id, owner_tag, strategic_region_id or
-   airbase province, mission_kind}` — enough for region air-activity
-   icons.
-3. **Active naval combats (added 2026-07-09, C3 files-first).** Item 3's
-   combat row is land-only; the on-map naval combat bubbles
-   (`naval_combat_mapicon`, `naval_combat_results_mapicon` in
-   `interface/mapicons.gui`) have no recording coverage. Wanted per-hour /
-   on-change: `{naval_combat_id, location (sea province), attacker/defender
-   task_force ids, result_type, progress}` where `result_type` selects the
-   frame/sprite path — naval battle vs port strike (`GFX_mapicon_naval_battle_result`
-   2-frame) and the `GFX_naval_combat_result[_portstrikes|_navalstrikes|_convoys]`
-   3-frame result families. `progress` fills `GFX_navalcombat_bar_progress_attacker_154`.
-   Degrades to no naval combat bubble.
-Degrades to empty seas/skies.
-
-**STATUS (reconciled 2026-07-09):** AIR is extractor-side LANDED
-(`map._r2_air_region_activity` with owner/mission-mask/wing/plane counts,
-`world_fold.rs:3920`, D31) -- replay-side ingest pending. NAVAL task-force
-rows remain OPEN as specified above.
-
-**PLACEMENT CLOSED (A7/D34, 2026-07-21):** ground air wings now carry
-`air_base_province`, joined from the D32 `{air_base_id,type=65}` handle to the
-D34 exact `CAirBase+0x70 -> CProvince+0xA4` carrier. The collector also requires
-the typed `CProvince` vtable and its `+0xC0` back-reference to the same `CState`
-as `CAirBase+0x68`, so a neighboring/state-centroid province cannot be promoted
-as exact. Carrier/mobile pools are absent from the ground state table and stay
-null. `map_viewer::unit_placement` consumes this leaf before its legacy
-state-representative fallback. Divisions and fleet task forces continue to use
-their existing exact `location_province` leaves.
-
-## 8b. Diplomatic pair-state, faction membership, capitals (MAP FURNITURE + WAR OVERLAYS)
-
-Three small per-country/per-pair streams, all with existing schema shapes
-(§3.3, §3.8, §7b) — the ask is that they ride into item 1's snapshots:
-
-1. **Pair relation state**: per hour (or on-change), for each country
-   pair with a non-default relation: at-war, same-faction/allied, subject/
-   overlord, guarantee, non-aggression pact, military access, embargo.
-   The extractor ALREADY live-extracts the relation flag set (the d53
-   relation-flag container work: NAP/military-access/docking/guarantee/
-   embargo — live-validated); at-war and faction membership come with it.
-   Consumer (2026-07-09, furniture lane): the map-furniture victory-point
-   icons carry a DIPLOMATIC COLOR COLUMN (relation of each province's
-   owner to the viewed country) — without pair state the column can't
-   tint. Also feeds war-state overlays (fronts/arrows) later. Degrades to
-   neutral tint everywhere.
-2. **Faction membership**: `{tag, faction_name_or_none, is_leader}`
-   on-change (schema §3.3 `faction.*`). Consumer: the same diplomatic
-   column (ally tint) + later diplomacy UI. Rides with (1) if easier.
-3. **Capital state per country**: `{tag, capital_state}` on-change
-   (schema §3.3 `capital_state`). Consumer: the capital-star map
-   furniture must move when a government relocates (France 1940).
-   Rare-event cadence; on-change is plenty.
-
-FURN-REL refinement (2026-07-09, decompile-verified): for the VP/capital
-icon color column SPECIFICALLY, the engine selector
-access/embargo, and does NOT read the d53 relation-flag container. So the
-MINIMUM for the icon column is just `at_war` + `same_faction` per
-viewed/owner pair (column law: self/same-faction -> col 2, at-war ->
-col 0, else neutral col 4; ported as `vp_icon_relation_column`, degrades
-to neutral gray). The BROADER pair-state set above stays requested for the
-other consumers (war overlays, diplomacy UI).
-
-War-overview panel consumer (2026-07-09, U1 lane `waroverview.gui`): the
-war-summary window already renders **belligerent-pair casualties** from the
-live `diplomacy_live.war_relations` feed (item 8b, already extracted) plus the
-belligerent set from `at_war` pairs — `replay_interface/native/game_ui/src/waroverview_binding.rs`
-binds both, fail-closed. TWO gaps remain, both fail-closed today:
-1. **War-object grouping** — the panel groups participants into attacker vs
-   defender *sides* of a named war (with a front + wargoal). The recording
-   carries `diplomacy_world.wars` (`{attackers, defenders, front, start_hour}`),
-   but the read-only `replay_core::DiplomacyView` surfaces only per-pair
-   `at_war` + flat `war_relations`; exposing war objects is a `replay_core`
-   view change (no new recording field — the data is already in the snapshot).
-2. **Per-participant aggregate stats (NEW recording dep)** — the panel's
-   `warscore` / `divisions` / `ic` columns and the `surrender_progressbar`
-   (capitulation progress), plus wargoal icons, are not carried by any current
-   stream. Ask: per hour (or on-change) per war participant
-   `{tag, warscore, division_count, industrial_capacity, capitulation_progress
-   (0..1), wargoals[]}`. Degrades to blank columns. Consumer: `waroverview.gui`
-   participant rows (`war_ally_entry` `warscore`/`divisions`/`ic`/`casualties`).
-
-## 9. Localisation / token joins
-
-The replay UI renders tokens the recording emits (focus ids, idea tokens,
-tech names, decision ids). Need: a deterministic token → localised-name
-join (effective mod-over-vanilla), either packed in the container or as a
-documented static bundle keyed by the recording's mod identity. First
-surfaces to hit this: map labels, topbar, country panels.
-
-**STATUS (reconciled 2026-07-09): partial extractor-side** -- their contract
-lists a `localisation_join` static artifact
-(`extractor/documents/MASTER_EXTRACTION_CONTRACT.md:772`,
-`extractor/native/compact_contract/src/lib.rs:188`). Replay-side: confirm the artifact
-actually rides in production recordings and covers the label/topbar keys.
-
-## 9b. Topbar / panel scalar bindings (UI CHROME — first rendered set)
-
-The the game UI chrome now composes from shipped `.gui` files on the replay
-side (all 453 parse; topbar rects gate ≤1px vs engine draw quads). Every
-NUMBER on it is recording-gated. The first fields the UI will actually
-render, all already shaped in the schema (§3.1–3.3) — the ask is presence
-in item 1's hourly snapshots for every country (the viewer can select any
-POV):
-
-- `politics.political_power`, `politics.stability`,
-  `politics.war_support`, `politics.command_power`
-- `military.manpower.available`, `military.xp.army/.navy/.air`
-- `economy.factories.civ/.mil/.dockyard`, `economy.fuel.current/.max`
-- `military.convoys[]` (count is enough for the topbar)
-- date + speed/pause (items 4 and the clock note below)
-
-Extension (2026-07-09 review, from the game_ui binding structs): the
-topbar/HUD consumes MORE than the core scalar set -- per POV country:
-`nukes_total/nukes_ready`, `supply_value/supply_ratio`, `world_tension`
-(world-scoped), the ratio bars (`industrial/convoy/fuel/xp` ratios), and
-the alert/notification counts (initiative, decisions available/timeout,
-intel, prototypes, market contracts); plus the OUTLINER rows (army/fleet
-groups with icon, text token, progress). Each degrades independently to an
-unavailable badge / empty outliner section.
-
-> `world_tension` CAVEAT (rc-reconcile 2026-07-09): unlike the other scalars
-> here it is COMPUTED-not-stored (clamped 0..100 decayed sum of the ~160-record
-> NDiplomacy threat ledger via the `TENSION_*` defines — extractor
-> `world_extract_offsets.draft.json` / `CRACKED_LEDGER.md`). It is **not** a
-> per-country field and **not** recomputable from the inputs a recording carries
-> today (`world.world_tension_inputs.{average_major_ic,
-> tension_scaling_base_country}` alone are insufficient). Until the extractor
-> emits either the final clamped scalar or the full threat ledger (EXTRACTION_NEEDS
-> A16), `replay_core::TopbarScalars::world_tension` reports `Absent`
-> (fail-closed) — surfacing it is a recording-side gap, not a view-path bug. The
-> ratio bars and alert counts, by contrast, ARE carried per country under
-> `countries.<tag>.scalars.*` and are now surfaced (`topbar_ratios()` /
-> `topbar_alerts()`).
-
-> ALERT SUB-COUNTS + ACTIVE-FEED CAVEAT (U1, exact-a729 closure 2026-07-21):
-> `game_ui::alerts` binds the available exact badge sub-counts. The alerts.gui
-> feed is not a historical fired-alert stream: the engine retains a current
-> active snapshot in 0x52 type-indexed vectors. Each 0x468-byte record carries
-> `{raw_identity_0, raw_identity_1, raw_identity_2}` at
-> `+0x438/+0x440/+0x450` and display order at `+0x460`; it has no per-instance
-> fire-time field. D79 TBA1 schema 2 now records the bounded pointer-free active
-> snapshot with type, template, priority, dedup-family disposition, icon state,
-> exact `GFX_global_alert_icons` atlas frame, and display order. Country-bearing
-> families carry a registry-joined country
-> DB id; command-group and opaque-object targets are explicitly omitted. Fire
-> time is NOT_APPLICABLE_NO_ENGINE_FIELD and must not be inferred from order or
-> the separate per-type sound cooldown. Badge zero-suppression (hide when
-> count=0) remains a FIT product convention in the binding, not a recorded/file
-> law.
-
-Degrades to an unavailable badge per missing field (never a fabricated
-number). Deeper panel content (production lines, army lists — the
-listbox/gridbox rows) stays deferred with items 10–12 until those panels
-are scheduled.
-
-Non-political MAP MODES (2026-07-09 note): the replay viewer selects the
-map mode at playback time, so the ACTIVE mode during original play is NOT
-needed (optional session trivia at most). The replay computes mode colors
-itself from recorded inputs -- do NOT record evaluated per-scope colors.
-The INPUTS for non-political modes (intel, resistance, supply detail)
-are deferred with items 10-12 until those modes are scheduled.
-
-## 9c. Decision panel state (UI CHROME — decisions/missions)
-
-Inventory item 11 (one of the 14 NEW streams). The U2 lane landed the
-STATIC decisions-panel chrome files-first (`replay_interface/native/game_ui/src/decision_chrome.rs`):
-the `interface/countrydecisionview.gui` layout parses complete, and every
-decision definition in `common/decisions/*.txt` maps to a card with its
-name-loc-key + icon-sprite + category resolved against the shipped
-localisation/GFX (vanilla 1.16.x: **4125 decisions, 591 categories, 88
-decision files**; name-key 3839/4125, declared-icon 3518/3595 resolve). What
-is NOT in any shipped file is the per-decision DYNAMIC state — this is the
-recording ask:
-
-- Per PLAYER/observed country, per hour (or on-change), for each currently
-  **visible** decision: `{decision_id, category_id, availability, remaining_timer_days, cost, target_tag}` where
-  - `availability` ∈ {available, unavailable, active, on_cooldown},
-  - `cost` = the PP (or custom-resource) cost shown in `cost_and_timer_text`,
-  - `remaining_timer_days` = the `timer_text` countdown for timed/mission decisions,
-  - `target_tag` = the flag on a `targeted_decision_item` card.
-
-Consumer READY: `decision_chrome::decision_card_binding(def, Option<&DecisionStateEntry>)`
-folds this onto the file-derived card and FAILS CLOSED (dynamic fields `None`,
-never a fabricated "Available"/cost/timer) when the stream is absent. The
-cost/timer NUMBER FORMATTING (PP glyph, +/- colour, day/week rendering) is
-engine-computed → UNKNOWN, carried raw. Overlaps 9b `alerts.decisions`
-(available/timeout COUNTS); this per-decision list is the superset. Filed as
-EXTRACTION_NEEDS **A21 / R-DECISION-STATE**.
-
-## 10. Building levels per state (live feed — when building rendering lands)
-
-Schema §4 `buildings`/`province_buildings` (state-scoped levels) are
-save-sourced today. The replay will render buildings on the map from
-static placement files; it needs the per-game levels (which slots are
-built, hourly or on-change) to know WHICH models to show. Not urgent until
-building rendering is scheduled — flagged now so it's on your radar.
-
-Extension (2026-07-09 review): building DAMAGE/REPAIR state too -- per
-state or province building row: `{scope, scope_id, building_type, level,
-healthy_level, damaged/damage_fraction, repair_progress,
-under_construction}` -- landmarks/dams/locks render destroyed states
-(MAP_3D_OBJECTS_PLAN). Construction-line rows `{tag, building_type,
-target_state/province, active_factories, progress}` feed the construction
-map mode later.
-
-**STATUS (reconciled 2026-07-09): largely extractor-side LANDED** -- D48
-`construction_buildings_state_damage_live` folds state/province building
-rows with `level`, `healthy_level`, `damaged` (`world_fold.rs:9957`,
-`:13049`). A14 additionally closes exact target location, repair levels, and
-aggregate fixed-5 `partial_health_raw`; B8/X6 closes full numeric type identity
-and the pinned 55-row vanilla token registry.
-
-**STATUS (reconciled 2026-07-19): replay typed ingest LANDED / presentation
-FAIL-CLOSED.** `replay_core::WorldFrame` exposes the D48 state/province rows
-with a producer-specific availability badge distinct from legacy/save building
-maps. The product still does not render placed buildings from those aggregates:
-O05/XN13P require recorded per-instance semantic identity, selected variant,
-visibility, transform, order, and exact D80 operation joins. Authenticated D80
-operations take precedence; without them D48 remains queryable state only.
-See `extractor/documents/domains/d48_construction_buildings_state_damage_live.md`
-and `extractor/documents/domains/d80_production_map_content_snapshot_live.md`.
-
-## 11. Rail/supply dynamic state (when the rail layer lands)
-
-Static rail/supply graphs are shipped files. Per-game rail damage/level
-and hub status would make the supply layer truthful. Deferred, low
-priority.
-
-## 12. Battle plans / order arrows (DEFERRED — do not build yet)
-
-Player-drawn plan arrows and frontline orders (schema §12 order_of_battle
-plans). Deliberately deferred until the replay schedules plan rendering;
-listed so the eventual ask isn't a surprise.
-
-## 13. Per-country fog of war / visibility (PROMOTED 2026-07-09 — REQUIRED)
-
-**Was "deferred — likely never needed"; now a core product feature by user
-directive (2026-07-09):** the replay defaults to omniscient observer (whole
-map visible, no FoW — that part still needs nothing from you), but the viewer
-can enter a country's POV — seeing that country's fog of war and only what it
-could see — and toggle back to the world view, exactly like the game observer
-mode when you observe as a specific country.
-
-What the replay needs, per POV country, per hour:
-
-- **Province visibility state** from that country's perspective — at minimum
-  a fogged/visible flag per province; if the engine holds more levels (e.g.
-  terrain-seen vs actively-watched), preserve the levels rather than
-  collapsing them. This drives the FoW terrain darkening layer.
-- **Visible-foreign-units set** — which foreign divisions/fleets/wings (item
-  3/8 unit ids) are spotted from that POV that hour, so POV mode hides
-  unspotted units. If the engine stores per-unit intel levels (detected vs
-  identified), preserve the level.
-- Alternatively: if the raw per-country intel state the engine evaluates FoW
-  *from* is cheaper to record than the evaluated result, record that instead
-  and tell us — the replay can apply engine rules replay-side given the
-  inputs. Whichever representation is cheaper on your end wins.
-
-**Wave 6 exact-a729 status (2026-07-21):** D94/FOW1 now records the engine's
-complete current-selected-POV `u8[province_database_id]` vector and replay
-regenerates the A8 IntelMap with the exact 6x6 coverage/average/invert law.
-D95/SPU1 separately records complete land and task-force map-producer frames,
-preserving each pointer-free engine reference identity and raw graded intel
-byte. Land map counters admit at 250; task-force map icons admit at 150 and
-exact detail at 250. Air wings are explicitly unavailable because the complete
-score xref and a dedicated air-wing icon closure found no authoritative wing
-map-spotting producer. Do not infer wing visibility from province or air-region
-aggregates. Capturing every player-country POV still requires selecting/cycling
-those POVs in the live game; the exact producer itself owns only the current
-selected POV.
-
-**FoW render-law note (CAP4, 2026-07-09):** the terrain pass consumes a
-screen-space 1920x1080 BGRA8 `ShadowMap`; shader `.g/.b` are final FoW
-color/alpha factors generated from map-space `IntelTex` / `ExtraFOW` /
-noise inputs (`fow.fxh`), then sampled by `pdxmap.shader`. Do **not** record a
-camera-space ShadowMap as the durable replay data. Record the stable
-world/province visibility/intel input needed to regenerate it for any replay
-camera. Province-level-or-finer is the minimum; state-level visibility is not
-enough because the shader samples by world position.
-
-**Scope bound (keeps this affordable):** POV candidates are only the
-*player-controlled* countries in the session (item 4 session metadata already
-names them) — typically far under 32 tags. A per-province visibility bitset
-over ≤32 POVs is roughly 1.6 KB/hour raw before deltas, and visibility
-changes slowly, so compact deltas should make this cheap. Do NOT record POV
-state for all ~200 AI tags unless it is free.
-
-**Cadence:** hourly-or-finer like everything else; thinning to the hour
-boundary is acceptable ONLY if that matches the engine's own FoW update
-cadence — otherwise record at the engine's cadence (zero-data-loss rule).
-
-## 14. UI-inventory deep-panel data streams (the deep-population set)
-
-**Surfaced 2026-07-09 by the UI + map-mode inventory (`UI_COVERAGE_MATRIX.md`
-§9): 14 recording-data streams the deep panels bind against.** Every one is
-country/state/world-scoped, hourly-or-on-change, and each degrades independently
-to an "unavailable" badge (never a fabricated value). All of them already have a
-`REPLAY_SCHEMA.md` shape (cited per stream) — the ask is that the shape rides
-into item 1's hourly snapshots. The `fx-streams` lane added a synthetic fixture
-+ typed `replay_core` view + round-trip gate for each, so the next UI wave gates
-against real fixture data instead of fail-closing. Two of the 14
-(**fired-event stream** + **decision state**) are owned by the
-`u2a-event-chrome` / `u2b-decision-chrome` lanes and are specified there; the
-other 12 are below.
-
-Cadence for all: **hourly or on-change**. Degrade for all: **unavailable badge /
-empty panel section**, never a fabricated row or number.
-
-1. **Research state** — `countries.<tag>.research` (schema §3.4):
-   `{tech_count, research_slots, in_progress[{name, points_factor, progress_pct}],
-   technologies[{name, level, date}]}`. Drives countrytechnologyview / techtree /
-   doctrinetree (done / in-progress / ahead-of-time penalty). Fixture
-   `fx_research_focus`; view `ResearchView`.
-2. **National-focus state** — `countries.<tag>.focus` (schema §3.5):
-   `{focus_tree, current, completed[], completed_count, progress}`. Drives
-   nationalfocusview. Fixture `fx_research_focus`; view `FocusView`.
-3. **Politics detail** — `countries.<tag>.politics` (schema §3.3):
-   `party_popularities{ideology:pct}`, `ideas[]`, `national_spirits[]`,
-   `laws.{economy,trade,conscription}`, `appointed_advisors[]`; PLUS
-   **command abilities** `countries.<tag>.abilities[].ability` (folds the
-   abilitylist.gui ask). Drives countrypoliticsview + the ability bar. Fixture
-   `fx_country_management`; view `PoliticsDetailView`.
-4. **Production queue + equipment stockpile** —
-   `countries.<tag>.production` (schema §3.6): `{stockpile_total, stockpile{id:amt},
-   construction_queue[{id, active_factories, cost, produced, priority}]}` PLUS
-   `countries.<tag>.military.equipment_stockpile[{archetype, equip_id, equip_type,
-   amount}]` (schema §3.2). Drives countryproductionlineview + equipmentoverview.
-   Fixture `fx_country_management`; view `ProductionView`.
-5. **Division / equipment templates & variants** — `designs.division_templates[]`
-   + `designs.equipment_variants{"id:type": …}` (schema §11, world-scoped, keyed by
-   `country`). Read-only snapshot for every designer view. Fixture
-   `fx_designs_catalog`; view `DesignsView`.
-6. **Intelligence / operatives state** — `countries.<tag>.intel` (schema §3.9):
-   `agency{name, is_created, upgrade_progress, capacity{…}}`, `operatives[{op_id,
-   name, state, captured}]`, `operations{running[{op_id, type, target, duration}]}`.
-   Drives intelligenceagencyview / intelledger / operationoverview / operative.
-   Fixture `fx_country_management`; view `IntelView`.
-7. **Trade state** — `countries.<tag>.economy.resources.{produced,exported,to_export}`
-   (schema §3.1) + trade contracts `countries.<tag>.diplomacy.lend_lease[{counterpart,
-   direction, convoys{assigned,total}}]` (schema §3.8; canonical world list
-   `diplomacy_world.trade_contracts`). Drives countrytradeview. Fixture
-   `fx_country_management`; view `TradeView`.
-8. **Occupation resistance / compliance** — `states.<id>.occupation`
-   `{resistance, resistance_speed, compliance, compliance_speed, occupied_country_tag,
-   operational_status}` + `states.<id>.occupation_law` (schema §4, state-scoped).
-   Drives countryoccupationview / garrisonlogview **and feeds the resistance +
-   compliance map modes** (`MAPMODE_COVERAGE_MATRIX`). Fixture `fx_occupation_sweep`;
-   view `OccupationRow` (keyed by state id).
-9. **Character / leader roster + traits** — `countries.<tag>.commanders` (schema
-   §3.10): `leader{name}`, `field_marshals[]` / `generals[]` / `admirals[]` each
-   `{name, token, level, traits[], assignment{kind,name}|null}`, `counts.roster_size`.
-   Drives officercorpview / unitleaderwindow / leadergroups / the trait trees.
-   Fixture `fx_leader_roster`; view `LeaderRosterView`.
-10. **Power-balance state** — `world.power_balances[]` (schema §18):
-    `{template, value, left_side, right_side, trending_side, countries[]}`. Drives
-    powerbalanceview (BBA). Fixture `fx_power_balance_combat`; view `PowerBalanceView`.
-11. **Naval / air combat detail + losses** — a new top-level `naval_combats[]`
-    `{naval_combat_id, location_province, attacker/defender (TAG), attacker/defender
-    task_force id, result_type, progress}` (pairs with the C3 naval-bubble ask in
-    item 8) + convoy losses `world_events.sunk_convoys[{month, convoys, killer_country,
-    owner}]` (schema §17). Air combat detail is served region-level by the existing
-    `naval_air.air_superiority` view. Drives navalcombat / navalcombatresultswindow /
-    naval_losses / destroyedshipswindow / combatlogview. Fixture
-    `fx_power_balance_combat`; view `NavalAirCombatView`.
-12. **Scripted-GUI variable state** — a GENERIC recorded var map (mod-extensible,
-    NOT 23 bespoke fields): `countries.<tag>.script_variables{name:number}` +
-    `world.variables{name:number}` + `world.flags{name:{value,date}}` (schema §3 /
-    §18). Drives all 23 national-mechanic `*_scripted_gui.gui` panels via a generic
-    composer. Fixture `fx_scripted_gui_vars`; view `ScriptedGuiView`.
-
-Plus one small companion folded here: **strategic raid state** `raids`
-(schema §16) `{counters.next_target, countries[{tag, priority}]}` — fixture
-`fx_power_balance_combat`, view `RaidStateView`. (Radar coverage has no
-`REPLAY_SCHEMA.md` field yet — tracked UNKNOWN in `EXTRACTION_NEEDS.md §A`,
-no view until a shape is pinned.)
-
-> **fired-event stream** (item 13 of the inventory, `world_events.fired_events` +
-> event id → loc join) and **decision state** (`countries.<tag>.decisions.*`) are
-> the remaining two of the 14 — owned by the `u2a`/`u2b` chrome lanes, not
-> duplicated here.
-
----
-
-## 14. Fired-event stream (EVENT POPUP CHROME)
-
-The replay renders the events that FIRED during the recording through the
-shipped `interface/eventwindow.gui` chrome (4 window variants + option-row
-template — layout + event-def→window resolution DONE and gated replay-side,
-`game_ui::event_chrome`; **97.4% of the 6,757 visible vanilla events resolve to
-a fully renderable window** from the def + localisation + picture GFX). XUI21
-now defines one strict rich row per firing:
-
-- `event_id` — the fired event definition's `id` (join key into the parsed
-  `events/*.txt` def: title/desc/picture/options come from the def + item 9 loc
-  join, so only the id + context need recording, NOT the event text).
-- `recipient_tag` — the country the event fired to (the POV that saw the popup;
-  also resolves `[FROM]`/`[ROOT]` loc scopes).
-- `fire_date`, `fire_hour`, `fire_tick`, `event_sequence` — exact chronology and
-  total ordering, including repeated and same-hour firings.
-- `visible_option_ordinals[]` and `chosen_option_ordinal` — definition-array
-  ordinals preserving the trigger-filtered option set/order and exact selection.
-- `selected_desc_key`, `shown_picture_gfx`, `popup_subtype` — the selected
-  description branch, actual picture, and country/news/state/leader/operative chrome.
-- `effective_timeout_hours`, `timeout_tick`, `resolved_tick`,
-  `resolution_reason` — exact pending/selected/timeout/dismissed lifetime.
-- `runtime_title_text_context_id`, `runtime_description_text_context_id`, and
-  `runtime_option_text_contexts[] = {definition_ordinal, context_id}` — independent
-  joins to A25/XUI06 exact runtime text for each materialised textbox. A
-  popup-wide context is forbidden because its source identity cannot match the
-  title, description, and multiple option keys simultaneously.
-- `fired_events_complete=true` — mandatory completeness witness; legacy save ID
-  ledgers and measured-empty lists without this witness are rejected.
-
-**Cadence:** on-change (events are discrete). Volume is tiny (a game fires
-hundreds of events total, not per hour). Degrades to unavailable: with no
-stream the event chrome is fail-closed "no event data" (never a fabricated
-title/option). No description, option-visibility, subtype, timeout, picture, or
-chronology FIT remains. Static text resolves through the effective files;
-runtime-dependent text must join A25 and otherwise rejects. Pairs with the
-localisation join (item 9).
-
----
-
-## Process asks (standing)
-
-- Schema deltas welcome: if the collector fold needs to deviate from a
-  `REPLAY_SCHEMA.md` shape, send the delta — the schema doc gets amended
-  rather than silently diverged from. Unknown domains are preserved raw,
-  so additive growth is free.
-- `portable_replay/native/snapshot` owns the neutral on-disk format API
-  (`Store`, `Container`, `Snapshot`, `pack`). Extractor and replay packages
-  statically link it independently; neither may depend on the other's runtime,
-  libraries, process, source tree, or install path.
-
-## Coverage status (replay side's view, for reconciliation)
-
-| # | item | status (reconciled 2026-07-09) |
-|---|---|---|
-| 1 | hourly snapshots in container | extractor LANDED (R1); replay verify pending |
-| 2 | owners/controllers per hour | shape COVERED (§4/§5); rides on 1 |
-| 3 | divisions + land combats | shape COVERED (§6/§7), live-fed; counter-badge extension OPEN; battle-bubble display fields (progress/bombardment/air-superiority, C3) OPEN |
-| 4 | session metadata | partial (session header LANDED; speed/pause + DLC display-names OPEN) |
-| 5 | naval supremacy | extractor LANDED (D56); replay ingest pending |
-| 6 | weather state | weather stream LANDED (D24); SnowMud accumulators OPEN |
-| 7 | cosmetic-tag stream | extractor LANDED (D18); replay ingest pending |
-| 7b | ruling party / ideology | schema shape exists (§3.3, live-collector); ride into snapshots |
-| 8 | naval/air presence | AIR LANDED (D31); NAVAL presence rows OPEN; active naval combats (C3 naval bubbles) OPEN |
-| 8b | pair relations + faction + capitals | relation flags already live-extracted (d53); fold into snapshots. VP-icon column minimum = just at_war + same_faction (FURN-REL decompile) |
-| 9 | localisation joins | partial (static artifact in their contract; verify it ships) |
-| 9b | topbar scalar bindings | schema shapes exist (§3.1–3.3); extended set + outliner OPEN |
-| 10 | building levels live | largely LANDED (D48 incl. damage); replay ingest deferred |
-| 11 | rail/supply state | deferred |
-| 12 | battle plans | deferred — do not build yet |
-| 13 | per-country FoW / visibility | **PROMOTED 2026-07-09** (observer country-POV is now core UX); per-player-country province-level-or-finer visibility/intel + spotted-units per hour; OPEN on both sides |
-| 14 | fired-event stream | **XUI21 REPLAY READY.** `replay_core::FiredEventsView`, strict `game_ui::event_chrome` admission, schema validation, exact option/branch/picture/subtype/timeout/history laws, and tick-domain visibility are implemented. Only extractor XUI21-E1's authenticated rich rows + completeness witness remain; legacy save IDs reject. |
-| 15 | UI-inventory deep-panel streams (12 of 14) | replay-side FIXTURE + typed view + round-trip gate LANDED (fx-streams lane): research/focus/politics-detail/production+stockpile/templates+variants/intel/trade/occupation/leaders/power-balance/naval-air-combat/scripted-GUI-vars (+raids). Shapes exist in `REPLAY_SCHEMA.md`; extractor fold into hourly snapshots OPEN (EXTRACTION_NEEDS A22–A33). fired-event + decision-state owned by u2a/u2b |
-
-The replay layer keeps this file current; anything new the replay needs
-from memory gets added HERE (nowhere else).
-
-`REPLAY_UI_DATA_SOURCES.md`, beside this file, answers the other direction: for
-every replay-UI surface, which authoritative domain each content element comes
-from when the viewer inspects **any** country. It is where the seven POV-local
-UI capture domains (d72, d75, d79, d82, d87, d88, d89) were retired and their
-surfaces re-derived, and it carries the ranked gap list those retirements leave.
-Items 13, 14 and 15 above are the rows it refines.
+# Replay recording data requirements
+
+This document defines the recording-side rules Replay enforces. It does not
+duplicate the live packet ledgers.
+
+## Canonical requirement authorities
+
+- Every externally supplied Replay requirement, exact carrier identity,
+  consumer, packet authority, and unavailable behavior:
+  `../re_evidence/rendering_laws/XUI27/external_producer_dependencies.json`.
+- Mandatory generated human view:
+  `EXTRACTOR_INPUT_RESIDUALS.md`.
+- Exhaustive non-UI map inputs and current XMAP00 dispositions:
+  `../re_evidence/rendering_laws/XMAP00/non_ui_visual_input_ledger_20260730.tsv`.
+- Non-UI consumer/effective-VFS audits:
+  `../re_evidence/rendering_laws/XMAP00/`.
+- Canonical snapshot fields and typed carrier keys: `REPLAY_SCHEMA.md`.
+- Exact field schemas and completeness rules: the owning XUI/XMAP packet and
+  the producer contract linked by the ledgers above.
+
+These machine-readable authorities are the complete lists. New requirements
+must be added there first; prose summaries must not copy their rows or counts.
+
+## Admission law
+
+A usable recording preserves exact campaign identity and canonical time, stable
+country/state/province/unit/combat identities, authenticated effective content,
+and the typed per-feature carriers required by the selected product route.
+Carrier admission binds the executable/evidence/content identities, hour and
+sequence, schema version, completeness census, and packet-specific hashes named
+by its owner.
+
+For every field, Replay preserves four distinct states:
+
+- domain absent;
+- captured but unobtained/null;
+- measured empty;
+- measured value.
+
+Only the owning contract may establish measured empty. Missing, legacy, partial,
+wrong-hour, wrong-content, unresolved, or unauthenticated inputs remain typed
+unavailable. Replay never substitutes:
+
+- owner for controller, history/game-start state for current state, or another
+  country/perspective;
+- zero, empty seas/skies, open ocean, a neutral tint, grey, or an omitted badge;
+- a representative province/base, centroid, nearest object, first row, or
+  recorder selection;
+- selected-Present pixels, recorder UI/POV, hard-coded game data, heap scans,
+  visual tuning, or a captured diagnostic pass.
+
+Static content is admitted only from the recording-authenticated effective VFS,
+preserving base-game/mod/DLC/language winner order. Static definitions cannot
+replace current campaign state. Derived presentation is permitted only where the
+owning packet proves the exact engine/game-file function and all of its inputs.
+
+## Map carriers
+
+Map production consumes the typed `WorldFrame` paths in the XMAP00 TSV. This
+includes current ownership and control, country presentation identity, selected
+POV visibility, diplomacy and map-mode inputs, land/naval/air objects, unit and
+order state, rail/supply state, weather and snow/mud state, map furniture,
+effects, and packet-authenticated rendering dependencies. XMAP14 combat is a
+top-level carrier family; XMAP15 battle plans require their authenticated
+semantic carrier. `map.control_by_state` and `map.control_by_province` are
+separate authorities and neither may be inferred from the other.
+
+Each applicable XMAP00 row must carry its owner-proven production disposition.
+An unavailable row suppresses or rejects only as specified by its packet; it is
+never silently rendered as empty. XMAP22 composes admitted providers but does
+not weaken their carrier contracts.
+
+## UI carriers
+
+UI production consumes authenticated authored GUI/GFX/font/localization content,
+the current typed `WorldFrame`, and viewer-owned interaction state. The XUI27
+ledger is the complete external boundary. Country-scoped carriers require exact
+selected-country joins and complete rosters where specified. Collection order,
+unavailable-versus-empty, localization, catalog identity, and country-switch
+invalidation remain packet-local laws; generic rectangles, recorded cursor
+state, or recorder widgets are not semantic authority.
+
+## Container and forward compatibility
+
+The container must authenticate the replay schema, source/content identities,
+and all referenced carrier artifacts. Unknown domains and fields survive ingest
+for forward compatibility, but no consumer may treat an unknown field as an
+admitted known carrier. Production compact recordings and snapshot fixtures use
+the single portable pre-fold boundary described by `REPLAY_ARCHITECTURE.md` and
+`HOI4REPLAY_CONTAINER_SPEC.md`.

@@ -8,14 +8,15 @@ use crate::design_catalog::{
 };
 use replay_core::world::ViewStatus;
 use replay_core::{
-    DesignCatalogJoinError, DesignRecord, SelectedDesignerFamilyExact,
-    PeaceConferenceObservationExact, SelectedDesignerIdentityExactView,
-    SelectedDesignerOwnerExact, StableDesignIdentityExact, WorldFrame,
+    DesignCatalogJoinError, DesignRecord, PeaceConferenceObservationExact,
+    PeaceConferencePresentationObservationExact, PeaceParticipantRoleExact,
+    SelectedDesignerFamilyExact, SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact,
+    StableDesignIdentityExact, WorldFrame,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DesignerViewKind {
     Division,
     Equipment,
@@ -234,6 +235,10 @@ pub struct PeaceParticipantRow {
     pub role: PeaceParticipantRole,
     pub score: DisplayAtom,
     pub score_ratio: DisplayAtom,
+    pub allocation_ids: Vec<String>,
+    pub result_ids: Vec<String>,
+    pub bid_count: DisplayAtom,
+    pub contested_bid_count: DisplayAtom,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,8 +258,40 @@ pub struct PeaceAllocationRow {
     pub target_ship_ids: Vec<String>,
     pub cost: DisplayAtom,
     pub bid: DisplayAtom,
-    pub status: String,
+    pub status: DisplayAtom,
+    pub popup_bid_count: DisplayAtom,
     pub contested_by_participant_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeaceAllocationGroupRow {
+    pub source_record_id: String,
+    pub ordinal: u32,
+    pub group_id: String,
+    pub allocation_ids: Vec<String>,
+    pub flag_texture_path: Option<String>,
+    pub target_display: DisplayAtom,
+    pub available_state_count: DisplayAtom,
+    pub wargoal_count: DisplayAtom,
+    pub contested_state_count: DisplayAtom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeaceContestedPopupRow {
+    pub source_record_id: String,
+    pub ordinal: u32,
+    pub popup_row_id: String,
+    pub participant_id: String,
+    pub allocation_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeaceContestedPopup {
+    pub source_record_id: String,
+    pub ordinal: u32,
+    pub popup_id: String,
+    pub selected_allocation_id: String,
+    pub rows: Vec<PeaceContestedPopupRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,7 +311,7 @@ pub struct PeaceResultRow {
     pub target_country_tag: Option<String>,
     pub target_state_ids: Vec<u32>,
     pub target_ship_ids: Vec<String>,
-    pub outcome: String,
+    pub outcome: DisplayAtom,
 }
 
 /// Pointer-free serialization of Clausewitz's registered object reference.
@@ -314,6 +351,8 @@ pub struct ActivePeaceConferenceSnapshot {
     pub contested_state_ids: Vec<u32>,
     pub participants: Vec<PeaceParticipantRow>,
     pub allocations: Vec<PeaceAllocationRow>,
+    pub allocation_groups: Vec<PeaceAllocationGroupRow>,
+    pub contested_popups: Vec<PeaceContestedPopup>,
     pub results: Vec<PeaceResultRow>,
     pub complete: bool,
 }
@@ -444,6 +483,9 @@ fn valid_atom(value: &DisplayAtom) -> bool {
         && nonempty(&value.raw_value)
         && nonempty(&value.rendered_text)
 }
+fn valid_peace_atom(value: &DisplayAtom) -> bool {
+    nonempty(&value.source_record_id)
+}
 fn exact_ordinals(values: impl Iterator<Item = u32>) -> bool {
     values
         .enumerate()
@@ -476,10 +518,7 @@ fn portable_design_id(identity: StableDesignIdentityExact) -> String {
     format!("{}:{}", identity.stable_id, identity.object_type)
 }
 
-fn exact_family_accepts_kind(
-    family: SelectedDesignerFamilyExact,
-    kind: DesignKind,
-) -> bool {
+fn exact_family_accepts_kind(family: SelectedDesignerFamilyExact, kind: DesignKind) -> bool {
     match family {
         SelectedDesignerFamilyExact::Division => kind == DesignKind::DivisionTemplate,
         SelectedDesignerFamilyExact::Equipment => kind == DesignKind::EquipmentVariant,
@@ -735,9 +774,9 @@ pub fn admit_peace_conference(
         || active.conference_id != active.conference_reference.portable_id()
         || !nonempty(&active.conference_id)
         || !nonempty(&active.phase)
-        || !nonempty(&active.current_participant_id)
-        || !valid_atom(&active.current_score)
-        || !valid_atom(&active.score_this_turn)
+        || (active.phase != "completed" && !nonempty(&active.current_participant_id))
+        || !valid_peace_atom(&active.current_score)
+        || !valid_peace_atom(&active.score_this_turn)
     {
         return Err(Xui08Rejection::InvalidPeaceIdentity);
     }
@@ -747,8 +786,12 @@ pub fn admit_peace_conference(
             !nonempty(&row.source_record_id)
                 || !nonempty(&row.participant_id)
                 || !nonempty(&row.country_tag)
-                || !valid_atom(&row.score)
-                || !valid_atom(&row.score_ratio)
+                || !valid_peace_atom(&row.score)
+                || !valid_peace_atom(&row.score_ratio)
+                || !valid_peace_atom(&row.bid_count)
+                || !valid_peace_atom(&row.contested_bid_count)
+                || !unique_nonempty(row.allocation_ids.iter().cloned())
+                || !unique_nonempty(row.result_ids.iter().cloned())
         })
     {
         return Err(Xui08Rejection::InvalidParticipantSet);
@@ -769,8 +812,9 @@ pub fn admit_peace_conference(
         .find(|row| row.participant_id == active.current_participant_id);
     if participant_ids.len() != active.participants.len()
         || participant_countries.len() != active.participants.len()
-        || !participant_ids.contains(active.current_participant_id.as_str())
-        || current.is_none_or(|row| row.role != PeaceParticipantRole::Victor)
+        || (active.phase != "completed"
+            && (!participant_ids.contains(active.current_participant_id.as_str())
+                || current.is_none_or(|row| row.role != PeaceParticipantRole::Victor)))
     {
         return Err(Xui08Rejection::InvalidParticipantSet);
     }
@@ -809,10 +853,11 @@ pub fn admit_peace_conference(
         if !nonempty(&row.source_record_id)
             || !nonempty(&row.allocation_id)
             || !nonempty(&row.action_kind)
-            || !nonempty(&row.status)
             || !participant_ids.contains(row.actor_participant_id.as_str())
-            || !valid_atom(&row.cost)
-            || !valid_atom(&row.bid)
+            || !valid_peace_atom(&row.cost)
+            || !valid_peace_atom(&row.bid)
+            || !valid_peace_atom(&row.status)
+            || !valid_peace_atom(&row.popup_bid_count)
             || row.turn > active.turn
             || !valid_state_ids
             || !valid_ship_ids
@@ -837,10 +882,36 @@ pub fn admit_peace_conference(
             || row
                 .contested_by_participant_ids
                 .iter()
-                .any(|id| !participant_ids.contains(id.as_str()))
+                .any(|id| !participant_ids.contains(id.as_str()) || id == &row.actor_participant_id)
         {
             return Err(Xui08Rejection::InvalidAllocation);
         }
+    }
+    let mut group_ids = BTreeSet::new();
+    let mut grouped_allocation_ids = BTreeSet::new();
+    if !exact_ordinals(active.allocation_groups.iter().map(|row| row.ordinal))
+        || active.allocation_groups.iter().any(|row| {
+            !nonempty(&row.source_record_id)
+                || !nonempty(&row.group_id)
+                || !group_ids.insert(row.group_id.as_str())
+                || row.allocation_ids.is_empty()
+                || !unique_nonempty(row.allocation_ids.iter().cloned())
+                || row.allocation_ids.iter().any(|id| {
+                    !allocation_ids.contains(id.as_str())
+                        || !grouped_allocation_ids.insert(id.as_str())
+                })
+                || row
+                    .flag_texture_path
+                    .as_deref()
+                    .is_some_and(|path| !nonempty(path))
+                || !valid_peace_atom(&row.target_display)
+                || !valid_peace_atom(&row.available_state_count)
+                || !valid_peace_atom(&row.wargoal_count)
+                || !valid_peace_atom(&row.contested_state_count)
+        })
+        || grouped_allocation_ids != allocation_ids
+    {
+        return Err(Xui08Rejection::InvalidAllocation);
     }
     if !exact_ordinals(active.results.iter().map(|row| row.ordinal)) {
         return Err(Xui08Rejection::InvalidResult);
@@ -854,7 +925,7 @@ pub fn admit_peace_conference(
             || !nonempty(&row.result_id)
             || !nonempty(&row.action_kind)
             || !nonempty(&row.actor_country_tag)
-            || !nonempty(&row.outcome)
+            || !valid_peace_atom(&row.outcome)
             || !valid_state_ids
             || !valid_ship_ids
             || row
@@ -893,19 +964,275 @@ pub fn admit_peace_conference(
             }
         }
     }
+    let mut assigned_allocations = BTreeSet::new();
+    let mut assigned_results = BTreeSet::new();
+    let memberships_valid = active.participants.iter().all(|participant| {
+        participant.allocation_ids.iter().all(|id| {
+            active
+                .allocations
+                .iter()
+                .find(|allocation| allocation.allocation_id == *id)
+                .is_some_and(|allocation| {
+                    allocation.actor_participant_id == participant.participant_id
+                        && assigned_allocations.insert(id.as_str())
+                })
+        }) && participant.result_ids.iter().all(|id| {
+            active
+                .results
+                .iter()
+                .find(|result| result.result_id == *id)
+                .is_some_and(|result| {
+                    result.actor_country_tag == participant.country_tag
+                        && assigned_results.insert(id.as_str())
+                })
+        })
+    }) && assigned_allocations == allocation_ids
+        && assigned_results == result_ids;
+    if !memberships_valid {
+        return Err(Xui08Rejection::InvalidParticipantSet);
+    }
+    let contested_ids = active
+        .allocations
+        .iter()
+        .filter(|allocation| !allocation.contested_by_participant_ids.is_empty())
+        .map(|allocation| allocation.allocation_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let popup_selected_ids = active
+        .contested_popups
+        .iter()
+        .map(|popup| popup.selected_allocation_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut popup_ids = BTreeSet::new();
+    if !exact_ordinals(active.contested_popups.iter().map(|popup| popup.ordinal))
+        || popup_selected_ids != contested_ids
+        || active.contested_popups.iter().any(|popup| {
+            let Some(selected) = active
+                .allocations
+                .iter()
+                .find(|allocation| allocation.allocation_id == popup.selected_allocation_id)
+            else {
+                return true;
+            };
+            let expected_participants = std::iter::once(selected.actor_participant_id.as_str())
+                .chain(
+                    selected
+                        .contested_by_participant_ids
+                        .iter()
+                        .map(String::as_str),
+                )
+                .collect::<Vec<_>>();
+            let mut popup_allocation_ids = BTreeSet::new();
+            !nonempty(&popup.source_record_id)
+                || !nonempty(&popup.popup_id)
+                || !popup_ids.insert(popup.popup_id.as_str())
+                || !exact_ordinals(popup.rows.iter().map(|row| row.ordinal))
+                || popup.rows.len() != expected_participants.len()
+                || popup
+                    .rows
+                    .first()
+                    .is_none_or(|row| row.allocation_id != popup.selected_allocation_id)
+                || popup.rows.iter().enumerate().any(|(ordinal, row)| {
+                    !nonempty(&row.source_record_id)
+                        || !nonempty(&row.popup_row_id)
+                        || row.participant_id != expected_participants[ordinal]
+                        || !popup_allocation_ids.insert(row.allocation_id.as_str())
+                        || active
+                            .allocations
+                            .iter()
+                            .find(|allocation| allocation.allocation_id == row.allocation_id)
+                            .is_none_or(|allocation| {
+                                allocation.actor_participant_id != row.participant_id
+                            })
+                })
+        })
+    {
+        return Err(Xui08Rejection::InvalidAllocation);
+    }
     Ok(AdmittedPeaceConference {
         snapshot: snapshot.clone(),
     })
 }
 
-/// Bind the recorder-owned PCS1 observation to the inert XUI08 snapshot.
-///
-/// Inactive is a complete semantic state and can be admitted directly. PCS1
-/// active v1 intentionally lacks participant/allocation/result rows, so it
-/// remains typed incomplete until a later complete carrier is authenticated.
+/// Bind the strict PCS3 passive-global observation to the XUI08 snapshot.
+/// Legacy PCS1 is retained only as an authenticated inactive fallback; its
+/// header-only active form can never authorize participant/allocation/result
+/// rows.
 pub fn peace_conference_snapshot_from_world(
     frame: &WorldFrame,
 ) -> Result<PeaceConferenceSnapshot, Xui08Rejection> {
+    if let Some(exact) = frame
+        .peace_conference_presentation_exact()
+        .presentation
+        .as_ref()
+    {
+        let atom = |value: &replay_core::PeaceFinalTextExact| DisplayAtom {
+            source_record_id: value.authored_identity.clone(),
+            raw_value: value.raw_value.clone(),
+            rendered_text: value.final_text.clone(),
+        };
+        return match &exact.observation {
+            PeaceConferencePresentationObservationExact::Inactive { refresh_sequence } => {
+                Ok(PeaceConferenceSnapshot::Inactive {
+                    source_record_id: format!(
+                        "pcs3:{}:{}:{}",
+                        exact.record_sha256, exact.frame_hour, refresh_sequence
+                    ),
+                })
+            }
+            PeaceConferencePresentationObservationExact::Active {
+                conference_reference,
+                phase,
+                turn,
+                remaining_score_turns,
+                current_participant_id,
+                current_score,
+                score_this_turn,
+                available_state_ids,
+                contested_state_ids,
+                participants,
+                allocations,
+                allocation_groups,
+                contested_popups,
+                results,
+                ..
+            } => {
+                let reference = PeaceConferenceReference {
+                    object_type: conference_reference.object_type,
+                    object_id: conference_reference.object_id,
+                };
+                let snapshot = PeaceConferenceSnapshot::Active(ActivePeaceConferenceSnapshot {
+                    source_record_id: exact.record_sha256.clone(),
+                    conference_reference: reference,
+                    conference_id: reference.portable_id(),
+                    phase: phase.token().into(),
+                    turn: *turn,
+                    remaining_score_turns: *remaining_score_turns,
+                    current_participant_id: current_participant_id.clone().unwrap_or_default(),
+                    current_score: atom(current_score),
+                    score_this_turn: atom(score_this_turn),
+                    available_state_ids: available_state_ids.clone(),
+                    contested_state_ids: contested_state_ids.clone(),
+                    participants: participants
+                        .iter()
+                        .map(|row| PeaceParticipantRow {
+                            source_record_id: format!(
+                                "{}:participant:{}",
+                                exact.record_sha256, row.source_ordinal
+                            ),
+                            ordinal: row.source_ordinal,
+                            participant_id: row.stable_participant_id.clone(),
+                            country_tag: row.country_tag.clone(),
+                            role: match row.role {
+                                PeaceParticipantRoleExact::Victor => PeaceParticipantRole::Victor,
+                                PeaceParticipantRoleExact::Beneficiary => {
+                                    PeaceParticipantRole::Beneficiary
+                                }
+                                PeaceParticipantRoleExact::Defeated => {
+                                    PeaceParticipantRole::Defeated
+                                }
+                            },
+                            score: atom(&row.score),
+                            score_ratio: atom(&row.score_ratio),
+                            allocation_ids: row.allocation_ids.clone(),
+                            result_ids: row.result_ids.clone(),
+                            bid_count: atom(&row.bid_count_display),
+                            contested_bid_count: atom(&row.contested_bid_count_display),
+                        })
+                        .collect(),
+                    allocations: allocations
+                        .iter()
+                        .map(|row| PeaceAllocationRow {
+                            source_record_id: format!(
+                                "{}:allocation:{}",
+                                exact.record_sha256, row.source_ordinal
+                            ),
+                            ordinal: row.source_ordinal,
+                            allocation_id: row.stable_allocation_id.clone(),
+                            turn: row.turn,
+                            action_kind: row.action_kind.token().into(),
+                            actor_participant_id: row.actor_participant_id.clone(),
+                            beneficiary_country_tag: row.beneficiary_country_tag.clone(),
+                            target_country_tag: row.target_country_tag.clone(),
+                            target_state_ids: row.target_state_ids.clone(),
+                            target_ship_ids: row.target_ship_ids.clone(),
+                            cost: atom(&row.cost),
+                            bid: atom(&row.bid),
+                            status: atom(&row.status),
+                            popup_bid_count: atom(&row.popup_bid_count_display),
+                            contested_by_participant_ids: row.contested_by_participant_ids.clone(),
+                        })
+                        .collect(),
+                    allocation_groups: allocation_groups
+                        .iter()
+                        .map(|row| PeaceAllocationGroupRow {
+                            source_record_id: format!(
+                                "{}:allocation-group:{}",
+                                exact.record_sha256, row.source_ordinal
+                            ),
+                            ordinal: row.source_ordinal,
+                            group_id: row.stable_group_id.clone(),
+                            allocation_ids: row.allocation_ids.clone(),
+                            flag_texture_path: row.flag_texture_path.clone(),
+                            target_display: atom(&row.target_display),
+                            available_state_count: atom(&row.available_state_count_display),
+                            wargoal_count: atom(&row.wargoal_count_display),
+                            contested_state_count: atom(&row.contested_state_count_display),
+                        })
+                        .collect(),
+                    contested_popups: contested_popups
+                        .iter()
+                        .map(|popup| PeaceContestedPopup {
+                            source_record_id: format!(
+                                "{}:contested-popup:{}",
+                                exact.record_sha256, popup.source_ordinal
+                            ),
+                            ordinal: popup.source_ordinal,
+                            popup_id: popup.stable_popup_id.clone(),
+                            selected_allocation_id: popup.selected_allocation_id.clone(),
+                            rows: popup
+                                .rows
+                                .iter()
+                                .map(|row| PeaceContestedPopupRow {
+                                    source_record_id: format!(
+                                        "{}:contested-popup:{}:row:{}",
+                                        exact.record_sha256,
+                                        popup.source_ordinal,
+                                        row.source_ordinal
+                                    ),
+                                    ordinal: row.source_ordinal,
+                                    popup_row_id: row.stable_popup_row_id.clone(),
+                                    participant_id: row.participant_id.clone(),
+                                    allocation_id: row.allocation_id.clone(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                    results: results
+                        .iter()
+                        .map(|row| PeaceResultRow {
+                            source_record_id: format!(
+                                "{}:result:{}",
+                                exact.record_sha256, row.source_ordinal
+                            ),
+                            ordinal: row.source_ordinal,
+                            result_id: row.stable_result_id.clone(),
+                            allocation_id: row.allocation_id.clone().unwrap_or_default(),
+                            action_kind: row.action_kind.token().into(),
+                            actor_country_tag: row.actor_country_tag.clone(),
+                            beneficiary_country_tag: row.beneficiary_country_tag.clone(),
+                            target_country_tag: row.target_country_tag.clone(),
+                            target_state_ids: row.target_state_ids.clone(),
+                            target_ship_ids: row.target_ship_ids.clone(),
+                            outcome: atom(&row.outcome),
+                        })
+                        .collect(),
+                    complete: true,
+                });
+                admit_peace_conference(&snapshot)?;
+                Ok(snapshot)
+            }
+        };
+    }
     let exact = frame
         .peace_conference_exact()
         .conference

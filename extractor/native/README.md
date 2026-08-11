@@ -44,10 +44,12 @@ knob.
 ## Checks
 
 ```powershell
-cargo metadata --manifest-path extractor\native\Cargo.toml --no-deps --format-version 1
-cargo test --manifest-path extractor\native\Cargo.toml --workspace --no-fail-fast
-cargo fmt --manifest-path extractor\native\Cargo.toml --all --check
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Check -Workspace Extractor
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Test -Workspace Extractor
 ```
+
+Run these from the candidate or authority worktree root. Do not invoke Cargo or
+`rustc` directly for validation.
 
 ## Guardrails
 

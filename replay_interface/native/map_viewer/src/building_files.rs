@@ -21,6 +21,28 @@ pub struct BuildingEntityBinding {
     pub scale_line: Option<usize>,
 }
 
+impl BuildingEntityBinding {
+    /// Equality over what the binding *means*, ignoring which file and line it
+    /// was read from. Two definitions of one name collapse losslessly only when
+    /// this holds (FW7, Codex addition 3).
+    pub fn semantically_eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.pdxmesh == other.pdxmesh
+            && self.scale.to_bits() == other.scale.to_bits()
+    }
+}
+
+impl BuildingPdxmeshBinding {
+    /// Equality over what the binding *means*; see
+    /// [`BuildingEntityBinding::semantically_eq`].
+    pub fn semantically_eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.mesh == other.mesh
+            && self.scale.to_bits() == other.scale.to_bits()
+            && self.mesh_settings == other.mesh_settings
+    }
+}
+
 /// A `.gfx` pdxmesh `meshsettings` sub-block. When present it OVERRIDES the
 /// mesh's baked-in material textures for the shape at `index` (FILE law,
 /// `gfx/entities/buildings.gfx`: e.g. `facility_nuclear.mesh`'s baked material
@@ -203,7 +225,7 @@ pub fn building_file_derived_layer_from_resolver(
     let entities = building_entity_bindings_from_resolver(resolver)?;
     let meshes = building_pdxmesh_bindings_from_resolver(resolver)?;
     let (resolved, coverage) =
-        resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes);
+        resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes)?;
     let (models, model_indices, coverage, model_gaps) =
         load_building_models(resolver, &resolved, coverage)?;
     let instances = building_preview_instances(
@@ -289,22 +311,142 @@ pub fn building_pdxmesh_bindings_from_resolver(
         let text = read_latin1(&path)?;
         out.extend(parse_building_pdxmesh_bindings(&text, source)?);
     }
+    // FW7 (Codex addition 3): the concatenated list is later folded into a
+    // `BTreeMap` keyed by name (`resolve_show_on_map_building_bindings`), which
+    // silently discarded every colliding binding but the last. Detect the
+    // collision where the sources are still distinguishable.
+    refuse_on_duplicate_pdxmesh_names(&out)?;
     Ok(out)
 }
 
+/// Refuse a pdxmesh binding list that cannot survive a name-keyed fold without
+/// loss. Byte-identical redefinitions collapse losslessly and are admitted.
+fn refuse_on_duplicate_pdxmesh_names(bindings: &[BuildingPdxmeshBinding]) -> Result<()> {
+    let mut seen: BTreeMap<&str, &BuildingPdxmeshBinding> = BTreeMap::new();
+    let mut gaps = Vec::new();
+    for binding in bindings {
+        if let Some(previous) = seen.get(binding.name.as_str()) {
+            if !previous.semantically_eq(binding) {
+                gaps.push(format!(
+                    "pdxmesh {:?} from {}:{} conflicts with {}:{}",
+                    binding.name,
+                    binding.source,
+                    binding.block_line,
+                    previous.source,
+                    previous.block_line
+                ));
+            }
+            continue;
+        }
+        seen.insert(binding.name.as_str(), binding);
+    }
+    refuse_on_binding_gaps("building pdxmesh bindings", "pdxmesh", &gaps)
+}
+
+/// FW7 (Codex addition 3): building entity bindings are parsed fail-closed.
+///
+/// Three silent losses lived in this function. A duplicate explicit `entity`
+/// name last-wrote into the map with no record, so a mod (or a second shipped
+/// `.asset`) could replace a binding invisibly. A `clone` whose base never
+/// resolves was accumulated and then *abandoned* when the fixed-point loop made
+/// no progress — the entity simply vanished from the returned list, and the
+/// building that referenced it later showed up only as a generic "missing
+/// entity" coverage row with no hint that the definition existed but was
+/// unresolvable. A clone that collides with an explicit binding's name
+/// overwrote it just as silently.
+///
+/// Each is now a typed gap naming the source file and the entity.
 pub fn parse_building_entity_bindings(
     text: &str,
     source: &str,
 ) -> Result<Vec<BuildingEntityBinding>> {
-    let mut explicit = BTreeMap::new();
+    let mut explicit: BTreeMap<String, BuildingEntityBinding> = BTreeMap::new();
     let mut clones = Vec::new();
+    let mut gaps: Vec<String> = Vec::new();
+    // ONE registry over every entity name the file declares, whatever kind of
+    // block declared it. Keeping mesh-bearing bindings, clones and mesh-less
+    // entities in separate collections is what let a name collide ACROSS kinds
+    // without a word — a mesh-bearing `building_a` followed by a mesh-less
+    // `entity = { name = "building_a" }` would leave the stale binding in place
+    // and report nothing.
+    let mut declared: BTreeMap<String, DeclaredEntity> = BTreeMap::new();
+    // Entities that parsed fine but carry no `pdxmesh` (particle emitters,
+    // locators, sound entities). They are not building bindings, so they are not
+    // in `explicit` — but they DO exist, and a clone of one is well-formed mod
+    // content whose derived entity is equally mesh-less. Tracking their names is
+    // what keeps the unresolvable-clone refusal from firing on valid input.
+    let mut mesh_less: BTreeSet<String> = BTreeSet::new();
+    // A repeated declaration is only a LOSS when the two disagree. A byte-
+    // identical repeat — of any kind, including a clone or a mesh-less entity —
+    // collapses without losing anything and is admitted, on the same terms as an
+    // identical repeated pdxmesh binding.
+    let mut note_declaration = |gaps: &mut Vec<String>,
+                                declared: &mut BTreeMap<String, DeclaredEntity>,
+                                name: &str,
+                                entry: DeclaredEntity|
+     -> bool {
+        match declared.get(name) {
+            Some(previous) if previous.semantically_eq(&entry) => false,
+            Some(previous) if previous.kind.label() == entry.kind.label() => {
+                gaps.push(format!(
+                    "entity {name:?} on line {} conflicts with {} declared on line {}",
+                    entry.line,
+                    entry.kind.label(),
+                    previous.line
+                ));
+                false
+            }
+            Some(previous) => {
+                gaps.push(format!(
+                    "entity {name:?} on line {} is declared as {} but line {} already declared it as {}",
+                    entry.line,
+                    entry.kind.label(),
+                    previous.line,
+                    previous.kind.label()
+                ));
+                false
+            }
+            None => {
+                declared.insert(name.to_string(), entry);
+                true
+            }
+        }
+    };
     for block in parse_assignment_blocks(text, source, "entity")? {
         match parse_building_entity_binding_block(&block, source)? {
             ParsedBuildingEntityBlock::Binding(binding) => {
+                if !note_declaration(
+                    &mut gaps,
+                    &mut declared,
+                    &binding.name,
+                    DeclaredEntity::binding(&binding),
+                ) {
+                    continue;
+                }
                 explicit.insert(binding.name.clone(), binding);
             }
-            ParsedBuildingEntityBlock::Clone(clone) => clones.push(clone),
-            ParsedBuildingEntityBlock::Ignored => {}
+            ParsedBuildingEntityBlock::Clone(clone) => {
+                if !note_declaration(
+                    &mut gaps,
+                    &mut declared,
+                    &clone.name,
+                    DeclaredEntity::clone_of(&clone),
+                ) {
+                    continue;
+                }
+                clones.push(clone);
+            }
+            ParsedBuildingEntityBlock::Ignored { name, block_line } => {
+                if !note_declaration(
+                    &mut gaps,
+                    &mut declared,
+                    &name,
+                    DeclaredEntity::mesh_less(block_line),
+                ) {
+                    continue;
+                }
+                mesh_less.insert(name);
+            }
         }
     }
     let mut unresolved = clones;
@@ -313,7 +455,16 @@ pub fn parse_building_entity_bindings(
         let mut still_unresolved = Vec::new();
         for clone in unresolved {
             if let Some(base) = explicit.get(&clone.clone).cloned() {
+                // The registry above already refused any cross-kind or repeated
+                // declaration of this name, so the derived entity cannot be
+                // overwriting anything.
                 explicit.insert(clone.name.clone(), clone.to_binding(&base));
+                changed = true;
+            } else if mesh_less.contains(&clone.clone) {
+                // The base exists and is deliberately mesh-less, so the derived
+                // entity is too. It is not a building binding and never was —
+                // refusing it would reject well-formed content.
+                mesh_less.insert(clone.name.clone());
                 changed = true;
             } else {
                 still_unresolved.push(clone);
@@ -323,39 +474,174 @@ pub fn parse_building_entity_bindings(
             break;
         }
         if !changed {
+            // Fixed point with survivors: these clones can never resolve —
+            // their base is absent, or they form a cycle. Abandoning them here
+            // is exactly the silent drop being fixed.
+            for clone in &still_unresolved {
+                gaps.push(format!(
+                    "entity {:?} clones {:?}, which is not defined by any entity block",
+                    clone.name, clone.clone
+                ));
+            }
             break;
         }
         unresolved = still_unresolved;
     }
+    refuse_on_binding_gaps(source, "entity", &gaps)?;
     Ok(explicit.into_values().collect())
+}
+
+/// What kind of entity block claimed a name, and what it said. Carried so a
+/// collision can name both lines and both kinds, and so a byte-identical repeat
+/// can be told apart from a genuine conflict (FW7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DeclaredEntityKind {
+    /// `pdxmesh` target and scale bits.
+    Binding { pdxmesh: String, scale: u32 },
+    /// Base entity name and optional scale bits.
+    Clone { base: String, scale: Option<u32> },
+    /// A named entity with no `pdxmesh` and no `clone`; the name is all it says.
+    MeshLess,
+}
+
+impl DeclaredEntityKind {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Binding { .. } => "a pdxmesh binding",
+            Self::Clone { .. } => "a clone",
+            Self::MeshLess => "a mesh-less entity",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeclaredEntity {
+    kind: DeclaredEntityKind,
+    line: usize,
+}
+
+impl DeclaredEntity {
+    fn binding(binding: &BuildingEntityBinding) -> Self {
+        Self {
+            kind: DeclaredEntityKind::Binding {
+                pdxmesh: binding.pdxmesh.clone(),
+                scale: binding.scale.to_bits(),
+            },
+            line: binding.block_line,
+        }
+    }
+
+    fn clone_of(clone: &ParsedBuildingEntityClone) -> Self {
+        Self {
+            kind: DeclaredEntityKind::Clone {
+                base: clone.clone.clone(),
+                scale: clone.scale.map(f32::to_bits),
+            },
+            line: clone.block_line,
+        }
+    }
+
+    fn mesh_less(line: usize) -> Self {
+        Self {
+            kind: DeclaredEntityKind::MeshLess,
+            line,
+        }
+    }
+
+    /// Two declarations of one name collapse losslessly only when they say the
+    /// same thing. The source line is deliberately excluded.
+    fn semantically_eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+/// Upper bound on individual binding gaps enumerated in a refusal message.
+pub const MAX_REPORTED_BINDING_GAPS: usize = 20;
+
+/// Fold a binding gap list into one typed refusal, or `Ok(())` when empty.
+fn refuse_on_binding_gaps(source: &str, kind: &str, gaps: &[String]) -> Result<()> {
+    if gaps.is_empty() {
+        return Ok(());
+    }
+    let shown = gaps.len().min(MAX_REPORTED_BINDING_GAPS);
+    let elided = gaps.len() - shown;
+    let suffix = if elided == 0 {
+        String::new()
+    } else {
+        format!("; and {elided} more")
+    };
+    Err(format!(
+        "{source} refused: {} unusable {kind} binding(s) — {}{suffix}",
+        gaps.len(),
+        gaps[..shown].join("; ")
+    )
+    .into())
 }
 
 pub fn parse_building_pdxmesh_bindings(
     text: &str,
     source: &str,
 ) -> Result<Vec<BuildingPdxmeshBinding>> {
-    parse_assignment_blocks(text, source, "pdxmesh")?
+    let bindings = parse_assignment_blocks(text, source, "pdxmesh")?
         .iter()
         .map(|block| parse_building_pdxmesh_binding_block(block, source))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    refuse_on_duplicate_pdxmesh_names(&bindings)?;
+    Ok(bindings)
 }
 
+/// FW7 (Codex addition 3): the name-keyed fold that used to eat duplicates.
+///
+/// Both slices were collected with `.collect::<BTreeMap<_, _>>()`, which keeps
+/// the last binding for each name and discards the rest without a word. The
+/// producers (`parse_building_entity_bindings`,
+/// `building_pdxmesh_bindings_from_resolver`) now refuse conflicting duplicates,
+/// but this function is publicly re-exported and takes arbitrary slices, so the
+/// loss stayed reachable through the public API. It is a refusal here too.
 pub fn resolve_show_on_map_building_bindings(
     show_on_map: &[ShowOnMapBuilding],
     entity_bindings: &[BuildingEntityBinding],
     pdxmesh_bindings: &[BuildingPdxmeshBinding],
-) -> (
+) -> Result<(
     BTreeMap<String, Vec<ResolvedBuildingEntity>>,
     Vec<BuildingBindingCoverageRow>,
-) {
-    let entities_by_name = entity_bindings
-        .iter()
-        .map(|binding| (binding.name.clone(), binding.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let meshes_by_name = pdxmesh_bindings
-        .iter()
-        .map(|binding| (binding.name.clone(), binding.clone()))
-        .collect::<BTreeMap<_, _>>();
+)> {
+    let mut entities_by_name: BTreeMap<String, BuildingEntityBinding> = BTreeMap::new();
+    let mut gaps = Vec::new();
+    for binding in entity_bindings {
+        match entities_by_name.get(&binding.name) {
+            Some(previous) if !previous.semantically_eq(binding) => gaps.push(format!(
+                "entity {:?} from {}:{} conflicts with {}:{}",
+                binding.name,
+                binding.source,
+                binding.block_line,
+                previous.source,
+                previous.block_line
+            )),
+            Some(_) => {}
+            None => {
+                entities_by_name.insert(binding.name.clone(), binding.clone());
+            }
+        }
+    }
+    let mut meshes_by_name: BTreeMap<String, BuildingPdxmeshBinding> = BTreeMap::new();
+    for binding in pdxmesh_bindings {
+        match meshes_by_name.get(&binding.name) {
+            Some(previous) if !previous.semantically_eq(binding) => gaps.push(format!(
+                "pdxmesh {:?} from {}:{} conflicts with {}:{}",
+                binding.name,
+                binding.source,
+                binding.block_line,
+                previous.source,
+                previous.block_line
+            )),
+            Some(_) => {}
+            None => {
+                meshes_by_name.insert(binding.name.clone(), binding.clone());
+            }
+        }
+    }
+    refuse_on_binding_gaps("show_on_map building bindings", "binding", &gaps)?;
     let mut resolved = BTreeMap::new();
     let mut coverage = Vec::new();
     for building in show_on_map {
@@ -393,7 +679,7 @@ pub fn resolve_show_on_map_building_bindings(
             missing_meshes,
         });
     }
-    (resolved, coverage)
+    Ok((resolved, coverage))
 }
 
 pub fn building_preview_instances(
@@ -879,7 +1165,14 @@ fn parse_assignment_blocks(
 enum ParsedBuildingEntityBlock {
     Binding(BuildingEntityBinding),
     Clone(ParsedBuildingEntityClone),
-    Ignored,
+    /// A named entity with no `pdxmesh` and no `clone` — a particle emitter,
+    /// locator or sound entity. Not a building binding, but it EXISTS, and the
+    /// name is carried so a clone of it is recognised as valid mod content
+    /// rather than refused as cloning something undefined (FW7).
+    Ignored {
+        name: String,
+        block_line: usize,
+    },
 }
 
 struct ParsedBuildingEntityClone {
@@ -949,7 +1242,7 @@ fn parse_building_entity_binding_block(
     let name = name.ok_or_else(|| format!("{source}:{block_line}: entity block has no name"))?;
     let Some(pdxmesh) = pdxmesh else {
         let Some(clone) = clone else {
-            return Ok(ParsedBuildingEntityBlock::Ignored);
+            return Ok(ParsedBuildingEntityBlock::Ignored { name, block_line });
         };
         return Ok(ParsedBuildingEntityBlock::Clone(
             ParsedBuildingEntityClone {
@@ -1154,9 +1447,6 @@ fn push_f32s<const N: usize>(bytes: &mut Vec<u8>, values: &[f32; N]) {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
-
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
 
     #[test]
     fn placement_slots_map_to_instances_only_when_preview_all() {
@@ -1258,7 +1548,8 @@ mod tests {
             scale_line: None,
         }];
         let (resolved, coverage) =
-            resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes);
+            resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes)
+                .expect("binding resolution");
         assert!(resolved.is_empty());
         assert_eq!(
             coverage[0].missing_meshes,
@@ -1299,7 +1590,8 @@ mod tests {
             show_on_map_meshes: None,
         }];
         let (resolved, coverage) =
-            resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes);
+            resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes)
+                .expect("binding resolution");
         assert!(coverage[0].fully_resolved());
         assert_eq!(
             resolved["air_base"][0].pdxmesh.mesh,
@@ -1307,6 +1599,319 @@ mod tests {
         );
         assert_eq!(resolved["air_base"][0].entity.scale, 1.25);
         assert_eq!(resolved["air_base"][0].pdxmesh.scale, 0.5);
+    }
+
+    // ---- FW7 (Codex addition 3): binding losses are typed gaps -------------
+
+    /// Regression: a `clone` whose base never resolves was accumulated by the
+    /// fixed-point loop and then *abandoned* when no progress was possible, so
+    /// the entity simply disappeared from the returned list. Downstream it
+    /// surfaced only as a generic "missing entity" coverage row with no hint
+    /// that the definition existed but could not be built.
+    #[test]
+    fn entity_clone_with_unresolvable_base_is_a_typed_gap_not_a_silent_drop() {
+        let text = r#"
+            objectTypes = {
+                entity = { name = "building_a" pdxmesh = "mesh_a" }
+                entity = { name = "building_orphan" clone = "building_absent" }
+            }
+            "#;
+        let error = parse_building_entity_bindings(text, BUILDINGS_ENTITY_ASSET_SOURCE)
+            .expect_err("unresolvable clone must refuse");
+        let message = error.to_string();
+        assert!(message.contains("building_orphan"), "{message}");
+        assert!(message.contains("building_absent"), "{message}");
+        assert!(message.contains("is not defined"), "{message}");
+    }
+
+    /// A clone of a deliberately mesh-less entity (a particle emitter, locator
+    /// or sound entity — parsed fine, classified `Ignored` because it has no
+    /// `pdxmesh`) is well-formed content. The derived entity is equally
+    /// mesh-less and equally not a building binding, so it must be admitted and
+    /// dropped from the binding list, NOT refused as cloning something that does
+    /// not exist. Chains of such clones resolve the same way.
+    #[test]
+    fn clone_of_a_mesh_less_entity_is_admitted_not_refused() {
+        let text = r#"
+            objectTypes = {
+                entity = { name = "particle_smoke" }
+                entity = { name = "particle_smoke_variant" clone = "particle_smoke" }
+                entity = { name = "particle_smoke_variant2" clone = "particle_smoke_variant" }
+                entity = { name = "building_a" pdxmesh = "mesh_a" }
+            }
+            "#;
+        let bindings = parse_building_entity_bindings(text, BUILDINGS_ENTITY_ASSET_SOURCE)
+            .expect("a clone of a mesh-less entity is valid content");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].name, "building_a");
+    }
+
+    /// One name, two kinds of block. Keeping bindings, clones and mesh-less
+    /// entities in separate collections let a name collide ACROSS kinds without
+    /// a word: the stale binding stayed in the returned list and nothing was
+    /// reported. One registry now covers all three, in either source order.
+    #[test]
+    fn a_name_declared_by_two_different_entity_kinds_is_refused() {
+        let binding_then_mesh_less = r#"
+            objectTypes = {
+                entity = { name = "building_a" pdxmesh = "mesh_a" }
+                entity = { name = "building_a" }
+            }
+            "#;
+        let error =
+            parse_building_entity_bindings(binding_then_mesh_less, BUILDINGS_ENTITY_ASSET_SOURCE)
+                .expect_err("a mesh-less redeclaration must be reported");
+        assert!(error.to_string().contains("building_a"), "{error}");
+        assert!(error.to_string().contains("mesh-less entity"), "{error}");
+
+        let mesh_less_then_binding = r#"
+            objectTypes = {
+                entity = { name = "building_a" }
+                entity = { name = "building_a" pdxmesh = "mesh_a" }
+            }
+            "#;
+        let error =
+            parse_building_entity_bindings(mesh_less_then_binding, BUILDINGS_ENTITY_ASSET_SOURCE)
+                .expect_err("the reverse order must be reported too");
+        assert!(error.to_string().contains("building_a"), "{error}");
+
+        let clone_over_mesh_less = r#"
+            objectTypes = {
+                entity = { name = "base" pdxmesh = "mesh_a" }
+                entity = { name = "building_a" }
+                entity = { name = "building_a" clone = "base" }
+            }
+            "#;
+        let error =
+            parse_building_entity_bindings(clone_over_mesh_less, BUILDINGS_ENTITY_ASSET_SOURCE)
+                .expect_err("a clone colliding with a mesh-less name must be reported");
+        assert!(error.to_string().contains("building_a"), "{error}");
+
+        let clone_over_binding = r#"
+            objectTypes = {
+                entity = { name = "base" pdxmesh = "mesh_a" }
+                entity = { name = "building_a" pdxmesh = "mesh_b" }
+                entity = { name = "building_a" clone = "base" }
+            }
+            "#;
+        let error =
+            parse_building_entity_bindings(clone_over_binding, BUILDINGS_ENTITY_ASSET_SOURCE)
+                .expect_err("a clone colliding with a binding name must be reported");
+        assert!(error.to_string().contains("building_a"), "{error}");
+    }
+
+    /// A clone whose base genuinely does not exist in ANY form is still a gap.
+    #[test]
+    fn clone_of_a_wholly_absent_base_is_still_refused() {
+        let text = r#"
+            objectTypes = {
+                entity = { name = "particle_smoke" }
+                entity = { name = "orphan" clone = "never_declared" }
+            }
+            "#;
+        let error = parse_building_entity_bindings(text, BUILDINGS_ENTITY_ASSET_SOURCE)
+            .expect_err("an absent base is still a gap");
+        assert!(error.to_string().contains("never_declared"), "{error}");
+    }
+
+    /// The publicly re-exported fold takes arbitrary slices, so the silent
+    /// last-wins collapse stayed reachable through the public API even after the
+    /// producers were tightened.
+    #[test]
+    fn the_public_binding_fold_refuses_conflicting_duplicates() {
+        let entity = |pdxmesh: &str, line: usize| BuildingEntityBinding {
+            name: "building_a".to_string(),
+            pdxmesh: pdxmesh.to_string(),
+            scale: 1.0,
+            source: BUILDINGS_ENTITY_ASSET_SOURCE.to_string(),
+            block_line: line,
+            name_line: line,
+            pdxmesh_line: line,
+            scale_line: None,
+        };
+        let mesh = BuildingPdxmeshBinding {
+            name: "mesh_one".to_string(),
+            mesh: "gfx/models/buildings/one.mesh".to_string(),
+            scale: 1.0,
+            mesh_settings: Vec::new(),
+            source: BUILDINGS_GFX_SOURCE.to_string(),
+            block_line: 1,
+            name_line: 1,
+            file_line: 2,
+            scale_line: None,
+        };
+        let error = resolve_show_on_map_building_bindings(
+            &[],
+            &[entity("mesh_one", 1), entity("mesh_two", 9)],
+            &[mesh.clone()],
+        )
+        .expect_err("conflicting entity duplicates must refuse");
+        assert!(error.to_string().contains("building_a"), "{error}");
+
+        // An identical redefinition collapses losslessly and is admitted.
+        resolve_show_on_map_building_bindings(
+            &[],
+            &[entity("mesh_one", 1), entity("mesh_one", 9)],
+            &[mesh.clone(), mesh],
+        )
+        .expect("identical redefinitions are lossless");
+    }
+
+    /// A chain of clones that DOES resolve still resolves — the fixed point is
+    /// unchanged, only its abandonment arm is.
+    #[test]
+    fn entity_clone_chain_still_resolves() {
+        let text = r#"
+            objectTypes = {
+                entity = { name = "building_base" pdxmesh = "mesh_base" scale = 2.0 }
+                entity = { name = "building_mid" clone = "building_base" }
+                entity = { name = "building_leaf" clone = "building_mid" }
+            }
+            "#;
+        let bindings = parse_building_entity_bindings(text, BUILDINGS_ENTITY_ASSET_SOURCE)
+            .expect("resolvable clone chain");
+        assert_eq!(bindings.len(), 3);
+        let leaf = bindings
+            .iter()
+            .find(|binding| binding.name == "building_leaf")
+            .expect("leaf binding");
+        assert_eq!(leaf.pdxmesh, "mesh_base");
+        assert_eq!(leaf.scale, 2.0);
+    }
+
+    /// Regression: a duplicate explicit entity name last-wrote into the map, so
+    /// a second definition replaced the first with no record.
+    #[test]
+    fn conflicting_duplicate_entity_name_is_refused() {
+        let text = r#"
+            objectTypes = {
+                entity = { name = "building_a" pdxmesh = "mesh_one" }
+                entity = { name = "building_a" pdxmesh = "mesh_two" }
+            }
+            "#;
+        let error = parse_building_entity_bindings(text, BUILDINGS_ENTITY_ASSET_SOURCE)
+            .expect_err("conflicting duplicate must refuse");
+        assert!(error.to_string().contains("building_a"), "{error}");
+        assert!(error.to_string().contains("conflicts with"), "{error}");
+    }
+
+    /// A byte-identical repeat of a CLONE, or of a mesh-less entity, collapses
+    /// losslessly and must be admitted — the same allowance identical pdxmesh
+    /// bindings get. Only a differing repeat is a loss.
+    #[test]
+    fn identical_repeated_clone_and_mesh_less_declarations_are_admitted() {
+        let identical_clones = r#"
+            objectTypes = {
+                entity = { name = "base" pdxmesh = "mesh_a" }
+                entity = { name = "derived" clone = "base" }
+                entity = { name = "derived" clone = "base" }
+            }
+            "#;
+        let bindings =
+            parse_building_entity_bindings(identical_clones, BUILDINGS_ENTITY_ASSET_SOURCE)
+                .expect("an identical repeated clone is lossless");
+        assert_eq!(bindings.len(), 2);
+
+        let identical_mesh_less = r#"
+            objectTypes = {
+                entity = { name = "particle_smoke" }
+                entity = { name = "particle_smoke" }
+            }
+            "#;
+        let bindings =
+            parse_building_entity_bindings(identical_mesh_less, BUILDINGS_ENTITY_ASSET_SOURCE)
+                .expect("an identical repeated mesh-less entity is lossless");
+        assert!(bindings.is_empty());
+
+        // A repeated clone that names a DIFFERENT base is still a loss.
+        let differing_clones = r#"
+            objectTypes = {
+                entity = { name = "base_one" pdxmesh = "mesh_a" }
+                entity = { name = "base_two" pdxmesh = "mesh_b" }
+                entity = { name = "derived" clone = "base_one" }
+                entity = { name = "derived" clone = "base_two" }
+            }
+            "#;
+        let error = parse_building_entity_bindings(differing_clones, BUILDINGS_ENTITY_ASSET_SOURCE)
+            .expect_err("a differing repeated clone must refuse");
+        assert!(error.to_string().contains("derived"), "{error}");
+    }
+
+    /// A byte-identical redefinition loses nothing when the name-keyed fold
+    /// collapses it, so it is admitted. Only a *differing* one is a loss.
+    #[test]
+    fn identical_duplicate_entity_definition_is_admitted() {
+        let text = r#"
+            objectTypes = {
+                entity = { name = "building_a" pdxmesh = "mesh_one" }
+                entity = { name = "building_a" pdxmesh = "mesh_one" }
+            }
+            "#;
+        let bindings = parse_building_entity_bindings(text, BUILDINGS_ENTITY_ASSET_SOURCE)
+            .expect("identical redefinition is lossless");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].pdxmesh, "mesh_one");
+    }
+
+    /// Regression: duplicate pdxmesh names were collapsed silently when the
+    /// binding vector was folded into a `BTreeMap` keyed by name in
+    /// `resolve_show_on_map_building_bindings`.
+    #[test]
+    fn conflicting_duplicate_pdxmesh_name_is_refused() {
+        let text = r#"
+            objectTypes = {
+                pdxmesh = { name = "mesh_a" file = "gfx\models\buildings\one.mesh" }
+                pdxmesh = { name = "mesh_a" file = "gfx\models\buildings\two.mesh" }
+            }
+            "#;
+        let error = parse_building_pdxmesh_bindings(text, BUILDINGS_GFX_SOURCE)
+            .expect_err("conflicting pdxmesh must refuse");
+        let message = error.to_string();
+        assert!(message.contains("mesh_a"), "{message}");
+        assert!(message.contains("conflicts with"), "{message}");
+    }
+
+    #[test]
+    fn identical_duplicate_pdxmesh_definition_is_admitted() {
+        let text = r#"
+            objectTypes = {
+                pdxmesh = { name = "mesh_a" file = "gfx\models\buildings\one.mesh" }
+                pdxmesh = { name = "mesh_a" file = "gfx\models\buildings\one.mesh" }
+            }
+            "#;
+        let bindings = parse_building_pdxmesh_bindings(text, BUILDINGS_GFX_SOURCE)
+            .expect("identical redefinition is lossless");
+        assert_eq!(bindings.len(), 2);
+        assert!(bindings[0].semantically_eq(&bindings[1]));
+    }
+
+    /// The cross-source concatenation in `building_pdxmesh_bindings_from_resolver`
+    /// is checked too — `buildings.gfx` and `supply_station.gfx` are folded into
+    /// one name-keyed map by the consumer.
+    #[test]
+    fn conflicting_pdxmesh_across_sources_is_refused() {
+        let root = crate::test_support::temp_test_dir("building_pdxmesh_cross_source");
+        let vanilla = root.join("vanilla");
+        write_text(
+            &vanilla,
+            BUILDINGS_GFX_SOURCE,
+            r#"objectTypes = { pdxmesh = { name = "mesh_a" file = "gfx/models/buildings/one.mesh" } }"#,
+        );
+        write_text(
+            &vanilla,
+            "gfx/models/buildings/supply_station.gfx",
+            r#"objectTypes = { pdxmesh = { name = "mesh_a" file = "gfx/models/buildings/two.mesh" } }"#,
+        );
+        let resolver = GameFileResolver::vanilla(vanilla).expect("resolver");
+        let error = building_pdxmesh_bindings_from_resolver(&resolver)
+            .expect_err("cross-source conflict must refuse");
+        let message = error.to_string();
+        assert!(message.contains("mesh_a"), "{message}");
+        assert!(
+            message.contains("gfx/models/buildings/supply_station.gfx"),
+            "{message}"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1459,19 +2064,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_building_binding_coverage() {
-        let game_dir = PathBuf::from(VANILLA_GAME_DIR);
-        if !game_dir.is_dir() {
-            eprintln!("skipping vanilla building binding gate: {VANILLA_GAME_DIR} is absent");
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let show_on_map =
             show_on_map_buildings_from_resolver(&resolver).expect("show_on_map buildings");
         let entities =
             building_entity_bindings_from_resolver(&resolver).expect("building entities");
         let meshes = building_pdxmesh_bindings_from_resolver(&resolver).expect("building meshes");
-        let (_, coverage) = resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes);
+        let (_, coverage) = resolve_show_on_map_building_bindings(&show_on_map, &entities, &meshes)
+            .expect("binding resolution");
         let missing = coverage
             .iter()
             .filter(|row| !row.fully_resolved())
@@ -1539,14 +2145,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_building_material_textures_resolve() {
-        let game_dir = PathBuf::from(VANILLA_GAME_DIR);
-        if !game_dir.is_dir() {
-            eprintln!(
-                "skipping vanilla building material texture gate: {VANILLA_GAME_DIR} is absent"
-            );
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let layer = building_file_derived_layer_from_resolver(&resolver, false).expect("layer");
         let pdxmeshes =
@@ -1601,7 +2205,7 @@ mod tests {
         fs::write(path, text).expect("write text");
     }
 
-    /// B2 GUESS-constant disposition gate (FIDELITY_LEDGER 2.12): the former
+    /// B2 GUESS-constant disposition gate: the former
     /// `AtlasCoordinate = (0,0,1,1) GUESS` / `vUVAnimSpeed = 0 GUESS` values
     /// are proven DEAD for the building path. The shipped shader reads them
     /// only under `#ifdef ATLAS` (gfx/FX/pdxmesh.shader:453) / `#ifdef
@@ -1611,15 +2215,15 @@ mod tests {
     /// PdxMeshStandard, live for the skinned ATLAS / UV_ANIM variants.
     #[cfg(windows)]
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_building_cb1_atlas_uvanim_dead_for_standard() {
         use crate::shader_compile::{
             build_stage_hlsl, d3d_compile_stage, parse_dxbc_reflection, ShaderStage,
         };
-        let game_dir = PathBuf::from(VANILLA_GAME_DIR);
-        if !game_dir.is_dir() {
-            eprintln!("skipping building cb1 atlas gate: {VANILLA_GAME_DIR} is absent");
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
 
         let var_used = |effect: &str, stage: ShaderStage, var: &str| -> Option<bool> {

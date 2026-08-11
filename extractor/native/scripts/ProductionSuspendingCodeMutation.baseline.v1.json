@@ -13,10 +13,22 @@
                                                   "count":  1
                                               },
                                               {
+                                                  "file":  "extractor/native/collector/src/attach_log/d47_cost_bench.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  2
+                                              },
+                                              {
+                                                  "file":  "extractor/native/collector/src/attach_log/tests/d81_batched_tables.rs",
+                                                  "capability":  "VirtualProtect",
+                                                  "kind":  "direct_call",
+                                                  "count":  1
+                                              },
+                                              {
                                                   "file":  "extractor/native/collector/src/attach_log/tests.rs",
                                                   "capability":  "VirtualProtect",
                                                   "kind":  "direct_call",
-                                                  "count":  3
+                                                  "count":  4
                                               }
                                           ],
                       "delegated_patchers":  [

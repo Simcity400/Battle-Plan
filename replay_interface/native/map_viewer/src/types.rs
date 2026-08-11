@@ -364,6 +364,43 @@ pub(crate) struct MapFrameRuntimeBundle {
     pub(crate) blockers: Vec<String>,
     #[serde(skip)]
     pub(crate) synthetic_payloads: BTreeMap<String, MapFrameSyntheticPayload>,
+    /// FW12 H2 (FW7-F2 consumer half): the typed outcome of the required
+    /// vanilla-source verification, recorded by
+    /// `frame_bundle::validate_map_frame_vanilla_sources` during bundle
+    /// validation. `None` only before validation ran (never serialized).
+    #[serde(skip)]
+    /// RES2: a SEAL, not a bare outcome. The field itself is `pub(crate)` like
+    /// its neighbours, so any module could assign it — but the value can only
+    /// be minted by `frame_bundle`, and it is bound to the very
+    /// `vanilla_sources` evidence it describes. Copying another frame's
+    /// verified seal onto this frame therefore does not admit it: the binding
+    /// no longer matches and the consumer gate treats it as absent, which is a
+    /// refusal.
+    pub(crate) vanilla_source_verification: Option<MapFrameVanillaSourceSeal>,
+}
+
+/// FW12 H2: how the map-frame bundle's required vanilla sources were verified
+/// against the engine's effective VFS. Replaces the former silent skip when no
+/// local resolver was supplied — the skip is now a recorded, typed state a
+/// consumer can gate on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MapFrameVanillaSourceVerification {
+    /// A local effective-VFS resolver re-read and re-hashed every required
+    /// source; the bundle evidence matches the local effective VFS.
+    ResolverVerified,
+    /// No local resolver, but every required source's evidence records
+    /// `effective_vfs_verified: true` from the capture host (FW7-F2: resolved
+    /// through the session's declared content layers at capture time).
+    ProducerVerified,
+    /// No local resolver AND at least one required source's evidence carries
+    /// no producer verification (`effective_vfs_verified` false or absent).
+    /// The bundle's internal evidence self-consistency was still validated,
+    /// but nothing certified these sources against the VFS the engine
+    /// actually compiled from.
+    Unverified {
+        /// The required sources lacking producer verification.
+        unverified_sources: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -801,6 +838,21 @@ pub(crate) struct MapFrameFileEvidence {
     pub(crate) byte_len: usize,
     pub(crate) fnv1a64: String,
     pub(crate) provenance: String,
+    /// FW7-F2 (producer: terrain_capture `copy_required_source_evidence`): for
+    /// game-source evidence, the content layer the bytes actually came from —
+    /// a declared mod's `source_id`, or `base_installation`. `None` for
+    /// runtime capture payloads and for bundles from pre-FW7 producers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resolved_from: Option<String>,
+    /// FW7-F2: `Some(true)` only when the capture host declared the session's
+    /// effective content layers and the bytes were resolved through them.
+    /// `Some(false)` marks a working-directory copy never checked against the
+    /// engine's effective VFS; `None` means the producer predates the field.
+    /// Machine-readable so this consumer never has to parse `provenance` —
+    /// [`crate::frame_bundle::validate_map_frame_vanilla_sources`] gates on it
+    /// when no local resolver is supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) effective_vfs_verified: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

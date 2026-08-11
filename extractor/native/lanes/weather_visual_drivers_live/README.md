@@ -106,16 +106,12 @@ captured data and can gate the weather visual path.
    nonzero `observed_province_rows`, `.battleplan` packing/verification, hourly-or-better
    cadence, zero skipped game hours, and no source/partial/bridge/worker failures.
 
-## Local proof
+## Historical local proof
 
-Standalone tests:
-
-```powershell
-rustc --edition=2021 --test extractor\native\lanes\weather_visual_drivers_live\domain24_weather_visual_v2.rs -o extractor\native\target\weather_visual_drivers_live_domain24_tests.exe
-extractor\native\target\weather_visual_drivers_live_domain24_tests.exe --nocapture
-```
-
-Result: 4 passed, 0 failed.
+The retired standalone test receipt was 4 passed, 0 failed. Its direct `rustc`
+commands are intentionally not retained as runnable instructions. Current
+candidate validation must use a maintained target reached through the
+worktree-local central wrapper.
 
 Live `870ebf` province-root validation and the nonzero-province lane-local payload
 are in `extractor/native/runs/weather_visual_drivers_live_870ebf_20260701_v2/`.

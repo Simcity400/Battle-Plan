@@ -5,7 +5,8 @@ Status: `PRODUCTION-SCHEDULED; PROMOTION AUTHORITY CONFLICT`
 The retained implementation sets `PRODUCTION_SCHEDULING_ENABLED=true`, and both
 domain registries mark d72 `production_complete` and schedulable. The master
 extraction contract still marks d72 reserved pending the authentic H-A26 live
-matrix and root central validation. Until those authorities are reconciled,
+matrix plus lane-local and combined-authority validation. Until those
+authorities are reconciled,
 runtime scheduling must not be presented as settled promotion closure.
 
 The live matrix requires nine authenticated cases in one process/install epoch:
@@ -25,9 +26,9 @@ RenderDoc, OCR, static localisation, replay-side Clausewitz evaluation, cursor-o
 
 The old TTI1/A25/semantic-row build and test receipts are not evidence for TTI2.
 The corrected hook, carrier, collector, fold, typed replay, and HUD consumer
-still require root-owned central validation under the master contract. The
-enabled code and registries do not by themselves resolve that promotion-
-authority conflict.
+still require wrapper-only validation in the implementation worktree followed
+by proportionate validation on the combined authority tree. The enabled code
+and registries do not by themselves resolve that promotion-authority conflict.
 
 ## Retained RenderDoc findings
 

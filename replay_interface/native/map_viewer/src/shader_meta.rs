@@ -781,8 +781,8 @@ pub(crate) fn terrain_scene_cb0_bytes_with_app_camera_layout(
 }
 
 /// COL3: the POLITICAL-mapmode scene CB0 state (session_POLCOLOR_1 +
-/// BORDERZOOM sweeps, 3768 CB0 samples at heights 50..3000 — see
-/// `documents/FIDELITY_LEDGER.md`). Two field groups:
+/// BORDERZOOM sweeps, 3768 CB0 samples at heights 50..3000). Two field
+/// groups:
 ///
 /// * `vGBCamDistOverride_GBOutlineCutoff = (1.0, 0.0, cutoff_strategic,
 ///   cutoff_country)` — HEIGHT-INVARIANT in every political-mapmode sample.

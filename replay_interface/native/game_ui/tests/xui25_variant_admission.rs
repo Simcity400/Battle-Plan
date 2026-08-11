@@ -1,6 +1,7 @@
 use game_ui::runtime_graphics::ClipRect;
 use game_ui::variant_admission::*;
 use replay_core::world::DisplayVariantMetadata;
+use std::collections::BTreeMap;
 
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -430,4 +431,90 @@ fn keyboard_controller_and_pointer_focus_are_all_fail_closed() {
         VariantCatalog::admit(vec![pointer]),
         Err(VariantRejection::InvalidEnvelope(_))
     ));
+}
+
+fn local_environment(language: &str) -> map_viewer::PlaybackEnvironment {
+    map_viewer::PlaybackEnvironment {
+        source_game: replay_core::SourceGameIdentity {
+            version: "1.19.2".into(),
+            build: "a729".into(),
+            executable_sha256: HASH_A.into(),
+            build_profile: "exact-a729".into(),
+        },
+        source_profile: replay_core::SourceProfileIdentity {
+            profile_id: "local-profile".into(),
+            playset_id: "local-playset".into(),
+            selection_sha256: HASH_B.into(),
+        },
+        dlc_selection: Vec::new(),
+        localisation_language: language.into(),
+        settings: BTreeMap::from([
+            ("physical_width".into(), "2560".into()),
+            ("physical_height".into(), "1440".into()),
+            ("min_gui_width".into(), "1280".into()),
+            ("min_gui_height".into(), "720".into()),
+            (
+                "gui_scale_f32_bits".into(),
+                1.25f32.to_bits().to_string(),
+            ),
+            ("display_mode".into(), "windowed".into()),
+            ("settings_file_sha256".into(), HASH_A.into()),
+        ]),
+    }
+}
+
+#[test]
+fn product_profile_is_local_and_does_not_consume_recorder_presentation() {
+    let environment = local_environment("l_french");
+    let profile = PlaybackUiProfile::admit(&environment, InputVariant::MouseKeyboard).unwrap();
+    assert_eq!(
+        profile.physical_viewport(),
+        PixelExtent {
+            width: 2560,
+            height: 1440,
+        }
+    );
+    assert_eq!(profile.key().min_gui, PixelExtent { width: 1280, height: 720 });
+    assert_eq!(profile.key().gui_scale(), 1.25);
+    assert_eq!(profile.key().display_mode, DisplayMode::Windowed);
+    assert_eq!(profile.localisation_language(), "l_french");
+    assert_eq!(profile.actual_client_input(), InputVariant::MouseKeyboard);
+    assert_eq!(profile.settings_file_sha256(), HASH_A);
+}
+
+#[test]
+fn product_profile_refuses_missing_settings_and_unimplemented_client_input() {
+    let mut missing = local_environment("l_english");
+    missing.settings.remove("gui_scale_f32_bits");
+    assert!(matches!(
+        PlaybackUiProfile::admit(&missing, InputVariant::MouseKeyboard),
+        Err(VariantRejection::InvalidEnvelope(_))
+    ));
+    assert_eq!(
+        PlaybackUiProfile::admit(&local_environment("l_english"), InputVariant::Controller),
+        Err(VariantRejection::UnsupportedInputVariant(
+            InputVariant::Controller
+        ))
+    );
+
+    let mut missing_hash = local_environment("l_english");
+    missing_hash.settings.remove("settings_file_sha256");
+    assert!(matches!(
+        PlaybackUiProfile::admit(&missing_hash, InputVariant::MouseKeyboard),
+        Err(VariantRejection::InvalidEnvelope(_))
+    ));
+    for invalid_hash in [
+        "not-a-sha256".to_string(),
+        "g".repeat(64),
+        HASH_A.to_uppercase(),
+    ] {
+        let mut invalid = local_environment("l_english");
+        invalid
+            .settings
+            .insert("settings_file_sha256".into(), invalid_hash);
+        assert!(matches!(
+            PlaybackUiProfile::admit(&invalid, InputVariant::MouseKeyboard),
+            Err(VariantRejection::InvalidEnvelope(_))
+        ));
+    }
 }

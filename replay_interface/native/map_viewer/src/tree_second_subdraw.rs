@@ -308,14 +308,16 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
+    /// The crate's gate table, included so this test module resolves each
+    /// corpus through EXACTLY the candidate list the build-time probe used.
+    /// Two copies of a candidate list drift; one cannot.
+    #[allow(dead_code)]
+    mod corpus {
+        include!("../test_gates.rs");
+    }
 
-    fn vanilla_dir() -> Option<PathBuf> {
-        let dir = PathBuf::from(VANILLA_GAME_DIR);
-        dir.is_dir().then_some(dir).or_else(|| {
-            eprintln!("skipping tree second-sub-draw gate: {VANILLA_GAME_DIR} is absent");
-            None
-        })
+    fn vanilla_dir() -> PathBuf {
+        replay_test_gates::require_vanilla_game_root()
     }
 
     /// The real trees-pass evidence: both tree pixel shaders are captured as
@@ -326,39 +328,12 @@ mod tests {
     /// `session_CAPFIX2_GAPS_4` has the bins but is a gaps-only capture missing
     /// the terrain moment, so it is only used for the loose-bin identification
     /// check, not for `load_trees`.
-    fn evidence_session() -> Option<PathBuf> {
-        for candidate in [
-            std::env::var("TREES2_CAPTURE_DIR").ok().map(PathBuf::from),
-            Some(PathBuf::from(
-                r"C:\Users\Example\AppData\Local\hoi4_captures\live_PAN2",
-            )),
-            Some(PathBuf::from(
-                r"C:\Users\Example\AppData\Local\hoi4_captures\live_trees_measure",
-            )),
-            // Durable preserved corpus copy (read-only B4 evidence).
-            Some(PathBuf::from(
-                r"C:\Users\Example\hoi4_capture_corpus_preserved\live_trees_measure",
-            )),
-            Some(PathBuf::from(
-                r"C:\Users\Example\hoi4_capture_corpus_preserved\live_PAN2",
-            )),
-            Some(PathBuf::from(
-                r"C:\Users\Example\AppData\Local\hoi4_captures\live_PAN_chunks",
-            )),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if candidate.join("map_frame_trees_pass_bundle.json").is_file()
-                && candidate
-                    .join("tree_pixel_shader_6b77b6df9ba8f03d.bin")
-                    .is_file()
-            {
-                return Some(candidate);
-            }
-        }
-        eprintln!("skipping tree second-sub-draw gate: no evidence session with the trees bundle");
-        None
+    fn evidence_session() -> PathBuf {
+        corpus::trees2_capture_dir().expect(
+            "no trees-pass capture (TREES2_CAPTURE_DIR, else the documented directories) carries \
+             both the trees bundle and the tree pixel shader, but this test was compiled as \
+             runnable",
+        )
     }
 
     /// The LOW_END_GFX pixel shader is byte-exact `tree.shader:tree_low_gfx`,
@@ -366,10 +341,13 @@ mod tests {
     /// identification the historical warning got wrong (it treated the low-gfx
     /// variant as a missing second draw).
     #[test]
+    #[cfg_attr(
+        not(gate_trees2_shader_capture_with_hoi4),
+        ignore = "TREES2_CAPTURE_DIR naming a capture with the tree shader evidence, plus the game install"
+    )]
     fn low_gfx_and_full_pixel_shaders_identify_by_effect() {
-        let (Some(game_dir), Some(session)) = (vanilla_dir(), evidence_session()) else {
-            return;
-        };
+        let game_dir = vanilla_dir();
+        let session = evidence_session();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
 
         let full = std::fs::read(session.join("tree_pixel_shader_277b7b5e8964214f.bin"))
@@ -393,10 +371,13 @@ mod tests {
     /// On the real bundle, the low-gfx PS is present but bound to NO draw, so
     /// the verdict is `created_unused` (not a gap), and the layer note says so.
     #[test]
+    #[cfg_attr(
+        not(gate_trees2_shader_capture_with_hoi4),
+        ignore = "TREES2_CAPTURE_DIR naming a capture with the tree shader evidence, plus the game install"
+    )]
     fn real_bundle_verdict_is_low_gfx_created_but_unused() {
-        let (Some(game_dir), Some(session)) = (vanilla_dir(), evidence_session()) else {
-            return;
-        };
+        let game_dir = vanilla_dir();
+        let session = evidence_session();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let bundle =
             NativeD3d11TerrainBundle::load_trees(session.join("map_frame_trees_pass_bundle.json"))
@@ -448,10 +429,12 @@ mod tests {
     /// the low-gfx one) — the ground truth behind the `mutually exclusive gfx
     /// tier` reading.
     #[test]
+    #[cfg_attr(
+        not(gate_trees2_shader_capture),
+        ignore = "TREES2_CAPTURE_DIR naming a capture with the tree shader evidence"
+    )]
     fn no_captured_draw_binds_the_low_gfx_pixel_shader() {
-        let Some(session) = evidence_session() else {
-            return;
-        };
+        let session = evidence_session();
         let bundle =
             NativeD3d11TerrainBundle::load_trees(session.join("map_frame_trees_pass_bundle.json"))
                 .expect("load trees bundle");

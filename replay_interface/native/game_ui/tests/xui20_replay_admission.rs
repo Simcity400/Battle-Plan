@@ -65,6 +65,8 @@ fn land() -> LandCombatPanel {
         detail_location_province: Leaf::Measured(42),
         age_days: Leaf::Measured(1),
         duration_days: Leaf::Measured(1),
+        terminal_record: Leaf::Absent,
+        terminal_record_status: Leaf::Absent,
         side_detail_completeness: Leaf::Measured("both".into()),
         participant_events: Leaf::Measured(Vec::new()),
         attacker: Leaf::Measured(side()),
@@ -278,9 +280,11 @@ fn sunk_ship_row() -> SunkShipEventExact {
 fn exact_binding() -> Xui20CombatDetailLosses {
     Xui20CombatDetailLosses {
         land: vec![land()],
+        land_status: replay_core::ViewStatus::Present,
         ended_land: std::collections::BTreeMap::new(),
         ended_land_status: replay_core::ViewStatus::Present,
         naval: vec![naval()],
+        naval_status: replay_core::ViewStatus::Present,
         air_losses: Leaf::Measured(vec![air_loss()]),
         air_region_combat: Leaf::Measured(vec![air_region()]),
         sunk_convoys: Leaf::Measured(Vec::new()),
@@ -351,10 +355,10 @@ fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
         admission.combat_log_families,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
-    assert!(matches!(
+    assert_eq!(
         admission.land_terminal,
-        Xui20SurfaceState::ExternalInputRequired { .. }
-    ));
+        Xui20SurfaceState::Admitted { row_count: 0 }
+    );
     assert_eq!(
         admission.naval_terminal,
         Xui20SurfaceState::Admitted { row_count: 1 }

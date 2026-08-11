@@ -14,38 +14,99 @@ guessing.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
+import os
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
-
-REPO = Path(r"")
-LEDGER = REPO / "extractor" / "coverage_audit" / "reference_ledger"
-OUT = REPO / "extractor" / "documents" / "domains"
 
 PROSE = (".md", ".txt")
 DATA = (".json", ".jsonl", ".csv")
 CODE = (".rs", ".py", ".ps1", ".c", ".h", ".toml")
 
 
+def _git_env() -> dict:
+    """Environment for every git call: the caller's git control variables removed.
+
+    GIT_DIR/GIT_WORK_TREE and friends take precedence over `-C`, so an inherited
+    value (a git hook, a wrapper script, another tool's shell) would silently
+    redirect a git query at a different checkout than the one being described.
+    """
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith(("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+                                 "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"))}
+
+
+def default_repo() -> Path:
+    """The tree this script itself lives in -- never a hard-coded checkout.
+
+    The old default was the literal path of the main checkout, so the generator
+    ignored the invoking tree entirely: run from a worktree it still read AND
+    rewrote the main checkout's tracked files, silently describing and mutating
+    a tree nobody asked about. A generator must read from and write to ONE
+    consistent tree, and the only anchor that is always right is the script's
+    own location -- the copy of the generator you ran is the copy that describes
+    its own tree.
+
+    `git rev-parse --show-toplevel` runs with the script's directory as cwd (not
+    the caller's), with the git control variables stripped from the environment:
+    GIT_DIR/GIT_WORK_TREE take precedence over `-C` and would otherwise let an
+    inherited variable (a hook, a wrapper, another tool's shell) redirect the
+    answer at another checkout. The result is then required to actually contain
+    this script, so a wrong answer falls back to the plain parent walk rather
+    than being trusted.
+    """
+    here = Path(__file__).resolve().parent            # <repo>/extractor/native/scripts
+    walked = here.parents[2]                          # <repo>
+    try:
+        out = subprocess.run(["git", "-C", str(here), "rev-parse", "--show-toplevel"],
+                             check=True, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", env=_git_env())
+        top = out.stdout.strip()
+        if top:
+            root = Path(top).resolve()
+            # Only trust a root this script actually lives under.
+            if root == here or root in here.parents:
+                return root
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return walked
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--repo", default=None,
+                    help="tree to describe; defaults to the tree this script "
+                         "lives in, so running from a worktree can never write "
+                         "into another checkout")
+    args = ap.parse_args()
+    repo = Path(args.repo).resolve() if args.repo else default_repo()
+    ledger = repo / "extractor" / "coverage_audit" / "reference_ledger"
+    out_root = repo / "extractor" / "documents" / "domains"
+
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     csv.field_size_limit(64 * 1024 * 1024)
 
+    registry_path = repo / "extractor" / "native" / "domain_registry.json"
+    if not registry_path.is_file():
+        print(f"no domain registry at {registry_path}; --repo does not name a "
+              f"checkout of this repository", file=sys.stderr)
+        return 2
     registry = {d["id"]: d for d in json.loads(
-        (REPO / "extractor" / "native" / "domain_registry.json").read_text(encoding="utf-8")
+        registry_path.read_text(encoding="utf-8")
     )["domains"] if d.get("id") is not None}
 
     verdict: dict[str, str] = {}
     sha: dict[str, str] = {}
-    for row in csv.DictReader((LEDGER / "reference_ledger.csv").open(encoding="utf-8")):
+    for row in csv.DictReader((ledger / "reference_ledger.csv").open(encoding="utf-8")):
         verdict[row["path"]] = row["verdict"]
         sha[row["path"]] = row["sha256"]
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    out_root.mkdir(parents=True, exist_ok=True)
     written = 0
     mergeable_total = 0
     carried = 0
@@ -68,7 +129,7 @@ def main() -> int:
         body = text.split("## Condensed knowledge", 1)[1]
         return body.split("## Files about this domain", 1)[0].rstrip()
 
-    for row in csv.DictReader((LEDGER / "domain_file_map.csv").open(encoding="utf-8")):
+    for row in csv.DictReader((ledger / "domain_file_map.csv").open(encoding="utf-8")):
         did = int(row["domain_id"])
         name = row["domain_name"] or f"domain_{did}"
         files = [f for f in row["files"].split(";") if f]
@@ -106,7 +167,7 @@ def main() -> int:
             "",
         ]
 
-        path = OUT / f"d{did:02d}_{name}.md"
+        path = out_root / f"d{did:02d}_{name}.md"
         keep = existing_condensed(path)
         if not keep:
             # A file that lists filenames and states no knowledge is worse than
@@ -162,9 +223,9 @@ def main() -> int:
     for did, name, nfiles, status in sorted(stubs):
         index.append(f"| {did} | `{name}` | {status} | {nfiles} |")
     index.append("")
-    (OUT / "UNDOCUMENTED_DOMAINS.md").write_text("\n".join(index), encoding="utf-8")
+    (out_root / "UNDOCUMENTED_DOMAINS.md").write_text("\n".join(index), encoding="utf-8")
 
-    print(f"wrote {written} domain files to {OUT}")
+    print(f"wrote {written} domain files to {out_root}")
     print(f"carried existing Condensed knowledge forward in {carried}")
     print(f"collected {len(stubs)} knowledge-free domains into UNDOCUMENTED_DOMAINS.md")
     print(f"mergeable prose/data entries across all domains: {mergeable_total}")

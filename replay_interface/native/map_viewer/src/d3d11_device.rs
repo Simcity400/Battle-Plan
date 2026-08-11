@@ -131,10 +131,7 @@ pub(crate) unsafe fn native_d3d11_check_void_upload_device(
     device: &D3dPtr<ID3D11Device>,
     action: &str,
 ) -> Result<()> {
-    native_d3d11_validate_void_upload_result(
-        (*device.as_raw()).GetDeviceRemovedReason(),
-        action,
-    )
+    native_d3d11_validate_void_upload_result((*device.as_raw()).GetDeviceRemovedReason(), action)
 }
 
 #[cfg(test)]
@@ -151,12 +148,16 @@ mod void_upload_tests {
             "UpdateSubresource terrain cb0",
         )
         .expect_err("negative device reason must reject the upload");
-        assert!(error
-            .downcast_ref::<NativeD3d11UploadError>()
-            .is_some());
+        assert!(error.downcast_ref::<NativeD3d11UploadError>().is_some());
         let message = error.to_string();
-        assert!(message.contains("UpdateSubresource terrain cb0"), "{message}");
-        assert!(message.contains("uploaded state was not admitted"), "{message}");
+        assert!(
+            message.contains("UpdateSubresource terrain cb0"),
+            "{message}"
+        );
+        assert!(
+            message.contains("uploaded state was not admitted"),
+            "{message}"
+        );
     }
 }
 

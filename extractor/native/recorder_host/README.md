@@ -444,11 +444,11 @@ DLL-complete project root discovery"`.
 Compact release country-domain proof example:
 
 ```powershell
-cargo build --release --manifest-path extractor/native/Cargo.toml -p collector -p recorder_host
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Release -Workspace Extractor -CacheMode Reusable
 
-extractor\native\target\release\collector_record.exe `
+.cargo-target\release\collector_record.exe `
   --pid <hoi4-pid> `
-  --dll extractor\native\target\release\collector.dll `
+  --dll .cargo-target\release\collector.dll `
   --out-dir replay\snapshots\_native_collector_session\politics_live_compact_release `
   --duration-s 15 `
   --sample-ms 0 `

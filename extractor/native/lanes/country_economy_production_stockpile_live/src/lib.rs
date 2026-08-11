@@ -3565,6 +3565,7 @@ mod tests {
             // an hour whose only remark is that a domain positively measured
             // nothing -- which is the whole reason the bit exists.
             compact_contract::COMPACT_STATUS_SOURCE_EMPTY,
+            compact_contract::COMPACT_STATUS_BASELINE_CLEAR,
         ];
         assert_eq!(
             informational_bits.iter().copied().fold(

@@ -1,9 +1,10 @@
-//! XUI03 exact runtime carrier for dynamic lists, grids, and overlap collections.
+//! Legacy d71 recorder-POV materialization trace.
 //!
-//! Authored GUI declarations cannot supply controller population, stable item
-//! identity, final ordering, filtering, materialization, or scroll state.  This
-//! module accepts only an authenticated exact-a729 trace and validates it before
-//! composition.  It never reconstructs those facts from pixels or names.
+//! This module remains for recording compatibility and diagnostics. It is not
+//! replay render authority: materialized slots, widget rectangles, clipping,
+//! and scroll belong to the recorder's selected-Present UI state. Shipping
+//! observer panels use [`crate::observer_collection`] with panel-specific
+//! semantic membership/order/subtype plus effective FILE geometry.
 
 use crate::compose::Rect;
 use crate::{ErrorKind, GameUiError, Result};
@@ -287,8 +288,10 @@ impl TryFrom<&replay_core::DynamicCollectionTraceRow> for DynamicCollectionTrace
     }
 }
 
-/// Convert the exact recorder d71 sidecar into production collection traces.
-/// Absent/unavailable/mismatched-hour input rejects; no static or pixel fallback exists.
+/// Decode the historical recorder d71 sidecar for diagnostics.
+///
+/// Shipping replay composition must not call this function. Observer rendering
+/// starts at [`crate::observer_collection::plan_observer_collection`].
 pub fn from_replay_frame(frame: &replay_core::WorldFrame) -> Result<Vec<DynamicCollectionTrace>> {
     let view = frame.dynamic_collection_trace();
     if view.status != replay_core::ViewStatus::Present {

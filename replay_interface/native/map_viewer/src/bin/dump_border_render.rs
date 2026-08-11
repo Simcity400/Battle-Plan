@@ -2,14 +2,15 @@
 //! alpha by rendering the synthesized border mesh at three camera heights and
 //! dumping one BMP per height plus a per-class stats line.
 //!
-//! No live `borders_pass` was ever captured, so this is a VISUAL + STRUCTURAL
-//! validation, not a byte-parity gate: it rasterizes the synthesized border
-//! polylines on the CPU with each class alpha-composited using the exact
+//! This is a diagnostic CPU oracle, not the XMAP06 promotion gate: it
+//! rasterizes the synthesized border polylines with each class
+//! alpha-composited using the exact
 //! transparency [`map_viewer::border_transparency`] returns for that class at
 //! the height, so the three dumps must show province borders present at the
 //! close height, gone at the mid height (province window 200–300), the state
 //! grid fading over the mid→far heights (state window 400–500), and only the
-//! opaque classes (country/coast/sea-region) surviving at the far height. The
+//! opaque classes (country/coast/sea-region/impassable) surviving at the far
+//! height. The
 //! GPU pass consumes the SAME transparency values through the shipped border
 //! pixel shader's `vTime_Transparency.y`; this dump is the CPU oracle for that
 //! per-class fade.
@@ -180,12 +181,16 @@ fn main() -> Result<()> {
             province_far: windows.province.far,
             state_near: windows.state.near,
             state_far: windows.state.far,
-            impassable_window: "state (400-500) — impassable is rank=State; tracked approximation"
+            impassable_window: "none — exact-a729 submits impassable as opaque"
                 .to_string(),
-            opaque_classes: vec!["country".into(), "sea_coast".into(), "sea_region".into()],
+            opaque_classes: vec![
+                "country".into(),
+                "impassable".into(),
+                "sea_coast".into(),
+                "sea_region".into(),
+            ],
         },
-        ramp: "linear over [NEAR,FAR] (approximation, see BORDER_LAW.md); endpoints certain, \
-               curve pending live borders_pass capture"
+        ramp: "exact-a729 clamped linear ramp over [NEAR,FAR] for province/state only"
             .to_string(),
         region: RegionReport {
             name: region.name.clone(),
@@ -202,7 +207,7 @@ fn main() -> Result<()> {
 
     println!("border render validation — fade windows drive per-class alpha:");
     println!(
-        "  province window {}-{}, state window {}-{}, impassable=state, opaque: country/coast/sea_region",
+        "  province window {}-{}, state window {}-{}, opaque: country/impassable/coast/sea_region",
         windows.province.near, windows.province.far, windows.state.near, windows.state.far
     );
     for regime in &stats.heights {
@@ -248,7 +253,9 @@ fn render_height_bmp(
     // Paint in the same material draw order the GPU pass and partition use, so
     // the CPU oracle and the GPU pass agree on overlap winners.
     for material in BorderClassIndexPartition::MATERIAL_DRAW_ORDER {
-        let fade = border_transparency(windows, material, height);
+        // Typed refusal on a non-finite height propagates (R14/R15 C4); the
+        // dump heights are literals, so this is infallible here in practice.
+        let fade = border_transparency(windows, material, height)?;
         // BORD3: the class's authentic ink colour and base opacity come from its
         // shipped DDS profile. The GPU shader outputs `vColor.a *
         // vTime_Transparency.y` (border.shader:146), so the CPU oracle's

@@ -9,12 +9,11 @@
 
 use super::PreparedProductionD3dFrame;
 use crate::light_depth_projection::{
-    L03DrawArguments, L03LightDepthProjection, L03LightDepthSubmission,
-    L03LightDepthTarget, L03SelectedLight, L03ShadowPipeline, L03TypedOwner,
+    L03DrawArguments, L03LightDepthProjection, L03LightDepthSubmission, L03LightDepthTarget,
+    L03SelectedLight, L03ShadowPipeline, L03TypedOwner,
 };
 use crate::shadow_pass_plan::{
-    plan_s1_shadow_screen_chain, ShadowScreenChainPlan, ShadowScreenPassKind,
-    ShadowScreenTarget,
+    plan_s1_shadow_screen_chain, ShadowScreenChainPlan, ShadowScreenPassKind, ShadowScreenTarget,
 };
 use crate::{PreparedRuntimeDraw, Result};
 use replay_core::{
@@ -139,9 +138,7 @@ fn portable_submission(row: &S1LightDepthSubmission) -> Result<L03LightDepthSubm
     let map_pipeline = |pipeline| match pipeline {
         S1ShadowPipeline::StandardUnskinned => L03ShadowPipeline::StandardUnskinned,
         S1ShadowPipeline::StandardSkinned => L03ShadowPipeline::StandardSkinned,
-        S1ShadowPipeline::FixedMapFurnitureBorder => {
-            L03ShadowPipeline::FixedMapFurnitureBorder
-        }
+        S1ShadowPipeline::FixedMapFurnitureBorder => L03ShadowPipeline::FixedMapFurnitureBorder,
         S1ShadowPipeline::TreeShadow => L03ShadowPipeline::TreeShadow,
     };
     let map_draw = |draw: replay_core::S1DrawArguments| match draw {
@@ -209,6 +206,7 @@ fn portable_submission(row: &S1LightDepthSubmission) -> Result<L03LightDepthSubm
         S1LightDepthSubmission::Tree {
             partition_mask,
             source_row_ordinal,
+            selected_mesh_ordinal,
             selected_lod_index,
             selected_mesh,
             selected_material,
@@ -218,6 +216,7 @@ fn portable_submission(row: &S1LightDepthSubmission) -> Result<L03LightDepthSubm
         } => L03LightDepthSubmission::Tree {
             partition_mask: *partition_mask,
             source_row_ordinal: *source_row_ordinal,
+            selected_mesh_ordinal: *selected_mesh_ordinal,
             selected_lod_index: *selected_lod_index,
             selected_mesh: selected_mesh.clone(),
             selected_material: selected_material.clone(),
@@ -283,10 +282,9 @@ fn validate_blur_cb(
         .filter(|binding| blur_cb_matches(binding, expected_bits))
         .count();
     if matches != 1 {
-        return Err(format!(
-            "S1 {role} blur draw does not carry exactly one exact PS-CB0 payload"
-        )
-        .into());
+        return Err(
+            format!("S1 {role} blur draw does not carry exactly one exact PS-CB0 payload").into(),
+        );
     }
     Ok(())
 }
@@ -353,18 +351,21 @@ fn materialized_execution_sha256(
         }
         previous = Some(position);
         let payload = match reference {
-            RenderExecutionRef::Static { .. } => {
-                MaterializedExecutionPayload::Static(&static_operation(frame, reference, "chain")?.command)
-            }
+            RenderExecutionRef::Static { .. } => MaterializedExecutionPayload::Static(
+                &static_operation(frame, reference, "chain")?.command,
+            ),
             RenderExecutionRef::Runtime { output } => {
-                let mut matches = frame.ordered_runtime_draws.iter().filter(|draw| match draw {
-                    PreparedRuntimeDraw::Particle { ordered_draw, .. }
-                    | PreparedRuntimeDraw::Entity { ordered_draw, .. }
-                    | PreparedRuntimeDraw::O04City { ordered_draw, .. }
-                    | PreparedRuntimeDraw::O05Building { ordered_draw, .. } => {
-                        ordered_draw == output
-                    }
-                });
+                let mut matches = frame
+                    .ordered_runtime_draws
+                    .iter()
+                    .filter(|draw| match draw {
+                        PreparedRuntimeDraw::Particle { ordered_draw, .. }
+                        | PreparedRuntimeDraw::Entity { ordered_draw, .. }
+                        | PreparedRuntimeDraw::O04City { ordered_draw, .. }
+                        | PreparedRuntimeDraw::O05Building { ordered_draw, .. } => {
+                            ordered_draw == output
+                        }
+                    });
                 let draw = matches
                     .next()
                     .ok_or("S1 runtime operation is absent after materialization")?;

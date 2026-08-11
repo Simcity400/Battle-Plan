@@ -177,16 +177,8 @@ adjacent ids 16/17 are `IdentityFailure`/`IdentityFailureAck`. Both require the 
 `CAMPAIGN_IDENTITY = 1 << 5` capability.
 
 The authenticated early-render family occupies ids 18 through 33 and requires
-`EARLY_RENDER`. Kind 33 is recorder-to-collector
-`EarlyRenderG2CaptureArm` (`EG2A`, version 1). It is optional, may occur only
-immediately before `EarlyRenderCommitReceipt`, and binds the process/hook
-epoch, launch manifest, mechanically derived launch epoch, matching capture
-receipt, executable, effective VFS, sealed content manifest, settings, camera,
-isolated capture-context digest, selected hour, observation tokens, and local
-input/output paths. The collector rejects an arm unless every launch-binding
-field matches and its receipt equals the following COMMIT. It commits that
-receipt before arming the existing production D3D hook owner; the message never
-authorizes injection or a second hook graph.
+`EARLY_RENDER`. Kind 33 is the collector-to-recorder
+`EarlyRenderStartupFailure` terminal report.
 
 #### One canonical first-record acknowledgement
 

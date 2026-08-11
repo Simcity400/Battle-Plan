@@ -11,8 +11,11 @@ use crate::dds;
 use crate::font::BitmapFont;
 use crate::gfx::SpriteRegistry;
 use crate::gui::{parse_gui_document, GuiElement};
-use crate::loc::{parse_english_yml, Localisation};
-use crate::paradox_text::{decode_text, parse_bytes, Document};
+use crate::loc::{parse_language_yml_with_duplicates, Localisation};
+use crate::paradox_text::{
+    decode_text, destructive_event_count, destructive_losses, diagnose_text_decode, parse_bytes,
+    Document,
+};
 use crate::scripted_gui_runtime::{load_scripted_gui_registry, ScriptedGuiRegistry};
 use crate::tga;
 use crate::{GameUiError, Result};
@@ -59,7 +62,7 @@ impl<'a> ProductionContentInterpreter<'a> {
         let localisation_language = localisation_language.into();
         if localisation_language.trim().is_empty() {
             return Err(GameUiError::parse(
-                "production content interpreter requires a recorded localisation language",
+                "production content interpreter requires a playback-selected localisation language",
             ));
         }
         Ok(Self {
@@ -92,9 +95,13 @@ impl<'a> ProductionContentInterpreter<'a> {
     }
 
     /// Strict Clausewitz/Jomini text parsing. Recovery is useful during RE but
-    /// not a production engine-law substitute, so any recovery fails closed.
+    /// not a production engine-law substitute, so any recovery fails closed —
+    /// and so does byte-level decode damage, which the parse itself cannot see
+    /// (a U+FFFD substituted for a destroyed byte is a perfectly ordinary
+    /// character to the tokenizer).
     pub fn parse_clausewitz(&self, expected: &UsedContentKey) -> Result<Interpreted<Document>> {
         let bytes = self.read(expected)?;
+        reject_decode_damage(expected, &bytes.value)?;
         let document = parse_bytes(&bytes.value);
         reject_recoveries(expected, &document)?;
         Ok(Interpreted {
@@ -135,21 +142,50 @@ impl<'a> ProductionContentInterpreter<'a> {
     ) -> Result<Interpreted<Localisation>> {
         require_extension(expected, "yml")?;
         let bytes = self.read(expected)?;
+        reject_decode_damage(expected, &bytes.value)?;
         let text = decode_text(&bytes.value);
-        let body = strict_localisation_body(
+        strict_localisation_body(
             &expected.normalized_game_relative_path,
             &text,
             &self.localisation_language,
         )?;
         let mut entries = BTreeMap::new();
-        // The proven line interpreter is language-neutral after the header.
-        parse_english_yml(&body, &mut entries);
+        let (parse_failures, duplicate_keys) =
+            parse_language_yml_with_duplicates(
+                &text,
+                &self.localisation_language,
+                &mut entries,
+            );
+        let parse_failures = parse_failures
+            .into_iter()
+            .map(|failure| format!("{}: {failure}", expected.normalized_game_relative_path))
+            .collect();
+        let source_by_key = entries
+            .keys()
+            .filter(|key| !duplicate_keys.contains(*key))
+            .map(|key| (key.clone(), expected.normalized_game_relative_path.clone()))
+            .collect();
+        let ambiguous_sources_by_key = duplicate_keys
+            .into_iter()
+            .map(|key| {
+                (
+                    key,
+                    vec![expected.normalized_game_relative_path.clone()],
+                )
+            })
+            .collect();
         Ok(Interpreted {
             provenance: bytes.provenance,
             value: Localisation {
+                source_by_key,
+                ambiguous_sources_by_key,
+                provenance_complete: true,
                 entries,
                 source_files: vec![expected.normalized_game_relative_path.clone()],
-                parse_failures: Vec::new(),
+                parse_failures,
+                // Refused above rather than recorded: this interpreter is the
+                // fail-closed one, so damaged bytes never reach here.
+                decode_lossy_files: Vec::new(),
             },
         })
     }
@@ -160,6 +196,13 @@ impl<'a> ProductionContentInterpreter<'a> {
     ) -> Result<Interpreted<EffectFile>> {
         require_one_extension(expected, &["shader", "fxh"])?;
         let bytes = self.read(expected)?;
+        // The effect grammar accepts arbitrary text in quoted strings and raw
+        // blocks, so a replacement character can reach an include path or the
+        // shader source itself without the parse ever failing. MEASURED before
+        // refusing: the shipped install has 52 `.shader` and 13 `.fxh` files and
+        // zero destructive decode events among them, so this cannot refuse the
+        // base game.
+        reject_decode_damage(expected, &bytes.value)?;
         let source = decode_text(&bytes.value);
         let effect = map_viewer::parse_effect_file(&source)
             .map_err(|error| GameUiError::parse(error.to_string()))?;
@@ -313,6 +356,31 @@ fn add_logical_path(mut error: GameUiError, rel_path: &str) -> GameUiError {
     error
 }
 
+/// Refuse content whose BYTES were destroyed at decode.
+///
+/// The byte-level counterpart of [`reject_recoveries`], and refused for the same
+/// reason this interpreter refuses recoveries: it is the fail-closed path, and
+/// a U+FFFD substituted for a destroyed byte is a silent approximation of a
+/// string the replay cannot reproduce. Only DESTRUCTIVE loss qualifies —
+/// lossless Latin-1 (which the shipped game uses for `§` colour codes) is not
+/// damage and is not refused. Measured: zero destructive decode events across
+/// the whole shipped install, so this cannot refuse the base game.
+fn reject_decode_damage(expected: &UsedContentKey, bytes: &[u8]) -> Result<()> {
+    let losses = diagnose_text_decode(bytes);
+    let events = destructive_event_count(&losses);
+    if events == 0 {
+        return Ok(());
+    }
+    let first = destructive_losses(&losses)
+        .first()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    Err(GameUiError::parse(format!(
+        "{} decode destroyed {events} byte sequences: {first}",
+        expected.normalized_game_relative_path
+    )))
+}
+
 fn reject_recoveries(expected: &UsedContentKey, document: &Document) -> Result<()> {
     if let Some(recovery) = document.recoveries.first() {
         return Err(GameUiError::parse(format!(
@@ -424,7 +492,7 @@ mod tests {
         )
         .unwrap();
         let mut entries = BTreeMap::new();
-        parse_english_yml(&body, &mut entries);
+        assert!(crate::loc::parse_english_yml(&body, &mut entries).is_empty());
         assert_eq!(entries.get("KEY").map(String::as_str), Some("Valeur"));
         assert!(strict_localisation_body(
             "localisation/english/test.yml",

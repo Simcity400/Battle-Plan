@@ -2,7 +2,8 @@
 //!
 //! Scrubbing consumes an [`OwnerProvider`]; the renderer rewrites only the
 //! compact state -> color table from `controllers_at(hour)` for validation
-//! while visible political recoloring remains blocked. `owners_at(hour)` stays
+//! while visible political recoloring is supplied by the authenticated XMAP05
+//! path. `owners_at(hour)` stays
 //! exposed because occupied-territory striping needs both maps.
 //!
 //! Frames are returned as `Arc` so a recording-backed provider can load
@@ -92,6 +93,14 @@ impl std::fmt::Display for TimelineSelectionError {
                 f,
                 "requested hour {requested} is unavailable inside the recording gap {from}->{to} (missing {missing:?}); refusing interpolation"
             ),
+            // `count == 0` never escapes the constructors today
+            // (`canonical_range` returns `Empty` first and `WorldTimeline`
+            // rejects an empty hour series), but a `pub` `Display` must not
+            // hide a latent `usize` underflow panic behind that invariant.
+            Self::OrdinalOutOfRange { requested, count: 0, first, last } => write!(
+                f,
+                "requested dump snapshot ordinal {requested} but the recording has no dump snapshots (canonical range {first}..={last})"
+            ),
             Self::OrdinalOutOfRange { requested, count, first, last } => write!(
                 f,
                 "requested dump snapshot ordinal {requested} is outside the recording's valid ordinal range 0..={} (canonical range {first}..={last})",
@@ -161,6 +170,36 @@ pub fn resolve_dump_hour(
     }
 }
 
+/// FW7/FW11 seam closure: before a bundle's province table is allowed to act
+/// as the anomaly/province authority for a recording, the bundle's declared
+/// capture-side modset and the recording's own declared modset must be
+/// reconciled.
+///
+/// A definite class disagreement (one side vanilla, the other modded) is a
+/// typed refusal: the [`replay_core::SourceError::ModsetMismatch`] value is
+/// boxed AS ITSELF, never flattened to a string, so a caller can still
+/// downcast it and classify the rejection (`validate::rejection_kind` maps it
+/// to `RejectionKind::Modset`). Anything the recorded evidence cannot decide
+/// is logged as a typed degradation. There is no silent third path: every
+/// outcome either refuses or prints.
+fn reconcile_bundle_against_recording(
+    bundle: Option<&MapBundle>,
+    manifest: Option<&replay_core::ContentManifest>,
+) -> Result<()> {
+    let Some(bundle) = bundle else {
+        // No bundle: nothing of the bundle's is used as an authority, so there
+        // is no cross-check to make.
+        return Ok(());
+    };
+    // `?` on a `SourceError` boxes the typed value (it implements
+    // `std::error::Error`); do NOT stringify it here.
+    let agreement = crate::bundle::reconcile_bundle_modset(&bundle.provenance, manifest)?;
+    // Positive agreement is the only quiet-ish outcome, and it still logs what
+    // was established. A non-decidable outcome must never be silence.
+    eprintln!("replay_app: {}", agreement.diagnostic());
+    Ok(())
+}
+
 /// Build the owner provider + mode label for a timeline mode. Shared by the
 /// interactive window loop and the headless frame-dump path.
 pub fn build_provider(
@@ -192,6 +231,9 @@ pub fn build_provider(
             for warning in timeline.warnings() {
                 eprintln!("replay_app: recording warning: {warning}");
             }
+            // The bundle's tables may not act as an authority for this
+            // recording until the two declared modsets have been reconciled.
+            reconcile_bundle_against_recording(bundle, timeline.content_manifest())?;
             // F4 anomaly validation is incremental. Opening establishes the
             // gap policy from index metadata only; frames are authenticated and
             // observed in order through the requested hour before that frame
@@ -256,6 +298,9 @@ pub fn build_recording_provider(
     for warning in timeline.warnings() {
         eprintln!("replay_app: recording warning: {warning}");
     }
+    // Same seam as `build_provider`: the retained-container rollover/bench
+    // entry must reconcile before the bundle becomes an authority too.
+    reconcile_bundle_against_recording(bundle, timeline.content_manifest())?;
     let known_provinces = bundle.map(|bundle| {
         bundle
             .province_to_state
@@ -301,11 +346,16 @@ pub trait OwnerProvider {
         Ok(None)
     }
     /// E6: the observer country picker source, derived from the recording's
-    /// session view. Defaults to fail-closed (no recording session).
-    fn pov_picker(&self) -> crate::observer::PovPicker {
-        crate::observer::PovPicker::Unavailable(
-            "no recording session (static baseline has no player countries)".to_string(),
-        )
+    /// complete d18 roster. Defaults to fail-closed (no typed recording frame).
+    ///
+    /// `Ok(PovPicker::Unavailable)` is reserved for a GENUINELY absent or
+    /// unusable session carrier in an authenticated frame; a selection or
+    /// frame authentication failure is `Err` — an authentication failure must
+    /// never be downgraded to a typed-absent picker.
+    fn pov_picker(&self) -> Result<crate::observer::PovPicker> {
+        Ok(crate::observer::PovPicker::Unavailable(
+            "static baseline has no typed d18 country roster".to_string(),
+        ))
     }
 
     /// F4: the marked held-value note (mid-playback anomaly holds) for `hour`,
@@ -321,9 +371,6 @@ pub trait OwnerProvider {
         None
     }
 
-    fn g2_engine_capture(&self) -> Option<&replay_core::PackagedG2EngineCapture> {
-        None
-    }
 
     fn decision_catalog(&self) -> Option<&replay_core::PackagedDecisionCatalog> {
         None
@@ -550,6 +597,18 @@ impl RecordingTimeline {
     /// which resolve identically today (see the `seek_equals_play_to`
     /// conformance gate); the interactive scrub reads owners through the same
     /// `state_at` primitive.
+    ///
+    /// **Callers today are gates, not the render loop** (the compiler reports
+    /// it unused in the non-test build). The Win32 loop drives
+    /// [`crate::transport`] and reads `current_hour()` back through
+    /// `selected_frame`/`owners_at`. This method and
+    /// [`Self::play_to_hour`] are the pair the `seek_equals_play_to`
+    /// conformance gate and the G2 end-to-end script assert resolve
+    /// identically on every recorded hour, over the same
+    /// `selected_canonical_hour` + `scan_anomalies_through` prologue the render
+    /// loop takes. They stay because that equivalence is the claim, and because
+    /// DECISIONS.md's "a replay opens where you stopped watching" restores at an
+    /// hour rather than a frame index.
     pub fn seek_hour(&self, hour: i64) -> std::result::Result<i64, TimelineSelectionError> {
         let canonical_hour = self.selected_canonical_hour(hour)?;
         self.scan_anomalies_through(canonical_hour)?;
@@ -564,7 +623,9 @@ impl RecordingTimeline {
             })
     }
 
-    /// E1 wiring: linear play-to through the `replay_core` hook.
+    /// E1 wiring: linear play-to through the `replay_core` hook. The linear
+    /// half of the conformance pair documented on [`Self::seek_hour`]; same
+    /// gate-only caller set today.
     pub fn play_to_hour(&self, hour: i64) -> std::result::Result<i64, TimelineSelectionError> {
         let canonical_hour = self.selected_canonical_hour(hour)?;
         self.scan_anomalies_through(canonical_hour)?;
@@ -675,17 +736,19 @@ impl OwnerProvider for RecordingTimeline {
         Ok(self.timeline.date_at(hour)?)
     }
 
-    fn pov_picker(&self) -> crate::observer::PovPicker {
-        // Read the first frame's typed recorder carriers (never a raw snapshot
-        // parse). D57 supplies the multiplayer roster; exact D68 supplies the
-        // ordinary single-player local country when that optional roster is
-        // absent, and the consumer rejects disagreement when both exist.
-        match self.selected_frame(self.timeline.first_hour()) {
-            Ok(frame) => crate::observer::povs_from_frame(&frame),
-            Err(err) => {
-                crate::observer::PovPicker::Unavailable(format!("session view unavailable: {err}"))
-            }
-        }
+    fn pov_picker(&self) -> Result<crate::observer::PovPicker> {
+        // Read the first frame's typed d18 roster. Multiplayer participation
+        // and the recorder's local country do not constrain replay-owned panel
+        // selection, and d94/d95 fog evidence is checked only if fog is
+        // explicitly requested.
+        //
+        // R7 F2: a `selected_frame` failure here is the F4 fail-closed
+        // authentication path (SHA/CRC/decode at the first hour); it
+        // PROPAGATES rather than becoming `PovPicker::Unavailable`, which is
+        // reserved for authenticated frames whose session carriers are
+        // genuinely absent or unusable.
+        let frame = self.selected_frame(self.timeline.first_hour())?;
+        Ok(crate::observer::povs_from_frame(&frame))
     }
 
     fn anomaly_note(
@@ -699,9 +762,6 @@ impl OwnerProvider for RecordingTimeline {
         self.timeline.content_manifest()
     }
 
-    fn g2_engine_capture(&self) -> Option<&replay_core::PackagedG2EngineCapture> {
-        self.timeline.g2_engine_capture()
-    }
 
     fn decision_catalog(&self) -> Option<&replay_core::PackagedDecisionCatalog> {
         self.timeline.decision_catalog()
@@ -742,6 +802,43 @@ mod tests {
             owners.insert(state_id, tag.to_string());
         }
         owners
+    }
+
+    /// RES1 R2 — at the actual seam, a bundle/recording modset disagreement
+    /// must still be classifiable: the boxed error has to downcast back to
+    /// `SourceError::ModsetMismatch` (which `validate::rejection_kind` maps to
+    /// `RejectionKind::Modset`). Flattening it to a string would silently
+    /// demote the rejection class.
+    #[test]
+    fn seam_refusal_preserves_the_typed_modset_class() {
+        use crate::bundle::tests::{recording_manifest, unique_temp_dir, write_fixture_bundle};
+
+        let dir = unique_temp_dir("timeline_modset_seam");
+        write_fixture_bundle(&dir);
+        // The fixture bundle declares no `modset` block => the vanilla identity.
+        let bundle = MapBundle::load(&dir).expect("fixture bundle loads");
+        assert_eq!(bundle.provenance.mod_count, 0);
+
+        // Vanilla bundle vs a recording that admitted two mod layers.
+        let modded = recording_manifest(2);
+        let error = reconcile_bundle_against_recording(Some(&bundle), Some(&modded))
+            .expect_err("a class disagreement must refuse at the seam");
+        let typed = error
+            .downcast_ref::<replay_core::SourceError>()
+            .expect("the seam must box the typed SourceError, not a String");
+        assert!(
+            matches!(typed, replay_core::SourceError::ModsetMismatch(_)),
+            "expected ModsetMismatch, got {typed:?}"
+        );
+
+        // The agreeing case passes through, and no bundle is a no-op.
+        let vanilla = recording_manifest(0);
+        reconcile_bundle_against_recording(Some(&bundle), Some(&vanilla))
+            .expect("matching vanilla identities must not refuse");
+        reconcile_bundle_against_recording(None, Some(&modded))
+            .expect("no bundle means no authority to cross-check");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1018,6 +1115,92 @@ mod tests {
         ));
     }
 
+    /// R7 F2 regression: a first-hour authentication/load failure must
+    /// PROPAGATE out of `pov_picker` — never degrade into the semantic
+    /// `PovPicker::Unavailable`, which is reserved for authenticated frames
+    /// whose session carriers are genuinely absent.
+    #[test]
+    fn pov_picker_propagates_a_first_frame_authentication_failure() {
+        struct FirstFrameFailureSource;
+        impl replay_core::ReplaySource for FirstFrameFailureSource {
+            fn game_id(&self) -> &str {
+                "first-frame-failure"
+            }
+            fn hours(&self) -> &[i64] {
+                &[0, 1, 2]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(
+                &self,
+                hour_index: i64,
+            ) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+                Err(replay_core::SourceError::Integrity(format!(
+                    "synthetic payload digest mismatch at hour {hour_index}"
+                )))
+            }
+        }
+
+        let timeline =
+            WorldTimeline::open(Box::new(FirstFrameFailureSource)).expect("index-only open");
+        let policy = AnomalyPolicy::with_known_provinces(timeline.hours(), None);
+        let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
+        let error = recording
+            .pov_picker()
+            .expect_err("an authentication failure must not become PovPicker::Unavailable");
+        assert!(
+            error.to_string().contains("payload digest mismatch"),
+            "the propagated error names the underlying integrity failure: {error}"
+        );
+    }
+
+    /// The companion direction for R7 F2: an AUTHENTICATED frame with no
+    /// session carriers stays a semantic `Ok(Unavailable)` — propagation is
+    /// only for failures.
+    #[test]
+    fn pov_picker_stays_semantic_unavailable_for_an_authenticated_sessionless_frame() {
+        let timeline = WorldTimeline::open(Box::new(CountingSource {
+            hours: vec![0, 1],
+            loads: Arc::new(AtomicUsize::new(0)),
+        }))
+        .expect("timeline");
+        let recording = RecordingTimeline::new_with_policy(timeline, None);
+        match recording.pov_picker().expect("authenticated frame") {
+            crate::observer::PovPicker::Unavailable(reason) => {
+                assert!(!reason.is_empty(), "carries the fail-closed reason");
+            }
+            crate::observer::PovPicker::Available(choices) => {
+                panic!("sessionless frame cannot offer POVs: {choices:?}")
+            }
+        }
+    }
+
+    /// R7 F6 regression: formatting `OrdinalOutOfRange` with `count == 0`
+    /// must not underflow-panic in the `pub` `Display` impl, even though no
+    /// current constructor produces that variant.
+    #[test]
+    fn ordinal_out_of_range_display_does_not_panic_on_zero_count() {
+        let zero = TimelineSelectionError::OrdinalOutOfRange {
+            requested: 3,
+            count: 0,
+            first: 0,
+            last: 0,
+        };
+        let text = zero.to_string();
+        assert!(
+            text.contains("has no dump snapshots"),
+            "zero-count message is honest, not an underflowed range: {text}"
+        );
+        let normal = TimelineSelectionError::OrdinalOutOfRange {
+            requested: 3,
+            count: 2,
+            first: 10,
+            last: 11,
+        };
+        assert!(normal.to_string().contains("0..=1"), "{normal}");
+    }
+
     #[test]
     fn anomaly_note_validates_the_frame_before_reporting_no_hold() {
         let timeline = WorldTimeline::open(Box::new(MidstreamLoadFailureSource::new()))
@@ -1083,6 +1266,116 @@ mod tests {
                     .map(|frame| frame.hour_index()),
                 Some(hour),
                 "typed WorldFrame is exposed at the exact recorded hour"
+            );
+        }
+    }
+
+    /// Scrubbing the recorded timeline actually changes recorded state.
+    ///
+    /// This is the surviving half of the retired `replay_qa`
+    /// "recording ingest + scrub" gate. That gate asserted the same property by
+    /// dumping two hours to BMP and byte-diffing them, which is no longer
+    /// reachable: a production recording invocation now refuses `--bundle`,
+    /// `--capture`, `--dump-zoom` and `--dump-center`, and the bundle-less
+    /// production dump path needs carriers the synthetic fixture never had plus a
+    /// machine-local the game install. The property itself is not about pixels, so it
+    /// is asserted here on the typed maps the renderer keys off, through the
+    /// product's own scrub provider -- no bundle, no GPU, no the game install.
+    ///
+    /// Nothing else covered this: `seek_equals_play_to_on_every_recorded_hour`
+    /// above uses the same fixture but asserts seek/play_to equivalence, and the
+    /// `e2e_playback` gate drives `fx_pov_visibility` / `fx_topbar_scalars_sweep`
+    /// for POV and topbar bindings. Ownership divergence across the scrub was
+    /// left unasserted in this crate when the harness gate died.
+    #[test]
+    fn scrubbing_the_recorded_timeline_changes_owner_and_controller_state() {
+        let path = fixture_path("positive/fx_owner_controller_flip.battleplan");
+        let source = replay_core::open_recording(&path).expect("open fixture");
+        let timeline = replay_core::WorldTimeline::open(source).expect("timeline");
+        let recording = RecordingTimeline::new_with_policy(timeline, None);
+
+        let hours: Vec<i64> = recording.hours().to_vec();
+        assert!(
+            hours.len() > 1,
+            "a single-hour recording cannot demonstrate a scrub"
+        );
+        let first = hours[0];
+        let last = *hours.last().expect("last recorded hour");
+
+        let first_owners = recording.owners_at(first).expect("owners at first hour");
+        let last_owners = recording.owners_at(last).expect("owners at last hour");
+        let first_controllers = recording
+            .controllers_at(first)
+            .expect("controllers at first hour");
+        let last_controllers = recording
+            .controllers_at(last)
+            .expect("controllers at last hour");
+
+        // Non-empty, or "they differ" could be satisfied by one side being empty
+        // because the frame failed to decode.
+        assert!(
+            !first_owners.is_empty() && !last_owners.is_empty(),
+            "owner map is empty at an endpoint: {} then {}",
+            first_owners.len(),
+            last_owners.len()
+        );
+        assert!(
+            !first_controllers.is_empty() && !last_controllers.is_empty(),
+            "controller map is empty at an endpoint: {} then {}",
+            first_controllers.len(),
+            last_controllers.len()
+        );
+
+        assert_ne!(
+            first_owners, last_owners,
+            "owners are identical at hour {first} and hour {last}; the recorded \
+             ownership scrub is a no-op"
+        );
+        assert_ne!(
+            first_controllers, last_controllers,
+            "controllers are identical at hour {first} and hour {last}; the \
+             recorded control scrub is a no-op"
+        );
+
+        // Divergence must be a CHANGED assignment on a state present in BOTH
+        // hours, not merely states appearing in or disappearing from the map.
+        // Asserted for owners and controllers alike: "non-empty and unequal" on
+        // its own would be satisfied by a map that only gained or lost entries.
+        let reassigned = |before: &BTreeMap<u32, String>, after: &BTreeMap<u32, String>| {
+            before
+                .iter()
+                .filter(|(state, tag)| after.get(state).is_some_and(|later| later != *tag))
+                .count()
+        };
+        assert!(
+            reassigned(&first_owners, &last_owners) > 0,
+            "no state kept its identity while changing OWNER between hour {first} \
+             and hour {last}"
+        );
+        assert!(
+            reassigned(&first_controllers, &last_controllers) > 0,
+            "no state kept its identity while changing CONTROLLER between hour \
+             {first} and hour {last}"
+        );
+
+        // Re-reading is stable, so the differences above are recorded state and
+        // not decode nondeterminism. BOTH maps at BOTH endpoints: the two
+        // endpoints are separate cache loads, so checking only the first hour
+        // would still admit an alternating or hour-specific last-frame decode
+        // that satisfied each reassignment assertion on a different read.
+        for (hour, expected_owners, expected_controllers) in [
+            (first, &first_owners, &first_controllers),
+            (last, &last_owners, &last_controllers),
+        ] {
+            assert_eq!(
+                &recording.owners_at(hour).expect("owners re-read"),
+                expected_owners,
+                "re-reading hour {hour} owners is not stable"
+            );
+            assert_eq!(
+                &recording.controllers_at(hour).expect("controllers re-read"),
+                expected_controllers,
+                "re-reading hour {hour} controllers is not stable"
             );
         }
     }

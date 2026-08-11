@@ -517,28 +517,25 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
                     payload_sha256,
                 )?;
                 if *texture_kind == replay_core::PoliticalTextureKind::Secondary
-                    && target_binding_identity
-                        == replay_core::OCCUPATION_SECONDARY_TARGET_BINDING
+                    && target_binding_identity == replay_core::OCCUPATION_SECONDARY_TARGET_BINDING
                 {
-                    let (terrain_t6_increment, water_t3_increment) =
-                        match (binding.stage, binding.slot) {
-                            (replay_core::ShaderStage::Pixel, 6) => (1, 0),
-                            (replay_core::ShaderStage::Pixel, 3) => (0, 1),
-                            _ => {
-                                return Err(
-                                    "occupation secondary replay binding is outside terrain-t6/water-t3"
-                                        .into(),
-                                )
-                            }
-                        };
-                    *occupation_terrain_t6_binding_count =
-                        occupation_terrain_t6_binding_count
-                            .checked_add(terrain_t6_increment)
-                            .ok_or("occupation terrain-t6 replay binding count overflow")?;
-                    *occupation_water_t3_binding_count =
-                        occupation_water_t3_binding_count
-                            .checked_add(water_t3_increment)
-                            .ok_or("occupation water-t3 replay binding count overflow")?;
+                    let (terrain_t6_increment, water_t3_increment) = match (
+                        binding.stage,
+                        binding.slot,
+                    ) {
+                        (replay_core::ShaderStage::Pixel, 6) => (1, 0),
+                        (replay_core::ShaderStage::Pixel, 3) => (0, 1),
+                        _ => return Err(
+                            "occupation secondary replay binding is outside terrain-t6/water-t3"
+                                .into(),
+                        ),
+                    };
+                    *occupation_terrain_t6_binding_count = occupation_terrain_t6_binding_count
+                        .checked_add(terrain_t6_increment)
+                        .ok_or("occupation terrain-t6 replay binding count overflow")?;
+                    *occupation_water_t3_binding_count = occupation_water_t3_binding_count
+                        .checked_add(water_t3_increment)
+                        .ok_or("occupation water-t3 replay binding count overflow")?;
                     if collect_snow_mud_h2 {
                         let proof = verify_occupation_secondary_inline_readback(
                             gfx,
@@ -1253,12 +1250,10 @@ pub(super) unsafe fn create_authenticated_snapshot_texture_gpu(
     let resource_desc = &packet.resource;
     if resource_desc.sample_count != 1 || resource_desc.ordered_subresources.is_empty() {
         return Err(
-            "authenticated draw-time texture snapshot is empty or unexpectedly multisampled"
-                .into(),
+            "authenticated draw-time texture snapshot is empty or unexpectedly multisampled".into(),
         );
     }
-    let (resource, storage, init) =
-        create_texture_resource(gfx, resolver, resource_desc, None)?;
+    let (resource, storage, init) = create_texture_resource(gfx, resolver, resource_desc, None)?;
     let _storage = storage;
     let _init = init;
     Ok(AuthenticatedTextureGpu {
@@ -1412,10 +1407,7 @@ unsafe fn verify_snow_mud_inline_readback(
         "CreateTexture2D staging for product SnowMudTexture H2",
     )?;
     let staging = ComPtr::from_raw(staging, "product SnowMudTexture H2 staging")?;
-    (*gfx.context.as_raw()).CopyResource(
-        staging.as_raw() as *mut _,
-        texture.as_raw() as *mut _,
-    );
+    (*gfx.context.as_raw()).CopyResource(staging.as_raw() as *mut _, texture.as_raw() as *mut _);
     let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
     hr_ok(
         (*gfx.context.as_raw()).Map(
@@ -1445,10 +1437,9 @@ unsafe fn verify_snow_mud_inline_readback(
             let source_start = row * source_pitch;
             let row_bytes = &mapped_bytes[mapped_start..mapped_start + source_pitch];
             if row_bytes != &packet.bytes[source_start..source_start + source_pitch] {
-                return Err(format!(
-                    "SnowMudTexture product readback differs from H at row {row}"
-                )
-                .into());
+                return Err(
+                    format!("SnowMudTexture product readback differs from H at row {row}").into(),
+                );
             }
             tight.extend_from_slice(row_bytes);
         }
@@ -1532,10 +1523,7 @@ unsafe fn verify_occupation_secondary_inline_readback(
         "CreateTexture2D staging for occupation secondary H2",
     )?;
     let staging = ComPtr::from_raw(staging, "occupation secondary H2 staging")?;
-    (*gfx.context.as_raw()).CopyResource(
-        staging.as_raw() as *mut _,
-        texture.as_raw() as *mut _,
-    );
+    (*gfx.context.as_raw()).CopyResource(staging.as_raw() as *mut _, texture.as_raw() as *mut _);
     let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
     hr_ok(
         (*gfx.context.as_raw()).Map(

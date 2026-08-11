@@ -51,10 +51,11 @@ Run from this directory:
 cargo run --offline -- --run-dir <lane-proof-run> --game-id orc52
 ```
 
-Run the adversarial and exact-container tests with:
+The replay verifier is a standalone workspace included in complete extractor
+validation. Run its adversarial and exact-container tests through:
 
 ```powershell
-cargo test --offline
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Final -Workspace Extractor -CacheMode Reusable
 ```
 
 Historical proof streams that start record sequences at zero no longer

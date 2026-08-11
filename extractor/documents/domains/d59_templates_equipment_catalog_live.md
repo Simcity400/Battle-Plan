@@ -77,7 +77,7 @@ See also d78.
 
 ## Files about this domain
 
-39 tracked files name this domain.
+38 tracked files name this domain.
 
 ### Prose evidence (6) — mergeable
 
@@ -102,7 +102,7 @@ See also d78.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (22)
+### Code (21)
 
 - `extractor/game_defs/build_runtime_static_bundle.py`
 - `extractor/game_defs/localisation_gate.py`
@@ -122,7 +122,6 @@ See also d78.
 - `replay_interface/native/game_ui/src/design_catalog.rs`
 - `replay_interface/native/game_ui/src/readonly_design_peace.rs`
 - `replay_interface/native/game_ui/src/static_unit_catalogs.rs`
-- `replay_interface/native/replay_core/src/g2_engine_capture.rs`
 - `replay_interface/native/replay_core/src/rollover_package_set.rs`
 - `replay_interface/native/replay_core/src/source.rs`
 - `replay_interface/native/replay_core/tests/world_timeline.rs`

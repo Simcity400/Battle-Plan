@@ -347,7 +347,7 @@ fn replace_path_missing_content_and_changed_dlc_fail_closed() {
 }
 
 #[test]
-fn decode_texture_decodes_admitted_bytes_and_fails_closed_on_mutation() {
+fn decode_texture_uses_immutable_admitted_bytes_after_source_mutation() {
     let root = temp_root("texture");
     let game = root.join("game");
     let userdata = root.join("profile");
@@ -399,10 +399,15 @@ fn decode_texture_decodes_admitted_bytes_and_fails_closed_on_mutation() {
     let png_key = interpreter.content_key("gfx/interface/photo.png").unwrap();
     assert!(interpreter.decode_texture(&png_key).is_err());
 
-    // The decoded payload comes from the single verified read: an on-disk
-    // mutation after admission must refuse, never decode the mutated bytes.
+    // The decoded payload comes from the single verified admission read. A
+    // later source mutation cannot change or invalidate the immutable bytes.
     fs::write(&tga_path, b"mutated after admission").unwrap();
-    assert!(interpreter.decode_texture(&tga_key).is_err());
+    let decoded_after_mutation = interpreter.decode_texture(&tga_key).unwrap();
+    assert_eq!(decoded_after_mutation.provenance, vec![tga_key]);
+    assert_eq!(
+        decoded_after_mutation.value.image.pixels,
+        decoded.value.image.pixels
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

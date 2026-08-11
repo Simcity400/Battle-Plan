@@ -16,9 +16,29 @@ use std::path::{Path, PathBuf};
 use game_ui::assets::normalize_rel_path;
 use game_ui::dds::{self, RgbaImage};
 use game_ui::tga;
+use game_ui::ErrorKind;
 use map_viewer::{GameFileResolver, LabelTextMetrics, MapLabelStraightLayoutStation};
 
 use crate::Result;
+use portable_content_manifest::paradox_text::{
+    decode_text, destructive_event_count, diagnose_text_decode,
+};
+
+/// Refuse content whose BYTES were destroyed at decode.
+///
+/// Both font-path decoders here read PATHS out of the decoded text (atlas page
+/// names, core.gfx font paths) and then resolve them, so a replacement
+/// character produces a binding the file never named. Only DESTRUCTIVE loss
+/// qualifies; Latin-1 is preserved losslessly by `decode_text`, as the shipped
+/// game requires. Measured: zero destructive events across the shipped .gfx and
+/// .fnt corpora, so this cannot refuse the base game.
+fn reject_font_decode_damage(bytes: &[u8], source: &str) -> Result<()> {
+    let events = destructive_event_count(&diagnose_text_decode(bytes));
+    if events != 0 {
+        return Err(format!("{source}: decode destroyed {events} byte sequences").into());
+    }
+    Ok(())
+}
 
 /// The font the overlay renders with.
 ///
@@ -151,8 +171,8 @@ pub struct TextLayout {
 }
 
 /// Font NAME -> files/color, resolved from `interface/core.gfx`.
-/// Language overrides are ignored: the replay surface renders the
-/// English-default font set.
+/// Language-specific `bitmapfont_override` file lists may replace the base
+/// files while retaining the base color, exactly as `core.gfx` declares.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontSpec {
     pub name: String,
@@ -182,6 +202,72 @@ pub fn load_game_font_from_resolver(resolver: &GameFileResolver, font_name: &str
     load_game_font_with_mode(resolver, font_name, AtlasMode::Coverage)
 }
 
+pub fn load_game_font_for_language_from_resolver(
+    resolver: &GameFileResolver,
+    font_name: &str,
+    language: &str,
+) -> Result<Font> {
+    let spec = game_font_spec(resolver, font_name, Some(language))?;
+    Font::load_from_resolver_with_mode(resolver, &spec, AtlasMode::Coverage)
+}
+
+/// Exact effective-VFS files opened by [`load_game_font_from_resolver`], in
+/// loader order. This deliberately resolves the GUI alias through core.gfx
+/// first; a coincidental `gfx/fonts/{alias}.fnt` must not replace the file(s)
+/// selected by the product loader.
+pub fn game_font_dependency_paths(
+    resolver: &GameFileResolver,
+    font_name: &str,
+) -> Result<Vec<String>> {
+    game_font_dependency_paths_for_language(resolver, font_name, None)
+}
+
+pub fn game_font_dependency_paths_for_language(
+    resolver: &GameFileResolver,
+    font_name: &str,
+    language: Option<&str>,
+) -> Result<Vec<String>> {
+    let core_gfx_rel = "interface/core.gfx";
+    let spec = game_font_spec(resolver, font_name, language)?;
+
+    let mut paths = vec![core_gfx_rel.to_string()];
+    for relative in &spec.files {
+        let resolved_name = game_ui_font_name(relative)?;
+        let descriptor = format!("gfx/fonts/{resolved_name}.fnt");
+        let descriptor_path = resolver.resolve_required(&descriptor, "font file")?;
+        let descriptor_bytes = fs::read(&descriptor_path)?;
+        let parsed = parse_fnt_text(&descriptor_bytes, &descriptor)?;
+        paths.push(descriptor);
+        for (page_id, declared) in parsed.page_files.iter().enumerate() {
+            let (page, _) = resolve_bitmap_font_page_path(
+                resolver,
+                &resolved_name,
+                u32::try_from(page_id)?,
+                declared.as_deref(),
+            )?;
+            paths.push(page);
+        }
+    }
+    Ok(paths)
+}
+
+fn game_font_spec(
+    resolver: &GameFileResolver,
+    font_name: &str,
+    language: Option<&str>,
+) -> Result<FontSpec> {
+    let core_gfx_rel = "interface/core.gfx";
+    let core_gfx_path = resolver.resolve_required(core_gfx_rel, "core.gfx font registry")?;
+    let core_bytes = fs::read(&core_gfx_path)?;
+    reject_font_decode_damage(&core_bytes, core_gfx_rel)?;
+    let core_text = decode_text(&core_bytes);
+    let source = format!("{core_gfx_rel} ({})", core_gfx_path.display());
+    match language {
+        Some(language) => font_spec_from_core_gfx_for_language(&core_text, font_name, language, &source),
+        None => font_spec_from_core_gfx(&core_text, font_name, &source),
+    }
+}
+
 pub fn load_game_font_preserving_color(
     resolver: &GameFileResolver,
     font_name: &str,
@@ -202,7 +288,8 @@ fn load_game_font_with_mode(
             core_gfx_path.display()
         )
     })?;
-    let text = String::from_utf8_lossy(&bytes);
+    reject_font_decode_damage(&bytes, &core_gfx_rel)?;
+    let text = decode_text(&bytes);
     let spec = font_spec_from_core_gfx(
         &text,
         font_name,
@@ -248,6 +335,94 @@ pub fn font_spec_from_core_gfx(text: &str, font_name: &str, source: &str) -> Res
         index += 1;
     }
     Err(format!("font {font_name:?} is not defined as bitmapfont in {source}").into())
+}
+
+pub fn font_spec_from_core_gfx_for_language(
+    text: &str,
+    font_name: &str,
+    language: &str,
+    source: &str,
+) -> Result<FontSpec> {
+    let base = font_spec_from_core_gfx(text, font_name, source)?;
+    let mut canonical = language.trim().to_ascii_lowercase();
+    if !canonical.starts_with("l_") {
+        canonical = format!("l_{canonical}");
+    }
+    let tokens = lex_pdx_tokens(text);
+    let Some((start, end)) = find_assigned_block(&tokens, 0, tokens.len(), "bitmapfonts") else {
+        return Err(format!("{source} has no bitmapfonts block").into());
+    };
+    let mut selected_files = None;
+    let mut index = start;
+    while index < end {
+        if tokens[index].eq_ignore_ascii_case("bitmapfont_override") {
+            if let Some((block_start, block_end)) =
+                assigned_block_after_key(&tokens, index, end, "bitmapfont_override")
+            {
+                let block = &tokens[block_start..block_end];
+                if font_block_name(block).as_deref() == Some(font_name)
+                    && font_block_list(block, "languages")
+                        .iter()
+                        .any(|value| value.eq_ignore_ascii_case(&canonical))
+                {
+                    let files = font_block_files(block);
+                    if files.is_empty() {
+                        return Err(format!(
+                            "font override {font_name:?} for {canonical} in {source} has no files"
+                        )
+                        .into());
+                    }
+                    if selected_files.replace(files).is_some() {
+                        return Err(format!(
+                            "font override {font_name:?} for {canonical} is ambiguous in {source}"
+                        )
+                        .into());
+                    }
+                }
+                index = block_end + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    Ok(FontSpec {
+        files: selected_files.unwrap_or(base.files),
+        ..base
+    })
+}
+
+fn font_block_list(tokens: &[String], key: &str) -> Vec<String> {
+    let mut index = 0;
+    while index + 2 < tokens.len() {
+        if tokens[index].eq_ignore_ascii_case(key)
+            && tokens[index + 1] == "="
+            && tokens[index + 2] == "{"
+        {
+            if let Some((start, end)) = block_after_open_brace(tokens, index + 2, tokens.len()) {
+                return tokens[start..end]
+                    .iter()
+                    .filter(|value| !matches!(value.as_str(), "=" | "{" | "}"))
+                    .cloned()
+                    .collect();
+            }
+        }
+        index += 1;
+    }
+    Vec::new()
+}
+
+fn font_block_files(tokens: &[String]) -> Vec<String> {
+    let mut index = 0;
+    while index + 2 < tokens.len() {
+        if tokens[index].eq_ignore_ascii_case("path") && tokens[index + 1] == "=" {
+            return vec![normalize_rel_path(&tokens[index + 2])];
+        }
+        index += 1;
+    }
+    font_block_list(tokens, "fontfiles")
+        .into_iter()
+        .map(|value| normalize_rel_path(&value))
+        .collect()
 }
 
 fn font_block_name(tokens: &[String]) -> Option<String> {
@@ -858,37 +1033,81 @@ fn resolve_bitmap_font_page(
     page_id: u32,
     declared: Option<&str>,
 ) -> Result<LoadedBitmapPage> {
+    let (rel, path) = resolve_bitmap_font_page_path(resolver, name, page_id, declared)?;
+    decode_resolved_font_page(page_id, rel, path)
+}
+
+fn resolve_bitmap_font_page_path(
+    resolver: &GameFileResolver,
+    name: &str,
+    page_id: u32,
+    declared: Option<&str>,
+) -> Result<(String, PathBuf)> {
     if let Some(declared) = declared {
-        let rel = font_page_declared_rel(declared);
-        if let Some(path) = resolver.resolve(&rel)? {
-            return decode_resolved_font_page(page_id, rel, path);
+        for rel in font_page_declared_candidates(name, declared) {
+            if let Some(path) = resolver.resolve(&rel)? {
+                return Ok((rel, path));
+            }
         }
     }
 
     for rel in inferred_font_page_candidates(name, page_id) {
         if let Some(path) = resolver.resolve(&rel)? {
-            return decode_resolved_font_page(page_id, rel, path);
+            return Ok((rel, path));
         }
     }
     Err(format!("no texture page found for font {name} page {page_id}").into())
 }
 
-fn font_page_declared_rel(declared: &str) -> String {
+/// The paths a declared `page file=` name may denote, in priority order.
+///
+/// `name` keeps any subdirectory below `gfx/fonts/` (see `game_ui_font_name`),
+/// so `gfx/fonts/korean/hoi_18.fnt` arrives here as `korean/hoi_18`. The
+/// descriptor's OWN directory therefore has to be tried before the flat legacy
+/// root: a Korean descriptor must bind the Korean atlas, never the Latin
+/// `gfx/fonts/` one that happens to share the file name. The inferred
+/// candidates below already had this property because the subdirectory rides
+/// along in `name`; only the declared name was resolved root-first. Mirrors
+/// `game_ui::font::declared_page_candidates`.
+fn font_page_declared_candidates(name: &str, declared: &str) -> Vec<String> {
     let rel = normalize_rel_path(declared);
-    if rel.contains('/') {
+    let mut candidates = Vec::new();
+    // ONLY an explicit `gfx/...` name is already an effective-VFS path. A
+    // relative name that merely contains a separator is still relative TO THE
+    // DESCRIPTOR, so it must be rebased first; treating it as a VFS path (as
+    // this parser used to) skipped the descriptor's own directory entirely.
+    let explicit_vfs_path = rel
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gfx/"));
+    if !explicit_vfs_path {
+        if let Some((dir, _)) = name.rsplit_once('/') {
+            candidates.push(normalize_rel_path(&format!("gfx/fonts/{dir}/{rel}")));
+        }
+    }
+    candidates.push(if rel.contains('/') {
         rel
     } else {
         normalize_rel_path(&format!("gfx/fonts/{rel}"))
-    }
+    });
+    candidates.dedup();
+    candidates
 }
 
-fn inferred_font_page_candidates(name: &str, page_id: u32) -> [String; 4] {
-    [
-        format!("gfx/fonts/{name}.dds"),
-        format!("gfx/fonts/{name}.tga"),
-        format!("gfx/fonts/{name}_{page_id}.dds"),
-        format!("gfx/fonts/{name}_{page_id}.tga"),
-    ]
+/// `name` keeps any subdirectory below `gfx/fonts/`, so these land beside the
+/// descriptor for nested fonts.
+///
+/// The unsuffixed candidates are offered for page 0 ONLY: the unsuffixed atlas
+/// is page 0's plane, so letting page 1 fall back to it binds the wrong plane.
+/// Mirrors `game_ui::font::inferred_page_candidates`.
+fn inferred_font_page_candidates(name: &str, page_id: u32) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if page_id == 0 {
+        candidates.push(format!("gfx/fonts/{name}.dds"));
+        candidates.push(format!("gfx/fonts/{name}.tga"));
+    }
+    candidates.push(format!("gfx/fonts/{name}_{page_id}.dds"));
+    candidates.push(format!("gfx/fonts/{name}_{page_id}.tga"));
+    candidates
 }
 
 fn decode_resolved_font_page(
@@ -909,14 +1128,29 @@ fn decode_resolved_font_page(
                     path.display()
                 )
             })?;
-            // Prefer the SHIPPED mip chain (see FontPage::mips); compressed
-            // chains fall back to the historical mip-0 decode.
+            // Prefer the SHIPPED mip chain (see FontPage::mips). ONLY an
+            // unsupported (compressed) format falls back to the historical
+            // mip-0 decode.
+            //
+            // The old `_` arm swallowed every error: a file with a complete
+            // mip 0 but a truncated deeper level — which `dds::decode_bytes`
+            // still decodes — silently degraded to `mip_images = Vec::new()`,
+            // contradicting the shipped-mip requirement documented on
+            // `dds::decode_mip_chain_bytes` (R11 C3). A malformed chain is now
+            // a hard error; only the documented format fallback survives.
             match dds::decode_mip_chain_bytes(&bytes) {
                 Ok(mut levels) if !levels.is_empty() => {
                     let image = levels.remove(0);
                     (image, levels)
                 }
-                _ => {
+                Ok(_) => {
+                    return Err(format!(
+                        "font page {rel_path} resolved to {} decoded to an empty mip chain",
+                        path.display()
+                    )
+                    .into())
+                }
+                Err(err) if matches!(err.kind, ErrorKind::UnsupportedDdsFormat(_)) => {
                     let image = dds::decode_bytes(&bytes)
                         .map_err(|err| {
                             format!(
@@ -926,6 +1160,14 @@ fn decode_resolved_font_page(
                         })?
                         .image;
                     (image, Vec::new())
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "failed to decode the shipped mip chain of font page {rel_path} \
+                         resolved to {}: {err}",
+                        path.display()
+                    )
+                    .into())
                 }
             }
         }
@@ -981,9 +1223,14 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
         )
         .into());
     }
-    // Face names may be non-UTF8 single-byte text; we never need them, so a
-    // lossy decode is safe for the numeric fields we do read.
-    let text = String::from_utf8_lossy(bytes);
+    // The old note here claimed a lossy decode was safe because only numeric
+    // fields were read. That is not true: `page file=` names are read from this
+    // same text and resolved to atlas paths, so a destroyed byte yields a path
+    // the descriptor never named. Use the layer's decoder (which preserves
+    // Latin-1 losslessly instead of destroying it, as the engine does) and
+    // refuse anything it could not decode without loss.
+    reject_font_decode_damage(bytes, source)?;
+    let text = decode_text(bytes);
 
     let mut common: Option<(i32, i32, u32, u32, usize, Option<usize>)> = None;
     let mut page_files: Vec<(u32, String)> = Vec::new();
@@ -1001,16 +1248,20 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
             "info" => saw_info = true,
             "common" => {
                 common = Some((
-                    required_int(&fields, "lineHeight", source)? as i32,
-                    optional_int(&fields, "base").unwrap_or(0) as i32,
-                    required_int(&fields, "scaleW", source)? as u32,
-                    required_int(&fields, "scaleH", source)? as u32,
-                    required_int(&fields, "pages", source)? as usize,
+                    required_unsigned(&fields, "lineHeight", source, MAX_GLYPH_EXTENT)? as i32,
+                    signed_i32(
+                        optional_int(&fields, "base").unwrap_or(0),
+                        "base",
+                        source,
+                    )?,
+                    required_unsigned(&fields, "scaleW", source, MAX_GLYPH_EXTENT)? as u32,
+                    required_unsigned(&fields, "scaleH", source, MAX_GLYPH_EXTENT)? as u32,
+                    required_unsigned(&fields, "pages", source, MAX_PAGE_COUNT)? as usize,
                     bmfont_glyph_channel_from_common(&fields),
                 ));
             }
             "page" => {
-                let id = required_int(&fields, "id", source)? as u32;
+                let id = required_unsigned(&fields, "id", source, MAX_PAGE_COUNT)? as u32;
                 let file = fields
                     .get("file")
                     .cloned()
@@ -1024,25 +1275,53 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
                     // fail-closed policy is skip-and-record, so drop it.
                     continue;
                 }
+                let id = u32::try_from(id)
+                    .map_err(|_| format!("{source}: char id={id} does not fit in u32"))?;
+                let page = optional_int(&fields, "page").unwrap_or(0);
+                if !(0..=MAX_PAGE_COUNT).contains(&page) {
+                    return Err(format!(
+                        "{source}: char id={id} page={page} is outside 0..={MAX_PAGE_COUNT}"
+                    )
+                    .into());
+                }
                 glyphs.push((
-                    id as u32,
+                    id,
                     Glyph {
-                        x: required_int(&fields, "x", source)? as u32,
-                        y: required_int(&fields, "y", source)? as u32,
-                        width: required_int(&fields, "width", source)? as u32,
-                        height: required_int(&fields, "height", source)? as u32,
-                        xoffset: optional_int(&fields, "xoffset").unwrap_or(0) as i32,
-                        yoffset: optional_int(&fields, "yoffset").unwrap_or(0) as i32,
-                        xadvance: required_int(&fields, "xadvance", source)? as i32,
-                        page: optional_int(&fields, "page").unwrap_or(0) as usize,
+                        x: required_unsigned(&fields, "x", source, MAX_GLYPH_EXTENT)? as u32,
+                        y: required_unsigned(&fields, "y", source, MAX_GLYPH_EXTENT)? as u32,
+                        width: required_unsigned(&fields, "width", source, MAX_GLYPH_EXTENT)?
+                            as u32,
+                        height: required_unsigned(&fields, "height", source, MAX_GLYPH_EXTENT)?
+                            as u32,
+                        xoffset: signed_i32(
+                            optional_int(&fields, "xoffset").unwrap_or(0),
+                            "xoffset",
+                            source,
+                        )?,
+                        yoffset: signed_i32(
+                            optional_int(&fields, "yoffset").unwrap_or(0),
+                            "yoffset",
+                            source,
+                        )?,
+                        xadvance: signed_i32(
+                            required_int(&fields, "xadvance", source)?,
+                            "xadvance",
+                            source,
+                        )?,
+                        page: page as usize,
                     },
                 ));
             }
             "kerning" => {
+                let first = required_int(&fields, "first", source)?;
+                let second = required_int(&fields, "second", source)?;
+                let amount = required_int(&fields, "amount", source)?;
                 kernings.push((
-                    required_int(&fields, "first", source)? as u32,
-                    required_int(&fields, "second", source)? as u32,
-                    required_int(&fields, "amount", source)? as i32,
+                    u32::try_from(first)
+                        .map_err(|_| format!("{source}: kerning first={first} is not a u32"))?,
+                    u32::try_from(second)
+                        .map_err(|_| format!("{source}: kerning second={second} is not a u32"))?,
+                    signed_i32(amount, "kerning amount", source)?,
                 ));
             }
             // "chars"/"kernings" count lines and anything unknown: ignored.
@@ -1129,6 +1408,51 @@ fn required_int(fields: &HashMap<String, String>, key: &str, source: &str) -> Re
         .ok_or_else(|| format!("{source}: missing {key}= attribute"))?
         .parse::<i64>()
         .map_err(|err| format!("{source}: {key}= is not an integer: {err}").into())
+}
+
+/// One-axis bound on a glyph rect or atlas extent, mirroring
+/// `game_ui::font::MAX_GLYPH_EXTENT` (and `dds::DDS_MAX_PIXELS` as a single
+/// axis). Keeping both `x` and `width` under 2^26 also makes `x + width` at
+/// [`Font::load_from_resolver_with_mode`] provably non-overflowing in `u32`.
+const MAX_GLYPH_EXTENT: i64 = 1 << 26;
+/// Page count ceiling: the AngelCode BINARY common block stores `pages` as a
+/// `u16`, so this is the format's own field width, not an invented limit.
+const MAX_PAGE_COUNT: i64 = u16::MAX as i64;
+
+/// Read a BMFont field that the format defines as unsigned, refusing a
+/// negative or out-of-range value BEFORE any cast or allocation.
+///
+/// `required_int` yields `i64` and every call site cast it with `as u32` /
+/// `as usize` / `as i32`. A negative value therefore became an enormous
+/// unsigned one: `pages=-1` produced `usize::MAX`, and `vec![None; usize::MAX]`
+/// is an infallible allocation — an abort, not an error; `x=-1` produced
+/// `u32::MAX`, and `x + width` then overflows, which is a panic under the
+/// workspace's release `overflow-checks = true`. Neither is reachable through
+/// `game_ui`'s bounds: this is a separate BMFont parser.
+///
+/// Measured against the shipped corpus (415 .fnt files, the game 1.19.2): every
+/// one of these fields is non-negative, and the extremes are
+/// `scaleW <= 8212`, `char.y <= 5418`, `char.width <= 164`, `pages <= 2` —
+/// far inside these bounds, so nothing shipped is refused.
+fn required_unsigned(
+    fields: &HashMap<String, String>,
+    key: &str,
+    source: &str,
+    max: i64,
+) -> Result<i64> {
+    let value = required_int(fields, key, source)?;
+    if value < 0 || value > max {
+        return Err(format!("{source}: {key}={value} is outside the accepted range 0..={max}").into());
+    }
+    Ok(value)
+}
+
+/// As [`required_unsigned`], for a field that is legitimately signed
+/// (`xoffset`, `yoffset`, `xadvance`, kerning `amount`): only the cast to
+/// `i32` needs bounding.
+fn signed_i32(value: i64, key: &str, source: &str) -> Result<i32> {
+    i32::try_from(value)
+        .map_err(|_| format!("{source}: {key}={value} does not fit in i32").into())
 }
 
 /// Resolve the on-disk texture for one page of `fnt_path`.
@@ -1248,6 +1572,17 @@ pub fn decode_tga(bytes: &[u8], source: &str) -> Result<FontPage> {
     if width == 0 || height == 0 {
         return Err(format!("{source}: TGA has empty dimensions {width}x{height}").into());
     }
+    // Same cap as `game_ui::tga::TGA_MAX_PIXELS` / `dds::DDS_MAX_PIXELS`: the
+    // `vec![0u8; pixel_count * 4]` below is header-derived, and 65535x65535
+    // asks for 17 GB. This decoder is test-only, but it is a sibling of the
+    // production one and must not model a different allocation policy.
+    const MAX_PIXELS: u64 = 1 << 26;
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(format!(
+            "{source}: TGA dimensions {width}x{height} exceed the {MAX_PIXELS}-pixel cap"
+        )
+        .into());
+    }
     let top_down = descriptor & 0x20 != 0;
     let bytes_per_pixel = usize::from(bpp / 8);
     let pixel_count = width as usize * height as usize;
@@ -1335,6 +1670,77 @@ pub fn decode_tga(bytes: &[u8], source: &str) -> Result<FontPage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A nested descriptor must probe its OWN directory before the flat legacy
+    /// root. `gfx/fonts/korean/hoi_18.fnt` shares its file name with the Latin
+    /// `gfx/fonts/hoi_18.*`, and binding the Latin atlas to a Korean font is a
+    /// wrong picture rather than an honest refusal.
+    #[test]
+    fn declared_page_candidates_put_the_descriptor_directory_first() {
+        assert_eq!(
+            font_page_declared_candidates("korean/hoi_18", "hoi_18_0.dds"),
+            vec![
+                "gfx/fonts/korean/hoi_18_0.dds".to_string(),
+                "gfx/fonts/hoi_18_0.dds".to_string(),
+            ]
+        );
+    }
+
+    /// A flat font has exactly one place to look, and dedup must not leave a
+    /// duplicated probe behind.
+    #[test]
+    fn declared_page_candidates_do_not_duplicate_for_a_flat_font() {
+        assert_eq!(
+            font_page_declared_candidates("hoi_18mbs", "hoi_18mbs_0.dds"),
+            vec!["gfx/fonts/hoi_18mbs_0.dds".to_string()]
+        );
+    }
+
+    /// An explicit `gfx/...` name is already an effective-VFS path and is never
+    /// rebased onto the descriptor's directory.
+    #[test]
+    fn explicit_vfs_declared_page_is_not_rebased() {
+        assert_eq!(
+            font_page_declared_candidates("korean/hoi_18", "gfx/fonts/shared.dds"),
+            vec!["gfx/fonts/shared.dds".to_string()]
+        );
+    }
+
+    /// A declared name that merely CONTAINS a separator is still relative to
+    /// the descriptor, so it is rebased first; the old raw-VFS reading is kept
+    /// only as the second tier. This pins the "relative, but not explicit
+    /// `gfx/`" distinction that the old `rel.contains('/')` early return erased.
+    #[test]
+    fn relative_declared_subpath_is_rebased_before_the_raw_vfs_reading() {
+        assert_eq!(
+            font_page_declared_candidates("korean/hoi_18", "pages/atlas.dds"),
+            vec![
+                "gfx/fonts/korean/pages/atlas.dds".to_string(),
+                "pages/atlas.dds".to_string(),
+            ]
+        );
+    }
+
+    /// The unsuffixed atlas is page 0's plane; page 1 must never borrow it.
+    #[test]
+    fn inferred_candidates_offer_the_unsuffixed_atlas_only_for_page_zero() {
+        assert_eq!(
+            inferred_font_page_candidates("hoi_mapfont4", 0),
+            vec![
+                "gfx/fonts/hoi_mapfont4.dds".to_string(),
+                "gfx/fonts/hoi_mapfont4.tga".to_string(),
+                "gfx/fonts/hoi_mapfont4_0.dds".to_string(),
+                "gfx/fonts/hoi_mapfont4_0.tga".to_string(),
+            ]
+        );
+        assert_eq!(
+            inferred_font_page_candidates("hoi_mapfont4", 1),
+            vec![
+                "gfx/fonts/hoi_mapfont4_1.dds".to_string(),
+                "gfx/fonts/hoi_mapfont4_1.tga".to_string(),
+            ]
+        );
+    }
 
     /// Synthetic garamond-style .fnt: no page/count lines, ANSI ids,
     /// trailing spaces — the oldest export style the game ships.
@@ -1636,6 +2042,102 @@ kernings count=0
     }
 
     #[test]
+    fn core_gfx_language_override_selects_files_and_inherits_base_color() {
+        let source = r#"
+            bitmapfonts = {
+                bitmapfont = {
+                    name = "hoi_16mbs"
+                    fontfiles = { "gfx/fonts/hoi_16mbs" "gfx/fonts/hoi_16mbs_cryllic" }
+                    color = 0xff7799ff
+                }
+                bitmapfont_override = {
+                    name = "hoi_16mbs"
+                    fontfiles = { "gfx/fonts/japanese/hoi_16mbs" }
+                    languages = { "l_japanese" }
+                }
+            }
+        "#;
+        let japanese = font_spec_from_core_gfx_for_language(
+            source,
+            "hoi_16mbs",
+            "japanese",
+            "core.gfx",
+        )
+        .expect("Japanese override");
+        assert_eq!(
+            japanese.files,
+            vec!["gfx/fonts/japanese/hoi_16mbs".to_string()]
+        );
+        assert_eq!(japanese.color, 0xFF77_99FF);
+
+        let german = font_spec_from_core_gfx_for_language(
+            source,
+            "hoi_16mbs",
+            "l_german",
+            "core.gfx",
+        )
+        .expect("base fallback");
+        assert_eq!(
+            german.files,
+            vec![
+                "gfx/fonts/hoi_16mbs".to_string(),
+                "gfx/fonts/hoi_16mbs_cryllic".to_string(),
+            ]
+        );
+        assert_eq!(german.color, 0xFF77_99FF);
+    }
+
+    #[test]
+    fn core_gfx_duplicate_language_overrides_fail_closed() {
+        let source = r#"
+            bitmapfonts = {
+                bitmapfont = { name="f" path="gfx/fonts/base" color=0xffffffff }
+                bitmapfont_override = { name="f" path="gfx/fonts/a" languages={ "l_japanese" } }
+                bitmapfont_override = { name="f" path="gfx/fonts/b" languages={ "l_japanese" } }
+            }
+        "#;
+        let error = font_spec_from_core_gfx_for_language(
+            source,
+            "f",
+            "l_japanese",
+            "core.gfx",
+        )
+        .expect_err("ambiguous override");
+        assert!(error.to_string().contains("ambiguous"), "{error}");
+    }
+
+    #[test]
+    fn game_font_dependencies_follow_the_core_alias_and_loader_order() {
+        let root = crate::bundle::tests::unique_temp_dir("font_dependency_paths");
+        let interface = root.join("interface");
+        fs::create_dir_all(&interface).expect("create interface dir");
+        fs::write(interface.join("core.gfx"), CORE_GFX_FIXTURE).expect("write core.gfx");
+        write_font(&root, "a", GARAMOND_STYLE_FNT, [255, 255, 255, 255]);
+        write_font(&root, "b", GARAMOND_STYLE_FNT, [255, 255, 255, 255]);
+        // A coincidental descriptor named after the GUI alias is not what the
+        // product loader opens and must not replace core.gfx's fontfiles list.
+        write_font(
+            &root,
+            "ListFont",
+            GARAMOND_STYLE_FNT,
+            [255, 255, 255, 255],
+        );
+        let resolver = GameFileResolver::vanilla(root.clone()).expect("resolver");
+
+        assert_eq!(
+            game_font_dependency_paths(&resolver, "ListFont").expect("dependency closure"),
+            vec![
+                "interface/core.gfx",
+                "gfx/fonts/a.fnt",
+                "gfx/fonts/a.tga",
+                "gfx/fonts/b.fnt",
+                "gfx/fonts/b.tga",
+            ]
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn core_gfx_font_spec_unknown_name_fails_closed() {
         let err = font_spec_from_core_gfx(CORE_GFX_FIXTURE, "Nope", "core.gfx").expect_err("fails");
         assert!(err.to_string().contains("\"Nope\""), "{err}");
@@ -1782,6 +2284,157 @@ kernings count=0
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// Uncompressed A8R8G8B8 DDS header + as many mip levels as `levels`
+    /// supplies. `declared_mips` is what the header claims, which is not
+    /// necessarily what the file carries.
+    fn a8r8g8b8_dds(width: u32, height: u32, declared_mips: u32, levels: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 128];
+        data[0..4].copy_from_slice(b"DDS ");
+        data[4..8].copy_from_slice(&124u32.to_le_bytes());
+        data[12..16].copy_from_slice(&height.to_le_bytes());
+        data[16..20].copy_from_slice(&width.to_le_bytes());
+        data[28..32].copy_from_slice(&declared_mips.to_le_bytes());
+        data[76..80].copy_from_slice(&32u32.to_le_bytes());
+        data[80..84].copy_from_slice(&0x40u32.to_le_bytes()); // DDPF_RGB
+        data[88..92].copy_from_slice(&32u32.to_le_bytes());
+        data[92..96].copy_from_slice(&0x00ff_0000u32.to_le_bytes());
+        data[96..100].copy_from_slice(&0x0000_ff00u32.to_le_bytes());
+        data[100..104].copy_from_slice(&0x0000_00ffu32.to_le_bytes());
+        data[104..108].copy_from_slice(&0xff00_0000u32.to_le_bytes());
+        let (mut w, mut h) = (width, height);
+        for _ in 0..levels {
+            data.extend(std::iter::repeat(0xFFu8).take((w * h * 4) as usize));
+            w = (w / 2).max(1);
+            h = (h / 2).max(1);
+        }
+        data
+    }
+
+    #[test]
+    fn negative_bmfont_counts_and_coordinates_are_typed_refusals() {
+        // Every one of these fields is unsigned in the BMFont format, was read
+        // as i64 and cast unchecked. `pages=-1` became `usize::MAX` and then
+        // `vec![None; usize::MAX]` — an infallible allocation, i.e. an abort;
+        // `x=-1` became `u32::MAX` and then overflowed `x + width`, a panic
+        // under the workspace's release overflow-checks.
+        let head = "info face=\"T\"\n";
+        let cases = [
+            (
+                format!("{head}common lineHeight=1 base=0 scaleW=1 scaleH=1 pages=-1\n"),
+                "pages=-1",
+            ),
+            (
+                format!("{head}common lineHeight=-1 base=0 scaleW=1 scaleH=1 pages=1\n"),
+                "lineHeight=-1",
+            ),
+            (
+                format!("{head}common lineHeight=1 base=0 scaleW=-1 scaleH=1 pages=1\n"),
+                "scaleW=-1",
+            ),
+            (
+                format!(
+                    "{head}common lineHeight=1 base=0 scaleW=1 scaleH=1 pages=1\n\
+                     page id=-1 file=\"a.tga\"\n"
+                ),
+                "id=-1",
+            ),
+        ];
+        for (source, expected) in cases {
+            let err = parse_fnt_text(source.as_bytes(), "probe.fnt")
+                .expect_err("a negative unsigned field must be refused");
+            let message = err.to_string();
+            assert!(message.contains(expected), "{expected}: {message}");
+            assert!(message.contains("outside"), "{expected}: {message}");
+        }
+    }
+
+    #[test]
+    fn negative_glyph_rect_components_are_typed_refusals() {
+        for field in ["x", "y", "width", "height"] {
+            let row =
+                "char id=65 x=2 y=2 width=2 height=2 xoffset=0 yoffset=0 xadvance=1 page=0\n"
+                    .replace(&format!("{field}=2 "), &format!("{field}=-1 "));
+            let source = format!(
+                "info face=\"T\"\n\
+                 common lineHeight=1 base=0 scaleW=8 scaleH=8 pages=1\n{row}"
+            );
+            let err = parse_fnt_text(source.as_bytes(), "probe.fnt")
+                .expect_err("a negative glyph rect component must be refused");
+            let message = err.to_string();
+            assert!(message.contains(&format!("{field}=-1")), "{field}: {message}");
+        }
+    }
+
+    #[test]
+    fn a_truncated_mip_chain_is_an_error_not_a_silent_mip_zero_degrade() {
+        // R11 C3: the fallback arm was `_`, so a file with a complete mip 0
+        // and a missing declared level fell through to `decode_bytes` and
+        // produced `mips: []` — contradicting the shipped-mip requirement
+        // documented on `dds::decode_mip_chain_bytes`.
+        let dir = crate::bundle::tests::unique_temp_dir("font_mip_truncated");
+        let fonts_dir = dir.join("gfx").join("fonts");
+        fs::create_dir_all(&fonts_dir).expect("create fonts dir");
+        fs::write(fonts_dir.join("mipfont.fnt"), GARAMOND_STYLE_FNT).expect("write fnt");
+        fs::write(
+            fonts_dir.join("mipfont.dds"),
+            a8r8g8b8_dds(8, 8, 2, 1), // declares 2 levels, carries 1
+        )
+        .expect("write dds");
+        let spec = FontSpec {
+            name: "mipfont".to_string(),
+            files: vec!["gfx/fonts/mipfont".to_string()],
+            color: 0xFFFF_FFFF,
+        };
+        let err = Font::load(&dir, &spec).expect_err("a truncated mip chain must fail closed");
+        let message = err.to_string();
+        assert!(message.contains("shipped mip chain"), "{message}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_complete_mip_chain_is_uploaded_and_a_compressed_page_still_falls_back() {
+        let dir = crate::bundle::tests::unique_temp_dir("font_mip_complete");
+        let fonts_dir = dir.join("gfx").join("fonts");
+        fs::create_dir_all(&fonts_dir).expect("create fonts dir");
+        fs::write(fonts_dir.join("mipfont.fnt"), GARAMOND_STYLE_FNT).expect("write fnt");
+        fs::write(fonts_dir.join("mipfont.dds"), a8r8g8b8_dds(8, 8, 2, 2)).expect("write dds");
+        let spec = FontSpec {
+            name: "mipfont".to_string(),
+            files: vec!["gfx/fonts/mipfont".to_string()],
+            color: 0xFFFF_FFFF,
+        };
+        let font = Font::load(&dir, &spec).expect("complete chain loads");
+        assert_eq!(font.pages[0].mips.len(), 1);
+        assert_eq!((font.pages[0].mips[0].0, font.pages[0].mips[0].1), (4, 4));
+        fs::remove_dir_all(&dir).ok();
+
+        // The one documented fallback: a compressed page has no mip-chain
+        // decoder, so mip 0 alone is still correct.
+        let dir = crate::bundle::tests::unique_temp_dir("font_mip_dxt1");
+        let fonts_dir = dir.join("gfx").join("fonts");
+        fs::create_dir_all(&fonts_dir).expect("create fonts dir");
+        fs::write(fonts_dir.join("dxtfont.fnt"), GARAMOND_STYLE_FNT).expect("write fnt");
+        let mut dxt = vec![0u8; 128];
+        dxt[0..4].copy_from_slice(b"DDS ");
+        dxt[4..8].copy_from_slice(&124u32.to_le_bytes());
+        dxt[12..16].copy_from_slice(&8u32.to_le_bytes());
+        dxt[16..20].copy_from_slice(&8u32.to_le_bytes());
+        dxt[28..32].copy_from_slice(&1u32.to_le_bytes());
+        dxt[76..80].copy_from_slice(&32u32.to_le_bytes());
+        dxt[80..84].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+        dxt[84..88].copy_from_slice(b"DXT1");
+        dxt.extend(std::iter::repeat(0xFFu8).take(2 * 2 * 8));
+        fs::write(fonts_dir.join("dxtfont.dds"), &dxt).expect("write dds");
+        let spec = FontSpec {
+            name: "dxtfont".to_string(),
+            files: vec!["gfx/fonts/dxtfont".to_string()],
+            color: 0xFFFF_FFFF,
+        };
+        let font = Font::load(&dir, &spec).expect("compressed page still loads from mip 0");
+        assert!(font.pages[0].mips.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn load_falls_back_to_stem_tga_when_declared_page_is_missing() {
         // Real-install case: cg_16b.fnt declares cg_16d.tga which does not
@@ -1898,11 +2551,12 @@ kernings count=0
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+    )]
     fn hoi_18mbs_loads_from_real_install_when_present() {
-        let Some(root) = real_install_root_if_present() else {
-            eprintln!("skipping real-install font test: BATTLE_PLAN_VANILLA not present");
-            return;
-        };
+        let root = real_install_root();
         let font = load_game_font(&root, OVERLAY_FONT_NAME).expect("hoi_18mbs loads");
         assert_eq!(font.name, OVERLAY_FONT_NAME);
         assert_eq!(font.line_height, 18);
@@ -1947,11 +2601,12 @@ kernings count=0
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+    )]
     fn overlay_font_uses_real_hoi18mbs_when_resolver_exists() {
-        let Some(root) = real_install_root_if_present() else {
-            eprintln!("skipping overlay font resolver test: BATTLE_PLAN_VANILLA not present");
-            return;
-        };
+        let root = real_install_root();
         let resolver = GameFileResolver::vanilla(root).expect("resolver");
         let selection = load_overlay_font(&resolver).expect("real overlay font loads");
         assert_eq!(selection.font_name, OVERLAY_FONT_NAME);
@@ -1960,13 +2615,16 @@ kernings count=0
         assert!(!selection.font.pages.is_empty());
     }
 
-    fn real_install_root_if_present() -> Option<PathBuf> {
-        let root = std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA")).map(PathBuf::from)?;
-        root.join("gfx")
-            .join("fonts")
-            .join("hoi_18mbs.fnt")
-            .is_file()
-            .then_some(root)
+    /// The vanilla install root, with its shipped overlay font present.
+    /// Panics rather than returning `None`: callers are gated on
+    /// `gate_hoi4_install`, so an absent install or an absent shipped font is
+    /// a failure, never a silent skip that libtest would report as a pass.
+    fn real_install_root() -> PathBuf {
+        let root = replay_test_gates::require_vanilla_game_root();
+        replay_test_gates::require_existing_file(
+            root.join("gfx").join("fonts").join("hoi_18mbs.fnt"),
+        );
+        root
     }
 
     fn missing_printable_ascii(font: &Font) -> String {

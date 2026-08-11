@@ -8,7 +8,7 @@ use crate::hud::{
 };
 use crate::loc::Localisation;
 use crate::major_views::{inspect_major_views, write_major_view_proofs, MajorViewReport};
-use crate::paradox_text::parse_file;
+use crate::paradox_text::{destructive_event_count, diagnose_text_decode, parse_bytes, parse_file};
 use crate::png::write_png;
 use crate::tga;
 use crate::topbar::{
@@ -94,6 +94,10 @@ pub struct LocalisationProbeReport {
     pub file_count: usize,
     pub key_count: usize,
     pub parse_failures: Vec<String>,
+    /// Byte-level decode damage, carried through instead of dropped. A separate
+    /// axis from `parse_failures`, which is line-level: a U+FFFD inside a quoted
+    /// value leaves a well-formed row, so the line parser reports nothing.
+    pub decode_lossy_files: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,6 +211,16 @@ pub fn run_probe(config: &ProbeConfig) -> Result<ProbeReport> {
     })
 }
 
+/// Parse one `.gfx` file and report its destructive decode EVENT count
+/// alongside the document. Same read-and-parse the previous
+/// `paradox_text::parse_file` call performed, with the byte-level observation
+/// that call discarded.
+fn load_gfx_document(path: &Path) -> Result<(crate::paradox_text::Document, usize)> {
+    let bytes = std::fs::read(path)?;
+    let events = destructive_event_count(&diagnose_text_decode(&bytes));
+    Ok((parse_bytes(&bytes), events))
+}
+
 pub fn parse_gfx_files(resolver: &AssetResolver) -> Result<(SpriteRegistry, GfxParseStats)> {
     let files = resolver.list_files_recursive("interface", Some("gfx"))?;
     let mut registry = SpriteRegistry::new();
@@ -215,11 +229,17 @@ pub fn parse_gfx_files(resolver: &AssetResolver) -> Result<(SpriteRegistry, GfxP
         ..GfxParseStats::default()
     };
     for file in files {
-        match parse_file(&file.path) {
-            Ok(doc) => {
+        // Read the bytes here rather than calling `paradox_text::parse_file`, so
+        // decode damage is observable; the parse itself is identical.
+        match load_gfx_document(&file.path) {
+            Ok((doc, decode_events)) => {
                 stats.recovery_count += doc.recoveries.len();
                 if !doc.recoveries.is_empty() {
                     stats.files_with_recoveries.push(file.rel_path.clone());
+                }
+                if decode_events != 0 {
+                    stats.decode_loss_count += decode_events;
+                    stats.files_with_decode_loss.push(file.rel_path.clone());
                 }
                 registry.add_document(&file.rel_path, &doc);
             }
@@ -240,8 +260,13 @@ pub fn parse_gui_files(resolver: &AssetResolver) -> Result<(LayoutSet, GuiParseS
     let files = resolver.list_files_recursive("interface", Some("gui"))?;
     let mut layouts = LayoutSet::default();
     for file in files {
-        match parse_file(&file.path) {
-            Ok(doc) => layouts.add_document(&file.rel_path, &doc),
+        // Must go through `LayoutSet::parse_file`, the byte-owning entry point:
+        // it is the only one that can observe decode damage. Routing through
+        // `paradox_text::parse_file` + `add_document` discards the bytes and
+        // records "decode not observed", so the decode-loss report below could
+        // never fire no matter how damaged the input was.
+        match layouts.parse_file(&file.path, &file.rel_path) {
+            Ok(()) => {}
             Err(err) => {
                 layouts.stats.file_count += 1;
                 layouts.stats.parse_failures += 1;
@@ -418,6 +443,7 @@ fn inspect_localisation(resolver: &AssetResolver) -> Result<LocalisationProbeRep
         file_count: localisation.source_files.len(),
         key_count: localisation.entries.len(),
         parse_failures: localisation.parse_failures,
+        decode_lossy_files: localisation.decode_lossy_files,
     })
 }
 
@@ -700,6 +726,15 @@ impl ProbeReport {
         ));
         out.push_str("gfx sprite kinds:\n");
         push_histogram(&mut out, &self.gfx.kind_histogram);
+        if !self.gfx.files_with_decode_loss.is_empty() {
+            out.push_str(&format!(
+                "gfx files with destructive decode loss (events={}):\n",
+                self.gfx.decode_loss_count
+            ));
+            for file in &self.gfx.files_with_decode_loss {
+                out.push_str(&format!("  {file}\n"));
+            }
+        }
         if !self.gfx.files_with_recoveries.is_empty() {
             out.push_str("gfx files with parser recoveries:\n");
             for file in &self.gfx.files_with_recoveries {
@@ -722,6 +757,20 @@ impl ProbeReport {
                 out.push_str(&format!("  {file}\n"));
             }
         }
+        // Byte-level decode damage is a different axis from parser recoveries
+        // and gets its own line rather than being counted into `recoveries=`.
+        // Emitted only when non-empty, exactly like the recoveries block above,
+        // so a clean corpus (which is every shipped one — measured) reports
+        // nothing extra.
+        if !self.gui.files_with_decode_loss.is_empty() {
+            out.push_str(&format!(
+                "gui files with destructive decode loss (events={}):\n",
+                self.gui.decode_loss_count
+            ));
+            for file in &self.gui.files_with_decode_loss {
+                out.push_str(&format!("  {file}\n"));
+            }
+        }
         out.push_str(&format!(
             "localisation english files={} keys={} parse_failures={}\n",
             self.localisation.file_count,
@@ -731,6 +780,15 @@ impl ProbeReport {
         if !self.localisation.parse_failures.is_empty() {
             out.push_str("localisation parse failures:\n");
             for item in &self.localisation.parse_failures {
+                out.push_str(&format!("  {item}\n"));
+            }
+        }
+        // Byte-level damage gets its own line, never counted into the
+        // `parse_failures=` total above. Emitted only when non-empty, so a clean
+        // corpus (which every shipped one is, measured) reports nothing extra.
+        if !self.localisation.decode_lossy_files.is_empty() {
+            out.push_str("localisation files with destructive decode loss:\n");
+            for item in &self.localisation.decode_lossy_files {
                 out.push_str(&format!("  {item}\n"));
             }
         }

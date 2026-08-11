@@ -5,10 +5,182 @@
 //! incompatibility reported by the shared portable-file contract.
 
 use map_viewer::{GameFileResolver, RecordedContentSource};
-use portable_content_manifest::{ContentIssueCode, ContentManifest, ContentValidationReport};
+use portable_content_manifest::{
+    normalize_game_relative_path, ContentIssueCode, ContentManifest, ContentValidationReport,
+    UsedContentKey,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 use crate::install_paths::ProductPaths;
 use crate::timeline::OwnerProvider;
+
+pub const BUNDLE_CONTENT_AUTHORITY_SCHEMA: &str = "hoi4.replay.xmap02-bundle-content-authority.v1";
+
+/// Mechanical agreement between a generated map bundle and the exact content
+/// admission used for playback. The legacy FNV values are accepted only after
+/// being recomputed over the admitted one-read payloads; the portable SHA-256
+/// tuple remains the product authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleContentAuthority {
+    pub schema: String,
+    pub manifest_digest_sha256: String,
+    pub product_modset_sha256: String,
+    pub effective_vfs_manifest_sha256: String,
+    pub bundle_modset_id: String,
+    pub bundle_mod_count: usize,
+    pub ordered_inputs: Vec<UsedContentKey>,
+    pub authority_sha256: String,
+}
+
+/// Derive the shipping authority directly from the recording admission and
+/// the mounted effective VFS. Normal recording routes are bundle-less; an
+/// external generated `MapBundle` is never a prerequisite for this gate.
+pub fn derive_bundle_content_authority(
+    manifest: &ContentManifest,
+    resolver: &GameFileResolver,
+    admission: &replay_core::ValidatedContentAdmission,
+) -> Result<BundleContentAuthority, String> {
+    manifest
+        .validate()
+        .map_err(|error| format!("CONTENT INCOMPATIBLE: invalid manifest: {error}"))?;
+    let manifest_digest = manifest
+        .computed_digest()
+        .map_err(|error| format!("CONTENT INCOMPATIBLE: manifest digest: {error}"))?;
+    if admission.manifest_digest_sha256() != manifest_digest
+        || admission.product_modset_sha256() != manifest.product_modset_sha256
+    {
+        return Err(
+            "CONTENT INCOMPATIBLE: content admission authority tuple disagrees with manifest"
+                .into(),
+        );
+    }
+    let recording_mod_count = manifest
+        .ordered_layers
+        .iter()
+        .filter(|layer| layer.layer_kind == replay_core::ContentLayerKind::Mod)
+        .count();
+    if resolver.bundle_mod_count() != recording_mod_count {
+        return Err(format!(
+            "CONTENT INCOMPATIBLE: mounted resolver {} ({} mods) and recording ({} mods) do not name one exact content roster",
+            resolver.bundle_modset_id(),
+            resolver.bundle_mod_count(),
+            recording_mod_count
+        ));
+    }
+    let mut ordered_inputs = Vec::new();
+    let mut effective_vfs = None;
+    for path in admission.required_paths() {
+        let key = admission
+            .require_used_content(path)
+            .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?
+            .clone();
+        resolver
+            .read_admitted_used_content(&key)
+            .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
+        match &effective_vfs {
+            Some(identity) if identity != &key.effective_vfs_manifest_sha256 => {
+                return Err(
+                    "CONTENT INCOMPATIBLE: bundle inputs span different effective VFS identities"
+                        .into(),
+                )
+            }
+            None => effective_vfs = Some(key.effective_vfs_manifest_sha256.clone()),
+            _ => {}
+        }
+        ordered_inputs.push(key);
+    }
+    let effective_vfs_manifest_sha256 = effective_vfs
+        .ok_or_else(|| "CONTENT INCOMPATIBLE: bundle has no admitted source inputs".to_string())?;
+    let mut authority = BundleContentAuthority {
+        schema: BUNDLE_CONTENT_AUTHORITY_SCHEMA.into(),
+        manifest_digest_sha256: manifest_digest,
+        product_modset_sha256: manifest.product_modset_sha256.clone(),
+        effective_vfs_manifest_sha256,
+        bundle_modset_id: resolver.bundle_modset_id(),
+        bundle_mod_count: resolver.bundle_mod_count(),
+        ordered_inputs,
+        authority_sha256: String::new(),
+    };
+    authority.authority_sha256 = bundle_authority_sha256(&authority)?;
+    Ok(authority)
+}
+
+/// Optional evidence/debug comparison for a supplied generated map bundle.
+/// Shipping derives authority without this input; when one is supplied, every
+/// legacy source hash must agree with the exact admitted payload.
+pub fn bind_bundle_provenance(
+    provenance: &crate::bundle::BundleProvenance,
+    manifest: &ContentManifest,
+    resolver: &GameFileResolver,
+    admission: &replay_core::ValidatedContentAdmission,
+) -> Result<BundleContentAuthority, String> {
+    let authority = derive_bundle_content_authority(manifest, resolver, admission)?;
+    if provenance.mod_count != authority.bundle_mod_count
+        || provenance.modset_id != authority.bundle_modset_id
+    {
+        return Err(format!(
+            "CONTENT INCOMPATIBLE: supplied bundle modset {} ({} mods) disagrees with canonical recording authority {} ({} mods)",
+            provenance.modset_id,
+            provenance.mod_count,
+            authority.bundle_modset_id,
+            authority.bundle_mod_count
+        ));
+    }
+    let mut expected_fnv = BTreeMap::new();
+    expected_fnv.insert(
+        normalize_game_relative_path("map/definition.csv")?,
+        provenance.definition_csv_fnv1a64.clone(),
+    );
+    expected_fnv.insert(
+        normalize_game_relative_path("map/provinces.bmp")?,
+        provenance.provinces_bmp_fnv1a64.clone(),
+    );
+    for (path, hash) in &provenance.visual_input_fnv1a64 {
+        let path = normalize_game_relative_path(path)?;
+        if let Some(previous) = expected_fnv.insert(path.clone(), hash.clone()) {
+            if previous != *hash {
+                return Err(format!(
+                    "CONTENT INCOMPATIBLE: bundle gives conflicting identities for {path}"
+                ));
+            }
+        }
+    }
+    for (path, expected_hash) in expected_fnv {
+        let key = admission
+            .require_used_content(&path)
+            .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
+        let bytes = resolver
+            .read_admitted_used_content(key)
+            .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
+        let actual_hash = fnv1a64_hex(&bytes);
+        if actual_hash != expected_hash {
+            return Err(format!(
+                "CONTENT INCOMPATIBLE: supplied map bundle input {path} was generated from {expected_hash}, but the admitted effective VFS contains {actual_hash}"
+            ));
+        }
+    }
+    Ok(authority)
+}
+
+fn bundle_authority_sha256(authority: &BundleContentAuthority) -> Result<String, String> {
+    let mut unsigned = authority.clone();
+    unsigned.authority_sha256.clear();
+    let bytes = serde_json::to_vec(&unsigned)
+        .map_err(|error| format!("encode bundle content authority: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
 
 /// Admit the selected installation/profile before any renderer or asset
 /// consumer is constructed. The returned resolver embeds the capability, so
@@ -36,7 +208,11 @@ pub fn bind_provider_content(
     let environment = crate::install_paths::playback_environment_from_paths(
         paths,
         &resolver,
-        manifest.required_settings.keys().cloned(),
+        manifest
+            .required_settings
+            .keys()
+            .filter(|key| !portable_content_manifest::is_playback_local_presentation_setting(key))
+            .cloned(),
     )
     .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
     let inventory = resolver
@@ -109,7 +285,11 @@ pub fn validate_timeline_content(
     let environment = crate::install_paths::playback_environment_from_paths(
         paths,
         &resolver,
-        manifest.required_settings.keys().cloned(),
+        manifest
+            .required_settings
+            .keys()
+            .filter(|key| !portable_content_manifest::is_playback_local_presentation_setting(key))
+            .cloned(),
     )
     .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
     let inventory = resolver
@@ -437,6 +617,25 @@ mod tests {
     }
 
     #[test]
+    fn bundle_content_authority_hash_is_canonical_and_mutation_sensitive() {
+        assert_eq!(fnv1a64_hex(b"hello"), "a430d84680aabd0b");
+        let mut authority = BundleContentAuthority {
+            schema: BUNDLE_CONTENT_AUTHORITY_SCHEMA.into(),
+            manifest_digest_sha256: "a".repeat(64),
+            product_modset_sha256: "b".repeat(64),
+            effective_vfs_manifest_sha256: "c".repeat(64),
+            bundle_modset_id: "vanilla".into(),
+            bundle_mod_count: 0,
+            ordered_inputs: Vec::new(),
+            authority_sha256: String::new(),
+        };
+        let first = bundle_authority_sha256(&authority).unwrap();
+        assert_eq!(first, bundle_authority_sha256(&authority).unwrap());
+        authority.bundle_mod_count = 1;
+        assert_ne!(first, bundle_authority_sha256(&authority).unwrap());
+    }
+
+    #[test]
     fn compatible_summary_distinguishes_unused_dlc() {
         let text = compatibility_summary(
             &manifest(),
@@ -717,6 +916,16 @@ graphics={
             .unwrap_err()
             .to_string()
             .contains("rejects unrecorded/default lookup"));
+        let authority =
+            derive_bundle_content_authority(&provider.manifest, &resolver, &admission).unwrap();
+        assert_eq!(authority.bundle_modset_id, "vanilla");
+        assert_eq!(authority.bundle_mod_count, 0);
+        assert_eq!(authority.ordered_inputs.len(), 1);
+        assert_eq!(
+            authority.ordered_inputs[0].normalized_game_relative_path,
+            "common/replay/non_ui.txt"
+        );
+        assert_eq!(authority.authority_sha256.len(), 64);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,8 +1,12 @@
 //! Capture-independent opaque production-target derivation and D3D11 ownership.
 
-use crate::{PreparedProductionMapFrame, PreparedRuntimeDraw, Result};
+use crate::{
+    PreparedProductionMapFrame, PreparedRuntimeDraw, Result, ViewerOwnedMapState, Xmap10TargetPlan,
+    Xmap10TargetRole,
+};
 use replay_core::{PreparedRenderTarget, RenderOutputState, RenderTargetDesc};
 use serde::{Deserialize, Serialize};
+use snapshot::sha256::Sha256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductionMainSceneTargetDesc {
@@ -42,6 +46,136 @@ impl ProductionMainSceneTargetDesc {
         }
         Ok(())
     }
+}
+
+/// Viewer-owned, capture-independent descriptor set for XMAP10's MainScene.
+///
+/// Opaque attachment ordinals are deterministic standalone-viewer allocation
+/// identities owned by XMAP10's target plan. The HDR color descriptor and its
+/// matching full-resolution D24S8 depth descriptor come from that exact plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionMainSceneInputs {
+    pub desc: ProductionMainSceneTargetDesc,
+    pub color: RenderTargetDesc,
+    pub depth: RenderTargetDesc,
+    pub producer_sha256: String,
+}
+
+impl ProductionMainSceneInputs {
+    pub fn validate(&self, viewer: &ViewerOwnedMapState, targets: &Xmap10TargetPlan) -> Result<()> {
+        viewer.validate()?;
+        targets.validate()?;
+        self.desc.validate()?;
+        let main = targets
+            .ordered_targets
+            .iter()
+            .find(|target| target.role == Xmap10TargetRole::MainScene)
+            .ok_or("XMAP10 target plan omitted MainScene")?;
+        let expected_desc = targets.production_main_scene_desc()?;
+        if main.width != viewer.viewport_width
+            || main.height != viewer.viewport_height
+            || self.desc != expected_desc
+            || self.color
+                != render_target_desc(
+                    self.desc.color_attachment_ordinal,
+                    self.desc.color_width,
+                    self.desc.color_height,
+                    self.desc.color_format,
+                    self.desc.color_samples,
+                )
+            || self.depth
+                != render_target_desc(
+                    self.desc.depth_attachment_ordinal,
+                    self.desc.depth_width,
+                    self.desc.depth_height,
+                    self.desc.depth_format,
+                    self.desc.depth_samples,
+                )
+            || self.producer_sha256 != main_scene_inputs_digest(&self.desc, targets)
+        {
+            return Err("viewer-owned XMAP10 MainScene inputs are inconsistent".into());
+        }
+        Ok(())
+    }
+}
+
+/// Derive XMAP10's exact full-resolution MainScene allocation contract from
+/// the live viewer viewport and XMAP10 target plan. No selected-Present target
+/// or recorder camera participates.
+pub fn production_main_scene_inputs_from_viewer(
+    viewer: &ViewerOwnedMapState,
+    targets: &Xmap10TargetPlan,
+) -> Result<ProductionMainSceneInputs> {
+    viewer.validate()?;
+    targets.validate()?;
+    let main = targets
+        .ordered_targets
+        .iter()
+        .find(|target| target.role == Xmap10TargetRole::MainScene)
+        .ok_or("XMAP10 target plan omitted MainScene")?;
+    if main.width != viewer.viewport_width
+        || main.height != viewer.viewport_height
+        || main.dxgi_format != 10
+        || main.mip_levels != 1
+        || main.sample_count != 1
+    {
+        return Err("XMAP10 MainScene target differs from the live viewer contract".into());
+    }
+    let desc = targets.production_main_scene_desc()?;
+    let inputs = ProductionMainSceneInputs {
+        color: render_target_desc(
+            desc.color_attachment_ordinal,
+            desc.color_width,
+            desc.color_height,
+            desc.color_format,
+            desc.color_samples,
+        ),
+        depth: render_target_desc(
+            desc.depth_attachment_ordinal,
+            desc.depth_width,
+            desc.depth_height,
+            desc.depth_format,
+            desc.depth_samples,
+        ),
+        producer_sha256: main_scene_inputs_digest(&desc, targets),
+        desc,
+    };
+    inputs.validate(viewer, targets)?;
+    Ok(inputs)
+}
+
+fn render_target_desc(
+    attachment_ordinal: u32,
+    width: u32,
+    height: u32,
+    dxgi_format_u32: u32,
+    sample_count: u32,
+) -> RenderTargetDesc {
+    RenderTargetDesc {
+        prepared_target: PreparedRenderTarget::OpaqueRenderTarget { attachment_ordinal },
+        width,
+        height,
+        dxgi_format_u32,
+        mip_level: 0,
+        sample_count,
+        sample_quality: 0,
+        persistent_content: None,
+        exact_resource: None,
+    }
+}
+
+fn main_scene_inputs_digest(
+    desc: &ProductionMainSceneTargetDesc,
+    targets: &Xmap10TargetPlan,
+) -> String {
+    Sha256::hex(
+        &serde_json::to_vec(&(
+            "hoi4.xmap10.viewer-main-scene-inputs.a729.v1",
+            desc,
+            &targets.deterministic_sha256,
+        ))
+        .expect("MainScene input identity serialization cannot fail"),
+    )
 }
 
 /// Derive the sole materialized opaque color/depth descriptor from exact
@@ -183,6 +317,7 @@ mod native {
     use super::*;
     use crate::d3d11_device::D3dPtr;
     use std::ptr;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use winapi::shared::dxgitype::DXGI_SAMPLE_DESC;
     use winapi::um::d3d11::{
         ID3D11DepthStencilView, ID3D11Device, ID3D11RenderTargetView, ID3D11Texture2D,
@@ -196,7 +331,13 @@ mod native {
         _depth_texture: D3dPtr<ID3D11Texture2D>,
         depth_dsv: D3dPtr<ID3D11DepthStencilView>,
         desc: ProductionMainSceneTargetDesc,
+        producer_frame_sha256: String,
+        allocation_generation: u64,
+        resource_identity_sha256: String,
+        device_identity: usize,
     }
+
+    static NEXT_MAIN_SCENE_ALLOCATION_SERIAL: AtomicU64 = AtomicU64::new(1);
 
     impl NativeProductionMainSceneTarget {
         /// # Safety
@@ -204,11 +345,30 @@ mod native {
         pub unsafe fn create_on_device(
             device: *mut ID3D11Device,
             desc: ProductionMainSceneTargetDesc,
+            producer_frame_sha256: String,
+            allocation_generation: u64,
         ) -> Result<Self> {
             desc.validate()?;
             if device.is_null() {
                 return Err("cannot create MainScene on a null D3D11 device".into());
             }
+            if !is_sha256(&producer_frame_sha256) || allocation_generation == 0 {
+                return Err(
+                    "MainScene allocation requires an authenticated producer frame and nonzero generation"
+                        .into(),
+                );
+            }
+            let allocation_serial =
+                NEXT_MAIN_SCENE_ALLOCATION_SERIAL.fetch_add(1, Ordering::SeqCst);
+            if allocation_serial == 0 {
+                return Err("MainScene allocation serial overflowed".into());
+            }
+            let resource_identity_sha256 = main_scene_resource_identity_sha256(
+                &desc,
+                &producer_frame_sha256,
+                allocation_generation,
+                allocation_serial,
+            )?;
             let color_desc = texture_desc(
                 &desc,
                 desc.color_format,
@@ -254,6 +414,10 @@ mod native {
                 _depth_texture: depth_texture,
                 depth_dsv,
                 desc,
+                producer_frame_sha256,
+                allocation_generation,
+                resource_identity_sha256,
+                device_identity: device as usize,
             })
         }
 
@@ -276,6 +440,50 @@ mod native {
         pub fn desc(&self) -> &ProductionMainSceneTargetDesc {
             &self.desc
         }
+
+        pub fn producer_frame_sha256(&self) -> &str {
+            &self.producer_frame_sha256
+        }
+
+        pub fn allocation_generation(&self) -> u64 {
+            self.allocation_generation
+        }
+
+        /// Pointer-free identity for this concrete MainScene allocation. The
+        /// generation is supplied by the production owner and is deliberately
+        /// distinct from the transient COM address.
+        pub fn resource_identity_sha256(&self) -> &str {
+            &self.resource_identity_sha256
+        }
+
+        /// In-process same-device admission value. This is never serialized
+        /// or included in a deterministic receipt.
+        pub fn device_identity(&self) -> usize {
+            self.device_identity
+        }
+    }
+
+    fn main_scene_resource_identity_sha256(
+        desc: &ProductionMainSceneTargetDesc,
+        producer_frame_sha256: &str,
+        allocation_generation: u64,
+        allocation_serial: u64,
+    ) -> Result<String> {
+        Ok(Sha256::hex(&serde_json::to_vec(&(
+            "hoi4.production-main-scene-allocation.v1",
+            producer_frame_sha256,
+            allocation_generation,
+            allocation_serial,
+            desc,
+        ))?))
+    }
+
+    fn is_sha256(value: &str) -> bool {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && value.bytes().any(|byte| byte != b'0')
     }
 
     fn texture_desc(
@@ -358,6 +566,36 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("must be distinct"));
+    }
+
+    #[test]
+    fn viewer_main_scene_inputs_follow_xmap10_plan_without_recorder_outputs() {
+        let viewer = ViewerOwnedMapState {
+            viewport_width: 1920,
+            viewport_height: 1080,
+            camera: None,
+            observer_country_id: None,
+            map_mode_id: "viewer.map_mode.unselected".into(),
+            map_mode_selection_epoch: 0,
+            selected_object_ids: Vec::new(),
+            input_revision: 0,
+            animation_time_f32_bits: 1.0f32.to_bits(),
+            frame_delta_seconds_f32_bits: 0.0f32.to_bits(),
+        };
+        let plan = Xmap10TargetPlan::new(1920, 1080).unwrap();
+        let inputs = production_main_scene_inputs_from_viewer(&viewer, &plan).unwrap();
+        assert_eq!(inputs.desc, plan.production_main_scene_desc().unwrap());
+        assert_eq!(inputs.color.dxgi_format_u32, 10);
+        assert_eq!(inputs.depth.dxgi_format_u32, 45);
+        assert_eq!(inputs.color.sample_count, 1);
+        assert_eq!(inputs.depth.sample_count, 1);
+        inputs.validate(&viewer, &plan).unwrap();
+
+        let resized = ViewerOwnedMapState {
+            viewport_width: 1919,
+            ..viewer
+        };
+        assert!(production_main_scene_inputs_from_viewer(&resized, &plan).is_err());
     }
 
     #[test]

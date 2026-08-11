@@ -199,15 +199,10 @@ fn join<'a>(
 }
 
 #[test]
+#[cfg_attr(not(gate_map_bundle), ignore = "the map bundle directory at map_viewer/out/map_bundle")]
 fn frame4700_engine_label_sizes_reproduce() {
-    let dir = bundle_dir();
-    let Some(bundle) = load_bundle(&dir) else {
-        eprintln!(
-            "SKIP frame4700 label size gate: no map bundle at {}",
-            dir.display()
-        );
-        return;
-    };
+    let dir = replay_test_gates::require_existing_dir(bundle_dir());
+    let bundle = load_bundle(&dir).expect("load map bundle");
     let inputs = LabelLawInputs {
         province_ids: &bundle.province_ids,
         width: bundle.width,
@@ -292,12 +287,10 @@ fn frame4700_engine_label_sizes_reproduce() {
 /// weighting the angle to chase it flips near-round countries, so it is NOT
 /// gated tight here).
 #[test]
+#[cfg_attr(not(gate_map_bundle), ignore = "the map bundle directory at map_viewer/out/map_bundle")]
 fn frame4700_engine_anchors_reproduce() {
-    let dir = bundle_dir();
-    let Some(bundle) = load_bundle(&dir) else {
-        eprintln!("SKIP NAME3 anchor gate: no map bundle at {}", dir.display());
-        return;
-    };
+    let dir = replay_test_gates::require_existing_dir(bundle_dir());
+    let bundle = load_bundle(&dir).expect("load map bundle");
     let inputs = LabelLawInputs {
         province_ids: &bundle.province_ids,
         width: bundle.width,

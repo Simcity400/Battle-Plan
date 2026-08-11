@@ -704,6 +704,11 @@ pub fn terrain_mesh_law_validate_corpus_with_resolver(
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
+    mod corpus {
+        include!("../test_gates.rs");
+    }
+
     #[test]
     fn scale_law_matches_captured_lods() {
         assert_eq!(terrain_chunk_scale_for_tile_size(128).unwrap(), 2.0);
@@ -929,28 +934,20 @@ mod tests {
         .is_err());
     }
 
-    /// Corpus byte-exact gate against a real captured session, ENV-GATED so it
-    /// only runs where the captures + installed content exist. Set:
+    /// Corpus byte-exact gate against a real captured session. Optional
+    /// overrides:
     ///   TERRAIN_MESH_LAW_CORPUS_CAPTURE=<session dir>
     ///   TERRAIN_MESH_LAW_CORPUS_GAME=<game dir>
     /// It asserts every terrain-chunk draw regenerates byte-identical.
     #[test]
+    #[cfg_attr(
+        not(gate_terrain_mesh_corpus),
+        ignore = "a terrain chunk corpus and the game install (TERRAIN_MESH_LAW_CORPUS_CAPTURE plus TERRAIN_MESH_LAW_CORPUS_GAME, else preserved gate18_final plus the default install)"
+    )]
     fn corpus_byte_exact_when_session_available() {
-        let (capture, game) = match (
-            std::env::var("TERRAIN_MESH_LAW_CORPUS_CAPTURE"),
-            std::env::var("TERRAIN_MESH_LAW_CORPUS_GAME"),
-        ) {
-            (Ok(c), Ok(g)) => (c, g),
-            _ => {
-                eprintln!(
-                    "skipping corpus gate: set TERRAIN_MESH_LAW_CORPUS_CAPTURE and \
-                     TERRAIN_MESH_LAW_CORPUS_GAME to run it"
-                );
-                return;
-            }
-        };
-        let resolver =
-            GameFileResolver::vanilla(std::path::PathBuf::from(&game)).expect("vanilla resolver");
+        let (capture, game) = corpus::terrain_mesh_corpus()
+            .expect("the terrain mesh corpus gate was true at build time");
+        let resolver = GameFileResolver::vanilla(game).expect("vanilla resolver");
         let library = NativeD3d11TerrainChunkLibrary::load_records_only(&capture)
             .expect("load chunk library records");
         let report =

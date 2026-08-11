@@ -1,11 +1,11 @@
-//! D6 (date/speed clock) + D7 (state tooltip) binding gates
-//! (REPLAY_PRODUCTION_PLAN Phase D).
+//! D6 (date/speed clock) + D7 (state tooltip) binding gates.
 //!
 //! Drives packed snapshot-flavor fixtures through the real `replay_core`
 //! `ReplaySource`/`WorldTimeline` and asserts that the `game_ui::binding`
 //! population reproduces the generator ground truth:
-//!   * D6 — the clock date_time equals the FILE-formatted recording date at
-//!     every frame, and the playback speed step maps onto the topbar buttons.
+//!   * D6 — the clock date_time preserves the FILE-formatted month as a
+//!     localisation template at every frame, and the playback speed step maps
+//!     onto the topbar buttons.
 //!   * D7 — the state tooltip owner/controller flip exactly at the fixture's
 //!     change hour, and an absent state is fail-closed.
 //!
@@ -52,8 +52,8 @@ fn english_month_loc() -> Localisation {
     loc
 }
 
-/// GATE D6a — at every recorded frame the clock date_time equals the FILE
-/// topbar format of that frame's own recording date, and the playback speed
+/// GATE D6a — at every recorded frame the clock date_time preserves the
+/// topbar's month localisation key until composition, and the playback speed
 /// step maps onto the topbar's five speed buttons.
 #[test]
 fn clock_binding_matches_recording_date_and_playback_speed() {
@@ -64,10 +64,29 @@ fn clock_binding_matches_recording_date_and_playback_speed() {
 
     for &hour in &hours {
         let frame = tl.frame(hour).unwrap();
-        // Independent expectation: the frame's own recording date, FILE-formatted.
+        // Independent expectation: preserve the FILE-formatted month as the
+        // exact `$KEY$` token shipping composition must resolve.
         let raw_date = frame.date().expect("fixture frame carries a date");
         let expected_date =
             format_topbar_date_english(raw_date).expect("recording date is well-formed");
+        let expected_date = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
+        .into_iter()
+        .fold(expected_date, |date, month| {
+            date.replace(month, &format!("${month}$"))
+        });
 
         // The clock must reproduce that date for every playback speed step, and
         // the speed field must track the step (0-based) onto buttons 1..=5.
@@ -87,10 +106,9 @@ fn clock_binding_matches_recording_date_and_playback_speed() {
     }
 }
 
-/// GATE D6b — a frame whose localisation lacks a month name still renders (the
-/// English key is the fail-safe), and a dateless lookup path is fail-closed.
-/// (Every fixture frame carries a date, so we exercise the fail-closed path
-/// through the pure formatter on a malformed string.)
+/// GATE D6b — a malformed recording date cannot produce a clock template.
+/// Missing or ambiguous month localisation is refused later by the compositor
+/// provenance gate.
 #[test]
 fn clock_date_is_fail_closed_on_bad_date() {
     assert_eq!(format_topbar_date_english("not-a-date"), None);

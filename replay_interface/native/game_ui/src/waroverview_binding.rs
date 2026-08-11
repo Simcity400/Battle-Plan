@@ -23,7 +23,7 @@
 //! * **POV belligerents** — the countries the POV country is at war with, for
 //!   the POV-highlight (mirrors the diplomacy panel's `wars`).
 //!
-//! ## KNOWN GAPS (fail-closed; filed in `LANE_REPORT.md` / docs)
+//! ## KNOWN GAPS (fail-closed; each is an explicit `None` below)
 //!
 //! * **W1C fields** — participant division count, participant IC, ordered live
 //!   wargoals, and terminal `war_result` are distinct scheduled-reader inputs.
@@ -264,7 +264,9 @@ pub struct WarOverviewBinding {
     pub available: bool,
     /// Live belligerent-pair casualty rows (verbatim from `war_relations`),
     /// filtered to rows whose pair identity (`first`,`second`) is measured.
-    pub war_relations: Vec<WarRelationSummary>,
+    /// Leaf authority is preserved: a measured-empty feed (no wars) stays
+    /// distinct from an absent (pre-v2 stream) or unobtained one.
+    pub war_relations: Leaf<Vec<WarRelationSummary>>,
     /// Exact source order and leaf authority are preserved.
     pub war_objects: Leaf<Vec<WarObjectSummary>>,
     /// Every country in any `at_war==true` pair OR any `war_relations` row,
@@ -280,7 +282,7 @@ impl Default for WarOverviewBinding {
         Self {
             pov_tag: String::new(),
             available: false,
-            war_relations: Vec::new(),
+            war_relations: Leaf::Absent,
             war_objects: Leaf::Absent,
             belligerents: Vec::new(),
             pov_belligerents: Vec::new(),
@@ -297,13 +299,18 @@ fn war_object_summaries(view: &DiplomacyView) -> Leaf<Vec<WarObjectSummary>> {
 }
 
 /// Belligerent-pair casualty rows from the view, dropping any row whose pair
-/// identity is not measured (a row with no tags cannot be attributed).
-fn war_relation_summaries(view: &DiplomacyView) -> Vec<WarRelationSummary> {
-    let rows = match view.war_relations.measured() {
-        Some(rows) => rows,
-        None => return Vec::new(),
+/// identity is not measured (a row with no tags cannot be attributed). The
+/// feed's leaf authority is preserved: `Measured(vec![])` (no wars recorded
+/// this hour) is NOT the same binding state as an `Absent` pre-v2 stream or
+/// an `Unobtained` feed.
+fn war_relation_summaries(view: &DiplomacyView) -> Leaf<Vec<WarRelationSummary>> {
+    let rows = match &view.war_relations {
+        Leaf::Measured(rows) => rows,
+        Leaf::Absent => return Leaf::Absent,
+        Leaf::Unobtained => return Leaf::Unobtained,
     };
-    rows.iter()
+    let summaries = rows
+        .iter()
         .filter_map(|r| {
             let first = r.first.measured()?.clone();
             let second = r.second.measured()?.clone();
@@ -323,20 +330,23 @@ fn war_relation_summaries(view: &DiplomacyView) -> Vec<WarRelationSummary> {
                 ),
             })
         })
-        .collect()
+        .collect();
+    Leaf::Measured(summaries)
 }
 
 /// Union of all tags in the casualty rows plus all tags in any measured
 /// `at_war==true` pair, sorted + de-duplicated.
 fn belligerents(
     view: &DiplomacyView,
-    summaries: &[WarRelationSummary],
+    summaries: &Leaf<Vec<WarRelationSummary>>,
     wars: &Leaf<Vec<WarObjectSummary>>,
 ) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
-    for s in summaries {
-        set.insert(s.first.clone());
-        set.insert(s.second.clone());
+    if let Leaf::Measured(summaries) = summaries {
+        for s in summaries {
+            set.insert(s.first.clone());
+            set.insert(s.second.clone());
+        }
     }
     if let Leaf::Measured(rows) = wars {
         for row in rows {
@@ -467,13 +477,13 @@ mod tests {
         let summaries = war_relation_summaries(&view);
         assert_eq!(
             summaries,
-            vec![WarRelationSummary {
+            Leaf::Measured(vec![WarRelationSummary {
                 first: "GER".to_string(),
                 second: "ENG".to_string(),
                 first_casualties: Some(1200),
                 second_casualties: Some(900),
                 residuals: Leaf::Absent,
-            }]
+            }])
         );
         assert_eq!(
             belligerents(&view, &summaries, &Leaf::Absent),
@@ -485,8 +495,35 @@ mod tests {
     #[test]
     fn absent_view_is_fail_closed() {
         let view = view_with(ViewStatus::DomainAbsent, vec![], Leaf::Absent);
-        assert!(war_relation_summaries(&view).is_empty());
-        assert!(belligerents(&view, &[], &Leaf::Absent).is_empty());
+        assert_eq!(war_relation_summaries(&view), Leaf::Absent);
+        assert!(belligerents(&view, &Leaf::Absent, &Leaf::Absent).is_empty());
+    }
+
+    /// A measured-empty casualty feed (no wars recorded this hour), an absent
+    /// pre-v2 feed, and an unobtained feed are three DIFFERENT binding states,
+    /// never collapsed into one empty vector.
+    #[test]
+    fn war_relations_leaf_states_stay_distinct() {
+        let measured_empty = view_with(ViewStatus::Present, vec![], Leaf::Measured(vec![]));
+        let absent = view_with(ViewStatus::Present, vec![], Leaf::Absent);
+        let unobtained = view_with(ViewStatus::Present, vec![], Leaf::Unobtained);
+        assert_eq!(
+            war_relation_summaries(&measured_empty),
+            Leaf::Measured(vec![])
+        );
+        assert_eq!(war_relation_summaries(&absent), Leaf::Absent);
+        assert_eq!(war_relation_summaries(&unobtained), Leaf::Unobtained);
+
+        // The distinction survives through the frame-level binding shape too.
+        let measured = WarOverviewBinding {
+            war_relations: war_relation_summaries(&measured_empty),
+            ..WarOverviewBinding::default()
+        };
+        let degraded = WarOverviewBinding {
+            war_relations: war_relation_summaries(&unobtained),
+            ..WarOverviewBinding::default()
+        };
+        assert_ne!(measured.war_relations, degraded.war_relations);
     }
 
     #[test]
@@ -508,7 +545,9 @@ mod tests {
                 hostility_reason_defender: Leaf::Absent,
             }]),
         );
-        let s = war_relation_summaries(&view);
+        let Leaf::Measured(s) = war_relation_summaries(&view) else {
+            panic!("measured feed must stay measured")
+        };
         assert_eq!(s[0].first_casualties, None);
         assert_eq!(s[0].second_casualties, None);
     }
@@ -532,7 +571,9 @@ mod tests {
                 hostility_reason_defender: Leaf::Measured("not_applicable".to_string()),
             }]),
         );
-        let rows = war_relation_summaries(&view);
+        let Leaf::Measured(rows) = war_relation_summaries(&view) else {
+            panic!("measured feed must stay measured")
+        };
         let Leaf::Measured(residuals) = &rows[0].residuals else {
             panic!("exact H-B5 tuple was not admitted")
         };

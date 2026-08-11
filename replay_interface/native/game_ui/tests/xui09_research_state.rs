@@ -262,6 +262,18 @@ fn doctrine() -> DoctrineView {
 fn research() -> ResearchView {
     ResearchView {
         tech_count: Leaf::Measured(1),
+        completed_technologies: Leaf::Unobtained,
+        completed_technologies_complete: Leaf::Unobtained,
+        completed_technologies_game_hour_raw: Leaf::Unobtained,
+        completed_technologies_count: Leaf::Unobtained,
+        completed_technologies_ordered_set_sha256: Leaf::Unobtained,
+        completed_technologies_authority: Leaf::Unobtained,
+        technology_states: Leaf::Unobtained,
+        technology_states_complete: Leaf::Unobtained,
+        technology_states_game_hour_raw: Leaf::Unobtained,
+        technology_states_count: Leaf::Unobtained,
+        technology_states_ordered_set_sha256: Leaf::Unobtained,
+        technology_states_authority: Leaf::Unobtained,
         research_slots: Leaf::Measured(2),
         in_progress: Leaf::Measured(vec![progress("tech_a", 0.1, 30)]),
         in_progress_live: Leaf::Measured(vec![
@@ -619,6 +631,116 @@ fn missing_definition_and_completed_active_overlap_fail_closed() {
     assert_eq!(
         admit(
             &overlap,
+            &technology,
+            &doctrine_canvas,
+            &technology_order,
+            &doctrine_order,
+            &definitions(),
+        ),
+        Err(ResearchStateRejection::InvalidTechnologySubset)
+    );
+}
+
+/// R12 F3 — a technology whose `level` is unmeasured is state-UNKNOWN
+/// (`Unavailable`), never a definite `Unresearched`; a live in-progress
+/// receipt (measured authority) wins over the unknown classification; and an
+/// unmeasured level no longer skips name validation or deduplication.
+#[test]
+fn unmeasured_level_is_unknown_not_unresearched_and_names_still_validate() {
+    let (technology, doctrine_canvas) = canvases();
+    let doctrine_order = vec![
+        "doctrine_a".into(),
+        "doctrine_b".into(),
+        "doctrine_c".into(),
+    ];
+    let technology_order: Vec<String> = vec![
+        "tech_done".into(),
+        "tech_a".into(),
+        "tech_b".into(),
+        "tech_mystery_absent".into(),
+        "tech_mystery_unobtained".into(),
+    ];
+
+    let unmeasured = |name: &str, level: Leaf<i64>| ResearchTechnologyRow {
+        name: Leaf::Measured(name.into()),
+        level,
+        date: Leaf::Absent,
+        research_points: Leaf::Absent,
+    };
+    let mut research = research();
+    research.technologies = Leaf::Measured(vec![
+        ResearchTechnologyRow {
+            name: Leaf::Measured("tech_done".into()),
+            level: Leaf::Measured(1),
+            date: Leaf::Measured("1936.1.1.1".into()),
+            research_points: Leaf::Measured(100.0),
+        },
+        unmeasured("tech_mystery_absent", Leaf::Absent),
+        unmeasured("tech_mystery_unobtained", Leaf::Unobtained),
+        // Actively researched AND unmeasured-level: the live producer's
+        // measured receipt is the stronger authority — renders InProgress.
+        unmeasured("tech_b", Leaf::Unobtained),
+    ]);
+    let admitted = admit(
+        &research,
+        &technology,
+        &doctrine_canvas,
+        &technology_order,
+        &doctrine_order,
+        &definitions(),
+    )
+    .expect("unmeasured levels degrade per-node, never reject the view");
+    assert_eq!(admitted.completed_technologies(), ["tech_done"]);
+    assert_eq!(
+        admitted
+            .technology_nodes()
+            .iter()
+            .map(|row| (row.id.as_str(), row.state))
+            .collect::<Vec<_>>(),
+        vec![
+            ("tech_done", ResearchNodeState::Completed),
+            ("tech_a", ResearchNodeState::InProgress),
+            ("tech_b", ResearchNodeState::InProgress),
+            ("tech_mystery_absent", ResearchNodeState::Unavailable),
+            ("tech_mystery_unobtained", ResearchNodeState::Unavailable),
+        ]
+    );
+
+    // An unmeasured level no longer skips NAME validation…
+    let mut nameless = research.clone();
+    nameless.technologies = Leaf::Measured(vec![ResearchTechnologyRow {
+        name: Leaf::Unobtained,
+        level: Leaf::Absent,
+        date: Leaf::Absent,
+        research_points: Leaf::Absent,
+    }]);
+    assert_eq!(
+        admit(
+            &nameless,
+            &technology,
+            &doctrine_canvas,
+            &technology_order,
+            &doctrine_order,
+            &definitions(),
+        ),
+        Err(ResearchStateRejection::InvalidTechnologySubset)
+    );
+
+    // …nor deduplication: the same id with measured and unmeasured levels is
+    // one contradictory identity, not two rows.
+    let mut duplicated = research.clone();
+    duplicated.technologies = Leaf::Measured(vec![
+        ResearchTechnologyRow {
+            name: Leaf::Measured("tech_done".into()),
+            level: Leaf::Measured(1),
+            date: Leaf::Measured("1936.1.1.1".into()),
+            research_points: Leaf::Measured(100.0),
+        },
+        unmeasured("tech_done", Leaf::Absent),
+    ]);
+    assert_eq!(
+        admit(
+            &duplicated,
             &technology,
             &doctrine_canvas,
             &technology_order,

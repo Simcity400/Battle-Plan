@@ -1,4 +1,4 @@
-//! G2 end-to-end playback gate (plan REPLAY_PRODUCTION_PLAN.md §G, item G2).
+//! G2 end-to-end playback gate.
 //!
 //! A scripted, headless run over the committed synthetic recordings that drives
 //! the PUBLIC product/consumer path: open through the shared `replay_core`
@@ -49,7 +49,7 @@ fn fixture_path(rel: &str) -> PathBuf {
 
 /// Deterministic 64-bit FNV-1a. std's `DefaultHasher` is deterministic too, but
 /// a hand-rolled FNV removes any doubt about cross-version stability and lets
-/// the exact hash points be reproduced from the LANE_REPORT.
+/// the exact hash points be reproduced from this source alone.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
@@ -153,8 +153,9 @@ fn effective_spotted_encoding(frame: &WorldFrame, pov: &PovState) -> String {
     }
 }
 
-/// Keep the historical synthetic-fixture hash stable while the product API
-/// now distinguishes exact recorded admission from unavailable legacy input.
+/// Encode unavailable legacy input distinctly from exact recorded admission.
+/// This marker participates in the synthetic-fixture POV hash, so semantic
+/// wording changes intentionally require rebaselining `GOLDEN_CHECKPOINTS`.
 fn render_marker(frame: &WorldFrame, pov: &PovState) -> String {
     match pov.render_status(Some(frame)) {
         PovRenderStatus::Omniscient => "render=OMNISCIENT".to_string(),
@@ -165,7 +166,7 @@ fn render_marker(frame: &WorldFrame, pov: &PovState) -> String {
         } => format!("render=RECORDED:{pov}:{province_slot_count}"),
         PovRenderStatus::Unavailable { pov, .. } => {
             format!(
-                "render=FOWBLOCKED:{pov}:observer POV FoW layer not yet law-certified (plan C8 is tooling-only); showing the omniscient world view, not a faked fog look"
+                "render=FOWUNAVAILABLE:{pov}:typed POV FoW authority is unavailable; no POV presentation is authenticated"
             )
         }
     }
@@ -219,7 +220,7 @@ fn state_hash(frame: &WorldFrame, pov: &PovState, topbar_tags: &[&str]) -> u64 {
 // {1000,1001,2000,3000}; per snapshot tick:
 //   GER: 1000 visible when tick<5 else fogged; 1001 always visible;
 //        2000 & 3000 always fogged.
-//        spotted foreign units: {div:[201:1], fleets:[501:1]} when tick<5, else empty.
+//        spotted foreign units: {div:[201:1], fleets:[501]} when tick<5, else empty.
 //   ENG: 3000 always visible; 2000 visible when tick>=7; 1000 & 1001 fogged.
 // ---------------------------------------------------------------------------
 
@@ -271,10 +272,10 @@ fn expected_eng_visible(tick: usize) -> BTreeSet<u32> {
 /// checkpoints (ticks 0, 5, 7, 11) of `fx_pov_visibility.battleplan` in
 /// `e2e_pov_visibility_open_play_scrub_pov_toggle`.
 const GOLDEN_CHECKPOINTS: [(i64, u64, u64); 4] = [
-    (16959365, 12970066525203477097, 15711531429320946573),
-    (16959370, 12570333928860468155, 5140697575460232613),
-    (16959372, 2494252011149070333, 4646677564537469215),
-    (16959376, 5910307060992128889, 5376290742305234459),
+    (16959365, 12970066525203477097, 15686549579718863552),
+    (16959370, 12570333928860468155, 6550089962123306605),
+    (16959372, 2494252011149070333, 9597366305995786683),
+    (16959376, 5910307060992128889, 9401900488825342487),
 ];
 
 /// Golden per-hour world-view binding hashes for all 12 hours of
@@ -321,17 +322,18 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     let hours: Vec<i64> = timeline.hours().to_vec();
     assert_eq!(hours.len(), 12);
 
-    // 2. Country picker: the recording session carries player countries under
-    //    world.scenario.players, so the observer picker is Available.
-    let choices = match provider.pov_picker() {
-        PovPicker::Available(c) => c,
-        PovPicker::Unavailable(reason) => panic!("picker should be Available: {reason}"),
-    };
-    let tags: Vec<&str> = choices.iter().map(|c| c.tag.as_str()).collect();
-    assert!(
-        tags.contains(&"GER") && tags.contains(&"ENG") && tags.contains(&"SOV"),
-        "picker player tags: {tags:?}"
-    );
+    // 2. Country picker: this legacy fixture predates the complete d18
+    // identity roster. Session-player rows are intentionally not a fallback;
+    // panel selection therefore stays unavailable while the lower-level fog
+    // fixture can still exercise its historical semantic maps.
+    match provider.pov_picker().expect("picker frame must authenticate") {
+        PovPicker::Unavailable(reason) => {
+            assert!(reason.contains("d18"), "typed gap names d18: {reason}");
+        }
+        PovPicker::Available(choices) => {
+            panic!("session-player subset must not become a country picker: {choices:?}")
+        }
+    }
 
     let topbar_tags = ["GER", "ENG", "SOV"];
     // Representative scrub checkpoints (tick index into the 12-hour series):
@@ -468,7 +470,7 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     let frame0 = timeline.state_at(hours[0]).expect("frame0");
     let ger0 = frame0.spotted_units_for("GER");
     assert_eq!(ger0.divisions, Leaf::Measured(vec!["201:1".to_string()]));
-    assert_eq!(ger0.fleets, Leaf::Measured(vec!["501:1".to_string()]));
+    assert_eq!(ger0.fleets, Leaf::Measured(vec!["501".to_string()]));
 
     let frame5 = timeline.state_at(hours[5]).expect("frame5");
     let ger5 = frame5.spotted_units_for("GER");

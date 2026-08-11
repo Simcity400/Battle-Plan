@@ -584,8 +584,6 @@ mod tests {
     use crate::test_support::temp_test_dir;
     use std::path::{Path, PathBuf};
 
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
     fn path_from_rel(root: &Path, rel: &str) -> PathBuf {
         rel.split('/')
             .filter(|part| !part.is_empty())
@@ -972,25 +970,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gated_vanilla_map_static_data_loads_real_install() {
-        let game_dir = Path::new(VANILLA_GAME_DIR);
-        if !game_dir.is_dir() {
-            eprintln!("skipping vanilla map static data test: {VANILLA_GAME_DIR} is absent");
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
 
         let buildings =
-            map_building_placements_from_game_dir(game_dir).expect("parse vanilla buildings.txt");
+            map_building_placements_from_game_dir(&game_dir).expect("parse vanilla buildings.txt");
         let unitstacks =
-            unit_stack_placements_from_game_dir(game_dir).expect("parse vanilla unitstacks.txt");
+            unit_stack_placements_from_game_dir(&game_dir).expect("parse vanilla unitstacks.txt");
         let railways =
-            railway_segments_from_game_dir(game_dir).expect("parse vanilla railways.txt");
+            railway_segments_from_game_dir(&game_dir).expect("parse vanilla railways.txt");
         let supply_nodes =
-            supply_nodes_from_game_dir(game_dir).expect("parse vanilla supply_nodes.txt");
+            supply_nodes_from_game_dir(&game_dir).expect("parse vanilla supply_nodes.txt");
         let weather =
-            weather_positions_from_game_dir(game_dir).expect("parse vanilla weatherpositions.txt");
+            weather_positions_from_game_dir(&game_dir).expect("parse vanilla weatherpositions.txt");
         let show_on_map =
-            show_on_map_buildings_from_game_dir(game_dir).expect("parse vanilla 00_buildings.txt");
+            show_on_map_buildings_from_game_dir(&game_dir).expect("parse vanilla 00_buildings.txt");
 
         assert_eq!(buildings.len(), 66_664);
         assert_eq!(unitstacks.len(), 265_355);

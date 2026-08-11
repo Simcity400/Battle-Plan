@@ -1,4 +1,5 @@
-//! Exact non-UI render-submit transport shared by recorder and standalone replay.
+//! Exact non-UI render and passive global-state transport shared by external
+//! producers and standalone replay.
 //!
 //! This crate contains no extractor or renderer dependency.  It transports the
 //! already-observed XN12/XN13/XN14/XN15 packet surface; it never derives a
@@ -87,6 +88,45 @@ pub use m02_combat::{
     M02_COMBAT_SCHEMA,
 };
 
+mod foundation;
+pub use foundation::{
+    FamilyCoverageRow, FamilyDisposition, FoundationGap, FoundationOperationIdentity,
+    FoundationRenderEnvelope, MapVisualFamily, FOUNDATION_RENDER_SCHEMA,
+};
+
+mod xmap07_snow_mud;
+pub use xmap07_snow_mud::{
+    Xmap07PassiveSnowMudCarrier, XMAP07_PASSIVE_SNOW_MUD_KEY,
+    XMAP07_PASSIVE_SNOW_MUD_SCHEMA, XMAP07_PASSIVE_SNOW_MUD_SCOPE,
+    XMAP07_SNOW_MUD_FADE_UPDATER_INSTRUCTIONS_SHA256, XMAP07_SNOW_MUD_FADE_UPDATER_RVA,
+    XMAP07_SNOW_MUD_FORMAT, XMAP07_SNOW_MUD_SCENE_COPY_INSTRUCTIONS_SHA256,
+    XMAP07_SNOW_MUD_SCENE_COPY_RVA,
+};
+
+mod assigned_stage;
+pub use assigned_stage::{
+    AssignedStage, AssignedStageEdge, AssignedStageIdentity, AssignedStageSchedule,
+    AssignedStageTopology, ASSIGNED_STAGE_SCHEDULE_SCHEMA, ASSIGNED_STAGE_SCHEMA,
+    ASSIGNED_STAGE_TOPOLOGY_SCHEMA,
+};
+
+mod xmap20;
+pub use xmap20::{
+    Xmap20DependencyReceipt, Xmap20DependencyReceipts, XMAP20_CAMERA_OWNER,
+    XMAP20_ENTITY_IDENTITY_OWNER, XMAP20_LIGHTING_OWNER,
+    XMAP20_PRE_PARTICLE_COMPOSITOR_OWNER,
+    XMAP20_PROVIDER_RECEIPTS_SCHEMA, XMAP20_WEATHER_IDENTITY_OWNER,
+};
+
+mod xmap20_effects;
+pub use xmap20_effects::{
+    admit_xmap20_effects, validate_xmap20_admitted_particles, Xmap20ActiveEffect,
+    Xmap20EffectAdmission, Xmap20EffectFrame, Xmap20LifecycleEvent,
+    Xmap20ParticleSubmissionRef, XMAP20_EFFECT_ADMISSION_SCHEMA, XMAP20_EFFECT_FRAME_SCHEMA,
+    XMAP20_EXECUTABLE_SHA256, XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA,
+    XMAP20_PARTICLE_REGISTRY_RVA, XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA,
+};
+
 mod c07_trees;
 pub use c07_trees::{
     C07TreeBucketCarrier, C07TreeCellOrdinalRange, C07TreeContentLibrary, C07TreeContentSelection,
@@ -106,6 +146,14 @@ pub use c07_trees::{
     C07_TREE_UNCAPTURED_CELLS,
 };
 
+mod c07_object_contract;
+pub use c07_object_contract::{
+    MapObjectDrawArguments, MapObjectMaterialFamily, MapObjectMeshGroupContent,
+    MapObjectRenderContent, MapObjectSubmeshContent, PreparedMapObjectDraw,
+    MAP_OBJECT_PARTITION_ALL, MAP_OBJECT_PARTITION_PRIMARY, MAP_OBJECT_PARTITION_WRAP_EAST,
+    MAP_OBJECT_PARTITION_WRAP_WEST,
+};
+
 mod s1_shadow;
 pub use s1_shadow::{
     S1DrawArguments, S1LightDepthSubmission, S1SelectedLight, S1ShadowCarrier, S1ShadowPipeline,
@@ -118,22 +166,30 @@ pub use s1_shadow::{
 
 mod m03_arrows;
 pub use m03_arrows::{
-    M03ArrowDraw, M03ArrowDrawMember, M03ArrowDrawMemberRef, M03ArrowDrawRef, M03ArrowFrame,
-    M03ArrowRow, M03PlanSubtype, M03StableKey, M03Visibility, M03_A729_EXECUTABLE_SHA256,
-    M03_ARROW_SCHEMA, M03_STATIC_PROOF_SHA256,
+    xmap15_semantic_producer_registration_sha256, M03ArrowDraw, M03ArrowDrawMember,
+    M03ArrowDrawMemberRef, M03ArrowDrawRef, M03ArrowFrame, M03ArrowRow, M03PlanSubtype,
+    M03StableKey, M03Visibility, M03_A729_EXECUTABLE_SHA256, M03_ARROW_SCHEMA,
+    M03_STATIC_PROOF_SHA256, Xmap15MapArrowVertex, Xmap15MovementDefinition, Xmap15MovementKey,
+    Xmap15MovementRoute, Xmap15MovementSemanticRow, Xmap15OwnerKind,
+    Xmap15PlanDefinitionSelector, Xmap15PlanGeometryProfile, Xmap15PlanKey,
+    Xmap15PlanMapArrowMesh, Xmap15PlanSemanticRow, Xmap15PreparedFrame, Xmap15PreparedRoute,
+    Xmap15PreparedRow, Xmap15SemanticFrame, XMAP15_SEMANTIC_INPUT_SCHEMA,
+    XMAP15_SEMANTIC_PRODUCER_REGISTRATION_DESCRIPTOR, XMAP15_STATE_FIRST_SCHEMA,
 };
 
 mod rail_supply_arrows;
 pub use rail_supply_arrows::{
     RailSupplyArrowDefinition, RailSupplyArrowDraw, RailSupplyArrowDrawMember,
     RailSupplyArrowDrawMemberRef, RailSupplyArrowDrawPass, RailSupplyArrowDrawRef,
-    RailSupplyArrowFrame, RailSupplyArrowKey, RailSupplyArrowRow, RailSupplyColorRole,
-    RailSupplyConstructionMode, RailSupplyHighlightOverride, RailSupplyVisibility,
+    RailSupplyArrowFrame, RailSupplyArrowGeometryProfile, RailSupplyArrowKey,
+    RailSupplyArrowRow, RailSupplyColorRole, RailSupplyConstructionMode,
+    RailSupplyHighlightOverride, RailSupplyMapArrowMesh, RailSupplyMapArrowMeshDraw,
+    RailSupplyMapArrowVertex, RailSupplyVisibility,
     RAIL_SUPPLY_A729_EXECUTABLE_SHA256, RAIL_SUPPLY_ARROW_SCHEMA,
     RAIL_SUPPLY_GRAPHICS_DEFINES_FILE_SHA256, RAIL_SUPPLY_GRAPHICS_DEFINES_PATH,
     RAIL_SUPPLY_MAPARROWS_FILE_SHA256, RAIL_SUPPLY_MAPARROWS_PATH,
     RAIL_SUPPLY_OWNER_MANIFEST_SHA256, RAIL_SUPPLY_PRODUCER_MANIFEST_SHA256,
-    RAIL_SUPPLY_SELECTOR_MANIFEST_SHA256,
+    RAIL_SUPPLY_PROVINCES_BMP_PATH, RAIL_SUPPLY_SELECTOR_MANIFEST_SHA256,
 };
 
 mod o04_cities;
@@ -199,7 +255,7 @@ pub(crate) mod base64_bytes {
         Ok(decoded)
     }
 
-    pub(super) fn encode(bytes: &[u8]) -> String {
+    pub(crate) fn encode(bytes: &[u8]) -> String {
         let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
         for chunk in bytes.chunks(3) {
             let a = chunk[0];
@@ -221,7 +277,7 @@ pub(crate) mod base64_bytes {
         out
     }
 
-    pub(super) fn decode(encoded: &str) -> Result<Vec<u8>, String> {
+    pub(crate) fn decode(encoded: &str) -> Result<Vec<u8>, String> {
         let bytes = encoded.as_bytes();
         if bytes.len() % 4 != 0 {
             return Err("inline byte payload base64 length is not divisible by four".into());
@@ -3436,7 +3492,99 @@ fn restore_inline_blob_references(
     Ok(())
 }
 
+/// Every `StaticMapDraw` a submit's static map programs carry, in operation
+/// order. Clear operations are not draws and are skipped.
+fn submit_static_program_draws(submit: &RenderSubmit) -> impl Iterator<Item = &StaticMapDraw> {
+    submit
+        .ordered_static_map_programs
+        .iter()
+        .flat_map(|program| program.ordered_operations.iter())
+        .filter_map(|operation| match &operation.command {
+            StaticMapCommand::Draw { draw } => Some(draw),
+            StaticMapCommand::ClearColor { .. } | StaticMapCommand::ClearDepthStencil { .. } => {
+                None
+            }
+        })
+}
+
+/// A `StaticMapDraw` carried outside `RenderSubmit::ordered_static_map_programs`.
+///
+/// `execution` is the render-operation reference under which the submit would
+/// schedule this draw, when the carrier has one. M02 and M03 draws do occupy a
+/// position in the authenticated render-operation order, so their prepared-target
+/// bindings have a real last writer and are resolved during the ordered walk.
+/// UI-pass HUD exact-pipeline draws have no such position at all.
+struct SideCarrierDraw<'a> {
+    owner: &'static str,
+    draw: &'a StaticMapDraw,
+    execution: Option<RenderExecutionRef>,
+}
+
+/// The frame-level carriers a submit needs in order to resolve the draws that
+/// its render-operation order schedules but does not itself contain.
+struct FrameCarriers<'a> {
+    m02: Option<&'a M02CombatFrame>,
+    m03: Option<&'a M03ArrowFrame>,
+    snow_mud: Option<&'a SnowMudTexturePacket>,
+}
+
 impl ProductionRenderFrame {
+    /// Every `StaticMapDraw` carried outside `RenderSubmit::ordered_static_map_programs`.
+    ///
+    /// These carriers admit exactly the same draw type as the static map
+    /// programs and therefore owe exactly the same payload resolution and
+    /// content-authority binding. Whenever a new `StaticMapDraw` carrier is
+    /// added to this schema it must be listed here, or its draws will be
+    /// admitted on structural checks alone.
+    fn side_carrier_static_draws(&self) -> Vec<SideCarrierDraw<'_>> {
+        let mut draws = Vec::new();
+        if let Some(m02) = &self.m02_combat {
+            for indicator in &m02.indicators {
+                for draw in &indicator.draws {
+                    draws.push(SideCarrierDraw {
+                        owner: "M02",
+                        draw: &draw.draw,
+                        execution: Some(RenderExecutionRef::M02 {
+                            output: M02CombatDrawRef {
+                                stable_combat_handle_le_hex: indicator
+                                    .stable_combat_handle_le_hex
+                                    .clone(),
+                                draw_ordinal: draw.draw_ordinal,
+                            },
+                        }),
+                    });
+                }
+            }
+        }
+        if let Some(m03) = &self.m03_arrows {
+            for draw in &m03.draws {
+                draws.push(SideCarrierDraw {
+                    owner: "M03",
+                    draw: &draw.draw,
+                    execution: Some(RenderExecutionRef::M03 {
+                        output: M03ArrowDrawRef {
+                            engine_draw_ordinal: draw.engine_draw_ordinal,
+                        },
+                    }),
+                });
+            }
+        }
+        if let Some(ui_pass) = &self.authenticated_ui_pass {
+            for operation in &ui_pass.ui_pass_operations {
+                if let UiPassOperation::HudCommand { command } = operation {
+                    if let HudCommandExecution::ExactPipeline { draw } = &command.execution {
+                        draws.push(SideCarrierDraw {
+                            owner: "UI-pass HUD",
+                            draw: &draw.exact_draw,
+                            execution: None,
+                        });
+                    }
+                }
+            }
+        }
+        draws
+    }
+
     pub fn decode_json(bytes: &[u8]) -> Result<Self, String> {
         let probe: SchemaProbe = serde_json::from_slice(bytes)
             .map_err(|error| format!("production render JSON: {error}"))?;
@@ -3614,24 +3762,26 @@ impl ProductionRenderFrame {
         if self.presentation_qpc_frequency_hz == 0 {
             return Err("presentation QPC frequency is zero".into());
         }
-        let has_snow_mud_source = self.submits.iter().any(|submit| {
-            submit
-                .ordered_static_map_programs
-                .iter()
-                .flat_map(|program| program.ordered_operations.iter())
-                .filter_map(|operation| match &operation.command {
-                    StaticMapCommand::Draw { draw } => Some(draw),
-                    StaticMapCommand::ClearColor { .. }
-                    | StaticMapCommand::ClearDepthStencil { .. } => None,
-                })
-                .flat_map(|draw| draw.ordered_shader_resources.iter())
-                .any(|binding| {
-                    matches!(
-                        &binding.source,
-                        StaticShaderResourceSource::SnowMudTexture { .. }
-                    )
-                })
-        });
+        // Every carrier that admits a `StaticMapDraw` is a snow/mud source
+        // edge, not only the static map programs. Scanning one carrier made a
+        // `SnowMudTexture` binding in an M02/M03/UI-pass draw invisible, and
+        // the `(None, false)` arm then admitted it with no H packet at all.
+        let has_snow_mud_source = self
+            .submits
+            .iter()
+            .flat_map(submit_static_program_draws)
+            .chain(
+                self.side_carrier_static_draws()
+                    .into_iter()
+                    .map(|carried| carried.draw),
+            )
+            .flat_map(|draw| draw.ordered_shader_resources.iter())
+            .any(|binding| {
+                matches!(
+                    &binding.source,
+                    StaticShaderResourceSource::SnowMudTexture { .. }
+                )
+            });
         match (&self.snow_mud_texture, has_snow_mud_source) {
             (Some(snow_mud), true) => snow_mud.validate_against(self)?,
             (None, false) => {}
@@ -3642,6 +3792,11 @@ impl ProductionRenderFrame {
                 return Err("selected-submit SnowMudTexture source has no H packet".into())
             }
         }
+        let carriers = FrameCarriers {
+            m02: self.m02_combat.as_ref(),
+            m03: self.m03_arrows.as_ref(),
+            snow_mud: self.snow_mud_texture.as_ref(),
+        };
         for submit in &self.submits {
             if last_submit.is_some_and(|v| submit.submit_index <= v) {
                 return Err("submit_index is not strictly increasing".into());
@@ -3659,7 +3814,45 @@ impl ProductionRenderFrame {
                 self.first_sequence,
                 self.last_sequence,
                 &self.authority.effective_vfs_manifest_sha256,
+                &carriers,
             )?;
+        }
+        // Side carriers hold `StaticMapDraw`s that never pass through the
+        // submit's static-program admission, so nothing resolved their named
+        // payloads. The M02/M03 draws the render-operation order schedules were
+        // just resolved in that ordered walk, with their real last-writer
+        // context. What is left here is every side-carrier draw the order does
+        // not schedule, plus the UI-pass HUD draws, which have no position in
+        // that order at all: for those a prepared-target producer is genuinely
+        // unresolvable, and a draw whose named payload cannot be resolved is
+        // refused.
+        let side_carrier_draws = self.side_carrier_static_draws();
+        if !side_carrier_draws.is_empty() {
+            let display_submit = self
+                .submit(selected.selected_candidate_id)
+                .ok_or("selected Present has no retained submit for its overlay carriers")?;
+            let scheduled = display_submit
+                .ordered_render_operations
+                .iter()
+                .collect::<BTreeSet<_>>();
+            for carried in side_carrier_draws {
+                if carried
+                    .execution
+                    .as_ref()
+                    .is_some_and(|execution| scheduled.contains(execution))
+                {
+                    continue;
+                }
+                validate_static_draw_named_payloads(
+                    carried.draw,
+                    &NamedPayloadScope {
+                        submit: display_submit,
+                        order: PreparedTargetOrder::Unordered,
+                        snow_mud: SnowMudResolution::RequirePacket(self.snow_mud_texture.as_ref()),
+                        owner: carried.owner,
+                    },
+                )?;
+            }
         }
         for packet in self
             .submits
@@ -3900,19 +4093,19 @@ impl ProductionRenderFrame {
             }
         }
         if let Some(m03) = &self.m03_arrows {
-            m03.validate()?;
-            if m03.update_index != self.update_index
-                || m03.first_sequence != self.first_sequence
-                || m03.last_sequence != self.last_sequence
-            {
-                return Err("M03 update/sequence frontier does not match production frame".into());
-            }
             for content in &m03.used_content {
                 if content.effective_vfs_manifest_sha256
                     != self.authority.effective_vfs_manifest_sha256
                 {
                     return Err("M03 content authority differs from production frame".into());
                 }
+            }
+            m03.validate()?;
+            if m03.update_index != self.update_index
+                || m03.first_sequence != self.first_sequence
+                || m03.last_sequence != self.last_sequence
+            {
+                return Err("M03 update/sequence frontier does not match production frame".into());
             }
             for draw in &m03.draws {
                 validate_static_draw_vfs_authority(
@@ -4299,6 +4492,7 @@ impl RenderSubmit {
         first_sequence: u64,
         last_sequence: u64,
         authority_manifest_sha256: &str,
+        carriers: &FrameCarriers<'_>,
     ) -> Result<(), String> {
         if self.camera_carrier_ordinal > 2 {
             return Err("render submit camera carrier ordinal is outside 0..=2".into());
@@ -4335,6 +4529,7 @@ impl RenderSubmit {
         validate_static_map_programs(
             &self.ordered_static_map_programs,
             self.ordered_scene_constant_buffers.as_slice(),
+            authority_manifest_sha256,
         )?;
         if let Some(tree_runtime) = &self.tree_runtime {
             tree_runtime
@@ -4445,6 +4640,18 @@ impl RenderSubmit {
             packet.geometry.validate(&packet.pipeline, true)?;
             validate_constant_buffers(&packet.ordered_constant_buffers)?;
             packet.output_state.validate()?;
+            validate_runtime_draw_vfs_authority(
+                &[
+                    &packet.content_identity.definition_content,
+                    &packet.content_identity.texture_content,
+                ],
+                &packet.shader_program,
+                &packet.ordered_texture_bindings,
+                &packet.geometry,
+                &packet.output_state,
+                authority_manifest_sha256,
+                "particle",
+            )?;
             if packet.atlas_rows == 0 || packet.atlas_columns == 0 {
                 return Err("particle atlas dimensions are zero".into());
             }
@@ -4512,6 +4719,18 @@ impl RenderSubmit {
             entity.geometry.validate(&entity.pipeline, false)?;
             validate_constant_buffers(&entity.ordered_constant_buffers)?;
             entity.output_state.validate()?;
+            validate_runtime_draw_vfs_authority(
+                &[
+                    &entity.content_identity.resolved_entity_asset,
+                    &entity.content_identity.mesh,
+                ],
+                &entity.shader_program,
+                &entity.ordered_texture_bindings,
+                &entity.geometry,
+                &entity.output_state,
+                authority_manifest_sha256,
+                "entity",
+            )?;
             if let Skinning::Palette {
                 palette_sha256,
                 palette_3200_bytes,
@@ -4580,7 +4799,7 @@ impl RenderSubmit {
                 "ordered draw list does not cover every particle/entity draw exactly once".into(),
             );
         }
-        validate_unified_render_operations(self)?;
+        validate_unified_render_operations(self, carriers)?;
 
         for direct in &self.direct_visuals {
             if direct.sequence < first_sequence || direct.sequence > last_sequence {
@@ -5304,7 +5523,7 @@ impl StaticMapPassProgram {
     }
 }
 
-fn canonical_json_sha256(value: &impl Serialize) -> Result<String, String> {
+pub fn canonical_json_sha256(value: &impl Serialize) -> Result<String, String> {
     let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
@@ -5312,6 +5531,7 @@ fn canonical_json_sha256(value: &impl Serialize) -> Result<String, String> {
 fn validate_static_map_programs(
     programs: &[StaticMapPassProgram],
     scene_constant_buffers: &[ConstantBufferBinding],
+    authority_manifest_sha256: &str,
 ) -> Result<(), String> {
     if programs.is_empty() {
         return Ok(());
@@ -5367,6 +5587,11 @@ fn validate_static_map_programs(
                     rgba_f32_bits,
                 } => {
                     validate_static_target(target, false)?;
+                    validate_render_target_vfs_authority(
+                        target,
+                        authority_manifest_sha256,
+                        "static map",
+                    )?;
                     if rgba_f32_bits
                         .iter()
                         .any(|bits| !f32::from_bits(*bits).is_finite())
@@ -5387,6 +5612,11 @@ fn validate_static_map_programs(
                         return Err("depth/stencil clear selects neither plane".into());
                     }
                     validate_static_target(target, true)?;
+                    validate_render_target_vfs_authority(
+                        target,
+                        authority_manifest_sha256,
+                        "static map",
+                    )?;
                     let depth = f32::from_bits(*depth_f32_bits);
                     if *clear_depth && (!depth.is_finite() || !(0.0..=1.0).contains(&depth)) {
                         return Err("static depth clear is non-finite or outside [0,1]".into());
@@ -5396,6 +5626,13 @@ fn validate_static_map_programs(
                 }
                 StaticMapCommand::Draw { draw } => {
                     validate_static_map_draw(draw)?;
+                    // The largest draw surface in the schema owes the same
+                    // content-authority binding as the M02/M03/UI-pass draws.
+                    validate_static_draw_vfs_authority(
+                        draw,
+                        authority_manifest_sha256,
+                        "static map",
+                    )?;
                     if draw
                         .output_state
                         .ordered_color_targets
@@ -5438,7 +5675,10 @@ fn validate_static_map_programs(
     Ok(())
 }
 
-fn validate_unified_render_operations(submit: &RenderSubmit) -> Result<(), String> {
+fn validate_unified_render_operations(
+    submit: &RenderSubmit,
+    carriers: &FrameCarriers<'_>,
+) -> Result<(), String> {
     let static_operations = submit
         .ordered_static_map_programs
         .iter()
@@ -5491,7 +5731,21 @@ fn validate_unified_render_operations(submit: &RenderSubmit) -> Result<(), Strin
                     .get(operation_ordinal)
                     .ok_or("unified render order references an unknown static operation")?;
                 if let StaticMapCommand::Draw { draw } = &operation.command {
-                    validate_static_submit_sources(draw, execution, &last_writer, submit)?;
+                    validate_static_draw_named_payloads(
+                        draw,
+                        &NamedPayloadScope {
+                            submit,
+                            order: PreparedTargetOrder::Ordered {
+                                current: execution,
+                                last_writer: &last_writer,
+                            },
+                            // The static-program SnowMud producer join is sealed
+                            // once per frame over the complete reflected consumer
+                            // set; see `validate_selected_present_snow_mud_sources`.
+                            snow_mud: SnowMudResolution::SealedConsumerSet,
+                            owner: "static map",
+                        },
+                    )?;
                 }
                 for target in static_operation_outputs(operation) {
                     last_writer.insert(target.prepared_target.clone(), execution.clone());
@@ -5509,20 +5763,53 @@ fn validate_unified_render_operations(submit: &RenderSubmit) -> Result<(), Strin
                 runtime_index += 1;
                 let output_state = runtime_output_state(submit, output)
                     .ok_or("unified render order references an unknown runtime draw")?;
-                for target in output_state
-                    .ordered_color_targets
-                    .iter()
-                    .chain(output_state.depth_target.iter())
-                {
-                    last_writer.insert(target.prepared_target.clone(), execution.clone());
+                record_output_state_writer(&mut last_writer, output_state, execution);
+            }
+            // M02 and M03 draws live on frame-level carriers but DO occupy a
+            // position in this order, so their prepared-target bindings have an
+            // exact preceding last writer and are resolved here rather than
+            // refused as unresolvable. They are also writers: whatever they
+            // render into is theirs from this point on, exactly as for the
+            // static and runtime arms, or a later read would resolve to a
+            // producer that has since been overwritten. A reference that names
+            // no carrier draw is left to the frame-level carrier-coverage
+            // checks, which report it with their own message.
+            RenderExecutionRef::M02 { output } => {
+                m02_suffix = true;
+                if let Some(draw) = carriers.m02.and_then(|m02| m02.draw(output)) {
+                    validate_static_draw_named_payloads(
+                        &draw.draw,
+                        &NamedPayloadScope {
+                            submit,
+                            order: PreparedTargetOrder::Ordered {
+                                current: execution,
+                                last_writer: &last_writer,
+                            },
+                            snow_mud: SnowMudResolution::RequirePacket(carriers.snow_mud),
+                            owner: "M02",
+                        },
+                    )?;
+                    record_output_state_writer(&mut last_writer, &draw.draw.output_state, execution);
                 }
             }
-            RenderExecutionRef::M02 { .. } => {
-                m02_suffix = true;
-            }
-            RenderExecutionRef::M03 { .. } => {
+            RenderExecutionRef::M03 { output } => {
                 if m02_suffix {
                     return Err("M03 map-arrow operation occurs after M02 UI-overlay suffix".into());
+                }
+                if let Some(draw) = carriers.m03.and_then(|m03| m03.draw(output)) {
+                    validate_static_draw_named_payloads(
+                        &draw.draw,
+                        &NamedPayloadScope {
+                            submit,
+                            order: PreparedTargetOrder::Ordered {
+                                current: execution,
+                                last_writer: &last_writer,
+                            },
+                            snow_mud: SnowMudResolution::RequirePacket(carriers.snow_mud),
+                            owner: "M03",
+                        },
+                    )?;
+                    record_output_state_writer(&mut last_writer, &draw.draw.output_state, execution);
                 }
             }
         }
@@ -5566,18 +5853,70 @@ fn validate_unified_render_operations(submit: &RenderSubmit) -> Result<(), Strin
     Ok(())
 }
 
-fn validate_static_submit_sources(
+/// How a draw's `PreparedTarget` bindings can be resolved to a producer.
+///
+/// Only draws that sit inside the submit's authenticated render-operation order
+/// have a last-writer relation at all. A carrier whose draws are outside that
+/// order (the UI-pass HUD exact pipeline, and the M02/M03 overlay carriers,
+/// whose carrier rows name an operation but never a graph position) has no
+/// authenticated producer for a render-graph resource, so the binding is
+/// unresolvable and is refused rather than admitted unchecked.
+enum PreparedTargetOrder<'a> {
+    Ordered {
+        current: &'a RenderExecutionRef,
+        last_writer: &'a BTreeMap<PreparedRenderTarget, RenderExecutionRef>,
+    },
+    Unordered,
+}
+
+/// How a draw's `SnowMudTexture` bindings join the SnowMudData H packet.
+///
+/// Static-program draws are covered by the frame-level sealed consumer set
+/// (`validate_selected_present_snow_mud_sources` plus the reflected fade
+/// receipt), which joins producer ordinal and payload digest for every one of
+/// them. Side-carrier draws are outside that sealed set, so the H packet must
+/// be named exactly at the binding or the payload cannot be resolved at all.
+enum SnowMudResolution<'a> {
+    SealedConsumerSet,
+    RequirePacket(Option<&'a SnowMudTexturePacket>),
+}
+
+/// Everything this crate can resolve a draw's *named* payloads against.
+struct NamedPayloadScope<'a> {
+    submit: &'a RenderSubmit,
+    order: PreparedTargetOrder<'a>,
+    snow_mud: SnowMudResolution<'a>,
+    owner: &'a str,
+}
+
+/// Join the six payload-naming shader-resource variants to the packets that
+/// actually carry their bytes.
+///
+/// `validate_static_map_draw` is structural only: it checks digest syntax and
+/// descriptors. This is the resolution half, and every carrier that admits a
+/// `StaticMapDraw` must run it. A draw whose named payload cannot be resolved
+/// is refused; nothing is admitted on the strength of a well-formed digest.
+fn validate_static_draw_named_payloads(
     draw: &StaticMapDraw,
-    current: &RenderExecutionRef,
-    last_writer: &BTreeMap<PreparedRenderTarget, RenderExecutionRef>,
-    submit: &RenderSubmit,
+    scope: &NamedPayloadScope<'_>,
 ) -> Result<(), String> {
+    let submit = scope.submit;
+    let owner = scope.owner;
     for binding in &draw.ordered_shader_resources {
         match &binding.source {
             StaticShaderResourceSource::PreparedTarget {
                 target, producer, ..
             } => {
-                if producer == current || last_writer.get(target) != Some(producer) {
+                let PreparedTargetOrder::Ordered {
+                    current,
+                    last_writer,
+                } = &scope.order
+                else {
+                    return Err(format!(
+                        "{owner} draw binds a prepared-target SRV with no authenticated producer position in the render-operation order"
+                    ));
+                };
+                if producer == *current || last_writer.get(target) != Some(producer) {
                     return Err(
                         "prepared-target SRV does not name its exact preceding last writer".into(),
                     );
@@ -5596,9 +5935,9 @@ fn validate_static_submit_sources(
                         && packet.target_binding_identity == *target_binding_identity
                         && packet.upload_order == *upload_order
                 });
-                let packet = matches
-                    .next()
-                    .ok_or("static draw references an absent political texture packet")?;
+                let packet = matches.next().ok_or_else(|| {
+                    format!("{owner} draw references an absent political texture packet")
+                })?;
                 if matches.next().is_some()
                     || packet.sha256 != *payload_sha256
                     || resource.width != packet.width
@@ -5624,6 +5963,18 @@ fn validate_static_submit_sources(
                     return Err("SnowMudTexture source identity/descriptor is incomplete".into());
                 }
                 check_sha256(payload_sha256, None)?;
+                if let SnowMudResolution::RequirePacket(packet) = &scope.snow_mud {
+                    let packet = packet.ok_or_else(|| {
+                        format!("{owner} draw references an absent SnowMudData H packet")
+                    })?;
+                    if packet.producer_ordinal != *producer_ordinal
+                        || packet.payload_sha256 != *payload_sha256
+                    {
+                        return Err(format!(
+                            "{owner} draw SnowMudTexture source is not joined to the selected-Present H packet"
+                        ));
+                    }
+                }
             }
             StaticShaderResourceSource::TiledLightIndex {
                 writer_index,
@@ -5631,7 +5982,7 @@ fn validate_static_submit_sources(
                 resource,
                 ..
             } => {
-                let packet = unique_tiled_light(submit, *writer_index)?;
+                let packet = unique_tiled_light(submit, *writer_index, owner)?;
                 if packet.light_index_map_sha256 != *payload_sha256
                     || resource.width != 64
                     || resource.height != 64
@@ -5647,7 +5998,7 @@ fn validate_static_submit_sources(
                 resource,
                 ..
             } => {
-                let packet = unique_tiled_light(submit, *writer_index)?;
+                let packet = unique_tiled_light(submit, *writer_index, owner)?;
                 if packet.light_data_map_sha256 != *payload_sha256
                     || resource.width != 128
                     || resource.height != 1
@@ -5666,9 +6017,11 @@ fn validate_static_submit_sources(
                     .authenticated_texture_snapshots
                     .iter()
                     .find(|packet| packet.snapshot_sha256 == *snapshot_sha256)
-                    .ok_or(
-                        "static draw references an absent authenticated texture snapshot packet",
-                    )?;
+                    .ok_or_else(|| {
+                        format!(
+                            "{owner} draw references an absent authenticated texture snapshot packet"
+                        )
+                    })?;
                 view.validate()?;
                 view.validate_against(&packet.resource)?;
             }
@@ -5678,21 +6031,42 @@ fn validate_static_submit_sources(
     Ok(())
 }
 
-fn unique_tiled_light(
-    submit: &RenderSubmit,
+fn unique_tiled_light<'a>(
+    submit: &'a RenderSubmit,
     writer_index: u64,
-) -> Result<&TiledLightSubmission, String> {
+    owner: &str,
+) -> Result<&'a TiledLightSubmission, String> {
     let mut matches = submit
         .tiled_lights
         .iter()
         .filter(|packet| packet.writer_index == writer_index);
     let packet = matches
         .next()
-        .ok_or("static draw references an absent tiled-light payload")?;
+        .ok_or_else(|| format!("{owner} draw references an absent tiled-light payload"))?;
     if matches.next().is_some() {
-        return Err("static draw tiled-light writer identity is not unique".into());
+        return Err(format!(
+            "{owner} draw tiled-light writer identity is not unique"
+        ));
     }
     Ok(packet)
+}
+
+/// Record `execution` as the last writer of every target this output state
+/// renders into. Every arm of the unified walk that executes a draw owes this,
+/// or a later prepared-target read resolves to a producer that has since been
+/// overwritten.
+fn record_output_state_writer(
+    last_writer: &mut BTreeMap<PreparedRenderTarget, RenderExecutionRef>,
+    output_state: &RenderOutputState,
+    execution: &RenderExecutionRef,
+) {
+    for target in output_state
+        .ordered_color_targets
+        .iter()
+        .chain(output_state.depth_target.iter())
+    {
+        last_writer.insert(target.prepared_target.clone(), execution.clone());
+    }
 }
 
 fn static_operation_outputs(operation: &StaticMapOperation) -> Vec<&RenderTargetDesc> {
@@ -6011,6 +6385,55 @@ fn collect_static_draw_used_content(draw: &StaticMapDraw) -> Vec<UsedContentKey>
         }
     }
     out
+}
+
+/// Bind every runtime-draw content key (entity or particle) to the frame's own
+/// effective-VFS manifest.
+///
+/// `validate_static_draw_vfs_authority` covers the static-draw shape. Entities
+/// and particles are the other half of the submitted draw surface and carry the
+/// same `UsedContentKey` authorities through a different struct shape; without
+/// this, a submission could name content resolved through a foreign manifest.
+fn validate_runtime_draw_vfs_authority(
+    identity_content: &[&UsedContentKey],
+    shader_program: &ShaderProgram,
+    texture_bindings: &[TextureBinding],
+    geometry: &GeometryBinding,
+    output_state: &RenderOutputState,
+    expected_manifest_sha256: &str,
+    owner: &str,
+) -> Result<(), String> {
+    let check = |content: &UsedContentKey| {
+        if content.effective_vfs_manifest_sha256 == expected_manifest_sha256 {
+            Ok(())
+        } else {
+            Err(format!(
+                "{owner} content authority differs from production frame"
+            ))
+        }
+    };
+    for content in identity_content {
+        check(content)?;
+    }
+    check(&shader_program.source)?;
+    for binding in texture_bindings {
+        check(&binding.content)?;
+        validate_texture_resource_vfs_authority(&binding.resource, &check)?;
+    }
+    for binding in &geometry.ordered_vertex_buffers {
+        validate_buffer_source_vfs_authority(&binding.source, &check)?;
+    }
+    if let Some(binding) = &geometry.index_buffer {
+        validate_buffer_source_vfs_authority(&binding.source, &check)?;
+    }
+    for target in output_state
+        .ordered_color_targets
+        .iter()
+        .chain(output_state.depth_target.iter())
+    {
+        validate_render_target_vfs_authority(target, expected_manifest_sha256, owner)?;
+    }
+    Ok(())
 }
 
 fn validate_texture_resource_vfs_authority<F>(
@@ -7866,10 +8289,9 @@ mod tests {
         draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
         validate_static_map_draw(&draw).expect("complete authenticated snapshot");
 
-        // Dropping the subresources entirely never reaches the snapshot rule:
-        // `validate_authenticated_snapshot_texture_resource` runs the generic
-        // descriptor check first, and that already refuses a texture that does
-        // not carry one subresource per mip*array slice.
+        // Dropping the subresource entirely is refused one layer earlier, by
+        // the generic descriptor rule that a texture must carry every ordered
+        // subresource.
         let mut truncated = packet.clone();
         truncated.resource.ordered_subresources.clear();
         assert!(truncated
@@ -7878,9 +8300,8 @@ mod tests {
             .contains("does not carry every ordered subresource"));
 
         // The snapshot-specific rule is that every retained subresource is
-        // INLINE: a content-range reference would rest the snapshot's identity
-        // on bytes the packet does not itself carry. This descriptor is
-        // otherwise complete and well formed, so it reaches that check.
+        // inline: a content-range reference would let the snapshot's identity
+        // rest on bytes the packet does not carry.
         packet.resource.ordered_subresources[0].source = BufferSource::UsedContentRange {
             content: content("gfx/terrain/terrain_id.dds"),
             source_byte_offset: 0,
@@ -7970,6 +8391,12 @@ mod tests {
                 base_vertex: 0,
             },
         }
+    }
+
+    /// Shared with `c07_trees::tests`, which needs a well-formed pipeline for
+    /// draws whose pipeline the C07 carrier law never inspects.
+    pub(crate) fn shared_test_pipeline() -> PipelineDesc {
+        pipeline()
     }
 
     fn pipeline() -> PipelineDesc {
@@ -8459,6 +8886,8 @@ mod tests {
         let mut draw = exact_m02_carrier().0.indicators[0].draws[0].draw.clone();
         draw.draw_token = "m03.exact-a48-movement".into();
         draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
+        let mut used_content = collect_static_draw_used_content(&draw);
+        used_content.sort();
         let stable_key = M03StableKey::Movement {
             owner_country_id: 1,
             division_id: 42,
@@ -8474,10 +8903,7 @@ mod tests {
             update_index: frame.update_index,
             first_sequence: frame.first_sequence,
             last_sequence: frame.last_sequence,
-            used_content: vec![
-                content("gfx/fx/particle.shader"),
-                content("gfx/textures/particle.dds"),
-            ],
+            used_content,
             rows: vec![M03ArrowRow {
                 event_sequence: frame.last_sequence,
                 stable_key: stable_key.clone(),
@@ -9060,7 +9486,7 @@ mod tests {
         assert!(nested_wrong_vfs
             .validate()
             .unwrap_err()
-            .contains("draw content authority"));
+            .contains("exact cover"));
     }
 
     fn canonical_particle_packet(
@@ -9086,6 +9512,17 @@ mod tests {
 
     #[test]
     fn exact_packet_and_palette_round_trip() {
+        let frame = production_frame_with_static_entities_and_particles();
+        let encoded = frame.encode_json().unwrap();
+        let decoded = ProductionRenderFrame::decode_json(&encoded).unwrap();
+        assert_eq!(decoded, frame);
+        exact_packet_and_palette_round_trip_tail(decoded, encoded);
+    }
+
+    /// One frame carrying all three submitted draw surfaces at once: static map
+    /// programs, entities and particles. Shared by the round-trip test and by
+    /// the content-authority regressions.
+    fn production_frame_with_static_entities_and_particles() -> ProductionRenderFrame {
         let palette = vec![7; 3200];
         let canonical_packet = canonical_particle_packet([0; 16], 2, 4, 0, 0, 4);
         let mut frame = ProductionRenderFrame {
@@ -9308,10 +9745,10 @@ mod tests {
                 output: frame.submits[0].ordered_draws[1].clone(),
             },
         ];
-        let encoded = frame.encode_json().unwrap();
-        let decoded = ProductionRenderFrame::decode_json(&encoded).unwrap();
-        assert_eq!(decoded, frame);
+        frame
+    }
 
+    fn exact_packet_and_palette_round_trip_tail(decoded: ProductionRenderFrame, encoded: Vec<u8>) {
         let mut legacy_mapname = decoded.clone();
         let StaticMapCommand::Draw { draw } =
             &mut legacy_mapname.submits[0].ordered_static_map_programs[0].ordered_operations[1]
@@ -9598,24 +10035,21 @@ mod tests {
         let frame = production_frame_with_m02();
         let encoded = frame.encode_json().unwrap();
 
-        // `decode_value` takes a BARE frame value: production's only caller is
-        // `build_production_render`, which hands it `rest["production_render"]`
-        // out of an already-admitted world document. `encode_json` emits the
-        // wire envelope (schema + wire_schema + inline_blobs + frame) added in
-        // f32125c1, and only `decode_json` unwraps that. Both entry points must
-        // land on the same frame.
+        // decode_value takes a BARE frame value — that is what an admitted
+        // world parse hands it (replay_core reads `rest["production_render"]`).
+        // encode_json emits the wire envelope (schema + wire_schema +
+        // inline_blobs + frame), which only decode_json unwraps. Both entry
+        // points must land on the same frame.
         let bare = serde_json::to_value(&frame).unwrap();
         assert_eq!(
             ProductionRenderFrame::decode_value(&bare).unwrap(),
             ProductionRenderFrame::decode_json(&encoded).unwrap()
         );
 
-        // The envelope is not a frame. `decode_value` must refuse it outright
-        // rather than silently drop the blob table it cannot restore, so the
-        // `deny_unknown_fields` rejection is the contract here, not an obstacle.
+        // The envelope is not a frame, and decode_value must refuse it rather
+        // than silently ignore the blob table it cannot restore.
         let envelope: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert!(envelope.get("wire_schema").is_some());
-        assert!(envelope.get("frame").is_some());
         let error = ProductionRenderFrame::decode_value(&envelope).unwrap_err();
         assert!(error.contains("unknown field `frame`"), "unexpected: {error}");
 
@@ -9964,6 +10398,498 @@ mod tests {
             weather_composition_sha256:
                 "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         }
+    }
+
+    /// Replace the first shader-resource binding of `draw` and reseal it.
+    fn rebind_first_shader_resource(draw: &mut StaticMapDraw, source: StaticShaderResourceSource) {
+        draw.ordered_shader_resources[0].source = source;
+        draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
+    }
+
+    fn dangling_snapshot_source() -> StaticShaderResourceSource {
+        StaticShaderResourceSource::AuthenticatedSnapshot {
+            snapshot_sha256: "e".repeat(64),
+            view: ShaderResourceViewDesc::Texture2d {
+                dxgi_format_u32: 29,
+                most_detailed_mip: 0,
+                mip_levels: 1,
+            },
+        }
+    }
+
+    fn snow_mud_source() -> StaticShaderResourceSource {
+        let texel = vec![0u8; (SNOW_MUD_TEXTURE_WIDTH * SNOW_MUD_TEXTURE_HEIGHT) as usize];
+        StaticShaderResourceSource::SnowMudTexture {
+            producer_ordinal: 1,
+            payload_sha256: hash(&texel),
+            resource: TextureResourceDesc {
+                dimension: TextureResourceDimension::Texture2d,
+                width: SNOW_MUD_TEXTURE_WIDTH,
+                height: SNOW_MUD_TEXTURE_HEIGHT,
+                depth: 1,
+                mip_levels: 1,
+                array_size: 1,
+                dxgi_format_u32: 87,
+                sample_count: 1,
+                sample_quality: 0,
+                usage_u32: 0,
+                bind_flags_u32: 0x8,
+                cpu_access_flags_u32: 0,
+                misc_flags_u32: 0,
+                ordered_subresources: Vec::new(),
+            },
+            view: ShaderResourceViewDesc::Texture2d {
+                dxgi_format_u32: 87,
+                most_detailed_mip: 0,
+                mip_levels: 1,
+            },
+        }
+    }
+
+    /// Apply `source` to the first shader-resource binding of the one draw each
+    /// side carrier owns, resealing whatever the carrier hashes over it.
+    fn frame_with_side_carrier_source(
+        carrier: &str,
+        source: StaticShaderResourceSource,
+    ) -> ProductionRenderFrame {
+        match carrier {
+            "M02" => {
+                let mut frame = production_frame_with_m02();
+                rebind_first_shader_resource(
+                    &mut frame.m02_combat.as_mut().unwrap().indicators[0].draws[0].draw,
+                    source,
+                );
+                frame
+            }
+            "M03" => {
+                let mut frame = production_frame_with_m03_a48_row();
+                let m03 = frame.m03_arrows.as_mut().unwrap();
+                rebind_first_shader_resource(&mut m03.draws[0].draw, source);
+                m03.used_content = m03
+                    .draws
+                    .iter()
+                    .flat_map(|draw| collect_static_draw_used_content(&draw.draw))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                frame
+            }
+            "UI-pass HUD" => {
+                let mut frame = production_frame_with_exact_ui_pass();
+                let command = exact_ui_command_mut(&mut frame, 0);
+                let HudCommandExecution::ExactPipeline { draw } = &mut command.execution else {
+                    panic!("UI-pass ordinal 0 is the exact-pipeline HUD command");
+                };
+                rebind_first_shader_resource(&mut draw.exact_draw, source);
+                rehash_exact_ui_command_and_pass(&mut frame, 0);
+                frame
+            }
+            other => panic!("unknown side carrier {other}"),
+        }
+    }
+
+    /// R4-1. `validate_static_map_draw` is structural only: it checks digest
+    /// syntax and descriptors and never resolves the named payload. Before this
+    /// gate the M02/M03/UI-pass carriers ran only that check, so a draw could
+    /// name a texture snapshot, political texture or tiled-light payload the
+    /// frame did not carry anywhere and still be admitted.
+    #[test]
+    fn side_carrier_draws_refuse_unresolvable_named_payloads() {
+        for carrier in ["M02", "M03", "UI-pass HUD"] {
+            let frame = frame_with_side_carrier_source(carrier, dangling_snapshot_source());
+            assert!(frame
+                .submits
+                .iter()
+                .all(|submit| submit.authenticated_texture_snapshots.is_empty()));
+            let error = frame.validate().unwrap_err();
+            assert_eq!(
+                error,
+                format!("{carrier} draw references an absent authenticated texture snapshot packet"),
+                "{carrier}"
+            );
+
+            let frame = frame_with_side_carrier_source(
+                carrier,
+                StaticShaderResourceSource::PoliticalTexture {
+                    texture_kind: PoliticalTextureKind::Secondary,
+                    target_binding_identity: "ProvinceSecondaryColorMap".into(),
+                    upload_order: 7,
+                    payload_sha256: "e".repeat(64),
+                    resource: texture().resource,
+                    view: texture().view,
+                },
+            );
+            let error = frame.validate().unwrap_err();
+            assert_eq!(
+                error,
+                format!("{carrier} draw references an absent political texture packet"),
+                "{carrier}"
+            );
+
+            let frame = frame_with_side_carrier_source(
+                carrier,
+                StaticShaderResourceSource::TiledLightIndex {
+                    writer_index: 3,
+                    payload_sha256: "e".repeat(64),
+                    resource: texture().resource,
+                    view: texture().view,
+                },
+            );
+            let error = frame.validate().unwrap_err();
+            assert_eq!(
+                error,
+                format!("{carrier} draw references an absent tiled-light payload"),
+                "{carrier}"
+            );
+
+            // A prepared-target SRV names a producing execution. M02 and M03
+            // draws DO occupy a position in the render-operation order, so the
+            // producer is resolved against the real last writer. The UI-pass
+            // HUD exact pipeline has no position there at all, so its producer
+            // is unresolvable and the binding is refused outright.
+            let frame = frame_with_side_carrier_source(
+                carrier,
+                StaticShaderResourceSource::PreparedTarget {
+                    target: PreparedRenderTarget::OpaqueRenderTarget {
+                        attachment_ordinal: 1,
+                    },
+                    resource: prepared_target_resource(),
+                    view: texture().view,
+                    producer: RenderExecutionRef::Static {
+                        operation_ordinal: 1,
+                    },
+                },
+            );
+            let error = frame.validate().unwrap_err();
+            let expected = if carrier == "UI-pass HUD" {
+                format!("{carrier} draw binds a prepared-target SRV with no authenticated producer position in the render-operation order")
+            } else {
+                "prepared-target SRV does not name its exact preceding last writer".to_string()
+            };
+            assert_eq!(error, expected, "{carrier}");
+        }
+    }
+
+    fn prepared_target_resource() -> TextureResourceDesc {
+        let mut resource = texture().resource;
+        resource.ordered_subresources.clear();
+        resource
+    }
+
+    /// R4-1 counter-case. An M03 draw is scheduled by the render-operation
+    /// order, so a prepared-target SRV naming its exact preceding last writer is
+    /// a legitimate frame and must be admitted, not refused as "unordered".
+    #[test]
+    fn ordered_side_carrier_draw_admits_its_exact_preceding_last_writer() {
+        let mut frame = production_frame_with_m03_a48_row();
+        let producer_target = output_state().ordered_color_targets[0].clone();
+
+        let static_texture = texture();
+        let mut program = StaticMapPassProgram {
+            program_ordinal: 0,
+            pass_token: format!("opaque-pass:{}", "a".repeat(64)),
+            ordered_content_keys: vec![],
+            ordered_operations: vec![StaticMapOperation {
+                operation_ordinal: 7,
+                payload_sha256: String::new(),
+                command: StaticMapCommand::Draw {
+                    draw: StaticMapDraw {
+                        draw_token: "terrain-producer".into(),
+                        shader_program: shader(),
+                        ordered_shader_resources: vec![StaticShaderResourceBinding {
+                            stage: static_texture.stage,
+                            slot: static_texture.slot,
+                            semantic_token: static_texture.semantic_token,
+                            source: StaticShaderResourceSource::UsedContent {
+                                content: static_texture.content,
+                                resource: static_texture.resource,
+                                view: static_texture.view,
+                            },
+                        }],
+                        pipeline: pipeline(),
+                        geometry: StaticGeometrySource::Exact {
+                            geometry: entity_geometry(),
+                        },
+                        ordered_constant_buffers: vec![constant_buffer()],
+                        output_state: output_state(),
+                        payload_sha256: String::new(),
+                    },
+                },
+            }],
+            payload_sha256: String::new(),
+        };
+        program.seal_payload_hashes().unwrap();
+        frame.submits[0].ordered_scene_constant_buffers = vec![constant_buffer()];
+        frame.submits[0].ordered_static_map_programs = vec![program];
+        let producer = RenderExecutionRef::Static {
+            operation_ordinal: 7,
+        };
+        frame.submits[0]
+            .ordered_render_operations
+            .insert(0, producer.clone());
+
+        rebind_first_shader_resource(
+            &mut frame.m03_arrows.as_mut().unwrap().draws[0].draw,
+            StaticShaderResourceSource::PreparedTarget {
+                target: producer_target.prepared_target.clone(),
+                resource: prepared_target_resource(),
+                view: texture().view,
+                producer: producer.clone(),
+            },
+        );
+        let m03 = frame.m03_arrows.as_mut().unwrap();
+        m03.used_content = m03
+            .draws
+            .iter()
+            .flat_map(|draw| collect_static_draw_used_content(&draw.draw))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        frame
+            .validate()
+            .expect("an M03 draw may sample the target its exact preceding static draw wrote");
+
+        // Naming any other execution is still refused.
+        let mut wrong = frame;
+        rebind_first_shader_resource(
+            &mut wrong.m03_arrows.as_mut().unwrap().draws[0].draw,
+            StaticShaderResourceSource::PreparedTarget {
+                target: producer_target.prepared_target,
+                resource: prepared_target_resource(),
+                view: texture().view,
+                producer: RenderExecutionRef::Static {
+                    operation_ordinal: 9,
+                },
+            },
+        );
+        assert_eq!(
+            wrong.validate().unwrap_err(),
+            "prepared-target SRV does not name its exact preceding last writer"
+        );
+    }
+
+    /// An M02/M03 draw is a writer as well as a reader. Once it renders into a
+    /// target, a later read of that target must name IT and not the static
+    /// execution it overwrote, or the resolved producer is stale.
+    #[test]
+    fn ordered_side_carrier_draw_becomes_the_last_writer_of_its_own_target() {
+        let mut frame = production_frame_with_m03_a48_row();
+        // Exactly the target the fixture's M03 draw renders into.
+        let producer_target = frame.m03_arrows.as_ref().unwrap().draws[0]
+            .draw
+            .output_state
+            .ordered_color_targets[0]
+            .clone();
+        let stale_static = RenderExecutionRef::Static {
+            operation_ordinal: 7,
+        };
+
+        // M03 draw A (ordinal 23, from the fixture) renders into the target;
+        // M03 draw B (ordinal 24) then samples it.
+        let mut overwriting = frame.m03_arrows.as_ref().unwrap().draws[0].clone();
+        overwriting.engine_draw_ordinal = 24;
+        let first_ordinal = frame.m03_arrows.as_ref().unwrap().draws[0].engine_draw_ordinal;
+        rebind_first_shader_resource(
+            &mut overwriting.draw,
+            StaticShaderResourceSource::PreparedTarget {
+                target: producer_target.prepared_target.clone(),
+                resource: prepared_target_resource(),
+                view: texture().view,
+                producer: stale_static,
+            },
+        );
+        let m03 = frame.m03_arrows.as_mut().unwrap();
+        overwriting.members[0].member_ordinal = 0;
+        m03.rows[0].draw_members.push(M03ArrowDrawMemberRef {
+            engine_draw_ordinal: 24,
+            member_ordinal: 0,
+        });
+        m03.draws.push(overwriting);
+        m03.ordered_draws.push(M03ArrowDrawRef {
+            engine_draw_ordinal: 24,
+        });
+        frame.submits[0]
+            .ordered_render_operations
+            .push(RenderExecutionRef::M03 {
+                output: M03ArrowDrawRef {
+                    engine_draw_ordinal: 24,
+                },
+            });
+
+        // Naming the static execution is stale: M03 draw A wrote the target after it.
+        assert_eq!(
+            frame.validate().unwrap_err(),
+            "prepared-target SRV does not name its exact preceding last writer"
+        );
+
+        // Naming M03 draw A, the exact preceding writer, is admitted.
+        let m03 = frame.m03_arrows.as_mut().unwrap();
+        rebind_first_shader_resource(
+            &mut m03.draws[1].draw,
+            StaticShaderResourceSource::PreparedTarget {
+                target: producer_target.prepared_target,
+                resource: prepared_target_resource(),
+                view: texture().view,
+                producer: RenderExecutionRef::M03 {
+                    output: M03ArrowDrawRef {
+                        engine_draw_ordinal: first_ordinal,
+                    },
+                },
+            },
+        );
+        frame
+            .validate()
+            .expect("an M03 draw may sample the target the preceding M03 draw wrote");
+    }
+
+    /// R4-2. The snow/mud H-packet requirement scanned only the static map
+    /// programs, so a `SnowMudTexture` binding in a side carrier was invisible
+    /// and the `(None, false)` arm admitted it with no producer packet at all.
+    #[test]
+    fn side_carrier_snow_mud_source_requires_the_h_packet() {
+        for carrier in ["M02", "M03", "UI-pass HUD"] {
+            let frame = frame_with_side_carrier_source(carrier, snow_mud_source());
+            assert!(frame.snow_mud_texture.is_none());
+            let error = frame.validate().unwrap_err();
+            assert_eq!(
+                error, "selected-submit SnowMudTexture source has no H packet",
+                "{carrier}"
+            );
+        }
+    }
+
+    /// R4-1 control: the VFS-authority binding that already covered the side
+    /// carriers must keep refusing a foreign manifest, and an untouched frame
+    /// must still validate.
+    #[test]
+    fn side_carrier_controls_still_pass_and_still_refuse_a_foreign_manifest() {
+        for carrier in ["M02", "M03", "UI-pass HUD"] {
+            let mut frame = match carrier {
+                "M02" => production_frame_with_m02(),
+                "M03" => production_frame_with_m03_a48_row(),
+                _ => production_frame_with_exact_ui_pass(),
+            };
+            frame.validate().unwrap_or_else(|error| {
+                panic!("{carrier} control frame must remain valid: {error}")
+            });
+
+            if carrier == "UI-pass HUD" {
+                let command = exact_ui_command_mut(&mut frame, 0);
+                let HudCommandExecution::ExactPipeline { draw } = &mut command.execution else {
+                    panic!("UI-pass ordinal 0 is the exact-pipeline HUD command");
+                };
+                let original = draw.exact_draw.shader_program.source.clone();
+                draw.exact_draw
+                    .shader_program
+                    .source
+                    .effective_vfs_manifest_sha256 = "9".repeat(64);
+                draw.exact_draw.payload_sha256 =
+                    draw.exact_draw.computed_payload_sha256().unwrap();
+                // The HUD command's admission list must keep covering the draw
+                // exactly, so the foreign key has to move with it.
+                for content in &mut command.ordered_effective_vfs_used_content {
+                    if *content == original {
+                        content.effective_vfs_manifest_sha256 = "9".repeat(64);
+                    }
+                }
+                rehash_exact_ui_command_and_pass(&mut frame, 0);
+            } else {
+                if carrier == "M02" {
+                    let foreign =
+                        &mut frame.m02_combat.as_mut().unwrap().indicators[0].draws[0].draw;
+                    foreign.shader_program.source.effective_vfs_manifest_sha256 = "9".repeat(64);
+                    foreign.payload_sha256 = foreign.computed_payload_sha256().unwrap();
+                } else {
+                    let m03 = frame.m03_arrows.as_mut().unwrap();
+                    let original = m03.draws[0].draw.shader_program.source.clone();
+                    m03.draws[0]
+                        .draw
+                        .shader_program
+                        .source
+                        .effective_vfs_manifest_sha256 = "9".repeat(64);
+                    m03.draws[0].draw.payload_sha256 =
+                        m03.draws[0].draw.computed_payload_sha256().unwrap();
+                    for content in &mut m03.used_content {
+                        if *content == original {
+                            content.effective_vfs_manifest_sha256 = "9".repeat(64);
+                        }
+                    }
+                    m03.used_content.sort();
+                }
+            }
+            let error = frame.validate().unwrap_err();
+            assert!(error.contains("content authority"), "{carrier}: {error}");
+        }
+    }
+
+    /// R4-4. `validate_static_map_programs` took no authority parameter, and the
+    /// entity/particle submissions never compared their `UsedContentKey`
+    /// authorities with the frame authority, leaving the largest draw surface
+    /// in the schema unbound to the frame's effective VFS manifest.
+    #[test]
+    fn submitted_draw_content_authority_is_bound_to_the_frame_manifest() {
+        let base = production_frame_with_static_entities_and_particles();
+        base.validate().expect("baseline frame is valid");
+
+        let mut foreign = base.clone();
+        let StaticMapCommand::Draw { draw } = &mut foreign.submits[0].ordered_static_map_programs[0]
+            .ordered_operations[1]
+            .command
+        else {
+            unreachable!("operation 101 is the static draw")
+        };
+        draw.shader_program.source.effective_vfs_manifest_sha256 = "9".repeat(64);
+        foreign.submits[0].ordered_static_map_programs[0]
+            .seal_payload_hashes()
+            .unwrap();
+        assert_eq!(
+            foreign.validate().unwrap_err(),
+            "static map draw content authority differs from production frame"
+        );
+
+        let mut foreign = base.clone();
+        foreign.submits[0].entities[0].ordered_texture_bindings[0]
+            .content
+            .effective_vfs_manifest_sha256 = "9".repeat(64);
+        assert_eq!(
+            foreign.validate().unwrap_err(),
+            "entity content authority differs from production frame"
+        );
+
+        let mut foreign = base.clone();
+        foreign.submits[0].entities[0]
+            .content_identity
+            .mesh
+            .effective_vfs_manifest_sha256 = "9".repeat(64);
+        assert_eq!(
+            foreign.validate().unwrap_err(),
+            "entity content authority differs from production frame"
+        );
+
+        let mut foreign = base.clone();
+        foreign.submits[0].particles[0]
+            .shader_program
+            .source
+            .effective_vfs_manifest_sha256 = "9".repeat(64);
+        assert_eq!(
+            foreign.validate().unwrap_err(),
+            "particle content authority differs from production frame"
+        );
+
+        let mut foreign = base;
+        let particle = &mut foreign.submits[0].particles[0];
+        particle.ordered_texture_bindings[0]
+            .content
+            .effective_vfs_manifest_sha256 = "9".repeat(64);
+        particle
+            .content_identity
+            .texture_content
+            .effective_vfs_manifest_sha256 = "9".repeat(64);
+        particle.content_identity_sha256 = particle.content_identity.computed_sha256().unwrap();
+        assert_eq!(
+            foreign.validate().unwrap_err(),
+            "particle content authority differs from production frame"
+        );
     }
 }
 

@@ -1,7 +1,6 @@
 use super::*;
 use crate::d3d11_device::{
-    native_d3d11_check_void_upload_device, native_d3d11_create_device, D3dPtr,
-    NativeD3d11Device,
+    native_d3d11_check_void_upload_device, native_d3d11_create_device, D3dPtr, NativeD3d11Device,
 };
 use replay_core::RenderOutputState;
 use replay_core::{
@@ -445,9 +444,7 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                 PreparedRuntimeDraw::Particle { packet, .. } => &packet.output_state,
                 PreparedRuntimeDraw::Entity { submission, .. }
                 | PreparedRuntimeDraw::O04City { submission, .. }
-                | PreparedRuntimeDraw::O05Building { submission, .. } => {
-                    &submission.output_state
-                }
+                | PreparedRuntimeDraw::O05Building { submission, .. } => &submission.output_state,
             };
             for target in &output.ordered_color_targets {
                 self.ensure_graph_color(target, None)?;
@@ -655,15 +652,16 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
             (Some(packet), count) if count == packet.snow_mud_fade_consumer_count => {}
             (Some(_), _) => {
                 return Err(
-                    "product SnowMudTexture binding/fade consumer cardinality mismatch"
-                        .into(),
+                    "product SnowMudTexture binding/fade consumer cardinality mismatch".into(),
                 )
             }
-            (None, _) => {
-                return Err("product SnowMudTexture binding has no H packet".into())
-            }
+            (None, _) => return Err("product SnowMudTexture binding has no H packet".into()),
         }
-        match (self.collect_snow_mud_h2, &self.snow_mud_texture, &self.snow_mud_proof) {
+        match (
+            self.collect_snow_mud_h2,
+            &self.snow_mud_texture,
+            &self.snow_mud_proof,
+        ) {
             (false, _, None) | (true, None, None) => {}
             (true, Some(packet), Some(proof))
                 if proof.replaced_binding_count == packet.snow_mud_fade_consumer_count => {}
@@ -685,11 +683,7 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
         ) {
             (None, 0, 0) => {}
             (Some(_), terrain, water) if terrain > 0 && water > 0 => {}
-            _ => {
-                return Err(
-                    "product occupation secondary binding topology is incomplete".into(),
-                )
-            }
+            _ => return Err("product occupation secondary binding topology is incomplete".into()),
         }
         match (
             self.collect_snow_mud_h2,
@@ -698,14 +692,10 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
         ) {
             (false, _, None) | (true, None, None) => {}
             (true, Some(_), Some(proof))
-                if proof.terrain_t6_binding_count
-                    == self.occupation_terrain_t6_binding_count
-                    && proof.water_t3_binding_count
-                        == self.occupation_water_t3_binding_count => {}
+                if proof.terrain_t6_binding_count == self.occupation_terrain_t6_binding_count
+                    && proof.water_t3_binding_count == self.occupation_water_t3_binding_count => {}
             _ => {
-                return Err(
-                    "product occupation secondary H2 proof collection is incomplete".into(),
-                )
+                return Err("product occupation secondary H2 proof collection is incomplete".into())
             }
         }
         unsafe { (*self.backend.context()).Flush() };
@@ -1653,7 +1643,10 @@ mod exact_target_consumer_tests {
             .is_some());
         let message = error.to_string();
         assert!(message.contains("subresource 3"), "{message}");
-        assert!(message.contains("uploaded state was not admitted"), "{message}");
+        assert!(
+            message.contains("uploaded state was not admitted"),
+            "{message}"
+        );
     }
 
     #[test]

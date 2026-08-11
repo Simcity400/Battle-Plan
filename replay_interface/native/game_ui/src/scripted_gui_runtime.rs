@@ -6,7 +6,9 @@
 //! d84 engine-resolved inputs carried in the recording.
 
 use crate::assets::AssetResolver;
-use crate::paradox_text::{parse_file, Entry, Value};
+use crate::paradox_text::{
+    destructive_event_count, diagnose_text_decode, parse_bytes, Entry, Value,
+};
 use crate::{GameUiError, Result};
 use replay_core::{Leaf, ScriptedGuiRuntimeInputs, ScriptedGuiView};
 use serde::{Deserialize, Serialize};
@@ -199,6 +201,11 @@ pub struct ScriptedGuiRegistry {
     pub schema: String,
     pub files: usize,
     pub definitions: BTreeMap<String, ScriptedGuiDefinition>,
+    /// The engine-tolerated single outer EOF closure law is retained as
+    /// positive provenance, not erased. A definition from such a file still
+    /// cannot render unless d84 independently proves that the engine
+    /// instantiated the exact effective-file identity.
+    pub engine_tolerated_eof_closures: Vec<String>,
     pub source_issues: Vec<String>,
 }
 
@@ -219,15 +226,46 @@ pub fn discover_effective_scripted_guis(
 pub fn load_scripted_gui_registry(resolver: &AssetResolver) -> Result<ScriptedGuiRegistry> {
     let files = resolver.list_files_recursive("common/scripted_guis", Some("txt"))?;
     let mut definitions = BTreeMap::new();
+    let mut engine_tolerated_eof_closures = Vec::new();
     let mut source_issues = Vec::new();
     for file in &files {
-        let document = parse_file(&file.path)?;
-        source_issues.extend(document.recoveries.iter().map(|recovery| {
-            format!(
+        let bytes = std::fs::read(&file.path)?;
+        // Byte-level decode damage is invisible to the parser: a U+FFFD
+        // substituted for a destroyed byte is an ordinary character to the
+        // tokenizer, so a damaged `name` or effect string parses with ZERO
+        // recoveries and would otherwise become a trusted definition. Recorded
+        // on `source_issues`, which is already the general source-problem
+        // channel here (it carries unsupported constructs too, not only
+        // recoveries), so no existing status changes meaning.
+        let decode_events = destructive_event_count(&diagnose_text_decode(&bytes));
+        if decode_events != 0 {
+            source_issues.push(format!(
+                "{}:decode destroyed {decode_events} byte sequences",
+                file.rel_path
+            ));
+        }
+        let document = parse_bytes(&bytes);
+        let engine_tolerated_outer_eof = document.recoveries.len() == 1
+            && document.recoveries[0].message
+                == "missing closing brace; accepted end of file"
+            && bytes
+                .iter()
+                .rfind(|byte| !byte.is_ascii_whitespace())
+                .is_some_and(|byte| *byte == b'}');
+        if engine_tolerated_outer_eof {
+            let recovery = &document.recoveries[0];
+            engine_tolerated_eof_closures.push(format!(
                 "{}:{}:{}:{}",
                 file.rel_path, recovery.line, recovery.column, recovery.message
-            )
-        }));
+            ));
+        } else {
+            source_issues.extend(document.recoveries.iter().map(|recovery| {
+                format!(
+                    "{}:{}:{}:{}",
+                    file.rel_path, recovery.line, recovery.column, recovery.message
+                )
+            }));
+        }
         for entry in document.root.fields() {
             let Some(key) = entry.key.as_deref() else {
                 source_issues.push(format!("{}:anonymous top-level construct", file.rel_path));
@@ -270,9 +308,10 @@ pub fn load_scripted_gui_registry(resolver: &AssetResolver) -> Result<ScriptedGu
         }
     }
     Ok(ScriptedGuiRegistry {
-        schema: "hoi4-xui22-scripted-gui-registry-v1".to_string(),
+        schema: "hoi4-xui22-scripted-gui-registry-v2".to_string(),
         files: files.len(),
         definitions,
+        engine_tolerated_eof_closures,
         source_issues,
     })
 }
@@ -284,6 +323,11 @@ fn compile_definition(
     source_issues: &mut Vec<String>,
 ) -> ScriptedGuiDefinition {
     let value = Value::Object(body.to_vec());
+    if value.first_value_ci("dynamic_lists").is_some() {
+        source_issues.push(format!(
+            "{source_file}:{name}.dynamic_lists requires an authenticated ordered array/value/scope carrier"
+        ));
+    }
     let visible = value
         .first_value_ci("visible")
         .map(|value| compile_predicate(value, &format!("{name}.visible")))
@@ -356,7 +400,7 @@ fn compile_definition(
                     };
                     properties.insert(
                         format!("{element_name}.{property_name}"),
-                        compile_property(raw),
+                        compile_property(property_name, raw),
                     );
                 }
             }
@@ -380,7 +424,7 @@ fn compile_definition(
     }
 }
 
-fn compile_property(raw: &str) -> PropertyExpr {
+fn compile_property(property_name: &str, raw: &str) -> PropertyExpr {
     let trimmed = raw.trim();
     if let Some(inner) = trimmed
         .strip_prefix("[?")
@@ -400,8 +444,40 @@ fn compile_property(raw: &str) -> PropertyExpr {
             call: trimmed.to_string(),
         };
     }
+    // Frame and position values may be authored as bare scripted variables.
+    // Treat only numeric literals as literals for these numeric properties;
+    // a non-numeric identifier must be evaluated against d51/d84 state.
+    if matches!(
+        property_name.to_ascii_lowercase().as_str(),
+        "frame" | "x" | "y"
+    ) && trimmed.parse::<f64>().is_err()
+    {
+        return PropertyExpr::Variable {
+            variable: VariableRef::parse(trimmed),
+        };
+    }
     PropertyExpr::Literal {
         value: raw.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod xui22_property_classification_tests {
+    use super::*;
+
+    #[test]
+    fn axis_and_frame_identifiers_are_variables_not_literal_pixels() {
+        for property in ["frame", "x", "y"] {
+            assert!(matches!(
+                compile_property(property, "scripted_gui_value"),
+                PropertyExpr::Variable { variable: VariableRef { name, .. } }
+                    if name == "scripted_gui_value"
+            ));
+            assert!(matches!(
+                compile_property(property, "-12"),
+                PropertyExpr::Literal { value } if value == "-12"
+            ));
+        }
     }
 }
 
@@ -960,28 +1036,27 @@ pub fn evaluate_definition(
     state: &ScriptedGuiRuntimeState,
     captured: Option<&ScriptedGuiRuntimeInputs>,
 ) -> ScriptedGuiEvaluation {
-    let visible = captured_truth(
+    let visible = authoritative_truth(
         definition.visible.evaluate(state),
         captured.map(|v| &v.visible.value),
+        captured.is_some(),
     );
-    let enabled = captured_truth(
+    let enabled = authoritative_truth(
         definition.enabled.evaluate(state),
         captured.map(|v| &v.enabled.value),
+        captured.is_some(),
     );
     let triggers: BTreeMap<String, Truth> = definition
         .triggers
         .iter()
         .map(|(name, predicate)| {
-            let truth = predicate.evaluate(state);
-            let truth = if truth == Truth::Unavailable {
+            let truth = authoritative_truth(
+                predicate.evaluate(state),
                 captured
                     .and_then(|value| value.triggers.get(name))
-                    .map_or(Truth::Unavailable, |value| {
-                        captured_truth(Truth::Unavailable, Some(&value.value))
-                    })
-            } else {
-                truth
-            };
+                    .map(|value| &value.value),
+                captured.is_some(),
+            );
             (name.clone(), truth)
         })
         .collect();
@@ -989,16 +1064,25 @@ pub fn evaluate_definition(
         .properties
         .iter()
         .map(|(name, property)| {
-            let value = match property {
-                PropertyExpr::Literal { value } => EvaluatedProperty::String {
-                    value: value.clone(),
-                    captured: false,
-                },
-                PropertyExpr::Variable { variable } => state
-                    .variable(variable)
-                    .map(|value| EvaluatedProperty::Number { value })
-                    .unwrap_or_else(|| captured_property(captured, name)),
-                PropertyExpr::EngineCall { .. } => captured_property(captured, name),
+            let value = if captured.is_some() {
+                // d84 is the authenticated post-engine result. Authored
+                // literals and replay-side variable evaluation remain useful
+                // only when this generic evaluator is used without a d84
+                // runtime row; they can never override an explicit measured,
+                // absent, or unobtained engine result.
+                captured_property(captured, name)
+            } else {
+                match property {
+                    PropertyExpr::Literal { value } => EvaluatedProperty::String {
+                        value: value.clone(),
+                        captured: false,
+                    },
+                    PropertyExpr::Variable { variable } => state
+                        .variable(variable)
+                        .map(|value| EvaluatedProperty::Number { value })
+                        .unwrap_or(EvaluatedProperty::Unavailable),
+                    PropertyExpr::EngineCall { .. } => EvaluatedProperty::Unavailable,
+                }
             };
             (name.clone(), value)
         })
@@ -1026,25 +1110,29 @@ fn effect_enabled_truth(
     state: &ScriptedGuiRuntimeState,
     captured: Option<&ScriptedGuiRuntimeInputs>,
 ) -> Truth {
-    let definition_enabled = captured_truth(
-        definition.enabled.evaluate(state),
-        captured.map(|value| &value.enabled.value),
-    );
+    if let Some(captured) = captured {
+        let definition_enabled = authoritative_truth(
+            Truth::Unavailable,
+            Some(&captured.enabled.value),
+            true,
+        );
+        let effect_gate = authoritative_truth(
+            Truth::Unavailable,
+            captured
+                .effect_enabled
+                .get(effect_name)
+                .map(|value| &value.value),
+            true,
+        );
+        return truth_and(definition_enabled, effect_gate);
+    }
+    let definition_enabled = definition.enabled.evaluate(state);
     let trigger_name = format!("{effect_name}_enabled");
     let Some(predicate) = definition.triggers.get(&trigger_name) else {
         return truth_and(definition_enabled, Truth::True);
     };
     let local = predicate.evaluate(state);
-    let effect_gate = if local != Truth::Unavailable {
-        local
-    } else {
-        captured
-            .and_then(|value| value.effect_enabled.get(effect_name))
-            .map_or(Truth::Unavailable, |value| {
-                captured_truth(Truth::Unavailable, Some(&value.value))
-            })
-    };
-    truth_and(definition_enabled, effect_gate)
+    truth_and(definition_enabled, local)
 }
 
 fn captured_property(captured: Option<&ScriptedGuiRuntimeInputs>, name: &str) -> EvaluatedProperty {
@@ -1068,9 +1156,13 @@ fn truth_and(left: Truth, right: Truth) -> Truth {
     }
 }
 
-fn captured_truth(local: Truth, captured: Option<&Leaf<bool>>) -> Truth {
-    if local != Truth::Unavailable {
-        return local;
+fn authoritative_truth(
+    local_without_capture: Truth,
+    captured: Option<&Leaf<bool>>,
+    captured_runtime_present: bool,
+) -> Truth {
+    if !captured_runtime_present {
+        return local_without_capture;
     }
     match captured {
         Some(Leaf::Measured(true)) => Truth::True,

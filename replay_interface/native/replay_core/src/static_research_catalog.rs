@@ -76,6 +76,27 @@ impl LocalisationJoinCatalog {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct AuthoredTechnologyFolder {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub x: Option<f64>,
+    #[serde(default)]
+    pub y: Option<f64>,
+    #[serde(default)]
+    pub x_raw: Option<String>,
+    #[serde(default)]
+    pub y_raw: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct AuthoredTechnologyLeadEdge {
+    pub to: String,
+    #[serde(default)]
+    pub research_cost_coeff: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct IdeaTechnologyDefinition {
     pub id: String,
     pub kind: String,
@@ -87,6 +108,26 @@ pub struct IdeaTechnologyDefinition {
     pub folders: Vec<String>,
     #[serde(default)]
     pub picture: Option<String>,
+    #[serde(default)]
+    pub start_year: Option<f64>,
+    #[serde(default)]
+    pub doctrine: bool,
+    #[serde(default)]
+    pub force_use_small_tech_layout: bool,
+    #[serde(default)]
+    pub authored_folders: Vec<AuthoredTechnologyFolder>,
+    #[serde(default)]
+    pub sub_tech_index: Option<i64>,
+    #[serde(default)]
+    pub sub_technologies: Vec<String>,
+    #[serde(default)]
+    pub leads_to: Vec<String>,
+    #[serde(default)]
+    pub leads_to_edges: Vec<AuthoredTechnologyLeadEdge>,
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub xor: Vec<String>,
     #[serde(default)]
     pub literal_name: Option<String>,
     #[serde(default)]
@@ -117,12 +158,27 @@ impl IdeaTechnologyLocalisationCatalog {
         self.technologies.get(id)
     }
 
+    /// Iterate effective recorder-packaged technology definitions in stable
+    /// identifier order for observer-owned replay composition.
+    pub fn technologies(
+        &self,
+    ) -> impl Iterator<Item = (&str, &IdeaTechnologyDefinition)> {
+        self.technologies
+            .iter()
+            .map(|(id, definition)| (id.as_str(), definition))
+    }
+
     pub fn idea_count(&self) -> usize {
         self.ideas.len()
     }
 
     pub fn technology_count(&self) -> usize {
         self.technologies.len()
+    }
+
+    /// Stable effective-VFS technology identities in canonical key order.
+    pub fn technology_ids(&self) -> impl Iterator<Item = &str> {
+        self.technologies.keys().map(String::as_str)
     }
 }
 
@@ -613,6 +669,47 @@ fn validate_definition_map(
                 format!("{expected_kind} row {key:?} has empty/duplicate category or folder"),
             ));
         }
+        if expected_kind == "technology" {
+            let authored_folder_names = definition
+                .authored_folders
+                .iter()
+                .filter_map(|folder| folder.name.as_deref())
+                .collect::<BTreeSet<_>>();
+            let edge_targets = definition
+                .leads_to_edges
+                .iter()
+                .map(|edge| edge.to.as_str())
+                .collect::<Vec<_>>();
+            if !unique_nonempty(&definition.sub_technologies)
+                || !unique_nonempty(&definition.leads_to)
+                || !unique_nonempty(&definition.xor)
+                || authored_folder_names.len() != definition.authored_folders.len()
+                || edge_targets
+                    != definition
+                        .leads_to
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                || definition.sub_tech_index.is_some_and(|index| index < 0)
+                || definition.authored_folders.iter().any(|folder| {
+                    folder.name.as_deref().is_none_or(str::is_empty)
+                        || folder.x.is_some() != folder.y.is_some()
+                        || folder.x.is_some_and(|value| !value.is_finite())
+                        || folder.y.is_some_and(|value| !value.is_finite())
+                })
+                || definition.leads_to_edges.iter().any(|edge| {
+                    edge.to.trim().is_empty()
+                        || edge
+                            .research_cost_coeff
+                            .is_some_and(|value| !value.is_finite())
+                })
+            {
+                return Err(StaticResearchCatalogError::new(
+                    artifact,
+                    format!("technology row {key:?} has invalid authored topology"),
+                ));
+            }
+        }
         match definition.localisation_status.as_str() {
             "resolved" => {
                 let resolved_key = definition.resolved_loc_key.as_deref().ok_or_else(|| {
@@ -666,6 +763,36 @@ fn validate_definition_map(
                     artifact,
                     format!("{expected_kind} row {key:?} has unknown status {status:?}"),
                 ));
+            }
+        }
+    }
+    if expected_kind == "technology" {
+        let mut subtechnology_owners = BTreeMap::<&str, &str>::new();
+        for (source, definition) in definitions {
+            for target in definition
+                .sub_technologies
+                .iter()
+                .chain(&definition.leads_to)
+                .chain(&definition.xor)
+            {
+                if !definitions.contains_key(target) {
+                    return Err(StaticResearchCatalogError::new(
+                        artifact,
+                        format!(
+                            "technology row {source:?} references absent technology {target:?}"
+                        ),
+                    ));
+                }
+            }
+            for child in &definition.sub_technologies {
+                if let Some(prior) = subtechnology_owners.insert(child, source) {
+                    return Err(StaticResearchCatalogError::new(
+                        artifact,
+                        format!(
+                            "subtechnology {child:?} is owned by both {prior:?} and {source:?}"
+                        ),
+                    ));
+                }
             }
         }
     }

@@ -7,13 +7,13 @@
 
 use crate::{bind_exact_rail_d80_draws, ExactRailD80Binding, GameFileResolver, Result};
 use replay_core::{
-    AuthenticatedCameraCarrier, AuthenticatedUiPass, BufferSource, ConstantBufferBinding, ContentManifest, EntitySubmission,
-    C07TreeRuntimeCarrier, HudCommandExecution, M02CombatFrame,
-    M03ArrowFrame, O04CityFrame, O05BuildingFrame, ParticlePacket, PoliticalTexturePacket, ProductionRenderFrame,
-    RailSupplyArrowFrame,
-    RenderExecutionRef, RenderOutputRef, RenderSubmit, RequiredContentKind, StaticGeometrySource, StaticMapCommand,
+    AuthenticatedCameraCarrier, AuthenticatedUiPass, BufferSource, C07TreeRuntimeCarrier,
+    ConstantBufferBinding, ContentManifest, EntitySubmission, HudCommandExecution, M02CombatFrame,
+    M03ArrowFrame, O04CityFrame, O05BuildingFrame, ParticlePacket, PoliticalTexturePacket,
+    ProductionRenderFrame, RailSupplyArrowFrame, RenderExecutionRef, RenderOutputRef, RenderSubmit,
+    RequiredContentKind, S1ShadowCarrier, StaticGeometrySource, StaticMapCommand,
     StaticMapPassProgram, StaticShaderResourceSource, TiledLightSubmission, UiPassOperation,
-    UsedContentKey, ValidatedContentAdmission, S1ShadowCarrier,
+    UsedContentKey, ValidatedContentAdmission,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -211,14 +211,14 @@ pub struct PreparedProductionMapFrame {
     /// An empty vector is authoritative unavailability, never permission to
     /// synthesize pipeline state from vanilla paths or retained captures.
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
-    pub authenticated_texture_snapshots:
-        Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
+    pub authenticated_texture_snapshots: Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
     /// D81 semantics joined to engine-built D80 railroad draws through the
     /// authenticated a729 registration producer. `None` never authorizes
     /// reconstructed centroid ribbons or shader-name inference.
     pub rail_ribbon: Option<ExactRailD80Binding>,
-    /// Exact selected-Present runtime SnowMudData packet consumed by static
-    /// bindings carrying `StaticShaderResourceSource::SnowMudTexture`.
+    /// Legacy captured-submit evidence packet. The shipping XMAP07/XMAP22
+    /// product path never reads this field; it consumes the passive global
+    /// `Xmap07PassiveSnowMudCarrier` instead.
     pub snow_mud_texture: Option<replay_core::SnowMudTexturePacket>,
     /// C07 operation join admitted against the selected submit. The D3D
     /// preparation/execution path must retain every referenced static draw.
@@ -959,7 +959,9 @@ impl ProductionMapRenderer {
                 .cloned()
                 .collect::<Vec<_>>();
             if complete_entity_outputs != building.referenced_outputs {
-                return Err("O05 building outputs are not the complete entity-instance cover".into());
+                return Err(
+                    "O05 building outputs are not the complete entity-instance cover".into(),
+                );
             }
             for output in &building.referenced_outputs {
                 let submission = entity_submission(submit, output)
@@ -1165,7 +1167,10 @@ fn ordered_draws(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
-    if o04_outputs.keys().any(|output| o05_outputs.contains_key(output)) {
+    if o04_outputs
+        .keys()
+        .any(|output| o05_outputs.contains_key(output))
+    {
         return Err("one entity output is classified as both O04 city and O05 building".into());
     }
     let mut particles = BTreeMap::new();
@@ -1260,6 +1265,11 @@ fn entity_submission<'a>(
 }
 
 fn collect_particle_content<'a>(particle: &'a ParticlePacket, out: &mut Vec<&'a UsedContentKey>) {
+    // XMAP20: the selected particle definition and atlas winner are semantic
+    // inputs, not decorative draw provenance. Reopen both through the admitted
+    // effective VFS even when a legacy binding happens to repeat the texture.
+    out.push(&particle.content_identity.definition_content);
+    out.push(&particle.content_identity.texture_content);
     out.push(&particle.shader_program.source);
     for texture in &particle.ordered_texture_bindings {
         out.push(&texture.content);

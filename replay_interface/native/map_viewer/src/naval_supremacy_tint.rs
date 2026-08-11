@@ -1,5 +1,11 @@
 //! Sea-zone naval-supremacy tint (plan item **C6**).
 //!
+//! This module is a legacy diagnostic surface. Production XMAP18 does not use
+//! its derived supremacy curve. It consumes exact observer/region 0/128/255
+//! control and contested-direction codes; XMAP05 writes them to
+//! GradientBorderChannel2.r/a for the shipped `dominance_fx_apply` shader.
+//! Capture-gated notes below apply only to this retained diagnostic path.
+//!
 //! The naval / strategic-navy map mode colours each sea zone (strategic region
 //! containing sea provinces) by the side that holds naval supremacy there. This
 //! module owns the *data law* for that overlay:
@@ -12,7 +18,7 @@
 //!    `CGradientBorderManager` / `CGradientBorder::CFillBufferThreaded`). This
 //!    module produces the per-zone RGBA the GB field is keyed with; the pixel
 //!    rasterisation + parity vs a captured supremacy frame is capture-gated and
-//!    deferred (see `LANE_REPORT.md`).
+//!    deferred.
 //! 2. **Supremacy -> status -> tint** — given a per-region supremacy snapshot
 //!    (controller + supremacy value, shaped exactly like `replay_core`'s
 //!    `NavalSupremacyRow`, requirements item 5 / extractor D56) plus the country
@@ -31,7 +37,7 @@
 //! `Some`, an absent/`Unobtained` leaf to `None`. The `state` (tri-state) leaf
 //! of the row is a **POV-relative** overlay (friendly/enemy/contested relative
 //! to the viewed country) and is not used by the omniscient-observer tint here —
-//! see [`PovNavalRelation`] and the E6 note in `LANE_REPORT.md`. This module
+//! see [`PovNavalRelation`]. This module
 //! deliberately does **not** depend on `replay_core`; the live wiring
 //! (`NavalSupremacyRow` -> `ZoneSupremacyInput`) belongs at the `replay_app`
 //! integration seam, keeping `map_viewer` decoupled from the crate the parallel
@@ -249,7 +255,7 @@ pub fn classify_naval_regions<'a>(
 /// resolver (`map/strategicregions` + `map/definition.csv`).
 pub fn naval_region_set_from_resolver(resolver: &GameFileResolver) -> Result<NavalRegionSet> {
     let region_files =
-        resolver.resolve_dir_files(NAVAL_SUPREMACY_STRATEGIC_REGIONS_DIR, Some("txt"))?;
+        resolver.resolve_dir_files_recursive(NAVAL_SUPREMACY_STRATEGIC_REGIONS_DIR, Some("txt"))?;
     let (region_to_provinces, region_meta, _province_to_region) =
         crate::load_strategic_regions(&region_files)?;
     let definition_csv = resolver.resolve_required(
@@ -596,11 +602,12 @@ NDefines = {
     /// Vanilla parse gate (skips without `BATTLE_PLAN_GAME_DIR`). Asserts the sea-zone
     /// count against the shipped files.
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_naval_region_parse() {
-        let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!("gate_vanilla_naval_region_parse: BATTLE_PLAN_GAME_DIR unset; skipped");
-            return;
-        };
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("resolver");
         let set = naval_region_set_from_resolver(&resolver).expect("naval region set");
         assert_eq!(

@@ -1,25 +1,35 @@
 # WEATHER_LAW — weather overlay rendering law (WEATHER1)
 
+> Ranks under `documents/DECISIONS.md`, which is the authority on intent; where this
+> document disagrees with it, `DECISIONS.md` wins. Status: **XMAP19 production
+> implementation** — exact-a729 runtime selection/visibility laws, a
+> presentation-independent cold-seek carrier, effective-VFS content closure,
+> foundation preparation, and normal app admission are implemented.
+
 Mechanism-correct **render** law for the game airborne weather overlay (clouds,
 rain, snowfall, blizzard, lightning storm, sandstorm), derived **files-first**
 from the shipped installed content via the mod-aware `GameFileResolver`. This is the
 RENDERING law: given a weather *type* per strategic region, how the engine
-*draws* the overlay. The per-region *current type* is runtime state supplied by
-the extractor feed (`REPLAY_DATA_REQUIREMENTS` item 6), NOT invented here.
-
-Analysis + synthesis only — **no `replay_app` render wiring**. Threading the
-overlay into the live pass is a later job.
+*draws* the overlay. Exact D24 supplies the current per-region gameplay state.
+The only additional runtime input is the two-word host-seeded visual epoch
+recorded on initial baseline and airborne-code changes. Recorder camera and
+selected-Present submissions are forbidden production authorities.
 
 Code: `replay_interface/native/map_viewer/src/weather_law.rs`, exported by
 `replay_interface/native/map_viewer/src/lib.rs`.
 
-Shipped sources of truth (game root
+Vanilla examples (game root
 `<local-path> of Iron IV\`):
 `common/weather.txt`, `gfx/entities/weather_entities.asset`,
 `gfx/entities/particles.gfx`, `gfx/particles/environment/*_clouds.asset`,
 `gfx/particles/*.dds`, `gfx/FX/particle.shader`, `gfx/FX/standardfuncsgfx.fxh`,
 `map/weatherpositions.txt`, `map/strategicregions/*.txt`,
 `common/defines/00_graphics.lua`.
+Production does not bind the example entity, particle-registration, or shader
+filenames. It enumerates the admitted effective `gfx/entities/**/*.asset`,
+`gfx/entities/**/*.gfx`, `gfx/particles/**/*.asset`, and `gfx/FX/**/*.shader`
+namespaces, resolves every referenced authored name exactly once, and retains
+the real winning `UsedContentKey` for each source.
 
 ---
 
@@ -47,11 +57,13 @@ Shipped sources of truth (game root
 - **Deterministic from files + a supplied type:** sprite texture, linear vertex
   color, blend mode, billboard size, spawn positions, and the `WEATHER_*` camera
   fade constants.
-- **NOT derivable from files (extractor / capture state):** the per-region
-  current weather type & intensity, the live per-particle ages (hence exact
-  `smoke_fade` alpha), the camera height (hence the fade factor), the animated
-  turbulence offsets, and the exact billboard perspective (runtime
-  ViewProjection CB). See the UNTRACED list.
+- **Runtime inputs:** D24 supplies exact current flags/intensity/expiry; the
+  XMAP19 lifecycle carrier supplies only the host-seeded visual epoch; XMAP03
+  supplies viewer camera; XMAP09 supplies lighting; compile-time distance fog
+  comes from the admitted particle-shader closure; XMAP10 owns final
+  composition. XMAP19 supplies XMAP20 an exact authored-trigger index; XMAP20
+  owns generic particle simulation and execution. Particle age/variance remains
+  normal renderer temporal state, not captured presentation authority.
 
 ---
 
@@ -89,28 +101,53 @@ per type carries `small = yes`.
 post-effects, not airborne particles — `arctic_water`/snow ground is SNOW1's
 `snow_law`, mud is the flooded static modifier.)
 
-### 2.2 Entity → particle (`gfx/entities/weather_entities.asset`)
+### 2.2 Entity → particle (effective `gfx/entities/**/*.asset`)
 
 `entity = { name = "rain_clouds_entity" … state = { event = { … particle =
 "rain_clouds_particle" … } } }`. The entity's `idle` state fires the named
 `pdxparticle`.
 
-### 2.3 Particle name → file (`gfx/entities/particles.gfx`)
+### 2.3 Particle name → file (effective `gfx/entities/**/*.gfx`)
 
 `pdxparticle = { name = "rain_clouds_particle" type = "rain_clouds_file" }`. The
 `type` is the `name=` of the `particle = { … }` block in the `.asset`.
 
-### 2.4 File suffix convention
+### 2.4 Particle-definition discovery
 
-For the **weather cloud** files this law resolves, `<X>_clouds_file` →
-`gfx/particles/environment/<X>_clouds.asset` (e.g. `rain_clouds_file` →
-`rain_clouds.asset`). Verified for every vanilla `*_clouds_file`. NOTE
-(Codex-flagged): this `environment/` directory convention is **not** universal
-for all particle files — e.g. `cloud_effect_file` lives at
-`gfx/particles/vehicles/cloud_effect.asset`, not `environment/`. The weather
-resolver only ever follows `*_clouds_file` entries reached through the
-`weather_effects` chain, so the convention holds for every path it takes; a
-future non-weather particle would need its own `pdxparticle`-declared path.
+Production does not infer a filename from `<type>_file`. It first resolves the
+named entity and every `pdxparticle` registration uniquely across their complete
+admitted effective namespaces. It then indexes admitted
+effective `gfx/particles/**/*.asset` definitions by their authored
+`particle.name`, counts every matching block (including duplicates in one
+file), requires exactly one definition, then closes the referenced texture and
+uniquely resolved shader-Effect translation-unit graph. Shader Effects are
+likewise counted by definition rather than by containing file. This preserves
+mods that move or replace any definition without relying on a vanilla directory
+convention, while refusing ambiguous same-file duplicates. Before parsing, the
+adapter compares every admitted namespace with an independent effective-VFS
+path enumeration and refuses an incomplete admission; an omitted mod file
+therefore cannot hide a duplicate or overriding definition. Effective
+Clausewitz namespace sources use the repository's lossless single-byte decode,
+so valid mod bytes are retained rather than rejected as non-UTF-8. The prepared
+`hoi4.xmap19.weather-atmosphere.a729.v2` program keeps the actual entity source,
+particle-registration sources, particle-asset paths, shader Effect names,
+shader paths, and admitted closure identities.
+
+### 2.5 Authored trigger identity supplied to XMAP20
+
+For each selected primary/fading producer ID, XMAP19 indexes the exact selected
+entity `default_state`. `authored_event_index` is zero-based among every
+`event={}` block, including sound-only blocks. `authored_effect_index` is
+zero-based among the particle and sound invocations inside that event, in source
+order. A particle trigger is therefore queried by the exact triple
+`(producer_instance_id, authored_event_index, authored_effect_index)`.
+
+The result preserves the admitted entity-file identity, entity/state names,
+particle token, and optional authored `node`, `time`, `keep_particle`, and
+`trigger_once` values. Omitted values remain absent; XMAP19 does not manufacture
+a root node, time, or boolean default. The trigger is bound to the XMAP19
+prepared-frame digest, and XMAP20 validates the returned row against its
+unconditional lifecycle event before simulating it.
 
 ## 3. The cloud subsystem (`gfx/particles/environment/*_clouds.asset`)
 
@@ -137,10 +174,12 @@ Sprite DDS are all **DXT5/BC3** (alpha in the texture): `cloud_6.dds`,
 carry `sort="depth"` (`lightning_storm_clouds.asset:7`) — the engine depth-sorts
 those particles back-to-front. The non-lightning cloud subsystems have no
 `sort`. The `alpha`/`size` asset fields also carry a **variance** term (e.g.
-`alpha={ 180,smoke_fade 20 }`, `size={ 60.5 20 }`); this law uses the **mean**
-(first number) and treats the variance + per-particle spread as runtime spawn
-state (U2). `snow_storm_clouds` additionally has a `planar` `sidewind` force —
-motion sim, not render (U2).
+`alpha={ 180,smoke_fade 20 }`, `size={ 60.5 20 }`). The older static-overlay
+diagnostic can summarize the first number, but it is not a production renderer
+or promotion authority. Production XMAP19 closes the complete admitted asset
+and XMAP20 applies its authored variance, forces, emission, and temporal
+simulation without a representative mean/peak substitute. `snow_storm_clouds`
+additionally has a `planar` `sidewind` force inside that generic simulation.
 
 ## 4. The pixel-shader color law (`gfx/FX/particle.shader`) — EXACT
 
@@ -157,8 +196,9 @@ motion sim, not render (U2).
 - Pixel: `return tex2D( DiffuseMap, In.vUV0 ) * vColor` (`particle.shader:168`)
   — the linear sprite texel (RGB + its own alpha) times the linear vertex color.
 - `FOG` define (on `ParticleAlphaBlend`, **off** `ParticleAdditive`) applies
-  `ApplyDistanceFog` to RGB before return (`particle.shader:189-191`) — see
-  UNTRACED U4.
+  `ApplyDistanceFog` to RGB before return (`particle.shader:189-191`). Its
+  `FOG_COLOR`, `FOG_BEGIN`, `FOG_END`, and `FOG_MAX` are exact compile-time
+  values from the admitted effective `constants.fxh`.
 - Blend states (`WriteMask = "RED|GREEN|BLUE"` — particles never write dest
   alpha):
   - `ParticleAlphaBlend` : Src=`SRC_ALPHA` Dst=`INV_SRC_ALPHA` (`:200-206`)
@@ -172,9 +212,9 @@ Ported in `ParticleBlend::blend_over` and unit-tested against the D3D equations.
 Each cloud `.asset` has `animation = { name="smoke_fade" curve={ x0 y0 x1 y1 … }
 op="MUL" time="life" }`. The curve is **piecewise-linear**; it MUL-modulates the
 base alpha over each particle's own life fraction. `evaluate_animation_curve`
-samples it; `animation_curve_peak` returns its max. For the shipped clouds the
-curve peaks at 1.0, so the representative (brightest) frame uses the base alpha.
-The **live** per-particle age is runtime state (UNTRACED U2).
+and `animation_curve_peak` remain diagnostic inspection helpers only.
+Production XMAP20 evaluates the complete admitted curve at each simulated
+particle age; it never substitutes the maximum or a representative phase.
 
 ## 6. Emitter positions (`map/weatherpositions.txt`) — DETERMINISTIC
 
@@ -200,54 +240,52 @@ Constants (cited exactly):
 | `WEATHER_PLAYBACK_RATE_CUTOFF` | 500 | |
 | `WEATHER_PLAYBACK_RATE_LENGTH` | 200 | |
 
-The `weather_camera_fade(camera_distance, defines)` function combines the far
-and near bands into a 0..1 layer-visibility multiplier. **The constants are
-real; the combining formula is a documented reconstruction** — the engine C++
-that applies these has no shipped-text source (UNTRACED U3).
+Exact-a729 `CAirInterface::GetWeatherEffectForAirRegion`
+(`hoi4.exe+0x0166ec50`) proves two role-specific alpha outputs:
+
+- primary precipitation: alpha `1` through distance `1100`, then
+  `(1500-distance)/400` through `1500`, then `0`;
+- fading/cloud entity: alpha `0` below `358`,
+  `(distance-358)/220` over `[358,578)`, `1` through `1100`, then the same far
+  fade as primary through `1500`, then `0`.
+
+Playback is `1` through distance `300`, linear to `0.15` over `(300,500)`,
+then `0.15`. Production generalizes those operations through the effective
+defines and rejects invalid or overlapping bands.
 
 ---
 
-## UNTRACED list (honest — invented values are never acceptable)
+## Exact runtime boundary
 
-| id | what | why untraced | plan / capture need |
-|---|---|---|---|
-| **U1** | per-region **current weather type + intensity** | pure runtime sim state; `common/weather.txt` gives only *probabilities* per period, and snow/mud is accumulated & seeded (see SNOW_LAW) | extractor feed `REPLAY_DATA_REQUIREMENTS` item 6: emit the active weather type per strategic region per tick |
-| **U2** | live **per-particle age** → exact `smoke_fade` alpha, spawn count, turbulence offsets | continuous particle simulation, not a file | a `weather_pass` capture moment must record, for a region with active weather: the live particle instance buffer (per-particle position, size, rotation, color/alpha) OR accept the file-derived representative (peak-curve) frame |
-| **U3** | the exact **camera fade curve** shape | constants cited but the C++ combine is not in any file | a capture at several zoom levels recording the applied per-layer fade factor vs. camera height would pin the shape; until then `weather_camera_fade` is flagged reconstruction |
-| **U4** | `ApplyDistanceFog` RGB stage (`FOG` define) | needs the runtime fog constants (fog color/range CB), absent from shipped text | a `weather_pass` capture must record the particle VS/PS constant buffers incl. fog params; treated as identity until then |
-| **U5** | exact **billboard perspective projection** | `particle.shader` billboards through the runtime `ViewProjectionMatrix` + `ProjectionMatrix` CB (per-frame camera state) | owned by the camera lane; the dump bin uses an explicit *orthographic top-down* projection instead of inventing a camera |
-| **U6** | `sandstorm` visual | `sandstorm` has **no** `fading_entity` (no cloud layer); its foreground `sandstorm.asset` is a ground-level dust effect, out of the "clouds-from-altitude" overlay scope | if a sandstorm overlay is wanted, port `gfx/particles/environment/sandstorm.asset`'s foreground subsystem separately (same particle.shader law) |
-
-### What a `weather_pass` capture moment must record (to close U2–U4)
-
-For one map frame over a region with **active, known** weather:
-1. The particle draw's **VS CB1/CB2/CB3** (`ProjectionMatrix`, `Scale`,
-   `InstanceWorldMatrix`, `HalfPixelWH_RowsCols`, `vLocalTime`) — pins U5 and the
-   tile atlas UV.
-2. The bound **fog constants** used by `ApplyDistanceFog` — pins U4.
-3. The live **per-particle instance buffer** (position/size/rotation/color) OR
-   confirmation that the file-derived peak-curve frame is close enough — pins U2.
-4. The **applied layer fade factor** at the capture's camera height — pins U3.
-5. The bound **DiffuseMap** hash — cross-checks the file-derived sprite DDS
-   (validation only; the law's sprite comes from the `.asset`).
+| boundary | production treatment |
+|---|---|
+| D24 current phenomenon/intensity/expiry | exact 305-region census; named flags use engine priority `rain_light`, `rain_heavy`, `snow`, `blizzard`, `sandstorm` even when several are true; XMAP19 cross-checks visual epoch code and expiry |
+| Authored variant choice | exact PRNG mix and file-order modulo; a measured-empty weather vector is valid and consumes no seed; big falls back to small only when the big vector is empty |
+| Host-time seed | not reconstructible from game hour/files; minimal presentation-independent two-word epoch carrier required |
+| Particle source identity | per-region code-change ordinal plus exact global weather-position ordinal and primary/fading role; full census is recorded and recomputed |
+| Live particle ages/variance | renderer temporal state derived from admitted particle assets; no captured Present bytes or visually tuned phase |
+| Billboard camera | viewer-owned XMAP03 matrices |
+| Lighting | XMAP09 dependency; XMAP19 never supplies neutral constants |
+| Distance fog | exact effective `constants.fxh` plus viewer/world positions |
+| Final target/order | XMAP10 composition dependency |
+| Snow/mud/ice | excluded; owned exclusively by XMAP07 |
+| Observer FoW | excluded; owned exclusively by XMAP05 |
 
 ---
 
-## Files touched
+## Production files
 
-- `replay_interface/native/map_viewer/src/weather_law.rs` (new) — the law.
-- `replay_interface/native/map_viewer/src/lib.rs` — module registration +
-  public exports only.
+- `replay_interface/native/replay_core/src/world.rs` — exact visual-epoch
+  carrier admission.
+- `replay_interface/native/map_viewer/src/weather_law.rs` — engine/file laws.
+- `replay_interface/native/map_viewer/src/production_features/xmap19.rs` —
+  effective-VFS catalog, exact selection, cold-seek preparation, family output.
+- `replay_interface/native/map_viewer/src/production_foundation.rs` and
+  `replay_interface/native/replay_app/src/app.rs` — normal product route and
+  typed-unavailable enforcement.
 
-Reuses the shared `map_static_data` weatherpositions parser (no duplication).
+## Promotion gate
 
-## Gate summary
-
-- `cargo fmt --check`: clean.
-- `cargo test -p map_viewer --lib`: 477 passed, 0 failed (15 new weather tests).
-- Assert-scan (`panic!`/`unwrap()`/`expect(`/`debug_assert` on non-test paths):
-  clean in both new files.
-- Dump PNGs produced for all 5 types (`map_viewer/out/weather_law_dump/`);
-  params JSON per type cross-checks the resolved law.
-- Flag-off byte-identical: **N/A by construction** — no `replay_app` render
-  wiring was added (law + dump bin only), so the live render path is untouched.
+Wrapper validation and the sole cold review are recorded with the promotion
+commit. Recordings without the independent visual-epoch carrier remain
+explicitly unavailable; they never fall back to `production_render`.

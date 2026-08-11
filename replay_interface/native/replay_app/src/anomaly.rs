@@ -1,9 +1,9 @@
-//! F4 — mid-playback data-anomaly policy: **log + hold-last-good, never invent**.
+//! Mid-playback data-anomaly policy: **log + hold-last-good, never invent**.
 //!
 //! Startup fail-closed diagnostics (the `--validate-recording` path in
 //! `main.rs`, the negative-fixture rejection matrix) reject a *malformed*
-//! recording at open. This module covers the other case the plan (Phase F4)
-//! calls out: a recording that OPENS cleanly but develops an anomaly
+//! recording at open. This module covers a recording that opens cleanly but
+//! develops an anomaly
 //! **mid-stream** — a domain that earlier snapshots carried goes missing, a
 //! field flips type, a value falls out of range, an hourly snapshot is missing,
 //! or the recording's identity mutates.
@@ -22,15 +22,16 @@
 //! This lives entirely at the **consumer seam** (`replay_app`): it reads the
 //! typed `replay_core::WorldFrame` views (`ViewStatus`, `Leaf`,
 //! `coverage_warnings`, `save_version`, raw `provenance`) and never touches
-//! recording bytes or `replay_core` internals. `replay_core` is read-only for
-//! this lane; no additive `replay_core` API was required (see LANE_REPORT.md).
+//! recording bytes or `replay_core` internals. Declared recording gaps remain
+//! [`HourResolution::GapUnavailable`]; hold-last-good never substitutes a stale
+//! frame for a declared gap.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use replay_core::{Leaf, ViewStatus, WorldFrame, WorldTimeline};
 use serde_json::Value;
 
-/// The five mid-playback anomaly classes (plan F4).
+/// The five mid-playback anomaly classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AnomalyClass {
     /// A domain (typed view) that was `Present` in earlier snapshots is now
@@ -127,6 +128,12 @@ pub struct Gap {
 /// A recorded index entry whose payload cannot be loaded and authenticated.
 /// This is terminal, not a hold-last-good anomaly: holding across an integrity
 /// failure would make an unverified recording appear playable.
+///
+/// Constructed only by [`scan_timeline`], the whole-timeline library mirror of
+/// the product walk. The product path reports the same condition as
+/// [`crate::timeline::TimelineSelectionError::FrameLoad`]; the two are
+/// deliberately separate types because only this one can name the scan that
+/// found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineScanError {
     pub hour: i64,
@@ -151,6 +158,12 @@ const MONITORED_DOMAINS: &[&str] = &[
     "countries",
     "weather",
     "snow_mud",
+    // The province ground-cover texture carries its own availability, split
+    // from the snow_mud view status (which also covers the fade partition):
+    // the texture can go absent/unobtained/wrong-typed mid-stream while the
+    // view stays Present, and that downgrade must surface, not read as an
+    // empty measured texture.
+    "snow_mud.by_province",
     "visibility",
     "buildings",
     "topbar",
@@ -162,11 +175,25 @@ const MONITORED_DOMAINS: &[&str] = &[
 /// Country scalar fields watched for the number->non-number TypeFlip.
 const TYPE_FLIP_FIELDS: &[&str] = &["political_power", "fuel_current"];
 
+/// The raw JSON value backing a monitored domain, used only to remember the
+/// last-good hour for the hold marker. Most monitors are top-level raw keys;
+/// the snow_mud pair lives nested under `weather` (and the texture partition
+/// one level deeper), so a plain top-level lookup would never record a last
+/// good value and the hold would claim the FAILING hour as its `since_hour`.
+fn monitored_domain_value<'a>(frame: &'a WorldFrame, domain: &str) -> Option<&'a Value> {
+    match domain {
+        "snow_mud" => frame.domain("weather")?.get("snow_mud"),
+        "snow_mud.by_province" => frame.domain("weather")?.get("snow_mud")?.get("texture"),
+        _ => frame.domain(domain),
+    }
+}
+
 fn view_status(frame: &WorldFrame, domain: &str) -> ViewStatus {
     match domain {
         "countries" => frame.countries_status(),
         "weather" => frame.weather_status(),
         "snow_mud" => frame.snow_mud_status(),
+        "snow_mud.by_province" => frame.snow_mud().by_province_status,
         "visibility" => frame.visibility_status(),
         "buildings" => frame.buildings_status(),
         "topbar" => frame.topbar_status(),
@@ -200,8 +227,13 @@ pub struct AnomalyPolicy {
     known_province_ids: Option<BTreeSet<u32>>,
 
     // rolling state
-    domain_present_seen: BTreeSet<String>,
-    last_good_domain: BTreeMap<String, (i64, Value)>,
+    /// Last recorded hour each monitored domain's TYPED view was `Present`.
+    /// Presence of the typed view — not of a raw top-level key — is what the
+    /// viewer holds: derived domains (e.g. `topbar`, which is keyed off
+    /// `countries`) are `Present` with no raw key of their own, and the hold
+    /// provenance must still name the real last-good hour, never the breaking
+    /// hour.
+    last_present_hour: BTreeMap<String, i64>,
     last_good_scalar: BTreeMap<String, (i64, f64)>,
     identity_baseline: Option<(i64, (Option<String>, Option<String>))>,
     /// Monitors currently in an anomalous episode (so we log the transition
@@ -236,8 +268,7 @@ impl AnomalyPolicy {
             hours: hours.to_vec(),
             gaps,
             known_province_ids,
-            domain_present_seen: BTreeSet::new(),
-            last_good_domain: BTreeMap::new(),
+            last_present_hour: BTreeMap::new(),
             last_good_scalar: BTreeMap::new(),
             identity_baseline: None,
             active: BTreeMap::new(),
@@ -318,12 +349,11 @@ impl AnomalyPolicy {
         self.check_out_of_range(frame, hour);
         self.check_identity(frame, hour);
 
-        // Record the active-hold snapshot for scrub queries — CHANGE-POINTS
-        // only (F2 memory audit): the old code appended one entry per
-        // observed hour, an O(recorded-hours) growth even on a clean
-        // multi-year recording (~26k entries for 3 years). An entry is now
-        // appended only when the snapshot differs from the previous
-        // change-point (re-observation of the same hour still overwrites).
+        // Record only active-hold change-points for scrub queries. Appending
+        // every observed hour would grow O(recorded-hours) even on a clean
+        // recording; an entry is appended only when the snapshot differs from
+        // the previous change-point (re-observation of the same hour still
+        // overwrites).
         // `active_holds_at` answers by last-entry-at-or-before, so skipping
         // an identical snapshot is query-equivalent.
         let holds: Vec<Hold> = self.active.values().cloned().collect();
@@ -355,22 +385,21 @@ impl AnomalyPolicy {
             let key = format!("domain:{domain}");
             match status {
                 ViewStatus::Present => {
-                    self.domain_present_seen.insert(domain.to_string());
-                    if let Some(value) = frame.domain(domain) {
-                        self.last_good_domain
-                            .insert(domain.to_string(), (hour, value.clone()));
-                    }
-                    // Recovered: clear an active hold so a later re-break re-logs.
+                    // The typed view is the presence authority. A raw-key
+                    // probe here (`frame.domain(domain)`) would MISS derived
+                    // domains such as `topbar` (Present from `countries`,
+                    // no raw `topbar` key) and a later loss would then
+                    // fabricate the breaking hour as the hold origin.
+                    self.last_present_hour.insert(domain.to_string(), hour);
+                    // A Present view clears its active hold; a later loss then
+                    // emits a new transition.
                     self.active.remove(&key);
                 }
                 ViewStatus::DomainAbsent | ViewStatus::DomainUnavailable => {
-                    // Only an anomaly if this domain was Present earlier.
-                    if self.domain_present_seen.contains(domain) {
-                        let since = self
-                            .last_good_domain
-                            .get(domain)
-                            .map(|(h, _)| *h)
-                            .unwrap_or(hour);
+                    // Only an anomaly if this domain was Present earlier; the
+                    // hold provenance is the exact hour it was last Present,
+                    // never invented from the breaking hour.
+                    if let Some(&since) = self.last_present_hour.get(domain) {
                         if !self.active.contains_key(&key) {
                             self.fire(
                                 AnomalyClass::MissingDomain,
@@ -549,11 +578,12 @@ impl AnomalyPolicy {
     {
         let key = format!("range:{monitor}");
         if out_of_range {
-            let since = self
-                .last_good_scalar
-                .get(monitor)
-                .map(|(h, _)| *h)
-                .unwrap_or(hour);
+            // The marker may claim a HELD value only when one was actually
+            // captured. An out-of-range value with no prior good
+            // capture is FLAGGED, never presented as held from the breaking
+            // hour (that provenance would be invented).
+            let last_good = self.last_good_scalar.get(monitor).map(|(h, _)| *h);
+            let since = last_good.unwrap_or(hour);
             if !self.active.contains_key(&key) {
                 let held = self
                     .last_good_scalar
@@ -567,13 +597,19 @@ impl AnomalyPolicy {
                     format!("{}{held}", detail(value)),
                 );
             }
+            let marker = match last_good {
+                Some(good_hour) => {
+                    format!("HELD {monitor} from hour {good_hour} (last value out of range)")
+                }
+                None => format!("FLAGGED {monitor} out of range (no prior good value to hold)"),
+            };
             self.active.insert(
                 key,
                 Hold {
                     class: AnomalyClass::OutOfRange,
                     monitor: monitor.to_string(),
                     since_hour: since,
-                    marker: format!("HELD {monitor} from hour {since} (last value out of range)"),
+                    marker,
                 },
             );
         } else {
@@ -626,10 +662,21 @@ fn status_label(status: ViewStatus) -> &'static str {
     }
 }
 
-/// Convenience: run the policy over every recorded frame of a timeline in order
-/// (the "scan at open" the app uses to log mid-playback anomalies). Returns the
-/// populated policy. A frame-load integrity/decode error is terminal: it is
-/// returned to the caller and is never downgraded to a hold-last-good anomaly.
+/// Library convenience: run the policy over every recorded frame of a timeline
+/// in order, and return the populated policy.
+///
+/// **This is not the product path.** The app never scans a whole timeline at
+/// open; it observes frames incrementally through the requested hour in
+/// [`crate::timeline::RecordingTimeline`] (`scan_anomalies_through`), which is
+/// what every scrub entry point reaches. This function is the whole-timeline
+/// mirror of that walk: same [`AnomalyPolicy`], same ordering, same terminal
+/// treatment of a load failure. It exists so the policy can be exercised
+/// against a fixture without standing up a `RecordingTimeline`, and the
+/// anomaly-policy test battery below is its only caller.
+///
+/// The one behaviour it must keep identical to the product walk: a frame-load
+/// integrity/decode error is terminal. It is returned to the caller and is
+/// never downgraded to a hold-last-good anomaly.
 pub fn scan_timeline(
     timeline: &WorldTimeline,
     known_province_ids: Option<BTreeSet<u32>>,
@@ -746,6 +793,55 @@ mod tests {
                 .contains("refusing hold-last-good across an unauthenticated frame"),
             "{error}"
         );
+    }
+
+    /// `topbar` is a DERIVED monitored domain — its typed
+    /// view is `Present` off the `countries` object with no raw `topbar` key.
+    /// When it later breaks, the hold provenance must name the hour it was
+    /// last Present, never fabricate the BREAKING hour as the hold origin.
+    #[test]
+    fn derived_domain_hold_names_the_last_present_hour_not_the_breaking_hour() {
+        let timeline = WorldTimeline::open(Box::new(MemorySource {
+            hours: vec![0, 1, 2],
+            frames: BTreeMap::from([
+                (0, serde_json::json!({ "countries": { "GER": {} } })),
+                (1, serde_json::json!({ "countries": { "GER": {} } })),
+                // countries (and therefore derived topbar) lost at hour 2.
+                (2, serde_json::json!({})),
+            ]),
+        }))
+        .expect("open synthetic timeline");
+
+        // The typed topbar view is Present while the raw `topbar` key is
+        // absent.
+        let first = timeline.frame(0).expect("first frame");
+        assert_eq!(first.topbar_status(), replay_core::ViewStatus::Present);
+        assert!(
+            first.domain("topbar").is_none(),
+            "fixture must exercise the derived-domain path (no raw topbar key)"
+        );
+
+        let policy = scan_timeline(&timeline, None).expect("scan");
+        let holds = policy.active_holds_at(2);
+        let topbar_hold = holds
+            .iter()
+            .find(|hold| hold.monitor == "topbar")
+            .expect("topbar loss after Present must hold");
+        assert_eq!(
+            topbar_hold.since_hour, 1,
+            "hold provenance is the last Present hour, not the breaking hour"
+        );
+        assert_eq!(topbar_hold.marker, "HELD topbar from hour 1");
+        let diagnostic = diagnostics_of(&policy, AnomalyClass::MissingDomain)
+            .into_iter()
+            .find(|d| d.monitor == "topbar")
+            .expect("topbar MissingDomain diagnostic");
+        assert!(
+            diagnostic.detail.contains("from hour 1"),
+            "diagnostic names the honest hold origin: {}",
+            diagnostic.detail
+        );
+        assert_eq!(diagnostic.hour, 2, "the transition is logged at the break");
     }
 
     fn fixture_root() -> PathBuf {
@@ -914,6 +1010,75 @@ mod tests {
         assert!(held[0].marker.contains("HELD"));
     }
 
+    /// FW1 status consumer: the per-province snow/mud semantic collection has
+    /// availability (`SnowMudView::by_province_status`), split from the view
+    /// status that also covers the fade partition. A mid-stream collection
+    /// downgrade under a still-`Present` snow_mud view must surface as a
+    /// MissingDomain hold on the legacy-key monitor — not read as an empty
+    /// measured semantic census, and not fire the whole-view monitor.
+    #[test]
+    fn snow_mud_texture_downgrade_surfaces_under_present_view() {
+        let textured = serde_json::json!({
+            "weather": { "snow_mud": {
+                "texture": [
+                    { "province_id": 1000, "region_id": 1,
+                      "snow_level_0_255": 40, "mud_level_0_255": 0 }
+                ],
+                "fade": { "phase": 0.5, "fade_0_hour": 1, "fade_1_hour": 2 }
+            } }
+        });
+        // The view stays Present (the snow_mud object and fade partition are
+        // still there) while the texture partition goes explicitly unobtained.
+        let texture_lost = serde_json::json!({
+            "weather": { "snow_mud": {
+                "texture": null,
+                "fade": { "phase": 0.5, "fade_0_hour": 1, "fade_1_hour": 2 }
+            } }
+        });
+        let source = MemorySource {
+            hours: vec![0, 1],
+            frames: [(0, textured), (1, texture_lost)].into_iter().collect(),
+        };
+        let timeline = WorldTimeline::open(Box::new(source)).expect("timeline");
+
+        // Preconditions: the stale-retained-state shape really is Present at
+        // the view root with a downgraded texture partition.
+        let frame1 = timeline.frame(1).expect("frame 1");
+        assert_eq!(frame1.snow_mud_status(), ViewStatus::Present);
+        assert_eq!(
+            frame1.snow_mud().by_province_status,
+            ViewStatus::DomainUnavailable
+        );
+
+        let policy = scan_timeline(&timeline, None).expect("scan");
+        let hits = diagnostics_of(&policy, AnomalyClass::MissingDomain);
+        assert_eq!(hits.len(), 1, "exactly one texture diagnostic: {hits:?}");
+        assert_eq!(hits[0].monitor, "snow_mud.by_province");
+        assert_eq!(hits[0].hour, 1);
+        assert!(
+            hits[0].detail.contains("from hour 0"),
+            "the diagnostic names the LAST GOOD hour, not the failing one: {}",
+            hits[0].detail
+        );
+
+        assert!(policy.active_holds_at(0).is_empty());
+        let held = policy.active_holds_at(1);
+        let texture = held
+            .iter()
+            .find(|h| h.monitor == "snow_mud.by_province")
+            .expect("texture held at the downgrade hour");
+        assert_eq!(texture.class, AnomalyClass::MissingDomain);
+        assert_eq!(
+            texture.since_hour, 0,
+            "the hold carries the last-good hour, never the failing hour"
+        );
+        assert!(texture.marker.contains("HELD"));
+        assert!(
+            !held.iter().any(|h| h.monitor == "snow_mud"),
+            "the whole-view monitor stays clean while only the texture broke"
+        );
+    }
+
     #[test]
     fn out_of_range_flags_negative_manpower_and_stray_province() {
         let timeline = open_anomaly("fx_anomaly_out_of_range");
@@ -956,6 +1121,57 @@ mod tests {
             .any(|h| h.monitor == "countries.GER.manpower_available"
                 && h.class == AnomalyClass::OutOfRange
                 && h.since_hour == last_good));
+    }
+
+    /// An out-of-range scalar with NO prior good capture is
+    /// FLAGGED — the hold marker must not claim "HELD ... from hour X" where
+    /// X is the breaking hour and nothing was ever captured to hold.
+    #[test]
+    fn out_of_range_without_prior_good_value_is_flagged_not_held() {
+        let timeline = WorldTimeline::open(Box::new(MemorySource {
+            hours: vec![0, 1],
+            frames: BTreeMap::from([
+                // Out of range from the very first observation.
+                (
+                    0,
+                    serde_json::json!({
+                        "countries": { "GER": { "politics": { "stability": 1.5 } } }
+                    }),
+                ),
+                (
+                    1,
+                    serde_json::json!({
+                        "countries": { "GER": { "politics": { "stability": 1.5 } } }
+                    }),
+                ),
+            ]),
+        }))
+        .expect("open synthetic timeline");
+        let policy = scan_timeline(&timeline, None).expect("scan");
+        let holds = policy.active_holds_at(1);
+        let hold = holds
+            .iter()
+            .find(|h| h.monitor == "countries.GER.stability")
+            .expect("out-of-range stability is tracked");
+        assert!(
+            hold.marker.starts_with("FLAGGED"),
+            "no prior good value: marker must flag, not claim a hold: {}",
+            hold.marker
+        );
+        assert!(
+            !hold.marker.contains("HELD"),
+            "a HELD claim requires a captured value: {}",
+            hold.marker
+        );
+        let diagnostic = diagnostics_of(&policy, AnomalyClass::OutOfRange)
+            .into_iter()
+            .find(|d| d.monitor == "countries.GER.stability")
+            .expect("diagnostic fired");
+        assert!(
+            diagnostic.detail.contains("no prior good value to hold"),
+            "{}",
+            diagnostic.detail
+        );
     }
 
     #[test]

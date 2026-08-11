@@ -30,8 +30,6 @@ use replay_core::{
 };
 use serde_json::Value;
 
-const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
 // --------------------------------------------------------------------------
 // fixture plumbing (mirrors replay_core/tests/roundtrip_gates.rs)
 // --------------------------------------------------------------------------
@@ -222,8 +220,8 @@ fn naval_air_placement_anchors_fleet_and_wing() {
     for f in frames(&t) {
         let set = placement_of(&f, &table, &state_anchor);
 
-        // Fleet task force 501:1 at sea province 3000 (recording location).
-        let fleet = find(&set.fleets, "501:1");
+        // Fleet task force 501 at sea province 3000 (recording location).
+        let fleet = find(&set.fleets, "501");
         assert_eq!(
             fleet.status,
             PlacementStatus::Placed,
@@ -238,8 +236,8 @@ fn naval_air_placement_anchors_fleet_and_wing() {
         assert_eq!(fleet.owner.as_deref(), Some("ENG"));
         assert!(fleet.world_anchor.unwrap().in_map_bounds());
 
-        // Air wing 800:1 anchored via its air-base state (FIT).
-        let wing = find(&set.wings, "800:1");
+        // Air wing 800 anchored via its air-base state (FIT).
+        let wing = find(&set.wings, "800");
         assert_eq!(
             wing.status,
             PlacementStatus::Placed,
@@ -263,7 +261,7 @@ fn wing_without_state_mapping_is_unavailable() {
     let empty = BTreeMap::new();
     let f = t.frame(t.first_hour()).unwrap();
     let set = placement_of(&f, &table, &empty);
-    let wing = find(&set.wings, "800:1");
+    let wing = find(&set.wings, "800");
     assert_eq!(wing.status, PlacementStatus::AnchorProvinceUnavailable);
     assert_eq!(wing.world_anchor, None);
 }
@@ -321,13 +319,10 @@ fn seek_equals_play_placement_and_step_holds() {
 // --------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(not(gate_hoi4_install), ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path")]
 fn gated_vanilla_unitstacks_anchor_table_places_fixture_provinces() {
-    let root = std::path::Path::new(VANILLA_GAME_DIR);
-    if !root.is_dir() {
-        eprintln!("skipping vanilla unitstacks anchor gate: {VANILLA_GAME_DIR} absent");
-        return;
-    }
-    let resolver = GameFileResolver::vanilla(root.to_path_buf()).expect("vanilla resolver");
+    let root = replay_test_gates::require_vanilla_game_root();
+    let resolver = GameFileResolver::vanilla(root).expect("vanilla resolver");
     let table = ProvinceAnchorTable::from_resolver(&resolver).expect("anchor table");
     assert!(table.len() > 13_000, "expected the full stack-centre table");
 

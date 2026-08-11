@@ -18,13 +18,11 @@ use game_ui::waroverview_binding::{war_overview_from_frame, WarRelationSummary};
 use replay_core::{open_recording, Leaf, WorldTimeline};
 use std::path::{Path, PathBuf};
 
-const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
-
-fn game_root() -> Option<PathBuf> {
-    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
-    root.is_dir().then_some(root)
+/// The vanilla install root. Panics rather than returning `None`: every
+/// caller is gated on `gate_hoi4_install`, so an absent install here is a
+/// failure, never a silent skip that libtest would report as a pass.
+fn game_root() -> PathBuf {
+    replay_test_gates::require_vanilla_game_root()
 }
 
 fn parse_layout(root: &Path, rel: &str) -> LayoutSet {
@@ -64,11 +62,12 @@ fn fixture(name: &str) -> WorldTimeline {
 /// gridbox are present, and the `war_ally_entry` participant-row template's
 /// named textboxes resolve to their file-declared pixel offsets.
 #[test]
+#[cfg_attr(
+    not(gate_hoi4_install),
+    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
+)]
 fn waroverview_layout_resolves_from_files() {
-    let Some(root) = game_root() else {
-        eprintln!("SKIP waroverview_layout_resolves_from_files: the game root missing");
-        return;
-    };
+    let root = game_root();
     let layouts = parse_layout(&root, "interface/waroverview.gui");
     assert_eq!(
         layouts.stats.recovery_count, 0,
@@ -138,7 +137,10 @@ fn war_overview_flips_at_change_hour() {
     // Before the war flip (tick 6): diplomacy present, but no war rows.
     let before = war_overview_from_frame(&tl.frame(hours[6]).unwrap(), "GER");
     assert!(before.available, "diplomacy present @tick6");
-    assert!(before.war_relations.is_empty(), "no war_relations @tick6");
+    assert!(
+        before.war_relations.measured().is_none(),
+        "no war_relations feed @tick6 (leaf stays unmeasured, not empty)"
+    );
     assert!(before.belligerents.is_empty(), "no belligerents @tick6");
     assert!(before.pov_belligerents.is_empty(), "GER no wars @tick6");
 
@@ -147,10 +149,10 @@ fn war_overview_flips_at_change_hour() {
     assert!(after.available);
     assert_eq!(
         after.war_relations,
-        vec![
+        Leaf::Measured(vec![
             summary("GER", "ENG", 1200, 900),
             summary("ITA", "ENG", 200, 300),
-        ],
+        ]),
         "war_relations casualties @tick7"
     );
     assert_eq!(
@@ -206,7 +208,11 @@ fn absent_pov_sees_global_wars_only() {
     let hours = tl.hours().to_vec();
     let usa = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "USA");
     assert!(usa.available);
-    assert_eq!(usa.war_relations.len(), 2, "global casualty rows");
+    assert_eq!(
+        usa.war_relations.measured().expect("measured feed").len(),
+        2,
+        "global casualty rows"
+    );
     assert_eq!(usa.belligerents.len(), 3, "global belligerent set");
     assert!(usa.pov_belligerents.is_empty(), "USA in no war");
 }

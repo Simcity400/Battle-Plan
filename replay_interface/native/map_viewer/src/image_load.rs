@@ -4,25 +4,136 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
+/// Maximum number of individual `definition.csv` defects named in the refusal
+/// message. The count is always exact; only the enumeration is bounded so a
+/// wholly-corrupt file cannot produce a multi-megabyte error string.
+pub(crate) const MAX_REPORTED_DEFINITION_GAPS: usize = 20;
+
+/// FW7-F5: `map/definition.csv` is parsed strictly and fails closed.
+///
+/// The previous loop handled malformed input four incompatible ways in one
+/// pass — a short row was skipped, a non-numeric id was skipped, a non-numeric
+/// channel propagated a bare `ParseIntError` with no line context, and a
+/// non-numeric continent silently became `0`. Duplicate ids and duplicate RGB
+/// keys were both accepted, and because `color_to_id` is keyed by color while
+/// `definitions` is keyed by id, either duplicate class left the two returned
+/// maps mutually inconsistent (several colors resolving to one id, or an id in
+/// `definitions` that no color can reach).
+///
+/// Every one of those is now a typed gap carried to the caller in a single
+/// refusal that names the 1-based line number and the exact defect. The only
+/// tolerated inputs are wholly blank lines and a UTF-8 BOM on the first line —
+/// neither carries province data, and neither can hide a dropped province.
 pub(crate) fn load_definition_csv(
     path: &Path,
 ) -> Result<(BTreeMap<u32, ProvinceDefinition>, HashMap<u32, u32>)> {
     let text = read_latin1(path)?;
-    let mut definitions = BTreeMap::new();
-    let mut color_to_id = HashMap::new();
-    for raw in text.lines() {
-        let parts = raw.trim().split(';').collect::<Vec<_>>();
+    decode_definition_csv(&text, path)
+}
+
+pub(crate) fn decode_definition_csv(
+    text: &str,
+    path: &Path,
+) -> Result<(BTreeMap<u32, ProvinceDefinition>, HashMap<u32, u32>)> {
+    let mut definitions: BTreeMap<u32, ProvinceDefinition> = BTreeMap::new();
+    let mut color_to_id: HashMap<u32, u32> = HashMap::new();
+    let mut id_lines: HashMap<u32, usize> = HashMap::new();
+    let mut color_lines: HashMap<u32, usize> = HashMap::new();
+    let mut gaps: Vec<String> = Vec::new();
+    let mut gap_count = 0usize;
+    let note = |gaps: &mut Vec<String>, gap_count: &mut usize, message: String| {
+        *gap_count += 1;
+        if gaps.len() < MAX_REPORTED_DEFINITION_GAPS {
+            gaps.push(message);
+        }
+    };
+    for (index, raw) in text.lines().enumerate() {
+        let line_no = index + 1;
+        // A UTF-8 BOM survives the latin1 decode as three printable chars and
+        // would otherwise turn row 1 into a silently dropped province.
+        let raw = if index == 0 {
+            raw.trim_start_matches('\u{feff}')
+                .trim_start_matches("\u{ef}\u{bb}\u{bf}")
+        } else {
+            raw
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parts = trimmed.split(';').collect::<Vec<_>>();
         if parts.len() < 8 {
+            note(
+                &mut gaps,
+                &mut gap_count,
+                format!(
+                    "line {line_no}: expected at least 8 semicolon-separated fields, found {}",
+                    parts.len()
+                ),
+            );
             continue;
         }
         let Ok(id) = parts[0].parse::<u32>() else {
+            note(
+                &mut gaps,
+                &mut gap_count,
+                format!("line {line_no}: province id {:?} is not a u32", parts[0]),
+            );
             continue;
         };
-        let r = parts[1].parse::<u8>()?;
-        let g = parts[2].parse::<u8>()?;
-        let b = parts[3].parse::<u8>()?;
-        let continent = parts[7].parse::<i32>().unwrap_or_default();
-        color_to_id.insert(color_key(r, g, b), id);
+        let mut channel = |field: usize, name: &str| match parts[field].parse::<u8>() {
+            Ok(value) => Some(value),
+            Err(_) => {
+                note(
+                    &mut gaps,
+                    &mut gap_count,
+                    format!(
+                        "line {line_no}: province {id} {name} channel {:?} is not a u8",
+                        parts[field]
+                    ),
+                );
+                None
+            }
+        };
+        let r = channel(1, "red");
+        let g = channel(2, "green");
+        let b = channel(3, "blue");
+        let (Some(r), Some(g), Some(b)) = (r, g, b) else {
+            continue;
+        };
+        let Ok(continent) = parts[7].parse::<i32>() else {
+            note(
+                &mut gaps,
+                &mut gap_count,
+                format!(
+                    "line {line_no}: province {id} continent {:?} is not an i32",
+                    parts[7]
+                ),
+            );
+            continue;
+        };
+        let key = color_key(r, g, b);
+        if let Some(previous) = id_lines.get(&id) {
+            note(
+                &mut gaps,
+                &mut gap_count,
+                format!("line {line_no}: province id {id} already defined on line {previous}"),
+            );
+            continue;
+        }
+        if let Some(previous) = color_lines.get(&key) {
+            note(
+                &mut gaps,
+                &mut gap_count,
+                format!(
+                    "line {line_no}: province {id} RGB ({r},{g},{b}) already claimed on line {previous}"
+                ),
+            );
+            continue;
+        }
+        id_lines.insert(id, line_no);
+        color_lines.insert(key, line_no);
+        color_to_id.insert(key, id);
         definitions.insert(
             id,
             ProvinceDefinition {
@@ -33,6 +144,32 @@ pub(crate) fn load_definition_csv(
                 continent,
             },
         );
+    }
+    if gap_count != 0 {
+        let elided = gap_count.saturating_sub(gaps.len());
+        let suffix = if elided == 0 {
+            String::new()
+        } else {
+            format!("; and {elided} more")
+        };
+        return Err(format!(
+            "{} is malformed: {gap_count} unusable row(s) — {}{suffix}",
+            path.display(),
+            gaps.join("; ")
+        )
+        .into());
+    }
+    // Invariant the two duplicate classes used to break: every definition is
+    // reachable through exactly one color, and every color maps to a defined
+    // province.
+    if definitions.len() != color_to_id.len() {
+        return Err(format!(
+            "{} produced {} province definitions but {} color keys",
+            path.display(),
+            definitions.len(),
+            color_to_id.len()
+        )
+        .into());
     }
     Ok((definitions, color_to_id))
 }
@@ -61,11 +198,38 @@ pub(crate) struct BmpIds {
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) ids: Vec<u32>,
+    /// Always `0` on a successful load — [`load_provinces_bmp`] refuses any
+    /// raster containing a color absent from `definition.csv` (FW7-F4). The
+    /// field is retained so the manifest can keep publishing the count and so
+    /// the pre-existing caller gates stay honest belt-and-braces.
     pub(crate) unknown_pixels: usize,
 }
 
+/// Upper bound on distinct unknown colors enumerated in the refusal message.
+pub(crate) const MAX_REPORTED_UNKNOWN_COLORS: usize = 8;
+
+/// FW7-F4: `provinces.bmp` pixels whose color has no `definition.csv` row are a
+/// hard refusal, not a silent `0`.
+///
+/// The raster is allocated as `vec![0u32; ..]` and the `None` arm never wrote a
+/// value, so an undefined color became province id `0` — which is the *documented
+/// "no province" sentinel* the rest of the crate keys on (`rail_files`,
+/// `map_furniture`, and `map_label_law` all skip on `0`). Only two of
+/// the nine call sites inspected `unknown_pixels`; the other seven — including the
+/// shipped-bundle generator — consumed the substituted sentinel and returned `Ok`.
+///
+/// Gating here rather than at each call site closes all nine at once and cannot be
+/// forgotten by a tenth. Every existing caller already propagates with `?`.
 pub(crate) fn load_provinces_bmp(path: &Path, color_to_id: &HashMap<u32, u32>) -> Result<BmpIds> {
     let data = fs::read(path)?;
+    decode_provinces_bmp(&data, path, color_to_id)
+}
+
+pub(crate) fn decode_provinces_bmp(
+    data: &[u8],
+    path: &Path,
+    color_to_id: &HashMap<u32, u32>,
+) -> Result<BmpIds> {
     if data.get(0..2) != Some(b"BM") {
         return Err("not a BMP file".into());
     }
@@ -95,6 +259,7 @@ pub(crate) fn load_provinces_bmp(path: &Path, color_to_id: &HashMap<u32, u32>) -
 
     let mut ids = vec![0u32; width * height];
     let mut unknown_pixels = 0usize;
+    let mut unknown_colors: BTreeMap<u32, (usize, usize)> = BTreeMap::new();
     for y in 0..height {
         let source_y = if bottom_up { height - 1 - y } else { y };
         let row = pixel_offset + source_y * stride;
@@ -106,9 +271,36 @@ pub(crate) fn load_provinces_bmp(path: &Path, color_to_id: &HashMap<u32, u32>) -
             let key = color_key(r, g, b);
             match color_to_id.get(&key) {
                 Some(id) => ids[y * width + x] = *id,
-                None => unknown_pixels += 1,
+                None => {
+                    unknown_pixels += 1;
+                    if unknown_colors.len() < MAX_REPORTED_UNKNOWN_COLORS
+                        || unknown_colors.contains_key(&key)
+                    {
+                        unknown_colors.entry(key).or_insert((x, y));
+                    }
+                }
             }
         }
+    }
+    if unknown_pixels != 0 {
+        let samples = unknown_colors
+            .iter()
+            .map(|(key, (x, y))| {
+                format!(
+                    "RGB({},{},{}) first at ({x},{y})",
+                    key & 0xff,
+                    (key >> 8) & 0xff,
+                    (key >> 16) & 0xff
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "{} has {unknown_pixels} unknown pixel(s) whose color has no definition.csv province; \
+             province id 0 is the \"no province\" sentinel, so these cannot be admitted: {samples}",
+            path.display()
+        )
+        .into());
     }
 
     Ok(BmpIds {
@@ -121,6 +313,10 @@ pub(crate) fn load_provinces_bmp(path: &Path, color_to_id: &HashMap<u32, u32>) -
 
 pub(crate) fn load_bmp_indexed(path: &Path) -> Result<IndexImage> {
     let data = fs::read(path)?;
+    decode_bmp_indexed(&data, path)
+}
+
+pub(crate) fn decode_bmp_indexed(data: &[u8], path: &Path) -> Result<IndexImage> {
     if data.get(0..2) != Some(b"BM") {
         return Err(format!("{} is not a BMP file", path.display()).into());
     }
@@ -163,6 +359,10 @@ pub(crate) fn load_bmp_indexed(path: &Path) -> Result<IndexImage> {
 
 pub(crate) fn load_bmp_rgbx(path: &Path) -> Result<RgbxImage> {
     let data = fs::read(path)?;
+    decode_bmp_rgbx(&data, path)
+}
+
+pub(crate) fn decode_bmp_rgbx(data: &[u8], path: &Path) -> Result<RgbxImage> {
     if data.get(0..2) != Some(b"BM") {
         return Err(format!("{} is not a BMP file", path.display()).into());
     }
@@ -402,14 +602,21 @@ pub(crate) fn dds_info(path: &Path) -> Result<DdsInfo> {
     })
 }
 
+/// Total for every possible header-supplied mask, including a full 32-bit
+/// channel mask. DDS channel masks arrive unvalidated from mod assets; the
+/// former u32 arithmetic overflowed on `1u32 << 32` (a 32-bit mask) and on
+/// `value * 255` (wide masks), which is a release panic under this crate's
+/// `overflow-checks = true` instead of a decode. Mirrors the identical fix in
+/// `game_ui::dds::mask_channel` (R18-3).
 pub(crate) fn mask_channel(raw: u32, mask: u32) -> u8 {
     if mask == 0 {
         return 0;
     }
     let shift = mask.trailing_zeros();
-    let bits = mask.count_ones();
-    let value = (raw & mask) >> shift;
-    let max = (1u32 << bits) - 1;
+    let bits = u64::from(mask.count_ones());
+    let value = u64::from((raw & mask) >> shift);
+    let max = (1u64 << bits) - 1;
+    debug_assert!(max > 0, "a non-zero mask always has at least one bit");
     ((value * 255 + max / 2) / max) as u8
 }
 
@@ -665,6 +872,36 @@ mod tests {
     }
 
     #[test]
+    fn mask_channel_is_total_for_every_mask_shape() {
+        // R18-3 (map_viewer twin of game_ui::dds): a 32-bit mask overflowed
+        // `1u32 << 32` and wide masks overflowed `value * 255`; both are
+        // release panics under overflow-checks instead of a decode.
+        assert_eq!(mask_channel(u32::MAX, u32::MAX), 255);
+        assert_eq!(mask_channel(0, u32::MAX), 0);
+        assert_eq!(mask_channel(0x8000_0000, 0xffff_ffff), 128);
+        assert_eq!(mask_channel(0xdead_beef, 0), 0);
+        assert_eq!(mask_channel(0x00ff_0000, 0x00ff_0000), 255);
+        assert_eq!(mask_channel(0x0000_0000, 0x00ff_0000), 0);
+    }
+
+    #[test]
+    fn full_channel_mask_dds_decodes_instead_of_panicking() {
+        // R18-3 reachability: an unvalidated mod-asset DDS header carrying
+        // rmask = 0xffff_ffff reaches mask_channel with 32 set bits through
+        // decode_dds_rgba_mip. Before the u64 widening this panicked.
+        let path = fake_path();
+        let mut data = vec![0u8; 132];
+        data[92..96].copy_from_slice(&0xffff_ffffu32.to_le_bytes()); // rmask
+        data[96..100].copy_from_slice(&0u32.to_le_bytes()); // gmask
+        data[100..104].copy_from_slice(&0u32.to_le_bytes()); // bmask
+        data[104..108].copy_from_slice(&0u32.to_le_bytes()); // amask
+        data[128..132].copy_from_slice(&0xffff_ffffu32.to_le_bytes()); // pixel
+        let image = decode_dds_rgba_mip(&path, &data, 1, 1, 128, 0x40, b"NONE", 32)
+            .expect("a full 32-bit channel mask is decodable, not a panic");
+        assert_eq!(image.pixels, vec![255, 0, 0, 255]);
+    }
+
+    #[test]
     fn uncompressed_mip_dimension_overflow_is_typed_error() {
         let path = fake_path();
         let data = vec![0u8; 128];
@@ -698,6 +935,240 @@ mod tests {
         assert_eq!(dds_mip_byte_len(8, 8, b"DXT1", 0).unwrap(), 32);
         assert_eq!(dds_mip_byte_len(8, 8, b"DXT5", 0).unwrap(), 64);
         assert_eq!(dds_mip_byte_len(1, 1, b"DXT1", 0).unwrap(), 8);
+    }
+
+    // ---- FW7-F5: definition.csv is parsed strictly -------------------------
+
+    fn definition_csv(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).expect("create temp dir");
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write definition.csv fixture");
+        path
+    }
+
+    #[test]
+    fn definition_csv_accepts_well_formed_rows_blank_lines_and_a_trailing_field() {
+        let dir = crate::test_support::temp_test_dir("definition_csv_ok");
+        let path = definition_csv(
+            &dir,
+            "definition.csv",
+            "0;0;0;0;land;false;unknown;0\n\
+             1;10;20;30;land;true;plains;1\n\
+             \n\
+             2;40;50;60;sea;false;ocean;-1;trailing-extra-field\n\
+             \n",
+        );
+        let (definitions, color_to_id) = load_definition_csv(&path).expect("strict parse");
+        assert_eq!(definitions.len(), 3);
+        assert_eq!(color_to_id.len(), 3);
+        assert_eq!(color_to_id.get(&color_key(10, 20, 30)), Some(&1));
+        let one = definitions.get(&1).expect("province 1");
+        assert_eq!(one.rgb, [10, 20, 30]);
+        assert!(one.coastal);
+        assert_eq!(one.terrain, "plains");
+        assert_eq!(one.continent, 1);
+        assert_eq!(definitions.get(&2).expect("province 2").continent, -1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A UTF-8 BOM survives `read_latin1` as three printable chars glued to the
+    /// first field, so under the old parser row 1 — province `0`, the "no
+    /// province" definition itself — was silently dropped. Stripping it is the
+    /// one tolerance the strict parser keeps beyond blank lines.
+    #[test]
+    fn definition_csv_tolerates_a_utf8_bom_on_the_first_row() {
+        let dir = crate::test_support::temp_test_dir("definition_csv_bom");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("definition.csv");
+        let mut bytes = vec![0xefu8, 0xbb, 0xbf];
+        bytes.extend_from_slice(b"0;0;0;0;land;false;unknown;0\n1;1;2;3;land;false;plains;0\n");
+        std::fs::write(&path, bytes).expect("write BOM fixture");
+        let (definitions, color_to_id) = load_definition_csv(&path).expect("BOM tolerated");
+        assert_eq!(definitions.len(), 2);
+        assert!(definitions.contains_key(&0));
+        assert_eq!(color_to_id.get(&color_key(0, 0, 0)), Some(&0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: a row with fewer than eight fields used to be skipped with a
+    /// bare `continue`, silently deleting that province.
+    #[test]
+    fn definition_csv_refuses_short_row() {
+        let dir = crate::test_support::temp_test_dir("definition_csv_short");
+        let path = definition_csv(&dir, "definition.csv", "1;10;20;30;land;true\n");
+        let err = load_definition_csv(&path).expect_err("short row must refuse");
+        let message = err.to_string();
+        assert!(message.contains("line 1"), "{message}");
+        assert!(message.contains("at least 8"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: a non-numeric id was skipped; a non-numeric channel produced
+    /// a bare `ParseIntError` with no line context; a non-numeric continent
+    /// silently became `0`. All three now name the line and the province.
+    #[test]
+    fn definition_csv_refuses_unparseable_fields_with_line_context() {
+        let dir = crate::test_support::temp_test_dir("definition_csv_fields");
+        let bad_id = definition_csv(&dir, "id.csv", "x;1;2;3;land;false;plains;0\n");
+        let message = load_definition_csv(&bad_id).unwrap_err().to_string();
+        assert!(message.contains("line 1"), "{message}");
+        assert!(message.contains("not a u32"), "{message}");
+
+        let bad_channel = definition_csv(&dir, "rgb.csv", "1;1;999;3;land;false;plains;0\n");
+        let message = load_definition_csv(&bad_channel).unwrap_err().to_string();
+        assert!(message.contains("green channel"), "{message}");
+        assert!(message.contains("not a u8"), "{message}");
+
+        let bad_continent = definition_csv(&dir, "cont.csv", "1;1;2;3;land;false;plains;x\n");
+        let message = load_definition_csv(&bad_continent).unwrap_err().to_string();
+        assert!(message.contains("continent"), "{message}");
+        assert!(message.contains("not an i32"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: a duplicate province id kept the last row in `definitions`
+    /// while BOTH colors stayed in `color_to_id`, and a duplicate RGB kept the
+    /// last id in `color_to_id` while BOTH ids stayed in `definitions` — the two
+    /// returned maps ended up mutually inconsistent, silently.
+    #[test]
+    fn definition_csv_refuses_duplicate_ids_and_duplicate_colors() {
+        let dir = crate::test_support::temp_test_dir("definition_csv_dupes");
+        let dup_id = definition_csv(
+            &dir,
+            "id.csv",
+            "1;1;2;3;land;false;plains;0\n1;4;5;6;land;false;plains;0\n",
+        );
+        let message = load_definition_csv(&dup_id).unwrap_err().to_string();
+        assert!(
+            message.contains("province id 1 already defined on line 1"),
+            "{message}"
+        );
+
+        let dup_color = definition_csv(
+            &dir,
+            "color.csv",
+            "1;1;2;3;land;false;plains;0\n2;1;2;3;land;false;plains;0\n",
+        );
+        let message = load_definition_csv(&dup_color).unwrap_err().to_string();
+        assert!(
+            message.contains("RGB (1,2,3) already claimed on line 1"),
+            "{message}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn definition_csv_refusal_bounds_the_enumeration_but_not_the_count() {
+        let dir = crate::test_support::temp_test_dir("definition_csv_many");
+        let mut body = String::new();
+        for index in 0..MAX_REPORTED_DEFINITION_GAPS + 3 {
+            body.push_str(&format!("bad-{index};1;2;3;land;false;plains;0\n"));
+        }
+        let path = definition_csv(&dir, "definition.csv", &body);
+        let message = load_definition_csv(&path).unwrap_err().to_string();
+        assert!(
+            message.contains(&format!(
+                "{} unusable row(s)",
+                MAX_REPORTED_DEFINITION_GAPS + 3
+            )),
+            "{message}"
+        );
+        assert!(message.contains("and 3 more"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- FW7-F4: unknown provinces.bmp colors fail closed ------------------
+
+    /// 24bpp bottom-up BMP over `pixels` given top-down, row-major.
+    fn write_provinces_bmp(path: &std::path::Path, width: usize, pixels: &[[u8; 3]]) {
+        let height = pixels.len() / width;
+        let stride = (width * 3 + 3) & !3;
+        let pixel_offset = 54usize;
+        let mut data = vec![0u8; pixel_offset + stride * height];
+        data[0..2].copy_from_slice(b"BM");
+        let total = u32::try_from(data.len()).expect("bmp size");
+        data[2..6].copy_from_slice(&total.to_le_bytes());
+        data[10..14].copy_from_slice(&(pixel_offset as u32).to_le_bytes());
+        data[14..18].copy_from_slice(&40u32.to_le_bytes());
+        data[18..22].copy_from_slice(&(width as i32).to_le_bytes());
+        data[22..26].copy_from_slice(&(height as i32).to_le_bytes());
+        data[26..28].copy_from_slice(&1u16.to_le_bytes());
+        data[28..30].copy_from_slice(&24u16.to_le_bytes());
+        for y in 0..height {
+            let source_y = height - 1 - y;
+            let row = pixel_offset + source_y * stride;
+            for x in 0..width {
+                let [r, g, b] = pixels[y * width + x];
+                data[row + x * 3] = b;
+                data[row + x * 3 + 1] = g;
+                data[row + x * 3 + 2] = r;
+            }
+        }
+        std::fs::write(path, data).expect("write provinces.bmp fixture");
+    }
+
+    #[test]
+    fn provinces_bmp_loads_when_every_color_is_defined() {
+        let dir = crate::test_support::temp_test_dir("provinces_bmp_ok");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("provinces.bmp");
+        write_provinces_bmp(&path, 2, &[[1, 0, 0], [2, 0, 0], [1, 0, 0], [2, 0, 0]]);
+        let mut color_to_id = HashMap::new();
+        color_to_id.insert(color_key(1, 0, 0), 11u32);
+        color_to_id.insert(color_key(2, 0, 0), 22u32);
+        let bmp = load_provinces_bmp(&path, &color_to_id).expect("all colors defined");
+        assert_eq!((bmp.width, bmp.height), (2, 2));
+        assert_eq!(bmp.ids, vec![11, 22, 11, 22]);
+        assert_eq!(bmp.unknown_pixels, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: an undefined color left the pre-zeroed raster untouched, so
+    /// the pixel silently became province id `0` — the crate-wide "no province"
+    /// sentinel — and seven of the nine call sites admitted it, including the
+    /// shipped-bundle generator.
+    #[test]
+    fn provinces_bmp_refuses_unknown_color_instead_of_substituting_zero() {
+        let dir = crate::test_support::temp_test_dir("provinces_bmp_unknown");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("provinces.bmp");
+        write_provinces_bmp(&path, 2, &[[1, 0, 0], [9, 9, 9], [1, 0, 0], [1, 0, 0]]);
+        let mut color_to_id = HashMap::new();
+        color_to_id.insert(color_key(1, 0, 0), 11u32);
+        let message = match load_provinces_bmp(&path, &color_to_id) {
+            Ok(_) => panic!("unknown color must refuse"),
+            Err(error) => error.to_string(),
+        };
+        assert!(message.contains("1 unknown pixel(s)"), "{message}");
+        assert!(message.contains("RGB(9,9,9) first at (1,0)"), "{message}");
+        assert!(message.contains("no province"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn provinces_bmp_unknown_color_sample_list_is_bounded() {
+        let dir = crate::test_support::temp_test_dir("provinces_bmp_many_unknown");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("provinces.bmp");
+        let width = MAX_REPORTED_UNKNOWN_COLORS + 4;
+        let pixels = (0..width)
+            .map(|index| [u8::try_from(index + 1).expect("channel"), 0, 0])
+            .collect::<Vec<_>>();
+        write_provinces_bmp(&path, width, &pixels);
+        let message = match load_provinces_bmp(&path, &HashMap::new()) {
+            Ok(_) => panic!("unknown colors must refuse"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains(&format!("{width} unknown pixel(s)")),
+            "{message}"
+        );
+        assert_eq!(
+            message.matches("first at").count(),
+            MAX_REPORTED_UNKNOWN_COLORS,
+            "{message}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

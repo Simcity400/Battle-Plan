@@ -1,16 +1,17 @@
-//! U1 — Topbar alerts strip / notification-area binding
-//! (REPLAY_PRODUCTION_PLAN §6a; UI_COVERAGE_MATRIX §2 "Alerts / notifications").
+//! U1 — Topbar alerts strip / notification-area binding.
+//! Generic geometry follows `replay_interface/documents/UI_LAYOUT_LAW.md`.
 //!
 //! Population seam (Constraint 2: parses **no** recording bytes) mapping
 //! `replay_core`'s READ-ONLY [`TopbarAlerts`] view (requirements item 9b) onto
-//! the topbar alert-icon display state — the four count badges the topbar's
-//! `country_menu_window` alert area shows, including independently produced
-//! decision, intel, prototype, and market sub-counts.
+//! the topbar alert-icon display state. [`AlertKind::ALL`] is the canonical
+//! set and order for every independently produced count leaf.
 //!
 //! Like [`crate::binding`], it fabricates no value: a `Leaf` that is
-//! `Absent`/`Unobtained`, or a view whose status is not `Present`, renders the
-//! **fail-closed absent form** (a `None` count / no badge), never a default `0`
-//! (Constraint 3).
+//! `Absent`/`Unobtained` renders the **fail-closed absent form** (a `None` count
+//! / no badge), never a default `0` (Constraint 3).
+//! The d87-to-legacy-badge bridge below is retained only for nonshipping
+//! diagnostic compatibility. Shipping decision presentation belongs to the
+//! XUI19 decision packet and does not use this helper as product authority.
 //!
 //! ## FILE citations — element names, `interface/topbar.gui`
 //!
@@ -21,7 +22,7 @@
 //! (`topbar.gui`), and the scrolling feed icon is `GFX_global_alert_icons`
 //! (`interface/alerts.gui`, `global_alerticon_window`).
 //!
-//! ## UNKNOWN / FIT labels and data gaps
+//! ## Runtime and presentation contracts
 //!
 //! - **Badge zero-suppression is FIT, not FILE.** Whether a `0` count renders a
 //!   badge at all is engine C++ logic, *not* encoded in the `.gui`. The
@@ -30,17 +31,12 @@
 //! - **Count number formatting is UNKNOWN → rendered raw** (same rationale as
 //!   the topbar scalars in `binding.rs`): [`AlertBadge::count_text`] is
 //!   `format!("{}")` of the exact leaf, no grouping/scaling.
-//! - **Which topbar badge a single view count maps to is UNKNOWN where the
-//!   topbar shows several.** `intel` maps to `intelview_ops_available_items`
-//!   (the topbar also shows `..._prepared_or_completed_items`);
-//!   `market_contracts` maps to `non_delivering_contract_amount` (the topbar
-//!   also shows `ongoing_contract_amount`). The single view count cannot fill
-//!   both sub-badges — a data-granularity gap (see below).
-//! - **Recording-Absent sub-counts (data gap, EXTRACTION_NEEDS §A / req 9b).**
-//!   The topbar shows MORE alert badges than the view carries: decision-timeout
-//!   items, intel prepared/completed ops, delivering (ongoing) contracts, and
-//!   prototype rewards. The view serves ONE count per category, so those
-//!   sub-badges are fail-closed absent here.
+//! - **Each badge has its own typed leaf.** Available/timeout decisions,
+//!   available/prepared-or-completed intel operations, non-delivering/ongoing
+//!   market contracts, initiative, and prototype rewards are not conflated.
+//!   Prototype rewards are the exact sum of complete owner-joined D65 program
+//!   rows. An individually unavailable leaf fails closed without suppressing
+//!   independently measured categories.
 //! - **The scrolling alert FEED is a current active snapshot.** Exact-a729
 //!   closure proves that `global_alerticon_window` is backed by 0x52
 //!   type-indexed active-slot vectors. D79 carries the pointer-free slot rows;
@@ -55,7 +51,7 @@ use replay_core::{
 
 /// FILE — the alerts feed layout file (`global_alerticon_window`).
 pub const ALERTS_GUI: &str = "interface/alerts.gui";
-/// FILE — the topbar layout file carrying the four alert count badges.
+/// FILE — the topbar layout file carrying the canonical alert count badges.
 pub const TOPBAR_GUI: &str = "interface/topbar.gui";
 
 /// FILE — the alerts-feed container window (`interface/alerts.gui`).
@@ -89,8 +85,8 @@ pub enum AlertKind {
 }
 
 impl AlertKind {
-    /// All four categories in the canonical display order (left→right in the
-    /// topbar alert area).
+    /// Every category in canonical display order (left→right in the topbar
+    /// alert area). Consumers derive their count and order from this constant.
     pub const ALL: [AlertKind; 8] = [
         AlertKind::Initiative,
         AlertKind::DecisionsAvailable,
@@ -103,9 +99,7 @@ impl AlertKind {
     ];
 
     /// FILE — the `topbar.gui` `instantTextBoxType` element whose text this
-    /// count drives (`country_menu_window` alert area). Where the topbar shows
-    /// several badges for one view count, this is the primary badge and the
-    /// module header records the UNKNOWN mapping ambiguity.
+    /// count drives (`country_menu_window` alert area).
     pub fn gui_element(self) -> &'static str {
         match self {
             AlertKind::Initiative => "initiative_text",
@@ -140,7 +134,8 @@ pub struct AlertBadge {
     pub kind: AlertKind,
     /// FILE — the target `topbar.gui` element name ([`AlertKind::gui_element`]).
     pub gui_element: &'static str,
-    /// The measured count, or `None` (fail-closed) when unmeasured — never `0`.
+    /// The measured count (including measured zero), or `None` (fail-closed)
+    /// when unmeasured. No default zero is fabricated.
     pub count: Option<i64>,
     /// FIT product convention: `true` when a positive count is measured. The
     /// engine's exact zero-suppression is UNKNOWN (C++ logic, not in the
@@ -155,20 +150,22 @@ pub struct AlertBadge {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlertsStripBinding {
     pub pov_tag: String,
-    /// `true` only when the underlying [`TopbarAlerts`] view is `Present` for
-    /// this frame (mirrors [`WorldFrame::topbar_extras_status`]).
+    /// `true` when the general [`TopbarAlerts`] view is `Present`, or when the
+    /// diagnostic compatibility projection supplies a validated D65/d87 count.
+    /// Shipping decision presentation does not use this availability flag.
     pub available: bool,
-    /// The four alert badges, always in [`AlertKind::ALL`] order.
+    /// Every canonical alert badge, always in [`AlertKind::ALL`] order.
     pub badges: Vec<AlertBadge>,
 }
 
 impl AlertsStripBinding {
-    /// The badge for `kind` (always present — the strip carries all four).
+    /// The badge for `kind` (always present because the strip is derived from
+    /// [`AlertKind::ALL`]).
     pub fn badge(&self, kind: AlertKind) -> &AlertBadge {
         self.badges
             .iter()
             .find(|b| b.kind == kind)
-            .expect("AlertsStripBinding always carries all eight AlertKind badges")
+            .expect("AlertsStripBinding always carries every AlertKind::ALL badge")
     }
 }
 
@@ -195,26 +192,89 @@ fn badge_from(kind: AlertKind, alerts: Option<&TopbarAlerts>) -> AlertBadge {
     }
 }
 
-/// Build the topbar alerts strip for `pov_tag` at one world frame (U1).
+fn set_badge_count(badges: &mut [AlertBadge], kind: AlertKind, count: Option<i64>) {
+    let badge = badges
+        .iter_mut()
+        .find(|badge| badge.kind == kind)
+        .expect("AlertKind::ALL supplies every badge");
+    badge.count = count;
+    badge.badge_shown = count.is_some_and(|count| count > 0);
+    badge.count_text = count
+        .filter(|count| *count > 0)
+        .map(|count| count.to_string());
+}
+
+/// Sum prototype rewards only from the complete, owner-joined D65 view. The
+/// looser scalar projection is never accepted as independent badge authority.
+fn validated_prototype_reward_count(frame: &WorldFrame, pov_tag: &str) -> Option<i64> {
+    if frame.special_project_programs_status() != ViewStatus::Present {
+        return None;
+    }
+    match frame.special_project_programs(pov_tag) {
+        Leaf::Measured(rows) => rows.iter().try_fold(0i64, |sum, row| {
+            sum.checked_add(i64::from(row.unread_prototype_rewards))
+        }),
+        Leaf::Absent | Leaf::Unobtained => None,
+    }
+}
+
+fn compose_alerts_strip(
+    pov_tag: &str,
+    general_alerts_present: bool,
+    alerts: Option<&TopbarAlerts>,
+    exact_decisions: Option<(u32, u32)>,
+    validated_prototype_rewards: Option<i64>,
+) -> AlertsStripBinding {
+    let mut badges: Vec<_> = AlertKind::ALL
+        .iter()
+        .map(|&kind| badge_from(kind, alerts))
+        .collect();
+
+    // The scalar projection is not complete D65 authority. Replace its value
+    // even when validation failed, so malformed or stale rows cannot survive.
+    set_badge_count(
+        &mut badges,
+        AlertKind::PrototypeRewards,
+        validated_prototype_rewards,
+    );
+    if let Some((available, timeout)) = exact_decisions {
+        set_badge_count(
+            &mut badges,
+            AlertKind::DecisionsAvailable,
+            Some(i64::from(available)),
+        );
+        set_badge_count(
+            &mut badges,
+            AlertKind::DecisionsTimeout,
+            Some(i64::from(timeout)),
+        );
+    }
+    AlertsStripBinding {
+        pov_tag: pov_tag.to_string(),
+        available: general_alerts_present
+            || exact_decisions.is_some()
+            || validated_prototype_rewards.is_some(),
+        badges,
+    }
+}
+
+/// Build the nonshipping diagnostic compatibility strip for `pov_tag`.
 ///
-/// When the topbar-extras view is not `Present`, or the POV is absent from a
-/// present view, every badge is the fail-closed absent form; `available`
-/// mirrors the view status for the frame.
+/// General typed-leaf availability is owned by
+/// [`WorldFrame::topbar_alerts_status`]. When that status is not `Present`, or
+/// the POV is absent from a present view, those leaves stay fail-closed. A
+/// same-POV authenticated d87 decision panel may populate the two legacy
+/// decision badges for diagnostics. The shipping XUI19 decision route does not
+/// consume this bridge, and no other category borrows d87 authority.
 pub fn alerts_strip_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertsStripBinding {
-    let present = frame.topbar_extras_status() == ViewStatus::Present;
+    let present = frame.topbar_alerts_status() == ViewStatus::Present;
     let alerts = if present {
         frame.topbar_alerts(pov_tag)
     } else {
         None
     };
-    let mut badges: Vec<_> = AlertKind::ALL
-        .iter()
-        .map(|&kind| badge_from(kind, alerts))
-        .collect();
-    // The authenticated d87 decision-panel carrier is the exact producer
-    // result for the selected POV. Prefer it over the legacy scalar bag only
-    // when its owner tag joins this strip; a missing/mismatched carrier leaves
-    // the corresponding badge in its existing fail-closed state.
+    // Diagnostic compatibility only: project same-POV d87 counts into the
+    // legacy badge model. A missing/mismatched carrier remains fail-closed.
     let exact_decisions = frame
         .decision_panel_exact()
         .panel
@@ -223,25 +283,13 @@ pub fn alerts_strip_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertsStrip
             frame.decision_panel_exact_status() == ViewStatus::Present
                 && panel.country_tag == pov_tag
         });
-    if let Some(panel) = exact_decisions {
-        for (kind, count) in [
-            (AlertKind::DecisionsAvailable, panel.available_alert_count),
-            (AlertKind::DecisionsTimeout, panel.timeout_alert_count),
-        ] {
-            let badge = badges
-                .iter_mut()
-                .find(|badge| badge.kind == kind)
-                .expect("all decision alert kinds are present");
-            badge.count = Some(i64::from(count));
-            badge.badge_shown = count > 0;
-            badge.count_text = (count > 0).then(|| count.to_string());
-        }
-    }
-    AlertsStripBinding {
-        pov_tag: pov_tag.to_string(),
-        available: present || exact_decisions.is_some(),
-        badges,
-    }
+    compose_alerts_strip(
+        pov_tag,
+        present,
+        alerts,
+        exact_decisions.map(|panel| (panel.available_alert_count, panel.timeout_alert_count)),
+        validated_prototype_reward_count(frame, pov_tag),
+    )
 }
 
 /// One visible icon projected from an exact active-alert snapshot row.
@@ -280,9 +328,11 @@ pub fn alert_feed_binding() -> AlertFeedBinding {
 }
 
 /// Bind the exact pointer-free current-active snapshot for one POV. Any
-/// malformed family/order relation fails the whole surface closed.
+/// malformed family/order relation fails the whole surface closed. Gated on
+/// [`WorldFrame::topbar_alerts_status`], the status that owns the alerts
+/// surface (the feed lives on the same [`TopbarAlerts`] view).
 pub fn alert_feed_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertFeedBinding {
-    if frame.topbar_extras_status() != ViewStatus::Present {
+    if frame.topbar_alerts_status() != ViewStatus::Present {
         return AlertFeedBinding::default();
     }
     let Some(alerts) = frame.topbar_alerts(pov_tag) else {
@@ -435,7 +485,7 @@ mod tests {
             .iter()
             .map(|&k| badge_from(k, None))
             .collect();
-        assert_eq!(badges.len(), 8);
+        assert_eq!(badges.len(), AlertKind::ALL.len());
         assert!(badges.iter().all(|b| b.count.is_none() && !b.badge_shown));
     }
 
@@ -447,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_carries_all_four_kinds_in_order() {
+    fn strip_carries_every_canonical_kind_in_order() {
         let a = alerts(
             Leaf::Measured(1),
             Leaf::Measured(2),
@@ -459,6 +509,24 @@ mod tests {
             .map(|&k| badge_from(k, Some(&a)))
             .collect();
         let kinds: Vec<_> = badges.iter().map(|b| b.kind).collect();
+        assert_eq!(badges.len(), AlertKind::ALL.len());
         assert_eq!(kinds, AlertKind::ALL.to_vec());
+    }
+
+    #[test]
+    fn d87_only_source_makes_only_its_decision_badges_available() {
+        let strip = compose_alerts_strip("GER", false, None, Some((5, 2)), None);
+        assert!(strip.available);
+        assert_eq!(
+            strip.badge(AlertKind::DecisionsAvailable).count,
+            Some(5)
+        );
+        assert_eq!(strip.badge(AlertKind::DecisionsTimeout).count, Some(2));
+        assert!(AlertKind::ALL.into_iter().all(|kind| {
+            matches!(
+                kind,
+                AlertKind::DecisionsAvailable | AlertKind::DecisionsTimeout
+            ) || strip.badge(kind).count.is_none()
+        }));
     }
 }

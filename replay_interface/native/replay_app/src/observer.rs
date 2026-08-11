@@ -1,13 +1,15 @@
-//! E6 Observer POV mode UX.
+//! E6 observer country selection and optional fog mode.
 //!
-//! Product model (REPLAY_PRODUCTION_PLAN §0 / observer-mode directive): the
-//! default view is the omniscient world (no fog). The viewer may pick one of
-//! the session's player countries and enter its POV; a single key toggles back
-//! to the world. This module owns:
+//! Product model (observer-mode directive; `documents/DECISIONS.md` §Viewing):
+//! the
+//! default view is the omniscient world (no fog). The viewer may select any
+//! country in the complete d18 roster for replay-owned panels. Fog is a
+//! separate optional request and is admitted only when the selected country
+//! has complete current-frame d94/d95 evidence. This module owns:
 //!
 //! * [`PovState`] — the POV state object + a stateless, idempotent toggle.
-//! * [`povs_from_frame`] — the country picker source, derived from typed
-//!   `replay_core` D57 session and D68 local-player views.
+//! * [`povs_from_frame`] — the country picker source, derived from the typed
+//!   complete d18 roster, never from the session-player subset.
 //! * [`PovState::render_status`] — the fail-closed render contract: because
 //!   a selected POV requires authenticated current-frame replay inputs;
 //!   POV entry binds to the current frame's exact d94 province visibility and
@@ -17,18 +19,15 @@
 //! The POV *state* still flips on entry so the UI can show which country is
 //! observed and offer the toggle.
 //!
-//! Player-list sourcing: the session view's `player_countries` reads a
-//! top-level `session.player_countries` and, when that key is absent, falls
-//! through to `world.scenario.players` (the location snapshot-flavor
-//! recordings use). `Leaf::Absent` therefore means *neither* location carried
-//! a player-country list, and [`povs_from_session`] fails closed with
-//! [`SESSION_PLAYERS_GAP`] instead of parsing the raw snapshot behind the
-//! seam.
+//! [`povs_from_session`] remains only as a legacy/session diagnostic helper.
+//! Product country selection calls [`povs_from_frame`] and therefore cannot be
+//! restricted by multiplayer participation or recorder POV.
 
 use replay_core::{
-    Leaf, PovVisibilityView, SessionHeaderView, SessionMetadataView, SpottedUnitsView, ViewStatus,
-    WorldFrame,
+    Leaf, PovVisibilityView, SessionMetadataView, SpottedUnitsView, ViewStatus, WorldFrame,
 };
+#[cfg(test)]
+use replay_core::SessionHeaderView;
 
 /// Fail-closed diagnostic prefix for an unavailable selected-POV frame join.
 pub const POV_RECORDED_STATE_UNAVAILABLE: &str =
@@ -46,11 +45,11 @@ pub const SESSION_PLAYERS_GAP: &str = "session player-country list unavailable: 
 pub enum ObserverMode {
     /// Default omniscient world view (no fog).
     Omniscient,
-    /// Observing as a player country (by TAG).
+    /// Rendering optional fog as a country (by TAG).
     Pov(String),
 }
 
-/// One selectable player country in the picker.
+/// One selectable d18 country in the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountryChoice {
     pub tag: String,
@@ -61,7 +60,7 @@ pub struct CountryChoice {
 /// The country picker's source state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PovPicker {
-    /// One or more selectable player countries.
+    /// One or more selectable d18 countries.
     Available(Vec<CountryChoice>),
     /// No usable player-country list; carries the fail-closed reason.
     Unavailable(String),
@@ -93,6 +92,7 @@ pub enum PovRenderStatus {
 /// the one-key toggle can flip back to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PovState {
+    selected_ui_country: Option<String>,
     mode: ObserverMode,
     last_pov: Option<String>,
 }
@@ -100,6 +100,7 @@ pub struct PovState {
 impl Default for PovState {
     fn default() -> Self {
         PovState {
+            selected_ui_country: None,
             mode: ObserverMode::Omniscient,
             last_pov: None,
         }
@@ -113,6 +114,21 @@ impl PovState {
 
     pub fn mode(&self) -> &ObserverMode {
         &self.mode
+    }
+    /// Country whose replay-owned panels are open. This is independent of fog.
+    pub fn selected_ui_country(&self) -> Option<&str> {
+        self.selected_ui_country.as_deref()
+    }
+    /// Select a country for replay-owned UI without requesting fog.
+    pub fn select_ui_country(&mut self, tag: &str) {
+        self.selected_ui_country = Some(tag.to_string());
+    }
+    /// Clear both panel and fog selection after the complete roster becomes
+    /// unavailable. No previous-hour country identity is held as current.
+    pub fn clear_country_selection(&mut self) {
+        self.selected_ui_country = None;
+        self.mode = ObserverMode::Omniscient;
+        self.last_pov = None;
     }
     pub fn is_omniscient(&self) -> bool {
         matches!(self.mode, ObserverMode::Omniscient)
@@ -132,6 +148,7 @@ impl PovState {
     /// Enter a country POV. Records it as the toggle target. Entering the same
     /// tag again is idempotent (state unchanged).
     pub fn enter_pov(&mut self, tag: &str) {
+        self.selected_ui_country = Some(tag.to_string());
         self.mode = ObserverMode::Pov(tag.to_string());
         self.last_pov = Some(tag.to_string());
     }
@@ -147,7 +164,11 @@ impl PovState {
     /// starting state. With no POV ever entered, toggling is a no-op.
     pub fn toggle(&mut self) {
         self.mode = match &self.mode {
-            ObserverMode::Omniscient => match &self.last_pov {
+            ObserverMode::Omniscient => match self
+                .selected_ui_country
+                .as_ref()
+                .or(self.last_pov.as_ref())
+            {
                 Some(tag) => ObserverMode::Pov(tag.clone()),
                 None => ObserverMode::Omniscient,
             },
@@ -301,17 +322,35 @@ pub fn povs_from_session(session: &SessionMetadataView) -> PovPicker {
     }
 }
 
-/// Build the production POV picker from typed recorder carriers.
+/// Build the production observer-country picker from the complete d18 roster.
 ///
-/// D57 remains the authoritative multiplayer roster. For an ordinary
-/// single-player recording where that optional multiplayer carrier is absent,
-/// the exact D68 local-player pair supplies the one recorded POV. When both
-/// carriers exist they must agree; disagreement is unavailable rather than
-/// choosing one source.
+/// This selection controls replay-owned panels only. Choosing a country here
+/// does not request fog and therefore does not require d94/d95 evidence.
 pub fn povs_from_frame(frame: &WorldFrame) -> PovPicker {
-    povs_from_session_and_header(frame.session_metadata(), frame.session_header())
+    let roster = frame.d18_country_roster();
+    if roster.status != ViewStatus::Present {
+        return PovPicker::Unavailable(
+            roster
+                .diagnostic
+                .unwrap_or_else(|| "complete d18 country roster unavailable".into()),
+        );
+    }
+    if roster.entries.is_empty() {
+        return PovPicker::Unavailable("complete d18 country roster is empty".into());
+    }
+    PovPicker::Available(
+        roster
+            .entries
+            .into_iter()
+            .map(|country| CountryChoice {
+                tag: country.tag,
+                label: None,
+            })
+            .collect(),
+    )
 }
 
+#[cfg(test)]
 fn povs_from_session_and_header(
     session: &SessionMetadataView,
     header: &SessionHeaderView,
@@ -365,7 +404,27 @@ mod tests {
         let state = PovState::new();
         assert!(state.is_omniscient());
         assert_eq!(state.active_pov(), None);
+        assert_eq!(state.selected_ui_country(), None);
         assert_eq!(state.render_status(None), PovRenderStatus::Omniscient);
+    }
+
+    #[test]
+    fn ui_country_selection_does_not_request_fog() {
+        let mut state = PovState::new();
+        state.select_ui_country("FRA");
+        assert_eq!(state.selected_ui_country(), Some("FRA"));
+        assert_eq!(state.active_pov(), None);
+        assert_eq!(state.render_status(None), PovRenderStatus::Omniscient);
+
+        state.toggle();
+        assert_eq!(state.active_pov(), Some("FRA"));
+        assert!(matches!(
+            state.render_status(None),
+            PovRenderStatus::Unavailable { .. }
+        ));
+        state.toggle();
+        assert_eq!(state.active_pov(), None);
+        assert_eq!(state.selected_ui_country(), Some("FRA"));
     }
 
     #[test]

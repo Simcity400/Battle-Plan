@@ -15,8 +15,8 @@ use game_ui::army_orders_group::{
     ArmyOrdersGroupControls,
 };
 use game_ui::character_ui::{
-    admit_exact_cabinet, AdmittedCabinetUi, AdmittedCharacterUi, CharacterPortraitCatalog,
-    CharacterPresentationInput,
+    admit_exact_cabinet, AdmittedCabinetUi, CharacterPortraitCatalog, CharacterViewerSelection,
+    LeaderSkillCostCatalog, ObserverCharacterUi, UnitLeaderTraitCatalog,
 };
 use game_ui::combat_detail_losses::{
     admit_xui20_replay, combat_detail_losses_from_frame, Xui20FrameHour, Xui20ReplayAdmission,
@@ -30,8 +30,9 @@ use game_ui::event_chrome::{
     admit_event_history, event_definitions_by_id, load_events, AdmittedFiredEvent, EventDef,
     EventHistoryRequest,
 };
+use game_ui::loc::Localisation;
 use game_ui::national_focus::{
-    admit_exact_national_focus_presentation, AdmittedNationalFocusPresentation, FocusCatalog,
+    admit_observer_national_focus_presentation, AdmittedNationalFocusPresentation, FocusCatalog,
     FocusTreeTopology,
 };
 use game_ui::readonly_design_peace::{
@@ -39,23 +40,16 @@ use game_ui::readonly_design_peace::{
     peace_conference_snapshot_from_world, AdmittedPeaceConference,
     AdmittedSelectedDesignerIdentity, PeaceConferenceSnapshot,
 };
-use game_ui::dynamic_collection::DynamicCollectionTrace;
-use game_ui::research_canvas::{
-    admit_research_canvas, technology_canvas_request_from_replay, LocalizedTextWitness,
-    ResearchCanvasRequest, TechnologyCanvasRequest,
-};
+use game_ui::research_canvas::TechnologyCanvasRequest;
+use game_ui::research_observer::{observer_research_from_frame, ObserverResearchModel};
 use game_ui::static_research::{
-    PoliticsIdeaCatalogLabels, ResearchCatalogLabels, StaticResearchUiCatalog,
-    TechnologySharingUiView,
+    PoliticsIdeaCatalogLabels, StaticResearchUiCatalog, TechnologySharingUiView,
 };
-use game_ui::strategic_air_details::{
-    bind_strategic_air_details, StrategicAirDetailsPanel,
-};
+use game_ui::strategic_air_details::{bind_strategic_air_details, StrategicAirDetailsPanel};
 use game_ui::supply_hub_motorization::bind_supply_hub_motorization_rows;
+use game_ui::text_law::RuntimeTextContext;
 use game_ui::trade_state::{admit_trade_screen, AdmittedTradeScreen};
 use game_ui::{assets::AssetResolver, gfx::SpriteRegistry};
-use game_ui::loc::Localisation;
-use game_ui::text_law::RuntimeTextContext;
 use replay_core::agency_upgrade_controller::admit_agency_upgrade_controller_refresh;
 use replay_core::cipher_controller::admit_cipher_controller_refresh;
 use replay_core::{
@@ -119,21 +113,13 @@ pub struct DirectTransitionHistorySummary {
 /// catalog hash must match it before binding.
 #[derive(Clone, Copy, Default)]
 pub struct SelectedPovSupplementalInputs<'a> {
-    pub focus: Option<(
-        &'a FocusTreeTopology,
-        &'a FocusCatalog,
-        &'a ResearchCanvasRequest,
-    )>,
-    /// Content-admitted localisation used to measure technology-canvas text.
-    /// Geometry, order, identities, pan and clipping still come exclusively
-    /// from the recorder-owned TCV1 observation in `frame`.
-    pub technology_text: Option<&'a LocalizedTextWitness>,
+    pub focus: Option<(&'a FocusTreeTopology, &'a FocusCatalog)>,
     /// Recorder-packaged semantic research catalogs. This supplies authored
     /// technology labels and the exact D69 runtime-definition join; it never
     /// falls back to the playback machine's installed content.
     pub static_research: Option<&'a StaticResearchUiCatalog>,
     pub decisions: Option<&'a DecisionStaticCatalog>,
-    pub character: Option<(u32, &'a CharacterPresentationInput)>,
+    pub character: Option<&'a CharacterViewerSelection>,
     pub peace: Option<&'a PeaceConferenceSnapshot>,
     pub selected_battleplan_owner: Option<ArmyBattleplanOwnerKey>,
     /// Stable replay identity selected by the product UI. A raw slot index or
@@ -152,26 +138,19 @@ pub struct SelectedPovRuntimeSnapshot {
     pub agency_controller: FeatureState<AgencyControllerSummary>,
     pub cipher_controller: FeatureState<CipherControllerSummary>,
     pub national_focus: FeatureState<AdmittedNationalFocusPresentation>,
-    /// Exact current-hour technology canvas admitted directly from TCV1.
-    /// Missing carrier or incomplete content-localisation remains unavailable.
+    /// Retired TCV1 compatibility slot; product XUI09 is observer-composed.
     pub technology_canvas: FeatureState<TechnologyCanvasRequest>,
-    /// Selected-country D3 research state joined to the authenticated static
-    /// technology catalog.
-    pub research: FeatureState<ResearchCatalogLabels>,
+    pub research: FeatureState<ObserverResearchModel>,
     /// Selected-country politics idea families joined to the authenticated
     /// recorder-packaged idea catalog.
     pub politics_ideas: FeatureState<PoliticsIdeaCatalogLabels>,
     /// Global D69 membership/bonus state joined to the authenticated
     /// technology-sharing definitions.
     pub technology_sharing: FeatureState<TechnologySharingUiView>,
-    /// Exact current-hour heterogeneous collection traces, including MIO
-    /// aggregate-bonus rows. This is the production replay consumer for DCT1;
-    /// it does not reconstruct rows from authored GUI definitions.
-    pub dynamic_collections: FeatureState<Vec<DynamicCollectionTrace>>,
     pub decision_panel: FeatureState<DecisionPanelBinding>,
     pub active_abilities: FeatureState<Vec<ActiveAbilityPresentation>>,
     pub cabinet: FeatureState<AdmittedCabinetUi>,
-    pub characters: FeatureState<AdmittedCharacterUi>,
+    pub characters: FeatureState<ObserverCharacterUi>,
     pub selected_designer: FeatureState<AdmittedSelectedDesignerIdentity>,
     pub peace_conference: FeatureState<AdmittedPeaceConference>,
     pub orders_group: FeatureState<ArmyOrdersGroupControls>,
@@ -184,9 +163,9 @@ pub struct SelectedPovRuntimeSnapshot {
     pub supply_hub_motorization: FeatureState<Vec<replay_core::HubMotorizationRow>>,
     pub fired_events: FeatureState<Vec<AdmittedFiredEvent>>,
     pub direct_transitions: FeatureState<DirectTransitionHistorySummary>,
-    /// XUI15 typed classic-resource trade presentation. This is consumed on
-    /// every selected-POV refresh; pixel composition remains separately gated
-    /// on an authenticated trade-window activation/root binding.
+    /// Legacy selected-POV XUI15 semantic companion. Shipping XUI15 uses the
+    /// passive all-country carrier plus viewer-owned panel state; this field
+    /// does not gate product pixels or activation.
     pub trade: FeatureState<AdmittedTradeScreen>,
     /// Exact X4 ordered deployment hierarchy for the selected country. The
     /// inner enum preserves domain absence, unobtained capture and measured
@@ -200,6 +179,8 @@ pub struct SelectedPovRuntime {
     event_definitions: FeatureState<BTreeMap<String, EventDef>>,
     event_localisation: FeatureState<Localisation>,
     character_portraits: FeatureState<CharacterPortraitCatalog>,
+    character_traits: FeatureState<UnitLeaderTraitCatalog>,
+    character_skill_costs: FeatureState<LeaderSkillCostCatalog>,
     snapshot: SelectedPovRuntimeSnapshot,
 }
 
@@ -209,8 +190,9 @@ impl SelectedPovRuntime {
     /// authenticated replay package/VFS boundary; this crate deliberately has
     /// no compile-time dependency on machine-local `game_defs/out`.
     ///
-    /// Passing `None` keeps only XUI19 unavailable. It never falls back to an
-    /// installed game tree or a developer checkout artifact.
+    /// Passing `None` makes XUI19's authored catalogue feature-locally
+    /// unavailable. It never falls back to an installed game tree or a
+    /// developer checkout artifact.
     pub fn new_with_decision_catalog_bytes(
         resolver: &AssetResolver,
         registry: &SpriteRegistry,
@@ -238,19 +220,51 @@ impl SelectedPovRuntime {
         let event_definitions = load_events(resolver)
             .map_err(|error| error.message)
             .and_then(|corpus| {
+                // `load_events` RECORDS byte-level damage and skips the file, so
+                // a damaged mod override can simply vanish from the corpus and
+                // leave an older definition uniquely admissible. Admitting a
+                // registry built from a knowingly partial corpus would present
+                // that as the effective content.
+                if !corpus.decode_lossy_files.is_empty() {
+                    return Err(format!(
+                        "XUI21 event corpus decode destroyed bytes in {:?}",
+                        corpus.decode_lossy_files
+                    ));
+                }
                 event_definitions_by_id(&corpus)
                     .map_err(|error| format!("XUI21 event-definition registry rejected: {error:?}"))
             })
             .map(FeatureState::admitted)
-            .unwrap_or_else(|error| FeatureState::unavailable(format!(
-                "XUI21 effective event-definition registry unavailable: {error}"
-            )));
+            .unwrap_or_else(|error| {
+                FeatureState::unavailable(format!(
+                    "XUI21 effective event-definition registry unavailable: {error}"
+                ))
+            });
         let event_localisation = Localisation::load_english(resolver)
+            .map_err(|error| error.message)
+            .and_then(|loc| {
+                // `load_english` RECORDS byte-level decode damage; admitting it
+                // unconditionally would throw that record away and present
+                // mojibake as an admitted string. Line-level damage
+                // (`parse_failures`) is deliberately still tolerated here — it
+                // is the pre-existing behaviour and skipping a damaged line is
+                // the right rendering choice — but destroyed BYTES mean the
+                // strings are not the file's strings.
+                if loc.decode_lossy_files.is_empty() {
+                    Ok(loc)
+                } else {
+                    Err(format!(
+                        "localisation decode destroyed bytes in {:?}",
+                        loc.decode_lossy_files
+                    ))
+                }
+            })
             .map(FeatureState::admitted)
-            .unwrap_or_else(|error| FeatureState::unavailable(format!(
-                "XUI21 effective localisation unavailable: {}",
-                error.message
-            )));
+            .unwrap_or_else(|error| {
+                FeatureState::unavailable(format!(
+                    "XUI21 effective localisation unavailable: {error}"
+                ))
+            });
         // Prewarm the effective mod-aware character portrait declarations once
         // at product startup. Per-frame character admission then joins d47's
         // exact character/leader identities to this immutable catalog and the
@@ -263,12 +277,30 @@ impl SelectedPovRuntime {
                     error.message
                 ))
             });
+        let character_traits = UnitLeaderTraitCatalog::load(resolver)
+            .map(FeatureState::admitted)
+            .unwrap_or_else(|error| {
+                FeatureState::unavailable(format!(
+                    "XUI17 effective unit-leader trait catalog unavailable: {}",
+                    error.message
+                ))
+            });
+        let character_skill_costs = LeaderSkillCostCatalog::load(resolver)
+            .map(FeatureState::admitted)
+            .unwrap_or_else(|error| {
+                FeatureState::unavailable(format!(
+                    "XUI17 effective unit-leader skill-cost catalog unavailable: {}",
+                    error.message
+                ))
+            });
         Self {
             ability_definitions,
             decision_catalog,
             event_definitions,
             event_localisation,
             character_portraits,
+            character_traits,
+            character_skill_costs,
             snapshot: unavailable_snapshot(None, "selected POV has not been evaluated"),
         }
     }
@@ -367,57 +399,32 @@ impl SelectedPovRuntime {
         };
 
         let national_focus = match supplemental.focus {
-            Some((topology, catalog, canvas)) => match frame.focus(pov) {
-                Some(focus) => admit_exact_national_focus_presentation(
-                    focus,
-                    frame.national_focus_presentation_exact(),
-                    pov,
-                    topology,
-                    catalog,
-                    canvas,
-                )
-                .map(FeatureState::admitted)
-                .unwrap_or_else(|error| FeatureState::unavailable(error.reason)),
+            Some((topology, catalog)) => match frame.focus(pov) {
+                Some(focus) => admit_observer_national_focus_presentation(focus, topology, catalog)
+                    .map(FeatureState::admitted)
+                    .unwrap_or_else(|error| FeatureState::unavailable(error.reason)),
                 None => FeatureState::unavailable("A31 selected-country focus view absent"),
             },
-            None => FeatureState::unavailable(
-                "A31 effective focus topology/catalog/UI09 canvas not admitted",
-            ),
+            None => {
+                FeatureState::unavailable("XUI10 effective focus topology/catalog not admitted")
+            }
         };
 
-        let derived_technology_text = technology_text_witness(frame, runtime_text);
-        let technology_text = supplemental
-            .technology_text
-            .cloned()
-            .or(derived_technology_text);
-        let technology_canvas = match technology_text {
-            Some(text) => technology_canvas_request_from_replay(frame, text)
-                .and_then(|request| {
-                    admit_research_canvas(&ResearchCanvasRequest::Technology(request.clone()))
-                        .map(|_| request)
-                })
-                .map(FeatureState::admitted)
-                .unwrap_or_else(|error| FeatureState::unavailable(error.reason)),
-            None => FeatureState::unavailable(
-                "H-A29 effective technology localisation was not admitted",
-            ),
-        };
+        let technology_canvas = FeatureState::unavailable(
+            "XUI09 TCV1 selected-Present canvas is retired from product replay",
+        );
         let research = match (supplemental.static_research, frame.research(pov)) {
-            (Some(catalog), Some(view)) => catalog
-                .bind_research(view)
+            (Some(catalog), Some(_)) => observer_research_from_frame(frame, pov, catalog)
                 .map(FeatureState::admitted)
                 .unwrap_or_else(|error| FeatureState::unavailable(error.message)),
-            (Some(_), None) => FeatureState::unavailable(
-                "D3 selected-country research view is absent",
-            ),
+            (Some(_), None) => {
+                FeatureState::unavailable("D3 selected-country research view is absent")
+            }
             (None, _) => FeatureState::unavailable(
                 "recorder-packaged static research catalog was not admitted",
             ),
         };
-        let politics_ideas = match (
-            supplemental.static_research,
-            frame.politics_detail(pov),
-        ) {
+        let politics_ideas = match (supplemental.static_research, frame.politics_detail(pov)) {
             (Some(catalog), Some(view)) => catalog
                 .bind_politics_ideas(view)
                 .map(FeatureState::admitted)
@@ -429,11 +436,6 @@ impl SelectedPovRuntime {
                 "recorder-packaged static research catalog was not admitted",
             ),
         };
-        let dynamic_collections =
-            game_ui::dynamic_collection::from_replay_frame(frame)
-                .map(FeatureState::admitted)
-                .unwrap_or_else(|error| FeatureState::unavailable(error.message));
-
         let decision_catalog = supplemental
             .decisions
             .or(self.decision_catalog.value.as_ref());
@@ -474,29 +476,34 @@ impl SelectedPovRuntime {
             ),
         };
 
+        let default_character_selection = CharacterViewerSelection::default();
         let characters = match (
-            supplemental.character,
             self.character_portraits.value.as_ref(),
+            self.character_traits.value.as_ref(),
+            self.character_skill_costs.value.as_ref(),
         ) {
-            (Some((owner_tag_db_id, remaining)), Some(portraits)) =>
-                crate::character_runtime::admit_country_character_ui_with_static_portraits_and_exact_a39(
+            (Some(portraits), Some(traits), Some(skill_costs)) => {
+                crate::character_runtime::admit_country_observer_character_ui(
                     frame,
                     pov,
-                    owner_tag_db_id,
                     portraits,
+                    traits,
+                    skill_costs,
                     sprites,
-                    remaining,
+                    supplemental
+                        .character
+                        .unwrap_or(&default_character_selection),
                 )
                 .map(FeatureState::admitted)
-                .unwrap_or_else(FeatureState::unavailable),
-            (None, _) => FeatureState::unavailable(
-                "A39 remaining assignment/name/portrait presentation inputs not admitted",
-            ),
-            (_, None) => FeatureState::unavailable(
+                .unwrap_or_else(FeatureState::unavailable)
+            }
+            _ => FeatureState::unavailable(
                 self.character_portraits
                     .unavailable_reason
                     .as_deref()
-                    .unwrap_or("XUI17 effective character portrait catalog unavailable"),
+                    .or(self.character_traits.unavailable_reason.as_deref())
+                    .or(self.character_skill_costs.unavailable_reason.as_deref())
+                    .unwrap_or("XUI17 effective character/trait/skill-cost catalog unavailable"),
             ),
         };
         let cabinet = match (
@@ -506,9 +513,9 @@ impl SelectedPovRuntime {
             (Some(roster), Some(portraits)) => admit_exact_cabinet(roster, portraits, sprites)
                 .map(FeatureState::admitted)
                 .unwrap_or_else(|error| FeatureState::unavailable(error.message)),
-            (None, _) => FeatureState::unavailable(
-                "D47 selected-country character/advisor roster absent",
-            ),
+            (None, _) => {
+                FeatureState::unavailable("D47 selected-country character/advisor roster absent")
+            }
             (_, None) => FeatureState::unavailable(
                 self.character_portraits
                     .unavailable_reason
@@ -537,7 +544,8 @@ impl SelectedPovRuntime {
             runtime_text,
         ) {
             (Some(definitions), Some(localisation), Some(runtime_text))
-                if runtime_text.contexts_complete => {
+                if runtime_text.contexts_complete =>
+            {
                 let contexts = runtime_text
                     .contexts
                     .iter()
@@ -552,14 +560,17 @@ impl SelectedPovRuntime {
                     runtime_text: &contexts,
                 })
                 .map(FeatureState::admitted)
-                .unwrap_or_else(|error| FeatureState::unavailable(format!(
-                    "XUI21 fired-event history unavailable: {error:?}"
-                )))
+                .unwrap_or_else(|error| {
+                    FeatureState::unavailable(format!(
+                        "XUI21 fired-event history unavailable: {error:?}"
+                    ))
+                })
             }
             (None, _, _) => FeatureState::unavailable(
-                self.event_definitions.unavailable_reason.as_deref().unwrap_or(
-                    "XUI21 effective event-definition registry unavailable",
-                ),
+                self.event_definitions
+                    .unavailable_reason
+                    .as_deref()
+                    .unwrap_or("XUI21 effective event-definition registry unavailable"),
             ),
             (_, None, _) => FeatureState::unavailable(
                 self.event_localisation
@@ -567,12 +578,12 @@ impl SelectedPovRuntime {
                     .as_deref()
                     .unwrap_or("XUI21 effective localisation unavailable"),
             ),
-            (_, _, Some(_)) => FeatureState::unavailable(
-                "XUI21 A25 runtime-text carrier is incomplete",
-            ),
-            (_, _, None) => FeatureState::unavailable(
-                "XUI21 A25 runtime-text carrier is unavailable",
-            ),
+            (_, _, Some(_)) => {
+                FeatureState::unavailable("XUI21 A25 runtime-text carrier is incomplete")
+            }
+            (_, _, None) => {
+                FeatureState::unavailable("XUI21 A25 runtime-text carrier is unavailable")
+            }
         };
         let direct_transitions = admit_direct_transition_history(frame);
         let deployment_queue = FeatureState::admitted(deployment_queue_state(frame, pov));
@@ -611,7 +622,6 @@ impl SelectedPovRuntime {
             research,
             politics_ideas,
             technology_sharing,
-            dynamic_collections,
             decision_panel,
             active_abilities,
             cabinet,
@@ -666,100 +676,6 @@ fn admit_preferred_tactic(
             "D92/D96 preferred-tactic selection or weight failed exact admission",
         ),
     }
-}
-
-/// Bind technology-node text to the same replay hour without falling back to
-/// machine-local localisation. A25's final setter bytes are authoritative;
-/// every included technology node must have exactly one matching context.
-fn technology_text_witness(
-    frame: &WorldFrame,
-    runtime_text: Option<&RuntimeTextCatalog>,
-) -> Option<LocalizedTextWitness> {
-    let catalog = runtime_text.filter(|catalog| catalog.contexts_complete)?;
-    let observation = frame.technology_canvas_exact().observation.as_ref()?;
-    let locale = frame
-        .session_metadata()
-        .localisation_language
-        .measured()
-        .filter(|value| !value.trim().is_empty())?
-        .clone();
-    let mut required_keys = Vec::new();
-    let mut resolved_strings = BTreeMap::new();
-    for item in observation.source_items.iter().filter(|item| {
-        item.included
-            && item.kind == replay_core::TechnologyCanvasDrawableKind::TechnologyNode
-    }) {
-        let matches = catalog
-            .contexts
-            .values()
-            .filter(|record| {
-                record.frame_hour == frame.hour_index()
-                    && (record.element_id == item.stable_item_id
-                        || record.element_id == item.hierarchy_path)
-            })
-            .collect::<Vec<_>>();
-        if matches.len() != 1 || matches[0].final_text_utf8.is_empty() {
-            return None;
-        }
-        required_keys.push(item.stable_item_id.clone());
-        resolved_strings.insert(
-            item.stable_item_id.clone(),
-            matches[0].final_text_utf8.clone(),
-        );
-    }
-    if required_keys.is_empty() {
-        return None;
-    }
-    Some(LocalizedTextWitness {
-        locale: Some(locale),
-        required_keys,
-        resolved_strings,
-    })
-}
-
-/// Bind every D89-visible focus title to one exact same-hour A25 setter result.
-/// The packaged focus catalog supplies definition identity, never substitute
-/// display text; missing or ambiguous runtime text keeps A31 unavailable.
-pub(crate) fn focus_text_witness(
-    frame: &WorldFrame,
-    runtime_text: Option<&RuntimeTextCatalog>,
-) -> Option<LocalizedTextWitness> {
-    let catalog = runtime_text.filter(|catalog| catalog.contexts_complete)?;
-    let presentation = frame
-        .national_focus_presentation_exact()
-        .presentation
-        .as_ref()?;
-    let locale = frame
-        .session_metadata()
-        .localisation_language
-        .measured()
-        .filter(|value| !value.trim().is_empty())?
-        .clone();
-    let mut required_keys = Vec::with_capacity(presentation.items.len());
-    let mut resolved_strings = BTreeMap::new();
-    for item in &presentation.items {
-        let matches = catalog
-            .contexts
-            .values()
-            .filter(|record| {
-                record.frame_hour == frame.hour_index()
-                    && record.element_id == item.focus_id
-            })
-            .collect::<Vec<_>>();
-        if matches.len() != 1 || matches[0].final_text_utf8.is_empty() {
-            return None;
-        }
-        required_keys.push(item.focus_id.clone());
-        resolved_strings.insert(item.focus_id.clone(), matches[0].final_text_utf8.clone());
-    }
-    if required_keys.is_empty() {
-        return None;
-    }
-    Some(LocalizedTextWitness {
-        locale: Some(locale),
-        required_keys,
-        resolved_strings,
-    })
 }
 
 fn admit_direct_transition_history(
@@ -853,10 +769,7 @@ fn admit_battleplan_panel(
     FeatureState::admitted(panel)
 }
 
-fn unavailable_snapshot(
-    pov: Option<&str>,
-    reason: &str,
-) -> SelectedPovRuntimeSnapshot {
+fn unavailable_snapshot(pov: Option<&str>, reason: &str) -> SelectedPovRuntimeSnapshot {
     SelectedPovRuntimeSnapshot {
         pov_country: pov.map(str::to_string),
         topbar: FeatureState::unavailable(reason),
@@ -868,7 +781,6 @@ fn unavailable_snapshot(
         research: FeatureState::unavailable(reason),
         politics_ideas: FeatureState::unavailable(reason),
         technology_sharing: FeatureState::unavailable(reason),
-        dynamic_collections: FeatureState::unavailable(reason),
         decision_panel: FeatureState::unavailable(reason),
         active_abilities: FeatureState::unavailable(reason),
         cabinet: FeatureState::unavailable(reason),
@@ -905,7 +817,6 @@ mod tests {
             snapshot.research.unavailable_reason.as_deref(),
             snapshot.politics_ideas.unavailable_reason.as_deref(),
             snapshot.technology_sharing.unavailable_reason.as_deref(),
-            snapshot.dynamic_collections.unavailable_reason.as_deref(),
             snapshot.decision_panel.unavailable_reason.as_deref(),
             snapshot.active_abilities.unavailable_reason.as_deref(),
             snapshot.cabinet.unavailable_reason.as_deref(),
@@ -916,7 +827,10 @@ mod tests {
             snapshot.battleplan_panel.unavailable_reason.as_deref(),
             snapshot.combat_detail.unavailable_reason.as_deref(),
             snapshot.strategic_air_details.unavailable_reason.as_deref(),
-            snapshot.supply_hub_motorization.unavailable_reason.as_deref(),
+            snapshot
+                .supply_hub_motorization
+                .unavailable_reason
+                .as_deref(),
             snapshot.fired_events.unavailable_reason.as_deref(),
             snapshot.direct_transitions.unavailable_reason.as_deref(),
             snapshot.trade.unavailable_reason.as_deref(),

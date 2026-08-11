@@ -24,6 +24,9 @@ replay_interface/re_evidence/rendering_laws/XN15L/stage_so_census.json text eol=
 replay_interface/re_evidence/rendering_laws/M02/production_interleave_closure/contract.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.sha256 text eol=lf
+# Exact-a729 shader fixture: source bytes intentionally retain shader-language
+# trailing whitespace and are hash-authenticated by XUI23 tests and receipts.
+replay_interface/native/replay_app/tests/fixtures/exact_a729/progress.shader text eol=lf whitespace=-trailing-space,-space-before-tab
 
 # These Python fixtures are byte-pinned by the offline save-oracle manifest.
 # Preserve their established checkout representation on every host.
@@ -58,6 +61,18 @@ replay_interface/re_evidence/rendering_laws/refresh_c04_t00_t01_pins.py text eol
 # SHA-256 constant in xui21_registry.rs. Any newline normalisation on checkout
 # changes the bytes and fails that check, so keep it exact on every platform.
 extractor/game_defs/out/fired_event_registry.json -text
+
+# Replay freeze artifacts and exact evidence are hash-bound. Keep checkout
+# representation byte-stable on every host.
+replay_interface/re_evidence/rendering_laws/XUI27/** text eol=lf
+replay_interface/re_evidence/rendering_laws/XUI11/** text eol=lf
+replay_interface/re_evidence/rendering_laws/XUI20/** text eol=lf
+replay_interface/re_evidence/rendering_laws/XUI19/*.json text eol=lf
+replay_interface/re_evidence/rendering_laws/XUI19/*.md text eol=lf
+replay_interface/re_evidence/rendering_laws/XUI19/evidence/*.json text eol=lf
+# Exact Ghidra decompiles retain their raw export bytes and are hash-pinned.
+replay_interface/re_evidence/rendering_laws/XUI19/evidence/*.decompile.c -text -diff
+replay_interface/re_evidence/rendering_laws/replay_promotion/*.md text eol=lf
 
 # The three C07 tree-library artifacts are emitted whole by
 # replay_interface/re_evidence/rendering_laws/C07/build_c07_portable_tree_library.py

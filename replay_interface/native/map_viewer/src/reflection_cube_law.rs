@@ -56,14 +56,14 @@ pub(crate) const REFLECTION_CUBE_DDS_SOURCE: &str = "map/terrain/reflection.dds"
 /// packed (no per-row padding — that padding is re-applied at repack time from
 /// the captured subresource metadata).
 #[derive(Debug)]
-struct DdsCube {
-    width: usize,
-    height: usize,
-    mips: usize,
+pub(crate) struct DdsCube {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) mips: usize,
     /// Always 6 for a valid cube (asserted in [`parse_reflection_dds`]).
-    faces: usize,
+    pub(crate) faces: usize,
     /// Legacy header stripped: 6 faces × tight mip chain of BGRA8 texels.
-    payload: Vec<u8>,
+    pub(crate) payload: Vec<u8>,
 }
 
 fn u32le(data: &[u8], off: usize) -> Result<u32> {
@@ -77,7 +77,7 @@ fn u32le(data: &[u8], off: usize) -> Result<u32> {
 /// uncompressed 32bpp BGRA cubemap with all 6 faces. Fail closed on anything
 /// else so a modded cube of a different byte contract never silently produces a
 /// wrong-but-valid buffer.
-fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
+pub(crate) fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
     if data.get(0..4) != Some(b"DDS ") {
         return Err(format!("{path}: not a DDS file (missing 'DDS ' magic)").into());
     }
@@ -637,6 +637,10 @@ mod tests {
     /// in CI (where those bundle/game assets are absent) and is run explicitly
     /// against the checked-out capture. Set the env var to run it.
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn gate_vanilla_reflection_dds_decodes_to_captured_payload_fnv() {
         // Self-contained capture-equality proof (no capture corpus needed on
         // disk): the captured ReflectionCubeMap upload payload measured
@@ -646,12 +650,7 @@ mod tests {
         // REAL shipped map/terrain/reflection.dds through the resolver into
         // the captured 128-aligned layout must reproduce exactly that byte
         // stream, so the runtime resolver-decode is a byte-noop for vanilla.
-        let game_dir =
-            std::path::PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
-        if !game_dir.is_dir() {
-            eprintln!("skipping vanilla reflection FNV gate: vanilla install absent");
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let binding = vanilla_reflection_binding(256, 9);
         assert_eq!(
@@ -676,17 +675,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_reflection_cube_proof),
+        ignore = "REFLECTION_CUBE_PROOF_DIR naming a directory with reflection.dds and cap_c.bin"
+    )]
     fn resolver_decode_byte_equals_captured_payload_from_assets() {
-        let Ok(asset_dir) = std::env::var("REFLECTION_CUBE_PROOF_DIR") else {
-            eprintln!(
-                "skipping resolver-decode proof: set REFLECTION_CUBE_PROOF_DIR to a dir with \
-                 reflection.dds + cap_c.bin"
-            );
-            return;
-        };
-        let asset_dir = std::path::PathBuf::from(asset_dir);
+        let asset_dir = replay_test_gates::require_dir_from_env("REFLECTION_CUBE_PROOF_DIR");
         let dds_src = asset_dir.join("reflection.dds");
-        let captured = std::fs::read(asset_dir.join("cap_c.bin")).expect("read cap_c.bin");
+        replay_test_gates::require_existing_file(&dds_src);
+        let captured_path = asset_dir.join("cap_c.bin");
+        replay_test_gates::require_existing_file(&captured_path);
+        let captured = std::fs::read(captured_path).expect("read cap_c.bin");
         assert_eq!(captured.len(), 2_112_768, "captured payload length");
         assert_eq!(
             fnv1a64(&captured),

@@ -25,8 +25,8 @@ fn view() -> ScriptedGuiView {
     let captured = ScriptedGuiRuntimeInputs {
         manager_order_index: Leaf::Absent,
         definition: Leaf::Absent,
-        // Conflicts with the locally decidable visible block below. The local
-        // result must win; captured values are fallback-only.
+        // Conflicts with the locally decidable visible block below. The exact
+        // captured engine result is authoritative.
         visible: EngineMaterialized {
             value: Leaf::Measured(false),
             unavailable_reason: None,
@@ -35,13 +35,23 @@ fn view() -> ScriptedGuiView {
             value: Leaf::Measured(true),
             unavailable_reason: None,
         },
-        triggers: BTreeMap::from([(
-            "engine_visible".to_string(),
-            EngineMaterialized {
-                value: Leaf::Measured(true),
-                unavailable_reason: None,
-            },
-        )]),
+        triggers: BTreeMap::from([
+            ("score_visible".to_string(), EngineMaterialized {
+                value: Leaf::Measured(false), unavailable_reason: None,
+            }),
+            ("increment_click_enabled".to_string(), EngineMaterialized {
+                value: Leaf::Measured(true), unavailable_reason: None,
+            }),
+            ("disabled_click_enabled".to_string(), EngineMaterialized {
+                value: Leaf::Measured(false), unavailable_reason: None,
+            }),
+            ("engine_visible".to_string(), EngineMaterialized {
+                value: Leaf::Measured(true), unavailable_reason: None,
+            }),
+            ("engine_gate_click_enabled".to_string(), EngineMaterialized {
+                value: Leaf::Measured(true), unavailable_reason: None,
+            }),
+        ]),
         properties: BTreeMap::from([
             (
                 "portrait.image".to_string(),
@@ -58,13 +68,20 @@ fn view() -> ScriptedGuiView {
                 },
             ),
         ]),
-        effect_enabled: BTreeMap::from([(
-            "engine_gate_click".to_string(),
-            EngineMaterialized {
-                value: Leaf::Measured(true),
-                unavailable_reason: None,
-            },
-        )]),
+        effect_enabled: BTreeMap::from([
+            ("increment_click".to_string(), EngineMaterialized {
+                value: Leaf::Measured(true), unavailable_reason: None,
+            }),
+            ("engine_only_click".to_string(), EngineMaterialized {
+                value: Leaf::Measured(true), unavailable_reason: None,
+            }),
+            ("engine_gate_click".to_string(), EngineMaterialized {
+                value: Leaf::Measured(true), unavailable_reason: None,
+            }),
+            ("disabled_click".to_string(), EngineMaterialized {
+                value: Leaf::Measured(false), unavailable_reason: None,
+            }),
+        ]),
     };
     ScriptedGuiView {
         status: ViewStatus::Present,
@@ -178,15 +195,18 @@ scripted_gui = {
     let state = ScriptedGuiRuntimeState::from_view(&replay_view, "TST");
     let captured = captured_inputs_for(&replay_view, "TST", "mod_panel");
     let evaluated = evaluate_registered_gui(&registry, &replay_view, "TST", "mod_panel").unwrap();
-    assert_eq!(evaluated.visible, Truth::True);
+    assert_eq!(evaluated.visible, Truth::False);
     assert_eq!(evaluated.enabled, Truth::True);
-    assert_eq!(evaluated.triggers["score_visible"], Truth::True);
+    assert_eq!(evaluated.triggers["score_visible"], Truth::False);
     assert_eq!(evaluated.triggers["engine_visible"], Truth::True);
     assert_eq!(evaluated.effect_enabled["increment_click"], Truth::True);
     assert_eq!(evaluated.effect_enabled["engine_gate_click"], Truth::True);
     assert_eq!(
         evaluated.properties["meter.frame"],
-        EvaluatedProperty::Number { value: 3.0 }
+        EvaluatedProperty::String {
+            value: "99".to_string(),
+            captured: true,
+        }
     );
     assert_eq!(
         evaluated.properties["portrait.image"],
@@ -213,14 +233,16 @@ scripted_gui = {
     ));
     assert_eq!(state.country_variables.as_ref().unwrap()["score"], 3.0);
 
-    // Concrete replay-side values win over a conflicting captured fallback.
+    // Exact captured engine values win over conflicting replay-local values.
     assert_eq!(
         evaluated.properties["meter.frame"],
-        EvaluatedProperty::Number { value: 3.0 }
+        EvaluatedProperty::String {
+            value: "99".to_string(),
+            captured: true,
+        }
     );
 
-    // Missing local state consults the exact residual carrier rather than
-    // silently dropping a variable-backed dynamic property.
+    // Removing local state cannot change an exact captured engine result.
     let mut missing_variable_view = view();
     missing_variable_view
         .by_country
@@ -233,6 +255,42 @@ scripted_gui = {
             value: "99".to_string(),
             captured: true,
         }
+    );
+
+    // Explicit engine unavailability remains unavailable even though the
+    // replay-local authored predicate and variable expression are decidable.
+    let mut unavailable_view = view();
+    let Some(Leaf::Measured(guis)) = unavailable_view.runtime_by_country.get_mut("TST") else {
+        panic!("captured GUI map missing")
+    };
+    let unavailable_inputs = guis.get_mut("mod_panel").unwrap();
+    unavailable_inputs.visible.value = Leaf::Unobtained;
+    unavailable_inputs
+        .properties
+        .get_mut("meter.frame")
+        .unwrap()
+        .value = Leaf::Unobtained;
+    unavailable_inputs
+        .triggers
+        .get_mut("score_visible")
+        .unwrap()
+        .value = Leaf::Unobtained;
+    unavailable_inputs
+        .effect_enabled
+        .get_mut("increment_click")
+        .unwrap()
+        .value = Leaf::Unobtained;
+    let unavailable =
+        evaluate_registered_gui(&registry, &unavailable_view, "TST", "mod_panel").unwrap();
+    assert_eq!(unavailable.visible, Truth::Unavailable);
+    assert_eq!(
+        unavailable.properties["meter.frame"],
+        EvaluatedProperty::Unavailable
+    );
+    assert_eq!(unavailable.triggers["score_visible"], Truth::Unavailable);
+    assert_eq!(
+        unavailable.effect_enabled["increment_click"],
+        Truth::Unavailable
     );
 
     // Definition-level enabled participates in every effect gate. A captured
@@ -256,6 +314,57 @@ scripted_gui = {
         ),
         Err(EffectApplyError::Disabled)
     ));
+}
+
+#[test]
+fn dynamic_lists_require_an_exact_ordered_runtime_carrier() {
+    let root = temp_root("dynamic_list_refusal");
+    fs::write(
+        root.join("common/scripted_guis/list.txt"),
+        r#"
+scripted_gui = {
+  list_panel = {
+    context_type = decision_category
+    window_name = list_window
+    dynamic_lists = {
+      rows = { array = runtime_rows value = row_value index = row_index }
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+    let registry = load_scripted_gui_registry(&AssetResolver::new(vec![root.clone()])).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert!(!registry.production_admitted());
+    assert!(registry
+        .source_issues
+        .iter()
+        .any(|issue| issue.contains("authenticated ordered array/value/scope carrier")));
+}
+
+#[test]
+fn only_one_outer_eof_closure_is_engine_tolerated() {
+    let root = temp_root("outer_eof");
+    fs::write(
+        root.join("common/scripted_guis/outer_eof.txt"),
+        "scripted_gui = { exact = { context_type = decision_category window_name = exact }",
+    )
+    .unwrap();
+    let registry = load_scripted_gui_registry(&AssetResolver::new(vec![root.clone()])).unwrap();
+    assert!(registry.production_admitted(), "{:?}", registry.source_issues);
+    assert_eq!(registry.engine_tolerated_eof_closures.len(), 1);
+
+    fs::write(
+        root.join("common/scripted_guis/outer_eof.txt"),
+        "scripted_gui = { broken = { context_type = decision_category",
+    )
+    .unwrap();
+    let truncated = load_scripted_gui_registry(&AssetResolver::new(vec![root.clone()])).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert!(!truncated.production_admitted());
+    assert!(truncated.engine_tolerated_eof_closures.is_empty());
+    assert!(truncated.source_issues.len() >= 2);
 }
 
 #[test]

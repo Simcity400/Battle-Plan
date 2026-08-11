@@ -15,6 +15,9 @@ pub struct AssetResolver {
     content_manifest_digest: Option<String>,
     product_modset_sha256: Option<String>,
     admitted_content: Option<BTreeMap<String, replay_core::UsedContentKey>>,
+    /// Owns the immutable snapshot backing `restricted_files`. Paths must not
+    /// outlive the admission bytes they name.
+    admission_lease: Option<map_viewer::ContentAdmissionLease>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +51,7 @@ impl AssetResolver {
             content_manifest_digest: None,
             product_modset_sha256: None,
             admitted_content: None,
+            admission_lease: None,
         }
     }
 
@@ -89,6 +93,7 @@ impl AssetResolver {
             content_manifest_digest: None,
             product_modset_sha256: None,
             admitted_content: None,
+            admission_lease: None,
         })
     }
 
@@ -118,6 +123,7 @@ impl AssetResolver {
             .restrict_to(required)
             .map_err(|error| GameUiError::missing(error.to_string()))?;
         let mut assets = Self::from_restricted_game_files(&restricted)?;
+        assets.admission_lease = resolver.content_admission_lease();
         assets.content_manifest_digest = Some(admission.manifest_digest_sha256().to_string());
         assets.product_modset_sha256 = Some(admission.product_modset_sha256().to_string());
         assets.admitted_content = Some(
@@ -144,6 +150,24 @@ impl AssetResolver {
         resolver: &map_viewer::GameFileResolver,
         admission: &replay_core::ValidatedContentAdmission,
         rows: impl IntoIterator<Item = replay_core::UsedContentKey>,
+    ) -> Result<Self> {
+        Self::from_used_content_rows_with_engine_spellings(
+            resolver,
+            admission,
+            rows,
+            BTreeMap::new(),
+        )
+    }
+
+    /// Restricted product resolver with independently authenticated,
+    /// case-preserved engine enumeration spellings. Lookup and portable
+    /// identity remain case-folded; only parse-order provenance uses these
+    /// spellings.
+    pub fn from_used_content_rows_with_engine_spellings(
+        resolver: &map_viewer::GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission,
+        rows: impl IntoIterator<Item = replay_core::UsedContentKey>,
+        engine_spellings: BTreeMap<String, String>,
     ) -> Result<Self> {
         if !resolver.has_content_admission() {
             return Err(GameUiError::missing(
@@ -186,6 +210,25 @@ impl AssetResolver {
             .restrict_to(required)
             .map_err(|error| GameUiError::missing(error.to_string()))?;
         let mut assets = Self::from_restricted_game_files(&restricted)?;
+        assets.admission_lease = resolver.content_admission_lease();
+        for (path, spelling) in engine_spellings {
+            let folded = normalize_rel_path(&path).to_ascii_lowercase();
+            if normalize_rel_path(&spelling).to_ascii_lowercase() != folded {
+                return Err(GameUiError::parse(format!(
+                    "authenticated engine spelling {spelling:?} disagrees with {path:?}"
+                )));
+            }
+            let file = assets
+                .restricted_files
+                .as_mut()
+                .and_then(|files| files.get_mut(&folded))
+                .ok_or_else(|| {
+                    GameUiError::missing(format!(
+                        "authenticated engine spelling names unselected content {path:?}"
+                    ))
+                })?;
+            file.rel_path = normalize_rel_path(&spelling);
+        }
         assets.content_manifest_digest = Some(admission.manifest_digest_sha256().to_string());
         assets.product_modset_sha256 = Some(admission.product_modset_sha256().to_string());
         assets.admitted_content = Some(
@@ -261,6 +304,7 @@ impl AssetResolver {
             .restrict_to(required)
             .map_err(|error| GameUiError::missing(error.to_string()))?;
         let mut assets = Self::from_restricted_game_files(&restricted)?;
+        assets.admission_lease = resolver.content_admission_lease();
         assets.content_manifest_digest = Some(admission.manifest_digest_sha256().to_string());
         assets.product_modset_sha256 = Some(admission.product_modset_sha256().to_string());
         assets.admitted_content = Some(
@@ -281,6 +325,15 @@ impl AssetResolver {
         self.admitted_content
             .as_ref()?
             .get(&normalize_rel_path(rel_path).to_ascii_lowercase())
+    }
+
+    /// Whether this resolver is the portable, manifest-bound product
+    /// capability rather than a raw install/user-data probe.
+    pub fn has_portable_content_admission(&self) -> bool {
+        self.restricted_files.is_some()
+            && self.content_manifest_digest.is_some()
+            && self.product_modset_sha256.is_some()
+            && self.admitted_content.is_some()
     }
 
     pub fn from_runtime_userdir(game_root: &Path, userdata: &Path) -> Result<Self> {
@@ -387,6 +440,7 @@ impl AssetResolver {
             content_manifest_digest: None,
             product_modset_sha256: None,
             admitted_content: None,
+            admission_lease: None,
         })
     }
 
@@ -512,6 +566,10 @@ impl AssetResolver {
             }
             "tga" => {
                 let decoded = tga::decode_file(&resolved.path)?;
+                (decoded.format, decoded.image)
+            }
+            "png" => {
+                let decoded = crate::png::decode_file(&resolved.path)?;
                 (decoded.format, decoded.image)
             }
             _ => {

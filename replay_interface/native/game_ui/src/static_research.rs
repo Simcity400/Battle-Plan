@@ -159,6 +159,29 @@ impl StaticResearchUiCatalog {
             })
     }
 
+    /// Effective authored technology definitions from authenticated replay
+    /// package bytes; no playback-machine VFS participates.
+    pub fn technology_definitions(
+        &self,
+    ) -> impl Iterator<Item = (&str, &IdeaTechnologyDefinition)> {
+        self.admitted.idea_technology().technologies()
+    }
+
+    /// Stable authored folder identities available to viewer-owned XUI09
+    /// navigation. Empty/coordinate-less rows are not selectable.
+    pub fn authored_technology_folders(&self) -> BTreeSet<String> {
+        self.technology_definitions()
+            .flat_map(|(_, definition)| definition.authored_folders.iter())
+            .filter_map(|folder| {
+                (folder.x.is_some() && folder.y.is_some())
+                    .then(|| folder.name.as_deref())
+                    .flatten()
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
     pub fn idea_definition(&self, id: &str) -> Result<&IdeaTechnologyDefinition> {
         self.admitted.idea_technology().idea(id).ok_or_else(|| {
             GameUiError::missing(format!(

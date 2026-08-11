@@ -43,41 +43,148 @@ pub struct TextColorTable {
 }
 
 impl TextColorTable {
+    /// Construct the exact font-local-first / graphics-global-fallback table
+    /// from authenticated ordered entries. Earlier entries win duplicates,
+    /// matching exact-a729's table parser.
+    pub fn from_authenticated_ordered_components(
+        tables: &[Vec<(String, Vec<String>)>],
+    ) -> Result<Self> {
+        let mut colors = BTreeMap::new();
+        for table in tables {
+            for (key, components) in table {
+                let mut chars = key.chars();
+                let (Some(code), None) = (chars.next(), chars.next()) else {
+                    return Err(crate::GameUiError::parse(format!(
+                        "authenticated textcolors key {key:?} is not one character"
+                    )));
+                };
+                let components = components
+                    .iter()
+                    .map(|component| {
+                        component.parse::<u32>().map_err(|_| {
+                            crate::GameUiError::parse(format!(
+                                "authenticated textcolors {code} has a non-numeric component"
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let [r, g, b] = components[..] else {
+                    return Err(crate::GameUiError::parse(format!(
+                        "authenticated textcolors {code} has {} components, need 3",
+                        components.len()
+                    )));
+                };
+                if [r, g, b].into_iter().any(|component| component > 255) {
+                    return Err(crate::GameUiError::parse(format!(
+                        "authenticated textcolors {code} has a component above 255"
+                    )));
+                }
+                colors.entry(code).or_insert([r as u8, g as u8, b as u8]);
+            }
+        }
+        Ok(Self { colors })
+    }
+
     /// Parse the `bitmapfonts.textcolors` block out of an already-parsed
     /// `core.gfx` root value. Case is preserved (the Clausewitz parser keeps
     /// raw key text), so `b`/`B` and `g`/`G` stay distinct.
-    pub fn from_core_gfx_value(root: &Value) -> Self {
+    ///
+    /// Every departure from the shipped shape is a typed refusal. Previously a
+    /// missing block returned an empty table, malformed entries were dropped,
+    /// and out-of-range components were clamped to 255 (R11 C7) — three ways
+    /// for a damaged `core.gfx` to become indistinguishable from a file with
+    /// no colours at all. Measured against the game 1.19.2's `interface/core.gfx`:
+    /// 23 entries, every key exactly one character, every value exactly three
+    /// components, none above 255 — this refuses nothing shipped.
+    pub fn from_core_gfx_value(root: &Value) -> Result<Self> {
         let mut colors = BTreeMap::new();
         let Some(bitmapfonts) = root.first_value_ci("bitmapfonts") else {
-            return Self { colors };
+            return Err(crate::GameUiError::parse(
+                "core.gfx has no bitmapfonts block",
+            ));
         };
         let Some(textcolors) = bitmapfonts.first_value_ci("textcolors") else {
-            return Self { colors };
+            return Err(crate::GameUiError::parse(
+                "core.gfx bitmapfonts block has no textcolors table",
+            ));
         };
         for entry in textcolors.fields() {
             let Some(key) = entry.key.as_deref() else {
-                continue;
+                return Err(crate::GameUiError::parse(
+                    "core.gfx textcolors has an anonymous entry",
+                ));
             };
             let mut chars = key.chars();
             let (Some(code), None) = (chars.next(), chars.next()) else {
-                continue; // colour codes are single characters
+                return Err(crate::GameUiError::parse(format!(
+                    "core.gfx textcolors key {key:?} is not a single-character colour code"
+                )));
             };
-            let components: Vec<u8> = block_items(&entry.value)
-                .filter_map(|item| scalar_u32(item))
-                .map(|value| value.min(255) as u8)
-                .collect();
-            if let [r, g, b] = components[..] {
-                colors.insert(code, [r, g, b]);
+            let components = block_items(&entry.value)
+                .map(|item| {
+                    scalar_u32(item).ok_or_else(|| {
+                        crate::GameUiError::parse(format!(
+                            "core.gfx textcolors {code} has a non-numeric component"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<u32>>>()?;
+            let [r, g, b] = components[..] else {
+                return Err(crate::GameUiError::parse(format!(
+                    "core.gfx textcolors {code} has {} components, need 3",
+                    components.len()
+                )));
+            };
+            if let Some(out_of_range) = [r, g, b].into_iter().find(|value| *value > 255) {
+                return Err(crate::GameUiError::parse(format!(
+                    "core.gfx textcolors {code} component {out_of_range} exceeds 255"
+                )));
             }
+            colors.entry(code).or_insert([r as u8, g as u8, b as u8]);
         }
-        Self { colors }
+        Ok(Self { colors })
     }
 
     /// Load + parse `interface/core.gfx` through the mod-aware resolver.
+    /// Absence of the file is an error here; callers that legitimately run
+    /// without one want [`Self::load_optional`].
     pub fn load(resolver: &AssetResolver) -> Result<Self> {
         let resolved = resolver.resolve_file("interface/core.gfx")?;
-        let doc = parse_file(&resolved.path)?;
-        Ok(Self::from_core_gfx_value(&doc.root))
+        Self::load_resolved(&resolved.path)
+    }
+
+    /// Load the colour table when the effective VFS has a `core.gfx`.
+    ///
+    /// `Ok(None)` means exactly one thing: this VFS has no `interface/core.gfx`
+    /// at all, so text renders in the base colour with codes stripped. A file
+    /// that exists but cannot be read or parsed is a typed error, never a
+    /// silent colourless render.
+    pub fn load_optional(resolver: &AssetResolver) -> Result<Option<Self>> {
+        let Some(resolved) = resolver.resolve_optional_file("interface/core.gfx")? else {
+            return Ok(None);
+        };
+        Self::load_resolved(&resolved.path).map(Some)
+    }
+
+    fn load_resolved(path: &std::path::Path) -> Result<Self> {
+        let doc = parse_file(path)?;
+        // Consistent with `font::bitmap_font_dependency_paths`, which already
+        // refuses to read a font alias out of a recovery-parsed core.gfx.
+        if !doc.recoveries.is_empty() {
+            return Err(crate::GameUiError::parse(format!(
+                "core.gfx parse required recovery at {}: {:?}",
+                path.display(),
+                doc.recoveries
+                    .iter()
+                    .take(4)
+                    .map(|recovery| format!(
+                        "{}:{} {}",
+                        recovery.line, recovery.column, recovery.message
+                    ))
+                    .collect::<Vec<_>>()
+            )));
+        }
+        Self::from_core_gfx_value(&doc.root)
     }
 
     /// RGB for a colour code, or `None` if the code is not in the shipped
@@ -329,7 +436,73 @@ mod tests {
             }
             "#,
         );
-        TextColorTable::from_core_gfx_value(&doc.root)
+        TextColorTable::from_core_gfx_value(&doc.root).expect("shipped-shape textcolors")
+    }
+
+    #[test]
+    fn a_damaged_colour_table_is_a_refusal_not_an_empty_table() {
+        // R11 C7: missing blocks returned an empty table, malformed entries
+        // were dropped and >255 components were clamped, so an unreadable
+        // core.gfx was indistinguishable from one with no colours.
+        let cases = [
+            ("bitmapfonts = { }", "no textcolors table"),
+            ("something_else = { }", "no bitmapfonts block"),
+            (
+                "bitmapfonts = { textcolors = { GG = { 1 2 3 } } }",
+                "not a single-character colour code",
+            ),
+            (
+                "bitmapfonts = { textcolors = { G = { 1 2 } } }",
+                "components, need 3",
+            ),
+            (
+                "bitmapfonts = { textcolors = { G = { 1 2 300 } } }",
+                "exceeds 255",
+            ),
+        ];
+        for (source, expected) in cases {
+            let doc = parse_str(source);
+            let err = TextColorTable::from_core_gfx_value(&doc.root)
+                .expect_err("damaged colour table must be refused");
+            assert!(err.message.contains(expected), "{source}: {err}");
+        }
+    }
+
+    #[test]
+    fn authenticated_font_local_textcolors_win_and_duplicates_are_first_wins() {
+        let tables = vec![
+            vec![
+                ("G".to_string(), vec!["1".into(), "2".into(), "3".into()]),
+                ("G".to_string(), vec!["9".into(), "9".into(), "9".into()]),
+            ],
+            vec![
+                ("G".to_string(), vec!["4".into(), "5".into(), "6".into()]),
+                ("R".to_string(), vec!["7".into(), "8".into(), "9".into()]),
+            ],
+        ];
+        let table = TextColorTable::from_authenticated_ordered_components(&tables).unwrap();
+        assert_eq!(table.colors[&'G'], [1, 2, 3]);
+        assert_eq!(table.colors[&'R'], [7, 8, 9]);
+    }
+
+    #[test]
+    fn absent_core_gfx_is_none_and_a_broken_one_is_an_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "game_ui_markup_core_gfx_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(dir.join("interface")).unwrap();
+        let resolver = AssetResolver::new(vec![dir.clone()]);
+        // No core.gfx at all: base-colour rendering is the documented
+        // fail-closed behaviour, reported as an explicit None.
+        assert_eq!(TextColorTable::load_optional(&resolver).unwrap(), None);
+
+        // Present but with no usable colour table: an error, not a None.
+        std::fs::write(dir.join("interface").join("core.gfx"), b"spriteTypes = { }").unwrap();
+        TextColorTable::load_optional(&resolver)
+            .expect_err("a present-but-tableless core.gfx must be an error");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

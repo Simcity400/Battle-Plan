@@ -175,9 +175,9 @@ fn snapshot_100() -> Value {
         },
         "order_of_battle": {
             "fleets": [
-                { "id": "fleet-1", "owner": "GER", "name": "Baltic Fleet",
+                { "id": 1, "owner": "GER", "name": "Baltic Fleet",
                   "task_forces": [
-                    { "id": "tf-1", "owner": "GER", "location_province": 321,
+                    { "id": 2, "owner": "GER", "location_province": 321,
                       "dominant_hull_class": "destroyer",
                       "ships": [
                         { "id": "ship-1", "definition": "destroyer", "organisation": 0.9,
@@ -187,7 +187,7 @@ fn snapshot_100() -> Value {
                   ] }
             ],
             "air_wings": [
-                { "id": "wing-1", "owner": "GER", "name": "JG 1", "count": 120,
+                { "id": 3, "owner": "GER", "name": "JG 1", "count": 120,
                   "experience": 0.3, "manpower": 240, "mission": "air_superiority",
                   "strategic_region": 42, "air_base": "1000:1", "state_id": 10,
                   "plane_definition": "fighter_equipment_0", "effective_planes": 118,
@@ -828,7 +828,7 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(d7_unit.equipment, Leaf::Unobtained);
 
     assert_eq!(f100.fleets_status(), ViewStatus::Present);
-    assert_eq!(f100.fleets()[0].task_force_uid, "tf-1");
+    assert_eq!(f100.fleets()[0].task_force_uid, "2");
     assert_eq!(f100.fleets()[0].ship_count, Leaf::Measured(1));
     assert_eq!(
         f100.fleets()[0].dominant_hull_class,
@@ -839,7 +839,7 @@ fn dir_store_typed_views_and_trichotomy() {
         Leaf::Measured("destroyer".to_string())
     );
     assert_eq!(f100.wings_status(), ViewStatus::Present);
-    assert_eq!(f100.wings()[0].wing_uid, "wing-1");
+    assert_eq!(f100.wings()[0].wing_uid, "3");
     assert_eq!(
         f100.wings()[0].mission_kind,
         Leaf::Measured("air_superiority".to_string())
@@ -1333,14 +1333,16 @@ fn compact_stream_container_fails_closed() {
 
     let err = open_recording(&path).err().expect("must fail closed");
     match &err {
-        SourceError::Unsupported(msg) => {
+        // R18-5: compact-stream evidence selects the typed subclass so the
+        // snapshot-native preflight can waive it without matching text.
+        SourceError::UnsupportedCompactStreamOnly(msg) => {
             assert!(msg.contains("collector_compact_stream"), "msg: {msg}");
             assert!(msg.contains("compact"), "msg: {msg}");
             assert!(msg.contains("hour-index/checkpoint"), "msg: {msg}");
             assert!(msg.contains("portable pre-folder"), "msg: {msg}");
             assert!(msg.contains("ordinary product open"), "msg: {msg}");
         }
-        other => panic!("expected Unsupported, got {other:?}"),
+        other => panic!("expected UnsupportedCompactStreamOnly, got {other:?}"),
     }
 
     let _ = fs::remove_dir_all(&root);
@@ -1443,9 +1445,11 @@ fn explicit_portable_prefolder_wires_a_stream_only_container() {
     let path = root.join("compact_prefolded.battleplan");
     fs::write(&path, pack(game, &entries, &identity, true).unwrap()).unwrap();
 
+    // R18-5: the stream-only container carries compact evidence, so ordinary
+    // open refuses with the typed compact-stream-only subclass.
     assert!(matches!(
         open_recording(&path),
-        Err(SourceError::Unsupported(_))
+        Err(SourceError::UnsupportedCompactStreamOnly(_))
     ));
     let source = open_recording_with_decoder(&path, &FixtureCertifiedPrefolder).unwrap();
     assert_eq!(source.game_id(), game);
@@ -2728,9 +2732,12 @@ fn windows_onedrive_dehydrated_recorder_store_binds_end_to_end_before_ship() {
     let selected_hour = selected
         .hour_index
         .expect("selected replay snapshot must carry an index hour");
+    drop(store);
+    let timeline = WorldTimeline::open(open_recording_game(&path, game).unwrap()).unwrap();
+    // Both arms assert; neither is a skip. (This used to `return` out of the
+    // "disabled" arm, which reads like an early exit and would be caught by
+    // the workspace `no_test_in_the_workspace_returns_early` guard.)
     if provider_state == "disabled" {
-        drop(store);
-        let timeline = WorldTimeline::open(open_recording_game(&path, game).unwrap()).unwrap();
         let error = match timeline.frame(selected_hour) {
             Ok(_) => panic!("disabled provider unexpectedly supplied replay-frame bytes"),
             Err(error) => error,
@@ -2739,24 +2746,22 @@ fn windows_onedrive_dehydrated_recorder_store_binds_end_to_end_before_ship() {
             matches!(error, WorldError::Source(SourceError::Open(_))),
             "disabled provider must surface through the replay source adapter: {error}"
         );
-        return;
+    } else {
+        let frame = timeline
+            .frame(selected_hour)
+            .expect("enabled sync provider failed to hydrate exact replay frame");
+        let metadata = frame.session_metadata();
+        assert!(
+            matches!(&metadata.active_dlcs, Leaf::Measured(_)),
+            "recorder DLC binding did not reach session metadata: {:?}",
+            metadata.active_dlcs
+        );
+        assert!(
+            matches!(&metadata.localisation_language, Leaf::Measured(language) if !language.trim().is_empty()),
+            "recorder language binding did not reach session metadata: {:?}",
+            metadata.localisation_language
+        );
     }
-    drop(store);
-    let timeline = WorldTimeline::open(open_recording_game(&path, game).unwrap()).unwrap();
-    let frame = timeline
-        .frame(selected_hour)
-        .expect("enabled sync provider failed to hydrate exact replay frame");
-    let metadata = frame.session_metadata();
-    assert!(
-        matches!(&metadata.active_dlcs, Leaf::Measured(_)),
-        "recorder DLC binding did not reach session metadata: {:?}",
-        metadata.active_dlcs
-    );
-    assert!(
-        matches!(&metadata.localisation_language, Leaf::Measured(language) if !language.trim().is_empty()),
-        "recorder language binding did not reach session metadata: {:?}",
-        metadata.localisation_language
-    );
 }
 
 #[test]

@@ -1208,15 +1208,21 @@ mod tests {
             source_line: 1,
             sprite_type: None,
             quad_texture_sprite: None,
+            parent_size: None,
             position: Some(GuiPoint { x, y }),
+            effective_position_f32_bits: None,
             size: None,
             slot_size: None,
             max_width: None,
             max_height: None,
             font: None,
+            format: None,
+            orientation: None,
+            max_slots_vertical: None,
             rotation,
             scale,
             frame: None,
+            center_position: None,
         }
     }
 
@@ -1668,16 +1674,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
     fn vanilla_resolver_decodes_render_assets_and_builds_known_land_counter() {
-        let game_dir = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from("X:/SteamLibrary/steamapps/common/Hearts of Iron IV")
-            });
-        if !game_dir.is_dir() {
-            eprintln!("SKIP: vanilla game dir missing at {}", game_dir.display());
-            return;
-        }
+        let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let assets = counter_render_assets_from_resolver(&resolver).expect("render assets");
         assert_eq!(

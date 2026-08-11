@@ -1,10 +1,14 @@
-//! Map camera. Coordinates live in map pixels per the Phase 2 architecture
-//! screen center and `zoom` is screen pixels per map pixel. The the game map
-//! wraps east-west, so x wraps. Vertical mutation is currently fail-closed
-//! until the replay carries the exact C02/C03 3D camera state. Pure math, no
-//! D3D.
+//! Viewer-owned product camera.
+//!
+//! The public center/zoom projection is retained for the existing renderer
+//! boundary, but production input mutates the authenticated XMAP03 3D state.
+//! A legacy 2D instance remains only for the explicit debug bundle/dump route.
 
-#[derive(Clone, Copy, Debug)]
+use map_viewer::ViewerMapCameraState;
+
+use crate::Result;
+
+#[derive(Clone, Debug)]
 pub struct Camera {
     pub center_x: f64,
     pub center_y: f64,
@@ -12,6 +16,7 @@ pub struct Camera {
     pub zoom: f64,
     map_w: f64,
     map_h: f64,
+    viewer_state: Option<ViewerMapCameraState>,
 }
 
 impl Camera {
@@ -25,23 +30,60 @@ impl Camera {
             zoom: 1.0,
             map_w,
             map_h,
+            viewer_state: None,
         };
-        camera.reset_fit(screen_w, screen_h);
+        camera
+            .reset_fit(screen_w, screen_h)
+            .expect("legacy debug camera reset");
         camera
     }
 
+    pub fn from_viewer_state(state: ViewerMapCameraState) -> Result<Self> {
+        state.validate()?;
+        let mut camera = Self {
+            center_x: 0.0,
+            center_y: 0.0,
+            zoom: 1.0,
+            map_w: f64::from(state.map_width),
+            map_h: f64::from(state.map_height),
+            viewer_state: Some(state),
+        };
+        camera.sync_projection()?;
+        Ok(camera)
+    }
+
+    pub fn viewer_state(&self) -> Option<&ViewerMapCameraState> {
+        self.viewer_state.as_ref()
+    }
+
     /// Reset to whole-map fit for the given screen size.
-    pub fn reset_fit(&mut self, screen_w: f64, screen_h: f64) {
+    pub fn reset_fit(&mut self, screen_w: f64, screen_h: f64) -> Result<()> {
+        if let Some(state) = &mut self.viewer_state {
+            let width = screen_w.max(1.0).round() as u32;
+            let height = screen_h.max(1.0).round() as u32;
+            state.resize_viewport(width, height)?;
+            state.reset_to_engine_overview()?;
+            self.sync_projection()?;
+            return Ok(());
+        }
         let screen_w = screen_w.max(1.0);
         let screen_h = screen_h.max(1.0);
         self.zoom = (screen_w / self.map_w).min(screen_h / self.map_h);
         self.center_x = self.map_w * 0.5;
         self.center_y = self.map_h * 0.5;
         self.normalize(screen_h);
+        Ok(())
     }
 
     /// Screen position -> continuous (unwrapped) map position.
     pub fn screen_to_map(&self, sx: f64, sy: f64, screen_w: f64, screen_h: f64) -> (f64, f64) {
+        if let Some(state) = &self.viewer_state {
+            return state
+                .screen_to_map(sx as f32, sy as f32)
+                .expect("validated viewer screen-to-map")
+                .map(|(x, y)| (f64::from(x), f64::from(y)))
+                .unwrap_or((f64::NAN, f64::NAN));
+        }
         (
             self.center_x + (sx - screen_w * 0.5) / self.zoom,
             self.center_y + (sy - screen_h * 0.5) / self.zoom,
@@ -70,18 +112,83 @@ impl Camera {
         self.map_h
     }
 
-    /// Pan horizontally by a screen-pixel delta (positive dx moves east).
-    /// Vertical mutation is intentionally blocked until the replay carries the
-    /// C03 3D camera carrier required for projected-footprint bounds repair.
-    pub fn pan_screen(&mut self, dx: f64, screen_h: f64) {
+    /// Pan by a screen-pixel delta through the viewer-owned 3D ground
+    /// projection. Positive x moves east and positive y moves south.
+    pub fn pan_screen(&mut self, dx: f64, dy: f64, screen_h: f64) -> Result<()> {
+        if let Some(state) = &mut self.viewer_state {
+            state.pan_screen(dx as f32, dy as f32)?;
+            self.sync_projection()?;
+            return Ok(());
+        }
         self.center_x += dx / self.zoom;
+        self.center_y += dy / self.zoom;
         self.normalize(screen_h);
+        Ok(())
+    }
+
+    pub fn drag_from(&mut self, start: &Camera, dx: f64, dy: f64, screen_h: f64) -> Result<()> {
+        *self = start.clone();
+        self.pan_screen(-dx, -dy, screen_h)
+    }
+
+    pub fn wheel_zoom(
+        &mut self,
+        cursor_x: f64,
+        cursor_y: f64,
+        signed_delta: i32,
+        raw_owner_delta: f64,
+    ) -> Result<()> {
+        let state = self
+            .viewer_state
+            .as_mut()
+            .ok_or("wheel zoom is unavailable on the legacy debug camera")?;
+        state.wheel_zoom(
+            cursor_x as f32,
+            cursor_y as f32,
+            signed_delta,
+            raw_owner_delta as f32,
+        )?;
+        self.sync_projection()
+    }
+
+    pub fn advance(&mut self, raw_owner_delta: f64) -> Result<()> {
+        if let Some(state) = &mut self.viewer_state {
+            state.advance(raw_owner_delta as f32)?;
+            self.sync_projection()?;
+        }
+        Ok(())
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        if let Some(state) = &mut self.viewer_state {
+            state.resize_viewport(width.max(1), height.max(1))?;
+            self.sync_projection()?;
+        } else {
+            self.normalize(f64::from(height.max(1)));
+        }
+        Ok(())
     }
 
     /// Wrap the horizontal center. Vertical center clamping is not performed:
     /// C03 refutes a center clamp and requires projected ground intersections.
     pub fn normalize(&mut self, _screen_h: f64) {
+        if self.viewer_state.is_some() {
+            self.sync_projection()
+                .expect("validated viewer camera projection");
+            return;
+        }
         self.center_x = self.center_x.rem_euclid(self.map_w);
+    }
+
+    fn sync_projection(&mut self) -> Result<()> {
+        let Some(state) = &self.viewer_state else {
+            return Ok(());
+        };
+        let (center_x, center_y) = state.center_map_pixels();
+        self.center_x = center_x;
+        self.center_y = center_y;
+        self.zoom = state.screen_zoom()?;
+        Ok(())
     }
 }
 
@@ -137,9 +244,8 @@ mod tests {
         camera.zoom = 2.0;
         camera.center_x = 10.0;
         // Pan far enough west that the unwrapped center goes negative.
-        camera.pan_screen(-100.0, SCREEN_H);
+        camera.pan_screen(-100.0, 0.0, SCREEN_H).unwrap();
         assert!(camera.center_x >= 0.0 && camera.center_x < 5632.0);
         assert_close(camera.center_x, 5632.0 + 10.0 - 50.0, "wrapped center");
     }
-
 }

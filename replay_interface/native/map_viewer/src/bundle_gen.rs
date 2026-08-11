@@ -1,7 +1,7 @@
 use crate::*;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     let game = require_dir(&options.game, "game directory")?;
@@ -281,30 +281,52 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         &common_building_paths,
         &entity_source_paths,
     )?;
-    write_u32_raw(&out.join("province_ids.r32"), &bmp.ids)?;
-    write_u8_raw(&out.join("terrain_indices.r8"), &terrain_indices.pixels)?;
-    write_u8_raw(&out.join("terrain_texture_ids.r8"), &terrain_texture_ids)?;
-    write_u8_raw(&out.join("heightmap.r8"), &heightmap.pixels)?;
-    write_u8_raw(&out.join("rivers.r8"), &rivers.pixels)?;
-    write_u8_raw(&out.join("cities.r8"), &cities.pixels)?;
-    write_u8_raw(&out.join("trees.r8"), &trees.pixels)?;
-    write_u32_raw(&out.join("height_normal.rgbx"), &height_normal.pixels)?;
-    write_u32_raw(&out.join("tree_tint.rgbx"), &tree_tint.pixels)?;
-    write_u32_raw(&out.join("tree_season.rgbx"), &tree_season.pixels)?;
+    // FW7 (Codex addition 1): payload rewriting starts here and `manifest.json`
+    // is only rewritten ~450 lines later. Without `--force` (which defaults off)
+    // nothing removed the old manifest first, so any failure in between left the
+    // *previous* manifest — with the previous source hashes, counts and modset —
+    // sitting beside a half-replaced payload set, and every consumer would read
+    // it as a coherent bundle. Opening the write scope retires the manifest, and
+    // it is the only thing that can hand out a payload path or write the new
+    // manifest — so the ordering is a property of the types, not of a comment.
+    let scope = BundleWriteScope::open(out)?;
+    // The raw output path is deliberately shadowed away here. `OutputPathRetired`
+    // has no `join`, no `display` and no `Deref`, so reintroducing an
+    // `out.join("payload")` write anywhere below this line is a COMPILE ERROR,
+    // not a silently reordered write. Everything after this point must go
+    // through `scope`.
+    #[allow(unused_variables)]
+    let out = OutputPathRetired;
+    write_u32_raw(&scope.payload("province_ids.r32"), &bmp.ids)?;
+    write_u8_raw(
+        &scope.payload("terrain_indices.r8"),
+        &terrain_indices.pixels,
+    )?;
+    write_u8_raw(
+        &scope.payload("terrain_texture_ids.r8"),
+        &terrain_texture_ids,
+    )?;
+    write_u8_raw(&scope.payload("heightmap.r8"), &heightmap.pixels)?;
+    write_u8_raw(&scope.payload("rivers.r8"), &rivers.pixels)?;
+    write_u8_raw(&scope.payload("cities.r8"), &cities.pixels)?;
+    write_u8_raw(&scope.payload("trees.r8"), &trees.pixels)?;
+    write_u32_raw(&scope.payload("height_normal.rgbx"), &height_normal.pixels)?;
+    write_u32_raw(&scope.payload("tree_tint.rgbx"), &tree_tint.pixels)?;
+    write_u32_raw(&scope.payload("tree_season.rgbx"), &tree_season.pixels)?;
     write_u32_raw(
-        &out.join("terrain_diffuse_atlas0.rgbx"),
+        &scope.payload("terrain_diffuse_atlas0.rgbx"),
         &terrain_atlas.pixels,
     )?;
     write_u32_raw(
-        &out.join("terrain_normal_atlas0.rgbx"),
+        &scope.payload("terrain_normal_atlas0.rgbx"),
         &terrain_normal_atlas.pixels,
     )?;
     write_rgba_mip_chain_raw(
-        &out.join("terrain_diffuse_atlas0_mips.rgba"),
+        &scope.payload("terrain_diffuse_atlas0_mips.rgba"),
         &terrain_atlas_mips,
     )?;
     write_rgba_mip_chain_raw(
-        &out.join("terrain_normal_atlas0_mips.rgba"),
+        &scope.payload("terrain_normal_atlas0_mips.rgba"),
         &terrain_normal_atlas_mips,
     )?;
     let shader_rgba_specs = [
@@ -417,14 +439,14 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         ),
     ];
     let (mut shader_sources, mut shader_source_dimensions) =
-        write_shader_rgba_sources(out, &shader_rgba_specs)?;
+        write_shader_rgba_sources(scope.dir(), &shader_rgba_specs)?;
     let (material_sources, material_dimensions) =
-        write_material_rgba_sources(out, &material_rgba_specs)?;
+        write_material_rgba_sources(scope.dir(), &material_rgba_specs)?;
     shader_sources.extend(material_sources);
     shader_source_dimensions.extend(material_dimensions);
     for spec in &raw_material_specs {
         copy_shader_source(
-            out,
+            scope.dir(),
             &spec.source,
             &spec.output,
             &spec.path,
@@ -467,27 +489,27 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     );
     let mut map_sources = BTreeMap::new();
     for (source, output, path) in &map_source_specs {
-        copy_bundle_source(out, source, output, path, &mut map_sources)?;
+        copy_bundle_source(scope.dir(), source, output, path, &mut map_sources)?;
     }
-    write_json(&out.join("map_object_meta.json"), &map_object_meta)?;
+    write_json(&scope.payload("map_object_meta.json"), &map_object_meta)?;
     write_json(
-        &out.join("map_material_contract.json"),
+        &scope.payload("map_material_contract.json"),
         &map_material_contract,
     )?;
-    write_json(&out.join("province_to_state.json"), &province_to_state)?;
-    write_json(&out.join("state_meta.json"), &state_meta)?;
-    write_json(&out.join("state_owner_1936.json"), &state_owners)?;
-    write_json(&out.join("country_colors.json"), &country_colors)?;
-    write_json(&out.join("province_definitions.json"), &definitions)?;
+    write_json(&scope.payload("province_to_state.json"), &province_to_state)?;
+    write_json(&scope.payload("state_meta.json"), &state_meta)?;
+    write_json(&scope.payload("state_owner_1936.json"), &state_owners)?;
+    write_json(&scope.payload("country_colors.json"), &country_colors)?;
+    write_json(&scope.payload("province_definitions.json"), &definitions)?;
     write_json(
-        &out.join("strategic_region_to_provinces.json"),
+        &scope.payload("strategic_region_to_provinces.json"),
         &region_to_provinces,
     )?;
     write_json(
-        &out.join("province_to_strategic_region.json"),
+        &scope.payload("province_to_strategic_region.json"),
         &province_to_region,
     )?;
-    write_json(&out.join("strategic_region_meta.json"), &region_meta)?;
+    write_json(&scope.payload("strategic_region_meta.json"), &region_meta)?;
 
     let mut input_dimensions = visual_input_dimensions(&[
         ("map/provinces.bmp", bmp.width, bmp.height),
@@ -733,7 +755,7 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         modset: resolver_setup.manifest_modset(),
         viewer_note: "No rendered map underlay is generated here. Product map rendering requires validated the game D3D11 captures or a fully reproduced engine terrain pipeline with all runtime/generated inputs accounted for.".to_string(),
     };
-    write_json(&out.join("manifest.json"), &manifest)?;
+    scope.write_manifest(&manifest)?;
 
     println!(
         "[province_ids.r32] {}x{}, {} ids",
@@ -789,8 +811,75 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     println!("states: {}", state_meta.len());
     println!("strategic regions: {}", region_meta.len());
     println!("unknown pixels: {}", bmp.unknown_pixels);
-    println!("bundle written: {}", out.display());
+    println!("bundle written: {}", scope.dir().display());
     Ok(())
+}
+
+/// A bundle output directory whose stale `manifest.json` has already been
+/// retired (FW7, Codex addition 1).
+///
+/// The ordering this enforces used to be a comment: `build_bundle` overwrote
+/// payloads from the province raster onward and only rewrote the manifest ~450
+/// lines later, and `--force` — the one thing that removed the old manifest —
+/// defaults off. Any failure in between left the previous manifest, with the
+/// previous source hashes, counts and modset, describing a half-replaced
+/// payload set that every consumer would read as coherent.
+///
+/// Making the scope the ONLY source of a payload path and the ONLY way to write
+/// the manifest turns "retire first" from a convention into something the
+/// compiler enforces: you cannot name a file inside the bundle without holding a
+/// scope, and you cannot hold a scope without having retired the manifest.
+pub(crate) struct BundleWriteScope {
+    out: PathBuf,
+}
+
+/// Shadows the raw output path once a [`BundleWriteScope`] is open. It has no
+/// path methods at all, so any write that tries to address the bundle directory
+/// without going through the scope fails to compile.
+pub(crate) struct OutputPathRetired;
+
+impl BundleWriteScope {
+    /// Create the output directory and retire any stale manifest.
+    pub(crate) fn open(out: &Path) -> Result<Self> {
+        fs::create_dir_all(out)?;
+        invalidate_bundle_manifest(out)?;
+        Ok(Self {
+            out: out.to_path_buf(),
+        })
+    }
+
+    /// Path of one payload inside the bundle.
+    pub(crate) fn payload(&self, name: &str) -> PathBuf {
+        self.out.join(name)
+    }
+
+    /// The bundle directory, for helpers that write several payloads.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.out
+    }
+
+    /// Write the new manifest. Reachable only from a scope, i.e. only after the
+    /// stale one was retired.
+    pub(crate) fn write_manifest(&self, manifest: &Manifest) -> Result<()> {
+        write_json(&self.out.join("manifest.json"), manifest)
+    }
+}
+
+/// Retire `manifest.json` before any payload in `out` is overwritten (FW7,
+/// Codex addition 1). A bundle directory with payloads but no manifest is
+/// unloadable, which is the honest state during a regeneration; a bundle with a
+/// stale manifest over fresh payloads is a silently wrong one.
+pub(crate) fn invalidate_bundle_manifest(out: &Path) -> Result<()> {
+    let manifest = out.join("manifest.json");
+    match fs::remove_file(&manifest) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not retire {} before regenerating the bundle: {error}",
+            manifest.display()
+        )
+        .into()),
+    }
 }
 
 pub(crate) fn remove_known_bundle_files(out: &Path) -> Result<()> {
@@ -1428,6 +1517,98 @@ mod tests {
     use crate::test_support::*;
     use std::collections::BTreeMap;
     use std::fs;
+
+    /// FW7 (Codex addition 1): a regeneration retires the stale manifest before
+    /// it can name a single payload path, so an interrupted run leaves an
+    /// unloadable directory rather than a stale manifest over half-replaced
+    /// payloads. `--force` defaults off, so nothing else removed it.
+    ///
+    /// The ordering is structural: `payload()` and `write_manifest()` are
+    /// reachable only through a `BundleWriteScope`, and `open()` is the only
+    /// constructor. This test would not compile against a version that let
+    /// `build_bundle` write a payload without opening the scope first.
+    #[test]
+    fn opening_the_write_scope_retires_the_stale_manifest_before_any_payload_path_exists() {
+        let root = temp_test_dir("bundle_write_scope");
+        fs::create_dir_all(&root).expect("create temp bundle dir");
+        let manifest_path = root.join("manifest.json");
+        write_json(&manifest_path, &minimal_test_manifest()).expect("write manifest");
+        let payload_path = root.join("province_ids.r32");
+        fs::write(&payload_path, [1u8, 2, 3, 4]).expect("write stale payload");
+        assert!(manifest_path.is_file());
+
+        let scope = BundleWriteScope::open(&root).expect("open write scope");
+        assert!(
+            !manifest_path.exists(),
+            "the stale manifest must be gone before any payload path can be named"
+        );
+        // The stale payload is still there — that is the point: the directory is
+        // now unloadable rather than plausibly coherent.
+        assert!(payload_path.is_file());
+
+        assert_eq!(scope.payload("province_ids.r32"), payload_path);
+        assert_eq!(scope.dir(), root.as_path());
+        scope
+            .write_manifest(&minimal_test_manifest())
+            .expect("write the new manifest");
+        assert!(
+            manifest_path.is_file(),
+            "the bundle becomes loadable again only once the new manifest lands"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The failure mode the ordering exists for: a regeneration that dies part
+    /// way through the payload rewrite must leave a directory with NO manifest,
+    /// so a consumer refuses it, rather than the previous manifest — previous
+    /// source hashes, counts and modset — sitting over half-replaced payloads.
+    #[test]
+    fn a_regeneration_that_fails_mid_payload_leaves_no_manifest_behind() {
+        let root = temp_test_dir("bundle_write_scope_interrupted");
+        fs::create_dir_all(&root).expect("create temp bundle dir");
+        let manifest_path = root.join("manifest.json");
+        write_json(&manifest_path, &minimal_test_manifest()).expect("write old manifest");
+        fs::write(root.join("province_ids.r32"), [1u8, 2, 3, 4]).expect("write old payload");
+        fs::write(root.join("heightmap.r8"), [9u8]).expect("write old payload");
+
+        // The regeneration sequence, aborted after the first payload lands.
+        let interrupted = (|| -> Result<()> {
+            let scope = BundleWriteScope::open(&root)?;
+            write_u32_raw(&scope.payload("province_ids.r32"), &[7u32, 8])?;
+            Err("simulated failure part way through the payload rewrite".into())
+        })();
+        assert!(interrupted.is_err());
+
+        assert!(
+            !manifest_path.exists(),
+            "the stale manifest must not survive a partial regeneration"
+        );
+        // The first payload was replaced and the second was not — exactly the
+        // mixed state the old manifest would have described as coherent.
+        assert_eq!(
+            fs::read(root.join("province_ids.r32"))
+                .expect("read payload")
+                .len(),
+            8
+        );
+        assert_eq!(
+            fs::read(root.join("heightmap.r8")).expect("read payload"),
+            [9u8]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A first-time bake has no manifest to retire, and that is not an error.
+    #[test]
+    fn write_scope_opens_cleanly_on_a_fresh_directory() {
+        let root = temp_test_dir("bundle_write_scope_fresh").join("nested");
+        assert!(!root.exists());
+        let scope = BundleWriteScope::open(&root).expect("open on a fresh directory");
+        assert!(scope.dir().is_dir());
+        assert!(!root.join("manifest.json").exists());
+        invalidate_bundle_manifest(&root).expect("absent manifest is not an error");
+        let _ = fs::remove_dir_all(root.parent().expect("parent"));
+    }
 
     #[test]
     fn terrain_runtime_import_rejects_wrong_byte_count() {
