@@ -73,6 +73,84 @@ impl NativeRootCache {
 
 }
 
+/// Is this frame's rowless outcome already decided by the inputs
+/// [`read_native_scheduled_frame`] was handed, before it walks anything?
+///
+/// The walk's own product can only be discarded, never published, whenever this
+/// holds: it is two of the three disjuncts of the post-walk gate below, and
+/// both of them are pure functions of the cache and the frame input. A torn
+/// root read or a clock-refused prewarm (`skipped_root_rows`) and a skipped
+/// country row (`skipped_input_rows`) are ROW-level loss inside families the
+/// frame did observe, which the family-presence mask cannot describe — so the
+/// gate replaces the built frame with a rowless `SOURCE_UNAVAILABLE |
+/// PARTIAL_DATA` one whatever the walk found. The third disjunct,
+/// `AdapterBuildStats::has_rejections`, is the walk's own finding and is NOT
+/// knowable here; frames that only fail it still walk.
+///
+/// HOW OFTEN THE OUTCOME IS PRE-DECIDED. In `runs/live_unlock/t49_pricing`,
+/// `lane_wall.hour_boundary_position.brackets_closed_before` has p50 0 over the
+/// 325 frames that witnessed an hour boundary, and the host's p50 is
+/// `sorted[ceil(n/2) - 1]`, so at least 163 of that capture's 334 extracted
+/// frames witnessed the boundary before ANY bracket had closed. d47's prewarm
+/// bracket is the first bracket in the frame — the prewarm runs before the
+/// main-thread reads and before the fan-out, and the clock ordinal totally
+/// orders every authenticated read — so those frames witnessed it at or before
+/// the prewarm's own two observations. That verdict is `Straddled` or
+/// `WrongHour` (`Unreadable` also produces a zero here, but t49 records no d47
+/// `clock_unreadable` gap at all), and all three poison the roots
+/// (`domain47_apply_prewarm_clock_verdict`) before the fan-out opens. At least
+/// 163 of 334 frames therefore had d47's rowless outcome DECIDED before any
+/// worker started.
+///
+/// WHAT THAT COUNT IS NOT. It is not a count of walks removed. This arm skips a
+/// walk only where the cache also holds stable roots, and a cold blocked
+/// adoption installs a ROOTLESS cache carrying `skipped_root_rows`
+/// (`domain47_apply_blocked_adoption`): such a frame is pre-decided too, and it
+/// already took the rootless arm below without walking anything. How many of
+/// the 163 held stable roots is not on the wire — that diagnostic rides d47's
+/// PERF record, which a stripped hour does not have. Closing it needs an
+/// unstripped per-frame counter of "pre-decided AND stable roots".
+///
+/// NOR DOES ANYTHING HERE PRICE A REMOVED WALK. `read_time_us` is a DOMAIN_PERF
+/// distribution and a stripped d47 hour has no PERF record, so t49's p50
+/// 43.2 ms describes its 39 SURVIVING reads and no stripped one; the prewarm
+/// p50 (42.4 ms over all 334 extracted frames) is a different population and
+/// must not be added to it. The saving is settled by a live A/B on frame wall,
+/// not from these manifests. What is established without measurement is the
+/// direction: on a pre-decided frame the walk's product cannot be published,
+/// whatever it costs.
+///
+/// WHAT IS LOST BY NOT WALKING. `AdapterBuildStats`, which describes rows this
+/// frame does not publish. NOT the parse errors: those are the self-decode of
+/// the frame's own emitted payload, and a rowless payload has none on this path
+/// already. Each cause is still named without them, one diagnostic per
+/// disjunct: poisoned roots by `domain47_prewarm_skipped_root_rows` and
+/// `domain47_prewarm_clock_verdict`, a skipped country row by
+/// `domain47_country_bridge_unstable_rows`, which the collector increments on
+/// the same rejection that increments `skipped_input_rows` (and which is the
+/// only one of the three that says anything on that path — a frame whose
+/// country bridge rejected a row can carry a clean `InFrameHour` prewarm).
+/// All three ride this hour's provisional PERF record and survive exactly when
+/// that record does — a bracket-rejected hour has its PERF and DATA records
+/// dropped in reconciliation and keeps only its DOMAIN_GAP reason, which is the
+/// same before this change and after it.
+/// The emitted payload, its status word and its family mask are unchanged —
+/// `skipped_root_rows_emit_rowless_partial_read` exercises this exact path with
+/// engine memory present and pins the wire outcome.
+fn rowless_outcome_is_already_decided(cache: &NativeRootCache, frame_input: &NativeFrameInput) -> bool {
+    cache.skipped_root_rows != 0 || frame_input.skipped_input_rows != 0
+}
+
+/// The rowless fail-closed frame the three gates in [`read_native_scheduled_frame`]
+/// all publish, built in one place so a pre-walk refusal and a post-walk refusal
+/// cannot spell themselves differently.
+fn rowless_partial_frame(elapsed_wall_ms: u64, status_flags: u32) -> LaneFrame {
+    let mut frame = LaneFrame::new(elapsed_wall_ms);
+    frame.status_flags =
+        status_flags | compact::STATUS_SOURCE_UNAVAILABLE | compact::STATUS_PARTIAL_DATA;
+    frame
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NativeFrameInput {
     pub elapsed_wall_ms: u64,
@@ -101,7 +179,20 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
     frame_input: NativeFrameInput,
 ) -> NativeScheduledRead {
     let started = Instant::now();
-    let (frame, stats) = if cache.has_stable_roots() {
+    let (frame, stats) = if cache.has_stable_roots()
+        && rowless_outcome_is_already_decided(cache, &frame_input)
+    {
+        // NOT WALKING IS THE POINT. The gate below would replace whatever this
+        // walk built with exactly this frame, and both of the conditions that
+        // decide it are already true — see
+        // [`rowless_outcome_is_already_decided`]. Building the frame first
+        // would read the whole character world out of the engine to produce a
+        // payload this function is already committed to discarding.
+        (
+            rowless_partial_frame(frame_input.elapsed_wall_ms, frame_input.status_flags),
+            AdapterBuildStats::default(),
+        )
+    } else if cache.has_stable_roots() {
         // BORROW the cached roots instead of deep-cloning them into an owned
         // `AdapterInput` (d47 critical-path work, 2026-08-03). The frame walk
         // only reads them, and the clone was thousands of per-hour `String`
@@ -152,20 +243,25 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
             adapter_result.frame.active_rulers.clear();
             cache.known_families & !compact::FAMILY_ACTIVE_RULER
         };
-        if cache.skipped_root_rows != 0
-            || adapter_result.stats.has_rejections()
-            || adapter_input.skipped_input_rows != 0
-        {
-            // A torn root, an adapter rejection or a skipped country row is
-            // ROW-level loss inside families this frame did observe. The
-            // family-presence mask cannot describe it — it is a whole-family
-            // vocabulary — so this frame must stay OUTSIDE the expected-partial
-            // tolerance, and `SOURCE_UNAVAILABLE` is what keeps it there.
+        if adapter_result.stats.has_rejections() {
+            // An adapter rejection is ROW-level loss inside families this frame
+            // did observe. The family-presence mask cannot describe it — it is
+            // a whole-family vocabulary — so this frame must stay OUTSIDE the
+            // expected-partial tolerance, and `SOURCE_UNAVAILABLE` is what
+            // keeps it there.
             //
             // Before per-family admission this branch set `PARTIAL_DATA` alone,
             // which was harmless only because no tolerance covered it. It does
             // now, and a tolerance written for a declared family gap must never
             // absorb an undeclared row loss.
+            //
+            // The two SIBLING conditions this gate used to test alongside the
+            // rejection — a torn root (`cache.skipped_root_rows`) and a skipped
+            // country row (`adapter_input.skipped_input_rows`) — are the same
+            // row-level loss and publish the same frame, but neither needs the
+            // walk to be answered, so both are now decided before it in
+            // [`rowless_outcome_is_already_decided`]. Reaching this arm means
+            // the walk itself found the loss.
             let mut frame = LaneFrame::new(adapter_input.elapsed_wall_ms);
             frame.status_flags = adapter_input.status_flags
                 | compact::STATUS_SOURCE_UNAVAILABLE
@@ -175,11 +271,10 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
             (adapter_result.frame, adapter_result.stats)
         }
     } else {
-        let mut frame = LaneFrame::new(frame_input.elapsed_wall_ms);
-        frame.status_flags = frame_input.status_flags
-            | compact::STATUS_SOURCE_UNAVAILABLE
-            | compact::STATUS_PARTIAL_DATA;
-        (frame, AdapterBuildStats::default())
+        (
+            rowless_partial_frame(frame_input.elapsed_wall_ms, frame_input.status_flags),
+            AdapterBuildStats::default(),
+        )
     };
 
     let payload = encode_frame_payload(&frame);
@@ -482,6 +577,125 @@ mod tests {
         assert_ne!(read.status_flags & compact::STATUS_SOURCE_UNAVAILABLE, 0);
         assert_eq!(decoded.family_presence_mask, compact::FAMILY_ALL);
         assert!(decoded.rows.is_empty());
+    }
+
+    /// Every engine read the frame walk performs, counted. `LaneMemory::read_u8`
+    /// takes `&self` and every other method of the trait funnels through it in
+    /// this fixture (`read_array` loops over it, `read_object_window` defaults
+    /// to `None`), so this counts the walk's whole appetite for the engine.
+    struct CountingMemory {
+        inner: FakeMemory,
+        reads: std::cell::Cell<u64>,
+    }
+
+    impl CountingMemory {
+        fn new(inner: FakeMemory) -> Self {
+            Self {
+                inner,
+                reads: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl LaneMemory for CountingMemory {
+        fn read_u8(&self, addr: u64) -> Option<u8> {
+            self.reads.set(self.reads.get().saturating_add(1));
+            self.inner.read_u8(addr)
+        }
+    }
+
+    /// A rowless outcome that is already decided by the cache and the frame
+    /// input costs NO engine reads — and publishes exactly the frame the
+    /// post-walk gate published.
+    ///
+    /// This is the whole of lane GT's fix. In `runs/live_unlock/t49_pricing`
+    /// `lane_wall.hour_boundary_position.brackets_closed_before` p50 is 0 over
+    /// 325 boundary frames, so at least 163 of that capture's 334 extracted
+    /// frames poisoned these roots before the fan-out even opened — every one
+    /// of them committed to a rowless d47 hour before any worker started. How
+    /// many of those still held stable roots (and so actually walked), and what
+    /// a walk costs on a frame whose records are stripped, are both absent from
+    /// that capture's wire — see `rowless_outcome_is_already_decided`.
+    ///
+    /// kills: delete the `rowless_outcome_is_already_decided` arm from
+    /// `read_native_scheduled_frame` (restoring the post-walk-only gate). The
+    /// wire assertions all still pass — that is the point, the wire is
+    /// unchanged — and the read counters go nonzero on both refusal cases.
+    #[test]
+    fn a_predecided_rowless_frame_reads_no_engine_memory() {
+        let cache_with = |skipped_root_rows: u32, character: u64| NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            skipped_root_rows,
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                char_id: 1458,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..NativeRootCache::default()
+        };
+        let character = 0x1000;
+        let memory = || {
+            let mut mem = FakeMemory::default();
+            write_character(&mut mem, character, 1458, 2);
+            CountingMemory::new(mem)
+        };
+        // The frame both refusals publish, built by the one constructor every
+        // caller of this module already uses for a rowless d47 hour.
+        let expected = empty_native_scheduled_read(
+            0,
+            compact::STATUS_SOURCE_UNAVAILABLE | compact::STATUS_PARTIAL_DATA,
+        );
+
+        for (case, cache, frame_input) in [
+            (
+                "torn or clock-refused roots",
+                cache_with(1, character),
+                NativeFrameInput::default(),
+            ),
+            (
+                "a skipped country row",
+                cache_with(0, character),
+                NativeFrameInput {
+                    skipped_input_rows: 1,
+                    ..NativeFrameInput::default()
+                },
+            ),
+        ] {
+            let mem = memory();
+            let read = read_native_scheduled_frame(&mem, &cache, frame_input);
+            assert_eq!(
+                mem.reads.get(),
+                0,
+                "{case}: the walk ran for a frame whose rowless outcome was already decided"
+            );
+            // ...and the hour is published exactly as it was before, so the
+            // saving costs the wire nothing.
+            assert_eq!(read.payload, expected.payload, "{case}");
+            assert_eq!(read.status_flags, expected.status_flags, "{case}");
+            assert_eq!(read.row_count, 0, "{case}");
+            assert_eq!(read.data_units_total, 0, "{case}");
+            assert_eq!(read.schema_flags, expected.schema_flags, "{case}");
+            assert_ne!(read.status_flags & compact::STATUS_PARTIAL_DATA, 0, "{case}");
+            assert_ne!(
+                read.status_flags & compact::STATUS_SOURCE_UNAVAILABLE,
+                0,
+                "{case}"
+            );
+        }
+
+        // THE CONTROL. The same roots and the same memory, with neither
+        // refusal set, still walk — a gate that swallowed the ordinary frame
+        // would pass every assertion above.
+        let mem = memory();
+        let read = read_native_scheduled_frame(&mem, &cache_with(0, character), NativeFrameInput::default());
+        assert_ne!(
+            mem.reads.get(),
+            0,
+            "the ordinary frame must still read the engine"
+        );
+        assert_ne!(read.row_count, 0, "the ordinary frame must still publish");
     }
 
     /// A recycled CHARACTER must cost its own text and nothing else — checked
@@ -875,8 +1089,17 @@ mod tests {
     ///
     /// MUTATION: make `adapter_input_ref_from_cache` hand the builder an empty
     /// `countries` slice (or any wrong/missing root family), or drop the
-    /// `adapter_input.skipped_input_rows != 0` arm from the scheduled reader —
-    /// the payload diverges and this fails.
+    /// `skipped_input_rows` disjunct from `rowless_outcome_is_already_decided`
+    /// (the pre-walk gate the scheduled reader's `skipped_input_rows` arm moved
+    /// into) — the payload diverges and this fails.
+    ///
+    /// ADAPTER STATS ARE COMPARED ONLY WHERE THERE IS A WALK. A frame whose
+    /// rowless outcome is decided before the walk does not run one, so it has
+    /// no stats to agree with the owned build's; it reports the default, and
+    /// the owned build here is this test's own instrument rather than anything
+    /// production performs on that path. The payload, the status word and the
+    /// row count — everything that reaches the wire — are compared on both
+    /// arms.
     #[test]
     fn borrowed_scheduled_read_matches_owned_build() {
         let (mem, cache, frame_input) = borrowed_input_fixture();
@@ -894,10 +1117,9 @@ mod tests {
                 &cache.roots.expect("fixture has roots"),
                 &owned,
             );
-            let expected_frame = if cache.skipped_root_rows != 0
-                || owned_result.stats.has_rejections()
-                || owned.skipped_input_rows != 0
-            {
+            let decided_before_the_walk =
+                cache.skipped_root_rows != 0 || owned.skipped_input_rows != 0;
+            let expected_frame = if decided_before_the_walk || owned_result.stats.has_rejections() {
                 let mut frame = LaneFrame::new(owned.elapsed_wall_ms);
                 // Row-level loss inside an observed family is not a family gap,
                 // so it must stay outside d47's expected-partial tolerance;
@@ -924,7 +1146,14 @@ mod tests {
                 encode_frame_payload(&expected_frame),
                 "payload must be byte-identical to the owned build"
             );
-            assert_eq!(read.adapter_stats, owned_result.stats);
+            assert_eq!(
+                read.adapter_stats,
+                if decided_before_the_walk {
+                    AdapterBuildStats::default()
+                } else {
+                    owned_result.stats
+                }
+            );
             assert_eq!(read.status_flags, {
                 let gate = compact::decode_payload(0, &read.payload);
                 gate.status_flags_or | expected_frame.status_flags
