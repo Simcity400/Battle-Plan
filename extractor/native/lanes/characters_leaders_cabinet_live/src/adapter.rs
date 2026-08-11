@@ -911,24 +911,6 @@ fn read_u32<M: LaneMemory>(
         .ok_or(ExtractError::MissingRead { addr, field })
 }
 
-fn read_nonzero_u64<M: LaneMemory>(
-    mem: &M,
-    base: u64,
-    offset: u64,
-    field: &'static str,
-) -> Result<u64, ExtractError> {
-    let addr = base
-        .checked_add(offset)
-        .ok_or(ExtractError::AddressOverflow(field))?;
-    let value = mem
-        .read_u64_le(addr)
-        .ok_or(ExtractError::MissingRead { addr, field })?;
-    if value == 0 {
-        return Err(ExtractError::NullPointer(field));
-    }
-    Ok(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

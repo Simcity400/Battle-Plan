@@ -835,15 +835,37 @@ pub const COMPACT_WEATHER_REGION_ROW_LEN: usize = 32;
 pub const COMPACT_WEATHER_PROVINCE_ROW_LEN: usize = 32;
 pub const COMPACT_MAP_MIN_STATE_ROWS: usize = 1_000;
 pub const COMPACT_MAP_MIN_PROVINCE_ROWS: usize = 10_000;
-pub const COMPACT_WEATHER_REGION_ROWS: usize = 305;
-pub const COMPACT_WEATHER_MIN_PROVINCE_ROWS: usize = 10_000;
+/// See `world_fold.rs`'s `WEATHER_MAX_REGION_ROWS`: representation envelopes on
+/// the two weather array lengths, NOT counts. These were `305` (the vanilla
+/// strategic-region count, applied as an equality) and `10_000` (a floor tuned
+/// on the vanilla map); either one rejected a modded map's whole weather
+/// payload.
+pub const COMPACT_WEATHER_MAX_REGION_ROWS: usize = 65_536;
+/// The region array's floor: a POLICY on what counts as a resolved weather root,
+/// not a claim about the engine. It is 1 rather than 2 because a region row
+/// carries a dense 0-based index and so has no vacant slot to spend. It is not 0
+/// because a zero-length region array is what an unloaded manager looks like, so
+/// admitting it would publish an empty root as a real one -- a deliberate
+/// fail-closed choice, not a proof that the vector must be non-empty. See
+/// `collector/src/attach_log/offsets.rs`'s `WEATHER_MIN_REGION_COUNT`.
+pub const COMPACT_WEATHER_MIN_REGION_ROWS: usize = 1;
+/// The province array's floor, which is the engine's own and is NOT the region
+/// array's: that array is subscripted BY PROVINCE ID and slot 0 is the vacant
+/// location, so a loaded array holds at least that slot plus one real province.
+/// It replaces a `10_000` tuned on the vanilla map.
+pub const COMPACT_WEATHER_MIN_PROVINCE_ROWS: usize = 2;
 pub const COMPACT_WEATHER_MAX_PROVINCE_ROWS: usize = 65_536;
 pub const COMPACT_MAP_MAX_STATE_ID: u32 = 65_535;
 pub const COMPACT_MAP_MAX_PROVINCE_ID: u32 = 65_536;
 pub const COMPACT_MAP_MAX_TAG_DB_ID: u32 = 1024;
 pub const COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
 pub const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
-pub const COMPACT_WEATHER_MAX_REGION_ID: u32 = 304;
+// COMPACT_WEATHER_MAX_REGION_ID (= 304, the vanilla strategic-region count
+// minus one) is deliberately gone rather than widened. A region id's ceiling is
+// the region table's own length, which the payload header carries in
+// `observed_region_rows`; a constant here would be a second, staler answer to a
+// question the wire already answers, and re-adding one is how this defect
+// returns.
 pub const COMPACT_WEATHER_MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 pub const COMPACT_WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 pub const COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
@@ -16880,9 +16902,12 @@ fn decode_compact_weather_data_payload(
         ));
         return;
     }
-    if !failed && observed_region_rows != COMPACT_WEATHER_REGION_ROWS {
+    if !failed
+        && !(COMPACT_WEATHER_MIN_REGION_ROWS..=COMPACT_WEATHER_MAX_REGION_ROWS)
+            .contains(&observed_region_rows)
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: weather observed_region_rows {observed_region_rows} != {COMPACT_WEATHER_REGION_ROWS}"
+            "offset {offset}: weather observed_region_rows {observed_region_rows} outside {COMPACT_WEATHER_MIN_REGION_ROWS}..={COMPACT_WEATHER_MAX_REGION_ROWS}"
         ));
     }
     if observed_province_rows != 0
@@ -16893,9 +16918,9 @@ fn decode_compact_weather_data_payload(
             "offset {offset}: weather observed_province_rows {observed_province_rows} outside {COMPACT_WEATHER_MIN_PROVINCE_ROWS}..={COMPACT_WEATHER_MAX_PROVINCE_ROWS}"
         ));
     }
-    if !failed && !delta_data && region_count != COMPACT_WEATHER_REGION_ROWS {
+    if !failed && !delta_data && region_count != observed_region_rows {
         summary.parse_errors.push(format!(
-            "offset {offset}: weather full snapshot region_count {region_count} != {COMPACT_WEATHER_REGION_ROWS}"
+            "offset {offset}: weather full snapshot region_count {region_count} != observed_region_rows {observed_region_rows}"
         ));
     }
     if !delta_data && observed_province_rows != 0 && province_count != observed_province_rows {
@@ -16983,7 +17008,9 @@ fn decode_compact_weather_data_payload(
         let intensity = read_u32_le(payload, cursor + 24);
         let row_reserved = read_u32_le(payload, cursor + 28);
         cursor += COMPACT_WEATHER_REGION_ROW_LEN;
-        if region_id > COMPACT_WEATHER_MAX_REGION_ID {
+        // Bounded by the region table's OWN length, which the header states.
+        // This was the constant 304, i.e. the vanilla count minus one.
+        if region_id as usize >= observed_region_rows {
             summary.parse_errors.push(format!(
                 "offset {offset}: weather row {row_index} has invalid region_id {region_id}"
             ));

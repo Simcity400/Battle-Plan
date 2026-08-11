@@ -1,34 +1,34 @@
 //! d62 `hub_motorization_live` — exact per-node supply-hub motorization levels.
 //!
-//! Derived from `world_fold.rs:18990`-`:19053`
+//! Derived from `world_fold.rs:19070`-`:19133`
 //! (`fold_hub_motorization`), its JSON emission at `:9187`-`:9220`, and the
-// @world-fold-authority domain=62 functions=fold_hub_motorization lines=18990-19053 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=87cd31354c75e5c73548663b2437e801bdcdc3b6c9f8c0c3d7e742b84de86004
+// @world-fold-authority domain=62 functions=fold_hub_motorization lines=19070-19133 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=894c6fac5d8a7c7875d97b5fd1e55f3c0279846568360fd32ed1b2930543181b
 //! payload codec the fold calls, which for this domain lives **outside** the fold
 //! in its own leaf crate: `extractor/native/lanes/hub_motorization_live/src/lib.rs`
-//! (`decode_payload_rows` at `:251`, `read_row` at `:312`, `validate_row` at
-//! `:327`). `extractor/documents/domains/d62_hub_motorization_live.md` carries the
+//! (`decode_payload_rows` at `:264`, `read_row` at `:325`, `validate_row` at
+//! `:340`). `extractor/documents/domains/d62_hub_motorization_live.md` carries the
 //! exact-a729 structure law and one field-level fact used below (levels 1 and 2
 //! are the only persisted values; 0 means "no entry" and is not stored).
 //!
-//! **Payload grammar** (`lib.rs:162`-`:183`, `:251`-`:310`): a 32-byte header —
+//! **Payload grammar** (`lib.rs:175`-`:196`, `:264`-`:323`): a 32-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `status_flags` u32 at
 //! `+12`, `schema_version` u32 at `+16`, `total_settings_nodes` u32 at `+20`,
 //! `row_len` u32 at `+24`, `total_map_entries` u32 at `+28` — followed by
 //! `row_count` fixed 32-byte rows of eight little-endian u32 words. The header
 //! carries its own `row_len` and `schema_version`, and the codec rejects any
-//! payload whose `row_len != 32` or `schema_version != 2` (`lib.rs:271`-`:279`),
+//! payload whose `row_len != 32` or `schema_version != 2` (`lib.rs:284`-`:292`),
 //! so the length never selects a row form: there is exactly one, and no legacy
 //! short row exists.
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `owner_tag_db_id`    | raw | none (key 0; `1..=2048`, `lib.rs:328`) |
-//! | `+4`  | u32 | `actor_tag_db_id`    | raw | none (key 2; `1..=2048`, `lib.rs:334`) |
-//! | `+8`  | u32 | `province_id`        | raw | none (key 1; `1..=20000`, `lib.rs:340`) |
-//! | `+12` | u32 | `state_id`           | raw | none (`1..=20000`, `lib.rs:346`) |
+//! | `+0`  | u32 | `owner_tag_db_id`    | raw | none (key 0; `1..=2048`, `lib.rs:341`) |
+//! | `+4`  | u32 | `actor_tag_db_id`    | raw | none (key 2; `1..=2048`, `lib.rs:347`) |
+//! | `+8`  | u32 | `province_id`        | raw | none (key 1; `1..=65535`, `lib.rs:353`) |
+//! | `+12` | u32 | `state_id`           | raw | none (`1..=65535`, `lib.rs:359`) |
 //! | `+16` | u32 | `record_index`       | raw | none |
 //! | `+20` | u32 | `map_entry_index`    | raw | none |
-//! | `+24` | u32 | `motorization_level` | raw | none (`1..=2`, `lib.rs:352`, `world_fold.rs::fold_hub_motorization`) |
+//! | `+24` | u32 | `motorization_level` | raw | none (`1..=2`, `lib.rs:365`, `world_fold.rs::fold_hub_motorization`) |
 //! | `+28` | u32 | `flags`              | —   | — (see below) |
 //!
 //! **No scale factor anywhere.** Every one of the eight words is an integer the
@@ -40,12 +40,12 @@
 //! carrying it would be a second encoding of the same fact.
 //!
 //! **No field can be absent, null or unknown, and the schema declares no
-//! capability.** There is no gate anywhere in this row: `read_row` (`lib.rs:312`)
-//! reads all eight words unconditionally, and `validate_row` (`lib.rs:327`)
+//! capability.** There is no gate anywhere in this row: `read_row` (`lib.rs:325`)
+//! reads all eight words unconditionally, and `validate_row` (`lib.rs:340`)
 //! range-rejects five of them outright. The row's `flags` word is not a gate
 //! either — see below. A read that fails happens *earlier*, in the collector's
 //! `derive_object_rows`, which returns `CcssMalformed` for the whole object
-//! rather than emitting a row with a hole (`lib.rs:528`-`:685`); and a payload
+//! rather than emitting a row with a hole (`lib.rs:541`-`:698`); and a payload
 //! that fails to decode marks the **domain-hour** unknown while retaining the
 //! previous accumulator (`world_fold.rs:15926`-`:15935`, `:15947`, `:15962`,
 //! `:15974`). That is an hour with no d62 state at all, not a row with an empty
@@ -55,7 +55,7 @@
 //! assert a state that cannot occur.
 //!
 //! **The five flag bits are verification witnesses, not field gates, and are not
-//! on the wire.** `validate_row` (`lib.rs:358`-`:368`) rejects a row that carries
+//! on the wire.** `validate_row` (`lib.rs:371`-`:381`) rejects a row that carries
 //! any bit outside the five AND a row that is missing any of the five; either
 //! rejection makes `decode_payload_rows` return `Err`, which the fold turns into
 //! a domain-unknown hour that folds nothing (`world_fold.rs::fold_hub_motorization`).
@@ -103,28 +103,30 @@ pub mod field {
 // `SCHEMA_VERSION`, and `split_payload` refuses any other value. See the
 // deliverable's open questions.
 
-/// `PAYLOAD_HEADER_LEN`, `lib.rs:72`.
+/// `PAYLOAD_HEADER_LEN`, `lib.rs:85`.
 pub const HEADER_LEN: usize = 32;
-/// `ROW_LEN`, `lib.rs:74`. Fixed; there is no legacy form.
+/// `ROW_LEN`, `lib.rs:87`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 32;
-/// `SCHEMA_VERSION`, `lib.rs:71`. `decode_payload_rows` (`:271`) rejects any
+/// `SCHEMA_VERSION`, `lib.rs:84`. `decode_payload_rows` (`:284`) rejects any
 /// other value, so this pins the grammar the offsets below belong to.
 pub const SCHEMA_VERSION: u32 = 2;
 
 /// `MAX_COUNTRY_COUNT`, `lib.rs:65` — the bound `validate_row` applies to both
-/// `owner_tag_db_id` and `actor_tag_db_id` (`:328`, `:334`). Zero is rejected too.
+/// `owner_tag_db_id` and `actor_tag_db_id` (`:341`, `:347`). Zero is rejected too.
 pub const MAX_COUNTRY_COUNT: u32 = 2_048;
-/// `MAX_PROVINCE_ID`, `lib.rs:67` (`validate_row:340`).
-pub const MAX_PROVINCE_ID: u32 = 20_000;
-/// `MAX_STATE_ID`, `lib.rs:68` (`validate_row:346`).
-pub const MAX_STATE_ID: u32 = 20_000;
+/// `MAX_PROVINCE_ID`, `lib.rs:80` (`validate_row:353`). A REPRESENTATION
+/// ENVELOPE, not a province count — see the producer's note; both spellings were
+/// `20_000`, a guess at content scale, and are now the build's settled 65 535.
+pub const MAX_PROVINCE_ID: u32 = 65_535;
+/// `MAX_STATE_ID`, `lib.rs:81` (`validate_row:359`).
+pub const MAX_STATE_ID: u32 = 65_535;
 
 pub const ROW_FLAG_COUNTRY_VERIFIED: u32 = 1 << 0;
 pub const ROW_FLAG_STRUCT_VERIFIED: u32 = 1 << 1;
 pub const ROW_FLAG_NODE_MOTORIZED: u32 = 1 << 2;
 pub const ROW_FLAG_ACTOR_VERIFIED: u32 = 1 << 3;
 pub const ROW_FLAG_LEVEL_VERIFIED: u32 = 1 << 4;
-/// `lib.rs:358`-`:368`: a row must carry **exactly** these five bits. Any extra
+/// `lib.rs:371`-`:381`: a row must carry **exactly** these five bits. Any extra
 /// bit and any missing bit are both hard rejections, which is why this is one
 /// constant and not a "known" mask plus a separate "required" mask.
 pub const REQUIRED_FLAGS: u32 = ROW_FLAG_COUNTRY_VERIFIED
@@ -134,7 +136,7 @@ pub const REQUIRED_FLAGS: u32 = ROW_FLAG_COUNTRY_VERIFIED
     | ROW_FLAG_LEVEL_VERIFIED;
 
 /// The lowest and highest motorization level the engine persists
-/// (`lib.rs:352`, `world_fold.rs::fold_hub_motorization`, dossier "Persisted levels are exact").
+/// (`lib.rs:365`, `world_fold.rs::fold_hub_motorization`, dossier "Persisted levels are exact").
 pub const MIN_MOTORIZATION_LEVEL: u32 = 1;
 pub const MAX_MOTORIZATION_LEVEL: u32 = 2;
 
@@ -142,7 +144,7 @@ pub const MAX_MOTORIZATION_LEVEL: u32 = 2;
 ///
 /// The engine's own values are `1` (50 % truck fraction) and `2` (100 %); `0`
 /// means "this actor has no entry for this node" and is **never persisted**
-/// (dossier line 45, `lib.rs:644`-`:647`), which in a keyed set is the absence of
+/// (dossier line 45, `lib.rs:657`-`:660`), which in a keyed set is the absence of
 /// the row, not a code the row can hold. Declaring `enum_card(3)` to keep the raw
 /// engine number would therefore make `Enum(0)` a decodable value meaning a level
 /// the fold rejects (`world_fold.rs::fold_hub_motorization`) — a record that passes
@@ -193,12 +195,12 @@ pub fn schema() -> Schema {
         Field::new(f::PROVINCE_ID, Kind::ContentId).key(1),
         Field::new(f::ACTOR_TAG_DB_ID, Kind::ContentId).key(2),
         // The supply node's state. Content-defined exactly as the province is,
-        // and read from the same node record (`lib.rs:584`); not part of the
+        // and read from the same node record (`lib.rs:597`); not part of the
         // fold's key, so it rides as a value.
         Field::new(f::STATE_ID, Kind::ContentId),
         // Engine array positions: `record_index` is the node's index in the
         // CCSS node vector and `map_entry_index` the entry's index in that
-        // node's motorization map (`lib.rs:653`-`:654`). They are neither
+        // node's motorization map (`lib.rs:666`-`:667`). They are neither
         // identity (the fold keys by owner/province/actor, not by these) nor
         // content (no manifest resolves an array slot), so §5 puts them at
         // `Unsigned`. Not `Monotone`: an index does not count anything and does
@@ -232,7 +234,7 @@ pub fn schema() -> Schema {
 
 // --- The boundary mapping ----------------------------------------------------
 
-/// The 32-byte payload header (`lib.rs:162`-`:183`, `:262`-`:270`).
+/// The 32-byte payload header (`lib.rs:175`-`:196`, `:275`-`:283`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -245,7 +247,7 @@ pub struct PayloadHeader {
 }
 
 /// Split a d62 DATA payload into its header and its rows slice, applying the
-/// codec's and the fold's **structural** checks (`lib.rs:255`-`:304`,
+/// codec's and the fold's **structural** checks (`lib.rs:268`-`:317`,
 /// `world_fold.rs::fold_hub_motorization`). Per-row semantics stay in
 /// [`record_from_row`].
 ///
@@ -268,7 +270,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
         row_len: u32_at(payload, 24),
         total_map_entries: u32_at(payload, 28),
     };
-    // `lib.rs:271`: the payload declares which grammar it is. Every offset in
+    // `lib.rs:284`: the payload declares which grammar it is. Every offset in
     // this module belongs to version 2, so another version is not a payload this
     // mapper may read.
     if header.schema_version != SCHEMA_VERSION {
@@ -277,7 +279,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
             header.schema_version
         ));
     }
-    // `lib.rs:277`: the header also declares its own row stride.
+    // `lib.rs:290`: the header also declares its own row stride.
     if header.row_len as usize != ROW_LEN {
         return Err(format!(
             "hub_motorization row_len {} != {ROW_LEN}",
@@ -286,7 +288,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     }
     // Checked arithmetic: `row_count` is arbitrary input from a stream on disk,
     // and `row_count * ROW_LEN` overflows `usize` for a large enough word. The
-    // codec saturates instead (`lib.rs:280`), which rejects the same payloads by
+    // codec saturates instead (`lib.rs:293`), which rejects the same payloads by
     // way of the length comparison; checked multiplication says so directly.
     let expected = (header.row_count as usize)
         .checked_mul(ROW_LEN)
@@ -303,7 +305,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
             payload.len()
         ));
     }
-    // `lib.rs:299` and `world_fold.rs::fold_hub_motorization`: the codec counts one map entry per
+    // `lib.rs:312` and `world_fold.rs::fold_hub_motorization`: the codec counts one map entry per
     // emitted row and the fold counts them again, so the header's total is the
     // row count. A mismatch means rows were dropped between collection and
     // emission — the fold marks the hour unknown for exactly this.
@@ -323,7 +325,9 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(key(&[owner as u64, province as u64, actor as u64]))
 }
 
-/// The three key words with `validate_row`'s range checks (`lib.rs:328`-`:345`).
+/// The three key words with `validate_row`'s range checks: owner at
+/// `lib.rs:341`, actor at `:347`, province at `:353` (`:341`-`:357` covers all
+/// three).
 /// Returned in **key order**, which is not row order: the row packs
 /// `owner, actor, province` and the key is `(owner, province, actor)`.
 pub fn key_fields_of_row(row: &[u8]) -> core::result::Result<(u32, u32, u32), String> {
@@ -345,7 +349,7 @@ pub fn key_fields_of_row(row: &[u8]) -> core::result::Result<(u32, u32, u32), St
 /// (stored = v + c * (frame_tick >> u)); d62 declares no derived field, so it is
 /// taken and ignored — every domain's mapper has the same shape.
 ///
-/// Fail-closed throughout, mirroring `validate_row` (`lib.rs:327`) and
+/// Fail-closed throughout, mirroring `validate_row` (`lib.rs:340`) and
 /// `fold_hub_motorization`: a row either of them would reject is an `Err` here,
 /// never a coerced value. The codec accumulates every error and reports them
 /// together; this returns the first, which is the same accept/reject decision.
@@ -366,12 +370,12 @@ pub fn record_from_row(
     let state_id = u32_at(row, 12);
     check_range(state_id, 1, MAX_STATE_ID, "state_id")?;
 
-    // `lib.rs:352` and `world_fold.rs::fold_hub_motorization`. Rejected, never clamped: a level
+    // `lib.rs:365` and `world_fold.rs::fold_hub_motorization`. Rejected, never clamped: a level
     // outside `1..=2` is a row the fold refuses, and coercing it would publish
     // a motorization level the engine never persisted.
     let level_code = level_to_code(u32_at(row, 24))?;
 
-    // `lib.rs:358`-`:368`. Both halves: an unknown bit means the row is not this
+    // `lib.rs:371`-`:381`. Both halves: an unknown bit means the row is not this
     // grammar, and a missing witness means the collector did not verify what the
     // row asserts. Either one makes the whole frame unfoldable upstream.
     let flags = u32_at(row, 28);
@@ -446,7 +450,7 @@ mod tests {
             .expect("field is in the schema")
     }
 
-    /// A raw 32-byte row, built the way the lane packs one (`lib.rs:172`-`:181`)
+    /// A raw 32-byte row, built the way the lane packs one (`lib.rs:185`-`:194`)
     /// — in ROW order, which is not key order.
     #[allow(clippy::too_many_arguments)]
     fn raw_row(
@@ -537,9 +541,9 @@ mod tests {
         // Step 8 case 3's capability list is empty for this domain, so there are
         // no per-capability raw-byte cases to write, and this test records why
         // instead of inventing them. Every one of the eight row words is read
-        // unconditionally (`lib.rs:312`) and five are range-rejected
-        // (`lib.rs:327`); nothing is gated. A failed read never becomes a row —
-        // the collector fails the whole CCSS object (`lib.rs:528`) and a payload
+        // unconditionally (`lib.rs:325`) and five are range-rejected
+        // (`lib.rs:340`); nothing is gated. A failed read never becomes a row —
+        // the collector fails the whole CCSS object (`lib.rs:541`) and a payload
         // that will not decode makes the whole domain-hour unknown with the
         // previous accumulator retained (`world_fold.rs::fold_hub_motorization`), which
         // is an absent hour, not an empty field.
@@ -726,7 +730,7 @@ mod tests {
             );
             assert!(key_from_row(&row).is_err(), "length {len}");
         }
-        // Every range rule of `validate_row` (`lib.rs:327`-`:357`), at both
+        // Every range rule of `validate_row` (`lib.rs:340`-`:370`), at both
         // edges: the bound itself is accepted and one past it is not.
         let bounds: [(usize, u32, u32, &str); 5] = [
             (0, 1, MAX_COUNTRY_COUNT, "owner"),
@@ -758,7 +762,7 @@ mod tests {
         }
         // The flags word: the whole 32-bit space in the two directions that
         // matter. Any missing witness and any unknown bit are both rejections
-        // (`lib.rs:358`-`:368`), which is what the schema's omission of the
+        // (`lib.rs:371`-`:381`), which is what the schema's omission of the
         // field rests on.
         for bit in 0..32u32 {
             let missing = REQUIRED_FLAGS & !(1 << bit);
@@ -831,13 +835,13 @@ mod tests {
         let mut truncated = payload.clone();
         truncated.pop();
         assert!(split_payload(&truncated).is_err());
-        // Another schema version (`lib.rs:271`) — every one but 2.
+        // Another schema version (`lib.rs:284`) — every one but 2.
         for version in [0u32, 1, 3, u32::MAX] {
             let mut wrong = payload.clone();
             wrong[16..20].copy_from_slice(&version.to_le_bytes());
             assert!(split_payload(&wrong).is_err(), "schema_version {version}");
         }
-        // Another row stride (`lib.rs:277`).
+        // Another row stride (`lib.rs:290`).
         for row_len in [0u32, 16, 31, 33, 64] {
             let mut wrong = payload.clone();
             wrong[24..28].copy_from_slice(&row_len.to_le_bytes());

@@ -1,4 +1,12 @@
 use super::*;
+
+/// How many strategic regions THESE FIXTURES build. Vanilla's 305 because that
+/// is what the reference captures carry — a fixture choice, not a contract: the
+/// count is content, the wire states it in `observed_region_rows`, and the fold
+/// no longer validates against a constant. It replaces `WEATHER_REGION_ROWS`,
+/// which was that constant.
+const FIXTURE_WEATHER_REGION_ROWS: usize = 305;
+
 use active_command_abilities_live_lane as abilities88_lane;
 use air_loss_stats_live_lane as airloss61_lane;
 use character_presentation_live_lane as character82_lane;
@@ -2317,7 +2325,10 @@ fn a39_domain82_folds_exact_trait_state_order_and_owner_qualified_ace_presentati
     };
     let payload = character82_lane::encode_payload(&frame).expect("exact d82 payload");
     let snapshot = snapshot_for_domain_records(vec![(character82_lane::DOMAIN_ID, payload)]);
-    let view = &snapshot["_r2_character_presentation_live"];
+    // The panel-scoped domain-82 observation keeps its own key: the XUI17 G8/G11 envelope on
+    // `_r2_character_presentation_live` denies unknown fields, so these leaves cannot ride
+    // inside it.
+    let view = &snapshot["_r2_character_presentation_panel_live"];
     assert_eq!(view["authority"], json!("exact_a729_character_presentation"));
     assert_eq!(
         view["ace_modifier_setter_artifact_sha256"],
@@ -2381,10 +2392,15 @@ fn a39_domain82_measured_empty_wrong_hour_and_unavailable_remain_distinct() {
         character82_lane::encode_payload(&measured_empty).unwrap(),
     )]);
     assert_eq!(
-        measured["_r2_character_presentation_live"]["trait_trees"]
+        measured["_r2_character_presentation_panel_live"]["trait_trees"]
             .as_array()
             .map(Vec::len),
         Some(2)
+    );
+    // A measured hour still admits the XUI17 envelope; only its two components are refused.
+    assert_eq!(
+        measured["_r2_character_presentation_live"]["schema_version"],
+        json!(4)
     );
 
     let mut wrong_hour = measured_empty.clone();
@@ -2430,6 +2446,149 @@ fn a39_domain82_measured_empty_wrong_hour_and_unavailable_remain_distinct() {
         malformed_after_clean["_r2_character_presentation_live"],
         Value::Null
     );
+}
+
+/// The XUI17 schema-4 admission, replicated rule by rule against what the fold actually emits.
+///
+/// Replay code cannot be called from here, so every rule is transcribed from
+/// `replay_interface/native/replay_core/src/character_presentation_g8.rs` with its line cited,
+/// and every replay-pinned constant is repeated as a literal. A drift on either side fails.
+///
+/// kills: `world_fold.rs` `fold_character_presentation` -- emitting schema 3 again, changing the
+/// authority string or any of the six XUI17 contract hashes, adding or dropping an envelope key,
+/// or pairing a null component with a zero status flag (or a blank reason). Each of those makes
+/// replay refuse the carrier at the cited line, and each fails a distinct assertion here.
+#[test]
+fn xui17_g8_envelope_satisfies_the_replay_schema_4_admission() {
+    let hour = 16_959_360u64;
+    let frame = character82_lane::CharacterPresentationFrame {
+        elapsed_wall_ms: 3,
+        status_flags: 0,
+        frame_hour: hour,
+        completeness_record_identity: "xui17:a729:refresh:11".into(),
+        snapshot: Some(character82_lane::CharacterPresentationSnapshot {
+            source_sequence: 11,
+            trait_trees: vec![
+                character82_lane::TraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 77,
+                    root: character82_lane::TraitTreeRoot::ControllerOffset120,
+                    nodes: Vec::new(),
+                },
+                character82_lane::TraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 77,
+                    root: character82_lane::TraitTreeRoot::ControllerOffset130,
+                    nodes: Vec::new(),
+                },
+            ],
+            ace_context: character82_lane::AceListContext::PlaneTypeMask { mask_raw: 0x400 },
+            ace_portraits: Vec::new(),
+        }),
+    };
+    let snapshot = snapshot_for_domain_records(vec![(
+        character82_lane::DOMAIN_ID,
+        character82_lane::encode_payload(&frame).expect("exact d82 payload"),
+    )]);
+    let view = &snapshot["_r2_character_presentation_live"];
+    let envelope = view.as_object().expect("envelope object");
+
+    // g8.rs:182-188 -- anything other than exactly 4 is DomainAbsent, never a G8 carrier.
+    assert_eq!(view["schema_version"], json!(4));
+    // g8.rs:130-150 -- CharacterPresentationG8Envelope is deny_unknown_fields and has no serde
+    // defaults, so the key set must match exactly in both directions.
+    let mut keys = envelope.keys().map(String::as_str).collect::<Vec<_>>();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "ace_failure_reason",
+            "ace_semantics_manifest_sha256",
+            "ace_status_flags",
+            "aces",
+            "authority",
+            "complete_membership_manifest_sha256",
+            "completeness_record_identity",
+            "elapsed_wall_ms",
+            "evidence_manifest_sha256",
+            "executable_sha256",
+            "frame_hour",
+            "post_hour_boundary_manifest_sha256",
+            "producer_contract_manifest_sha256",
+            "schema_version",
+            "superseding_boundary_claim_artifact_sha256",
+            "trait_failure_reason",
+            "trait_status_flags",
+            "traits",
+        ]
+    );
+    // g8.rs:226-236 -- the authority/identity header, compared against replay's own constants.
+    assert_eq!(view["authority"], json!("exact_a729_g8_g11_post_hour"));
+    for (field, expected) in [
+        (
+            "executable_sha256",
+            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        ),
+        (
+            "producer_contract_manifest_sha256",
+            "5d95b0f2e6ad1951f50fad1645972b03b138d7bb865d424a79e65d189fbb0737",
+        ),
+        (
+            "evidence_manifest_sha256",
+            "fbc359fb46a2c7fe2b593ee0af410a034c1e30988d9c73b542df0ce74302d288",
+        ),
+        (
+            "post_hour_boundary_manifest_sha256",
+            "9959a34c326dddc65cd171010a70e5cff9f646295bd47b37416203cc9689156f",
+        ),
+        (
+            "complete_membership_manifest_sha256",
+            "46c5a9c7ad2d0e3e1b2d38bbb954a12302c773d91b95179aeb438f510fee9b79",
+        ),
+        (
+            "ace_semantics_manifest_sha256",
+            "63c52460b7142ac8f0346655931c0650c3abf2ebb484de7ddc3a55fd3a8796e2",
+        ),
+        (
+            "superseding_boundary_claim_artifact_sha256",
+            "77f02b5552b83323565d341df62a9156a5c73e107c463fa902d8a5b809afa625",
+        ),
+    ] {
+        assert_eq!(view[field], json!(expected), "{field} must match XUI17");
+    }
+    // g8.rs:237 -- the envelope binds to the replay hour it is filed under.
+    assert_eq!(view["frame_hour"], json!(hour));
+    // g8.rs:238-239 -- non-blank, at most 1 KiB.
+    let identity = view["completeness_record_identity"].as_str().expect("identity");
+    assert!(!identity.trim().is_empty() && identity.len() <= 1_024);
+
+    // g8.rs:300-306 -- component_shape. Both components are absent here, so each needs a
+    // nonzero status flag and a non-blank reason of at most 4 KiB. A zero flag or an empty
+    // reason beside a null component is refused, and so is a present component with either set.
+    for (component, flags, reason) in [
+        ("traits", "trait_status_flags", "trait_failure_reason"),
+        ("aces", "ace_status_flags", "ace_failure_reason"),
+    ] {
+        assert_eq!(view[component], Value::Null, "{component} has no source");
+        let status = view[flags].as_u64().expect("status flags");
+        let text = view[reason].as_str().expect("failure reason");
+        assert_ne!(status, 0, "{flags} must be nonzero beside a null component");
+        assert!(!text.trim().is_empty() && text.len() <= 4_096);
+        // The reason is what replay renders (game_ui/src/character_ui.rs:3021, 3215-3237), so
+        // it must name the missing capture rather than restate the refusal.
+        assert!(text.contains("domain 82"), "{reason} must name its producer");
+    }
+
+    // g8.rs:179-181 -- an explicit null is DomainUnavailable, which is what an unmeasured hour
+    // must project. It must not be confused with the admitted-but-refused envelope above.
+    let mut wrong_hour = frame;
+    wrong_hour.frame_hour += 1;
+    let stale = snapshot_for_domain_records(vec![(
+        character82_lane::DOMAIN_ID,
+        character82_lane::encode_payload(&wrong_hour).unwrap(),
+    )]);
+    assert_eq!(stale["_r2_character_presentation_live"], Value::Null);
+    assert_eq!(stale["_r2_character_presentation_panel_live"], Value::Null);
 }
 
 #[test]
@@ -2927,15 +3086,15 @@ fn put_u64_at(out: &mut [u8], offset: usize, value: u64) {
 fn chunk3_weather_payload(extra_status: u32) -> Vec<u8> {
     let mut out = vec![0u8; WEATHER_HEADER_LEN];
     put_u64_at(&mut out, 0, 10);
-    put_u32_at(&mut out, 8, WEATHER_REGION_ROWS as u32);
-    put_u32_at(&mut out, 12, WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 8, FIXTURE_WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 12, FIXTURE_WEATHER_REGION_ROWS as u32);
     put_u32_at(&mut out, 16, extra_status);
     put_u32_at(&mut out, 20, 0);
-    put_u32_at(&mut out, 24, WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 24, FIXTURE_WEATHER_REGION_ROWS as u32);
     put_u32_at(&mut out, 28, 0);
     put_u32_at(&mut out, 32, 100_000);
     put_u32_at(&mut out, 36, 1);
-    for region_id in 0..WEATHER_REGION_ROWS as u32 {
+    for region_id in 0..FIXTURE_WEATHER_REGION_ROWS as u32 {
         let flags = if region_id == 12 {
             WEATHER_REGION_RAIN_LIGHT
                 | WEATHER_REGION_PHENOMENON_ACTIVE
@@ -2962,7 +3121,7 @@ fn chunk3_weather_delta_activating_region(region_id: u32) -> Vec<u8> {
     put_u32_at(&mut out, 12, 1);
     put_u32_at(&mut out, 16, DELTA);
     put_u32_at(&mut out, 20, 0);
-    put_u32_at(&mut out, 24, WEATHER_REGION_ROWS as u32);
+    put_u32_at(&mut out, 24, FIXTURE_WEATHER_REGION_ROWS as u32);
     put_u32_at(&mut out, 28, 0);
     put_u32_at(&mut out, 32, 100_000);
     // Header activity is scoped to this one emitted delta row.
@@ -5075,7 +5234,7 @@ fn chunk3_d24_delta_recomputes_merged_305_region_active_count() {
 
     assert_eq!(snapshots[0]["map"]["_r2_weather_live"]["active_region_count"], json!(1));
     let weather = &snapshots[1]["map"]["_r2_weather_live"];
-    assert_eq!(weather["regions"].as_object().unwrap().len(), WEATHER_REGION_ROWS);
+    assert_eq!(weather["regions"].as_object().unwrap().len(), FIXTURE_WEATHER_REGION_ROWS);
     assert_eq!(weather["active_region_count"], json!(2));
     assert_eq!(weather["regions"]["12"]["weather_kind"], json!("rain_light"));
     assert_eq!(weather["regions"]["20"]["weather_kind"], json!("rain_heavy"));

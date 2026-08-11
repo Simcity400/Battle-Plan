@@ -35,6 +35,10 @@ struct Region {
 #[derive(Clone, Debug, Default)]
 pub struct SyntheticMemory {
     regions: Vec<Region>,
+    /// Region indices sorted by base address, built on the first read and
+    /// dropped whenever the regions change. See [`SyntheticMemory::region_for`]
+    /// — this changes how long a lookup takes and never which region it finds.
+    index: std::cell::RefCell<Option<Vec<u32>>>,
     copies: Cell<u64>,
     bytes_moved: Cell<u64>,
 }
@@ -51,6 +55,7 @@ impl SyntheticMemory {
             bytes,
             readable: true,
         });
+        self.invalidate_index();
         self
     }
 
@@ -99,11 +104,94 @@ impl SyntheticMemory {
         self.bytes_moved.set(0);
     }
 
+    /// The FIRST region, in mapping order, that wholly contains `span`.
+    ///
+    /// # Why this is not just `iter().find(..)` any more
+    ///
+    /// It was, and at the sizes every gate in this repo stages — a few dozen
+    /// regions — that was right. Lane GL stages the d81 world at production's
+    /// 3,512 province slots, which is 17,574 regions, and the plan issues
+    /// 84,226 copies against it: the scan alone is three quarters of a billion
+    /// comparisons and it swamped the substrate it was there to measure. That
+    /// is a property of the FIXTURE and not of anything a capture runs, so the
+    /// lookup is indexed and the fixture stops being the subject.
+    ///
+    /// THE ANSWER IS UNCHANGED, and the fallback is what makes that true rather
+    /// than hoped. A binary search over bases can only be the mapping-order
+    /// answer when at most one region can contain any address — so the index is
+    /// built ONLY if the regions are pairwise disjoint, and a fixture that maps
+    /// one region over another keeps the linear scan and its first-wins rule.
     fn region_for(&self, span: Span) -> Option<&Region> {
-        self.regions.iter().find(|region| {
+        // A ZERO-LENGTH SPAN IS THE ONE CASE TWO DISJOINT REGIONS CAN BOTH
+        // CONTAIN (Codex 019fef9d, finding 4): at the boundary between
+        // `[a, b)` and `[b, c)`, an empty span at `b` sits inside both by the
+        // `start >= base && end <= end` test below, so "the first one mapped"
+        // is a real choice and the binary search would make the other one. It
+        // is rare enough not to be worth indexing and the scan is exact, so
+        // an empty span takes the scan.
+        if span.len == 0 {
+            return self.regions.iter().find(|region| {
+                let end = region.base as u128 + region.bytes.len() as u128;
+                span.start >= region.base && span.end_excl() <= end
+            });
+        }
+        let position = {
+            let mut cached = self.index.borrow_mut();
+            if cached.is_none() {
+                *cached = Some(self.sorted_disjoint_index());
+            }
+            let order = cached.as_ref().expect("just built");
+            if order.is_empty() && !self.regions.is_empty() {
+                // Overlapping regions: the index cannot express first-wins.
+                None
+            } else {
+                // The last region whose base is at or below the span's start;
+                // no other can contain it, because they are disjoint.
+                let at = order
+                    .partition_point(|slot| self.regions[*slot as usize].base <= span.start);
+                at.checked_sub(1).map(|at| order[at] as usize)
+            }
+        };
+        let contains = |region: &Region| {
             let end = region.base as u128 + region.bytes.len() as u128;
             span.start >= region.base && span.end_excl() <= end
-        })
+        };
+        match position {
+            Some(slot) => {
+                let region = &self.regions[slot];
+                if contains(region) {
+                    Some(region)
+                } else {
+                    None
+                }
+            }
+            None => self.regions.iter().find(|region| contains(region)),
+        }
+    }
+
+    /// Region indices sorted by base, or EMPTY if any two regions overlap.
+    ///
+    /// An empty vector for a non-empty region list is the "cannot index this"
+    /// signal; an empty region list indexes to an empty vector too, and both
+    /// answer `None` for every span, so the two do not have to be told apart.
+    fn sorted_disjoint_index(&self) -> Vec<u32> {
+        let mut order: Vec<u32> = (0..self.regions.len() as u32).collect();
+        order.sort_unstable_by_key(|slot| self.regions[*slot as usize].base);
+        for pair in order.windows(2) {
+            let left = &self.regions[pair[0] as usize];
+            let right = &self.regions[pair[1] as usize];
+            if left.base as u128 + left.bytes.len() as u128 > right.base as u128 {
+                return Vec::new();
+            }
+        }
+        order
+    }
+
+    /// Drop the lookup index. Called by every `&mut self` entry point that can
+    /// move a region, so a fixture staged in several steps cannot read through
+    /// an index built before the last of them.
+    fn invalidate_index(&mut self) {
+        *self.index.borrow_mut() = None;
     }
 }
 

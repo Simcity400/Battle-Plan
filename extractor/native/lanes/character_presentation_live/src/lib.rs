@@ -42,6 +42,51 @@ pub const ACE_MODIFIER_FORMATTER_MANIFEST_SHA256: [u8; 32] =
 pub const ACE_SELECTED_CONTEXT_MANIFEST_SHA256: [u8; 32] =
     hex32(b"b593bfc287648ac2bdced54567db5241f2acfe4032f8aed2a77632e29b468c5c");
 
+/// Replay-facing XUI17 G8/G11 carrier contract for `_r2_character_presentation_live`.
+///
+/// These identities name the *admission contract the world-frame projection speaks*. They are
+/// deliberately separate from the CPR1 manifests above, which identify this producer's own
+/// engine read laws: the two answer different questions, and the projection can speak the
+/// contract while a component of it is explicitly unavailable.
+///
+/// `SCHEMA_VERSION` above versions the CPR1 wire payload and is not this number. Replay reads
+/// only the projection.
+pub const XUI17_CARRIER_SCHEMA_VERSION: u32 = 4;
+pub const XUI17_CARRIER_AUTHORITY: &str = "exact_a729_g8_g11_post_hour";
+pub const XUI17_PRODUCER_CONTRACT_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"5d95b0f2e6ad1951f50fad1645972b03b138d7bb865d424a79e65d189fbb0737");
+pub const XUI17_EVIDENCE_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"fbc359fb46a2c7fe2b593ee0af410a034c1e30988d9c73b542df0ce74302d288");
+pub const XUI17_G8_POST_HOUR_BOUNDARY_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"9959a34c326dddc65cd171010a70e5cff9f646295bd47b37416203cc9689156f");
+pub const XUI17_G8_COMPLETE_MEMBERSHIP_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"46c5a9c7ad2d0e3e1b2d38bbb954a12302c773d91b95179aeb438f510fee9b79");
+pub const XUI17_G11_ACE_SEMANTICS_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"63c52460b7142ac8f0346655931c0650c3abf2ebb484de7ddc3a55fd3a8796e2");
+pub const XUI17_G8_SUPERSEDING_BOUNDARY_CLAIM_ARTIFACT_SHA256: [u8; 32] =
+    hex32(b"77f02b5552b83323565d341df62a9156a5c73e107c463fa902d8a5b809afa625");
+
+/// Component status flag: this producer captures no source for the component at all.
+///
+/// The contract's failure law is `reject_only_the_invalid_component;
+/// absent_is_not_measured_empty`, so a component with no source is transported as an explicit
+/// unavailable disposition with a machine reason -- never as an empty batch, which would assert
+/// that the engine was measured and found to hold nothing.
+pub const XUI17_COMPONENT_STATUS_SOURCE_NOT_CAPTURED: u32 = 1 << 0;
+
+/// Why the G8 trait component is unavailable from this producer. Named here rather than at the
+/// projection site so a fixture can pin the exact disposition replay will render.
+pub const XUI17_G8_TRAIT_UNAVAILABLE_REASON: &str = "XUI17 G8 requires an all-country passive \
+     trait-tree census over the complete D18/D47 join, with a trait-definition census, a \
+     per-node definition kind, a fixed-point progress scale and blocked-reason text; domain 82 \
+     captures only the selected leader's two trait trees and carries none of those leaves";
+
+/// Why the G11 ace component is unavailable from this producer.
+pub const XUI17_G11_ACE_UNAVAILABLE_REASON: &str = "XUI17 G11 requires an all-country ace \
+     presentation joined to the complete D46 country ace order, carrying graphical culture, \
+     gender, portrait pool index and the assigned wing's display name and equipment sprite; \
+     domain 82 captures only the selected owner's ace portrait sprite and modifier text";
+
 const fn hex32(input: &[u8; 64]) -> [u8; 32] {
     const fn nibble(value: u8) -> u8 {
         match value {

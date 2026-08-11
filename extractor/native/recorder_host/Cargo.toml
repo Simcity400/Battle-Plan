@@ -49,8 +49,6 @@ character_presentation_live_lane = { path = "../lanes/character_presentation_liv
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
 theatre_selector_live_lane = { path = "../lanes/theatre_selector_live" }
 country_army_upgrade_requests_live_lane = { path = "../lanes/country_army_upgrade_requests_live" }
-fow_visibility_live_lane = { package = "fow_visibility_live", path = "../lanes/fow_visibility_live" }
-spotted_units_live_lane = { package = "spotted_units_live", path = "../lanes/spotted_units_live" }
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
 decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
 active_command_abilities_live_lane = { path = "../lanes/active_command_abilities_live" }

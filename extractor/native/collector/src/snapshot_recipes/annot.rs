@@ -292,23 +292,135 @@ pub struct CloseAsk {
     pub gap_on_change: bool,
 }
 
-/// Everything the annotations hold for one observation.
+/// Everything the annotations hold about ONE interval.
+///
+/// # Why one entry and not five maps
+///
+/// This was five `BTreeMap<IntervalId, _>` — `consumed`, `samples`, `closing`,
+/// `closes` and `stages` — and the attach pass wrote three of them and read a
+/// fourth for EVERY request against EVERY interval it covered. Lane GL measured
+/// that on d81's production shape: 35,084 requests per observation, five
+/// ordered-map descents apiece, about a quarter of the whole observation spent
+/// finding entries rather than filling them.
+///
+/// The five maps were always keyed identically and always written together, so
+/// they are one map now and one descent serves the whole request. Nothing about
+/// what is stored changed: each of the five is still independently ABSENT (an
+/// interval with a stage and no consumption records no consumption, which is
+/// the difference between "reads all of it" and "reads a mask of it"), which is
+/// why three of these fields are `Option` rather than a default value.
 #[derive(Clone, Debug, Default)]
-pub struct Annotations {
-    consumed: BTreeMap<IntervalId, Consumption>,
-    samples: BTreeMap<IntervalId, SampleImages>,
+struct IntervalAnnot {
+    consumed: Option<Consumption>,
+    samples: Option<SampleImages>,
     /// Arena offsets of the SECOND and later closing images, in the order the
     /// closing wave took them. The FIRST closing image is the record's own
     /// `closing_offset`, exactly as the first opening image is its
     /// `opening_offset` — see [`ClosingImages`].
-    closing: BTreeMap<IntervalId, ClosingImages>,
-    closes: BTreeMap<IntervalId, Vec<CloseAsk>>,
-    stages: BTreeMap<IntervalId, Vec<u16>>,
+    closing: Option<ClosingImages>,
+    closes: Vec<CloseAsk>,
+    stages: Vec<u16>,
+}
+
+/// Everything the annotations hold for one observation.
+#[derive(Clone, Debug, Default)]
+pub struct Annotations {
+    per_interval: BTreeMap<IntervalId, IntervalAnnot>,
     /// True once any recipe in the observation declares any annotation. While
     /// false every entry point below is a single predictable branch.
     armed: bool,
     /// Modelled footprint, reconciled into the custody ledger by the executor.
     charged: u64,
+}
+
+/// One interval's annotations, held open across a request's whole set of
+/// writes.
+///
+/// THE POINT IS THE DESCENT, not the borrow: the attach pass tags a stage,
+/// records a closing policy, records a consumption mask and records a sampling
+/// request against the same interval, one after the other, and each of those
+/// used to find the interval again. Holding the entry is what makes the four
+/// writes one lookup. Every method here does exactly what the identically named
+/// method on [`Annotations`] does.
+pub struct IntervalEntry<'a> {
+    slot: &'a mut IntervalAnnot,
+}
+
+impl IntervalEntry<'_> {
+    /// See [`Annotations::tag_stage`].
+    pub fn tag_stage(&mut self, stage: u16) {
+        if stage == 0 {
+            return;
+        }
+        if !self.slot.stages.contains(&stage) {
+            self.slot.stages.push(stage);
+        }
+    }
+
+    /// See [`Annotations::ask_close`]. The armed check is the caller's, exactly
+    /// as it is on the map-level spelling.
+    pub fn ask_close(&mut self, consumer: super::ConsumerId, gap_on_change: bool) {
+        let request = CloseAsk {
+            consumer,
+            gap_on_change,
+        };
+        if !self.slot.closes.contains(&request) {
+            self.slot.closes.push(request);
+        }
+    }
+
+    /// See [`Annotations::consume_all`].
+    pub fn consume_all(&mut self) {
+        let entry = self.slot.consumed.get_or_insert_with(Consumption::default);
+        entry.full = true;
+        entry.spans.clear();
+        entry.strided.clear();
+    }
+
+    /// See [`Annotations::consume_spans`].
+    pub fn consume_spans(&mut self, spans: &[Span]) {
+        let entry = self.slot.consumed.get_or_insert_with(|| Consumption {
+            full: false,
+            spans: Vec::new(),
+            strided: Vec::new(),
+        });
+        if entry.full {
+            return;
+        }
+        entry.spans.extend_from_slice(spans);
+    }
+
+    /// See [`Annotations::consume_strided`].
+    pub fn consume_strided(&mut self, mask: StridedMask) {
+        let entry = self.slot.consumed.get_or_insert_with(|| Consumption {
+            full: false,
+            spans: Vec::new(),
+            strided: Vec::new(),
+        });
+        if entry.full {
+            return;
+        }
+        entry.strided.push(mask);
+    }
+
+    /// Record one consumer's SAMPLING request against this interval.
+    ///
+    /// IN PLACE. The map-keyed path cloned the whole [`SampleImages`] — two
+    /// `Vec`s — out of the map, appended one ask to the clone, and inserted the
+    /// clone back, which is two descents and two allocations to append one
+    /// element. The ask that lands is the same ask.
+    ///
+    /// A missing record means no ADJACENT sample was ever taken, and the
+    /// opening image still exists, so the default's `success_mask` is 1 — which
+    /// is exactly what the cloning path substituted for an absent entry.
+    pub fn ask_samples(&mut self, consumer: super::ConsumerId, wanted: u8, gap_on_disagree: bool) {
+        let images = self.slot.samples.get_or_insert_with(|| SampleImages {
+            extra: Vec::new(),
+            success_mask: 1,
+            asks: Vec::new(),
+        });
+        images.ask(consumer, wanted, gap_on_disagree);
+    }
 }
 
 impl Annotations {
@@ -328,11 +440,21 @@ impl Annotations {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.consumed.is_empty()
-            && self.samples.is_empty()
-            && self.closing.is_empty()
-            && self.closes.is_empty()
-            && self.stages.is_empty()
+        self.per_interval.is_empty()
+    }
+
+    /// One interval's annotations, opened once for a whole request's worth of
+    /// writes. See [`IntervalEntry`].
+    pub fn entry(&mut self, interval: IntervalId) -> IntervalEntry<'_> {
+        IntervalEntry {
+            slot: self.per_interval.entry(interval).or_default(),
+        }
+    }
+
+    /// One interval's annotations, or `None` when nothing has been recorded
+    /// against it.
+    fn slot(&self, interval: IntervalId) -> Option<&IntervalAnnot> {
+        self.per_interval.get(&interval)
     }
 
     /// How many CLOSING images this interval's consumers asked for.
@@ -345,8 +467,8 @@ impl Annotations {
     ///
     /// [`SampleSpec`]: super::executor::SampleSpec
     pub fn closing_images_wanted(&self, interval: IntervalId) -> u8 {
-        self.samples
-            .get(&interval)
+        self.slot(interval)
+            .and_then(|slot| slot.samples.as_ref())
             .map(|images| images.asks.iter().map(|ask| ask.wanted).max().unwrap_or(1))
             .unwrap_or(1)
             .max(1)
@@ -354,12 +476,18 @@ impl Annotations {
 
     /// Record one extra closing image's arena offset.
     pub fn push_closing_image(&mut self, interval: IntervalId, offset: u32) {
-        self.closing.entry(interval).or_default().extra.push(offset);
+        self.per_interval
+            .entry(interval)
+            .or_default()
+            .closing
+            .get_or_insert_with(ClosingImages::default)
+            .extra
+            .push(offset);
     }
 
     /// The extra closing images of `interval`, the first one excluded.
     pub fn closing_images(&self, interval: IntervalId) -> Option<&ClosingImages> {
-        self.closing.get(&interval)
+        self.slot(interval).and_then(|slot| slot.closing.as_ref())
     }
 
     /// Record one consumer's closing-witness policy for one interval.
@@ -386,14 +514,7 @@ impl Annotations {
         if !self.armed {
             return;
         }
-        let request = CloseAsk {
-            consumer,
-            gap_on_change,
-        };
-        let entry = self.closes.entry(interval).or_default();
-        if !entry.contains(&request) {
-            entry.push(request);
-        }
+        self.entry(interval).ask_close(consumer, gap_on_change);
     }
 
     /// Whether a CHANGED closing image of `interval` gaps `consumer`.
@@ -404,7 +525,7 @@ impl Annotations {
     /// requests elected to judge the image itself — a consumer reached by two
     /// recipes, one of which wants the default, is not opting out.
     pub fn close_gaps(&self, interval: IntervalId, consumer: super::ConsumerId) -> bool {
-        let Some(asks) = self.closes.get(&interval) else {
+        let Some(asks) = self.slot(interval).map(|slot| &slot.closes) else {
             return true;
         };
         let mut asked = false;
@@ -420,63 +541,48 @@ impl Annotations {
     /// Record that every byte of `interval` a contributor touched is consumed.
     /// Once set this cannot be narrowed again.
     pub fn consume_all(&mut self, interval: IntervalId) {
-        let entry = self.consumed.entry(interval).or_default();
-        entry.full = true;
-        entry.spans.clear();
-        entry.strided.clear();
+        self.entry(interval).consume_all();
     }
 
     /// Record `spans` of `interval` as consumed. Ignored once the interval is
     /// fully consumed.
     pub fn consume_spans(&mut self, interval: IntervalId, spans: &[Span]) {
-        let entry = self.consumed.entry(interval).or_insert(Consumption {
-            full: false,
-            spans: Vec::new(),
-            strided: Vec::new(),
-        });
-        if entry.full {
-            return;
-        }
-        entry.spans.extend_from_slice(spans);
+        self.entry(interval).consume_spans(spans);
     }
 
     /// Record a per-element mask over `interval`.
     pub fn consume_strided(&mut self, interval: IntervalId, mask: StridedMask) {
-        let entry = self.consumed.entry(interval).or_insert(Consumption {
-            full: false,
-            spans: Vec::new(),
-            strided: Vec::new(),
-        });
-        if entry.full {
-            return;
-        }
-        entry.strided.push(mask);
+        self.entry(interval).consume_strided(mask);
     }
 
     /// The consumption of `interval`. Absent is [`Consumption::full`].
     pub fn consumption(&self, interval: IntervalId) -> Option<&Consumption> {
-        self.consumed.get(&interval)
+        self.slot(interval).and_then(|slot| slot.consumed.as_ref())
     }
 
     /// True when `want` intersects bytes some consumer reads out of
     /// `interval`.
     pub fn consumed_touches(&self, interval: IntervalId, want: &Span) -> bool {
-        match self.consumed.get(&interval) {
+        match self.consumption(interval) {
             Some(consumption) => consumption.touches(want),
             None => true,
         }
     }
 
     pub fn set_samples(&mut self, interval: IntervalId, images: SampleImages) {
-        self.samples.insert(interval, images);
+        self.per_interval.entry(interval).or_default().samples = Some(images);
     }
 
     pub fn samples(&self, interval: IntervalId) -> Option<&SampleImages> {
-        self.samples.get(&interval)
+        self.slot(interval).and_then(|slot| slot.samples.as_ref())
     }
 
+    /// ASCENDING BY INTERVAL ID, which is what the map-keyed spelling produced
+    /// and what `close_witnesses` walks in.
     pub fn sampled_intervals(&self) -> impl Iterator<Item = (&IntervalId, &SampleImages)> {
-        self.samples.iter()
+        self.per_interval
+            .iter()
+            .filter_map(|(id, slot)| slot.samples.as_ref().map(|images| (id, images)))
     }
 
     /// Tag `interval` with the stage of an op that reached it. Stages are a set:
@@ -486,16 +592,12 @@ impl Annotations {
         if stage == 0 {
             return;
         }
-        let entry = self.stages.entry(interval).or_default();
-        if !entry.contains(&stage) {
-            entry.push(stage);
-        }
+        self.entry(interval).tag_stage(stage);
     }
 
     pub fn stages_of(&self, interval: IntervalId) -> &[u16] {
-        self.stages
-            .get(&interval)
-            .map(|list| list.as_slice())
+        self.slot(interval)
+            .map(|slot| slot.stages.as_slice())
             .unwrap_or(&[])
     }
 
@@ -553,50 +655,42 @@ impl Annotations {
             nodes * node + heap
         };
 
-        let mut consumption_heap = 0u64;
-        for consumption in self.consumed.values() {
-            consumption_heap += vec_bytes(&consumption.spans) + vec_bytes(&consumption.strided);
-            for mask in &consumption.strided {
-                consumption_heap += vec_bytes(&mask.windows);
+        // ONE TABLE, because there is one map. The five separate charges this
+        // replaces summed five node arrays for an interval that appeared in all
+        // five; the merged entry is one node array holding one value that
+        // carries all five fields, and `size_of::<IntervalAnnot>()` is that
+        // value. The heap each of its `Vec`s owns is added per entry exactly as
+        // before, because that part is real and is not part of the node.
+        //
+        // IT IS NOT UNIFORMLY CHEAPER OR DEARER THAN THE FIVE, and that is
+        // worth saying because this figure decides when an observation at the
+        // ceiling refuses: an interval that carried all five is charged one node
+        // slot where it was charged five, and an interval that carried only a
+        // stage is charged a whole `IntervalAnnot` where it was charged a
+        // `Vec<u16>`. The model still tracks the structure that exists, which is
+        // the only property it has to have.
+        let mut heap = 0u64;
+        for slot in self.per_interval.values() {
+            if let Some(consumption) = &slot.consumed {
+                heap += vec_bytes(&consumption.spans) + vec_bytes(&consumption.strided);
+                for mask in &consumption.strided {
+                    heap += vec_bytes(&mask.windows);
+                }
             }
-        }
-        let mut sample_heap = 0u64;
-        for images in self.samples.values() {
-            sample_heap += vec_bytes(&images.extra) + vec_bytes(&images.asks);
-        }
-        let mut close_heap = 0u64;
-        for asks in self.closes.values() {
-            close_heap += vec_bytes(asks);
-        }
-        let mut closing_heap = 0u64;
-        for images in self.closing.values() {
-            closing_heap += vec_bytes(&images.extra);
-        }
-        let mut stage_heap = 0u64;
-        for stages in self.stages.values() {
-            stage_heap += vec_bytes(stages);
+            if let Some(images) = &slot.samples {
+                heap += vec_bytes(&images.extra) + vec_bytes(&images.asks);
+            }
+            if let Some(images) = &slot.closing {
+                heap += vec_bytes(&images.extra);
+            }
+            heap += vec_bytes(&slot.closes);
+            heap += vec_bytes(&slot.stages);
         }
 
         table(
-            self.consumed.len(),
-            std::mem::size_of::<Consumption>(),
-            consumption_heap,
-        ) + table(
-            self.samples.len(),
-            std::mem::size_of::<SampleImages>(),
-            sample_heap,
-        ) + table(
-            self.closes.len(),
-            std::mem::size_of::<Vec<CloseAsk>>(),
-            close_heap,
-        ) + table(
-            self.closing.len(),
-            std::mem::size_of::<ClosingImages>(),
-            closing_heap,
-        ) + table(
-            self.stages.len(),
-            std::mem::size_of::<Vec<u16>>(),
-            stage_heap,
+            self.per_interval.len(),
+            std::mem::size_of::<IntervalAnnot>(),
+            heap,
         )
     }
 

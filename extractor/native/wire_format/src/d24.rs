@@ -1,8 +1,8 @@
 //! d24 `weather_live` — per-strategic-region and per-province realized weather.
 //!
-//! Derived from `world_fold.rs:20430`-`:20757`
+//! Derived from `world_fold.rs:20510`-`:20881`
 //! (`fold_weather`), its payload constants at `:761`-`:808`, the state it folds
-// @world-fold-authority domain=24 functions=fold_weather lines=20430-20757 sha256=a40946a82ef36080e9dbea9252098cd68770424c9592db32455e6389cc9d3135 closure=08648f232b6ef7edc381b9886d8ca81d7e2031ac0ba93a32dd83a072786cac43
+// @world-fold-authority domain=24 functions=fold_weather lines=20510-20881 sha256=d8cb7ad6fc63b31b07fd325b9ac8b3ce142b03cc160ae76207529831c99aef67 closure=d06842555dcac900eedafd4e93db981e9ad9fd3ccf8ffeb82baca853595cb407
 //! into at `:24179`-`:24301`, the collector read that produces the flags
 //! (`extractor/native/collector/src/attach_log.rs:59018`-`:59192`), and the
 //! production consumer of the folded JSON
@@ -22,8 +22,8 @@
 //! | u32 | `+12` | `changed_rows` |
 //! | u32 | `+16` | `status_flags` |
 //! | u32 | `+20` | `province_count` (rows emitted by THIS record) |
-//! | u32 | `+24` | `observed_region_rows` (must be 305, `world_fold.rs::fold_weather`) |
-//! | u32 | `+28` | `observed_province_rows` (0, or 10_000..=65_536) |
+//! | u32 | `+24` | `observed_region_rows` — the ENGINE's region-vector size; range-checked against the envelope, never equated to a count (`world_fold.rs::fold_weather`) |
+//! | u32 | `+28` | `observed_province_rows` (0, or 2..=65_536) |
 //! | u32 | `+32` | `scale_raw` (asserted `== FIXED_SCALE`, `world_fold.rs::fold_weather`) |
 //! | u32 | `+36` | `active_region_count` (delta-local witness, `world_fold.rs::fold_weather`) |
 //! | u32 | `+40` | `reserved0` (must be 0) |
@@ -31,14 +31,14 @@
 //!
 //! **This domain is baseline + delta** (`world_fold.rs::fold_weather`), unlike d63's
 //! full-replace. A record without `COMPACT_STATUS_DELTA_DATA` resets
-//! `weather_live` and must carry all 305 regions and all `observed_province_rows`
+//! `weather_live` and must carry all `observed_region_rows` regions and all `observed_province_rows`
 //! provinces; a delta record upserts its rows and never deletes. `WeatherState`
 //! below is that accumulator, so the measurement harness and the tests fold the
 //! same way the recorder does instead of each rebuilding it.
 //!
 //! | region row | offset | field | scale | gate |
 //! |---|---|---|---|---|
-//! | u32 | `+0`  | `region_id`             | raw    | none (key; `<= 304`) |
+//! | u32 | `+0`  | `region_id`             | raw    | none (key; `< observed_region_rows`) |
 //! | u32 | `+4`  | `flags`                 | —      | — |
 //! | i32 | `+8`  | `temperature_raw`       | /1e5   | none |
 //! | u32 | `+12` | `phenomenon`            | raw    | none (`<= 16`) |
@@ -72,8 +72,8 @@
 //!   Those three presences are the record's own unknown bits.
 //! - `dynamic_lut == (snow_present || mud_present)` (`world_fold.rs::fold_weather`). Likewise.
 //!   The collector names both of these `..._DRIVER`
-//!   (`lanes/weather_live/domain24_weather_sandstorm_v3.rs:49`-`:50`,
-//!   `:133`-`:138`) and computes them from the presences exactly this way.
+//!   (`lanes/weather_live/domain24_weather_sandstorm_v3.rs:75`-`:76`,
+//!   `:159`-`:164`) and computes them from the presences exactly this way.
 //! - `mud_active` implies `mud_present` (`:17253`). `MUD_PRESENT` is a
 //!   *measurement* gate like the other five `..._PRESENT` bits — the collector
 //!   sets it unconditionally next to the other presences
@@ -89,7 +89,7 @@
 //! stays its own field.
 //!
 //! `active_region_count` is **not** a field: the fold recomputes it host-side
-//! over the reconstructed 305-region state after merging (`:17349`-`:17355`).
+//! over the reconstructed region state after merging (`:17349`-`:17355`).
 //! It is checked here as a header witness over the emitted rows and then
 //! discarded.
 //!
@@ -207,14 +207,39 @@ pub const HEADER_LEN: usize = 48;
 pub const REGION_ROW_LEN: usize = 32;
 /// `WEATHER_PROVINCE_ROW_LEN`, `world_fold.rs::WEATHER_PROVINCE_ROW_LEN`.
 pub const PROVINCE_ROW_LEN: usize = 32;
-/// `WEATHER_REGION_ROWS`, `world_fold.rs::WEATHER_REGION_ROWS`. A full snapshot carries exactly
-/// this many regions (`:17072`).
-pub const REGION_ROWS: usize = 305;
-/// `WEATHER_MIN_PROVINCE_ROWS` / `WEATHER_MAX_PROVINCE_ROWS`, `:765`-`:766`.
-pub const MIN_PROVINCE_ROWS: usize = 10_000;
+/// `WEATHER_MAX_REGION_ROWS`, `world_fold.rs::WEATHER_MAX_REGION_ROWS`. A
+/// REPRESENTATION ENVELOPE on the region-array length, not a region count.
+///
+/// The header's `observed_region_rows` is the ENGINE's own region-vector size
+/// (`collector`'s `compact_weather_root_from_header` reads it straight out of
+/// the vector header), so the number of strategic regions is on the wire and
+/// nothing here has to guess it. This constant was `REGION_ROWS = 305` — the
+/// vanilla `map/strategicregions/` count — equated against both
+/// `observed_region_rows` and a full snapshot's `region_count`, either of which
+/// rejects the whole hour. A map mod that changes the strategic-region set lost
+/// domain 24 entirely.
+///
+/// `wire_format::d49::MAX_REGION_ID` and `::d56::MAX_REGION_ID` bound the SAME
+/// id space at 100 000. That is a cross-domain INCONSISTENCY, not a proof: a
+/// loose validation envelope can sit above a smaller real maximum, and neither
+/// of those constants is itself proven structural. What carries the claim is the
+/// engine evidence — the container is empty at construction, so its length is
+/// load-derived — and the fact that the count arrives on the wire.
+pub const MAX_REGION_ROWS: usize = 65_536;
+/// `WEATHER_MIN_REGION_ROWS`, `world_fold.rs::WEATHER_MIN_REGION_ROWS`. A POLICY
+/// on what counts as a resolved weather root, not a claim about the engine: 1
+/// rather than 2 because a region row carries a dense 0-based index and so has
+/// no vacant slot to spend, and not 0 because a zero-length region array is what
+/// an unloaded manager looks like. Nothing proves the vector must be non-empty;
+/// this fails closed on that ambiguity deliberately.
+pub const MIN_REGION_ROWS: usize = 1;
+/// `WEATHER_MIN_PROVINCE_ROWS` / `WEATHER_MAX_PROVINCE_ROWS`, `:765`-`:766`. The
+/// province floor is the engine's own and is NOT the region floor: that array is
+/// subscripted BY PROVINCE ID and slot 0 is the vacant location, so a loaded
+/// array holds at least that slot plus one real province. It replaces a `10_000`
+/// tuned on the vanilla map.
+pub const MIN_PROVINCE_ROWS: usize = 2;
 pub const MAX_PROVINCE_ROWS: usize = 65_536;
-/// `WEATHER_MAX_REGION_ID`, `world_fold.rs::WEATHER_MAX_REGION_ID`.
-pub const MAX_REGION_ID: u32 = 304;
 /// `WEATHER_MAX_RAW_ACTIVITY_CANDIDATE`, `world_fold.rs::WEATHER_MAX_RAW_ACTIVITY_CANDIDATE`.
 pub const MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 /// `WEATHER_MAX_TEMPERATURE_RAW`, `world_fold.rs::WEATHER_MAX_TEMPERATURE_RAW`.
@@ -486,10 +511,11 @@ pub fn split_payload(
             header.scale_raw
         ));
     }
-    // `:17059`
-    if observed_region_rows != REGION_ROWS {
+    // `:17059` — range, never equality: the count is content.
+    if !(MIN_REGION_ROWS..=MAX_REGION_ROWS).contains(&observed_region_rows) {
         return Err(format!(
-            "weather observed_region_rows {observed_region_rows} != {REGION_ROWS}"
+            "weather observed_region_rows {observed_region_rows} outside \
+             {MIN_REGION_ROWS}..={MAX_REGION_ROWS}"
         ));
     }
     // `:17064`
@@ -502,10 +528,13 @@ pub fn split_payload(
         ));
     }
     let delta = header.is_delta();
-    // `:17072` — a full snapshot is the complete 305-region set.
-    if !delta && region_count != REGION_ROWS {
+    // `:17072` — a full snapshot is the complete region set, which is what
+    // `observed_region_rows` states. Still an equality, but against the wire's
+    // own count instead of a constant, so a truncated snapshot is still caught.
+    if !delta && region_count != observed_region_rows {
         return Err(format!(
-            "weather full snapshot region_count {region_count} != {REGION_ROWS}"
+            "weather full snapshot region_count {region_count} != \
+             observed_region_rows {observed_region_rows}"
         ));
     }
     // `:17077`
@@ -584,10 +613,36 @@ pub fn key_from_region_row(row: &[u8]) -> core::result::Result<Key, String> {
 pub fn region_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
     check_len(row, REGION_ROW_LEN, "region")?;
     let region_id = u32_at(row, 0);
-    if region_id > MAX_REGION_ID {
+    // Row-local, so only the representation envelope is available here. The
+    // TIGHT bound — the region table's own length — is header-relative and lives
+    // in [`check_region_id`], exactly as the province side is already split.
+    // This used to be `region_id > 304`, the vanilla count minus one, applied as
+    // if it were the tight bound.
+    if region_id as usize >= MAX_REGION_ROWS {
         return Err(format!("weather region row has invalid region_id {region_id}"));
     }
     Ok(region_id)
+}
+
+/// The fold's header-relative region id bound (`world_fold.rs::fold_weather`).
+/// Public for the same reason [`check_province_id`] is: it needs the payload
+/// header, so it cannot live in [`record_from_region_row`], and a caller that
+/// re-derives it can drift.
+///
+/// `observed_region_rows` is the engine's own region-vector size. Bounding by it
+/// is what makes the check follow a mod's `map/strategicregions/` set instead of
+/// vanilla's.
+pub fn check_region_id(
+    region_id: u32,
+    observed_region_rows: u32,
+) -> core::result::Result<(), String> {
+    if region_id >= observed_region_rows {
+        return Err(format!(
+            "weather region row has invalid region_id {region_id} \
+             (observed_region_rows {observed_region_rows})"
+        ));
+    }
+    Ok(())
 }
 
 /// One compact row of the `regions` table, as the collector emits it today,
@@ -944,6 +999,40 @@ impl WeatherState {
             .find(|c| c.collection_id == PROVINCES)
             .ok_or_else(|| "weather schema has no provinces collection".to_string())?;
 
+        // A DELTA may not restate the table's size (`world_fold.rs::fold_weather`
+        // applies the same rule). This is a PROTOCOL invariant, not a claim about
+        // the engine: nothing here knows whether a strategic-region table can
+        // change mid-campaign, and it does not need to.
+        //
+        // The delta grammar upserts and never deletes (`world_fold.rs::fold_weather`), so it
+        // cannot express a table that SHRANK — the rows for the regions that went
+        // away would stay in the accumulator. A delta declaring a smaller count
+        // would therefore overwrite `self.observed_region_rows` below and leave
+        // the reconstructed state holding region ids its own declared table
+        // length says do not exist. A count change is expressible only as a full
+        // snapshot, which replaces the whole state; a delta that disagrees with
+        // the baseline is either a torn stream or a producer that owed a
+        // snapshot, and both are refusals.
+        //
+        // Both counts are latched, not just the region one. `check_province_id`
+        // bounds a province id by `observed_province_rows` exactly as
+        // `check_region_id` bounds a region id by `observed_region_rows`, so a
+        // shrinking delta strands high-id provinces the same way.
+        if header.is_delta() && self.baseline_seen {
+            if self.observed_region_rows != header.observed_region_rows {
+                return Err(format!(
+                    "weather delta observed_region_rows {} != baseline {}",
+                    header.observed_region_rows, self.observed_region_rows
+                ));
+            }
+            if self.observed_province_rows != header.observed_province_rows {
+                return Err(format!(
+                    "weather delta observed_province_rows {} != baseline {}",
+                    header.observed_province_rows, self.observed_province_rows
+                ));
+            }
+        }
+
         let mut regions: KeyedState = BTreeMap::new();
         let mut computed_active = 0usize;
         for row in region_bytes.chunks_exact(REGION_ROW_LEN) {
@@ -952,6 +1041,7 @@ impl WeatherState {
             if u32_at(row, 4) & REGION_ACTIVE_SIGNAL != 0 {
                 computed_active += 1;
             }
+            check_region_id(region_id_of_row(row)?, header.observed_region_rows)?;
             let k = key_from_region_row(row)?;
             let record = record_from_region_row(region_collection, row, frame_tick)?;
             // `:17132` — a duplicate id in one frame is a rejected frame, never a
@@ -1073,6 +1163,15 @@ fn i32_at(b: &[u8], off: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How many strategic regions THESE FIXTURES build, and the province count
+    /// they pair with it. Vanilla's 305 / 10 000 because that is what the
+    /// reference captures carry — fixture choices, not contract: both counts are
+    /// content, the wire states them, and `split_payload` no longer validates
+    /// against a constant. They replace the exported `REGION_ROWS` and
+    /// `MIN_PROVINCE_ROWS`, which were those constants.
+    const FIXTURE_REGION_ROWS: usize = 305;
+    const FIXTURE_MIN_PROVINCE_ROWS: usize = 10_000;
     use crate::value::{escapes, quantize};
     use crate::TickGrid;
 
@@ -1181,7 +1280,7 @@ mod tests {
         p.extend_from_slice(&((regions.len() + provinces.len()) as u32).to_le_bytes());
         p.extend_from_slice(&status_flags.to_le_bytes());
         p.extend_from_slice(&(provinces.len() as u32).to_le_bytes());
-        p.extend_from_slice(&(REGION_ROWS as u32).to_le_bytes());
+        p.extend_from_slice(&(FIXTURE_REGION_ROWS as u32).to_le_bytes());
         p.extend_from_slice(&observed_province_rows.to_le_bytes());
         p.extend_from_slice(&FIXED_SCALE_RAW.to_le_bytes());
         p.extend_from_slice(&active_region_count.to_le_bytes());
@@ -1199,7 +1298,7 @@ mod tests {
 
     /// A full 305-region / N-province snapshot payload the fold accepts.
     fn baseline_payload(province_rows: u32) -> Vec<u8> {
-        let regions: Vec<Vec<u8>> = (0..REGION_ROWS as u32)
+        let regions: Vec<Vec<u8>> = (0..FIXTURE_REGION_ROWS as u32)
             .map(|id| {
                 if id % 3 == 0 {
                     let (flags, phenomenon) = active(REGION_RAIN_LIGHT);
@@ -1209,7 +1308,7 @@ mod tests {
                 }
             })
             .collect();
-        let active_regions = (0..REGION_ROWS as u32).filter(|id| id % 3 == 0).count() as u32;
+        let active_regions = (0..FIXTURE_REGION_ROWS as u32).filter(|id| id % 3 == 0).count() as u32;
         let provinces: Vec<Vec<u8>> = (0..province_rows)
             .map(|id| {
                 province_row(
@@ -1230,7 +1329,7 @@ mod tests {
     /// may legally be zero (`world_fold.rs::fold_weather`), and then `province_count`
     /// must be zero too (`world_fold.rs::fold_weather`) — the cheap fixture for whole-payload sweeps.
     fn region_only_baseline() -> Vec<u8> {
-        let regions: Vec<Vec<u8>> = (0..REGION_ROWS as u32)
+        let regions: Vec<Vec<u8>> = (0..FIXTURE_REGION_ROWS as u32)
             .map(|id| region_row(id, 0, -50_000, 0, 60_832_505, 0, 0))
             .collect();
         payload(0, 0, &regions, &[], 0)
@@ -1850,10 +1949,33 @@ mod tests {
             );
             assert!(key_from_region_row(&vec![0u8; len]).is_err());
         }
-        // region_id above the bound (`:17132`).
-        assert!(record_from_region_row(&c, &region_row(305, 0, 0, 0, 0, 0, 0), 0).is_err());
+        // region_id above the ENVELOPE (`:17132`). The row mapper is row-local
+        // and only the envelope is reachable here; the tight bound is the region
+        // table's own length and is asserted through `check_region_id` below.
+        //
+        // kills: restoring d24's row-local ceiling to the vanilla-derived 304
+        // (`region_id > MAX_REGION_ID` with `MAX_REGION_ID = 304`). Region 305
+        // is the 306th strategic region — ordinary content for a map mod, and
+        // the row that a 304 ceiling silently costs.
+        assert!(
+            record_from_region_row(&c, &region_row(305, 0, 0, 0, 0, 0, 0), 0).is_ok(),
+            "region 305 is content a map mod may define, not an invalid id"
+        );
+        assert!(
+            record_from_region_row(&c, &region_row(FIXTURE_REGION_ROWS as u32 * 10, 0, 0, 0, 0, 0, 0), 0)
+                .is_ok(),
+            "nothing row-local knows how many regions there are"
+        );
+        assert!(record_from_region_row(&c, &region_row(MAX_REGION_ROWS as u32 - 1, 0, 0, 0, 0, 0, 0), 0).is_ok());
+        assert!(record_from_region_row(&c, &region_row(MAX_REGION_ROWS as u32, 0, 0, 0, 0, 0, 0), 0).is_err());
         assert!(record_from_region_row(&c, &region_row(u32::MAX, 0, 0, 0, 0, 0, 0), 0).is_err());
-        assert!(record_from_region_row(&c, &region_row(304, 0, 0, 0, 0, 0, 0), 0).is_ok());
+        // The helper's own contract. This does NOT kill deleting its call site
+        // -- see `the_fold_refuses_a_region_id_past_the_headers_own_count` for
+        // that, which drives `fold_payload` instead.
+        assert!(check_region_id(304, 305).is_ok());
+        assert!(check_region_id(305, 305).is_err(), "the count is EXCLUSIVE");
+        assert!(check_region_id(305, 306).is_ok(), "a 306-region mod set admits region 305");
+        assert!(check_region_id(0, 0).is_err());
         // Unknown flag bits (`:17137`) — every one of them.
         for bit in 8..32u32 {
             assert!(
@@ -2015,6 +2137,176 @@ mod tests {
         assert!(check_province_id(0, 0).is_err(), "no province is legal at zero rows");
     }
 
+    /// A map that is not vanilla's folds, end to end.
+    ///
+    /// This is the whole point of the change: every d24 admission rule used to
+    /// be written against 305 regions and a >= 10 000-province map, so a total
+    /// conversion — more regions, fewer regions, a smaller map — lost the
+    /// domain rather than a row. The counts here are deliberately nothing like
+    /// vanilla's in either direction.
+    ///
+    /// kills: any equality against a region-count constant in `split_payload`
+    /// (`observed_region_rows != 305`, `region_count != 305`), the 10 000
+    /// province floor, and a region-id ceiling of 304 in `region_id_of_row` or
+    /// `check_region_id`. Each of those refuses this payload.
+    #[test]
+    fn a_map_that_is_not_vanillas_folds_end_to_end() {
+        let s = schema();
+        for region_rows in [2u32, 7, 306, 1_000] {
+            let province_rows = region_rows * 3;
+            let regions: Vec<Vec<u8>> = (0..region_rows)
+                .map(|id| region_row(id, 0, -50_000, 0, 60_832_505, 0, 0))
+                .collect();
+            let provinces: Vec<Vec<u8>> = (0..province_rows)
+                .map(|id| province_row(id, full_province_flags(false), 100_000, -2_500, 3_000, 0, 0))
+                .collect();
+            let p = payload_with_observed_regions(
+                0,
+                region_rows,
+                province_rows,
+                &regions,
+                &provinces,
+                0,
+            );
+            let mut state = WeatherState::default();
+            let outcome = state
+                .fold_payload(&s, &p, 0)
+                .unwrap_or_else(|e| panic!("{region_rows} regions / {province_rows} provinces: {e}"));
+            assert!(matches!(outcome, FoldOutcome::Folded { reset: true }));
+            assert_eq!(state.regions.len(), region_rows as usize);
+            assert_eq!(state.provinces.len(), province_rows as usize);
+        }
+    }
+
+    /// The frame-level region-id bound, driven through `fold_payload` itself.
+    ///
+    /// `region_id_of_row` can only see the envelope, so the TIGHT bound — the
+    /// region table's own length — exists exactly once, as the
+    /// [`check_region_id`] call inside [`WeatherState::fold_payload`]. A test
+    /// that calls the helper directly proves the helper and nothing about
+    /// whether anyone invokes it.
+    ///
+    /// kills: deleting the `check_region_id` call from `fold_payload`, or
+    /// bounding it by anything other than `header.observed_region_rows` (the
+    /// envelope, a constant 304, or the emitted `region_count`). Under any of
+    /// those this payload folds instead of erroring.
+    #[test]
+    fn the_fold_refuses_a_region_id_past_the_headers_own_count() {
+        let s = schema();
+        // A 4-region map whose LAST row claims to be region 9. The row is
+        // envelope-legal, the payload length is right, the ids are unique, and
+        // the emitted row count matches the header, so every other rule passes.
+        let regions: Vec<Vec<u8>> = [0u32, 1, 2, 9]
+            .iter()
+            .map(|id| region_row(*id, 0, -50_000, 0, 60_832_505, 0, 0))
+            .collect();
+        let provinces: Vec<Vec<u8>> = (0..4u32)
+            .map(|id| province_row(id, full_province_flags(false), 100_000, -2_500, 3_000, 0, 0))
+            .collect();
+        let bad = payload_with_observed_regions(0, 4, 4, &regions, &provinces, 0);
+        let err = WeatherState::default()
+            .fold_payload(&s, &bad, 0)
+            .expect_err("region 9 does not exist in a 4-region table");
+        assert!(
+            err.contains("invalid region_id 9") && err.contains("observed_region_rows 4"),
+            "the refusal must name the id and the table length it was measured \
+             against; got: {err}"
+        );
+        // The identical payload with that row inside the table folds, which is
+        // what proves the refusal above is about the RELATION between the id and
+        // the header's count, and not about anything else in the payload.
+        let regions: Vec<Vec<u8>> = [0u32, 1, 2, 3]
+            .iter()
+            .map(|id| region_row(*id, 0, -50_000, 0, 60_832_505, 0, 0))
+            .collect();
+        let good = payload_with_observed_regions(0, 4, 4, &regions, &provinces, 0);
+        assert!(matches!(
+            WeatherState::default().fold_payload(&s, &good, 0),
+            Ok(FoldOutcome::Folded { .. })
+        ));
+
+        // The two candidate bounds are only distinguishable when the emitted row
+        // count is SMALLER than the table — which is every delta. Seed a
+        // 6-region baseline, then send a one-row delta touching region 5: legal
+        // against the table (6), out of range against the emitted count (1).
+        //
+        // kills: bounding `check_region_id` by the emitted `region_count`
+        // instead of `header.observed_region_rows`. The delta below is ordinary
+        // and must fold.
+        let baseline_regions: Vec<Vec<u8>> = (0..6u32)
+            .map(|id| region_row(id, 0, -50_000, 0, 60_832_505, 0, 0))
+            .collect();
+        let mut state = WeatherState::default();
+        state
+            .fold_payload(
+                &s,
+                &payload_with_observed_regions(0, 6, 4, &baseline_regions, &provinces, 0),
+                0,
+            )
+            .expect("6-region baseline");
+        let touched = region_row(5, 0, -40_000, 0, 60_832_505, 0, 0);
+        let delta =
+            payload_with_observed_regions(STATUS_DELTA_DATA, 6, 4, &[touched.clone()], &[], 0);
+        assert!(
+            matches!(
+                state.fold_payload(&s, &delta, 1),
+                Ok(FoldOutcome::Folded { reset: false })
+            ),
+            "a delta touching one region of six is bounded by the TABLE, not by \
+             the single row it emits"
+        );
+
+        // And the delta may not restate the table's size: that would let a
+        // shrinking delta strand baseline rows above the new count.
+        //
+        // kills: dropping the delta count-latch guard at the top of
+        // `fold_payload`.
+        let shrunk =
+            payload_with_observed_regions(STATUS_DELTA_DATA, 4, 4, &[touched.clone()], &[], 0);
+        let err = state
+            .fold_payload(&s, &shrunk, 2)
+            .expect_err("a delta may not resize the region table");
+        assert!(err.contains("delta observed_region_rows 4 != baseline 6"), "got: {err}");
+
+        // The province count is latched by the same rule and for the same
+        // reason: `check_province_id` bounds a province id by
+        // `observed_province_rows`, so a shrinking delta strands high-id
+        // provinces exactly as it would strand high-id regions.
+        //
+        // kills: latching only `observed_region_rows` in the delta guard, which
+        // is what the first version of this guard did.
+        let shrunk_provinces =
+            payload_with_observed_regions(STATUS_DELTA_DATA, 6, 2, &[touched], &[], 0);
+        let err = state
+            .fold_payload(&s, &shrunk_provinces, 3)
+            .expect_err("a delta may not resize the province table either");
+        assert!(
+            err.contains("delta observed_province_rows 2 != baseline 4"),
+            "got: {err}"
+        );
+    }
+
+    /// The same fixture builder as [`payload`], with `observed_region_rows`
+    /// under the caller's control instead of pinned to a constant.
+    fn payload_with_observed_regions(
+        status_flags: u32,
+        observed_region_rows: u32,
+        observed_province_rows: u32,
+        regions: &[Vec<u8>],
+        provinces: &[Vec<u8>],
+        active_region_count: u32,
+    ) -> Vec<u8> {
+        let mut p = payload(
+            status_flags,
+            observed_province_rows,
+            regions,
+            provinces,
+            active_region_count,
+        );
+        p[24..28].copy_from_slice(&observed_region_rows.to_le_bytes());
+        p
+    }
+
     #[test]
     fn a_mapper_refuses_a_collection_it_cannot_fill() {
         // A caller handing over another domain's collection must not get a
@@ -2033,9 +2325,9 @@ mod tests {
     fn split_payload_enforces_the_folds_structural_rules() {
         let good = baseline_payload(10_000);
         let (header, regions, provinces) = split_payload(&good).expect("well-formed");
-        assert_eq!(header.region_count, REGION_ROWS as u32);
+        assert_eq!(header.region_count, FIXTURE_REGION_ROWS as u32);
         assert_eq!(header.province_count, 10_000);
-        assert_eq!(regions.len(), REGION_ROWS * REGION_ROW_LEN);
+        assert_eq!(regions.len(), FIXTURE_REGION_ROWS * REGION_ROW_LEN);
         assert_eq!(provinces.len(), 10_000 * PROVINCE_ROW_LEN);
         assert!(!header.is_delta());
 
@@ -2061,27 +2353,71 @@ mod tests {
         for wrong in [0u32, 1, 32_768, 99_999, 100_001] {
             assert!(split_payload(&patch(32, wrong)).is_err(), "scale {wrong}");
         }
-        // observed_region_rows (`:17059`).
-        for wrong in [0u32, 304, 306] {
-            assert!(split_payload(&patch(24, wrong)).is_err(), "observed regions {wrong}");
+        // observed_region_rows (`:17059`). Only the ENVELOPE and the
+        // header's own internal consistency are enforced. 304 and 306 used to be
+        // rejected here purely for not being 305, so a map mod that adds or
+        // removes one strategic region lost the whole hour's weather.
+        //
+        // kills: restoring `observed_region_rows != REGION_ROWS` (or any other
+        // equality against a constant) in `split_payload`. A 306-region map is
+        // admitted whole by `a_map_that_is_not_vanillas_folds_end_to_end`; here
+        // only word 24 moves, so the payload becomes internally inconsistent and
+        // the message says which rule caught it — the count relations, never a
+        // constant.
+        let err = split_payload(&patch(24, 306)).expect_err("306 vs 305 rows is inconsistent");
+        assert!(
+            err.contains("region_count 305 != observed_region_rows 306"),
+            "a mismatched header must be refused by the count relation, not by a \
+             constant; got: {err}"
+        );
+        let err = split_payload(&patch(24, 304)).expect_err("305 rows cannot exceed 304 observed");
+        assert!(
+            err.contains("region_count 305 != observed_region_rows 304"),
+            "got: {err}"
+        );
+        // The envelope itself, at both ends.
+        for wrong in [0u32, 1, 65_537, u32::MAX] {
+            let err = split_payload(&patch(24, wrong))
+                .expect_err(&format!("observed regions {wrong}"));
+            assert!(
+                err.contains("observed_region_rows"),
+                "observed regions {wrong}: {err}"
+            );
         }
-        // observed_province_rows outside its window (`:17064`).
-        for wrong in [1u32, 9_999, 65_537, u32::MAX] {
+        // observed_province_rows outside its window (`:17064`). 9 999 used to be
+        // rejected for being under a 10 000 floor tuned on the vanilla map. It
+        // cannot be probed by patching THIS payload -- word 28 alone leaves
+        // 10 000 emitted province rows behind it, and the count relation refuses
+        // that for a reason of its own -- so the floor is killed by building an
+        // internally consistent smaller map.
+        //
+        // kills: restoring `MIN_PROVINCE_ROWS = 10_000` as the floor. A total
+        // conversion with a smaller map is legal, and this is one.
+        let small_map = baseline_payload(9_999);
+        assert!(
+            split_payload(&small_map).is_ok(),
+            "a 9 999-province map is content, not a malformed payload"
+        );
+        assert!(
+            split_payload(&baseline_payload(2)).is_ok(),
+            "the province floor is the engine's vacant-slot rule, not a map size"
+        );
+        for wrong in [1u32, 65_537, u32::MAX] {
             assert!(split_payload(&patch(28, wrong)).is_err(), "observed provinces {wrong}");
         }
         // A full snapshot short of 305 regions (`:17072`) or of its own
         // observed province count (`:17077`).
         let mut fewer = baseline_payload(10_000);
-        fewer[8..12].copy_from_slice(&(REGION_ROWS as u32 - 1).to_le_bytes());
+        fewer[8..12].copy_from_slice(&(FIXTURE_REGION_ROWS as u32 - 1).to_le_bytes());
         assert!(split_payload(&fewer).is_err());
         assert!(split_payload(&patch(20, 9_999)).is_err());
         // active_region_count above region_count (`:17107`).
-        assert!(split_payload(&patch(36, REGION_ROWS as u32 + 1)).is_err());
+        assert!(split_payload(&patch(36, FIXTURE_REGION_ROWS as u32 + 1)).is_err());
         // Non-zero reserved words (`:17112`).
         assert!(split_payload(&patch(40, 1)).is_err());
         assert!(split_payload(&patch(44, 1)).is_err());
         // changed_rows above the emitted rows (`:17097`).
-        assert!(split_payload(&patch(12, REGION_ROWS as u32 + 10_001)).is_err());
+        assert!(split_payload(&patch(12, FIXTURE_REGION_ROWS as u32 + 10_001)).is_err());
         // A count whose byte length overflows `usize` must be rejected, not
         // wrapped into a plausible small length.
         let mut huge = good.clone();
@@ -2120,7 +2456,7 @@ mod tests {
                 .expect("folds"),
             FoldOutcome::Folded { reset: true }
         );
-        assert_eq!(state.regions.len(), REGION_ROWS);
+        assert_eq!(state.regions.len(), FIXTURE_REGION_ROWS);
         assert_eq!(state.provinces.len(), 10_000);
         assert_eq!(state.observed_province_rows, 10_000);
         assert_eq!(state.scale_raw, FIXED_SCALE_RAW);
@@ -2134,7 +2470,7 @@ mod tests {
             state.fold_payload(&s, &delta, 0).expect("folds"),
             FoldOutcome::Folded { reset: false }
         );
-        assert_eq!(state.regions.len(), REGION_ROWS, "a delta deletes nothing");
+        assert_eq!(state.regions.len(), FIXTURE_REGION_ROWS, "a delta deletes nothing");
         assert_eq!(state.provinces.len(), 10_000);
         assert_ne!(state.provinces[&key(&[7])], before, "the touched row moved");
 
@@ -2259,7 +2595,7 @@ mod tests {
         let c = region_collection();
         let mut state = WeatherState::default();
         state.fold_payload(&s, &baseline_payload(10_000), 0).expect("folds");
-        let baseline_active = (0..REGION_ROWS).filter(|id| id % 3 == 0).count();
+        let baseline_active = (0..FIXTURE_REGION_ROWS).filter(|id| id % 3 == 0).count();
         assert_eq!(state.active_region_count(&c), baseline_active);
 
         // Deactivate one region with a one-row delta whose own header witness
@@ -2320,7 +2656,7 @@ mod tests {
         let s = schema();
         let mut state = WeatherState::default();
         state
-            .fold_payload(&s, &baseline_payload(MIN_PROVINCE_ROWS as u32), 0)
+            .fold_payload(&s, &baseline_payload(FIXTURE_MIN_PROVINCE_ROWS as u32), 0)
             .expect("folds");
 
         let mut bytes = Vec::new();
@@ -2336,7 +2672,7 @@ mod tests {
         let touched = province_row(7, full_province_flags(true), 111_111, 2, 3, 4, 1);
         let (flags, phenomenon) = active(REGION_BLIZZARD);
         let region = region_row(11, flags, -12_345, phenomenon, 60_900_000, 2, 2);
-        let delta_payload = payload(STATUS_DELTA_DATA, MIN_PROVINCE_ROWS as u32, &[region], &[touched], 1);
+        let delta_payload = payload(STATUS_DELTA_DATA, FIXTURE_MIN_PROVINCE_ROWS as u32, &[region], &[touched], 1);
         state.fold_payload(&s, &delta_payload, 0).expect("folds");
 
         let deltas = vec![

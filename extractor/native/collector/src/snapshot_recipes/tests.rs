@@ -4184,3 +4184,189 @@ fn a_gap_request_wins_whatever_order_the_requests_arrive_in() {
     // opt-out is measured against.
     assert!(record_only.close_gaps(IntervalId(9), consumer));
 }
+
+// ---------------------------------------------------------------------------
+// lane GL: what the bookkeeping cuts must not have changed
+// ---------------------------------------------------------------------------
+
+/// THE FIVE ANNOTATION TABLES BECAME ONE ENTRY, AND EACH PART IS STILL
+/// INDEPENDENTLY ABSENT.
+///
+/// `Annotations` held five `BTreeMap<IntervalId, _>` and now holds one map of
+/// one struct, so an interval that carries a stage has an ENTRY where it used
+/// to have a row in exactly one of the five. The difference between "this
+/// interval has no recorded consumption" and "this interval has an empty
+/// consumption" is load-bearing: the first means EVERY byte is consumed (see
+/// the module header on the default) and the second is the state
+/// `Consumption::images_agree` fails closed on. The merge must not turn the
+/// first into the second.
+///
+/// kills: `Annotations::entry` materialising `consumed`, `samples` or
+/// `closing` — replacing any of those three `Option` fields with a value, or
+/// spelling `get_or_insert_with` on them in `tag_stage`'s path — makes
+/// `consumption`, `samples` and `closing_images` return `Some` for an interval
+/// nobody recorded either against, and each assertion below fails on its own.
+#[test]
+fn one_annotation_entry_keeps_its_five_parts_independently_absent() {
+    use super::annot::Annotations;
+    let interval = IntervalId(3);
+    let mut annot = Annotations::new();
+    annot.arm();
+    annot.tag_stage(interval, 7);
+
+    assert_eq!(annot.stages_of(interval), &[7]);
+    assert!(
+        annot.consumption(interval).is_none(),
+        "a stage tag records no consumption, and an absent consumption is how \
+         'this contributor reads all of it' is spelled",
+    );
+    assert!(
+        annot.consumed_touches(interval, &Span::new(0, 8)),
+        "and absent therefore reads as fully consumed",
+    );
+    assert!(
+        annot.samples(interval).is_none(),
+        "a stage tag records no sampling request",
+    );
+    assert!(
+        annot.closing_images(interval).is_none(),
+        "a stage tag takes no closing image",
+    );
+    assert_eq!(
+        annot.closing_images_wanted(interval),
+        1,
+        "and an interval nobody asked about takes the one closing image every \
+         recipe took before the sequence existed",
+    );
+    assert!(
+        annot.close_gaps(interval, ConsumerId(1)),
+        "nobody asked, so the substrate's own verdict stands",
+    );
+}
+
+/// THE SAMPLING ASK IS APPENDED IN PLACE, AND IT LANDS BESIDE THE IMAGES THAT
+/// WERE ALREADY TAKEN.
+///
+/// `reconcile_samples` used to clone the whole `SampleImages` out of the table,
+/// append one ask to the clone, and insert the clone back. It appends through
+/// the entry now. Two things could go wrong: the ask not landing, and the
+/// images it lands beside being replaced by a fresh default — the second would
+/// erase the adjacent images the copy wave actually took and report two held
+/// images as one.
+///
+/// kills: `IntervalEntry::ask_samples` spelling an unconditional assignment
+/// where it spells `get_or_insert_with` — the second block finds `extra` empty
+/// and `success_mask` back at 1.
+#[test]
+fn a_sampling_ask_appends_without_replacing_the_images_already_taken() {
+    use super::annot::Annotations;
+    let interval = IntervalId(5);
+    let consumer = ConsumerId(9);
+    let mut annot = Annotations::new();
+    annot.arm();
+
+    // No images recorded yet: the opening one exists or the interval would not,
+    // so the default the ask lands in holds exactly it.
+    annot.entry(interval).ask_samples(consumer, 2, true);
+    let images = annot.samples(interval).expect("the ask created the record");
+    assert_eq!(images.held(), 1);
+    assert_eq!(images.success_mask, 1);
+    assert_eq!(images.asks.len(), 1);
+    let asks = images.asks.clone();
+
+    // Now the copy wave takes a second image, and a LATER request asks again.
+    annot.set_samples(
+        interval,
+        super::annot::SampleImages {
+            extra: vec![0x40],
+            success_mask: 0b11,
+            asks,
+        },
+    );
+    annot.entry(interval).ask_samples(ConsumerId(10), 3, false);
+    let images = annot.samples(interval).expect("still recorded");
+    assert_eq!(
+        images.held(),
+        2,
+        "the ask must not replace the images the copy wave took",
+    );
+    assert_eq!(images.success_mask, 0b11);
+    assert_eq!(images.asks.len(), 2, "and both consumers' asks stand");
+    assert_eq!(
+        annot.closing_images_wanted(interval),
+        3,
+        "the closing wave takes as many images as the greediest ask wanted",
+    );
+}
+
+/// THE FIXTURE MEMORY'S INDEXED LOOKUP FINDS THE REGION THE SCAN FOUND.
+///
+/// `SyntheticMemory::region_for` was `iter().find(..)` — first in MAPPING order
+/// wins — and is now a binary search over bases, which can only agree with that
+/// rule while at most one region can contain an address. So the index is built
+/// only when the regions are pairwise disjoint, and the scan is kept for when
+/// they are not. This is fixture machinery and no capture runs it, but a
+/// fixture that quietly served different bytes would invalidate every gate
+/// built on it.
+///
+/// kills: `sorted_disjoint_index` returning the sorted order unconditionally
+/// rather than an empty vector on overlap — the binary search then lands on the
+/// LAST region whose base is at or below the address, which is the
+/// second-mapped one here, and the first assertion reads 0xBB where the scan
+/// read 0xAA. Separately, dropping the `contains` re-check after the search
+/// makes the straddling read succeed instead of refusing, dropping
+/// `invalidate_index` from `map` makes the third block refuse a region that is
+/// mapped, and dropping the zero-length fallback makes the last block serve
+/// through the SECOND region instead of refusing through the first.
+#[test]
+fn the_fixture_memorys_indexed_lookup_answers_what_the_scan_answered() {
+    let mut overlapping = SyntheticMemory::new();
+    overlapping.map(0x1000, vec![0xAAu8; 0x200]);
+    // WHOLLY INSIDE the first, and mapped second, so mapping order and address
+    // order disagree about which one owns 0x1100.
+    overlapping.map(0x1080, vec![0xBBu8; 0x80]);
+    let mut out = [0u8; 4];
+    overlapping
+        .copy_into(0x1100, &mut out)
+        .expect("both regions contain this address");
+    assert_eq!(
+        out,
+        [0xAAu8; 4],
+        "the region mapped FIRST serves the read, which is what the scan did",
+    );
+
+    // Disjoint regions: the index is used, and it must still refuse a read that
+    // crosses the boundary between two of them rather than serving the region
+    // its start happens to fall in.
+    let mut disjoint = SyntheticMemory::new();
+    disjoint.map(0x1000, vec![0x11u8; 0x10]);
+    disjoint.map(0x1010, vec![0x22u8; 0x10]);
+    let mut out = [0u8; 8];
+    disjoint
+        .copy_into(0x100C, &mut out)
+        .expect_err("a read across two regions is not a read of either");
+    disjoint
+        .copy_into(0x1010, &mut out)
+        .expect("and each region still serves its own bytes");
+    assert_eq!(out, [0x22u8; 8]);
+
+    // And a region mapped AFTER the index was built still serves: the index is
+    // dropped whenever the region list changes.
+    disjoint.map(0x2000, vec![0x33u8; 0x10]);
+    disjoint
+        .copy_into(0x2000, &mut out)
+        .expect("the index cannot outlive the region list it indexed");
+    assert_eq!(out, [0x33u8; 8]);
+
+    // A ZERO-LENGTH SPAN AT A BOUNDARY is the one address two DISJOINT regions
+    // both contain, so first-in-mapping-order is a real choice there too. The
+    // first region is made unreadable, so the two answers are distinguishable:
+    // the first-mapped region refuses, the second would serve.
+    let mut boundary = SyntheticMemory::new();
+    boundary.map(0x1000, vec![0x11u8; 0x10]);
+    boundary.map(0x1010, vec![0x22u8; 0x10]);
+    boundary.set_readable(0x1000, false);
+    boundary
+        .copy_into(0x1010, &mut [])
+        .expect_err("the region mapped FIRST owns the boundary, and it refuses");
+}

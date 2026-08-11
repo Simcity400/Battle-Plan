@@ -541,7 +541,6 @@ dependencies = [
  "inline_detour",
  "minhook",
  "portable_content_manifest",
- "serde",
  "serde_json",
  "windows-sys",
 ]
@@ -666,7 +665,6 @@ dependencies = [
  "inline_detour",
  "production_hook_receipt",
  "serde",
- "serde_json",
  "sha2",
  "snapshot",
 ]
@@ -832,7 +830,6 @@ dependencies = [
  "png",
  "portable_content_manifest",
  "portable_render_stream",
- "production_hook_receipt",
  "production_render_catalog_capture_contract",
  "runtime_text_inputs_live_lane",
  "serde",
@@ -881,7 +878,6 @@ dependencies = [
  "direct_frd_transitions_live",
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
- "fow_visibility_live",
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
@@ -903,7 +899,6 @@ dependencies = [
  "session_multiplayer_metadata_live",
  "sha2",
  "snapshot",
- "spotted_units_live",
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
  "theatre_selector_live_lane",
@@ -1050,10 +1045,8 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 name = "snapshot"
 version = "0.1.0"
 dependencies = [
- "compact_stream",
  "crc32fast",
  "flate2",
- "libc",
  "portable_replay_format",
  "serde",
  "serde_json",
@@ -1301,7 +1294,6 @@ dependencies = [
  "compact_contract",
  "compact_stream",
  "portable_content_manifest",
- "serde_json",
  "sha2",
  "wire_format",
  "zstd",

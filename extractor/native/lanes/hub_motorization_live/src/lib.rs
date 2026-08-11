@@ -63,8 +63,21 @@ pub const MOTOR_MAP_LEVEL_OFF: usize = 0x04;
 
 pub const MAX_COUNTRY_COUNT: u32 = 2_048;
 pub const MAX_NODE_COUNT: u32 = 16_384;
-pub const MAX_PROVINCE_ID: u32 = 20_000;
-pub const MAX_STATE_ID: u32 = 20_000;
+/// Representation envelopes on the two map-content ids a supply-node row
+/// carries. NOT counts, and specifically not vanilla counts.
+///
+/// Both were `20_000` — a round number above the vanilla province count with a
+/// little margin, which is a guess about content and not a bound anything
+/// states. This build's settled envelope for both id spaces is 65_535
+/// (`compact_contract::build_profile::MAX_PROVINCE_ID` / `::MAX_STATE_ID`,
+/// pinned to that literal by
+/// `wire_format/tests/producer_consumer_admission_agreement.rs`), corroborated
+/// by `MAX_MAP_CONTROL_PROVINCE_COUNT`/`WEATHER_MAX_PROVINCE_COUNT` (65 536
+/// slots) and `MAX_MAP_CONTROL_STATE_ID` (65 535). A map mod between 20 001 and
+/// 65 535 provinces had every d62 row past the old ceiling refused while the
+/// same provinces were admitted by domains 30, 44 and 48 from the same map.
+pub const MAX_PROVINCE_ID: u32 = 65_535;
+pub const MAX_STATE_ID: u32 = 65_535;
 pub const MAX_MOTOR_MAP_SIZE: u32 = 2_048;
 
 pub const SCHEMA_VERSION: u32 = 2;
@@ -470,51 +483,32 @@ fn object_passes_candidate_guard<M: Mem>(
     if mem.u64(country_table + u64::from(tag_db_id) * 8) != Some(country) {
         return false;
     }
-    let Some(arr) = mem
-        .u64(object + CCSS_NODE_ARRAY_OFF)
+    // The node array must be READABLE for this to be a usable candidate, but
+    // its CONTENTS are deliberately not judged here.
+    //
+    // This guard's whole job is discrimination: the scan tries many heap
+    // addresses and this decides which of them are `CCountrySupplySystem`
+    // objects. Everything above answers that — the country back-pointer is in
+    // heap, its vtable matches, its `tag_db_id` is inside the live country
+    // table, and `country_table[tag_db_id]` points back at this very object. An
+    // object that satisfies all four IS one; nothing about a node's province id
+    // can add to that.
+    //
+    // It used to go on to range-check every node's province id, state id and
+    // motor-map size against this lane's envelopes, and return `false` — which
+    // `collect_rows` turns into a bare `continue`. That silently dropped the
+    // whole country's rows while the domain still reported success, and it made
+    // `derive_object_rows`'s own `province_id_out_of_range`,
+    // `state_id_out_of_range`, `motor_map_size_out_of_range` and
+    // `motor_map_ptr_invalid` refusals — which check exactly the same four
+    // things, on the same bytes, one call later — unreachable. An authenticated
+    // CCSS with an out-of-envelope node now reaches those and fails the frame
+    // closed with a named reason, which is what the typed error exists for.
+    mem.u64(object + CCSS_NODE_ARRAY_OFF)
         .filter(|ptr| ok_ptr(*ptr, heap_lo, heap_hi, 8))
-    else {
-        return false;
-    };
-    let Some(byte_len) = (count as usize).checked_mul(NODE_RECORD_STRIDE) else {
-        return false;
-    };
-    let Some(blob) = mem.read_bytes(arr, byte_len) else {
-        return false;
-    };
-    for index in 0..count as usize {
-        let base = index * NODE_RECORD_STRIDE;
-        let province = u32::from_le_bytes(
-            blob[base + NODE_PROVINCE_OFF..base + NODE_PROVINCE_OFF + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let state = u32::from_le_bytes(
-            blob[base + NODE_STATE_OFF..base + NODE_STATE_OFF + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let motor_map_ptr = u64::from_le_bytes(
-            blob[base + NODE_MOTOR_MAP_PTR_OFF..base + NODE_MOTOR_MAP_PTR_OFF + 8]
-                .try_into()
-                .unwrap(),
-        );
-        let map_size = u32::from_le_bytes(
-            blob[base + NODE_MOTOR_MAP_SIZE_OFF..base + NODE_MOTOR_MAP_SIZE_OFF + 4]
-                .try_into()
-                .unwrap(),
-        );
-        if province == 0
-            || province > MAX_PROVINCE_ID
-            || state == 0
-            || state > MAX_STATE_ID
-            || map_size > MAX_MOTOR_MAP_SIZE
-            || (map_size > 0 && !ok_ptr(motor_map_ptr, heap_lo, heap_hi, 8))
-        {
-            return false;
-        }
-    }
-    true
+        .and_then(|arr| (count as usize).checked_mul(NODE_RECORD_STRIDE).map(|len| (arr, len)))
+        .and_then(|(arr, len)| mem.read_bytes(arr, len))
+        .is_some()
 }
 
 struct ObjectRows {
@@ -1018,6 +1012,45 @@ mod tests {
         assert_eq!(got.observed_objects, 1);
         assert_eq!(got.settings_objects, 0);
         assert!(got.rows.is_empty());
+    }
+
+    /// An AUTHENTICATED `CCountrySupplySystem` carrying a node outside this
+    /// lane's id envelopes fails the frame closed with a named reason — it is
+    /// not quietly skipped.
+    ///
+    /// `object_passes_candidate_guard` used to range-check every node itself and
+    /// return `false`, which `collect_rows` turns into a bare `continue`: the
+    /// country's whole row set vanished and the domain still reported success,
+    /// while `derive_object_rows`'s own `province_id_out_of_range` refusal —
+    /// checking the same bytes one call later — could never fire. The guard now
+    /// decides only WHETHER THIS IS a CCSS (country back-pointer in heap, its
+    /// vtable, its `tag_db_id` inside the live table, and the table pointing
+    /// back at this object), which is what a discriminator is for.
+    ///
+    /// kills: restoring the node-content range checks to
+    /// `object_passes_candidate_guard`. Under that, both cases below return
+    /// `Ok` with `settings_objects == 0` and no rows instead of the typed error.
+    #[test]
+    fn an_authenticated_object_with_an_out_of_envelope_node_fails_closed() {
+        for (province, state, reason) in [
+            (MAX_PROVINCE_ID + 1, 5u32, "province_id_out_of_range"),
+            (13_071, MAX_STATE_ID + 1, "state_id_out_of_range"),
+        ] {
+            let mut mem = good_image();
+            let mut nodes = vec![0u8; 3 * NODE_RECORD_STRIDE];
+            put_record(&mut nodes, 0, 9288, 2, 0, 0);
+            put_record(&mut nodes, 1, province, state, 0x2500_0000, 2);
+            put_record(&mut nodes, 2, 42, 7, 0, 0);
+            mem.sbytes(0x2400_0000, nodes);
+            assert_eq!(
+                collect_rows(&mem, BASE, LO, HI),
+                Err(HubMotorizationError::CcssMalformed {
+                    object: 0x2300_0000,
+                    reason,
+                }),
+                "province {province} state {state} must be refused by name"
+            );
+        }
     }
 
     #[test]

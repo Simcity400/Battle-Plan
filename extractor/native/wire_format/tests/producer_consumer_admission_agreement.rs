@@ -151,6 +151,46 @@ fn the_supply_province_ceiling_is_the_shared_province_envelope() {
     assert_eq!(compact_contract::build_profile::MAX_PROVINCE_ID, 65_535);
 }
 
+/// Every consumer that re-applies a province-id ceiling must apply the SAME
+/// envelope.
+///
+/// The two pinned here were left behind when the producer stopped bounding by
+/// the vanilla province count: `d34` still refused above 13 413 — the vanilla
+/// count itself, spelled out — and `d62` above 20 000. Both are consumers of
+/// rows the recorder had already collected, so the loss was invisible on the
+/// producer side and a producer-only widening "worked" and produced nothing.
+///
+/// The assertion is an equality against the shared bound AND against the
+/// literal: the equality catches one spelling drifting, the literal catches all
+/// of them moving together to a number nobody chose.
+///
+/// kills: reverting `wire_format::d34::MAX_PROVINCE_ID` to 13_413, or
+/// `wire_format::d62::MAX_PROVINCE_ID` / `::MAX_STATE_ID` to 20_000 (or to any
+/// other value than the shared envelope).
+#[test]
+fn every_province_and_state_consumer_applies_the_shared_envelope() {
+    for (name, value) in [
+        ("wire_format::d34::MAX_PROVINCE_ID", wire_format::d34::MAX_PROVINCE_ID),
+        ("wire_format::d48::MAX_PROVINCE_ID", wire_format::d48::MAX_PROVINCE_ID),
+        ("wire_format::d54::MAX_PROVINCE_ID", wire_format::d54::MAX_PROVINCE_ID),
+        ("wire_format::d62::MAX_PROVINCE_ID", wire_format::d62::MAX_PROVINCE_ID),
+    ] {
+        assert_eq!(
+            value,
+            portable_admission::SUPPLY_MAX_PROVINCE_ID,
+            "{name} does not apply the shared province envelope. A consumer \
+             narrower than the producer discards rows the recorder collected, \
+             and nothing on the producer side reports it."
+        );
+    }
+    assert_eq!(
+        wire_format::d62::MAX_STATE_ID,
+        compact_contract::build_profile::MAX_STATE_ID,
+        "wire_format::d62::MAX_STATE_ID does not apply the shared state envelope"
+    );
+    assert_eq!(compact_contract::build_profile::MAX_STATE_ID, 65_535);
+}
+
 /// The calendar window is closed at BOTH ends. A copy that spells the upper
 /// comparison `>=` rejects exactly one value every other copy admits, and
 /// nothing else would notice.

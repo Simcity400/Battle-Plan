@@ -10,13 +10,39 @@ pub const PROVINCE_ROW_LEN: usize = 32;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
-pub const EXPECTED_REGION_ROWS: usize = 305;
-pub const MAX_REGION_ID: u32 = 304;
+/// Representation envelopes on the two weather array lengths the payload header
+/// reports. NOT counts.
+///
+/// `MAX_REGION_ROWS` was `EXPECTED_REGION_ROWS = 305`, the vanilla
+/// `map/strategicregions/` count, equated against both `observed_region_rows`
+/// and a full snapshot's `region_count`; `MIN_PROVINCE_ROWS` was
+/// `MIN_OBSERVED_PROVINCE_ROWS = 10_000`, a floor tuned on the vanilla map. A
+/// map mod on either side of those lost this gate's whole verdict for the hour.
+/// `observed_region_rows` IS the engine's own region-vector size and is on the
+/// wire; see `collector/src/attach_log/offsets.rs`'s `WEATHER_MAX_REGION_COUNT`
+/// for the engine evidence. The floor is the engine's vacant-slot rule.
+pub const MAX_REGION_ROWS: usize = 65_536;
+/// The region array's floor: a POLICY on what counts as a resolved weather root,
+/// not a claim about the engine. It is 1 rather than 2 because a region row
+/// carries a dense 0-based index and so has no vacant slot to spend. It is not 0
+/// because a zero-length region array is what an unloaded manager looks like, so
+/// admitting it would publish an empty root as a real one -- a deliberate
+/// fail-closed choice, not a proof that the vector must be non-empty. See
+/// `collector/src/attach_log/offsets.rs`'s `WEATHER_MIN_REGION_COUNT`.
+pub const MIN_REGION_ROWS: usize = 1;
+/// The province array's floor, which is the engine's own and is NOT the region
+/// array's: that array is subscripted BY PROVINCE ID and slot 0 is the vacant
+/// location. It replaces a `10_000` tuned on the vanilla map.
+pub const MIN_PROVINCE_ROWS: usize = 2;
+// MAX_REGION_ID (= 304, the vanilla count minus one) is deliberately gone rather
+// than widened: a region id's ceiling is the region table's own length, which
+// the header carries in `observed_region_rows`. A constant here would be a
+// second, staler answer to a question the wire already answers.
 pub const MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 pub const MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 pub const MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
 pub const MAX_PRECIP_RAW: i32 = 100_000_000;
-pub const MIN_OBSERVED_PROVINCE_ROWS: usize = 10_000;
+// MIN_OBSERVED_PROVINCE_ROWS is now MIN_PROVINCE_ROWS above.
 pub const MAX_OBSERVED_PROVINCE_ROWS: usize = 65_536;
 pub const MAX_CUSTOM_MODIFIER_COUNT: u32 = 4_096;
 pub const MAX_ACTIVE_MODIFIER_COUNT: u32 = 4_096;
@@ -223,22 +249,22 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> WeatherSandstormGateSumm
         ));
         return summary;
     }
-    if observed_region_rows != EXPECTED_REGION_ROWS {
+    if !(MIN_REGION_ROWS..=MAX_REGION_ROWS).contains(&observed_region_rows) {
         summary.parse_errors.push(format!(
-            "offset {offset}: observed_region_rows {observed_region_rows} != {EXPECTED_REGION_ROWS}"
+            "offset {offset}: observed_region_rows {observed_region_rows} outside {MIN_REGION_ROWS}..={MAX_REGION_ROWS}"
         ));
     }
     if observed_province_rows != 0
-        && !(MIN_OBSERVED_PROVINCE_ROWS..=MAX_OBSERVED_PROVINCE_ROWS)
+        && !(MIN_PROVINCE_ROWS..=MAX_OBSERVED_PROVINCE_ROWS)
             .contains(&observed_province_rows)
     {
         summary.parse_errors.push(format!(
             "offset {offset}: observed_province_rows {observed_province_rows} outside bounds"
         ));
     }
-    if !delta_data && region_count != EXPECTED_REGION_ROWS {
+    if !delta_data && region_count != observed_region_rows {
         summary.parse_errors.push(format!(
-            "offset {offset}: full snapshot region_count {region_count} != {EXPECTED_REGION_ROWS}"
+            "offset {offset}: full snapshot region_count {region_count} != observed_region_rows {observed_region_rows}"
         ));
     }
     if changed_rows > emitted_rows {
@@ -296,6 +322,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> WeatherSandstormGateSumm
             offset,
             row_index,
             region_id,
+            observed_region_rows,
             flags,
             temperature_raw,
             phenomenon,
@@ -346,6 +373,7 @@ fn validate_region_row(
     offset: usize,
     row_index: usize,
     region_id: u32,
+    observed_region_rows: usize,
     flags: u32,
     temperature_raw: i32,
     phenomenon: u32,
@@ -355,7 +383,9 @@ fn validate_region_row(
     computed_active_regions: &mut usize,
     summary: &mut WeatherSandstormGateSummary,
 ) {
-    if region_id > MAX_REGION_ID {
+    // Bounded by the region table's OWN length, which the header states.
+    // This was the constant 304, the vanilla count minus one.
+    if region_id as usize >= observed_region_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: weather region row {row_index} has invalid region_id {region_id}"
         ));
@@ -585,6 +615,11 @@ fn read_i32_le(payload: &[u8], offset: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    /// How many strategic regions THESE FIXTURES build. Vanilla's 305 because
+    /// that is what the reference captures carry -- a fixture choice, not a
+    /// contract: the count is content and the wire states it.
+    const FIXTURE_REGION_ROWS: usize = 305;
+
     use super::*;
 
     #[test]
@@ -593,7 +628,7 @@ mod tests {
             elapsed_wall_ms: 1,
             status_flags: STATUS_DELTA_DATA,
             changed_rows: 2,
-            observed_region_rows: EXPECTED_REGION_ROWS as u32,
+            observed_region_rows: FIXTURE_REGION_ROWS as u32,
             observed_province_rows: 13_414,
         };
         let payload = encode_payload(
@@ -641,7 +676,7 @@ mod tests {
             elapsed_wall_ms: 1,
             status_flags: STATUS_DELTA_DATA,
             changed_rows: 1,
-            observed_region_rows: EXPECTED_REGION_ROWS as u32,
+            observed_region_rows: FIXTURE_REGION_ROWS as u32,
             observed_province_rows: 13_414,
         };
         let payload = encode_payload(

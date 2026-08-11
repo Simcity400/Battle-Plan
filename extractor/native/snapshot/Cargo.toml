@@ -17,7 +17,6 @@ ce-cache-anatomy = ["portable_replay_format/ce-cache-anatomy"]
 dq-v3-prototype = ["portable_replay_format/dq-v3-prototype"]
 
 [dependencies]
-compact_stream = { path = "../compact_stream" }
 portable_replay_format = { path = "../../../portable_replay/native/snapshot" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -39,9 +38,6 @@ windows-sys = { version = "0.61", features = [
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
 ] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
 
 # The bin sources live in the NEUTRAL layer next to the implementation they
 # drive (portable_replay/native/snapshot/src/bin). They were moved there so the

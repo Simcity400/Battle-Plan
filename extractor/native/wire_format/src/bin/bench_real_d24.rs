@@ -270,16 +270,16 @@ fn check_authority_payload(
     let observed_regions = header.observed_region_rows as usize;
     let observed_provinces = header.observed_province_rows as usize;
     let emitted_rows = region_count.saturating_add(province_count);
-    if !failed && observed_regions != d24::REGION_ROWS {
-        return invalid("observed_region_rows is not 305".to_string());
+    if !failed && !(d24::MIN_REGION_ROWS..=d24::MAX_REGION_ROWS).contains(&observed_regions) {
+        return invalid("observed_region_rows is outside its allowed range".to_string());
     }
     if observed_provinces != 0
         && !(d24::MIN_PROVINCE_ROWS..=d24::MAX_PROVINCE_ROWS).contains(&observed_provinces)
     {
         return invalid("observed_province_rows is outside its allowed range".to_string());
     }
-    if !failed && !delta && region_count != d24::REGION_ROWS {
-        return invalid("full snapshot region_count is not 305".to_string());
+    if !failed && !delta && region_count != observed_regions {
+        return invalid("full snapshot region_count differs from observed count".to_string());
     }
     if !delta && observed_provinces != 0 && province_count != observed_provinces {
         return invalid("full snapshot province_count differs from observed count".to_string());
@@ -329,6 +329,13 @@ fn check_authority_payload(
         d24::record_from_region_row(region_collection, row, 0)
             .map_err(|e| format!("d24 authority region row {row_index} at byte {at_byte}: {e}"))?;
         let region_id = d24::region_id_of_row(row).expect("row mapper checked the id");
+        // The tight, header-relative bound, exactly as the province loop below
+        // already applies its own. It could be omitted while `region_id_of_row`
+        // carried a hardcoded 304 ceiling; the ceiling is now the envelope, so
+        // the authority scan has to make this check itself or it is looser than
+        // the fold it is auditing.
+        d24::check_region_id(region_id, header.observed_region_rows)
+            .map_err(|e| format!("d24 authority region row {row_index} at byte {at_byte}: {e}"))?;
         if !seen_regions.insert(region_id) {
             return invalid(format!(
                 "region row {row_index} duplicates region_id {region_id}"
@@ -953,6 +960,13 @@ mod tests {
     use super::*;
     use compact_contract::COMPACT_DOMAIN_FRAME;
 
+    /// How many strategic regions THESE FIXTURES build. It is vanilla's 305
+    /// because that is what the reference captures carry — deliberately a
+    /// fixture choice and no longer a contract constant. `d24` used to export
+    /// this number as `REGION_ROWS` and equate the wire against it; the count is
+    /// content, so the wire states it and nothing validates against a constant.
+    const FIXTURE_REGION_ROWS: usize = 305;
+
     /// Build one H4CR record the way the recorder frames it
     /// (`compact_contract/src/record_header.rs:60`).
     fn record(sequence: u64, game_hour: i32, domain: u16, kind: u16, payload: &[u8]) -> Vec<u8> {
@@ -1064,7 +1078,7 @@ mod tests {
         p.extend_from_slice(&((regions.len() + provinces.len()) as u32).to_le_bytes());
         p.extend_from_slice(&status_flags.to_le_bytes());
         p.extend_from_slice(&(provinces.len() as u32).to_le_bytes());
-        p.extend_from_slice(&(d24::REGION_ROWS as u32).to_le_bytes());
+        p.extend_from_slice(&(FIXTURE_REGION_ROWS as u32).to_le_bytes());
         p.extend_from_slice(&observed_province_rows.to_le_bytes());
         p.extend_from_slice(&d24::FIXED_SCALE_RAW.to_le_bytes());
         p.extend_from_slice(&0u32.to_le_bytes()); // active_region_count
@@ -1081,7 +1095,7 @@ mod tests {
     /// may legally be zero, `world_fold.rs:16990`), which keeps the fixtures
     /// small without leaving the grammar.
     fn baseline_payload(status_flags: u32, temperature_raw: i32) -> Vec<u8> {
-        let regions: Vec<Vec<u8>> = (0..d24::REGION_ROWS as u32)
+        let regions: Vec<Vec<u8>> = (0..FIXTURE_REGION_ROWS as u32)
             .map(|id| region_row(id, temperature_raw))
             .collect();
         payload(status_flags, 0, &regions, &[])
@@ -1149,7 +1163,7 @@ mod tests {
         assert_eq!(s.baseline_records, 1, "one full snapshot");
         assert_eq!(
             s.final_regions,
-            d24::REGION_ROWS,
+            FIXTURE_REGION_ROWS,
             "the delta deleted nothing"
         );
     }
@@ -1489,25 +1503,25 @@ mod tests {
         wrong_scale[32..36].copy_from_slice(&32_768u32.to_le_bytes());
         invalid.push(wrong_scale);
         // An out-of-range region id (`:17058`).
-        let mut regions: Vec<Vec<u8>> = (0..d24::REGION_ROWS as u32)
+        let mut regions: Vec<Vec<u8>> = (0..FIXTURE_REGION_ROWS as u32)
             .map(|id| region_row(id, 10))
             .collect();
         regions[0] = region_row(305, 10);
         invalid.push(payload(0, 0, &regions, &[]));
         // A duplicated region id in one frame (`:17058`).
-        let mut regions: Vec<Vec<u8>> = (0..d24::REGION_ROWS as u32)
+        let mut regions: Vec<Vec<u8>> = (0..FIXTURE_REGION_ROWS as u32)
             .map(|id| region_row(id, 10))
             .collect();
         regions[1] = region_row(0, 10);
         invalid.push(payload(0, 0, &regions, &[]));
         // An unknown region flag bit (`:17063`).
-        let mut regions: Vec<Vec<u8>> = (0..d24::REGION_ROWS as u32)
+        let mut regions: Vec<Vec<u8>> = (0..FIXTURE_REGION_ROWS as u32)
             .map(|id| region_row(id, 10))
             .collect();
         regions[2][4..8].copy_from_slice(&(1u32 << 20).to_le_bytes());
         invalid.push(payload(0, 0, &regions, &[]));
         // A province id past `observed_province_rows` (`:17158`).
-        let regions: Vec<Vec<u8>> = (0..d24::REGION_ROWS as u32)
+        let regions: Vec<Vec<u8>> = (0..FIXTURE_REGION_ROWS as u32)
             .map(|id| region_row(id, 10))
             .collect();
         invalid.push(payload(0, 10_000, &regions, &[province_row(10_000, 1)]));

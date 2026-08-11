@@ -1723,15 +1723,6 @@ fn build_reserved_snapshot(
     Ok(snapshot)
 }
 
-fn drain_decoded_component_pair() -> Result<(DecodedTraitComponent, DecodedAceComponent), String> {
-    let Some((reservation_id, trait_component, ace_component)) = reserve_decoded_component_pair()?
-    else {
-        return Err("A39 decoded trait/ace component pair is incomplete".into());
-    };
-    commit_character_presentation_candidate(reservation_id)?;
-    Ok((trait_component, ace_component))
-}
-
 unsafe extern "system" fn hook_trait_refresh(
     controller: usize,
     refresh_argument_ptr: usize,

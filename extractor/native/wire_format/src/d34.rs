@@ -1,8 +1,8 @@
 //! d34 `air_base_status` — per-air-base capacity, level and basing occupancy.
 //!
-//! Derived from `world_fold.rs:18177`-`:18245`
+//! Derived from `world_fold.rs:18257`-`:18325`
 //! (`fold_air_base_status`), its payload constants at `:985`-`:986`, `:758` and
-// @world-fold-authority domain=34 functions=fold_air_base_status lines=18177-18245 sha256=0e6293b25e2e6e55325fcc90c3b9ba786a4e539a7f57df49fad575fb7e67cb3f closure=55d92ba86817234cd2885317e0bd739363d23d700f94f8299c49256a4dcdb399
+// @world-fold-authority domain=34 functions=fold_air_base_status lines=18257-18325 sha256=0e6293b25e2e6e55325fcc90c3b9ba786a4e539a7f57df49fad575fb7e67cb3f closure=edbf7a20d7f549331dcdf63445a628af96ca0ccdd656a5f26ccca39d507a1dca
 //! `:499`, the accumulator it folds into (`:1870`), the two consumers of that
 //! accumulator (`:8169`-`:8219`, `:8926`-`:8962`), and the collector read and
 //! payload writer that produce the rows
@@ -152,7 +152,24 @@ pub const ROW_FLAG_DELETED: u32 = 1;
 /// `SUPPLY_MAX_PROVINCE_ID`, `world_fold.rs::SUPPLY_MAX_PROVINCE_ID`. A row whose province id
 /// exceeds this is rejected (`:15185`-`:15187`) — checked **before** the delete
 /// branch, so it applies to tombstones too.
-pub const MAX_PROVINCE_ID: u32 = 13_413;
+///
+/// This constant used to be `13_413`, the VANILLA PROVINCE COUNT, after the
+/// producer had already stopped using that number. `bound_trips.rs:54` records
+/// what it cost the first time: `runs/live_unlock/t15` (555 hours, unmodded)
+/// observed exactly 13_413 as the maximum in every province-id field, so the
+/// margin was zero and the first province a mod adds was already past it. The
+/// producer's ceiling is now the engine's own province-array length
+/// (`attach_log.rs`'s `supply_province` module) and the shared representation
+/// envelope is `portable_admission::SUPPLY_MAX_PROVINCE_ID`; this consumer was
+/// left behind, so the recorder collected rows d34 then refused — the exact
+/// producer-widened / consumer-still-narrow shape
+/// `tests/producer_consumer_admission_agreement.rs` exists to prevent.
+///
+/// It is a REPRESENTATION ENVELOPE, not a province count: nothing here knows how
+/// many provinces the loaded mod set defines, and the number that does is on the
+/// producer side. `tests/producer_consumer_admission_agreement.rs` pins this
+/// spelling to the shared one.
+pub const MAX_PROVINCE_ID: u32 = 65_535;
 
 /// The sentinel the fold documents as "province unobtained"
 /// (`world_fold.rs::fold_air_base_status`). Mapped to [`Value::Unknown`].
@@ -945,7 +962,24 @@ mod tests {
         }
         // Province id out of range (`:15185`), at the bound and one past it.
         assert!(parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, MAX_PROVINCE_ID)).is_ok());
-        for bad in [MAX_PROVINCE_ID + 1, 20_000, u32::MAX] {
+        // kills: d34.rs MAX_PROVINCE_ID reverted to the vanilla province count
+        // 13_413, OR set to any other value below the shared 65_535 envelope.
+        // The literals are deliberate: a test spelled only in terms of the
+        // constant passes for every value the constant could take, which is
+        // exactly the change it exists to catch. 13_414 kills the vanilla count;
+        // 65_535 kills every ceiling below the envelope, including the 20_000
+        // that d62 used to carry.
+        assert!(
+            parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, 13_414)).is_ok(),
+            "13_414 is one past the VANILLA province count, not past this build's \
+             representation envelope; refusing it is the defect this bound had"
+        );
+        assert!(
+            parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, 65_535)).is_ok(),
+            "65_535 is the shared envelope's top and must be admitted"
+        );
+        assert!(parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, 65_536)).is_err());
+        for bad in [MAX_PROVINCE_ID + 1, 100_000, u32::MAX] {
             assert!(
                 parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, bad)).is_err(),
                 "province {bad} exceeds {MAX_PROVINCE_ID}"

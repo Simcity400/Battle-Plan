@@ -17,7 +17,25 @@ const RECORD_TYPE_DATA: u16 = 3;
 const HEADER_LEN: usize = 48;
 const REGION_ROW_LEN: usize = 32;
 const PROVINCE_ROW_LEN: usize = 32;
-const REGION_COUNT: usize = 305;
+/// Representation envelopes on the weather region-array length. NOT a count.
+///
+/// This was `REGION_COUNT = 305` — the vanilla `map/strategicregions/` count —
+/// and the gate equated it against `observed_regions`, against a baseline's
+/// `region_rows`, against the baseline's unique-id count, and used it as the
+/// completeness target for `flags_by_region`. On a modded map every one of those
+/// fails, so the gate reported a drift failure for a map it simply did not know
+/// about. `observed_regions` IS the engine's own region-vector size and arrives
+/// on the wire; the gate now latches it on the first record and requires
+/// consistency afterwards, exactly as it already did for the province count.
+const MAX_REGION_ROWS: usize = 65_536;
+/// The region array's floor: a POLICY on what counts as a resolved weather root,
+/// not a claim about the engine. It is 1 rather than 2 because a region row
+/// carries a dense 0-based index and so has no vacant slot to spend. It is not 0
+/// because a zero-length region array is what an unloaded manager looks like, so
+/// admitting it would publish an empty root as a real one -- a deliberate
+/// fail-closed choice, not a proof that the vector must be non-empty. See
+/// `collector/src/attach_log/offsets.rs`'s `WEATHER_MIN_REGION_COUNT`.
+const MIN_REGION_ROWS: usize = 1;
 const KNOWN_REGION_FLAGS: u32 = 0xff;
 const KNOWN_PROVINCE_FLAGS: u32 = 0x3ff;
 const RAIN_LIGHT: u32 = 1;
@@ -102,6 +120,7 @@ struct Gate {
     nonconsecutive_pairs: u64,
     duplicate_hours: u64,
     hours: BTreeSet<i32>,
+    observed_region_count: Option<usize>,
     observed_province_count: Option<usize>,
     flags_by_region: BTreeMap<u32, u32>,
     expiry_by_region: BTreeMap<u32, i32>,
@@ -147,8 +166,19 @@ impl Gate {
         if status & FAILURE_MASK != 0 {
             return Err(format!("weather status has failure bits {status:#x}"));
         }
-        if observed_regions != REGION_COUNT {
-            return Err(format!("observed region count {observed_regions} != {REGION_COUNT}"));
+        if !(MIN_REGION_ROWS..=MAX_REGION_ROWS).contains(&observed_regions) {
+            return Err(format!(
+                "observed region count {observed_regions} outside {MIN_REGION_ROWS}..={MAX_REGION_ROWS}"
+            ));
+        }
+        if let Some(expected) = self.observed_region_count {
+            if observed_regions != expected {
+                return Err(format!(
+                    "observed region count {observed_regions} != prior {expected}"
+                ));
+            }
+        } else {
+            self.observed_region_count = Some(observed_regions);
         }
         if let Some(expected) = self.observed_province_count {
             if observed_provinces != expected {
@@ -178,8 +208,10 @@ impl Gate {
         if payload.len() != expected {
             return Err(format!("weather payload length {} != {expected}", payload.len()));
         }
-        if !delta && region_rows != REGION_COUNT {
-            return Err(format!("baseline region count {region_rows} != {REGION_COUNT}"));
+        if !delta && region_rows != observed_regions {
+            return Err(format!(
+                "baseline region count {region_rows} != observed {observed_regions}"
+            ));
         }
         if delta && self.baselines == 0 {
             return Err("weather delta precedes baseline".into());
@@ -203,7 +235,10 @@ impl Gate {
             let active_modifier_count = u32_at(payload, base + 20)?;
             let intensity = u32_at(payload, base + 24)?;
             let reserved = u32_at(payload, base + 28)?;
-            if id > 304 || !seen.insert(id) {
+            // Bounded by the region table's OWN length, which the header states.
+            // This was the bare literal `id > 304` — the vanilla strategic-region
+            // count minus one, spelled inline with nothing naming it.
+            if id as usize >= observed_regions || !seen.insert(id) {
                 return Err(format!("invalid or duplicate region id {id}"));
             }
             if flags & !KNOWN_REGION_FLAGS != 0 {
@@ -287,8 +322,10 @@ impl Gate {
         if computed_active != active_regions {
             return Err(format!("active region header {active_regions} != computed {computed_active}"));
         }
-        if !delta && seen.len() != REGION_COUNT {
-            return Err(format!("baseline unique regions {} != {REGION_COUNT}", seen.len()));
+        if !delta && seen.len() != observed_regions {
+            return Err(format!(
+                "baseline unique regions {} != observed {observed_regions}", seen.len()
+            ));
         }
 
         let province_base = HEADER_LEN + region_rows * REGION_ROW_LEN;
@@ -410,7 +447,7 @@ impl Gate {
         self.weather_records >= 2
             && self.baselines >= 1
             && self.deltas >= 1
-            && self.flags_by_region.len() == REGION_COUNT
+            && self.flags_by_region.len() == self.observed_region_count.unwrap_or_default()
             && self.provinces_by_id.len() == self.observed_province_count.unwrap_or_default()
             && self.hours.len() as u64 == self.weather_records
             && self.duplicate_hours == 0
@@ -421,9 +458,9 @@ impl Gate {
             && self.rain_heavy_transitions > 0
             && self.weather_kind_transitions > 0
             && self.expiry_refreshes > 0
-            && self.rain_heavy_max < REGION_COUNT
+            && self.rain_heavy_max < self.observed_region_count.unwrap_or_default()
             && self.arctic_water_min > 0
-            && self.arctic_water_max < REGION_COUNT
+            && self.arctic_water_max < self.observed_region_count.unwrap_or_default()
     }
 
     fn skipped_hours(&self) -> u64 {
@@ -621,21 +658,37 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// How many strategic regions THESE FIXTURES build. Vanilla's 305 because
+    /// that is what the retained corpus carries -- a fixture choice, not a
+    /// contract: the count is content, the wire states it, and the gate latches
+    /// what it is told.
+    const FIXTURE_REGION_COUNT: usize = 305;
+
     fn payload(delta: bool, changed_id: Option<u32>) -> Vec<u8> {
-        let count = if delta { 1 } else { REGION_COUNT };
+        payload_with_regions(delta, changed_id, FIXTURE_REGION_COUNT)
+    }
+
+    /// The same fixture with the map's region count under the caller's control,
+    /// so a test can build a map that is not vanilla's.
+    fn payload_with_regions(
+        delta: bool,
+        changed_id: Option<u32>,
+        region_count: usize,
+    ) -> Vec<u8> {
+        let count = if delta { 1 } else { region_count };
         let mut out = Vec::with_capacity(HEADER_LEN + count * REGION_ROW_LEN);
         out.extend_from_slice(&0u64.to_le_bytes());
         out.extend_from_slice(&(count as u32).to_le_bytes());
         out.extend_from_slice(&(count as u32).to_le_bytes());
         out.extend_from_slice(&(if delta { COMPACT_STATUS_DELTA_DATA } else { 0 }).to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&(REGION_COUNT as u32).to_le_bytes());
+        out.extend_from_slice(&(region_count as u32).to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&100_000u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
-        let ids: Vec<u32> = if delta { vec![changed_id.unwrap()] } else { (0..REGION_COUNT as u32).collect() };
+        let ids: Vec<u32> = if delta { vec![changed_id.unwrap()] } else { (0..region_count as u32).collect() };
         for id in ids {
             out.extend_from_slice(&id.to_le_bytes());
             let flags = if id == 0 { ARCTIC_WATER } else if id < 35 { RAIN_HEAVY } else { 0 };
@@ -678,9 +731,45 @@ mod tests {
 
     #[test]
     fn malformed_observed_region_count_fails_closed() {
+        // 304 observed against 305 emitted baseline rows is INTERNALLY
+        // inconsistent, which is why it still fails. It is not refused for
+        // "not being 305".
         let mut bytes = payload(false, None);
         bytes[24..28].copy_from_slice(&304u32.to_le_bytes());
         assert!(Gate::new().consume(100, &bytes).is_err());
+        // The envelope's own ends.
+        for wrong in [0u32, 1, 65_537, u32::MAX] {
+            let mut bytes = payload(false, None);
+            bytes[24..28].copy_from_slice(&wrong.to_le_bytes());
+            assert!(Gate::new().consume(100, &bytes).is_err(), "observed {wrong}");
+        }
+        // A capture that changes its region count mid-stream is a torn or
+        // spliced stream, not a mod: the count is latched on the first record.
+        let mut gate = Gate::new();
+        gate.consume(100, &payload(false, None)).unwrap();
+        let mut bytes = payload(true, Some(1));
+        bytes[24..28].copy_from_slice(&(FIXTURE_REGION_COUNT as u32 + 1).to_le_bytes());
+        assert!(gate.consume(101, &bytes).is_err());
+    }
+
+    /// A map that is not vanilla's passes the gate.
+    ///
+    /// kills: restoring `REGION_COUNT = 305` and any of the four equalities it
+    /// carried — `observed_regions != REGION_COUNT`, `region_rows !=
+    /// REGION_COUNT`, `seen.len() != REGION_COUNT`, and `flags_by_region.len()
+    /// == REGION_COUNT` in `passed()`. Each one turns a modded map into a drift
+    /// FAILURE, which is a verdict about the gate and not about the capture.
+    #[test]
+    fn a_map_that_is_not_vanillas_passes_the_gate() {
+        for regions in [40usize, 306, 1_000] {
+            let mut gate = Gate::new();
+            gate.consume(100, &payload_with_regions(false, None, regions))
+                .unwrap_or_else(|e| panic!("{regions} regions baseline: {e}"));
+            gate.consume(101, &payload_with_regions(true, Some(1), regions))
+                .unwrap_or_else(|e| panic!("{regions} regions delta: {e}"));
+            assert!(gate.passed(), "{regions} regions: {}", gate.json());
+            assert_eq!(gate.observed_region_count, Some(regions));
+        }
     }
 
     #[test]
@@ -775,7 +864,7 @@ mod tests {
         assert_eq!(stream.gate.duplicate_hours, 0);
         assert_eq!(stream.gate.hours.len(), 423);
         assert_eq!(stream.gate.skipped_hours(), 0);
-        assert_eq!(stream.gate.flags_by_region.len(), REGION_COUNT);
+        assert_eq!(stream.gate.flags_by_region.len(), FIXTURE_REGION_COUNT);
         assert_eq!(stream.gate.provinces_by_id.len(), 13_414);
         assert!(stream.gate.provinces_by_id.contains_key(&0));
         assert!(stream.gate.provinces_by_id.contains_key(&13_413));

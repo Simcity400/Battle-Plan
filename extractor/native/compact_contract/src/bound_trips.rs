@@ -68,7 +68,50 @@ pub const BOUND_TRIP_COUNTRY_LINK_INDEX: usize = 8;
 /// things, and the raw sample says which: an id past the ceiling in force, and
 /// a province-array length past the sanity envelope (a torn read).
 pub const BOUND_TRIP_SUPPLY_PROVINCE_ID: usize = 9;
-pub const BOUND_TRIP_ID_COUNT: usize = 10;
+/// A weather-manager array LENGTH — the strategic-region array or the
+/// province array — was past its representation envelope.
+///
+/// The same story as [`BOUND_TRIP_SUPPLY_PROVINCE_ID`], one domain over. The
+/// collector admitted the region array only on the EXACT vanilla
+/// strategic-region count (`region_size == 305 && region_cap == 305`), and it
+/// did so on the root-DISCOVERY path: a map mod that adds or removes one
+/// strategic region did not lose weather rows, it lost the weather root and with
+/// it the whole of domain 24. The province array's floor (10 000) was the same
+/// guess in the other direction and cost a smaller-map total conversion the same
+/// domain.
+///
+/// The loss is LOUD but CAUSELESS, which is the half this id closes. The failed
+/// sample becomes a record carrying `COMPACT_STATUS_SOURCE_UNAVAILABLE` and the
+/// recorder treats that as a typed domain failure — so unlike the supply
+/// province case nothing was silently dropped — but the reason string is
+/// discarded by an `Err(_)` arm, so a capture could report domain 24 unavailable
+/// for every hour of a campaign with nothing naming the region count as the
+/// cause.
+///
+/// Both counts now come from the engine's own vector headers, which is what a
+/// mod changes; this id fires only for a length past the envelope — a torn or
+/// wrong read — and the raw sample carries the length that was seen.
+pub const BOUND_TRIP_WEATHER_ARRAY_LEN: usize = 10;
+/// A country's political-party vector was longer than the collector's
+/// fixed-size party snapshot.
+///
+/// Unlike the two above it, this bound is NOT going away, and the distinction
+/// is the point. `common/ideologies` and `common/parties` are content, so how
+/// many parties a country has is a mod's decision — but the collector's
+/// copy-only bracket reads the whole party vector into `[usize; N]` and
+/// `[ObjectSnapshot; N]` on the stack, sized at compile time, because a heap
+/// allocation inside the sweep is what that architecture exists to avoid. The
+/// ceiling is therefore a MEMORY BUDGET the extractor pays, not a claim about
+/// how many parties a game defines.
+///
+/// What it may not be is silent. All four sites simply returned `None` on a
+/// longer vector, so a modded country's whole politics read — popularities,
+/// ruling party, the fingerprints that drive change detection — vanished with
+/// nothing in the capture distinguishing that from a country that has no
+/// parties. The raw sample carries the vector length that was seen, which is
+/// what a capture needs to say "raise the budget to N".
+pub const BOUND_TRIP_POLITICAL_PARTY_COUNT: usize = 11;
+pub const BOUND_TRIP_ID_COUNT: usize = 12;
 
 /// `(per-frame trip counter unit, last-observed raw value unit)` per bound id.
 /// The counter unit is summable in the recorder; the `_sample` suffix routes
@@ -100,6 +143,14 @@ pub const BOUND_TRIP_UNITS: [(&str, &str); BOUND_TRIP_ID_COUNT] = [
     (
         "bt_supply_province_id_trips",
         "bt_supply_province_id_raw_sample",
+    ),
+    (
+        "bt_weather_array_len_trips",
+        "bt_weather_array_len_raw_sample",
+    ),
+    (
+        "bt_political_party_count_trips",
+        "bt_political_party_count_raw_sample",
     ),
 ];
 
@@ -642,6 +693,20 @@ mod tests {
                     "bt_supply_province_id_raw_sample",
                 ),
             ),
+            (
+                BOUND_TRIP_WEATHER_ARRAY_LEN,
+                (
+                    "bt_weather_array_len_trips",
+                    "bt_weather_array_len_raw_sample",
+                ),
+            ),
+            (
+                BOUND_TRIP_POLITICAL_PARTY_COUNT,
+                (
+                    "bt_political_party_count_trips",
+                    "bt_political_party_count_raw_sample",
+                ),
+            ),
         ] {
             assert_eq!(BOUND_TRIP_UNITS[id], expected, "bound id {id}");
         }
@@ -659,6 +724,8 @@ mod tests {
             BOUND_TRIP_FACTION_MEMBERS,
             BOUND_TRIP_COUNTRY_LINK_INDEX,
             BOUND_TRIP_SUPPLY_PROVINCE_ID,
+            BOUND_TRIP_WEATHER_ARRAY_LEN,
+            BOUND_TRIP_POLITICAL_PARTY_COUNT,
         ];
         assert_eq!(ids.len(), BOUND_TRIP_ID_COUNT, "an id is missing from this table");
         let mut sorted = ids;

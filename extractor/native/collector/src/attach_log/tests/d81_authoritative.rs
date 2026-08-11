@@ -107,20 +107,173 @@ const RAILLESS_TRIPLE: [u32; 3] = [382, 383, 384];
 /// except the railless triple.
 const PUBLISHED_ROWS: usize = PROVINCES as usize - RAILLESS_TRIPLE.len();
 
+/// WHERE THE WORLD SITS, so one staging body can build it at more than one
+/// SIZE.
+///
+/// The fixture above is 385 province slots, which is where every gate in this
+/// file runs it. Lane GL needed the SAME world at production's 3,512 slots to
+/// price the copy plan on the shape a capture actually observes, and a second
+/// staging body would be a second world to keep in step. So the addresses and
+/// the two sizes become a value, [`Layout::DEFAULT`] reproduces the constants
+/// above exactly, and every test in this file keeps calling the free helpers
+/// below, which are that default.
+///
+/// NOTHING ABOUT THE SHAPE CHANGES WITH SIZE — the same regions in the same
+/// order, the same scatter stride, the same reciprocal triples, the same one
+/// railless triple at the top. Only the counts and the spacing between the
+/// scattered families move, and the spacing moves only so the families stay
+/// disjoint at a size that would otherwise overrun them.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Layout {
+    pub(super) province_slots: u32,
+    pub(super) selector_mask: u32,
+    gamestate: u64,
+    idler_slot: u64,
+    idler_slot_b: u64,
+    idler: u64,
+    owner: u64,
+    container: u64,
+    rail_manager: u64,
+    rail_table: u64,
+    active_root: u64,
+    active_table: u64,
+    selector_map: u64,
+    selector_table: u64,
+    source_array: u64,
+    map_array: u64,
+    rail_info: u64,
+    pair_blob: u64,
+    map_province: u64,
+    record: u64,
+    source_province: u64,
+    scatter_stride: u64,
+}
+
+impl Layout {
+    /// The world every gate in this file stages: the constants above, spelled
+    /// through the struct so the two cannot drift.
+    pub(super) const DEFAULT: Layout = Layout {
+        province_slots: PROVINCE_SLOTS,
+        selector_mask: SELECTOR_MASK,
+        gamestate: GAMESTATE,
+        idler_slot: IDLER_SLOT,
+        idler_slot_b: IDLER_SLOT_B,
+        idler: IDLER,
+        owner: OWNER,
+        container: CONTAINER,
+        rail_manager: RAIL_MANAGER,
+        rail_table: RAIL_TABLE,
+        active_root: ACTIVE_ROOT,
+        active_table: ACTIVE_TABLE,
+        selector_map: SELECTOR_MAP,
+        selector_table: SELECTOR_TABLE,
+        source_array: SOURCE_ARRAY,
+        map_array: MAP_ARRAY,
+        rail_info: RAIL_INFO,
+        pair_blob: PAIR_BLOB,
+        map_province: MAP_PROVINCE,
+        record: RECORD,
+        source_province: SOURCE_PROVINCE,
+        scatter_stride: SCATTER_STRIDE,
+    };
+
+    /// The same world at `province_slots` slots.
+    ///
+    /// The five SCATTERED families each need `slots * SCATTER_STRIDE` of
+    /// address space and the default layout gives them 0x1000_0000 apiece,
+    /// which 3,512 slots overrun. A sized world therefore spaces the fixed
+    /// regions and the families by a full 4 GiB each — still inside
+    /// `[HEAP_LO, HEAP_HI)`, which is the only predicate the reader applies to
+    /// any of these addresses — and keeps the stride, the order and the
+    /// disjointness the default has.
+    ///
+    /// `province_slots` must be `1 (mod 3)`: the topology names `1..slots` and
+    /// the neighbour rings are triples, exactly as [`PROVINCE_SLOTS`] is.
+    pub(super) fn sized(province_slots: u32) -> Layout {
+        assert!(
+            province_slots % 3 == 1 && province_slots >= 7,
+            "the topology names 1..slots in reciprocal triples, and the top \
+             triple is the railless one",
+        );
+        // A power of two minus one, at least twice the slot count, so the
+        // engine's open-addressed selector table has a free slot within the
+        // probe's own reach for every province. The default's 511 against 385
+        // slots is the same ratio.
+        let mut selector_mask = SELECTOR_MASK;
+        while selector_mask + 1 < province_slots.saturating_mul(2) {
+            selector_mask = selector_mask * 2 + 1;
+        }
+        const SPAN: u64 = 0x1_0000_0000;
+        let at = |index: u64| BASE + index * SPAN;
+        Layout {
+            province_slots,
+            selector_mask,
+            gamestate: at(0),
+            idler_slot: at(1),
+            idler_slot_b: at(1) + 0x1_0000,
+            idler: at(2),
+            owner: at(3),
+            container: at(4),
+            rail_manager: at(5),
+            rail_table: at(6),
+            active_root: at(7),
+            active_table: at(8),
+            selector_map: at(9),
+            selector_table: at(10),
+            source_array: at(11),
+            map_array: at(12),
+            rail_info: at(13),
+            pair_blob: at(14),
+            map_province: at(15),
+            record: at(16),
+            source_province: at(17),
+            scatter_stride: SCATTER_STRIDE,
+        }
+    }
+
+    /// Selector slots the fixture stages, mask plus the probe's tail.
+    fn selector_slots(&self) -> u32 {
+        self.selector_mask + 1 + SELECTOR_MAX_DISTANCE as u32 + 1
+    }
+
+    /// The one triple with no rail slot at all: the top one, which is
+    /// [`RAILLESS_TRIPLE`] at the default size.
+    fn railless_triple(&self) -> [u32; 3] {
+        let top = self.province_slots - 1;
+        [top - 2, top - 1, top]
+    }
+
+    fn rail_info_of(&self, province: u32) -> u64 {
+        self.rail_info + u64::from(province) * self.scatter_stride
+    }
+    fn pair_blob_of(&self, province: u32) -> u64 {
+        self.pair_blob + u64::from(province) * self.scatter_stride
+    }
+    fn map_province_of(&self, province: u32) -> u64 {
+        self.map_province + u64::from(province) * self.scatter_stride
+    }
+    fn record_of(&self, province: u32) -> u64 {
+        self.record + u64::from(province) * self.scatter_stride
+    }
+    fn source_province_of(&self, province: u32) -> u64 {
+        self.source_province + u64::from(province) * self.scatter_stride
+    }
+}
+
 fn rail_info_of(province: u32) -> u64 {
-    RAIL_INFO + u64::from(province) * SCATTER_STRIDE
+    Layout::DEFAULT.rail_info_of(province)
 }
 fn pair_blob_of(province: u32) -> u64 {
-    PAIR_BLOB + u64::from(province) * SCATTER_STRIDE
+    Layout::DEFAULT.pair_blob_of(province)
 }
 fn map_province_of(province: u32) -> u64 {
-    MAP_PROVINCE + u64::from(province) * SCATTER_STRIDE
+    Layout::DEFAULT.map_province_of(province)
 }
 fn record_of(province: u32) -> u64 {
-    RECORD + u64::from(province) * SCATTER_STRIDE
+    Layout::DEFAULT.record_of(province)
 }
 fn source_province_of(province: u32) -> u64 {
-    SOURCE_PROVINCE + u64::from(province) * SCATTER_STRIDE
+    Layout::DEFAULT.source_province_of(province)
 }
 
 /// The two neighbours of a province, as the engine's own `(id, level)` pairs.
@@ -209,70 +362,104 @@ pub(super) struct StagedWorld {
 }
 
 pub(super) fn stage_world(shape: WorldShape) -> StagedWorld {
+    stage_world_in(shape, Layout::DEFAULT)
+}
+
+/// [`stage_world`] at a chosen [`Layout`].
+///
+/// Every line below reads its addresses and its two counts off `layout`, so the
+/// default size and a production-sized one are the SAME world staged twice and
+/// not two fixtures that have to be kept in step.
+pub(super) fn stage_world_in(shape: WorldShape, layout: Layout) -> StagedWorld {
     use crate::attach_log::*;
     let mut memory = SyntheticMemory::new();
 
-    memory.map_zeroed(GAMESTATE, D81_GS_ANCHOR_SELECTOR_MAP_OFF + 8);
-    memory.map_zeroed(IDLER_SLOT, 8);
-    memory.map_zeroed(IDLER_SLOT_B, 8);
-    memory.map_zeroed(IDLER, D81_IDLER_OWNER_OFF + 8);
-    memory.map_zeroed(OWNER, D81_OWNER_CONTAINER_OFF + 8);
-    memory.map_zeroed(CONTAINER, D81_CONTAINER_PROVINCE_COUNT_OFF + 4);
-    memory.map_zeroed(RAIL_MANAGER, D81_RAIL_MANAGER_TABLE_OFF + 8);
-    memory.map_zeroed(RAIL_TABLE, PROVINCE_SLOTS as usize * 8);
-    memory.map_zeroed(ACTIVE_ROOT, D81_ACTIVE_ROOT_TABLE_OFF + 8);
-    let active_bytes = PROVINCE_SLOTS as usize * D81_ACTIVE_ENTRY_STRIDE;
+    let province_slots = layout.province_slots;
+    let selector_mask = layout.selector_mask;
+    let selector_slots = layout.selector_slots();
+    let railless_triple = layout.railless_triple();
+    let (gamestate, idler_slot, idler_slot_b, idler, owner, container_base) = (
+        layout.gamestate,
+        layout.idler_slot,
+        layout.idler_slot_b,
+        layout.idler,
+        layout.owner,
+        layout.container,
+    );
+    let (rail_manager, rail_table, active_root, active_table) = (
+        layout.rail_manager,
+        layout.rail_table,
+        layout.active_root,
+        layout.active_table,
+    );
+    let (selector_map, selector_table, source_array, map_array) = (
+        layout.selector_map,
+        layout.selector_table,
+        layout.source_array,
+        layout.map_array,
+    );
+
+    memory.map_zeroed(gamestate, D81_GS_ANCHOR_SELECTOR_MAP_OFF + 8);
+    memory.map_zeroed(idler_slot, 8);
+    memory.map_zeroed(idler_slot_b, 8);
+    memory.map_zeroed(idler, D81_IDLER_OWNER_OFF + 8);
+    memory.map_zeroed(owner, D81_OWNER_CONTAINER_OFF + 8);
+    memory.map_zeroed(container_base, D81_CONTAINER_PROVINCE_COUNT_OFF + 4);
+    memory.map_zeroed(rail_manager, D81_RAIL_MANAGER_TABLE_OFF + 8);
+    memory.map_zeroed(rail_table, province_slots as usize * 8);
+    memory.map_zeroed(active_root, D81_ACTIVE_ROOT_TABLE_OFF + 8);
+    let active_bytes = province_slots as usize * D81_ACTIVE_ENTRY_STRIDE;
     assert!(
         active_bytes as u64 > PAGE,
         "the active table must span more than one page or its scoping is untested",
     );
-    memory.map_zeroed(ACTIVE_TABLE, active_bytes);
-    memory.map_zeroed(SELECTOR_MAP, D81_SELECTOR_MAP_MAX_DISTANCE_OFF + 1);
+    memory.map_zeroed(active_table, active_bytes);
+    memory.map_zeroed(selector_map, D81_SELECTOR_MAP_MAX_DISTANCE_OFF + 1);
     memory.map_zeroed(
-        SELECTOR_TABLE,
-        (SELECTOR_SLOTS as usize + 8) * D81_SELECTOR_ENTRY_STRIDE,
+        selector_table,
+        (selector_slots as usize + 8) * D81_SELECTOR_ENTRY_STRIDE,
     );
-    memory.map_zeroed(SOURCE_ARRAY, PROVINCE_SLOTS as usize * 8);
-    memory.map_zeroed(MAP_ARRAY, PROVINCE_SLOTS as usize * 8);
+    memory.map_zeroed(source_array, province_slots as usize * 8);
+    memory.map_zeroed(map_array, province_slots as usize * 8);
 
-    memory.write_u64(GAMESTATE + D81_GS_RAIL_MANAGER_OFF as u64, RAIL_MANAGER);
-    memory.write_u64(GAMESTATE + CGAMESTATE_CPROVINCE_ARRAY as u64, SOURCE_ARRAY);
-    memory.write_u32(GAMESTATE + CGAMESTATE_CPROVINCE_COUNT as u64, PROVINCE_SLOTS);
+    memory.write_u64(gamestate + D81_GS_RAIL_MANAGER_OFF as u64, rail_manager);
+    memory.write_u64(gamestate + CGAMESTATE_CPROVINCE_ARRAY as u64, source_array);
+    memory.write_u32(gamestate + CGAMESTATE_CPROVINCE_COUNT as u64, province_slots);
     memory.write_u64(
-        GAMESTATE + D81_GS_ACTIVE_PROVINCE_ROOT_OFF as u64,
-        ACTIVE_ROOT,
+        gamestate + D81_GS_ACTIVE_PROVINCE_ROOT_OFF as u64,
+        active_root,
     );
     memory.write_u64(
-        GAMESTATE + D81_GS_ANCHOR_SELECTOR_MAP_OFF as u64,
-        SELECTOR_MAP,
+        gamestate + D81_GS_ANCHOR_SELECTOR_MAP_OFF as u64,
+        selector_map,
     );
-    memory.write_u64(RAIL_MANAGER + D81_RAIL_MANAGER_TABLE_OFF as u64, RAIL_TABLE);
-    memory.write_u64(ACTIVE_ROOT + D81_ACTIVE_ROOT_TABLE_OFF as u64, ACTIVE_TABLE);
-    memory.write_u64(SELECTOR_MAP + D81_SELECTOR_MAP_TABLE_OFF as u64, SELECTOR_TABLE);
-    memory.write_u32(SELECTOR_MAP + D81_SELECTOR_MAP_MASK_OFF as u64, SELECTOR_MASK);
+    memory.write_u64(rail_manager + D81_RAIL_MANAGER_TABLE_OFF as u64, rail_table);
+    memory.write_u64(active_root + D81_ACTIVE_ROOT_TABLE_OFF as u64, active_table);
+    memory.write_u64(selector_map + D81_SELECTOR_MAP_TABLE_OFF as u64, selector_table);
+    memory.write_u32(selector_map + D81_SELECTOR_MAP_MASK_OFF as u64, selector_mask);
     memory.write(
-        SELECTOR_MAP + D81_SELECTOR_MAP_MAX_DISTANCE_OFF as u64,
+        selector_map + D81_SELECTOR_MAP_MAX_DISTANCE_OFF as u64,
         &[SELECTOR_MAX_DISTANCE],
     );
 
-    memory.write_u64(IDLER_SLOT, IDLER);
-    memory.write_u64(IDLER_SLOT_B, IDLER);
-    memory.write_u64(IDLER + D81_IDLER_OWNER_OFF as u64, OWNER);
-    memory.write_u64(OWNER + D81_OWNER_CONTAINER_OFF as u64, CONTAINER);
+    memory.write_u64(idler_slot, idler);
+    memory.write_u64(idler_slot_b, idler);
+    memory.write_u64(idler + D81_IDLER_OWNER_OFF as u64, owner);
+    memory.write_u64(owner + D81_OWNER_CONTAINER_OFF as u64, container_base);
     memory.write_u64(
-        CONTAINER + D81_CONTAINER_PROVINCE_ARRAY_OFF as u64,
-        MAP_ARRAY,
+        container_base + D81_CONTAINER_PROVINCE_ARRAY_OFF as u64,
+        map_array,
     );
     memory.write_u32(
-        CONTAINER + D81_CONTAINER_PROVINCE_COUNT_OFF as u64,
-        PROVINCE_SLOTS,
+        container_base + D81_CONTAINER_PROVINCE_COUNT_OFF as u64,
+        province_slots,
     );
 
     // Every selector slot occupied, with a marker that admits the full probe
     // distance and a key no province owns, so a probe walks its whole distance
     // instead of stopping at the first empty slot.
-    for slot in 0..SELECTOR_SLOTS + 8 {
-        let entry = SELECTOR_TABLE + u64::from(slot) * D81_SELECTOR_ENTRY_STRIDE as u64;
+    for slot in 0..selector_slots + 8 {
+        let entry = selector_table + u64::from(slot) * D81_SELECTOR_ENTRY_STRIDE as u64;
         memory.write(
             entry + D81_SELECTOR_MARKER_OFF as u64,
             &[SELECTOR_MAX_DISTANCE + 1],
@@ -281,16 +468,16 @@ pub(super) fn stage_world(shape: WorldShape) -> StagedWorld {
     }
     // The keys, placed the way an open-addressed table places them: forward, no
     // wrap, first free slot within the probe's own reach.
-    let mut occupied = vec![false; (SELECTOR_SLOTS + 8) as usize];
-    for province in 0..PROVINCE_SLOTS {
-        let start = selector_slot_of(province, SELECTOR_MASK);
+    let mut occupied = vec![false; (selector_slots + 8) as usize];
+    for province in 0..province_slots {
+        let start = selector_slot_of(province, selector_mask);
         for step in 0..=u32::from(SELECTOR_MAX_DISTANCE) {
             let slot = start + step;
             if occupied[slot as usize] {
                 continue;
             }
             occupied[slot as usize] = true;
-            let entry = SELECTOR_TABLE + u64::from(slot) * D81_SELECTOR_ENTRY_STRIDE as u64;
+            let entry = selector_table + u64::from(slot) * D81_SELECTOR_ENTRY_STRIDE as u64;
             memory.write_u32(entry + D81_SELECTOR_KEY_OFF as u64, province);
             memory.write_u64(
                 entry + D81_SELECTOR_VALUE_OFF as u64,
@@ -300,22 +487,22 @@ pub(super) fn stage_world(shape: WorldShape) -> StagedWorld {
         }
     }
 
-    for province in 0..PROVINCE_SLOTS {
+    for province in 0..province_slots {
         let index = u64::from(province);
         memory.write(
-            ACTIVE_TABLE + index * D81_ACTIVE_ENTRY_STRIDE as u64 + D81_ACTIVE_WINDOW_OFFSET as u64,
+            active_table + index * D81_ACTIVE_ENTRY_STRIDE as u64 + D81_ACTIVE_WINDOW_OFFSET as u64,
             &active_window_of(province),
         );
-        let source = source_province_of(province);
+        let source = layout.source_province_of(province);
         memory.map_zeroed(source, crate::attach_log::CPROVINCE_OFF_ID + 0x20);
         memory.write_u64(source, CPROVINCE_VTABLE);
         memory.write_u32(source + crate::attach_log::CPROVINCE_OFF_ID as u64, province);
-        memory.write_u64(SOURCE_ARRAY + index * 8, source);
+        memory.write_u64(source_array + index * 8, source);
 
-        let map = map_province_of(province);
+        let map = layout.map_province_of(province);
         memory.map_zeroed(map, D81_ANCHOR_SECONDARY_OFF + 12 + 0x20);
-        memory.write_u64(MAP_ARRAY + index * 8, map);
-        let record = record_of(province);
+        memory.write_u64(map_array + index * 8, map);
+        let record = layout.record_of(province);
         memory.map_zeroed(record, D81_RECORD_SELECTOR_KEY_OFF + 0x10);
         memory.write_u64(map + D81_MAP_PROVINCE_RECORD_OFF as u64, record);
         // The key is the province's OWN id, which is the `RecordKeyIsProvinceId`
@@ -336,13 +523,13 @@ pub(super) fn stage_world(shape: WorldShape) -> StagedWorld {
         // branch the walk takes for 9,903 of t26's 13,413 provinces. Slot 0 is
         // never walked and one whole triple is railless, so the branch is
         // exercised BY THE WALK and not only by the staging.
-        if province == 0 || RAILLESS_TRIPLE.contains(&province) {
-            memory.write_u64(RAIL_TABLE + index * 8, 0);
+        if province == 0 || railless_triple.contains(&province) {
+            memory.write_u64(rail_table + index * 8, 0);
             continue;
         }
-        let info = rail_info_of(province);
+        let info = layout.rail_info_of(province);
         memory.map_zeroed(info, RAIL_INFO_PAIRS_PTR_OFF + RAIL_HEADER_WINDOW_LEN + 0x20);
-        let blob = pair_blob_of(province);
+        let blob = layout.pair_blob_of(province);
         memory.map_zeroed(blob, 0x40);
         for (slot, (neighbour, level)) in neighbours_of(province).iter().enumerate() {
             memory.write_u32(blob + slot as u64 * 8, *neighbour);
@@ -365,14 +552,14 @@ pub(super) fn stage_world(shape: WorldShape) -> StagedWorld {
         } else {
             info
         };
-        memory.write_u64(RAIL_TABLE + index * 8, pointer);
+        memory.write_u64(rail_table + index * 8, pointer);
     }
 
     if let Some(province) = shape.unreadable_rail_info {
-        memory.set_readable(rail_info_of(province), false);
+        memory.set_readable(layout.rail_info_of(province), false);
     }
 
-    let provinces: Vec<CompactMapProvinceRoot> = (1..PROVINCE_SLOTS)
+    let provinces: Vec<CompactMapProvinceRoot> = (1..province_slots)
         .filter(|province| {
             shape
                 .skipped_triple
@@ -381,27 +568,27 @@ pub(super) fn stage_world(shape: WorldShape) -> StagedWorld {
         })
         .map(|province| CompactMapProvinceRoot {
             province_id: province,
-            province_ptr: source_province_of(province) as usize,
+            province_ptr: layout.source_province_of(province) as usize,
             state_id: 1,
         })
         .collect();
     let valid_ids = provinces.iter().map(|root| root.province_id).collect();
     let topology = CompactMapControlTopology {
-        province_array: SOURCE_ARRAY as usize,
-        province_count: PROVINCE_SLOTS,
+        province_array: source_array as usize,
+        province_count: province_slots,
         states: Vec::new(),
         provinces,
     };
     let container = D81MapProvinceContainer {
-        container: CONTAINER as usize,
-        province_array: MAP_ARRAY as usize,
-        province_count: PROVINCE_SLOTS,
+        container: container_base as usize,
+        province_array: map_array as usize,
+        province_count: province_slots,
     };
     let roots = Domain81PlanRoots {
-        game_state: GAMESTATE,
-        idler_slot: IDLER_SLOT,
-        idler_slot_b: IDLER_SLOT_B,
-        container: CONTAINER,
+        game_state: gamestate,
+        idler_slot: idler_slot,
+        idler_slot_b: idler_slot_b,
+        container: container_base,
         province_slots: topology
             .provinces
             .iter()

@@ -1594,6 +1594,22 @@ enum MaskSource {
     Strided(u64, u32, u32),
 }
 
+/// What one request's compare mask says about the intervals it covers.
+///
+/// Resolved ONCE for the request. Nothing in it depends on which interval is
+/// being annotated — the windows come from the op, the base and the extent's
+/// stride from the request — so building it per owned interval, which is what
+/// [`Observation::annotate`] used to do, rebuilt the same vector for every one
+/// of them.
+enum ResolvedMask {
+    /// This contributor reads the whole request.
+    All,
+    /// Absolute spans inside the request.
+    Spans(Vec<Span>),
+    /// A per-element mask over a decoded extent.
+    Strided(super::annot::StridedMask),
+}
+
 /// Which anchor a task's copy requests rest on.
 ///
 /// # Why this is a tag and not an [`AnchorKind`]
@@ -1925,7 +1941,42 @@ struct Observation<'a, M: SnapshotMemory> {
     /// attempt is what the topology promises, so the attempt is what is
     /// recorded.
     mid_walk_done: Vec<bool>,
+    /// [`Observation::effective_stage`]'s RANK for each interval id, refilled
+    /// immediately before each closing sort.
+    ///
+    /// # Why this exists
+    ///
+    /// Both closing sorts key on `effective_stage`, and `sort_unstable_by_key`
+    /// evaluates its key once per COMPARISON — so a schedule of n intervals
+    /// asked the same question about the same interval some `log n` times over.
+    /// Lane GL measured 567,906 `effective_stage` calls against 21,056
+    /// intervals in one observation of d81's production shape, and the sort was
+    /// 21.4% of the whole observation: the single largest named term in it, and
+    /// one that moves no bytes.
+    ///
+    /// The answer is a function of the interval's stage set and the recipes'
+    /// closing programs, so within one sort it cannot change — filling it once
+    /// per interval and sorting on the fill is the same order by the same key.
+    ///
+    /// # Why it is refilled and not cached
+    ///
+    /// A stage set GROWS: `mid_walk_close` runs at the end of every wave, and
+    /// the wave after it can tag an interval with a stage it did not carry. A
+    /// value cached across waves would be the previous wave's answer. So each
+    /// sort refills the entries it is about to read, and reads no others —
+    /// entries for intervals outside the sort are stale by construction and are
+    /// never consulted.
+    stage_rank_memo: Vec<(u32, u16)>,
 }
+
+/// [`Observation::stage_rank_memo`]'s spelling of `effective_stage` returning
+/// `None` — the interval carries no stage any closing program lists.
+///
+/// `u32::MAX` and not a sentinel of its own: a rank is a position in a
+/// program's stage list, which `validate_closing` bounds far below this, so the
+/// value cannot collide with a real rank. It also sorts LAST, which is exactly
+/// what `closing_schedule`'s own `unwrap_or(usize::MAX)` did.
+const NO_CLOSING_RANK: u32 = u32::MAX;
 
 impl<'a, M: SnapshotMemory> Observation<'a, M> {
     fn new(
@@ -2001,6 +2052,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             unreadable_closes: Vec::new(),
             void_context: Vec::new(),
             mid_walk_done: Vec::new(),
+            stage_rank_memo: Vec::new(),
         })
     }
 
@@ -2098,6 +2150,13 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             + super::arena::vec_bytes(&self.owned)
             + super::arena::vec_bytes(&self.sites)
             + super::arena::vec_bytes(&self.mid_walk_done)
+            // The closing sorts' rank memo. It is grown through `reserve_own`,
+            // which advances `own_tables_charged`, so leaving it out of the
+            // footprint this reconciles AGAINST would let a later wave's growth
+            // hide beneath the memo's own baseline and go uncharged — custody
+            // above the admitted total, which is the one direction this
+            // accounting must not fail in (Codex 019fef9d, finding 3).
+            + super::arena::vec_bytes(&self.stage_rank_memo)
             + self.visited.charged_bytes()
             + self.plan.capacity_bytes()
             + self.acquisition.capacity_bytes();
@@ -3291,19 +3350,16 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // under which one recipe's stricter requirement cannot leak onto its
         // neighbour's hour.
         for &id in owned {
-            let mut images = match self.annot.samples(id) {
-                Some(existing) => existing.clone(),
-                // No record means no ADJACENT sample was ever taken — but the
-                // opening image exists, or the interval would not. Its bit is
-                // set, so `held()` is one and not zero.
-                None => super::annot::SampleImages {
-                    extra: Vec::new(),
-                    success_mask: 1,
-                    asks: Vec::new(),
-                },
-            };
-            images.ask(consumer, spec.count, wants_gap);
-            self.annot.set_samples(id, images);
+            // IN PLACE. This cloned the whole `SampleImages` — two `Vec`s — out
+            // of the annotation table, appended one ask to the clone, and
+            // inserted the clone back: two descents and two allocations per
+            // (request, interval) to append one element. No record means no
+            // ADJACENT sample was ever taken, and the opening image exists or
+            // the interval would not, so the default `success_mask` is 1 —
+            // which is exactly what the substituted default carried.
+            self.annot
+                .entry(id)
+                .ask_samples(consumer, spec.count, wants_gap);
         }
     }
 
@@ -3320,29 +3376,33 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 (*op, MaskSource::Strided(span.start, stride, *count))
             }
         };
-        let modifier = self.recipes[recipe].op_mod(op);
+        // BORROWED, NOT CLONED. `recipes` is a `&'a [Recipe]` held beside the
+        // observation rather than inside it, so a modifier taken through this
+        // copy of the reference does not borrow `self` and does not have to be
+        // escaped with a `Vec` clone. It was one `compare.windows` clone per
+        // request that reached annotation — on d81's two masked ops, 35,084
+        // requests per observation.
+        let recipes = self.recipes;
+        let modifier = recipes[recipe].op_mod(op);
         let stage = modifier.stage;
-        let windows = modifier.compare.windows.clone();
-        let consumer = self.recipes[recipe].consumer;
+        let windows = modifier.compare.windows.as_slice();
+        let consumer = recipes[recipe].consumer;
         let gap_on_close = modifier.on_close == CloseAction::Gap;
-        for &id in owned {
-            if stage != 0 {
-                self.annot.tag_stage(id, stage);
-            }
-            // BEFORE the mask arms below, every one of which `continue`s. A
-            // consumer that declared `Record` on a masked op would otherwise be
-            // gapped by a default it never asked for.
-            self.annot.ask_close(id, consumer, gap_on_close);
-            if windows.is_empty() {
-                // No mask means "this contributor reads all of it", and that is
-                // final: see the module header on monotonicity.
-                self.annot.consume_all(id);
-                continue;
-            }
+
+        // THE MASK IS RESOLVED ONCE FOR THE REQUEST, not once per interval it
+        // covers. Nothing in either arm depends on the interval — the windows,
+        // the request's own span and the extent's stride are all properties of
+        // the request — so the `Vec` each arm built inside the loop was the same
+        // vector rebuilt per owned interval.
+        let resolved = if windows.is_empty() {
+            // No mask means "this contributor reads all of it", and that is
+            // final: see the module header on monotonicity.
+            ResolvedMask::All
+        } else {
             match mask_source {
                 MaskSource::At(base) => {
                     let mut spans: Vec<Span> = Vec::with_capacity(windows.len());
-                    for window in &windows {
+                    for window in windows {
                         if let Some(resolved) = window.resolve(base) {
                             if resolved.overlaps(&span) {
                                 spans.push(resolved);
@@ -3357,43 +3417,60 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         // read as "nothing to compare, therefore unchanged".
                         // That is a witness certifying an object it never
                         // looked at. Fall back to the whole request.
-                        self.annot.consume_all(id);
+                        ResolvedMask::All
                     } else {
-                        self.annot.consume_spans(id, &spans);
+                        ResolvedMask::Spans(spans)
                     }
                 }
                 MaskSource::Strided(base, stride, count) => {
                     if stride == 0 || count == 0 {
-                        self.annot.consume_all(id);
-                        continue;
+                        ResolvedMask::All
+                    } else {
+                        let element_windows: Vec<(u32, u32)> = windows
+                            .iter()
+                            .filter(|window| {
+                                window.offset >= 0
+                                    && (window.offset as u64 + u64::from(window.len))
+                                        <= u64::from(stride)
+                            })
+                            .map(|window| (window.offset as u32, window.len))
+                            .collect();
+                        if element_windows.len() != windows.len() {
+                            // A window that does not fit inside one element is
+                            // not a per-element mask. Rather than guess what it
+                            // meant, the interval goes back to fully consumed —
+                            // the safe direction.
+                            ResolvedMask::All
+                        } else {
+                            ResolvedMask::Strided(super::annot::StridedMask {
+                                base,
+                                stride,
+                                count,
+                                windows: element_windows,
+                            })
+                        }
                     }
-                    let element_windows: Vec<(u32, u32)> = windows
-                        .iter()
-                        .filter(|window| {
-                            window.offset >= 0
-                                && (window.offset as u64 + u64::from(window.len))
-                                    <= u64::from(stride)
-                        })
-                        .map(|window| (window.offset as u32, window.len))
-                        .collect();
-                    if element_windows.len() != windows.len() {
-                        // A window that does not fit inside one element is not
-                        // a per-element mask. Rather than guess what it meant,
-                        // the interval goes back to fully consumed — the safe
-                        // direction.
-                        self.annot.consume_all(id);
-                        continue;
-                    }
-                    self.annot.consume_strided(
-                        id,
-                        super::annot::StridedMask {
-                            base,
-                            stride,
-                            count,
-                            windows: element_windows,
-                        },
-                    );
                 }
+            }
+        };
+
+        for &id in owned {
+            // ONE DESCENT FOR THE WHOLE REQUEST'S WRITES. The stage tag, the
+            // closing policy and the consumption used to be three lookups of
+            // the same interval in three separate tables; they are three writes
+            // through one entry now. See `annot::IntervalEntry`.
+            let mut entry = self.annot.entry(id);
+            // `tag_stage` returns on stage 0 itself, so the guard that used to
+            // sit here is inside it and the behaviour is the same.
+            entry.tag_stage(stage);
+            // BEFORE the mask below. A consumer that declared `Record` on a
+            // masked op would otherwise be gapped by a default it never asked
+            // for.
+            entry.ask_close(consumer, gap_on_close);
+            match &resolved {
+                ResolvedMask::All => entry.consume_all(),
+                ResolvedMask::Spans(spans) => entry.consume_spans(spans),
+                ResolvedMask::Strided(mask) => entry.consume_strided(mask.clone()),
             }
         }
     }
@@ -4602,10 +4679,77 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         best
     }
 
+    /// Make [`Observation::stage_rank_memo`] hold `effective_stage`'s rank for
+    /// every id `ids` names, so the sort that follows can read it instead of
+    /// recomputing it once per comparison.
+    ///
+    /// Charged before it is grown, like every other table the executor owns:
+    /// one `u32` per interval, taken at the moment custody is fullest.
+    fn fill_stage_ranks(
+        &mut self,
+        ids: impl Iterator<Item = IntervalId>,
+    ) -> Result<(), CustodyRefusal> {
+        let wanted = self
+            .owners
+            .len()
+            .saturating_sub(self.stage_rank_memo.len());
+        Self::reserve_own(
+            &mut self.stage_rank_memo,
+            self.arena.ledger_ref(),
+            &mut self.own_tables_charged,
+            wanted,
+        )?;
+        self.stage_rank_memo
+            .resize(self.owners.len(), (NO_CLOSING_RANK, 0));
+        for id in ids {
+            let found = self
+                .effective_stage(id)
+                .map(|(rank, stage)| {
+                    (
+                        u32::try_from(rank).unwrap_or(NO_CLOSING_RANK - 1),
+                        stage,
+                    )
+                })
+                .unwrap_or((NO_CLOSING_RANK, 0));
+            if let Some(slot) = self.stage_rank_memo.get_mut(id.0 as usize) {
+                *slot = found;
+            }
+        }
+        Ok(())
+    }
+
+    /// The rank this sort filled for `id`. See [`Observation::fill_stage_ranks`].
+    #[inline]
+    fn filled_rank(&self, id: IntervalId) -> u32 {
+        self.stage_rank_memo
+            .get(id.0 as usize)
+            .map(|(rank, _)| *rank)
+            .unwrap_or(NO_CLOSING_RANK)
+    }
+
+    /// The WINNING STAGE this sort filled for `id`, or `None` when the interval
+    /// carries no stage any closing program lists — the same answer
+    /// `effective_stage(id).map(|(_, stage)| stage)` gives, read instead of
+    /// recomputed.
+    #[inline]
+    fn filled_stage(&self, id: IntervalId) -> Option<u16> {
+        match self.stage_rank_memo.get(id.0 as usize) {
+            Some((rank, stage)) if *rank != NO_CLOSING_RANK => Some(*stage),
+            _ => None,
+        }
+    }
+
     /// When an interval closes, after elision has been applied.
-    fn close_when(&self, id: IntervalId) -> CloseWhen {
-        match self.effective_stage(id) {
-            Some((_, stage)) => stage_entry(self.recipes, stage)
+    ///
+    /// `stage` is the winning stage [`Observation::fill_stage_ranks`] already
+    /// found for this interval. It is passed in rather than re-derived because
+    /// the caller is inside the loop that follows that fill, and asking
+    /// `effective_stage` again was one more walk of the interval's stage list
+    /// and of every recipe's closing program per pending entry — 35,084 of them
+    /// per observation on d81's shape.
+    fn close_when(&self, stage: Option<u16>) -> CloseWhen {
+        match stage {
+            Some(stage) => stage_entry(self.recipes, stage)
                 .map(|entry| entry.when)
                 .unwrap_or(CloseWhen::Final),
             None => CloseWhen::Final,
@@ -4739,8 +4883,25 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // order is the order that ran" is one statement about both waves. The
         // id makes it total; duplicates therefore land adjacent and the
         // closing-offset test below skips them the second time.
+        // THE KEY IS FILLED ONCE PER INTERVAL AND THEN READ, rather than
+        // recomputed once per comparison. `NO_CLOSING_RANK` is respelled back
+        // into `None` here because this key's `Option` sorts `None` FIRST,
+        // where `closing_schedule`'s `unwrap_or(usize::MAX)` sorts it last —
+        // the two orders differ and both are preserved exactly.
+        if let Err(custody) = self.fill_stage_ranks(pending.iter().map(|(id, _)| *id)) {
+            self.mid_walk_pending = pending;
+            return Err(custody);
+        }
         pending.sort_unstable_by_key(|(id, _)| {
-            (self.effective_stage(*id).map(|(rank, _)| rank), id.0)
+            let rank = self.filled_rank(*id);
+            (
+                if rank == NO_CLOSING_RANK {
+                    None
+                } else {
+                    Some(rank as usize)
+                },
+                id.0,
+            )
         });
         // One byte per interval, so the "already attempted" test below is an
         // index rather than a scan of a list that grows with the observation.
@@ -4765,7 +4926,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             if self.mid_walk_closed_already(id) {
                 continue;
             }
-            match self.close_when(id) {
+            match self.close_when(self.filled_stage(id)) {
                 CloseWhen::AfterWave(wave) if wave == depth => {}
                 // A STAGE THAT ARRIVED AFTER ITS OWN CLOSE (Codex 019fe942,
                 // finding B2). The wave it declared has already run, so no
@@ -5008,14 +5169,18 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         // stronger statement of the two.
         //
         // The HEAD is not sorted: it already ran, in the order it ran in.
-        order[first_unclosed..].sort_unstable_by_key(|id| {
-            (
-                self.effective_stage(*id)
-                    .map(|(rank, _)| rank)
-                    .unwrap_or(usize::MAX),
-                id.0,
-            )
-        });
+        // FILLED ONCE PER INTERVAL, THEN READ. `sort_unstable_by_key` evaluates
+        // its key once per COMPARISON: lane GL measured 567,906
+        // `effective_stage` calls against 21,056 intervals in one observation of
+        // d81's shape, and this sort was 21.4% of it. The answer cannot change
+        // during a sort — it is a function of the interval's stage set and the
+        // recipes' closing programs, neither of which this function touches —
+        // so the order is the same order by the same key.
+        self.fill_stage_ranks(order[first_unclosed..].iter().copied())?;
+        // `NO_CLOSING_RANK` is `u32::MAX` and every real rank is a small
+        // position in a stage list, so it sorts last exactly as the
+        // `unwrap_or(usize::MAX)` it replaces did.
+        order[first_unclosed..].sort_unstable_by_key(|id| (self.filled_rank(*id), id.0));
         Ok(Some((order, first_unclosed)))
     }
 
