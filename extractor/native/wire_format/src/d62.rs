@@ -1,8 +1,8 @@
 //! d62 `hub_motorization_live` — exact per-node supply-hub motorization levels.
 //!
-//! Derived from `world_fold.rs:18813`-`:18876`
+//! Derived from `world_fold.rs:18990`-`:19053`
 //! (`fold_hub_motorization`), its JSON emission at `:9187`-`:9220`, and the
-// @world-fold-authority domain=62 functions=fold_hub_motorization lines=18813-18876 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=87cd31354c75e5c73548663b2437e801bdcdc3b6c9f8c0c3d7e742b84de86004
+// @world-fold-authority domain=62 functions=fold_hub_motorization lines=18990-19053 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=87cd31354c75e5c73548663b2437e801bdcdc3b6c9f8c0c3d7e742b84de86004
 //! payload codec the fold calls, which for this domain lives **outside** the fold
 //! in its own leaf crate: `extractor/native/lanes/hub_motorization_live/src/lib.rs`
 //! (`decode_payload_rows` at `:251`, `read_row` at `:312`, `validate_row` at

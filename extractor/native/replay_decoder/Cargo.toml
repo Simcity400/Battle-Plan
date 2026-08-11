@@ -42,6 +42,13 @@ dq-v3-prototype = ["dep:mimalloc", "dep:fold_v3", "snapshot/dq-v3-prototype"]
 # named owners instead of read off a single process peak. Never on by default
 # and never packaged; it writes no artifact outside the caller's spill dir.
 fr-mem-profile = ["dep:mimalloc", "recorder_host/mem-alloc-trace"]
+# Lane GQ bad-hour fault-injection harness. Injects one structural fault at a
+# time into an otherwise clean H4CR stream (and into a real retained container)
+# and reports which game hours the REAL production paths still deliver, which
+# they lose, and whether the loss is named. Measurement only: it writes nothing
+# outside the scratch directory it is given, is never on by default and is never
+# packaged.
+gq-bad-hour = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -88,6 +95,11 @@ required-features = ["dq-v3-prototype"]
 name = "fr_mem_profile"
 path = "src/bin/fr_mem_profile.rs"
 required-features = ["fr-mem-profile"]
+
+[[bin]]
+name = "gq_bad_hour"
+path = "src/bin/gq_bad_hour.rs"
+required-features = ["gq-bad-hour"]
 
 [[test]]
 name = "prefold_worker_process"

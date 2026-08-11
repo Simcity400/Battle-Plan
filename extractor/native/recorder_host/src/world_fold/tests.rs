@@ -32028,3 +32028,546 @@ fn d48_delta_adding_a_second_country_construction_line() -> Vec<u8> {
     };
     domain48::encode_lane_frame(&frame)
 }
+
+
+// ---------------------------------------------------------------------------
+// Lane GQ - a bad hour costs exactly that hour, and says so.
+// ---------------------------------------------------------------------------
+
+/// D13 `tech_live` payload: 32-byte header then one 16-byte country row.
+/// `completed` is what the fold publishes as `research.tech_count`, so two
+/// hours carrying different values produce two distinguishable snapshots.
+fn gq_tech_payload(tag_db_id: u32, completed: u32, status_flags: u32) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes()); // country_count
+    payload.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&1_000u32.to_le_bytes()); // progress scale
+    payload.extend_from_slice(&100_000u32.to_le_bytes()); // live scale
+    payload.extend_from_slice(&0u32.to_le_bytes()); // active_count
+    payload.extend_from_slice(&tag_db_id.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // row flags
+    payload.extend_from_slice(&completed.to_le_bytes());
+    payload.extend_from_slice(&3u32.to_le_bytes()); // research_slots
+    payload
+}
+
+/// The canonical record a scheduled domain emits for an hour it could not
+/// produce a payload for. The collector's frame seal mints one for every such
+/// domain (`attach_log.rs`, `DomainGapReason::ReaderSilent`), so this is the
+/// ordinary production shape of a bad domain-hour, not a corruption.
+fn gq_domain_gap_payload(game_hour_raw: i32) -> Vec<u8> {
+    compact_contract::domain_gap::DomainGapRecordV1 {
+        part: compact_contract::domain_gap::DomainGapPart::Both,
+        reason: compact_contract::domain_gap::DomainGapReason::SourceUnavailable,
+        target_hour_raw: game_hour_raw,
+        range_start_hour_raw: game_hour_raw,
+        range_end_hour_raw: game_hour_raw,
+        tick_before: 0,
+        tick_after: 0,
+        queue_capacity: 0,
+        queue_depth: 0,
+        queue_dropped: 0,
+        outcome_ordinal: 0,
+    }
+    .encode()
+    .expect("canonical domain gap encodes")
+}
+
+/// An hour in which a domain reported a `DOMAIN_GAP` must SAY so, because the
+/// fold is a running state and will otherwise republish the previous hour's
+/// value under this hour's date as if it had been observed.
+///
+/// Hour 0 carries `tech_count = 10`. Hour 1 carries a `DOMAIN_GAP` for d13 and
+/// nothing else for that domain. Hour 2 carries `tech_count = 12`.
+///
+/// Before `WorldFold::record_domain_gap` existed, `DOMAIN_GAP` reached only the
+/// boundary trackers - which use it for framing questions and cannot touch the
+/// folded world - so hour 1 published `research.tech_count = 10` with
+/// `domain_problems: []`, `unfolded_domains: []` and `notes: []`: an hour
+/// asserting it was clean while carrying a value it never received. Lane GQ
+/// measured that as matrix cell (f3); this test is that cell as an assertion.
+///
+/// What the fix must NOT do is discard the retained leaf. The gap record is a
+/// statement about ABSENCE, not evidence that the held rows are wrong, so the
+/// value stays readable and the hour states that it is retained. Hour 2's own
+/// value must still land, proving the mark is per-hour and not sticky.
+///
+/// kills: `WorldFold::ingest_record`'s `COMPACT_RECORD_TYPE_DOMAIN_GAP` arm.
+/// Delete it (or the `mark_fold_domain_unknown` call inside
+/// `record_domain_gap`) and hour 1 publishes with an empty `domain_problems`
+/// and an empty `notes`, failing the two assertions below that read them.
+#[test]
+fn an_hour_whose_domain_reported_a_gap_names_it_instead_of_republishing_the_last_value() {
+    let base_hi = 16_959_360i64;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    let hour0 = raw_for(base_hi);
+    push_record(
+        &mut stream,
+        seq,
+        hour0,
+        13,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &gq_tech_payload(47, 10, 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        hour0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let hour1 = raw_for(base_hi + 1);
+    push_record(
+        &mut stream,
+        seq,
+        hour1,
+        13,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        &gq_domain_gap_payload(hour1),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        hour1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+    seq += 1;
+
+    let hour2 = raw_for(base_hi + 2);
+    push_record(
+        &mut stream,
+        seq,
+        hour2,
+        13,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &gq_tech_payload(47, 12, 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        hour2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("gq_domain_gap");
+    fold.ingest_stream(&stream);
+    let snapshots: Vec<Value> = fold
+        .finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect();
+    assert_eq!(snapshots.len(), 3, "three closed hours");
+
+    // Hour 0: clean, and the value the later hours are measured against.
+    let clean = &snapshots[0]["provenance"]["collector"]["domain_problems"];
+    assert_eq!(
+        clean.as_array().map(Vec::len),
+        Some(0),
+        "hour 0 has no problem to report: {clean}"
+    );
+    assert_eq!(
+        snapshots[0]["countries"]["47"]["research"]["tech_count"],
+        json!(10)
+    );
+
+    // Hour 1 - THE BAD HOUR. It still carries the retained leaf, and it names
+    // the gap that makes the leaf not this hour's observation.
+    let problems = snapshots[1]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        problems.iter().any(|problem| {
+            problem["domain_id"] == json!(13) && problem["problem"] == json!("domain_gap")
+        }),
+        "the gapped hour must name domain 13's gap: {problems:?}"
+    );
+    let notes = snapshots[1]["provenance"]["notes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        notes.iter().any(|note| {
+            let text = note.as_str().unwrap_or_default();
+            text.contains("DOMAIN_GAP")
+                && text.contains("source_unavailable")
+                && text.contains("retained from an earlier hour")
+        }),
+        "the note must say which gap and that the value shown is retained: {notes:?}"
+    );
+    assert_eq!(
+        snapshots[1]["countries"]["47"]["research"]["tech_count"],
+        json!(10),
+        "the retained leaf stays readable; the hour's own statement is what changes"
+    );
+
+    // Hour 2: the mark is per-hour, not sticky, and the real value lands.
+    let after = snapshots[2]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !after
+            .iter()
+            .any(|problem| problem["problem"] == json!("domain_gap")),
+        "the gap belongs to hour 1 alone: {after:?}"
+    );
+    assert_eq!(
+        snapshots[2]["countries"]["47"]["research"]["tech_count"],
+        json!(12),
+        "the hour after the gap publishes its own observation"
+    );
+}
+
+
+/// A refused hour must not stamp its complaints onto the next published hour.
+///
+/// This is the boundary the gap test above does not reach. Hour 0 gaps domain
+/// 13 and then closes with `FRAME_REFUSED` rather than `FRAME_END` - a sequence
+/// the boundary tracker accepts as a legitimately closed hour, and which
+/// publishes no snapshot. Hour 1 then delivers perfectly good d13 data and
+/// closes normally.
+///
+/// `WorldFold` had no `FRAME_REFUSED` arm at all, so nothing reset the hour's
+/// per-hour bookkeeping: hour 0's `domain_gap` problem, its note and its
+/// `fold_domains_unknown_this_hour` entry survived the refusal and were
+/// published as hour 1's. A consumer then read a healthy hour as degraded, and
+/// for a problem-backed domain that makes the healthy value unavailable.
+///
+/// The decoder side already had this rule for the per-hour DOMAIN_DATA tallies
+/// (`a_refused_hour_does_not_carry_its_counts_into_the_next_hour` in
+/// `replay_decoder`); the fold's own per-hour state had the identical hole.
+///
+/// kills: `WorldFold::ingest_record`'s `COMPACT_RECORD_TYPE_FRAME_REFUSED` arm.
+/// Delete it (or empty out `close_refused_hour`) and hour 1 publishes with
+/// hour 0's `domain_gap` problem and hour 0's note, failing both assertions
+/// below. Making `close_refused_hour` publish a snapshot instead fails the
+/// hour-count assertion.
+#[test]
+fn a_refused_hour_does_not_stamp_its_gap_complaint_onto_the_next_hour() {
+    let base_hi = 16_959_360i64;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+
+    // Hour 0: domain 13 gaps, and the frame is then REFUSED.
+    let hour0 = raw_for(base_hi);
+    push_record(
+        &mut stream,
+        seq,
+        hour0,
+        13,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+        &gq_domain_gap_payload(hour0),
+    );
+    seq += 1;
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        refused_hour: hour0,
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            domain_id: 13,
+            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            reason: "d13_source_unavailable=1".to_string(),
+        }],
+    }
+    .encode()
+    .expect("canonical refusal fixture");
+    push_record(
+        &mut stream,
+        seq,
+        hour0,
+        1000,
+        compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+        &refusal,
+    );
+    seq += 1;
+
+    // Hour 1: healthy d13 data, closed normally.
+    let hour1 = raw_for(base_hi + 1);
+    push_record(
+        &mut stream,
+        seq,
+        hour1,
+        13,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &gq_tech_payload(47, 21, 0),
+    );
+    seq += 1;
+    push_record(
+        &mut stream,
+        seq,
+        hour1,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut fold = WorldFold::new("gq_refused_hour");
+    fold.ingest_stream(&stream);
+    let snapshots: Vec<Value> = fold
+        .finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect();
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "the refused hour publishes nothing; only hour 1 is a snapshot"
+    );
+
+    let problems = snapshots[0]["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !problems
+            .iter()
+            .any(|problem| problem["problem"] == json!("domain_gap")),
+        "hour 1 observed domain 13 cleanly; the refused hour's gap is not its problem: {problems:?}"
+    );
+    let notes = snapshots[0]["provenance"]["notes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !notes
+            .iter()
+            .any(|note| note.as_str().unwrap_or_default().contains("DOMAIN_GAP")),
+        "the refused hour's note must not be republished as hour 1's: {notes:?}"
+    );
+    assert_eq!(
+        snapshots[0]["countries"]["47"]["research"]["tech_count"],
+        json!(21),
+        "hour 1's own observation is published"
+    );
+}
+
+
+/// Fold `hours` where exactly one of them closes with `FRAME_REFUSED` instead
+/// of `FRAME_END`. Otherwise identical to `chunk1_snapshots`, so a pair of tests
+/// can differ ONLY in how the middle hour closed.
+fn gq_snapshots_with_refused_hour(
+    hours: Vec<Vec<(u16, Vec<u8>)>>,
+    refused_hour: usize,
+) -> Vec<Value> {
+    let base_hi = 16_959_360i64;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for (hour_offset, records) in hours.into_iter().enumerate() {
+        let raw = raw_for(base_hi + hour_offset as i64);
+        for (domain_id, payload) in records {
+            push_record(
+                &mut stream,
+                seq,
+                raw,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            seq += 1;
+        }
+        if hour_offset == refused_hour {
+            let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+                refused_hour: raw,
+                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                    domain_id: 64,
+                    status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    reason: "d64_source_unavailable=1".to_string(),
+                }],
+            }
+            .encode()
+            .expect("canonical refusal fixture");
+            push_record(
+                &mut stream,
+                seq,
+                raw,
+                1000,
+                compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                &refusal,
+            );
+        } else {
+            push_record(
+                &mut stream,
+                seq,
+                raw,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &frame_end_payload(),
+            );
+        }
+        seq += 1;
+    }
+    let mut fold = WorldFold::new("gq_refused_prune");
+    fold.ingest_stream(&stream);
+    fold.finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect()
+}
+
+/// Closing an hour with `FRAME_REFUSED` must still run the deferred accumulator
+/// prunes, or a later division that REUSES a dead division's id inherits its
+/// equipment.
+///
+/// This is `chunk3_d26_prunes_equipment_when_d20_deletes_division_before_id_reuse`
+/// with one difference: the deletion hour closes with `FRAME_REFUSED`. The d20
+/// deletion in that hour is folded into live state and queues the dead
+/// division's equipment key in `division_equipment_deleted_division_keys_this_hour`.
+/// `reset_hour_state` CLEARS that queue, so a refusal path that only reset would
+/// not defer the prune - it would destroy it - and the d26 accumulator would keep
+/// the row.
+///
+/// The reuse hour deliberately supplies a ROWLESS d26 delta rather than no d26
+/// at all. Without it, `equipment` would be `Null` merely because the domain was
+/// absent, and the assertion would pass whether or not the prune ran - the
+/// vacuity the sibling test above avoids by other means. With it, d26 is known
+/// and served from the accumulator while contributing no rows of its own, so the
+/// ONLY row that can appear under `17:2` is the stale one from `17:1`.
+///
+/// kills: the two prune calls in `WorldFold::close_refused_hour`. Delete them
+/// (leaving the `reset_hour_state()` call) and `17:2` is published carrying
+/// equipment row 11 from the deleted `17:1`, failing the final assertion. Run
+/// once with the calls removed to confirm the rowless-d26 construction is doing
+/// its job: the failure prints `equipment: [{equip_id: 11, amount: 2.5}]` under
+/// `div_uid 17:2`, so the assertion is answering the prune and not d26 absence.
+#[test]
+fn a_refused_hour_still_prunes_equipment_of_the_division_it_deleted() {
+    let snaps = gq_snapshots_with_refused_hour(
+        vec![
+            vec![
+                (20, chunk3_division_payload(&[(17, 1, 47)])),
+                (
+                    26,
+                    chunk3_division_equipment_payload(0, &[(47, 17, 0, 0, 0, 1)], &[(11, 250_000)]),
+                ),
+            ],
+            // Refused: the deletion is folded, the hour publishes nothing.
+            vec![(20, chunk3_division_delete_payload(17, 1))],
+            // Reuse: same owner, same division id, new type; d26 known but rowless.
+            vec![
+                (20, chunk3_division_payload(&[(17, 2, 47)])),
+                (
+                    26,
+                    chunk3_rowless_division_equipment_payload(DELTA, 1, 1, 0),
+                ),
+            ],
+        ],
+        1,
+    );
+
+    assert_eq!(
+        snaps.len(),
+        2,
+        "the refused hour publishes nothing: only the seed and reuse hours are snapshots"
+    );
+    assert_eq!(
+        snaps[0]["divisions"][0]["equipment"][0]["equip_id"],
+        json!(11),
+        "the seed hour establishes the row that must not survive the deletion"
+    );
+
+    let reused = &snaps[1]["divisions"][0];
+    assert_eq!(reused["div_uid"], json!("17:2"));
+    assert_eq!(
+        reused["equipment"],
+        Value::Null,
+        "the deleted division's equipment must not be served as the reused id's: {}",
+        snaps[1]["divisions"]
+    );
+}
+
+
+/// A refused PARTIAL hour must not delete an observed air-wing loadout using a
+/// carried d30 accumulator as authority for which wings exist.
+///
+/// `prune_air_wing_loadout_orphans_for_current_hour` guards on
+/// `fold_domain_seen(30)`, which reads the never-cleared
+/// `successful_fold_domains_seen` - "d30 succeeded at some point", not "d30 is
+/// authoritative this hour". Under `FRAME_END` that is safe: the frame seal
+/// mints a gap for every scheduled domain that reported nothing, and a d30 gap
+/// marks d30 unknown, which the prune's third guard catches. A `FRAME_REFUSED`
+/// frame may close a partial hour with NO d30 record and NO d30 gap, and then
+/// neither guard fires.
+///
+/// Hour 0 publishes wing `(1,700,77)` with a loadout. Hour 1 is refused and
+/// carries ONLY d32, for a newly observed wing `(1,701,78)`. Hour 2 supplies
+/// d30 containing BOTH wings and publishes.
+///
+/// Without the current-hour guard, hour 1's prune finds `(1,701,78)` absent
+/// from the carried hour-0 `air_wings` and deletes the loadout that was
+/// actually observed; hour 2 then publishes that wing with no loadout and no
+/// complaint - loss beyond the refused hour, and unnamed.
+///
+/// kills: the `fold_domain_fresh_this_hour(AIR_WINGS_DOMAIN_ID)` condition
+/// around the air prune in `WorldFold::close_refused_hour`. Remove it (calling
+/// the prune unconditionally) and wing `701` is published in hour 2 without the
+/// loadout observed in hour 1, failing the final assertion.
+#[test]
+fn a_refused_partial_hour_does_not_prune_a_loadout_against_a_stale_air_wing_set() {
+    let snaps = gq_snapshots_with_refused_hour(
+        vec![
+            vec![
+                (18, country_identity_payload(&[(1, "GER")])),
+                (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+                (
+                    32,
+                    d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+                ),
+            ],
+            // Refused and PARTIAL: d32 only, for a wing d30 has not named yet.
+            vec![(
+                32,
+                d32_loadouts_payload(&[(1, 701, 78, 9002, vec![(901, 200_000)])], 0),
+            )],
+            // d30 now names both wings; the hour-1 loadout must still be there.
+            vec![
+                (18, country_identity_payload(&[(1, "GER")])),
+                (
+                    30,
+                    d30_air_wings_payload(&[(1, 700, 77, 100), (1, 701, 78, 100)], 0),
+                ),
+            ],
+        ],
+        1,
+    );
+
+    assert_eq!(
+        snaps.len(),
+        2,
+        "the refused hour publishes nothing: only hours 0 and 2 are snapshots"
+    );
+
+    let wings = snaps[1]["order_of_battle"]["air_wings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let reappeared = wings
+        .iter()
+        .find(|wing| wing["id"] == json!(701))
+        .unwrap_or_else(|| panic!("d30 named wing 701 this hour: {wings:?}"));
+    assert_eq!(
+        reappeared["_r2_air_wing_loadout"]["equipment"][0]["variant_id"],
+        json!(901),
+        "the loadout observed during the refused hour must survive it: {reappeared}"
+    );
+    assert_eq!(
+        reappeared["_r2_air_wing_loadout"]["air_base_id"],
+        json!(9002),
+        "and it must be the loadout that hour actually carried: {reappeared}"
+    );
+}
+

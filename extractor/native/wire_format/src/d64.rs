@@ -2,9 +2,9 @@
 //!
 //! d64 is a genuine hybrid. Its 20-byte base rows are mutable per-country
 //! pending state, while its optional `DEL2` suffix is an independently produced,
-//! append-only lifecycle ledger (`world_fold.rs:11309`-`:11442`, including the
+//! append-only lifecycle ledger (`world_fold.rs:11486`-`:11619`, including the
 //! delegated lifecycle-row fold).
-// @world-fold-authority domain=64 functions=fold_delayed_events,fold_delayed_event_rows lines=11309-11442 sha256=123b847368be5ccd76a5eb867e5ea30e106b0bedd96c0bf06a34f9a9f6dc0e71 closure=f356f1719ed2c4999da81e6c5ea0da5592772f6f1f84178421ff6a8f25b4ddf4
+// @world-fold-authority domain=64 functions=fold_delayed_events,fold_delayed_event_rows lines=11486-11619 sha256=123b847368be5ccd76a5eb867e5ea30e106b0bedd96c0bf06a34f9a9f6dc0e71 closure=f356f1719ed2c4999da81e6c5ea0da5592772f6f1f84178421ff6a8f25b4ddf4
 //! The state table is an ordered occurrence list: physical vector order is
 //! authoritative and duplicates are legitimate
 //! (`extractor/documents/domains/d64_delayed_events_live.md:27`,
