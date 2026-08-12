@@ -1,10 +1,10 @@
 //! d67 `country_dynamic_modifiers_live` — the per-country active
 //! dynamic-modifier **instance** set, schema-v2 (`DMI2`) grammar only.
 //!
-//! Derived from `world_fold.rs:12100`-`:12553`
+//! Derived from `world_fold.rs:12128`-`:12581`
 //! (`fold_country_dynamic_modifiers` and the
 //! `fold_country_dynamic_modifier_instances` it delegates to), the payload codec
-// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=12100-12553 sha256=e7139ddd48b64d81eaabb1ef67183603160c15e33813bfcd8275d9b475d674b1 closure=b74e4b7d73da411d96a5ee5bd668278f835810ca3f5341e559ac732b2a35787e
+// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=12128-12581 sha256=e7139ddd48b64d81eaabb1ef67183603160c15e33813bfcd8275d9b475d674b1 closure=b74e4b7d73da411d96a5ee5bd668278f835810ca3f5341e559ac732b2a35787e
 //! `extractor/native/compact_contract/src/dynamic_modifiers.rs`, the collector
 //! read at `extractor/native/collector/src/attach_log.rs:61148`-`:61371`, and the
 //! entry decoder `extractor/native/lanes/country_dynamic_modifiers_live/timed_instance_exact.rs`.
@@ -75,7 +75,7 @@
 //!
 //! | offset | width | field | note |
 //! |---|---|---|---|
-//! | `+0`  | u32 | `owner_tag_db_id` | `1..=2048`, `:221`-`:224` |
+//! | `+0`  | u32 | `owner_tag_db_id` | `1..=MAX_OWNER_TAG_DB_ID`, `:221`-`:224` |
 //! | `+4`  | u32 | `id_offset` | must equal the running cursor, `:238` |
 //! | `+8`  | u16 | `id_len` | `1..=128`, `:238` |
 //! | `+10` | u16 | `flags` | bit0 `enabled`, bit1 `remaining_days present`, `:43`-`:45` |
@@ -261,8 +261,13 @@ pub const MAX_VALUES_PER_INSTANCE: usize = 256;
 pub const MAX_MODIFIER_ID_LEN: usize = 128;
 /// `dynamic_modifiers.rs:31`.
 pub const AUTHORITY_KIND_EXACT_A729: u32 = 1;
-/// `compact_contract/src/build_profile.rs:45`.
-pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
+/// `compact_contract/src/build_profile.rs`'s `MAX_COMPACT_OWNER_TAG_DB_ID`.
+///
+/// Was `2_048`, a guess at the vanilla-plus-DLC country count.
+/// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size
+/// gives `i32::MAX - 1`. Pinned by
+/// `tests/producer_consumer_admission_agreement.rs`.
+pub const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `compact_contract/src/record_header.rs:10`.
 pub const MAX_PAYLOAD_LEN: usize = 1 << 28;
 

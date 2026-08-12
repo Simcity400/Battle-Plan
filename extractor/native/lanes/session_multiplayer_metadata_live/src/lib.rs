@@ -105,7 +105,87 @@ pub const EVENT_SOURCE_X12_SPEED_SETTER: u32 = 0x1201;
 pub const EVENT_SOURCE_X12_PAUSE_TOGGLE: u32 = 0x1202;
 pub const EVENT_SOURCE_X12_PAUSE_FORCED: u32 = 0x1203;
 
-pub const MAX_TAG_DB_ID: u32 = 4096;
+/// Was `4096`, a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags). ENGINE-STRUCTURAL now: a country database id is admissible iff
+/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
+/// is the widest id a loadable database holds.
+pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
+
+/// Fail-closed budget on the LIVE `CGameState` country-object count the d57
+/// world-tension walk reads before iterating it.
+///
+/// A COUNT, not an id. It gated on `MAX_TAG_DB_ID`, and when that became the
+/// engine's structural id-space width the loop it controls — two live-memory
+/// reads per iteration, inside the sweep — became bounded by 2.1 billion. This
+/// is the same defect the air-loss country count had, one lane away, and it is
+/// why an id ceiling and a read budget must never be one constant.
+///
+/// # What this is, and what it is NOT
+///
+/// It is a FAIL-CLOSED CEILING on a torn or crafted count word, set to the same
+/// 65 536 the rest of the tree uses for the country table so the family holds
+/// one number. It is NOT engine-proven, and — the part an earlier draft of this
+/// doc got wrong — it is NOT a measured performance budget.
+///
+/// That draft priced it as "two 512 KB array reads", which is what a bulk copy
+/// of the two arrays would cost and is not what this walk does. The loop makes
+/// two separately guarded scalar reads per iteration and then, for every live
+/// country, further vtable, identity, policy and threshold reads. At the
+/// ceiling that is upwards of 131 000 guarded reads before the per-country work,
+/// and no measurement in this tree says what that costs against the 48 ms sweep
+/// budget. Stating a price that does not bound the actual work is worse than
+/// admitting there is none, because the next reader trusts it.
+///
+/// So: the value is chosen for consistency and to stop a garbage word, and the
+/// cost of reaching it is UNMEASURED. Lane GV residual R-GV-10. Lowering the
+/// literal instead would only reintroduce a content cap wearing a performance
+/// excuse.
+///
+/// # What closing R-GV-10 actually takes
+///
+/// An earlier draft of this note offered two one-line recipes — "measure the
+/// per-iteration work, or bulk-copy the two arrays". Both were too small, and
+/// an under-specified closing step is how a residual gets closed on paper:
+///
+/// * **Copying the two arrays does not make this walk copy-only.** Freezing the
+///   country-pointer and aggregate arrays leaves every per-country
+///   dereference live — country identity, the tag-equivalence table, the
+///   relation rows, five policy maps, the metadata block and global policy
+///   state. The closing bracket rechecks only the top-level pointers and
+///   counts, so a two-array copy would neither freeze the walk nor stop
+///   cross-state attribution. A real snapshot plan has to cover every
+///   transitively dereferenced structure.
+/// * **The work is not flat per country, so a single per-country price cannot
+///   establish the envelope.** There are FIVE separate quantities, and an
+///   earlier draft of this note conflated two of them:
+///   [`MAX_WORLD_TENSION_LEDGER_ROWS`] bounds the GLOBAL ledger loop, not a
+///   per-country one; the per-country relation walk carries its own separate
+///   `4_096` ceiling at its read site. Beyond those two there are the policy-map
+///   reads per country, the country loop itself, and the post-walk membership
+///   check — which is QUADRATIC (`sums.keys().any(|id| country_rows.iter()
+///   .any(..))`), on the order of `country_count^2` comparisons at a full
+///   roster. All five have to be enumerated and bounded together.
+///
+/// And the two branches are not alternatives. A complete snapshot plan does not
+/// close a residual about UNMEASURED cost — it changes what is being paid for
+/// without saying what it costs — so any such design still has to pass the same
+/// end-to-end measurement. The snapshot is what makes the walk copy-only and
+/// attribution-safe; the measurement is what closes R-GV-10.
+///
+/// A production closure should also replace the quadratic membership scan with
+/// an id set, which is a strict improvement independent of the ceiling.
+///
+/// Overflow refuses the whole extension with its named failure stage.
+pub const MAX_WORLD_TENSION_COUNTRY_COUNT: u32 = 65_536;
+
+/// The world-tension extension's country ROW COUNT, which is a different
+/// question from [`MAX_TAG_DB_ID`] and used to share it. It needs no
+/// content-scale ceiling of its own: the count is multiplied by
+/// `WORLD_TENSION_COUNTRY_ROW_LEN` with checked arithmetic and the result must
+/// reconstruct the extension's exact length, so what actually bounds it is the
+/// payload. This ceiling only keeps that multiply away from the checked-overflow
+/// path, and is the structural row width.
+pub const MAX_WORLD_TENSION_COUNTRY_ROWS: u32 = i32::MAX as u32;
 pub const MAX_STRING_BLOB_BYTES: usize = 256 * 1024;
 pub const MAX_PLAYER_ROWS: u32 = 4096;
 pub const MAX_EVENT_ROWS: u32 = 100_000;
@@ -457,7 +537,7 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
     let ledger_count = read_u32(ext, 16);
     let string_bytes = read_u32(ext, 20) as usize;
     let flags = read_u32(ext, 24);
-    if country_count > MAX_TAG_DB_ID || ledger_count > MAX_WORLD_TENSION_LEDGER_ROWS {
+    if country_count > MAX_WORLD_TENSION_COUNTRY_ROWS || ledger_count > MAX_WORLD_TENSION_LEDGER_ROWS {
         return Err("world-tension extension row count exceeds bound".into());
     }
     if string_bytes > MAX_STRING_BLOB_BYTES || flags & !WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK != 0 {

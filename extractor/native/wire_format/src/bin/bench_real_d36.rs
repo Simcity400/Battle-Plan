@@ -184,7 +184,10 @@ const PROBE_DOMAIN_ID: u16 = 250;
 
 /// Limits enforced by d36's independent payload authority
 /// (`domain_data_authority.rs:715`-`:717`).
-const AUTHORITY_MAX_TAG_DB_ID: u32 = 1_024;
+// Was `1_024`, a guess at the vanilla-plus-DLC country count; now the
+// family's engine-structural id-space width, matching
+// `COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID`.
+const AUTHORITY_MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 const AUTHORITY_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const AUTHORITY_MAX_AMOUNT_RAW: i64 = 100_000_000_000_000_000;
 

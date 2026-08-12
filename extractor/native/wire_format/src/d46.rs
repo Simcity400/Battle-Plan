@@ -2,9 +2,9 @@
 //! table, plus the `ACE1` air-ace-roster trailer that ships inside the same
 //! record.
 //!
-//! Derived from `world_fold.rs:19432`-`:19654`
+//! Derived from `world_fold.rs:19465`-`:19687`
 //! (`fold_air_variant_archetypes`, dispatched at `:4723`), the row grammar and
-// @world-fold-authority domain=46 functions=fold_air_variant_archetypes lines=19432-19654 sha256=4436a62252b4f0f0b2c3716ab07adadcb4686ff7fb351b704527f367896aeaab closure=4816e0dc90dce756fa573600d0011b74db7d04a87ed53eaf534d8456fe1b21a6
+// @world-fold-authority domain=46 functions=fold_air_variant_archetypes lines=19465-19687 sha256=4436a62252b4f0f0b2c3716ab07adadcb4686ff7fb351b704527f367896aeaab closure=4816e0dc90dce756fa573600d0011b74db7d04a87ed53eaf534d8456fe1b21a6
 //! bounds in
 //! `extractor/native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_variant_archetypes_live.rs`
 //! (authority #2 — production's status-independent payload check), the trailer
@@ -467,7 +467,12 @@ pub mod ace {
         | SOURCE_LIVE_ACE_DEATH_RECORD;
 
     /// Bounds, `:74`-`:81`.
-    pub const MAX_TAG_DB_ID: u32 = 4096;
+    /// Was `4096`, a guess at the vanilla-plus-DLC country count.
+    /// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int`
+    /// size gives `i32::MAX - 1` — the same derivation `MAX_ACE_ID` and
+    /// `MAX_WING_ID` beside it already use for their own engine id spaces.
+    /// Pinned by `tests/producer_consumer_admission_agreement.rs`.
+    pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
     pub const MAX_ACE_ID: u32 = i32::MAX as u32;
     pub const MAX_COUNTRY_ACE_INDEX: u32 = 4096;
     pub const MAX_WING_ID: u32 = i32::MAX as u32;

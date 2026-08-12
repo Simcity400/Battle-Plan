@@ -15,7 +15,11 @@ pub const PARENT_LEN: usize = 32;
 pub const CHILD_LEN: usize = 80;
 pub const MAX_PARENTS: usize = 4_096;
 pub const MAX_CHILDREN: usize = 65_536;
-pub const MAX_TAG_DB_ID: u32 = 4_096;
+/// Was `4_096`, a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags); the family bound is
+/// [`crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`] and is
+/// engine-structural.
+pub const MAX_TAG_DB_ID: u32 = crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const RAID_REFERENCE_TYPE: u32 = 84;
 pub const EXACT_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";

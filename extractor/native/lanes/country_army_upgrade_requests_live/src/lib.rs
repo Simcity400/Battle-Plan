@@ -88,7 +88,20 @@ pub const PRODUCED_ALLOW_ZERO_OFF: u64 = 0x58;
 pub const PRODUCED_ROW_STRIDE: u64 = 0x10;
 
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-pub const MAX_COUNTRIES: usize = 2_048;
+/// Fail-closed ceiling on the number of country rows an AUR1 snapshot carries.
+///
+/// Was `2_048` — a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags), which refused an overhaul's whole payload on both sides. A
+/// country count is content, so it is now the structural row width, and
+/// `bounded_count` takes its real ceiling from what the remaining payload can
+/// hold. The per-country limits below are different questions and unchanged.
+pub const MAX_COUNTRIES: usize = i32::MAX as usize;
+
+/// The smallest number of payload bytes one country entry can consume:
+/// `tag_db_id` 4 plus `group_count` 4, with zero groups. A count-prefixed
+/// section divides the bytes it has left by this so a stream-supplied count can
+/// never size an allocation.
+const MIN_COUNTRY_ENTRY_LEN: usize = 8;
 pub const MAX_GROUPS_PER_COUNTRY: usize = 4_096;
 pub const MAX_REQUEST_ROWS_PER_GROUP: usize = 4_096;
 pub const MAX_DELIVERIES_PER_GROUP: usize = 4_096;
@@ -775,6 +788,13 @@ pub fn decode_payload(payload: &[u8]) -> Result<ArmyUpgradeFrame, CarrierError> 
     let snapshot = if has_snapshot {
         let source_sequence = reader.u64()?;
         let country_count = reader.bounded_count(MAX_COUNTRIES, "country")?;
+        // `MAX_COUNTRIES` is now the structural row width rather than a
+        // content-scale guess, so it no longer incidentally bounds this
+        // allocation. What does is the payload: a country entry is at least
+        // MIN_COUNTRY_ENTRY_LEN bytes, so the bytes still ahead cap the count.
+        if country_count > reader.remaining() / MIN_COUNTRY_ENTRY_LEN {
+            return invalid("AUR1 country count exceeds the payload's capacity");
+        }
         let mut countries = Vec::with_capacity(country_count);
         let mut leaves = 0usize;
         for _ in 0..country_count {
@@ -964,6 +984,13 @@ impl<'a> Reader<'a> {
             return invalid(format!("AUR1 {label} count exceeds bound"));
         }
         Ok(value)
+    }
+
+    /// Bytes left. A count-prefixed section whose ceiling is not a small
+    /// constant divides this by its minimum entry size, so a stream-supplied
+    /// count can never size an allocation.
+    fn remaining(&self) -> usize {
+        self.payload.len().saturating_sub(self.at)
     }
 }
 

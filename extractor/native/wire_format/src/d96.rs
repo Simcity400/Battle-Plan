@@ -1,9 +1,9 @@
 //! d96 `country_preferred_tactic_weight_live` — the multiplier the land-combat
 //! consumer applies to each country's selected combat tactic.
 //!
-//! Derived from `world_fold.rs:12896`-`:12934`
+//! Derived from `world_fold.rs:12924`-`:12962`
 //! (`fold_country_preferred_tactic_weights`, dispatched at `:4763`) together with
-// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=12896-12934 sha256=17f387e1fca03b7d7b389c122b989b579a6f8f2b0b3de733f573c9551c36793c closure=d5aa9a67e5513f0aeac57c26a83c47a7ab96ab2ab5971177b5475add4ec42c5d
+// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=12924-12962 sha256=17f387e1fca03b7d7b389c122b989b579a6f8f2b0b3de733f573c9551c36793c closure=d5aa9a67e5513f0aeac57c26a83c47a7ab96ab2ab5971177b5475add4ec42c5d
 //! the deferred fold it delegates to,
 //! `extractor/native/recorder_host/src/tactic_weight_fold.rs:32`-`:80`
 //! (`TacticWeightFoldState::fold_payload`); its payload codec
@@ -316,8 +316,21 @@ pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 276;
 /// `tactic_weight.rs:26`. Carried in the header at `+36` and asserted there.
 pub const FIXED_SCALE: i64 = 100_000;
-/// `tactic_weight.rs:27`.
-pub const MAX_COUNTRIES: usize = 1_024;
+/// `tactic_weight.rs`'s `MAX_COUNTRIES`. Was `1_024`, a guess at the
+/// vanilla-plus-DLC country count that refused an overhaul's whole payload; a
+/// country count is content, so it is now the structural row width and the
+/// bounds that do the work are [`max_rows_in`] (the payload's own capacity) and
+/// the producer's `observed_country_count`.
+pub const MAX_COUNTRIES: usize = i32::MAX as usize;
+
+/// `tactic_weight.rs`'s `max_rows_in`: the largest number of rows `remaining`
+/// bytes of payload can hold, given a row is [`FIXED_ROW_LEN`] fixed bytes plus
+/// a token of at least one byte. A FORMAT bound — without it a four-byte
+/// stream word decides an allocation.
+#[must_use]
+pub const fn max_rows_in(remaining: usize) -> usize {
+    remaining / (FIXED_ROW_LEN + 1)
+}
 /// `tactic_weight.rs:28`.
 pub const MAX_TOKEN_BYTES: usize = 256;
 /// The fixed part of a row (`tactic_weight.rs:192`-`:200`).
@@ -673,6 +686,14 @@ pub fn split_payload(
             "country_preferred_tactic_weight row count outside observed roster \
              (row_count {row_count}, observed {}, max {MAX_COUNTRIES})",
             header.observed_country_count
+        ));
+    }
+
+    // `:241`-`:243`: the count is stream-supplied and sizes the allocation, so
+    // it is bounded by what the remaining payload can hold.
+    if row_count > max_rows_in(payload.len() - HEADER_LEN) {
+        return Err(format!(
+            "country_preferred_tactic_weight row count {row_count} exceeds the payload's capacity"
         ));
     }
 
@@ -1998,10 +2019,15 @@ mod tests {
         long.push(0);
         let err = split_payload(&long).expect_err("trailing bytes");
         assert!(err.contains("trailing bytes"), "{err}");
-        // And a row count the body cannot satisfy.
+        // And a row count the body cannot satisfy. The reason moved from
+        // "truncated" to the payload-capacity rule when `MAX_COUNTRIES` stopped
+        // being a content-scale guess: the count is stream-supplied and sizes
+        // the row `Vec`, so it is now bounded by what the remaining bytes can
+        // hold BEFORE the allocation rather than discovered row-by-row after
+        // it. Refusing earlier and naming the rule is the point of the change.
         let err = split_payload(&payload_raw(&[], 0, 4, 4, 0, 1, FIXED_SCALE as u32, 0, factor))
             .expect_err("row count without rows");
-        assert!(err.contains("truncated"), "{err}");
+        assert!(err.contains("exceeds the payload's capacity"), "{err}");
     }
 
     #[test]

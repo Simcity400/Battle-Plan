@@ -111,7 +111,21 @@ HEAP_HI = 0x7FF000000000
 MIN_USABLE_STATE_ROWS = 1000
 MIN_USABLE_PROVINCE_ROWS = 10000
 MAX_PROVINCE_COUNT = 65536
-MAX_TAG_DB_ID = 1024
+# A COUNT and an ID are two questions, and `MAX_TAG_DB_ID = 1024` used to answer
+# both here. 1024 is 2.3x the vanilla country count of 439, so this probe -- the
+# lane's certifying live probe, source-bound into `replay_verify` -- reported a
+# modded game as having no countries at all, and discarded its high-id
+# occupation states as invalid.
+#
+# The count budget matches the tree's country-table family (65_536 slots, 8
+# bytes a pointer = a 512 KB walk). The identity ceiling is the
+# `_CountryLinkTags` index space's structural width -- NOT the country
+# database's, which is a different vector with its own live size; see
+# `collector_module.rs`'s `MAX_TAG_DB_ID` for why the distinction is
+# load-bearing here. Both are `i32::MAX - 1` for their own reasons, and the
+# probe must not merge them back.
+MAX_COUNTRY_TABLE_COUNT = 65536
+MAX_TAG_DB_ID = (1 << 31) - 2
 MAX_ABS_FIXED_RAW = 100_000_000
 
 
@@ -262,7 +276,11 @@ def resolve_state_roots(p):
 def read_country_occupation_status(p, game_state, tbl):
     country_table = p.u64(game_state + CGAMESTATE_COUNTRY_TABLE)
     country_count = p.u32(game_state + CGAMESTATE_COUNTRY_COUNT)
-    if not is_heap_ptr(country_table) or country_count == 0 or country_count > MAX_TAG_DB_ID:
+    if (
+        not is_heap_ptr(country_table)
+        or country_count == 0
+        or country_count > MAX_COUNTRY_TABLE_COUNT
+    ):
         return {}, {
             "country_count": country_count,
             "valid_country_roots": 0,

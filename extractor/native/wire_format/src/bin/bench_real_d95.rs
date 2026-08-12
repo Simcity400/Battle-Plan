@@ -1806,12 +1806,32 @@ mod tests {
             let codec = SpottedUnitsSnapshot::decode(&payload);
             let mut hour = HourAccumulator::new();
             let port = hour.fold_payload(&payload, &roster);
+            // The port applies exactly ONE rule the shipping codec does not: a
+            // POV must be in this hour's D18 roster (`fold_pov_spotted_units`).
+            // That difference was invisible while the codec's own POV ceiling
+            // was 2_048 and this fixture roster happened to be `1..=2048` —
+            // every POV the codec admitted was in the roster by coincidence of
+            // two numbers. The ceiling is now the engine's id-space width, so
+            // the coincidence is gone and the rule has to be stated. It is a
+            // real difference between the two layers, not a defect in either,
+            // and stating it is what keeps this a differential test rather
+            // than a tautology.
+            let port_should_admit = codec
+                .as_ref()
+                .map(|snapshot| roster.contains(snapshot.pov_country_id))
+                .unwrap_or(false);
             assert_eq!(
-                codec.is_ok(),
+                port_should_admit,
                 port.is_ok(),
                 "codec and port disagree on payload {payload:02x?}: {codec:?} vs {port:?}"
             );
+            // The content comparison below is only meaningful when the port
+            // actually folded the payload, which now requires the roster rule
+            // above as well as the codec's own acceptance.
             let Ok(snapshot) = codec else { continue };
+            if !port_should_admit {
+                continue;
+            }
             let stored = hour.stored().expect("a folded payload stores a snapshot");
             assert_eq!(stored.header.capture_sequence, snapshot.capture_sequence);
             assert_eq!(stored.header.pov_country_id, snapshot.pov_country_id);

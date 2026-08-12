@@ -61,7 +61,25 @@ pub const MOTOR_MAP_ENTRY_STRIDE: usize = 0x08;
 pub const MOTOR_MAP_ACTOR_TAG_DB_ID_OFF: usize = 0x00;
 pub const MOTOR_MAP_LEVEL_OFF: usize = 0x04;
 
-pub const MAX_COUNTRY_COUNT: u32 = 2_048;
+/// Fail-closed ceiling on a live country-table COUNT and on the per-country
+/// CCSS vector's count/capacity words. A COUNT, not an id — the id question is
+/// [`MAX_COUNTRY_TAG_DB_ID`], which used to share this constant and must not,
+/// because widening an id space and widening a live-read budget are different
+/// decisions.
+///
+/// PRICED: a country-table slot is one 8-byte pointer, so at this ceiling the
+/// walk covers 512 KB. It is 149x the vanilla country count. Was `2_048`, which
+/// priced nothing. NOT engine-proven; overflow is a typed
+/// `CountryTableUnavailable`/`CcssVectorIncoherent`.
+pub const MAX_COUNTRY_COUNT: u32 = 65_536;
+
+/// Fail-closed ceiling on `owner_tag_db_id` / `actor_tag_db_id`.
+/// ENGINE-STRUCTURAL: a country database id is admissible iff
+/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
+/// is the widest id a loadable database holds. Was the `2_048` above, a guess
+/// at the vanilla-plus-DLC country count that discarded an overhaul's rows on
+/// both sides of the wire.
+pub const MAX_COUNTRY_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_NODE_COUNT: u32 = 16_384;
 /// Representation envelopes on the two map-content ids a supply-node row
 /// carries. NOT counts, and specifically not vanilla counts.
@@ -337,13 +355,13 @@ fn read_row(payload: &[u8], offset: usize) -> HubMotorizationRow {
 }
 
 fn validate_row(index: usize, row: &HubMotorizationRow, errors: &mut Vec<String>) {
-    if row.owner_tag_db_id == 0 || row.owner_tag_db_id > MAX_COUNTRY_COUNT {
+    if row.owner_tag_db_id == 0 || row.owner_tag_db_id > MAX_COUNTRY_TAG_DB_ID {
         errors.push(format!(
             "row {index} owner_tag_db_id {} out of range",
             row.owner_tag_db_id
         ));
     }
-    if row.actor_tag_db_id == 0 || row.actor_tag_db_id > MAX_COUNTRY_COUNT {
+    if row.actor_tag_db_id == 0 || row.actor_tag_db_id > MAX_COUNTRY_TAG_DB_ID {
         errors.push(format!(
             "row {index} actor_tag_db_id {} out of range",
             row.actor_tag_db_id
@@ -542,7 +560,12 @@ fn derive_object_rows<M: Mem>(
     }
     let tag_db_id = mem
         .u32(country + COUNTRY_TAG_DB_ID_OFF)
-        .filter(|tag| *tag > 0 && *tag < country_count && *tag <= MAX_COUNTRY_COUNT)
+        // The live `country_count` is the real bound. The second clause was
+        // `MAX_COUNTRY_COUNT`, the READ BUDGET, applied to an ID -- redundant
+        // today because the count is itself budget-bounded, but it would become
+        // a hidden 65_536 id ceiling the moment R-GV-2 replaces that budget
+        // with the live cross-check.
+        .filter(|tag| *tag > 0 && *tag < country_count && *tag <= MAX_COUNTRY_TAG_DB_ID)
         .ok_or_else(|| malformed("tag_db_id_out_of_range"))?;
     if mem.u64(country_table + u64::from(tag_db_id) * 8) != Some(country) {
         return Err(malformed("country_table_self_ref_mismatch"));
@@ -619,9 +642,10 @@ fn derive_object_rows<M: Mem>(
                     .try_into()
                     .unwrap(),
             );
+            // As above: the live count bounds the id; the budget must not.
             if actor_tag_db_id == 0
                 || actor_tag_db_id >= country_count
-                || actor_tag_db_id > MAX_COUNTRY_COUNT
+                || actor_tag_db_id > MAX_COUNTRY_TAG_DB_ID
             {
                 return Err(malformed("motor_map_country_ref_out_of_range"));
             }

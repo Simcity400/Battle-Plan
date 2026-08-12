@@ -5,7 +5,11 @@ pub const DOMAIN_NAME: &str = "pov_province_visibility_live";
 pub const CARRIER_MAGIC: [u8; 4] = *b"FOW1";
 pub const CARRIER_VERSION: u16 = 1;
 pub const MAX_PROVINCE_SLOTS: usize = 65_535;
-pub const MAX_POV_COUNTRY_ID: u32 = 2_048;
+/// A POV country id is a country-database id, so it carries the family bound:
+/// [`crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`]. Was `2_048`, a guess
+/// at the vanilla-plus-DLC country count (vanilla defines 439 tags), which cost
+/// this whole carrier on any overhaul whose human player sat above it.
+pub const MAX_POV_COUNTRY_ID: u32 = crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 /// The frame carries the hour its PRODUCER observed at, not the hour the
 /// collector drained it in.
 ///

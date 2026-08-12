@@ -2,11 +2,11 @@
 //! the frame-level fold mirror.
 //!
 //! Authority, in the recipe's precedence order:
-//! `world_fold.rs:22541`-`:22746`'s `fold_scripted_state` (dispatched
+//! `world_fold.rs:22574`-`:22779`'s `fold_scripted_state` (dispatched
 //! at `:4726`), its row validator `validate_scripted_state_row` (`world_fold.rs::validate_scripted_state_row`), its
 //! accumulator writer `apply_scripted_state_row` (`world_fold.rs::apply_scripted_state_row`) and its clear
 //! `clear_scripted_state_accumulators` (`world_fold.rs::clear_scripted_state_accumulators`). There is no dossier for this
-// @world-fold-authority domain=51 functions=fold_scripted_state lines=22541-22746 sha256=d7fa8c4f338709598efad260f5ce69851dbef0300668ca5968ae80f56cc37745 closure=7becb0a80d2ad7e04991a6f3fbc52a0dbf70ed4891784b0eed6bcd9b5316c9c6
+// @world-fold-authority domain=51 functions=fold_scripted_state lines=22574-22779 sha256=d7fa8c4f338709598efad260f5ce69851dbef0300668ca5968ae80f56cc37745 closure=7becb0a80d2ad7e04991a6f3fbc52a0dbf70ed4891784b0eed6bcd9b5316c9c6
 // @lane-payload-authority domain=51 path=extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs function=decode_payload lines=209-641 sha256=ebb8ac22ae995651cc86c6ff81709f2ccce422c0b4e830714cfb5b48b624bc80
 //! domain; the fold is sufficient. The lane's own payload decoder
 //! (`lanes/scripted_state_flags_variables_live/scripted_state_compact.rs`,
@@ -278,10 +278,14 @@ pub const MAX_DELAYED_EVENT_ID: u32 = 100_000 * 42_949;
 /// `DOMAIN51_MAX_DELAYED_EVENT_DUE_HOURS` (`build_profile.rs:325`), read by the
 /// fold at `world_fold.rs:958`.
 pub const MAX_DELAYED_EVENT_DUE_HOURS: u32 = 500_000;
-/// `MAX_COMPACT_OWNER_TAG_DB_ID` (`build_profile.rs:45`). A **fold** bound only
+/// `MAX_COMPACT_OWNER_TAG_DB_ID` (`build_profile.rs`). A **fold** bound only
 /// for kind-6 rows (`world_fold.rs::validate_scripted_state_row`); the payload authority applies it to
 /// every country-scoped row, which is [`check_authority_payload`]'s business.
-pub const MAX_COUNTRY_TAG_DB_ID: u32 = 2_048;
+///
+/// Was `2_048`, a guess at the vanilla-plus-DLC country count. ENGINE-STRUCTURAL
+/// now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size gives `i32::MAX - 1`.
+/// Pinned by `tests/producer_consumer_admission_agreement.rs`.
+pub const MAX_COUNTRY_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_STATE_ID` (`scripted_state_compact.rs:62`) — authority-only, never a
 /// fold bound.
 pub const MAX_STATE_ID: u32 = 65_535;
@@ -3433,7 +3437,10 @@ mod tests {
         assert_eq!(MIN_DELAYED_EVENT_ID, 100_000);
         assert_eq!(MAX_DELAYED_EVENT_ID, 4_294_900_000);
         assert_eq!(MAX_DELAYED_EVENT_DUE_HOURS, 500_000);
-        assert_eq!(MAX_COUNTRY_TAG_DB_ID, 2_048);
+        // Was `2_048`, a guess at the vanilla-plus-DLC country count. Now the
+        // engine's structural id-space width: `id < *(int32*)(db + 0x0C)` with
+        // a signed-`int` size gives `i32::MAX - 1`.
+        assert_eq!(MAX_COUNTRY_TAG_DB_ID, 2_147_483_646);
         assert_eq!(MAX_STATE_ID, 65_535);
         assert_eq!(MAX_KEY_BYTES, 512);
         assert_eq!(MAX_KEY_TABLE_BYTES, 8 * 1024 * 1024);

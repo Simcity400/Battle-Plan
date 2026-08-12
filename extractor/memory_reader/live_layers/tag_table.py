@@ -55,7 +55,19 @@ FIXED_PREFIX = ["---", "GER", "ENG", "SOV"]
 VALIDATE_PREFIX = ["---", "GER", "ENG", "SOV", "SWE", "FRA", "LUX", "BEL",
                    "HOL", "CZE", "POL"]
 
-MAX_RECORDS = 1024          # sanity bound on table length
+# Scan budget on one candidate table's length, NOT a statement about how many
+# countries a game may define. It was `1024` -- 2.3x the vanilla count of 439 --
+# and `_read_all` stopped there SILENTLY, so a larger table was accepted as a
+# complete 1024-row prefix and every higher tag resolved to `None`. This module
+# is imported directly by the occupation lane's certifying live probe, so that
+# truncation reached the evidence.
+#
+# 65_536 matches the tree's country-table budget (a record is 0x20 bytes, so the
+# walk is 2 MiB at the ceiling). Hitting it is now an OVERFLOW the caller can
+# see rather than an end-of-table: `_read_all` reports it and `_is_canonical`
+# refuses the candidate, because a table we cannot prove we read to its end is
+# not one to publish.
+MAX_RECORDS = 65536
 SANE_MIN_TAGS = 40          # at least this many real tags or it isn't the table
 
 
@@ -100,16 +112,26 @@ class TagTable(object):
 
     @classmethod
     def _read_all(cls, p, base):
-        """Walk records from base until the first invalid one. Returns list."""
+        """Walk records from base until the first invalid one.
+
+        Returns `(tags, overflowed)`. `overflowed` is True when the walk ran out
+        of scan budget with the record at the cursor still valid -- i.e. the
+        table did not end, we merely stopped looking. That case used to be
+        indistinguishable from a real end, which silently truncated any table
+        longer than the budget.
+        """
         tags = []
         i = 0
         while i < MAX_RECORDS:
             t = cls._read_record(p, base + i * STRIDE)
             if t is None:
-                break
+                return tags, False
             tags.append(t)
             i += 1
-        return tags
+        # The budget is spent. If the next record still reads as valid, this
+        # candidate is longer than we are willing to walk and we cannot claim to
+        # have read it.
+        return tags, cls._read_record(p, base + i * STRIDE) is not None
 
     @staticmethod
     def _is_canonical(tags):
@@ -156,8 +178,11 @@ class TagTable(object):
                             break
                         s = i + 1
                         cand_base = base + pos + i
-                        tags = cls._read_all(p, cand_base)
-                        if cls._is_canonical(tags):
+                        tags, overflowed = cls._read_all(p, cand_base)
+                        # A candidate we could not walk to its end is refused,
+                        # not truncated: publishing its prefix would present an
+                        # incomplete tag table as the canonical one.
+                        if not overflowed and cls._is_canonical(tags):
                             candidates.append((cand_base, tags))
                     scanned += len(blob)
                     blen = len(blob)

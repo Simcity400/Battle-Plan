@@ -98,7 +98,23 @@ pub const MAX_CASUALTIES: i64 = 50_000_000;
 /// headroom for modded values without admitting garbage.
 pub const MAX_LEGITIMACY_RAW: i32 = 1_000_000_000;
 pub const MAX_EXILE_ARMY_LEADERS: i32 = 100_000;
-pub const MAX_COUNTRY_ROWS: u32 = 8_192;
+/// Fail-closed ceiling on the number of country rows a capitulation/war payload
+/// carries.
+///
+/// This was `8_192` while the producer's own country-table budget was `4_096`,
+/// so the consumer was comfortably the wider of the two. Raising that budget to
+/// the priced `65_536` (`build_profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS`)
+/// inverted it: the producer walks up to 65_536 country roots and could emit
+/// more rows than this would admit, which is the producer-widened /
+/// consumer-still-narrow split the whole tag-cap wave exists to remove — and it
+/// would have been introduced by the fix rather than found by it.
+///
+/// A country count is content, so there is no honest constant for it; it is the
+/// structural row width. Nothing is unbounded by that: `decode_payload` requires
+/// `HEADER_LEN + country_rows * ROW_COUNTRY_LEN + war_rows * war_row_len` to
+/// equal the payload length EXACTLY before it allocates, so the payload is the
+/// real bound on both counts.
+pub const MAX_COUNTRY_ROWS: u32 = i32::MAX as u32;
 pub const MAX_WAR_ROWS: u32 = 8_192;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

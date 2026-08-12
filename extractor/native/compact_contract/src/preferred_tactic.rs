@@ -11,7 +11,34 @@ pub const DOMAIN_ID: u16 = 92;
 pub const MAGIC: [u8; 4] = *b"PTC1";
 pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 164;
-pub const MAX_ROWS: usize = 1024;
+/// Fail-closed ceiling on the number of country rows PTC1 carries.
+///
+/// PTC1 is the country roster's own carrier — one row per country — so `1024`
+/// was a guess at the vanilla-plus-DLC country count (vanilla defines 439 tags)
+/// that refused the whole payload on any larger mod. A country count is
+/// content, so it is now the structural row width, exactly as its sibling
+/// `tactic_weight::MAX_COUNTRIES` (PTW1) is.
+///
+/// The bound that protects the allocation is [`max_rows_in`], not this: the
+/// count is stream-supplied and sizes a `Vec`, so it is checked against what
+/// the remaining payload can actually hold.
+pub const MAX_ROWS: usize = i32::MAX as usize;
+
+/// The fixed part of one PTC1 row: `tag_db_id` 4, `tactic_database_id` 4,
+/// `flags` 2, `token_len` 2. A variable-length token may follow, so a row is at
+/// least this many bytes. (`wire_format::d92::FIXED_ROW_LEN` mirrors it.)
+pub const FIXED_ROW_LEN: usize = 12;
+
+/// The largest number of rows `remaining` bytes of PTC1 payload can hold.
+///
+/// A FORMAT bound. Without it a four-byte stream word decides a
+/// `Vec::with_capacity`, which is what the old content-scale ceiling was
+/// incidentally preventing.
+#[inline]
+#[must_use]
+pub const fn max_rows_in(remaining: usize) -> usize {
+    remaining / FIXED_ROW_LEN
+}
 pub const MAX_TOKEN_BYTES: usize = 256;
 
 pub const FLAG_SELECTED: u16 = 1 << 0;
@@ -130,6 +157,12 @@ pub fn decode_payload(payload: &[u8]) -> Result<PreferredTacticSnapshot, String>
     }
     if row_count > MAX_ROWS || selected_count > row_count {
         return Err("PTC1 row count outside bounds".into());
+    }
+    // The count is stream-supplied and sizes the allocation below, so it is
+    // bounded by what the remaining payload can hold and not only by the two
+    // header words the same crafted payload also supplies.
+    if row_count > max_rows_in(payload.len() - at) {
+        return Err("PTC1 row count exceeds the payload's capacity".into());
     }
     let mut rows = Vec::with_capacity(row_count);
     for _ in 0..row_count {

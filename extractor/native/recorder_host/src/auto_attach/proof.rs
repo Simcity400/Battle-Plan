@@ -1376,7 +1376,9 @@ mod tests {
 
     #[test]
     fn round6_d10_out_of_range_all_zero_fuel_does_not_prove_recording() {
-        let stream = d10_stream_with_single_row(fuel_payload_with_single_row(2_049, 0, 0, 0, 0, 0));
+        let out_of_range = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID + 1;
+        let stream =
+            d10_stream_with_single_row(fuel_payload_with_single_row(out_of_range, 0, 0, 0, 0, 0));
         assert!(FirstCompactRecordGate::new([10])
             .observe(&stream)
             .unwrap()
@@ -1392,9 +1394,14 @@ mod tests {
             .is_none());
     }
 
+    /// `2_049` used to be out of range and is an ordinary country id now that
+    /// the ceiling is the engine's id-space width, so the probe moves to one
+    /// past the real ceiling.
     #[test]
     fn round6_d10_out_of_range_nonzero_fuel_does_not_prove_recording() {
-        let stream = d10_stream_with_single_row(fuel_payload_with_single_row(2_049, 1, 1, 0, 0, 0));
+        let out_of_range = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID + 1;
+        let stream =
+            d10_stream_with_single_row(fuel_payload_with_single_row(out_of_range, 1, 1, 0, 0, 0));
         assert!(FirstCompactRecordGate::new([10])
             .observe(&stream)
             .unwrap()

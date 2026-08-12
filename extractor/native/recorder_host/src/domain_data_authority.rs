@@ -480,7 +480,7 @@ pub const COMPACT_SESSION_HEADER_KNOWN_FLAGS: u32 = COMPACT_SESSION_HEADER_FLAG_
     | COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG
     | COMPACT_SESSION_HEADER_FLAG_VERSION;
 pub const COMPACT_SESSION_HEADER_MAX_STRING_LEN: usize = 128;
-pub const COMPACT_SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
+pub const COMPACT_SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 
 pub const COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE: u16 = 69;
 pub const COMPACT_TECH_SHARING_GROUPS_HEADER_LEN: usize = 16;
@@ -492,7 +492,7 @@ pub const COMPACT_TECH_SHARING_GROUPS_ROW_LEN: usize = 12;
 pub const COMPACT_TECH_SHARING_GROUP_MAX_GROUPS: usize =
     compact_contract::build_profile::DOMAIN69_TECH_SHARING_MAX_GROUPS as usize;
 pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS: usize = 512;
-pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
+pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE: u16 = compact_contract::naval_history::DOMAIN_ID;
 pub const COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE: u16 = compact_contract::rail_replay::DOMAIN_ID;
 pub const COMPACT_DOMAIN_RAID_INSTANCES_LIVE: u16 = compact_contract::raid_instances::DOMAIN_ID;
@@ -698,14 +698,14 @@ pub const COMPACT_SHIP_MAX_EXPERIENCE_RAW: u32 = 100_000_000;
 pub const COMPACT_AIR_WING_ROW_LEN: usize = 40;
 pub const COMPACT_AIR_WING_ROW_FLAG_DELETED: u32 = 1;
 pub const COMPACT_AIR_WING_ROW_FLAG_MISSION_REGION: u32 = 1 << 1;
-pub const COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID: u32 = 1_024;
+pub const COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_AIR_WING_MAX_ID: u32 = i32::MAX as u32;
 pub const COMPACT_AIR_WING_MAX_PLANES: u32 = 10_000_000;
 pub const COMPACT_AIR_WING_MAX_MISSION_REGION_ID: u32 = 65_535;
 pub const COMPACT_AIR_REGION_ACTIVITY_ROW_LEN: usize = 32;
 pub const COMPACT_AIR_REGION_ACTIVITY_ROW_FLAG_DELETED: u32 = 1;
 pub const COMPACT_AIR_REGION_ACTIVITY_MAX_REGION_ID: u32 = 65_535;
-pub const COMPACT_AIR_REGION_ACTIVITY_MAX_OWNER_TAG_DB_ID: u32 = 1_024;
+pub const COMPACT_AIR_REGION_ACTIVITY_MAX_OWNER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_AIR_REGION_ACTIVITY_MAX_WING_COUNT: u32 = 20_000;
 pub const COMPACT_AIR_REGION_ACTIVITY_MAX_PLANES: u32 = 10_000_000;
 pub const COMPACT_AIR_WING_LOADOUT_ROW_LEN: usize = 32;
@@ -808,13 +808,13 @@ pub const COMPACT_PROJECT_MAX_SCIENTIST_TOKEN_LEN: usize = 160;
 pub const COMPACT_PROJECT_MAX_SCIENTIST_DISPLAY_LEN: usize = 160;
 pub const COMPACT_AIR_VARIANT_RESERVE_ROW_LEN: usize = 24;
 pub const COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED: u32 = 1;
-pub const COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID: u32 = 1_024;
+pub const COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_AIR_VARIANT_RESERVE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_AIR_VARIANT_RESERVE_MAX_AMOUNT_RAW: i64 = 100_000_000_000_000_000;
 pub const COMPACT_AIR_SUPERIORITY_INPUT_ROW_LEN: usize = 48;
 pub const COMPACT_AIR_SUPERIORITY_INPUT_ROW_FLAG_DELETED: u32 = 1;
 pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_REGION_ID: u32 = 65_535;
-pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_OWNER_TAG_DB_ID: u32 = 1_024;
+pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_OWNER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_WING_COUNT: u32 = 20_000;
 pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
@@ -857,7 +857,7 @@ pub const COMPACT_WEATHER_MIN_PROVINCE_ROWS: usize = 2;
 pub const COMPACT_WEATHER_MAX_PROVINCE_ROWS: usize = 65_536;
 pub const COMPACT_MAP_MAX_STATE_ID: u32 = 65_535;
 pub const COMPACT_MAP_MAX_PROVINCE_ID: u32 = 65_536;
-pub const COMPACT_MAP_MAX_TAG_DB_ID: u32 = 1024;
+pub const COMPACT_MAP_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
 pub const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
 // COMPACT_WEATHER_MAX_REGION_ID (= 304, the vanilla strategic-region count
@@ -2515,10 +2515,12 @@ fn decode_compact_production_license_trailer(
                 ));
             }
             if version == 2
+                // `> i32::MAX` is one short of the id rule (it admits the size
+                // ceiling, which no database can index).
                 && (visible_order != expected_order as u32
                     || creator_tag_db_id == 0
-                    || creator_tag_db_id > i32::MAX as u32
-                    || origin_tag_db_id > i32::MAX as u32)
+                    || creator_tag_db_id > COMPACT_MAX_OWNER_TAG_DB_ID
+                    || origin_tag_db_id > COMPACT_MAX_OWNER_TAG_DB_ID)
             {
                 summary.parse_errors.push(format!(
                     "offset {offset}: production license v2 tag {tag_db_id} row {expected_order} has invalid order/creator/origin ({visible_order}, {creator_tag_db_id}, {origin_tag_db_id})"

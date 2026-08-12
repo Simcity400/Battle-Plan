@@ -96,7 +96,16 @@ pub const SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT: u32 = 1 << 4;
 pub const SOURCE_LIVE_ACE_DEATH_RECORD: u32 = 1 << 5;
 pub const SOURCE_LIVE_ACE_LIFECYCLE_RECORD: u32 = 1 << 6;
 
-pub const MAX_TAG_DB_ID: u32 = 4096;
+/// Was `4096`, a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags). ENGINE-STRUCTURAL now, by the same derivation `MAX_ACE_ID` and
+/// `MAX_WING_ID` below already use for their own engine id spaces: a country
+/// database id is admissible iff `id < *(int32*)(db + 0x0C)` and that size is a
+/// signed `int`, so `i32::MAX - 1` is the widest id a loadable database holds.
+/// (This crate takes no dependencies, so the value is spelled rather than
+/// imported; `wire_format/tests/producer_consumer_admission_agreement.rs` pins
+/// it to `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID` through its d46
+/// mirror.)
+pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_ACE_ID: u32 = i32::MAX as u32;
 pub const MAX_COUNTRY_ACE_INDEX: u32 = 4096;
 pub const MAX_WING_ID: u32 = i32::MAX as u32;

@@ -1,9 +1,9 @@
 //! d11 `production_live` — per-country stockpiles, production lines, the civil
 //! construction queue, production licences and the convoy bank.
 //!
-//! Derived from `world_fold.rs:15594`-`:16235`
+//! Derived from `world_fold.rs:15622`-`:16263`
 //! (`fold_production`), its trailer chain parser at `:27419`-`:27524` and the ten
-// @world-fold-authority domain=11 functions=fold_production lines=15594-16235 sha256=038ef1164017e78b3493c03fea9fefd8bb78eafc64e6859348b18ed38d8dd0eb closure=c391330fdc37495ee5429eab854ddc18278a4d29c17559eb03714878554d2527
+// @world-fold-authority domain=11 functions=fold_production lines=15622-16263 sha256=038ef1164017e78b3493c03fea9fefd8bb78eafc64e6859348b18ed38d8dd0eb closure=1d1046c334eaea3bd78baf9e45906b77599bd42f37adb20fd98e94237c6bda1c
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).
 //! `extractor/documents/domains/d11_production_live.md` supplies the native
@@ -391,6 +391,17 @@ pub const MAX_REQUESTED_FACTORIES: i32 = 100_000;
 pub const MAX_LINE_PRIORITY: i32 = 4095;
 /// `world_fold.rs::parse_production_license_segment` — a licence variant id is `1..2^24`.
 pub const MAX_LICENSE_VARIANT_ID: u32 = 1 << 24;
+
+/// A production-licence creator/origin `tag_db_id`.
+///
+/// Every copy of this check — producer, this parser, the payload authority and
+/// both folds — spelled it `> i32::MAX`, which is ONE SHORT of the id rule: it
+/// admits `i32::MAX` itself, and that is the vector SIZE ceiling, so it is the
+/// first value no loaded database can index. A torn `0x7fffffff` was therefore
+/// published and folded as a genuine creator. The family bound is
+/// `build_profile::MAX_COMPACT_OWNER_TAG_DB_ID` = `i32::MAX - 1`; mirrored here
+/// because d11 is not admitted to the production-codec dependency surface.
+pub const MAX_PRODUCTION_LICENSE_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 
 /// `deployment_queue.rs:5`, `:3`.
 const PDQ1_CODEC_HEADER_LEN: usize = 40;
@@ -1394,10 +1405,12 @@ fn parse_license_segment(
                     creator.expect("v2"),
                     origin.expect("v2"),
                 );
+                // `> i32::MAX` is one short of the id rule: it admits
+                // `i32::MAX`, the size ceiling, which no database can index.
                 if order != expected_order as u32
                     || creator == 0
-                    || creator > i32::MAX as u32
-                    || origin > i32::MAX as u32
+                    || creator > MAX_PRODUCTION_LICENSE_TAG_DB_ID
+                    || origin > MAX_PRODUCTION_LICENSE_TAG_DB_ID
                 {
                     return Err(format!(
                         "production license v2 tag {tag_db_id} row {expected_order} has invalid \
@@ -4392,6 +4405,30 @@ mod tests {
         );
         assert_eq!(set.items[0].visible_order, None);
 
+        // The admitted side of the identity ceiling. Without this the refusal
+        // probes below pass for any predicate that is merely tight ENOUGH, and
+        // the round-11 off-by-one (`> i32::MAX`, which admits the size ceiling
+        // no database can index) is only visible as the difference between
+        // these two values.
+        //
+        // Origin ZERO stays legal throughout: it is the null-country sentinel,
+        // not an out-of-range id.
+        //
+        // kills: restoring `> i32::MAX` in `parse_trailers`' creator/origin
+        // check, narrowing `MAX_PRODUCTION_LICENSE_TAG_DB_ID` to a
+        // content-scale ceiling, and refusing origin 0.
+        for admitted_origin in [0u32, 2_048, 2_049, MAX_PRODUCTION_LICENSE_TAG_DB_ID] {
+            let good = plic(2, &[(7, vec![(11, 0, 9, admitted_origin)])]);
+            parse_trailers(&good, StatusPredicates::PERMISSIVE)
+                .unwrap_or_else(|e| panic!("origin {admitted_origin} is in range: {e}"));
+        }
+        let max_creator = plic(
+            2,
+            &[(7, vec![(11, 0, MAX_PRODUCTION_LICENSE_TAG_DB_ID, 0)])],
+        );
+        parse_trailers(&max_creator, StatusPredicates::PERMISSIVE)
+            .expect("the largest admissible creator id is in range");
+
         for bad in [
             plic(3, &[(7, vec![(11, 0, 9, 0)])]),                     // version
             plic(2, &[(0, vec![(11, 0, 9, 0)])]),                     // zero tag
@@ -4399,7 +4436,24 @@ mod tests {
             plic(2, &[(7, vec![(MAX_LICENSE_VARIANT_ID, 0, 9, 0)])]), // variant out of range
             plic(2, &[(7, vec![(11, 1, 9, 0)])]),                     // order != position
             plic(2, &[(7, vec![(11, 0, 0, 0)])]),                     // creator zero
-            plic(2, &[(7, vec![(11, 0, 9, 0x8000_0000)])]),           // origin > i32::MAX
+            // One past the id ceiling. `0x8000_0000` used to stand here, and
+            // both the retired `> i32::MAX` predicate and the correct
+            // `> MAX_PRODUCTION_LICENSE_TAG_DB_ID` one reject it -- so it could
+            // not tell them apart, and restoring the off-by-one would have left
+            // this green. `MAX + 1` IS `i32::MAX`, which is exactly the value
+            // the retired predicate admitted.
+            plic(
+                2,
+                &[(7, vec![(11, 0, 9, MAX_PRODUCTION_LICENSE_TAG_DB_ID + 1)])],
+            ),
+            plic(
+                2,
+                &[(
+                    7,
+                    vec![(11, 0, MAX_PRODUCTION_LICENSE_TAG_DB_ID + 1, 0)],
+                )],
+            ), // creator one past the ceiling
+            plic(2, &[(7, vec![(11, 0, 9, u32::MAX)])]), // and the sign-bit range
             plic(2, &[(7, vec![(11, 0, 9, 0), (11, 1, 9, 0)])]),      // duplicate variant
             plic(2, &[(7, vec![(11, 0, 9, 0)]), (7, vec![])]),        // duplicate tag
         ] {

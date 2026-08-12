@@ -1,9 +1,9 @@
 //! d38 `air_superiority_inputs` — the equipment actually flying each air mission,
 //! aggregated into `(region, owner, mission, variant)` buckets.
 //!
-//! Derived from `world_fold.rs:18796`-`:18916`
+//! Derived from `world_fold.rs:18824`-`:18944`
 //! (`fold_air_superiority_inputs`), its payload constants at `:991`-`:992`,
-// @world-fold-authority domain=38 functions=fold_air_superiority_inputs lines=18796-18916 sha256=c8cfeadd470eb6ca6da19a405e16f97a842bc27b16b28723b469bfc2a20f4a0b closure=9b5500a1f16ff59d2e8ac0edbff5fd597622fa405ca9c68ba224bf79ab42d9b4
+// @world-fold-authority domain=38 functions=fold_air_superiority_inputs lines=18824-18944 sha256=c8cfeadd470eb6ca6da19a405e16f97a842bc27b16b28723b469bfc2a20f4a0b closure=9b5500a1f16ff59d2e8ac0edbff5fd597622fa405ca9c68ba224bf79ab42d9b4
 //! `:758` and `:156`, the accumulator's own JSON projection (`world_fold.rs::insert_air_superiority_inputs`), and
 //! the collector read that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:55529`-`:55769`,

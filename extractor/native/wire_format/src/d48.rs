@@ -2,9 +2,9 @@
 //! per-location building levels/damage, per-state resources, and the RLC1
 //! railway-construction trailer.
 //!
-//! Derived from `world_fold.rs:24351`-`:24688`
+//! Derived from `world_fold.rs:24384`-`:24721`
 //! (`fold_construction_buildings_state_damage`), its accumulator type at
-// @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=24351-24688 sha256=9d8154f0e46b7fe29b1894a2a39c562b69563431d16b20dbdb6161fc3d5e869b closure=d24fa542ac833398d159fb87eb34b15e3e4f7bb4efed74cea8aa9303b37a8876
+// @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=24384-24721 sha256=9d8154f0e46b7fe29b1894a2a39c562b69563431d16b20dbdb6161fc3d5e869b closure=d24fa542ac833398d159fb87eb34b15e3e4f7bb4efed74cea8aa9303b37a8876
 //! `:2123`-`:2131` and its key helpers at `:25681`-`:25696`; the row grammar is
 //! the lane crate `extractor/native/lanes/construction_buildings_state_damage_live/src/lib.rs`
 //! (`decode_lane_frame` at `:1118`, `gate_decoded_frame` at `:1413`, the row
@@ -53,7 +53,7 @@
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `tag_db_id`   | raw | key; non-zero and `<= 2048` (`:1636`-`:1644`) |
+//! | `+0`  | u32 | `tag_db_id`   | raw | key; non-zero and `<= MAX_COMPACT_OWNER_TAG_DB_ID` (`:1636`-`:1644`) |
 //! | `+4`  | u32 | `line_id`     | raw | key; bit 31 is the DELETED tombstone bit (`:153`, `:1845`) |
 //! | `+8`  | u32 | `template_id` | raw | `1<<0` (`:129`) |
 //! | `+12` | i32 | `active_factories` | raw | none; `0..=100_000` (`:1679`) |
@@ -339,8 +339,15 @@ pub const SCOPE_PROVINCE: u32 = 2;
 /// `build_profile.rs:1177`-`:1178`.
 pub const MAX_STATE_ID: u32 = 65_535;
 pub const MAX_PROVINCE_ID: u32 = 65_535;
-/// `build_profile.rs:45`.
-pub const MAX_COMPACT_OWNER_TAG_DB_ID: u32 = 2_048;
+/// `build_profile.rs`'s `MAX_COMPACT_OWNER_TAG_DB_ID`, pinned to
+/// `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID` by
+/// `tests/producer_consumer_admission_agreement.rs`.
+///
+/// Was `2_048`, a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags). ENGINE-STRUCTURAL now: a country-database id is admissible iff
+/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
+/// is the widest id any loadable database can hold.
+pub const MAX_COMPACT_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `build_profile.rs:1137`.
 pub const BUILDING_LEVEL_SANE_MAX: u32 = 1_000;
 /// `build_profile.rs:1170`.

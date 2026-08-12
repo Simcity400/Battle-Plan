@@ -124,7 +124,10 @@ const DECISION_TARGET_FLAG_KNOWN_MASK: u32 = DECISION_TARGET_FLAG_COUNTRY_TAG
     | DECISION_TARGET_FLAG_NUMERIC_ID
     | DECISION_TARGET_FLAG_RECORD_0X24;
 const DECISION_TARGET_UNKNOWN_ID: u32 = u32::MAX;
-const DECISION_TARGET_MAX_TAG_DB_ID: u32 = 4096;
+/// Was `4096`, a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags). ENGINE-STRUCTURAL now: a country database id is admissible iff
+/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`.
+const DECISION_TARGET_MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 const DECISION_TARGET_MAX_NUMERIC_ID: u32 = 1_000_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

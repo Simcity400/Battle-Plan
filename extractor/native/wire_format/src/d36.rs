@@ -1,9 +1,9 @@
 //! d36 `air_variant_reserves` — per-country stockpiled reserves of each air
 //! variant.
 //!
-//! Derived from `world_fold.rs:18690`-`:18793`
+//! Derived from `world_fold.rs:18718`-`:18821`
 //! (`fold_air_variant_reserves`), its payload constants at `:989`-`:990` and
-// @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=18690-18793 sha256=6b4f4dcb82fc64534f8323e2363dc7ab8963c6684192cb54019f07af35b76f2d closure=1476973041dcca0efcdb7d93f78ce9b5d887ebc9f0cabd8ed860a0e70e660ab5
+// @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=18718-18821 sha256=6b4f4dcb82fc64534f8323e2363dc7ab8963c6684192cb54019f07af35b76f2d closure=1476973041dcca0efcdb7d93f78ce9b5d887ebc9f0cabd8ed860a0e70e660ab5
 //! `:156`, the render at `world_fold.rs::build_designs`, and the collector read that produces
 //! the rows (`extractor/native/collector/src/attach_log.rs:55392`-`:55530`,
 //! `:71487`-`:71523`). There is no `extractor/documents/domains/d36_*.md`, so the
@@ -417,7 +417,8 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
 ///
 /// Neither component is range-checked, because the fold does not check either.
 /// The independent authority decoder rejects `tag_db_id == 0` and
-/// `tag_db_id > 1024` (`domain_data_authority.rs:15190`-`:15196`,
+/// `tag_db_id > COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID`
+/// (`domain_data_authority.rs:15190`-`:15196`,
 /// `:715`); the fold is the authority here and it wins. Recorded as a finding.
 pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_row_len(row)?;

@@ -20,7 +20,14 @@ pub const DOMAIN_NAME: &str = "design_catalog_context_live";
 pub const SCHEMA_VERSION: u32 = 1;
 pub const AUTHORITY_EXACT_A729_DESIGNER_VIEW: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DCX1");
-pub const MAX_SELECTED_COUNTRIES: usize = 4_096;
+/// Fail-closed ceiling on the number of selected-country ids DCX1 carries.
+///
+/// Was `4_096` — a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags), which refused the whole carrier on an overhaul. A country count
+/// is content, so it is now the structural row width; the decode bounds the
+/// count by the payload instead, which is the bound that actually protects the
+/// allocation.
+pub const MAX_SELECTED_COUNTRIES: usize = i32::MAX as usize;
 pub const MAX_ORDERED_DESIGNS: usize = 131_072;
 
 /// Whole-function Ghidra manifests for the transition root and complete grid
@@ -278,6 +285,12 @@ pub fn decode_payload(payload: &[u8]) -> Result<DesignCatalogContextFrame, Carri
     if selected_count > MAX_SELECTED_COUNTRIES || design_count > MAX_ORDERED_DESIGNS {
         return invalid("DCX1 vector count exceeds bound");
     }
+    // Each selected id is a 4-byte word, so the bytes still ahead cap the count.
+    // Without this a stream-supplied word decides the allocation -- which the
+    // old content-scale ceiling was incidentally preventing.
+    if selected_count > r.remaining() / 4 {
+        return invalid("DCX1 selected-country count exceeds the payload's capacity");
+    }
     let mut selected_country_tag_ids = Vec::with_capacity(selected_count);
     for _ in 0..selected_count {
         selected_country_tag_ids.push(r.u32()?);
@@ -330,6 +343,14 @@ fn string(out: &mut Vec<u8>, value: &str) -> Result<(), CarrierError> {
 struct Reader<'a> {
     payload: &'a [u8],
     at: usize,
+}
+
+impl<'a> Reader<'a> {
+    /// Bytes left. A count-prefixed section divides this by its minimum entry
+    /// size so a stream-supplied count can never size an allocation.
+    fn remaining(&self) -> usize {
+        self.payload.len().saturating_sub(self.at)
+    }
 }
 impl<'a> Reader<'a> {
     fn bytes(&mut self, len: usize) -> Result<&'a [u8], CarrierError> {

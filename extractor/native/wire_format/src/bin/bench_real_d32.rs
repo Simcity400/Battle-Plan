@@ -234,7 +234,11 @@ fn check_authority_payload(
     header: d32::PayloadHeader,
     at_byte: usize,
 ) -> Result<(), String> {
-    const MAX_OWNER_TAG_DB_ID: u32 = 1_024;
+    // `domain_data_authority::COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID`. Was
+    // `1_024`, a guess at the vanilla-plus-DLC country count; now the family's
+    // engine-structural id-space width, the same derivation `MAX_WING_ID`
+    // below already uses.
+    const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
     const MAX_WING_ID: u32 = i32::MAX as u32;
     const MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
     const MAX_VARIANT_ID: u32 = i32::MAX as u32;
@@ -2131,7 +2135,10 @@ mod tests {
         ));
         bad.push(d32_payload(
             failed,
-            &[wing_row(1_025, 11, 3, 0, 408, 0, 0)],
+            // Was owner `1_025`, one past the old `1_024` content guess; that
+            // is an ordinary country id now, so the probe moves to the real
+            // boundary.
+            &[wing_row(i32::MAX as u32, 11, 3, 0, 408, 0, 0)],
             &[],
         ));
         bad.push(d32_payload(failed, &[wing_row(7, 0, 3, 0, 408, 0, 0)], &[]));

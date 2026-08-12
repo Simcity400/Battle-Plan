@@ -1,8 +1,8 @@
 //! d68 `session_header_live` — the campaign's top-level save/session header.
 //!
-//! Derived from `world_fold.rs:12564`-`:12694`
+//! Derived from `world_fold.rs:12592`-`:12722`
 //! (`fold_session_header`), its payload constants at `:224`-`:253`, the carried
-// @world-fold-authority domain=68 functions=fold_session_header lines=12564-12694 sha256=1b4d863946a4f3ea1da94395d91ed01fcb5707eec005aeddd871c12254ae89c1 closure=4372b0c4b5343cd4923c9135a8c4d41564e6743092d7f5f94fa91babf1c802b8
+// @world-fold-authority domain=68 functions=fold_session_header lines=12592-12722 sha256=1b4d863946a4f3ea1da94395d91ed01fcb5707eec005aeddd871c12254ae89c1 closure=28af2f9ec005bbc6c3aec7cd015c8145005b2e8d192808a8917dac006c96df1e
 //! accumulator at `:1744` / `:2258`-`:2267`, the value it publishes at
 //! `world_fold.rs::build_session_header_value`, and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:61784`-`:61969`).
@@ -49,7 +49,7 @@
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+16` | u32 | `player_tag_db_id` | raw | `1<<0`, and `1..=2048` when set (`world_fold.rs::fold_session_header`) |
+//! | `+16` | u32 | `player_tag_db_id` | raw | `1<<0`, and `1..=MAX_PLAYER_TAG_DB_ID` when set (`world_fold.rs::fold_session_header`) |
 //! | `+20` | u32 | `dlcs`             | raw | `1<<1` |
 //! | `+24` | u32 | `start_date_raw`   | raw | `1<<2` |
 //! | `+28` | u32 | `save_version`     | raw | `1<<3` |
@@ -241,8 +241,13 @@ pub const KNOWN_FLAGS: u32 = FLAG_PLAYER
 
 /// `SESSION_HEADER_MAX_STRING_LEN`, `world_fold.rs::SESSION_HEADER_MAX_STRING_LEN`.
 pub const MAX_STRING_LEN: usize = 128;
-/// `SESSION_HEADER_MAX_PLAYER_TAG_DB_ID`, `world_fold.rs:252`.
-pub const MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
+/// `SESSION_HEADER_MAX_PLAYER_TAG_DB_ID`, `world_fold.rs`.
+///
+/// Was `2_048`, a guess at the vanilla-plus-DLC country count.
+/// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size
+/// gives `i32::MAX - 1`. Pinned by
+/// `tests/producer_consumer_admission_agreement.rs`.
+pub const MAX_PLAYER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 
 /// The key component of the one and only row. Its value is arbitrary and carries
 /// no information — what it carries is the fact that the collection is a
@@ -1021,7 +1026,8 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // §3 keeps zero out of the three empty states. Every flag set with every
-        // scalar zero is not a legal frame — `player_tag_db_id` must be `1..=2048`
+        // scalar zero is not a legal frame — `player_tag_db_id` must be
+        // `1..=MAX_PLAYER_TAG_DB_ID`
         // when its bit is set (`world_fold.rs::fold_session_header`) — so this is the largest
         // real-zero frame the fold accepts.
         let c = collection();
@@ -1307,7 +1313,8 @@ mod tests {
             let p = raw_payload(0, presence, 0, scalars, ["", "", ""]);
             assert!(parse_update(&p).is_err(), "scalar {index} without its flag");
         }
-        // `player_tag_db_id` bounds (`:10077`): 0 and 2049 rejected, 1 and 2048
+        // `player_tag_db_id` bounds (`:10077`): 0 and one past the ceiling
+        // rejected, 1 and the ceiling itself
         // accepted — the bound is not off by one.
         for tag in [0u32, MAX_PLAYER_TAG_DB_ID + 1, u32::MAX] {
             let p = raw_payload(0, FLAG_PLAYER, 0, [tag, 0, 0, 0, 0], ["", "", ""]);

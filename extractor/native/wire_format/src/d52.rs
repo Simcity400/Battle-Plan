@@ -2,10 +2,10 @@
 //! and compliance, plus the `GAR1` garrison-alert and `COL1` collaboration
 //! trailers.
 //!
-//! Derived from `world_fold.rs:20541`-`:20803`
+//! Derived from `world_fold.rs:20574`-`:20836`
 //! (`fold_occupation_resistance_compliance`, dispatched `:4714`), its payload
-// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=20541-20803 sha256=e3869710e831805a13f140854562fbf62949e989b8f96d4c405429b5662f826e closure=6f533ef398e5167ee9a3d9c962ba741c29db378273d8c4adf88e7ab01d8def81
-// @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=235-610 sha256=8dc1515a505fc28e96b58a60819cc25a02c7b5df927cb4d0a0d2ded487e5fc5c
+// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=20574-20836 sha256=e3869710e831805a13f140854562fbf62949e989b8f96d4c405429b5662f826e closure=97c96bb45280e5c6470973fc4f479bc1faa52e8367c7d00ac0664f1939958aa5
+// @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=240-615 sha256=8dc1515a505fc28e96b58a60819cc25a02c7b5df927cb4d0a0d2ded487e5fc5c
 //! constants at `:388`-`:399` and `:435`-`:466`, its two trailer decoders
 //! (`occupation_garrison_alert_len` `:30271`, `decode_occupation_collaboration`
 //! `:30291`, `decode_occupation_garrison_alert` `:30355`), the lane's own payload
@@ -919,7 +919,27 @@ pub fn parse_collaboration(trailer: &[u8]) -> core::result::Result<Collaboration
 }
 
 /// `MAX_TAG_DB_ID`, `world_fold.rs::decode_occupation_collaboration` and `domain44_compact.rs:50`.
-pub const MAX_TAG_DB_ID: u32 = 1_024;
+///
+/// Despite the name this is the `_CountryLinkTags` index space, NOT the country
+/// database's — see the provenance in
+/// `lanes/occupation_resistance_compliance_live/collector_module.rs`, and note
+/// that a refusal here is attributed to
+/// `bound_trips::BOUND_TRIP_COUNTRY_LINK_INDEX` rather than to the database's
+/// id. Applying one space's bound to the other would be a category error.
+///
+/// Was `1_024` — the tightest spelling in the family and 2.3x the vanilla
+/// country count, and an admitted content guess in a space whose engine bound
+/// is a live field (`u32[CGameState + 0x364]`). ENGINE-STRUCTURAL now, for THIS
+/// space: the engine's PDX vectors carry a signed 32-bit size and subscript
+/// with a signed index, so the widest index any loaded link vector can hold is
+/// `i32::MAX - 1` — the identical derivation the country database's bound uses,
+/// applied to its own vector rather than borrowed from it.
+///
+/// Bounding against the live size instead of the structural width still needs
+/// `u32[CGameState + 0x364]` carried in the d52 header; that is lane GV's
+/// residual R-GV-3 and is a grammar change, not a bounds edit. What it would
+/// buy is tightness, not coverage: no row is discarded at this width.
+pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_STATE_ID`, `domain44_compact.rs:49` — a lane-contract bound, not a fold
 /// one, so it is enforced in [`check_authority_payload`] and nowhere else.
 pub const MAX_STATE_ID: u32 = 65_535;
@@ -3127,10 +3147,15 @@ mod tests {
                 },
             ),
             (
-                "a tag past the lane's 1024 bound",
+                "a tag past the lane's id-space bound",
                 RawRow {
-                    owner: 5_000,
-                    occupied: 5_000,
+                    // One past the structural id-space width. Was `5_000`,
+                    // which was only out of band while the lane's ceiling was
+                    // the `1_024` content guess; it is an ordinary country id
+                    // now, so the case had to move to the real boundary or it
+                    // would stop testing the refusal at all.
+                    owner: MAX_TAG_DB_ID + 1,
+                    occupied: MAX_TAG_DB_ID + 1,
                     ..full_row()
                 },
             ),
@@ -3349,7 +3374,10 @@ mod tests {
             ),
             (
                 "an out-of-band tag",
-                col1(COLLABORATION_FLAG_COMPLETE, 436, 0, &[(5_000, 1, 1)]),
+                // One past the structural id-space width; `5_000` is an
+                // ordinary country id now that the ceiling is not a content
+                // guess.
+                col1(COLLABORATION_FLAG_COMPLETE, 436, 0, &[(MAX_TAG_DB_ID + 1, 1, 1)]),
             ),
             (
                 "progress past 1.0",
@@ -3788,7 +3816,11 @@ mod tests {
             check_authority_trailers(&t)
                 .unwrap_or_else(|e| panic!("controller {controller} is inside the bound: {e}"));
         }
-        for controller in [MAX_TAG_DB_ID + 1, MAX_TAG_DB_ID + 2, 5_000, u32::MAX] {
+        // `5_000` used to sit in this list; it is an ordinary country id now
+        // that the ceiling is the engine's id-space width rather than a guess
+        // at the vanilla country count, so the out-of-band probes are the
+        // boundary itself and the words a signed index cannot express.
+        for controller in [MAX_TAG_DB_ID + 1, MAX_TAG_DB_ID + 2, 0x8000_0000, u32::MAX] {
             let t = alert_at(controller);
             parse_trailers(&t).unwrap_or_else(|e| {
                 panic!("the FOLD folds controller {controller}, so the parser must: {e}")

@@ -257,7 +257,10 @@ fn check_authority_payload(
     const MIN_PROVINCE_ROWS: usize = 10_000;
     const MAX_STATE_ID: u32 = 65_535;
     const MAX_PROVINCE_ID: u32 = 65_536;
-    const MAX_TAG_DB_ID: u32 = 1_024;
+    // `domain_data_authority::COMPACT_MAP_MAX_TAG_DB_ID`. Was `1_024`, a
+    // guess at the vanilla-plus-DLC country count; now the family's
+    // engine-structural id-space width.
+    const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 
     let state_count = header.state_count as usize;
     let province_count = header.province_count as usize;
@@ -1659,7 +1662,15 @@ mod tests {
         bad_changed[12..16].copy_from_slice(&1u32.to_le_bytes());
         bad_payloads.push(bad_changed);
         bad_payloads.push(d22_payload(FAILED_DELTA, &[state_row(0, 7, 7, 3)], &[]));
-        bad_payloads.push(d22_payload(FAILED_DELTA, &[state_row(1, 1_025, 7, 3)], &[]));
+        // Was owner `1_025` — one past the old `1_024` content guess. That is
+        // an ordinary country id now that the ceiling is the engine's id-space
+        // width, so the probe moves to the real boundary or it stops testing
+        // the refusal.
+        bad_payloads.push(d22_payload(
+            FAILED_DELTA,
+            &[state_row(1, i32::MAX as u32, 7, 3)],
+            &[],
+        ));
         bad_payloads.push(d22_payload(
             FAILED_DELTA,
             &[state_row(1, 7, 7, 1 << 8)],
@@ -1678,7 +1689,9 @@ mod tests {
         bad_payloads.push(d22_payload(
             FAILED_DELTA,
             &[],
-            &[province_row(1, 1_025, 0, d22::FLAG_PROVINCE_CONTROLLER)],
+            // Was controller `1_025`, one past the old content guess; the
+            // boundary moved with the ceiling.
+            &[province_row(1, i32::MAX as u32, 0, d22::FLAG_PROVINCE_CONTROLLER)],
         ));
         bad_payloads.push(d22_payload(
             FAILED_DELTA,

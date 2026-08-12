@@ -25,7 +25,24 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"NUK1");
 pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_SOURCE_UNAVAILABLE: u32 = 0;
 pub const AUTHORITY_EXACT_A729_RECEIPT: u32 = 1;
-pub const MAX_COUNTRIES: usize = 2_048;
+/// Fail-closed ceiling on the number of country rows a NUK1 snapshot carries.
+///
+/// Was `2_048` — a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags), which refused an overhaul's whole payload on both sides. A
+/// country count is content, so there is no honest constant for it; it is now
+/// the structural row width. The bound that does the work on decode is the
+/// payload: `country_count * COUNTRY_BLOCK_LEN + prologue` must equal the
+/// payload length exactly (`decode_carrier`, and `wire_format::d83`'s mirror of
+/// the same rule), so a crafted count cannot size the allocation.
+pub const MAX_COUNTRIES: usize = i32::MAX as usize;
+
+/// One country's fixed extent in a NUK1 CARRIER payload: `tag_db_id` 4,
+/// `container_capacity` 4, `entry_count` 4, then `NUKE_TYPE_COUNT` entries of
+/// `nuke_type_raw` 4 + reserved 4 + `amount_raw` 8 + `nukes_ready` 4 +
+/// reserved 4. `entry_count` is required to equal `NUKE_TYPE_COUNT` exactly, so
+/// the block is fixed. (This is the carrier's layout; `wire_format::d83`'s
+/// `COUNTRY_BLOCK_LEN` is the wire record's and is a separate number.)
+const CARRIER_COUNTRY_BLOCK_LEN: usize = 12 + (NUKE_TYPE_COUNT as usize) * 24;
 
 /// Root-controlled promotion switch. Fresh Wave-5 producer/consumer,
 /// constructor, and vtable authority is bound to the collector's authenticated
@@ -355,6 +372,15 @@ pub fn decode_payload(payload: &[u8]) -> Result<NukeStockpileFrame, CarrierError
         if country_count > MAX_COUNTRIES {
             return invalid("NUK1 country count exceeds bound");
         }
+        // The count is stream-supplied and sizes the allocation below, so it is
+        // bounded by what the remaining payload can actually hold: one country
+        // is a fixed CARRIER_COUNTRY_BLOCK_LEN block. Without this a four-byte
+        // word decides the allocation -- which is what the old content-scale
+        // ceiling was incidentally preventing, and the reason widening it
+        // needed a real bound rather than a bigger number.
+        if country_count > reader.remaining() / CARRIER_COUNTRY_BLOCK_LEN {
+            return invalid("NUK1 country count exceeds the payload's capacity");
+        }
         let mut countries = Vec::with_capacity(country_count);
         for _ in 0..country_count {
             let tag_db_id = reader.u32()?;
@@ -434,6 +460,11 @@ impl<'a> Reader<'a> {
             .ok_or(CarrierError::Truncated)?;
         self.at = end;
         Ok(value)
+    }
+    /// Bytes left. A count-prefixed section divides this by its fixed block
+    /// size so a stream-supplied count can never size an allocation.
+    fn remaining(&self) -> usize {
+        self.payload.len().saturating_sub(self.at)
     }
     fn bool(&mut self) -> Result<bool, CarrierError> {
         match self.bytes(1)?[0] {

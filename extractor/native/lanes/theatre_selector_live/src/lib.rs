@@ -67,7 +67,20 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"THS2");
 /// with the difference that the refusal would look like a producer bug.
 pub const SCHEMA_VERSION: u32 = 4;
 
-pub const MAX_COUNTRIES: usize = 4_096;
+/// Fail-closed ceiling on the number of country rows a THS2 census or section
+/// list carries.
+///
+/// Was `4_096` — a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags), which refused the whole carrier on an overhaul. A country count
+/// is content, so it is now the structural row width; the decode bounds each
+/// count by what the remaining payload can hold, which is the bound that
+/// actually protects the allocation.
+pub const MAX_COUNTRIES: usize = i32::MAX as usize;
+
+/// One census entry is a 4-byte `owner_tag_db_id`; one section is at least that
+/// plus an `admitted` bool and three reserved bytes.
+const MIN_CENSUS_ENTRY_LEN: usize = 4;
+const MIN_SECTION_ENTRY_LEN: usize = 8;
 pub const MAX_THEATRES_PER_SECTION: usize = 16_384;
 pub const MAX_MEMBERS_PER_SECTION: usize = 200_000;
 pub const MAX_ALERTS_PER_THEATRE: usize = 0x52;
@@ -1209,6 +1222,9 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
         if census_count > MAX_COUNTRIES {
             return invalid("THS2 census count exceeds bound");
         }
+        if census_count > reader.remaining() / MIN_CENSUS_ENTRY_LEN {
+            return invalid("THS2 census count exceeds the payload's capacity");
+        }
         let mut census = Vec::with_capacity(census_count);
         for _ in 0..census_count {
             census.push(reader.u32()?);
@@ -1216,6 +1232,9 @@ pub fn decode_payload(payload: &[u8]) -> Result<TheatreSelectorFrame, CarrierErr
         let section_count = reader.u32()? as usize;
         if section_count > MAX_COUNTRIES {
             return invalid("THS2 section count exceeds bound");
+        }
+        if section_count > reader.remaining() / MIN_SECTION_ENTRY_LEN {
+            return invalid("THS2 section count exceeds the payload's capacity");
         }
         let mut sections = Vec::with_capacity(section_count);
         for _ in 0..section_count {
@@ -1429,6 +1448,14 @@ fn priority(out: &mut Vec<u8>, value: PriorityOrdinal) {
 struct Reader<'a> {
     payload: &'a [u8],
     at: usize,
+}
+
+impl<'a> Reader<'a> {
+    /// Bytes left. A count-prefixed section divides this by its minimum entry
+    /// size so a stream-supplied count can never size an allocation.
+    fn remaining(&self) -> usize {
+        self.payload.len().saturating_sub(self.at)
+    }
 }
 
 impl<'a> Reader<'a> {

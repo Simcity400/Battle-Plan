@@ -208,7 +208,11 @@ fn check_authority_payload(payload: &[u8], at_byte: usize) -> Result<(), String>
                 parsed.region_id
             ));
         }
-        if parsed.owner_tag_db_id == 0 || parsed.owner_tag_db_id > 1_024 {
+        // The bare literal `1_024` was a guess at the vanilla-plus-DLC
+        // country count; the family bound is engine-structural.
+        if parsed.owner_tag_db_id == 0
+            || parsed.owner_tag_db_id > (i32::MAX as u32) - 1
+        {
             return Err(format!(
                 "d31 authority at byte {at_byte}: row {row_index} has invalid owner {}",
                 parsed.owner_tag_db_id
@@ -1096,7 +1100,13 @@ mod tests {
             1,
         ));
         bad_payloads.push(d31_payload(FAILED, &[row(37, 0, 512, 0, 4, 76, 61)], 1));
-        bad_payloads.push(d31_payload(FAILED, &[row(37, 1_025, 512, 0, 4, 76, 61)], 1));
+        // Was owner `1_025`, one past the old `1_024` content guess; that is
+        // an ordinary country id now, so the probe moves to the real boundary.
+        bad_payloads.push(d31_payload(
+            FAILED,
+            &[row(37, i32::MAX as u32, 512, 0, 4, 76, 61)],
+            1,
+        ));
         bad_payloads.push(d31_payload(
             FAILED,
             &[

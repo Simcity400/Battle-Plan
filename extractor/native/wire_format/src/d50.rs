@@ -1,8 +1,8 @@
 //! d50 `naval_combat_members_live` — the ships and convoys inside each naval combat.
 //!
-//! Derived from `world_fold.rs:24258`-`:24348`
+//! Derived from `world_fold.rs:24291`-`:24381`
 //! (`fold_naval_combat_members`), the D49 fold it depends on
-// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=24258-24348 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=6d1756c006524faea2679ab7ba8cbda5a7de38f52d5525813f1dde6a8481d35b
+// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=24291-24381 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=6d1756c006524faea2679ab7ba8cbda5a7de38f52d5525813f1dde6a8481d35b
 //! (`:20040`-`:20128`, `fold_naval_combat_lifecycle`), the accumulator's JSON
 //! projection (`:8839`-`:8887`), the lane codec that defines the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`,
@@ -351,8 +351,15 @@ pub const MAX_SHIP_INSTANCE_ID: u32 = 4_000_000;
 /// `compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID` (lane `:88`),
 /// mirrored rather than imported because d50 is not admitted to the production-
 /// codec dependency surface. The measurement bin asserts the mirror — the same
-/// arrangement d32 uses for its `DELTA_DATA` bit.
-pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
+/// arrangement d32 uses for its `DELTA_DATA` bit — and
+/// `tests/producer_consumer_admission_agreement.rs` pins it to
+/// `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID`.
+///
+/// Was `2_048`, a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags). ENGINE-STRUCTURAL now: a country-database id is admissible iff
+/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
+/// is the widest id any loadable database can hold.
+pub const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_GROUP_INDEX: u32 = 64;
 pub const MAX_MEMBER_INDEX: u32 = 1_000;
 pub const MAX_BATTLE_SLOT_INDEX: u32 = 4_096;

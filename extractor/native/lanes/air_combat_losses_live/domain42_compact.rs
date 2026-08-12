@@ -24,7 +24,11 @@ pub const ROW_FLAG_STATE_BASELINE: u32 = 1 << 6;
 /// air_accidents or experience_raw changed vs the previous sample.
 pub const ROW_FLAG_WING_SCALAR_CHANGE: u32 = 1 << 7;
 
-pub const MAX_OWNER_TAG_DB_ID: u32 = 1_024;
+/// Was `1_024`, a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags). ENGINE-STRUCTURAL now, by the same derivation `MAX_WING_ID` below
+/// already uses: a country database id is admissible iff
+/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`.
+pub const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_WING_ID: u32 = i32::MAX as u32;
 pub const MAX_PLANES: u32 = 10_000_000;
 pub const MAX_MISSION_REGION_ID: u32 = 65_535;

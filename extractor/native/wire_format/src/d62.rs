@@ -1,8 +1,8 @@
 //! d62 `hub_motorization_live` — exact per-node supply-hub motorization levels.
 //!
-//! Derived from `world_fold.rs:19366`-`:19429`
+//! Derived from `world_fold.rs:19399`-`:19462`
 //! (`fold_hub_motorization`), its JSON emission at `:9187`-`:9220`, and the
-// @world-fold-authority domain=62 functions=fold_hub_motorization lines=19366-19429 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=4d37e6d1d7fef5637817dd1e99483b912ed3a44ec5e7832c406adca844367ea8
+// @world-fold-authority domain=62 functions=fold_hub_motorization lines=19399-19462 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=4d37e6d1d7fef5637817dd1e99483b912ed3a44ec5e7832c406adca844367ea8
 //! payload codec the fold calls, which for this domain lives **outside** the fold
 //! in its own leaf crate: `extractor/native/lanes/hub_motorization_live/src/lib.rs`
 //! (`decode_payload_rows` at `:264`, `read_row` at `:325`, `validate_row` at
@@ -22,8 +22,8 @@
 //!
 //! | offset | width | field | scale | gate |
 //! |---|---|---|---|---|
-//! | `+0`  | u32 | `owner_tag_db_id`    | raw | none (key 0; `1..=2048`, `lib.rs:341`) |
-//! | `+4`  | u32 | `actor_tag_db_id`    | raw | none (key 2; `1..=2048`, `lib.rs:347`) |
+//! | `+0`  | u32 | `owner_tag_db_id`    | raw | none (key 0; `1..=MAX_COUNTRY_COUNT`, `lib.rs:341`) |
+//! | `+4`  | u32 | `actor_tag_db_id`    | raw | none (key 2; `1..=MAX_COUNTRY_COUNT`, `lib.rs:347`) |
 //! | `+8`  | u32 | `province_id`        | raw | none (key 1; `1..=65535`, `lib.rs:353`) |
 //! | `+12` | u32 | `state_id`           | raw | none (`1..=65535`, `lib.rs:359`) |
 //! | `+16` | u32 | `record_index`       | raw | none |
@@ -113,7 +113,14 @@ pub const SCHEMA_VERSION: u32 = 2;
 
 /// `MAX_COUNTRY_COUNT`, `lib.rs:65` — the bound `validate_row` applies to both
 /// `owner_tag_db_id` and `actor_tag_db_id` (`:341`, `:347`). Zero is rejected too.
-pub const MAX_COUNTRY_COUNT: u32 = 2_048;
+///
+/// Despite the `_COUNT` name this is an IDENTITY bound: both sites compare an
+/// id, not a row count. Was `2_048`, a guess at the vanilla-plus-DLC country
+/// count, which is exactly the kind of confusion the name invited.
+/// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size
+/// gives `i32::MAX - 1`. Pinned by
+/// `tests/producer_consumer_admission_agreement.rs`.
+pub const MAX_COUNTRY_COUNT: u32 = (i32::MAX as u32) - 1;
 /// `MAX_PROVINCE_ID`, `lib.rs:80` (`validate_row:353`). A REPRESENTATION
 /// ENVELOPE, not a province count — see the producer's note; both spellings were
 /// `20_000`, a guess at content scale, and are now the build's settled 65 535.

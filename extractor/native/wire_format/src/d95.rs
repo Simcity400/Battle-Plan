@@ -1,9 +1,9 @@
 //! d95 `pov_spotted_units_live` — the current POV's map-spotted land units and
 //! task forces.
 //!
-//! Derived from `world_fold.rs:13161`-`:13229`
+//! Derived from `world_fold.rs:13189`-`:13257`
 //! (`fold_pov_spotted_units`, dispatched at `:4752`), its payload codec
-// @world-fold-authority domain=95 functions=fold_pov_spotted_units lines=13161-13229 sha256=22f810187fac25dbae53375a864cad075f8e9428c503ed00f198bb73bbd1b81e closure=2f3d14ea2ccaa31c01a44e88dc1c8fd97eace6f58b27d60e6de8bd542885266c
+// @world-fold-authority domain=95 functions=fold_pov_spotted_units lines=13189-13257 sha256=22f810187fac25dbae53375a864cad075f8e9428c503ed00f198bb73bbd1b81e closure=2f3d14ea2ccaa31c01a44e88dc1c8fd97eace6f58b27d60e6de8bd542885266c
 //! `extractor/native/compact_contract/src/spotted_units.rs` (authority #2 for
 //! offsets, per the recipe), the production dispatcher's d95 error arm
 //! (`world_fold.rs::apply_domain_data`), the hour-boundary reset (`world_fold.rs::reset_hour_state`) and
@@ -22,7 +22,7 @@
 //! | `+4`  | u16 | `version` (must be 1)    | — |
 //! | `+6`  | u16 | `flags`                  | — |
 //! | `+8`  | u64 | `capture_sequence`       | none; zero rejected (`:74`-`:76`) |
-//! | `+16` | u32 | `pov_country_id`         | none; `1..=2048` (`:77`-`:79`) |
+//! | `+16` | u32 | `pov_country_id`         | none; `1..=MAX_POV_COUNTRY_ID` (`:77`-`:79`) |
 //! | `+20` | u32 | `land_count`             | — |
 //! | `+24` | u32 | `taskforce_count`        | — |
 //! | `+28` | u64 | `land_frame_sequence`    | `FLAG_LAND_FRAME` (`1<<0`) |
@@ -209,9 +209,15 @@ pub const FLAG_TASKFORCE_FRAME_HOUR: u16 = 1 << 3;
 /// widening this mask from being a relaxation.
 pub const KNOWN_FLAGS: u16 =
     FLAG_LAND_FRAME | FLAG_TASKFORCE_FRAME | FLAG_LAND_FRAME_HOUR | FLAG_TASKFORCE_FRAME_HOUR;
-/// `MAX_POV_COUNTRY_ID`, `spotted_units.rs:9`; the admitted POV range is
-/// `1..=2048` (`:39`-`:40`).
-pub const MAX_POV_COUNTRY_ID: u32 = 2_048;
+/// `MAX_POV_COUNTRY_ID`, `spotted_units.rs`, which is the family bound
+/// `build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`; the admitted POV range is
+/// `1..=` this (`:39`-`:40`).
+///
+/// Was `2_048`, a guess at the vanilla-plus-DLC country count.
+/// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size
+/// gives `i32::MAX - 1`. Pinned by
+/// `tests/producer_consumer_admission_agreement.rs`.
+pub const MAX_POV_COUNTRY_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_ROWS_PER_SURFACE`, `spotted_units.rs:10`; enforced per surface at
 /// `:150`-`:151`.
 pub const MAX_ROWS_PER_SURFACE: usize = 131_072;

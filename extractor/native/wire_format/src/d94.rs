@@ -1,9 +1,9 @@
 //! d94 `pov_province_visibility_live` — the observing country's fog-of-war level
 //! for every province, as one complete engine byte vector per hour.
 //!
-//! Derived from `world_fold.rs:13098`-`:13159`
+//! Derived from `world_fold.rs:13126`-`:13187`
 //! (`fold_pov_province_visibility`, dispatched at `:4745`, its error arm at
-// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=13098-13159 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=30203ccff5281514208e37c449f8aa0f59285b5437eaf10d82e532720ce7e9c8
+// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=13126-13187 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=30203ccff5281514208e37c449f8aa0f59285b5437eaf10d82e532720ce7e9c8
 //! `:4917`-`:4925`, its hour reset at `world_fold.rs::reset_hour_state`) and from the payload codec
 //! the domain already owns, `compact_contract/src/pov_visibility.rs` (recipe
 //! authority 2). There is no `extractor/documents/domains/d94_*.md`, which is
@@ -18,7 +18,7 @@
 //! | `+4`  | u16 | `version`              | — | must be `1` (`:53`) |
 //! | `+6`  | u16 | `flags`                | — | only `FLAG_PRODUCER_HOUR` defined; any other bit rejected (`:53`) |
 //! | `+8`  | u64 | `capture_sequence`     | raw | must be non-zero (`:20`) |
-//! | `+16` | u32 | `pov_country_id`       | raw | `1..=2048` (`:23`) |
+//! | `+16` | u32 | `pov_country_id`       | raw | `1..=MAX_POV_COUNTRY_ID` (`:23`) |
 //! | `+20` | u32 | `count`                | raw | `1..=65535`, and `len == 24 + count + 8·hour` (`:26`, `:59`) |
 //! | `+24` | u8 × `count` | `province_levels` | **raw, no scale** | none |
 //! | `+24+count` | i64 | `producer_hour_raw` | raw engine date | present iff `FLAG_PRODUCER_HOUR`; must fit `i32` |
@@ -122,8 +122,14 @@ pub const HOUR_LEN: usize = 8;
 pub const ROW_LEN: usize = 1;
 /// `MAX_PROVINCE_SLOTS`, `pov_visibility.rs:7`.
 pub const MAX_PROVINCE_SLOTS: usize = 65_535;
-/// `MAX_POV_COUNTRY_ID`, `pov_visibility.rs:8`.
-pub const MAX_POV_COUNTRY_ID: u32 = 2_048;
+/// `MAX_POV_COUNTRY_ID`, `pov_visibility.rs`, which is the family bound
+/// `build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`.
+///
+/// Was `2_048`, a guess at the vanilla-plus-DLC country count.
+/// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size
+/// gives `i32::MAX - 1`. Pinned by
+/// `tests/producer_consumer_admission_agreement.rs`.
+pub const MAX_POV_COUNTRY_ID: u32 = (i32::MAX as u32) - 1;
 
 pub fn schema() -> Schema {
     use field as f;

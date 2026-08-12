@@ -152,7 +152,10 @@ pub fn encode_payload_with_bonuses(
             .ok_or_else(|| "tech-sharing pair count overflow".to_string())?;
         let mut member_ids = BTreeSet::new();
         for (member_index, member) in row.members.iter().enumerate() {
-            if member.member_tag_db_id == 0 || (member.member_tag_db_id & 0x8000_0000) != 0 {
+            if member.member_tag_db_id == 0
+                || member.member_tag_db_id
+                    > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
+            {
                 return Err(format!(
                     "tech-sharing row {row_index} member {member_index} has invalid tag_db_id {}",
                     member.member_tag_db_id
@@ -284,7 +287,9 @@ pub fn decode_payload_with_bonuses(
             let pair_base = pair_index * MEMBER_BONUS_LEN;
             let member_tag_db_id = read_u32(blob, pair_base)?;
             let dynamic_bonus_raw_fixed5 = read_i64(blob, pair_base + 4)?;
-            if member_tag_db_id == 0 || (member_tag_db_id & 0x8000_0000) != 0 {
+            if member_tag_db_id == 0
+                || member_tag_db_id > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
+            {
                 return Err(format!(
                     "tech-sharing row {row_index} member {member_index} has invalid tag_db_id {member_tag_db_id}"
                 ));
@@ -360,7 +365,10 @@ pub fn encode_payload_with_definition_ids(
             .map_err(|_| format!("tech-sharing row {row_index} member count exceeds u32"))?;
         let mut member_ids = BTreeSet::new();
         for (member_index, member) in row.members.iter().enumerate() {
-            if member.member_tag_db_id == 0 || (member.member_tag_db_id & 0x8000_0000) != 0 {
+            if member.member_tag_db_id == 0
+                || member.member_tag_db_id
+                    > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
+            {
                 return Err(format!(
                     "tech-sharing row {row_index} member {member_index} has invalid tag_db_id {}",
                     member.member_tag_db_id
@@ -541,7 +549,7 @@ pub fn decode_payload_with_definition_ids(
             let member_tag_db_id = read_u32(pair_blob, pair_base)?;
             let dynamic_bonus_raw_fixed5 = read_i64(pair_blob, pair_base + 4)?;
             if member_tag_db_id == 0
-                || (member_tag_db_id & 0x8000_0000) != 0
+                || member_tag_db_id > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
                 || !member_ids.insert(member_tag_db_id)
             {
                 return Err(format!(

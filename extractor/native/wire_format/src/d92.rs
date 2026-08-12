@@ -1,8 +1,8 @@
 //! d92 `country_preferred_tactic_live` — each country's selected combat tactic.
 //!
-//! Derived from `world_fold.rs:12831`-`:12894`
+//! Derived from `world_fold.rs:12859`-`:12922`
 //! (`fold_country_preferred_tactics`, dispatched at `:4747`), its payload codec
-// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=12831-12894 sha256=e4436fb8ebaf47d966fe6c3de1a84dd93092909f34ef8d462e9a4b6c15746d2a closure=c6de133740f2640c9fecc49514a40f9f2593cea0c6cdefc79215e72291979908
+// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=12859-12922 sha256=e4436fb8ebaf47d966fe6c3de1a84dd93092909f34ef8d462e9a4b6c15746d2a closure=c6de133740f2640c9fecc49514a40f9f2593cea0c6cdefc79215e72291979908
 //! `extractor/native/compact_contract/src/preferred_tactic.rs`, and the collector
 //! read that produces every row
 //! (`extractor/native/collector/src/attach_log.rs:32490`-`:32557`,
@@ -205,8 +205,20 @@ pub const MAGIC: [u8; 4] = *b"PTC1";
 pub const VERSION: u16 = 1;
 /// `preferred_tactic.rs:13`.
 pub const HEADER_LEN: usize = 164;
-/// `preferred_tactic.rs:14`.
-pub const MAX_ROWS: usize = 1024;
+/// `preferred_tactic.rs`'s `MAX_ROWS`. Was `1024`, a guess at the
+/// vanilla-plus-DLC country count that refused the whole roster payload on any
+/// larger mod; a country count is content, so it is the structural row width
+/// and [`max_rows_in`] is what bounds the allocation.
+pub const MAX_ROWS: usize = i32::MAX as usize;
+
+/// `preferred_tactic.rs`'s `max_rows_in`: the largest number of rows
+/// `remaining` bytes of payload can hold, a row being at least
+/// [`FIXED_ROW_LEN`] bytes. A FORMAT bound — without it a four-byte stream word
+/// decides an allocation.
+#[must_use]
+pub const fn max_rows_in(remaining: usize) -> usize {
+    remaining / FIXED_ROW_LEN
+}
 /// `preferred_tactic.rs:15`.
 pub const MAX_TOKEN_BYTES: usize = 256;
 /// The fixed part of a row: `tag_db_id`, `tactic_database_id`, `flags`,
@@ -514,6 +526,14 @@ pub fn split_payload(
         return Err(format!(
             "country_preferred_tactic row count outside bounds \
              (row_count {row_count}, selected_count {selected_count}, max {MAX_ROWS})"
+        ));
+    }
+
+    // The count is stream-supplied and sizes the allocation, so it is bounded
+    // by what the remaining payload can hold.
+    if row_count > max_rows_in(payload.len() - HEADER_LEN) {
+        return Err(format!(
+            "country_preferred_tactic row count {row_count} exceeds the payload's capacity"
         ));
     }
 

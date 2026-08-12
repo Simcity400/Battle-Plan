@@ -20492,12 +20492,18 @@ fn air_loss_stats_non_clean_masks_current_hour_sidecar() {
 /// the country COUNT; the fold bounded nothing, so a row outside the range
 /// reached a snapshot whose whole air-loss table replay then voided.
 ///
-/// Pinned absolutely: `2_048` is admitted, `2_049` and `0` are not.
+/// Pinned absolutely: the ceiling itself is admitted, one past it and `0` are
+/// not. `2_048` used to BE the ceiling and is now an ordinary country id, so it
+/// is kept as a probe on the admitted side — it is the value an overhaul's
+/// 2_048th country carries, and it must fold.
+///
+/// kills: reverting `MAX_COMPACT_OWNER_TAG_DB_ID` to a content-scale ceiling,
+/// and removing the fold's owner range check (which would let `0` through).
 #[test]
 fn air_loss_stats_owner_identity_stops_at_the_shared_compact_ceiling() {
     assert_eq!(
         compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID,
-        2_048
+        2_147_483_646
     );
     let fold_owner = |id: u32| {
         let row = airloss61_lane::AirLossStatRow {
@@ -20513,18 +20519,27 @@ fn air_loss_stats_owner_identity_stops_at_the_shared_compact_ceiling() {
         ])
     };
 
-    let admitted = fold_owner(2_048);
-    assert_eq!(
-        admitted["strategic_air"]["_r2_air_loss_stats_live"]
-            .as_array()
-            .expect("admitted D61 table")
-            .len(),
-        1
-    );
+    for admitted_owner in [
+        2_048u32,
+        2_049,
+        compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID,
+    ] {
+        let admitted = fold_owner(admitted_owner);
+        assert_eq!(
+            admitted["strategic_air"]["_r2_air_loss_stats_live"]
+                .as_array()
+                .unwrap_or_else(|| panic!("owner {admitted_owner} must fold"))
+                .len(),
+            1
+        );
+    }
 
     // Above the ceiling and at zero the fold refuses, so the domain is reported
     // unknown for the hour instead of publishing rows replay discards whole.
-    for rejected in [2_049u32, 0] {
+    for rejected in [
+        compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID + 1,
+        0,
+    ] {
         let snap = fold_owner(rejected);
         assert_eq!(
             snap["strategic_air"]["_r2_air_loss_stats_live"],
@@ -21713,10 +21728,54 @@ fn w6_d69_rejects_legacy_payload_even_when_zero_rows_is_ambiguous() {
     assert!(snap.get("tech_sharing_group").is_none());
 }
 
+/// kills: reverting the d69 member bound to the sign-bit test
+/// (`member_tag_db_id & 0x8000_0000`) in the TSG2 decoder AND in the fold
+/// TOGETHER. The probe is `MAX_COMPACT_OWNER_TAG_DB_ID + 1`, which IS
+/// `i32::MAX` — a value with NO sign bit set — so once both guards are
+/// sign-bit tests the payload folds and the assertion below fails.
+///
+/// Both, not either: the two guards are deliberately redundant and in series.
+/// The decoder refuses the member first, so only decoded rows ever reach the
+/// fold's own check — reverting one leaves the other still failing closed, and
+/// this test stays green. Naming a single-site mutation here would be a
+/// `kills:` line the test cannot honour, so it names the pair. The redundancy
+/// is the point of a defence in depth, and what this fixture pins is that the
+/// PAIR cannot be lost.
+///
+/// Addressing the member record by offset is what makes even that much true:
+/// every byte before it is asserted identical to an admitted payload, so the
+/// member bound is the only rule that can produce the refusal.
 #[test]
 fn w6_d69_tech_sharing_groups_rejects_member_out_of_range() {
     // A member tag_db_id beyond the guard ceiling folds closed.
-    let payload = tech_sharing_groups_payload(&[(0x0009, &[1, 999_999])], 0);
+    //
+    // The out-of-range word cannot go through `tech_sharing_groups_payload`:
+    // its encoder refuses it too (correctly), so building the fixture that way
+    // panics at encode and the FOLD is never reached -- which is what this test
+    // did until round 12 caught it. Encode an admitted payload, then overwrite
+    // the serialized member word, so the bytes handed to the fold are exactly
+    // the bytes a crafted or torn frame would carry.
+    // Address the member record by OFFSET, not by searching for its value. A
+    // `windows(4).position(..)` search for the little-endian `2` finds byte 20
+    // first -- the TSG2 schema VERSION -- so it corrupted the version word and
+    // the fold refused for the wrong reason, leaving the member bound
+    // unexercised. TSG2 is a 24-byte header, then 12 bytes per row, then 12
+    // bytes per member pair (`tag_db_id` u32 + `dynamic_bonus_raw_fixed5` i64),
+    // so the last member's id is the four bytes at `len - 12`.
+    const MEMBER_BONUS_LEN: usize = 12;
+    let out_of_range = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID + 1;
+    let admitted = tech_sharing_groups_payload(&[(0x0009, &[1, 2])], 0);
+    let mut payload = admitted.clone();
+    let member_word = payload.len() - MEMBER_BONUS_LEN;
+    assert_eq!(
+        &payload[member_word..member_word + 4],
+        &2u32.to_le_bytes(),
+        "the last member record must start with the second member's tag_db_id"
+    );
+    payload[member_word..member_word + 4].copy_from_slice(&out_of_range.to_le_bytes());
+    // Everything before that member id is untouched, so the ONLY reason the
+    // fold can refuse this payload is the member bound under test.
+    assert_eq!(payload[..member_word], admitted[..member_word]);
     let snap = snapshot_for_domain_records(vec![(69, payload)]);
     assert!(
         snap.get("tech_sharing_group").is_none(),

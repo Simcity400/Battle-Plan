@@ -56,7 +56,17 @@ GS_COUNTRY_TABLE = 0x310
 GS_COUNTRY_COUNT = 0x31C
 GS_CURRENT_DATE = 0x468
 DATE_EPOCH_CONST = 43_799_999
-MAX_COUNTRIES = 2048
+# A COUNT budget, not an identity ceiling. `2048` was a guess at the
+# vanilla-plus-DLC country count (vanilla defines 439 tags), and this file is a
+# PRODUCTION producer that `recorder_host` launches and waits 30 s on for
+# readiness -- so on an overhaul above the guess it raised, and recording never
+# started at all.
+#
+# 65_536 is the tree's country-table budget: a slot is one 8-byte pointer, so the
+# registry bulk read below is 512 KB at the ceiling, and it is 149x the vanilla
+# count. Both use sites bound a count before a read or a loop, and neither is an
+# id, so neither takes the structural id ceiling.
+MAX_COUNTRIES = 65536
 MAX_VECTOR = 100_000
 HEAP_LO = 0x10000000000
 HEAP_HI = 0x7FF000000000

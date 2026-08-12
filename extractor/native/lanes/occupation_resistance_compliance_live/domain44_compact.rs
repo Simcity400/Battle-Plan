@@ -47,7 +47,12 @@ pub const ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN: u32 = 1 << 14;
 pub const ROW_FLAG_GARRISON_SCALARS: u32 = 1 << 15;
 
 pub const MAX_STATE_ID: u32 = 65_535;
-pub const MAX_TAG_DB_ID: u32 = 1_024;
+/// The `_CountryLinkTags` index space, not the country database's (see
+/// `collector_module.rs`'s `MAX_TAG_DB_ID` for the provenance and the
+/// `BOUND_TRIP_COUNTRY_LINK_INDEX` attribution). Was `1_024`, a guess at the
+/// vanilla-plus-DLC country count; now that vector's own structural width,
+/// `i32::MAX - 1`.
+pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_ABS_FIXED_RAW: i32 = 100_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

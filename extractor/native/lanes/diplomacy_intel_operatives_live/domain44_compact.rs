@@ -5995,27 +5995,31 @@ fn summarize_state_event_row(
     }
 }
 
+/// Duplicate detection over `(src, target)` country pairs.
+///
+/// This was a DENSE BITSET over the whole pair space: `stride * stride` bits
+/// with `stride = MAX_TAG_DB_ID + 1`, allocated on first insert. That is the one
+/// place in this tree where a country id ceiling was load-bearing for an
+/// ALLOCATION rather than for admission, and it is why raising the ceiling could
+/// not be a bounds edit alone. At the old `2_048` guess the bitset was 2049^2
+/// bits (525 KB per payload); at the engine's real id-space width it is
+/// `(2^31)^2` bits, i.e. 2^59 bytes — an instant abort, which is exactly what
+/// the recorder-host d53 fold did before this changed.
+///
+/// The set is now keyed by the pair itself, so its cost is proportional to the
+/// pairs a payload actually carries — which the payload's own length bounds —
+/// rather than to the square of the id space. That is the same shape the
+/// sibling `StateEventSeenSet::other` already had.
 #[derive(Debug, Default)]
 struct PairSeenSet {
-    words: Option<Vec<u64>>,
+    pairs: HashSet<u64>,
 }
 
 impl PairSeenSet {
     fn insert(&mut self, src: u32, target: u32) -> bool {
         debug_assert!(valid_tag(src));
         debug_assert!(valid_tag(target));
-        let stride = MAX_TAG_DB_ID as usize + 1;
-        let bit = src as usize * stride + target as usize;
-        let word_index = bit / 64;
-        let mask = 1u64 << (bit % 64);
-        let words = self.words.get_or_insert_with(|| {
-            let bit_count = stride * stride;
-            vec![0u64; (bit_count + 63) / 64]
-        });
-        let word = &mut words[word_index];
-        let fresh = *word & mask == 0;
-        *word |= mask;
-        fresh
+        self.pairs.insert((u64::from(src) << 32) | u64::from(target))
     }
 }
 
@@ -6174,6 +6178,44 @@ fn read_i64_le(payload: &[u8], offset: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The relation-opinion duplicate set costs what the payload carries, not
+    /// what the id space could hold.
+    ///
+    /// It used to be a dense bitset of `(MAX_TAG_DB_ID + 1)^2` bits. That is
+    /// fine while the ceiling is a small content-scale guess and is an instant
+    /// out-of-memory abort once the ceiling is the engine's real id-space
+    /// width — a country id ceiling was quietly load-bearing for an ALLOCATION,
+    /// which is the one thing that made raising it more than a bounds edit.
+    ///
+    /// The pairs below sit at the very top of the id space, which is precisely
+    /// where the old structure aborted: the dense form would have had to
+    /// allocate 2^59 bytes before it could answer the first `insert`.
+    ///
+    /// kills: restoring the dense `vec![0u64; stride * stride]` form of
+    /// `PairSeenSet` (which aborts this test on the first insert), and any
+    /// keying that collapses `(a, b)` with `(b, a)` or loses the high bits of
+    /// either id.
+    #[test]
+    fn the_relation_opinion_pair_set_costs_pairs_not_the_square_of_the_id_space() {
+        let top = MAX_TAG_DB_ID;
+        let mut seen = PairSeenSet::default();
+
+        assert!(seen.insert(top, top - 1), "first sighting is fresh");
+        assert!(!seen.insert(top, top - 1), "the same pair repeats");
+        // Direction is part of the identity: an opinion of A about B is not an
+        // opinion of B about A.
+        assert!(seen.insert(top - 1, top), "the reversed pair is a new pair");
+        assert!(!seen.insert(top - 1, top));
+        // Ids that differ only in their high bits must not collide.
+        assert!(seen.insert(1, top));
+        assert!(seen.insert(top, 1));
+        assert!(!seen.insert(1, top));
+        // And the ordinary vanilla-scale pairs still behave.
+        assert!(seen.insert(1, 2));
+        assert!(!seen.insert(1, 2));
+        assert!(seen.insert(2, 1));
+    }
 
     #[test]
     fn production_domain_id_is_53() {
@@ -7169,7 +7211,10 @@ mod tests {
     fn melt_faction_rows() -> Vec<FactionRow> {
         // (faction_id, leader_tag_db_id, member_count) taken from the melt.
         // Member tag_db_ids are disjoint blocks of 100 within the valid tag
-        // range [1, MAX_TAG_DB_ID(=2048)]; the leader is the block's first tag.
+        // range [1, MAX_TAG_DB_ID]; the leader is the block's first tag. (That
+        // ceiling was 2048 when this fixture was written and is now the
+        // engine's id-space width; the fixture only needs the ids to be valid
+        // and disjoint, which they still are.)
         let shape = [
             (1u32, 100u32, 18usize),
             (2, 200, 31),

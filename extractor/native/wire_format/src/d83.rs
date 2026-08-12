@@ -1,8 +1,8 @@
 //! d83 `nuke_stockpile_live` — per-country nuclear stockpile containers.
 //!
-//! Derived from `world_fold.rs:14240`-`:14309`
+//! Derived from `world_fold.rs:14268`-`:14337`
 //! (`fold_nuke_stockpile`) and the payload codec the fold calls, which for this
-// @world-fold-authority domain=83 functions=fold_nuke_stockpile lines=14240-14309 sha256=f938de9a0f2da83b112ea3fe8129fe1f28232fcf829cfccba0c6a8d6d5ec317e closure=36c7768027ab42579e60db9ca730a55d1cb8106d855f9f9a3bb24157d1986ec3
+// @world-fold-authority domain=83 functions=fold_nuke_stockpile lines=14268-14337 sha256=f938de9a0f2da83b112ea3fe8129fe1f28232fcf829cfccba0c6a8d6d5ec317e closure=36c7768027ab42579e60db9ca730a55d1cb8106d855f9f9a3bb24157d1986ec3
 //! domain lives **outside** the fold in its own leaf crate:
 //! `extractor/native/lanes/nuke_stockpile_live/src/lib.rs` (`encode_payload` at
 //! `:293`, `decode_payload` at `:328`, `validate_frame` at `:270`,
@@ -202,8 +202,16 @@ pub const NUKE_TYPE_COUNT: usize = 2;
 /// A country row and its entries are one fixed-size block, because
 /// `NUKE_TYPE_COUNT` is invariant.
 pub const COUNTRY_BLOCK_LEN: usize = COUNTRY_ROW_LEN + NUKE_TYPE_COUNT * ENTRY_ROW_LEN;
-/// `MAX_COUNTRIES`, `lib.rs:28` (`:355`, `:244`).
-pub const MAX_COUNTRIES: u32 = 2_048;
+/// `MAX_COUNTRIES`, `lib.rs` (`:355`, `:244`).
+///
+/// Was `2_048` — a guess at the vanilla-plus-DLC country count (vanilla defines
+/// 439 tags), which refused an overhaul's whole payload. A country count is
+/// content, so it is now the structural row width; the bound that does the work
+/// here is the payload itself, which the exact-length equation below already
+/// enforced (`country_count * COUNTRY_BLOCK_LEN + prologue == payload.len()`).
+/// That equation is why widening this one is safe without a second guard: the
+/// decoder never allocates from `country_count` before the length matches.
+pub const MAX_COUNTRIES: u32 = i32::MAX as u32;
 
 /// `AUTHORITY_SOURCE_UNAVAILABLE` / `AUTHORITY_EXACT_A729_RECEIPT`,
 /// `lib.rs:26`-`:27`. Any other word is rejected (`lib.rs:83`).

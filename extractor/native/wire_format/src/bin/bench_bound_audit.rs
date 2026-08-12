@@ -175,14 +175,32 @@ fn main() {
         .unwrap_or_else(|e| panic!("read {path}: {e}"));
     eprintln!("stream: {path} ({} bytes)", bytes.len());
 
+    // The country-identity bounds production applies, sourced rather than
+    // hand-typed. Two of them, not one: d20/d44 carry country-DATABASE ids and
+    // d52 carries `_CountryLinkTags` indices.
+    let owner_tag_db_id_bound =
+        i64::from(compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID);
+    let link_index_bound = i64::from(wire_format::d52::MAX_TAG_DB_ID);
+
     // (wire field, the bound the producer/consumer applies to it)
     let mut audit = Audit::new(&[
         // d20 divisions
         ("d20.max_supply_raw / MAX_SUPPLY_RAW", 100_000_000),
         ("d20.current_supply_raw / MAX_SUPPLY_RAW", 100_000_000),
+        // These two used to be hand-typed `2_048` and `1_024`. This binary
+        // classifies observed values as "at or over" a production bound, so a
+        // stale copy makes it report ordinary overhaul ids as bound trips —
+        // an evidence tool that lies in the direction of the defect it exists
+        // to find. They are sourced from the bounds production actually
+        // applies, and kept SEPARATE: d20/d44 carry country-DATABASE ids,
+        // d52 carries `_CountryLinkTags` indices, and collapsing the two would
+        // be the category error `compact_contract::country_tag_db` warns about.
         ("d20.supply_gain_raw / MAX_SUPPLY_GAIN_RAW", 500_000),
         ("d20.location / d20 MAX_PROVINCE_ID", 1_000_000),
-        ("d20.owner_tag_db_id / MAX_COMPACT_OWNER_TAG_DB_ID", 2_048),
+        (
+            "d20.owner_tag_db_id / MAX_COMPACT_OWNER_TAG_DB_ID",
+            owner_tag_db_id_bound,
+        ),
         // d44 supply logistics
         ("d44.province.rail / MAX_BUILDING_LEVEL", 1_000),
         ("d44.province.supply_node / MAX_BUILDING_LEVEL", 1_000),
@@ -194,24 +212,24 @@ fn main() {
         ("d44.division.current_supply / MAX_SUPPLY_RAW", 100_000_000),
         ("d44.division.max_supply / MAX_SUPPLY_RAW", 100_000_000),
         ("d44.division.supply_gain / MAX_SUPPLY_GAIN_RAW", 500_000),
-        ("d44.division.owner / MAX_COMPACT_OWNER_TAG_DB_ID", 2_048),
+        ("d44.division.owner / MAX_COMPACT_OWNER_TAG_DB_ID", owner_tag_db_id_bound),
         ("d44.csupply.entity_id / SUPPLY_MAX_PROVINCE_ID", 65_535),
         ("d44.country_disrupted.value / MAX_SUPPLY_RAW", 100_000_000),
         ("d44.country_disrupted.province / SUPPLY_MAX_PROVINCE_ID", 65_535),
-        ("d44.country_disrupted.owner / MAX_COMPACT_OWNER_TAG_DB_ID", 2_048),
+        ("d44.country_disrupted.owner / MAX_COMPACT_OWNER_TAG_DB_ID", owner_tag_db_id_bound),
         ("d44.homebase_candidate.province / SUPPLY_MAX_PROVINCE_ID", 65_535),
-        ("d44.homebase_candidate.owner / MAX_COMPACT_OWNER_TAG_DB_ID", 2_048),
+        ("d44.homebase_candidate.owner / MAX_COMPACT_OWNER_TAG_DB_ID", owner_tag_db_id_bound),
         ("d44.fhb1.province / SUPPLY_MAX_PROVINCE_ID", 65_535),
-        ("d44.fhb1.owner / MAX_COMPACT_OWNER_TAG_DB_ID", 2_048),
+        ("d44.fhb1.owner / MAX_COMPACT_OWNER_TAG_DB_ID", owner_tag_db_id_bound),
         ("d44.atr1.province / SUPPLY_MAX_PROVINCE_ID", 65_535),
-        ("d44.atr1.owner / MAX_COMPACT_OWNER_TAG_DB_ID", 2_048),
+        ("d44.atr1.owner / MAX_COMPACT_OWNER_TAG_DB_ID", owner_tag_db_id_bound),
         // d52 occupation
-        ("d52.owner_tag_db_id / MAX_TAG_DB_ID", 1_024),
-        ("d52.controller_tag_db_id / MAX_TAG_DB_ID", 1_024),
-        ("d52.occupied_country_tag_db_id / MAX_TAG_DB_ID", 1_024),
-        ("d52.collab.owner_tag_db_id / MAX_TAG_DB_ID", 1_024),
-        ("d52.collab.target_tag_db_id / MAX_TAG_DB_ID", 1_024),
-        ("d52.gar1.controller_tag_db_id / MAX_TAG_DB_ID", 1_024),
+        ("d52.owner_tag_db_id / MAX_TAG_DB_ID", link_index_bound),
+        ("d52.controller_tag_db_id / MAX_TAG_DB_ID", link_index_bound),
+        ("d52.occupied_country_tag_db_id / MAX_TAG_DB_ID", link_index_bound),
+        ("d52.collab.owner_tag_db_id / MAX_TAG_DB_ID", link_index_bound),
+        ("d52.collab.target_tag_db_id / MAX_TAG_DB_ID", link_index_bound),
+        ("d52.gar1.controller_tag_db_id / MAX_TAG_DB_ID", link_index_bound),
     ]);
 
     let mut offset = 0usize;
