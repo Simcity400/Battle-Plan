@@ -709,6 +709,16 @@ pub struct DecodeStats {
     /// True only when both the production tracker and strict extractor
     /// certification accept the final closed-hour boundary.
     pub ends_at_frame_end: bool,
+    /// WHAT THIS DECODE ESTABLISHED, per game hour: which hours were framed end
+    /// to end and closed canonically (each with the digest of the records it is
+    /// made of), and which are excluded, each with a named reason.
+    ///
+    /// This is the per-hour verdict the seal publishes against (owner ruling
+    /// 2026-08-11, task #188). `boundary_error`/`ends_at_frame_end` above are
+    /// still the whole-stream verdict and still mean exactly what they did:
+    /// `certification_verdict` below is unchanged, because `take_index` and
+    /// `certify_complete` need the stronger end-to-end claim.
+    pub hour_coverage: recorder_host::hour_coverage::HourCoverageMap,
 }
 
 impl DecodeStats {
@@ -1171,6 +1181,17 @@ pub struct CertifiedReplayArtifacts {
     pub production_render_blob_count: u64,
     pub production_render_blob_bytes: u64,
     pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
+    /// WHAT THIS BUILD VOUCHES FOR, per game hour — established by the SAME
+    /// walk that produced the packaged H4IX and H4CP above.
+    ///
+    /// It travels with the artifacts rather than being re-derived at seal time
+    /// because a second, independent walk of the run-dir stream is a second
+    /// SOURCE: nothing would join its per-hour digests to the bytes the
+    /// packaged cache was actually built from, so a stream swapped between the
+    /// two walks would publish one walk's `basis_sha256` values over the other
+    /// walk's cache, and every VERIFIED claim would then be backed by bytes
+    /// nobody serves (Codex review round 2, finding 4).
+    pub hour_coverage: recorder_host::hour_coverage::HourCoverageMap,
     /// Placement-authoritative CID1 the complete fold retained, in the same
     /// manifest shape the legacy per-hour JSON fold publishes. `None` for a
     /// Legacy-protocol stream, which must never retain one.
@@ -1510,6 +1531,9 @@ pub fn build_certified_replay_artifacts(
     let (jobs_tx, jobs_rx) = mpsc::sync_channel::<CacheEmitJob>(FINALIZE_PIPELINE_DEPTH);
     let mut pending: Option<(WorldHour, u64)> = None;
     let mut legacy_json_bytes_avoided = 0u64;
+    /// The first hour left out of the cache, if any. Only a TRAILING run of
+    /// them is representable; see the refusal below.
+    let mut skipped_hour: Option<i64> = None;
 
     let pipeline_result = thread::scope(|scope| {
         let consumer_dir = output_dir.clone();
@@ -1561,17 +1585,52 @@ pub fn build_certified_replay_artifacts(
                                 "legacy JSON byte accounting overflowed u64".to_string(),
                             )
                         })?;
+                    // AN EXCLUDED HOUR IS NOT CACHED. The cursor still DELIVERS
+                    // it — tooling has always been able to read an uncertifiable
+                    // stream — but the certified cache is what a replay consumer
+                    // is served from, so an hour the recording does not vouch
+                    // for must not be in it (Codex review round 1, finding 2).
+                    //
+                    // The end offset handed to the previous hour is the NEXT
+                    // hour's start whether or not that hour is emitted, so
+                    // skipping one cannot silently widen its neighbour's byte
+                    // range over the skipped hour's records.
+                    let verified = i32::try_from(previous.hour_index)
+                        .ok()
+                        .and_then(|hour| {
+                            hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST)
+                        })
+                        .is_some_and(|raw| cursor.live_hour_coverage().is_hour_verified(raw));
+                    // The cache's rows must abut exactly, so only a TRAILING
+                    // exclusion can be dropped. A verified hour arriving after
+                    // a skipped one is refused here, by name, rather than
+                    // reaching the encoder as an unexplained contiguity error
+                    // (Codex review round 2, finding 1; residual GY-4).
+                    if verified {
+                        if let Some(excluded) = skipped_hour {
+                            return Err(OpenError::Certification(format!(
+                                "game hour {excluded} is excluded from this recording's \
+                                 verified coverage but hour {} after it is verified; the \
+                                 certified checkpoint cache is contiguous by construction, \
+                                 so an INTERIOR excluded hour cannot be represented in it",
+                                previous.hour_index
+                            )));
+                        }
+                    } else {
+                        skipped_hour = Some(previous.hour_index);
+                    }
                     // A closed receiver means the consumer already failed. Stop
                     // producing and let the join below surface ITS error, which
                     // is the real one, rather than a send failure describing the
                     // symptom.
-                    if jobs_tx
-                        .send(CacheEmitJob::from_hour(
-                            previous,
-                            previous_start,
-                            start_offset,
-                        ))
-                        .is_err()
+                    if verified
+                        && jobs_tx
+                            .send(CacheEmitJob::from_hour(
+                                previous,
+                                previous_start,
+                                start_offset,
+                            ))
+                            .is_err()
                     {
                         return Ok(());
                     }
@@ -1586,6 +1645,12 @@ pub fn build_certified_replay_artifacts(
         // runs. Drop the sender first so the consumer's loop terminates.
         let producer_result = producer.and_then(|()| {
             let excluded = cursor.stats().excluded_domain_data_records.clone();
+            // Read before `take_index` consumes the cursor, and SEALED (the
+            // cursor is exhausted by now, so `finalize_done` has closed the map
+            // over the EOF residual). This is what the seal publishes, so the
+            // per-hour bases it carries are the ones this build's cache was
+            // made from — see the field's own comment.
+            let hour_coverage = cursor.stats().hour_coverage.clone();
             // Read before `take_index` consumes the cursor: the seal path needs
             // the retained CID1 to join against the session manifest exactly as
             // the legacy per-hour JSON fold does.
@@ -1639,13 +1704,24 @@ pub fn build_certified_replay_artifacts(
                         "legacy JSON byte accounting overflowed u64".to_string(),
                     )
                 })?;
-            let _ = jobs_tx.send(CacheEmitJob::from_hour(
-                last,
-                last_start,
-                expected_source_len,
-            ));
+            // Same rule as every other hour, asked against the CERTIFIED INDEX
+            // rather than the cursor (which `take_index` has already consumed).
+            // Asking the index is the stronger question anyway: it is what the
+            // cache must agree with entry for entry.
+            if stream_index
+                .hours
+                .iter()
+                .any(|row| row.hour_index == last.hour_index)
+            {
+                let _ = jobs_tx.send(CacheEmitJob::from_hour(
+                    last,
+                    last_start,
+                    expected_source_len,
+                ));
+            }
             Ok((
                 excluded,
+                hour_coverage,
                 identity,
                 stream_index,
                 index_rows_charge,
@@ -1662,11 +1738,18 @@ pub fn build_certified_replay_artifacts(
         // Consumer errors win: when both fail, the producer's is usually the
         // "receiver hung up" symptom of the consumer's real failure.
         let cache_encoder = consumed?;
-        let (excluded, identity, stream_index, index_rows_charge, published_hour_coverage_end) =
-            producer_result?;
+        let (
+            excluded,
+            hour_coverage,
+            identity,
+            stream_index,
+            index_rows_charge,
+            published_hour_coverage_end,
+        ) = producer_result?;
         Ok::<_, OpenError>((
             cache_encoder,
             excluded,
+            hour_coverage,
             identity,
             stream_index,
             index_rows_charge,
@@ -1676,6 +1759,7 @@ pub fn build_certified_replay_artifacts(
     let (
         charged_encoder,
         excluded_domain_data_records,
+        hour_coverage,
         campaign_identity_manifest,
         stream_index,
         // Held for as long as `stream_index` is: it owns the hour rows now.
@@ -1849,6 +1933,7 @@ pub fn build_certified_replay_artifacts(
         production_render_blob_count,
         production_render_blob_bytes,
         excluded_domain_data_records,
+        hour_coverage,
         campaign_identity_manifest,
         // Never `expected_source_len` by default: a stream whose tail reached
         // no published hour must report the shorter, honest coverage.
@@ -2670,6 +2755,18 @@ impl HourCursor {
         &self.stats
     }
 
+    /// The coverage established SO FAR, readable mid-iteration.
+    ///
+    /// `stats().hour_coverage` is only populated at `finalize_done`, so a
+    /// caller streaming hours out of this cursor and asking that field would
+    /// see an empty map and treat every hour as unverified. An hour's row is
+    /// written the moment its frame closes, which is strictly before
+    /// `next_hour` can yield it, so this is complete for every hour already
+    /// delivered.
+    pub fn live_hour_coverage(&self) -> &recorder_host::hour_coverage::HourCoverageMap {
+        self.boundary_tracker.coverage()
+    }
+
     /// Number of finished hours currently buffered but not yet pulled. This is
     /// the cursor's retention: it is at most the hours closed by one
     /// `FRAME_END` (normally 0 or 1), never the whole stream — the structural
@@ -2708,8 +2805,70 @@ impl HourCursor {
     /// must have reached physical EOF, passed strict stream certification, and
     /// have a stable re-openable source identity. Prefix/reader-only indexes are
     /// intentionally unavailable through this authoritative API.
-    pub fn take_index(self) -> Result<StreamIndex, IndexCertificationError> {
+    pub fn take_index(mut self) -> Result<StreamIndex, IndexCertificationError> {
         self.validate_complete()?;
+        // AN EXCLUDED HOUR NEVER ENTERS THE CERTIFIED INDEX.
+        //
+        // The index is what the replay cache's hours are enumerated from, so an
+        // excluded hour left in it is an excluded hour served (Codex review
+        // round 1, finding 2). Dropping the row here is the single point that
+        // decides it, because every certified artifact — H4IX rows, H4CP cache
+        // hours, the hour count on the manifest — is derived from this vector.
+        //
+        // ONLY A TRAILING EXCLUSION CAN BE DROPPED, and that is a property of
+        // the H4IX/H4CP contract rather than a choice made here: the index's
+        // first hour must sit at decoded offset zero and consecutive cache
+        // rows must have exactly contiguous H4CR ranges
+        // (`StreamIndex::validate_structure`, `ReplayCacheEncoder`). An
+        // INTERIOR excluded hour cannot be represented in either structure, so
+        // it is refused here by name instead of producing an index the format
+        // rejects for a reason that says nothing about the hour (Codex review
+        // round 2, finding 1). See `runs/gy_per_hour_seal/MATRIX.md`, residual
+        // GY-4.
+        {
+            let mut seen_excluded: Option<i64> = None;
+            for row in &self.index_hours {
+                let verified = i32::try_from(row.hour_index)
+                    .ok()
+                    .and_then(|hour| {
+                        hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST)
+                    })
+                    .is_some_and(|raw| self.boundary_tracker.coverage().is_hour_verified(raw));
+                match (verified, seen_excluded) {
+                    (false, None) => seen_excluded = Some(row.hour_index),
+                    (true, Some(excluded)) => {
+                        return Err(IndexCertificationError::Stream(format!(
+                            "game hour {excluded} is excluded from this recording's verified \
+                             coverage but hour {} after it is verified; the certified hour \
+                             index and checkpoint cache are contiguous by construction (the \
+                             first hour sits at decoded offset zero and consecutive hours \
+                             must abut), so an INTERIOR excluded hour cannot be represented \
+                             in them. {}",
+                            row.hour_index,
+                            self.stats.hour_coverage.summary()
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // The tracker's live map, not `stats.hour_coverage`: `finalize_done`
+        // has run by the time a cursor can be consumed, but reading the tracker
+        // directly is what keeps this correct if that ever stops being true.
+        let coverage = self.boundary_tracker.coverage().clone();
+        self.index_hours.retain(|row| {
+            i32::try_from(row.hour_index)
+                .ok()
+                .and_then(|hour| hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST))
+                .is_some_and(|raw| coverage.is_hour_verified(raw))
+        });
+        if self.index_hours.is_empty() {
+            return Err(IndexCertificationError::Stream(format!(
+                "no game hour in this recording is verified, so no certified index can be \
+                 minted ({})",
+                self.stats.hour_coverage.summary()
+            )));
+        }
         let descriptor = self
             .index_source
             .ok_or(IndexCertificationError::UnidentifiedSource)?;
@@ -2756,19 +2915,46 @@ impl HourCursor {
         self.validate_complete()
     }
 
+    /// What a certified index asserts, since the owner's per-hour ruling
+    /// (2026-08-11, task #188).
+    ///
+    /// It used to be the whole-stream verdict: the stream had to have been
+    /// walked end to end with every byte framed, or no index could be minted at
+    /// all. That is what made the ruling UNREACHABLE on the production binary
+    /// branch — `build_certified_replay_artifacts` calls `take_index`, and its
+    /// failure propagated out of finalize long before the per-hour seal gate
+    /// downstream could read a coverage map (Codex review round 1, finding 1).
+    ///
+    /// What replaces it is not weaker, it is per-hour: the recording must have
+    /// at least one hour it can vouch for, its coverage map must be
+    /// structurally admissible, and — asserted by the callers that build the
+    /// index rows — every hour the index carries must be one of the verified
+    /// ones. Bytes that framed into no hour are named in the map rather than
+    /// silently tolerated: `truncated_tail_bytes` and `unframeable` spans both
+    /// appear there as excluded hours or unattributed losses.
     fn validate_complete(&self) -> Result<(), IndexCertificationError> {
         if !self.done {
             return Err(IndexCertificationError::NotExhausted);
         }
-        self.stats
-            .certification_verdict()
-            .map_err(IndexCertificationError::Stream)?;
-        if self.processed != self.decoded_read {
-            return Err(IndexCertificationError::Length(format!(
-                "framed {} byte(s), but read {} decoded source byte(s)",
-                self.processed, self.decoded_read
-            )));
-        }
+        validate_excluded_domain_data_accounting(
+            self.stats.malformed_payload_records,
+            &self.stats.excluded_domain_data_records,
+        )
+        .map_err(IndexCertificationError::Stream)?;
+        recorder_host::hour_coverage::per_hour_seal_verdict(&self.stats.hour_coverage).map_err(
+            |error| {
+                // A recording with NOTHING to publish is the one case where the
+                // strict machine's own diagnosis is the most specific statement
+                // available, and it must not be lost behind the coverage
+                // summary: the strict arms exist precisely to say things the
+                // shared boundary tracker does not (e.g. "FRAME_END ... without
+                // an open DOMAIN_DATA hour").
+                IndexCertificationError::Stream(match self.stats.boundary_error.as_deref() {
+                    Some(strict) => format!("{error}; {strict}"),
+                    None => error,
+                })
+            },
+        )?;
         if self.total_len != 0 && self.total_len != self.decoded_read {
             return Err(IndexCertificationError::Length(format!(
                 "declared decoded length {} does not match {} byte(s) read",
@@ -2793,7 +2979,87 @@ impl HourCursor {
                 let header = match parse_compact_record_header(&self.carry[self.pos..]) {
                     Ok(h) => h,
                     Err(e) => {
-                        self.stats.stop_reason = Some(framing_stop_message(e, record_start_abs));
+                        let message = framing_stop_message(e, record_start_abs);
+                        if self.stats.stop_reason.is_none() {
+                            self.stats.stop_reason = Some(message.clone());
+                        }
+                        // GQ-2: pick the stream back up at the next well-formed
+                        // record rather than discarding every intact byte after
+                        // the damage. Measured before this existed: one flipped
+                        // bit in hour 1's record magic cost hours 2..8, all of
+                        // which were physically present and independently
+                        // decodable (`runs/gq_bad_hour/MATRIX.md`, cell c1).
+                        match if self.compressed {
+                            // A compressed source is not resynchronised: its
+                            // storage checksum proves the decoded bytes are
+                            // what was sealed, so H4CR-invalid content there is
+                            // capture-time garbage in a container claiming
+                            // integrity. That stays the hard error below.
+                            recorder_host::stream_fold::FramingResync::Exhausted
+                        } else {
+                            recorder_host::stream_fold::find_frame_resync_offset(
+                                &self.carry,
+                                self.pos,
+                            )
+                        } {
+                            recorder_host::stream_fold::FramingResync::At(next) => {
+                                let skipped = (next - self.pos) as u64;
+                                let before =
+                                    recorder_host::stream_fold::FoldDamageWatch::before(
+                                        &self.boundary_tracker,
+                                    );
+                                self.boundary_tracker.note_framing_damage(
+                                    record_start_abs,
+                                    skipped,
+                                    &message,
+                                );
+                                recorder_host::stream_fold::apply_fold_damage_step(
+                                    before.after(&self.boundary_tracker, 0),
+                                    &mut self.fold,
+                                );
+                                self.pos = next;
+                                continue;
+                            }
+                            recorder_host::stream_fold::FramingResync::NeedMoreData
+                                if self.carry.len() - self.pos
+                                    <= recorder_host::stream_fold::MAX_RESYNC_WINDOW_BYTES =>
+                            {
+                                break; // read more, then look again
+                            }
+                            // Past the window the scanned region is DISCARDED
+                            // and framing keeps going. Stopping here left the
+                            // stream half-read and cost hours that had already
+                            // closed cleanly (Codex review round 4). Only the
+                            // COMPRESSED arm below still stops, deliberately.
+                            recorder_host::stream_fold::FramingResync::NeedMoreData
+                            | recorder_host::stream_fold::FramingResync::Exhausted
+                                if !self.compressed =>
+                            {
+                                let keep = COMPACT_RECORD_HEADER_LEN.saturating_sub(1);
+                                let discard =
+                                    (self.carry.len() - self.pos).saturating_sub(keep);
+                                if discard > 0 {
+                                    let before =
+                                        recorder_host::stream_fold::FoldDamageWatch::before(
+                                            &self.boundary_tracker,
+                                        );
+                                    self.boundary_tracker.note_framing_damage(
+                                        record_start_abs,
+                                        discard as u64,
+                                        &message,
+                                    );
+                                    recorder_host::stream_fold::apply_fold_damage_step(
+                                        before.after(&self.boundary_tracker, 0),
+                                        &mut self.fold,
+                                    );
+                                    self.pos += discard;
+                                    continue;
+                                }
+                                break;
+                            }
+                            recorder_host::stream_fold::FramingResync::NeedMoreData
+                            | recorder_host::stream_fold::FramingResync::Exhausted => {}
+                        }
                         if self.compressed {
                             // A framing stop before physical EOF means the zstd
                             // footer + content checksum were never validated.
@@ -2823,12 +3089,43 @@ impl HourCursor {
                             && header.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER))
                 {
                     if self.strict_validation_error.is_none() {
-                        self.strict_validation_error = Some(format!(
+                        let message = format!(
                             "Legacy stream contains an IdentityV1 sequence-zero CID1 header at byte {record_start_abs}"
-                        ));
+                        );
+                        self.strict_validation_error = Some(message.clone());
                         let payload = &self.carry
                             [self.pos + COMPACT_RECORD_HEADER_LEN..self.pos + record_len];
                         let _ = self.stream_validator.validate_record(&header, payload);
+                        // The validator is TERMINAL from here, so this arm now
+                        // swallows every remaining record without ever showing
+                        // it to the boundary tracker. Those hours must not
+                        // simply vanish: before this, the prefix still sealed
+                        // while everything after the illegal identity record was
+                        // silently amputated, with no excluded row and no named
+                        // loss anywhere (Codex review round 9). Naming it as
+                        // stream damage also latches `framing_damage_seen`, so
+                        // nothing after it can be vouched for either.
+                        let before =
+                            recorder_host::stream_fold::FoldDamageWatch::before(
+                                &self.boundary_tracker,
+                            );
+                        self.boundary_tracker.note_framing_damage(
+                            record_start_abs,
+                            record_len as u64,
+                            &message,
+                        );
+                        recorder_host::stream_fold::apply_fold_damage_step(
+                            before.after(&self.boundary_tracker, header.game_hour_raw),
+                            &mut self.fold,
+                        );
+                    } else {
+                        // Still account the bytes this arm consumes, so the
+                        // named span covers everything it swallowed.
+                        self.boundary_tracker.note_framing_damage(
+                            record_start_abs,
+                            record_len as u64,
+                            "records after a terminal stream-identity failure",
+                        );
                     }
                     self.pos += record_len;
                     continue;
@@ -2901,8 +3198,22 @@ impl HourCursor {
                     COMPACT_RECORD_TYPE_DOMAIN_PERF => self.stats.perf_records += 1,
                     _ => self.stats.other_records += 1,
                 }
+                let damage_before =
+                    recorder_host::stream_fold::FoldDamageWatch::before(&self.boundary_tracker);
                 self.boundary_tracker
                     .observe(&header, payload, record_start_abs);
+                // An hour under resynchronisation is EXCLUDED from the
+                // recording's verified coverage. Its remains are not folded:
+                // feeding them in would carry state nothing vouches for into
+                // the hours that follow, which is the shape the owner stop
+                // condition names. The one thing that MUST still happen is
+                // closing the fold's open hour when the damaged span ends —
+                // otherwise the next hour's records fold into it and publish
+                // under the wrong date.
+                recorder_host::stream_fold::apply_fold_damage_step(
+                    damage_before.after(&self.boundary_tracker, header.game_hour_raw),
+                    &mut self.fold,
+                );
 
                 if let Some(reason) = malformed_reason {
                     if exact_payload_error.is_some() {
@@ -3053,6 +3364,7 @@ impl HourCursor {
         }
         self.stats.boundary_error = self.strict_validation_error.take();
         self.stats.ends_at_frame_end = self.stats.boundary_error.is_none();
+        self.stats.hour_coverage = self.boundary_tracker.seal_coverage(&self.carry);
         self.done = true;
     }
 

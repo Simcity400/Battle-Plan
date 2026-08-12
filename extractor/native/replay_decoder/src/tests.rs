@@ -1116,7 +1116,19 @@ fn header_corruption_in_compressed_stream_is_a_hard_decode_error() {
         "unexpected error: {err}"
     );
 
-    // Raw: tolerant stop-with-reason behavior byte-identical to before.
+    // Raw: the damage costs its own hour, not everything after it.
+    //
+    // This assertion is the one the owner's per-hour ruling (2026-08-11, task
+    // #188) changed. It used to require that corruption before the first
+    // FRAME_END emitted NO hours: the cursor stopped dead at the first
+    // unparseable header and every intact hour after it was discarded unread.
+    // A raw source now resynchronises at the next well-formed record, and the
+    // damaged hour is named in the coverage map instead of costing the rest.
+    //
+    // kills: putting the unconditional framing stop back in `HourCursor::pump`'s
+    // parse-error arm. The raw cursor then yields nothing and the "hours after
+    // the damage survive" assertion fails — while the compressed assertions
+    // above keep passing, which is why both live in one test.
     let mut raw_cursor = Source::detect(&raw_path)
         .unwrap()
         .open_cursor(&opts)
@@ -1126,13 +1138,39 @@ fn header_corruption_in_compressed_stream_is_a_hard_decode_error() {
         .collect::<Result<Vec<WorldHour>, DecodeError>>()
         .expect("raw torn/corrupt tails keep the tolerant stop");
     assert!(
-        hours.is_empty(),
-        "corruption before the first FRAME_END emits no hours"
+        !hours.is_empty(),
+        "the hours after the damage must survive it: {}",
+        raw_cursor.stats().hour_coverage.summary()
     );
     assert!(raw_cursor.stats().stop_reason.is_some());
     assert!(
         raw_cursor.stats().certification_verdict().is_err(),
         "diagnostic raw-prefix tolerance must not become certification"
+    );
+    // And the damaged hour is REFUSED by name rather than served.
+    let excluded = raw_cursor.stats().hour_coverage.excluded_hours();
+    assert!(
+        excluded
+            .iter()
+            .any(|(_, reason)| reason.contains("framing damage")),
+        "the damaged hour must be excluded and named: {excluded:?}"
+    );
+    // AND none of the recovered hours reaches the certified index. The damage
+    // here lands in the SECOND record, so no hour closed before it: every hour
+    // was read after a resynchronised boundary, which is a guess rather than a
+    // proof, so the recording has nothing it can vouch for and mints no index.
+    //
+    // kills: dropping the `framing_damage_seen` arm from
+    // `BoundaryTracker::close_hour_if_boundary`. The recovered hours are then
+    // VERIFIED, `build_index` succeeds, and this refusal disappears — a
+    // digest-backed claim over records that may have been read from inside a
+    // damaged record's payload.
+    let error = build_index(&Source::detect(&raw_path).unwrap(), &opts)
+        .expect_err("hours recovered after framing damage are not vouched for");
+    let message = format!("{error}");
+    assert!(
+        message.contains("nothing to seal") && message.contains("recovered after framing damage"),
+        "the refusal must say nothing is verified, and why: {message}"
     );
 }
 
@@ -1387,17 +1425,27 @@ fn authoritative_index_requires_eof_certification_and_a_stable_source() {
     let mut malformed_suffix = stream;
     malformed_suffix.extend_from_slice(b"H4C");
     std::fs::write(&path, malformed_suffix).unwrap();
-    match build_index(
+    // Since the owner's per-hour ruling (2026-08-11, task #188) a malformed
+    // suffix no longer prevents an authoritative index — it costs the hours it
+    // damaged. What the index must still refuse to do is CARRY one of them: the
+    // rows it publishes are exactly the verified hours, and the residue is
+    // named in the coverage map instead of silently dropped.
+    //
+    // kills: restoring the whole-stream `certification_verdict()` call in
+    // `HourCursor::validate_complete`. `build_index` then refuses outright and
+    // the `expect` below fails — which is exactly the loss the ruling retired.
+    // (The `index_hours.retain(...)` filter is NOT what this input exercises: a
+    // three-byte suffix emits no hour, so there is no excluded row to drop.
+    // `header_corruption_in_compressed_stream_is_a_hard_decode_error` covers
+    // the filter, on a stream whose injured hour IS emitted.)
+    let index = build_index(
         &Source::StreamFile(path),
         &OpenOptions {
             game_id: Some("fold_check".to_string()),
         },
-    ) {
-        Err(OpenError::Certification(message)) => {
-            assert!(message.contains("not certified"), "{message}");
-        }
-        other => panic!("malformed suffix must prevent authoritative index: {other:?}"),
-    }
+    )
+    .expect("the hours before a malformed suffix are verified and indexable");
+    assert_eq!(index.hours.len(), 3, "three hours were framed end to end");
 }
 
 #[test]
@@ -1466,8 +1514,16 @@ fn seek_rejects_wrong_source_and_valid_prefix_copy_mutations() {
     let mut malformed_suffix = stream.clone();
     malformed_suffix.extend_from_slice(b"H4C");
     std::fs::write(&original_path, malformed_suffix).unwrap();
+    // The source changed under a persisted index, and the seek refuses. Which
+    // refusal it is moved with the owner's per-hour ruling (2026-08-11, task
+    // #188): the truncated source now certifies its own verified hours, so the
+    // mismatch is caught by the index-to-source binding rather than by a
+    // whole-stream certification failure. Both are refusals of the same thing —
+    // a persisted index may never be served against bytes it was not built
+    // from.
     match seek_to_hour(&original, &index, HOUR_A, &opts) {
-        Err(SeekError::Open(OpenError::Certification(_))) => {}
+        Err(SeekError::Open(OpenError::Certification(_)))
+        | Err(SeekError::InvalidIndex(_)) => {}
         other => panic!("malformed suffix must prevent seek result: {other:?}"),
     }
 
@@ -2342,7 +2398,13 @@ fn compressed_storage_still_enforces_the_decoded_receipt() {
     // index (the declared total is never reached), before the identity join.
     assert!(
         error.to_string().contains("certified H4CR identity")
-            || error.to_string().contains("not certifiable"),
+            || error.to_string().contains("not certifiable")
+            // Since the owner's per-hour ruling (2026-08-11, task #188) a
+            // stream is no longer refused wholesale for a torn tail, so the
+            // overshooting DECLARED length is caught by the length binding
+            // itself rather than by whole-stream certification. Either way the
+            // source is never admitted under a length it does not have.
+            || error.to_string().contains("does not match"),
         "unexpected error: {error}"
     );
 
@@ -2476,18 +2538,47 @@ fn neutral_prefolded_producer_accepts_only_physically_raw_h4cr() {
     }
 }
 
+/// A MALFORMED SUFFIX COSTS ITS OWN HOURS, AND THE PREFIX IS NOT SMUGGLED OUT
+/// UNNAMED.
+///
+/// Before the owner's per-hour ruling (2026-08-11, task #188) this asserted a
+/// blanket refusal: three intact hours followed by three stray bytes produced
+/// nothing at all. That is the loss the ruling retired — the three hours are
+/// framed end to end and each carries a digest-backed basis.
+///
+/// What must NOT change is that the tail is never silently dropped. So the
+/// second half asserts the residue is NAMED, and a consumer can always tell a
+/// three-hour recording from a three-hour prefix of a longer one.
+///
+/// kills: dropping the residual-carry arm from `BoundaryTracker::seal_coverage`.
+/// The three stray bytes then appear in no coverage row and no unattributed
+/// loss, and the second assertion fails while the first still passes — which is
+/// why both are here.
 #[test]
-fn malformed_raw_suffix_never_exposes_a_prefolded_prefix() {
+fn a_malformed_raw_suffix_costs_its_own_hours_and_is_named() {
     let dir = TmpDir::new("neutral_no_prefix");
     let path = dir.0.join("collector_stream.bin");
     let mut stream = three_hour_stream();
     stream.extend_from_slice(b"H4C");
     std::fs::write(&path, stream).unwrap();
 
-    assert!(matches!(
-        fold_raw_h4cr_prefolded(&path, &OpenOptions::default()),
-        Err(OpenError::Certification(_))
-    ));
+    let prefolded = fold_raw_h4cr_prefolded(&path, &OpenOptions::default())
+        .expect("the intact hours before a malformed suffix are verified and admissible");
+    assert_eq!(
+        prefolded.entries().len(),
+        3,
+        "every hour framed end to end is delivered"
+    );
+
+    let mut cursor = open(&path).expect("open the same stream");
+    cursor.by_ref().for_each(drop);
+    let coverage = &cursor.stats().hour_coverage;
+    assert_eq!(coverage.verified_count(), 3);
+    assert!(
+        !coverage.unattributed_losses().is_empty() || !coverage.excluded_hours().is_empty(),
+        "the malformed suffix must be NAMED somewhere a consumer reads: {}",
+        coverage.summary()
+    );
 }
 
 #[test]

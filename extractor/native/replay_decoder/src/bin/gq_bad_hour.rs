@@ -17,9 +17,12 @@
 //!   `replay_decoder`'s `HourCursor` (the production replay decoder). The
 //!   certification verdict is `strict_stream_certification_verdict`. The
 //!   seal-time gates are `validate_excluded_domain_data_accounting` +
-//!   `strict_stream_certification_verdict` (the `fold_stats` arm) and
-//!   `verify_stream_logical_boundary_with_identity_mode` (the skip-fold arm) —
-//!   the same two calls `collector_record`'s seal makes, in the same order.
+//!   `hour_coverage::per_hour_seal_verdict` over the walk's PER-HOUR coverage
+//!   map (the `fold_stats` arm) and `stream_fold::walk_stream_hour_coverage`
+//!   fed to the same verdict (the skip-fold arm) — the same two calls
+//!   `collector_record`'s seal makes, in the same order, after the owner's
+//!   per-hour ruling of 2026-08-11 (task #188). Before that ruling both arms
+//!   asked `strict_stream_certification_verdict` for one whole-stream verdict.
 //!   The container gate is `snapshot::container::Container::verify_all`.
 //! * **Not real**: the base stream BYTES. No captured H4CR spool survives on
 //!   this machine — the four retained captures (`runs/live_unlock/t46..t49`) are
@@ -56,9 +59,10 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_DOMAIN_GAP, COMPACT_RECORD_TYPE_FRAME_END,
     COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA,
 };
+use recorder_host::hour_coverage::per_hour_seal_verdict;
 use recorder_host::stream_fold::{
-    drive_fold_with_identity_mode, strict_stream_certification_verdict,
-    validate_excluded_domain_data_accounting, verify_stream_logical_boundary_with_identity_mode,
+    drive_fold_with_identity_mode, validate_excluded_domain_data_accounting,
+    walk_stream_hour_coverage,
 };
 use recorder_host::world_fold::WorldFold;
 
@@ -452,6 +456,10 @@ struct Observation {
     boundary_walk: Result<(), String>,
     /// Every accounting string a consumer could read the injury out of.
     named_reasons: Vec<String>,
+    /// The recording's own per-hour verdict, as the production seal publishes
+    /// it: which hours are verified (with a digest-backed basis) and which are
+    /// excluded, each with a named reason.
+    coverage: recorder_host::hour_coverage::HourCoverageMap,
 }
 
 fn observe(bytes: &[u8], identity: bool, scratch: &Path, tag: &str) -> Observation {
@@ -487,6 +495,7 @@ fn observe(bytes: &[u8], identity: bool, scratch: &Path, tag: &str) -> Observati
     let stats = cursor.stats().clone();
 
     let mut named_reasons = Vec::new();
+    let mut coverage = recorder_host::hour_coverage::HourCoverageMap::new();
     if let Some(e) = &decode_io_error {
         named_reasons.push(format!("decoder_error={e}"));
     }
@@ -511,33 +520,40 @@ fn observe(bytes: &[u8], identity: bool, scratch: &Path, tag: &str) -> Observati
                     m.first_game_hour_raw, m.first_reason
                 ));
             }
+            // The per-hour coverage map is the recording's own statement about
+            // which hours it vouches for, and it is what the production seal
+            // publishes against. Every excluded hour is a named loss a consumer
+            // reads directly, so it counts here exactly as an accounting string
+            // does.
+            for (hour, reason) in s.hour_coverage.excluded_hours() {
+                named_reasons.push(format!("coverage_excluded hour_raw={hour} reason={reason}"));
+            }
+            for loss in s.hour_coverage.unattributed_losses() {
+                named_reasons.push(format!("coverage_unattributed {loss}"));
+            }
+            coverage = s.hour_coverage.clone();
+            // The same two calls `collector_record`'s seal makes, in the same
+            // order, after the per-hour ruling.
             validate_excluded_domain_data_accounting(
                 s.malformed_payload_records,
                 &s.excluded_domain_data_records,
             )
-            .and_then(|()| {
-                strict_stream_certification_verdict(
-                    s.stop_reason.as_deref(),
-                    s.truncated_tail_bytes,
-                    s.ends_at_frame_end,
-                    None,
-                )
-            })
+            .and_then(|()| per_hour_seal_verdict(&s.hour_coverage))
         }
     };
 
     // --- the skip-fold seal arm, over a real file --------------------------
     let path = scratch.join(format!("{tag}.h4cr"));
     fs::write(&path, bytes).expect("write injected stream");
-    let boundary_walk = match verify_stream_logical_boundary_with_identity_mode(&path, mode) {
-        Ok(excluded) => {
-            for e in &excluded {
+    let boundary_walk = match walk_stream_hour_coverage(&path, mode) {
+        Ok(outcome) => {
+            for e in &outcome.excluded_domain_data_records {
                 named_reasons.push(format!(
                     "seal_walk_excluded hour_raw={} domain={} reason={}",
                     e.game_hour_raw, e.domain_id, e.validation_reason
                 ));
             }
-            Ok(())
+            per_hour_seal_verdict(&outcome.hour_coverage)
         }
         Err(e) => Err(e.to_string()),
     };
@@ -560,6 +576,7 @@ fn observe(bytes: &[u8], identity: bool, scratch: &Path, tag: &str) -> Observati
         fold_seal_gate,
         boundary_walk,
         named_reasons,
+        coverage,
     }
 }
 
@@ -1201,12 +1218,21 @@ fn main() {
         ));
 
         // (h) abrupt end at a whole-record boundary: the hour is left OPEN.
-        // Only that hour is injured; hours before it are complete and sealed.
+        //
+        // The injured set is `hour..HOURS`, not `[hour]`. The injection CUTS
+        // THE FILE at this hour's FRAME_END offset, so every later hour is
+        // physically absent from the stream — exactly as in cell (a), which
+        // has always declared the whole tail injured. Declaring only `[hour]`
+        // scored those absent hours as collateral loss, which made the cell
+        // unpassable by construction and hid what the row was actually
+        // measuring: whether the hours BEFORE the cut survive and whether the
+        // open hour is named. (Lane GY.)
+        let injured: Vec<usize> = (hour..HOURS).collect();
         let bytes = inject_truncate_at_boundary(&base, hour);
         rows.push(judge(
             "(h) abrupt end, hour left open at EOF",
             name,
-            &[hour],
+            &injured,
             &base_obs,
             &observe(&bytes, identity, &scratch, &format!("h_{name}")),
         ));

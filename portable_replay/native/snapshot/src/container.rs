@@ -893,6 +893,22 @@ pub struct ContainerEntry {
     pub sha256: String,
 }
 
+/// One container entry's integrity verdict, from
+/// [`Container::verify_all_streaming_report`].
+///
+/// `hour_index` is what makes a per-hour recording's container gate per-hour:
+/// an entry that serves one game hour can be refused alone, while an entry the
+/// recording cannot be read without is still a whole-container refusal — named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryVerification {
+    pub path: String,
+    pub role: Option<String>,
+    /// The game hour this entry serves, when the verified index names one.
+    pub hour_index: Option<i64>,
+    /// `None` when the entry's decompressed bytes matched its manifest digest.
+    pub error: Option<String>,
+}
+
 /// Authentication receipt for one manifest entry copied through the bounded
 /// file-backed container path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1863,6 +1879,14 @@ impl Container {
         Ok(guard.contains_key(path))
     }
 
+    /// Every game hour this container's verified index publishes a snapshot
+    /// for. A consumer of the recording's per-hour coverage map checks this
+    /// against the map: an hour the container serves that the map does not
+    /// vouch for is an excluded hour reaching replay.
+    pub fn published_hour_indexes(&self) -> Vec<i64> {
+        self.hour_to_file.keys().copied().collect()
+    }
+
     /// Load a snapshot by hour_index — resolved through the INDEX (`file` field),
     /// not by synthesizing a filename, so segment-prefixed rollback files load too.
     pub fn load(&self, hour_index: i64) -> Result<Snapshot, ContainerError> {
@@ -1916,14 +1940,87 @@ impl Container {
     /// entry is decompressed, CRC-checked, and SHA-256 checked into a bounded
     /// sink through the already-open archive handle.
     pub fn verify_all_streaming(&self) -> Result<(), ContainerError> {
+        for entry in self.verify_all_streaming_report()? {
+            if let Some(error) = entry.error {
+                return Err(ContainerError::PayloadIntegrity(error));
+            }
+        }
+        Ok(())
+    }
+
+    /// Verify EVERY entry and report each one, instead of stopping at the first
+    /// failure.
+    ///
+    /// The granularity of a verdict is the granularity of the damage it can
+    /// isolate. `verify_all_streaming` above answers one question about the
+    /// whole container, so a single flipped byte anywhere in it refuses
+    /// everything — measured on the real retained capture `t48_authoritative`
+    /// (lane GQ, cell g1). A recording that publishes a PER-HOUR coverage map
+    /// needs the container gate to answer at the same resolution, or the map's
+    /// own verifiability is coarser than the map.
+    ///
+    /// So this reports one row per entry, each carrying the entry's role and
+    /// the hour it serves when the manifest names one. A caller can then refuse
+    /// exactly what the damage reached: a failed entry that serves one hour
+    /// excludes that hour, while a failed entry the recording cannot be read
+    /// without is still a whole-container refusal — with the entry named.
+    ///
+    /// Verification cost is unchanged: the same entries, the same streaming
+    /// decompression, the same digests. Only the stopping rule differs.
+    pub fn verify_all_streaming_report(&self) -> Result<Vec<EntryVerification>, ContainerError> {
+        let roles: HashMap<String, Option<String>> = self
+            .entries()
+            .into_iter()
+            .map(|entry| (entry.path, entry.role))
+            .collect();
         let mut guard = self.by_path.lock().map_err(|_| {
             ContainerError::Reject("container entry-verification lock poisoned".into())
         })?;
         let paths = guard.keys().cloned().collect::<Vec<_>>();
+        let mut report = Vec::with_capacity(paths.len());
         for path in paths {
-            verify_streamed(&self.archive, &mut guard, &path)?;
+            let error = match verify_streamed(&self.archive, &mut guard, &path) {
+                Ok(()) => None,
+                Err(error) => Some(error.to_string()),
+            };
+            let role = roles.get(&path).cloned().flatten();
+            report.push(EntryVerification {
+                hour_index: self.hour_index_served_by(&path),
+                path,
+                role,
+                error,
+            });
         }
-        Ok(())
+        report.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(report)
+    }
+
+    /// The game hour a container entry serves, when the verified index names
+    /// one. Snapshot entries are per-hour by construction; the certified cache
+    /// and index are not, and correctly report `None` — a cache-only recording
+    /// has no finer granularity than its cache, which is why cell (g1) stays a
+    /// whole-container refusal (see `runs/gy_per_hour_seal/MATRIX.md`).
+    fn hour_index_served_by(&self, path: &str) -> Option<i64> {
+        // The index's `file` is a container-relative name that CARRIES its
+        // directory — production writes `snapshots/000000000000.snapshot.json`
+        // — while a manifest entry path is `payload/<game>/<that name>`. So the
+        // join is a path-boundary suffix match, not a basename compare:
+        // comparing basenames was false for every real production snapshot
+        // entry, which silently reclassified a one-hour injury as damage
+        // serving no hour and refused the whole recording (Codex review round
+        // 2, finding 3).
+        //
+        // The join is against the EXACT path the reader resolves, not any path
+        // that happens to end with the indexed name: an unrelated
+        // `payload/<game>/aux/snapshots/<file>` would otherwise be reported as
+        // serving that hour, attributing an injury to the wrong owner (Codex
+        // review round 3, finding 4).
+        let expected_prefix = format!("payload/{}/", self.game_id);
+        let relative = path.strip_prefix(expected_prefix.as_str())?;
+        self.hour_to_file
+            .iter()
+            .find(|(_, indexed)| indexed.as_str() == relative)
+            .map(|(hour, _)| *hour)
     }
 
     /// Recompute a bounded whole-file receipt through the retained file handle.

@@ -1,9 +1,9 @@
 //! d95 `pov_spotted_units_live` — the current POV's map-spotted land units and
 //! task forces.
 //!
-//! Derived from `world_fold.rs:13043`-`:13111`
+//! Derived from `world_fold.rs:13161`-`:13229`
 //! (`fold_pov_spotted_units`, dispatched at `:4752`), its payload codec
-// @world-fold-authority domain=95 functions=fold_pov_spotted_units lines=13043-13111 sha256=22f810187fac25dbae53375a864cad075f8e9428c503ed00f198bb73bbd1b81e closure=2f3d14ea2ccaa31c01a44e88dc1c8fd97eace6f58b27d60e6de8bd542885266c
+// @world-fold-authority domain=95 functions=fold_pov_spotted_units lines=13161-13229 sha256=22f810187fac25dbae53375a864cad075f8e9428c503ed00f198bb73bbd1b81e closure=2f3d14ea2ccaa31c01a44e88dc1c8fd97eace6f58b27d60e6de8bd542885266c
 //! `extractor/native/compact_contract/src/spotted_units.rs` (authority #2 for
 //! offsets, per the recipe), the production dispatcher's d95 error arm
 //! (`world_fold.rs::apply_domain_data`), the hour-boundary reset (`world_fold.rs::reset_hour_state`) and

@@ -2142,6 +2142,11 @@ fn validate_scanned_hours(
 struct VerifiedReplayAuthority {
     manifest: Value,
     stream_certification: StreamCertification,
+    /// WHICH GAME HOURS THIS RECORDING VOUCHES FOR. Read from the
+    /// container-authenticated recorder manifest and then narrowed by
+    /// per-entry container damage, so it is one statement per hour rather than
+    /// a coverage claim a consumer has to join against an integrity report.
+    hour_coverage: recorder_host::hour_coverage::HourCoverageMap,
     details: Value,
 }
 
@@ -3611,6 +3616,10 @@ const SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS: &[&str] = &[
     "standalone_manifest_is_authoritative",
     "post_pack_fields_in_standalone_manifest_only",
     "excluded_domain_data",
+    // The per-hour coverage map is minted at seal time and written into the
+    // sealed copy only, exactly like `excluded_domain_data` beside it: the
+    // run-dir manifest is written before the seal walk has a verdict.
+    recorder_host::hour_coverage::HOUR_COVERAGE_FIELD,
 ];
 
 /// The divergence is DIRECTIONAL, and so is the allowlist. A field is removed
@@ -3988,12 +3997,49 @@ fn load_verified_replay_authority(
             replay_path.display()
         )
     })?;
-    container.verify_all().map_err(|err| {
+    // EVERY entry is verified, and every result is kept.
+    //
+    // This used to be `container.verify_all()`, which returns on the FIRST
+    // corrupt entry. That made per-entry confinement unreachable no matter what
+    // the coverage map said: a flipped byte in one hour's snapshot entry
+    // aborted the authority here, before anything could associate that entry
+    // with its hour (Codex review round 1, finding 3). The report is computed
+    // once, at the same point in the chain the old call occupied, and the
+    // per-hour downgrade below reads it.
+    let entry_report = container.verify_all_streaming_report().map_err(|err| {
         format!(
-            "replay container verify_all failed for {}: {err}",
+            "replay container per-entry verification failed for {}: {err}",
             replay_path.display()
         )
     })?;
+    // A damaged entry that serves NO single game hour is refused here, before
+    // anything is read out of the container: the recorder manifest, the index
+    // and the certified cache are what every other claim rests on, so damage
+    // to them cannot be confined to an hour. Naming the entry and its role is
+    // what the first-failure abort could not do.
+    {
+        let unisolatable: Vec<String> = entry_report
+            .iter()
+            .filter(|entry| entry.error.is_some() && entry.hour_index.is_none())
+            .map(|entry| {
+                format!(
+                    "{} (role {:?}): {}",
+                    entry.path,
+                    entry.role.as_deref().unwrap_or("none"),
+                    entry.error.as_deref().unwrap_or("")
+                )
+            })
+            .collect();
+        if !unisolatable.is_empty() {
+            return Err(format!(
+                "replay container {} carries {} damaged entr(ies) that serve no single game \
+                 hour, so the damage cannot be confined to one hour: {}",
+                replay_path.display(),
+                unisolatable.len(),
+                unisolatable.join("; ")
+            ));
+        }
+    }
 
     let replay_game_id = required_nonempty_str(external_manifest, "replay_game_id")?;
     if container.game_id() != replay_game_id {
@@ -4146,9 +4192,89 @@ fn load_verified_replay_authority(
                 .into(),
         );
     }
+    // -----------------------------------------------------------------------
+    // PER-HOUR VERIFIED COVERAGE — what this container actually asserts.
+    // Owner ruling 2026-08-11 (task #188).
+    //
+    // Before the ruling a sealed container carried one whole-stream
+    // certification and this loader had nothing per-hour to read: an injured
+    // capture simply never reached a container at all. Now the recording states
+    // exactly which hours it vouches for, and this is where a replay consumer
+    // learns it — from the CONTAINER-AUTHENTICATED recorder manifest, never
+    // from the mutable run-dir copy, so a coverage claim is not something a
+    // file on disk can rewrite.
+    // -----------------------------------------------------------------------
+    let mut hour_coverage = read_sealed_hour_coverage(&embedded_manifest)?;
+    // THE LEAK GUARD IS ASKED OF THE SEALED MAP, BEFORE CONTAINER DAMAGE IS
+    // FOLDED IN, because the two are different questions with different
+    // answers.
+    //
+    //  * An hour the container publishes that its own SEALED map excludes is a
+    //    contradiction the recorder should never have produced. There is no
+    //    honest reading of such a container, so it is refused.
+    //  * An hour excluded because its ENTRY rotted AFTER sealing is not a
+    //    contradiction — it is exactly the per-hour loss this model exists to
+    //    confine. Refusing the recording for it would convert a one-hour injury
+    //    back into a whole-recording refusal, which is the thing being retired
+    //    (Codex review round 3, finding 3).
+    //
+    // So the guard runs here, against what the recording claimed at seal time;
+    // the damaged hours are then excluded below and simply not served.
+    let mut served_hours = container.published_hour_indexes();
+    served_hours.extend(
+        stream_details
+            .get("indexed_hour_indexes")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_i64).collect::<Vec<i64>>())
+            .unwrap_or_default(),
+    );
+    served_hours.sort_unstable();
+    served_hours.dedup();
+    refuse_hours_the_coverage_map_does_not_vouch_for(&served_hours, &hour_coverage, &replay_path)?;
+
+    // Container damage is judged at ENTRY granularity and folded into the SAME
+    // map, so a consumer reads one statement per hour rather than having to
+    // join a coverage map against a separate integrity report. The entries that
+    // serve no single hour were already refused above, at the point the old
+    // all-entry abort occupied; what is left here is damage a single hour owns.
+    for entry in &entry_report {
+        let Some(error) = entry.error.as_deref() else {
+            continue;
+        };
+        let Some(game_hour_raw) = entry
+            .hour_index
+            .and_then(|hour| i32::try_from(hour).ok())
+            .and_then(|hour| hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST))
+        else {
+            continue;
+        };
+        hour_coverage.record_excluded(
+            game_hour_raw,
+            0,
+            0,
+            format!(
+                "the container entry serving this hour ({}) failed verification: {error}",
+                entry.path
+            ),
+        );
+    }
+    let excluded_hours: Vec<Value> = hour_coverage
+        .excluded_hours()
+        .into_iter()
+        .map(|(hour, reason)| json!({ "game_hour_raw": hour, "reason": reason }))
+        .collect();
+
     let mut details = json!({
         "file": replay_path.display().to_string(),
         "game_id": container.game_id(),
+        // The recording's own per-hour verdict, reported so a replay consumer
+        // composes its NAMED GAPS with the partial-data law instead of
+        // inferring coverage from which hours happen to be present.
+        recorder_host::hour_coverage::HOUR_COVERAGE_FIELD: json!({
+            "verified_hours": hour_coverage.verified_count(),
+            "excluded_hours": excluded_hours,
+            "unattributed_losses": hour_coverage.unattributed_losses(),
+        }),
         "recorder_manifest": manifest_entry.path,
         "recorder_manifest_bytes": embedded_manifest_bytes.len(),
         "recorder_manifest_sha256": embedded_sha256,
@@ -4185,7 +4311,77 @@ fn load_verified_replay_authority(
     Ok(VerifiedReplayAuthority {
         manifest: embedded_manifest,
         stream_certification,
+        hour_coverage,
         details,
+    })
+}
+
+/// THE LEAK GUARD: an hour the container publishes that its own coverage map
+/// does not vouch for is an excluded hour reaching replay.
+///
+/// This is the direction in which a per-hour seal is MORE dangerous than the
+/// all-or-nothing certification it replaced. The old model could not serve an
+/// injured hour because it refused the whole recording; the new one publishes
+/// the healthy hours, so something has to hold the line at the boundary between
+/// "excluded" and "served". This is that line, and it is fail-closed twice
+/// over: an hour with an EXCLUDED row is refused by name, and so is an hour the
+/// map does not mention at all — absence is not a claim of coverage.
+fn refuse_hours_the_coverage_map_does_not_vouch_for(
+    published_hour_indexes: &[i64],
+    coverage: &recorder_host::hour_coverage::HourCoverageMap,
+    replay_path: &Path,
+) -> Result<(), String> {
+    for hour_index in published_hour_indexes {
+        let game_hour_raw = i32::try_from(*hour_index)
+            .ok()
+            .and_then(|hour| hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST))
+            .ok_or_else(|| {
+                format!("replay container publishes an out-of-range hour_index {hour_index}")
+            })?;
+        if !coverage.is_hour_verified(game_hour_raw) {
+            return Err(format!(
+                "replay container {} publishes game hour {game_hour_raw} (hour_index \
+                 {hour_index}), which its own verified-coverage map does not vouch for: {}",
+                replay_path.display(),
+                coverage
+                    .row(game_hour_raw)
+                    .map(|row| match &row.coverage {
+                        recorder_host::hour_coverage::HourCoverage::Excluded { reason } =>
+                            reason.clone(),
+                        recorder_host::hour_coverage::HourCoverage::Verified { .. } =>
+                            "verified".to_string(),
+                    })
+                    .unwrap_or_else(|| "the map names this hour nowhere at all".to_string())
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Read the recording's per-hour coverage map out of the CONTAINER-AUTHENTICATED
+/// recorder manifest.
+///
+/// Required, not optional. Pre-production carries no backwards compatibility
+/// (`AGENTS.md`), and a compact recording that states no coverage is one whose
+/// per-hour claims a consumer would have to invent — which is the guessing the
+/// owner ruling forbids. The refusal names the field so a stale artifact is
+/// diagnosable rather than merely rejected.
+fn read_sealed_hour_coverage(
+    embedded_manifest: &Value,
+) -> Result<recorder_host::hour_coverage::HourCoverageMap, String> {
+    let field = recorder_host::hour_coverage::HOUR_COVERAGE_FIELD;
+    let value = embedded_manifest
+        .get("host_finalize")
+        .and_then(|finalize| finalize.get(field))
+        .ok_or_else(|| {
+            format!(
+                "container-authenticated recorder_manifest carries no \
+                 host_finalize.{field}; a sealed recording must state which game hours it \
+                 verifies and which it excludes"
+            )
+        })?;
+    recorder_host::hour_coverage::HourCoverageMap::from_json(value).map_err(|error| {
+        format!("container-authenticated recorder_manifest host_finalize.{field}: {error}")
     })
 }
 
@@ -4552,6 +4748,17 @@ fn certify_cache_only_recording(
         "checkpoint_cache_entry": cache_entry.path,
         "checkpoint_cache_sha256": cache_entry.sha256,
         "indexed_hours": hour_index.hours().len(),
+        // EVERY hour this container will actually SERVE. A cache-only recording
+        // publishes no per-hour snapshot entries at all, so the container's
+        // snapshot index is empty and enumerating hours from it sees nothing —
+        // which is how an excluded hour could still have been served out of the
+        // certified cache (Codex review round 1, finding 2). These are the rows
+        // the per-hour coverage check is applied to.
+        "indexed_hour_indexes": hour_index
+            .hours()
+            .iter()
+            .map(|entry| entry.hour_index())
+            .collect::<Vec<i64>>(),
     });
     Ok((
         StreamCertification::ManifestAttestedThroughDeltaCache {
@@ -8263,6 +8470,13 @@ mod tests {
             "excluded_domain_data".into(),
             json!({"complete": true, "per_domain": {}, "records": [], "total_records": 0}),
         );
+        // The per-hour coverage map, minted from the seal walk and written into
+        // the sealed copy alone — the same sealed-only pre-pack shape as
+        // `excluded_domain_data` above (owner ruling 2026-08-11, task #188).
+        object.insert(
+            recorder_host::hour_coverage::HOUR_COVERAGE_FIELD.into(),
+            fixture_hour_coverage(&[0, 1, 2], &[]).to_json(),
+        );
         sealed["host_finalize"] = sealed_host_finalize;
 
         let mut run_dir = base;
@@ -9103,6 +9317,13 @@ mod tests {
     /// Production change that would make this fail: dropping the container
     /// entry re-hash, or falling back to the manifest-attested chain when the
     /// packaged comparison fails.
+    ///
+    /// The accepted refusal wording gained a fourth form when per-entry
+    /// verification replaced the all-entry abort (owner ruling 2026-08-11, task
+    /// #188): the packaged stream entry serves no single game hour, so damage
+    /// to it is still a WHOLE-container refusal — now naming the entry and its
+    /// role, which the first-failure abort could not. What must not change is
+    /// that it refuses at all, and never on the weaker manifest-attested route.
     #[test]
     fn a_tampered_packaged_stream_still_refuses() {
         let dir = TmpDir::new("packaged_tampered");
@@ -9137,7 +9358,9 @@ mod tests {
         assert!(
             error.contains("verify_all failed")
                 || error.contains("independently hash")
-                || error.contains("not container entry digest"),
+                || error.contains("not container entry digest")
+                || (error.contains("serve no single game hour")
+                    && error.contains("collector_compact_stream")),
             "{error}"
         );
         assert!(
@@ -11220,10 +11443,123 @@ mod tests {
     /// The bytes the recorder would seal for this run-dir manifest, produced by
     /// the recorder's OWN seal-time function, so a fixture cannot model a
     /// projection the production sealer does not perform.
+    /// A fixture coverage map: `hours` verified hour indexes, each with a
+    /// digest-backed basis, plus any excluded rows the caller names.
+    fn fixture_hour_coverage(
+        verified: &[i64],
+        excluded: &[(i64, &str)],
+    ) -> recorder_host::hour_coverage::HourCoverageMap {
+        let mut map = recorder_host::hour_coverage::HourCoverageMap::new();
+        for hour in verified {
+            let raw = compact_contract::calendar::DATE_EPOCH_CONST + *hour as i32;
+            map.record_verified(raw, 0, 64, Sha256::hex(format!("hour {hour}").as_bytes()));
+        }
+        for (hour, reason) in excluded {
+            let raw = compact_contract::calendar::DATE_EPOCH_CONST + *hour as i32;
+            map.record_excluded(raw, 0, 0, *reason);
+        }
+        map
+    }
+
     fn sealed_manifest_bytes(manifest_bytes: &[u8]) -> Vec<u8> {
-        let manifest: Value = serde_json::from_slice(manifest_bytes).unwrap();
+        let mut manifest: Value = serde_json::from_slice(manifest_bytes).unwrap();
+        // The per-hour coverage map is a SEALED-ONLY pre-pack field: the
+        // recorder mints it from the seal walk's verdict and writes it into the
+        // container copy alone (`session_manifest_bytes_with_pre_pack_host_finalize`).
+        // Modelling that here rather than putting it in the run-dir document is
+        // what keeps this fixture corpus a recording the recorder could
+        // actually have produced.
+        if let Some(finalize) = manifest
+            .get_mut("host_finalize")
+            .and_then(Value::as_object_mut)
+        {
+            let field = recorder_host::hour_coverage::HOUR_COVERAGE_FIELD;
+            if !finalize.contains_key(field) {
+                finalize.insert(
+                    field.to_string(),
+                    fixture_hour_coverage(&[0, 1, 2], &[]).to_json(),
+                );
+            }
+        }
         recorder_host::portable_manifest::portable_session_manifest_bytes(&manifest)
             .expect("a fixture run-dir manifest must have a portable projection")
+    }
+
+    /// AN EXCLUDED HOUR MUST NOT REACH REPLAY.
+    ///
+    /// The per-hour seal publishes a recording that has injured hours, which the
+    /// all-or-nothing certification it replaced could never do. That makes this
+    /// boundary load-bearing in a way it was not before: an hour the map refuses
+    /// is an hour a replay consumer must never be served.
+    ///
+    /// kills: dropping the `is_hour_verified` check from
+    /// `refuse_hours_the_coverage_map_does_not_vouch_for` (or weakening it to
+    /// "not explicitly excluded"). The first case then serves an hour the
+    /// recording refused; the second serves an hour the recording never
+    /// mentioned, which is coverage inferred from absence.
+    #[test]
+    fn a_container_may_not_publish_an_hour_its_coverage_map_refuses() {
+        let path = Path::new("fixture.battleplan");
+        let clean = fixture_hour_coverage(&[0, 1, 2], &[]);
+        refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &clean, path)
+            .expect("every published hour is verified");
+
+        // An hour the map EXCLUDES, published anyway.
+        let injured = fixture_hour_coverage(&[0, 2], &[(1, "framing damage at byte 421")]);
+        let error =
+            refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &injured, path)
+                .unwrap_err();
+        assert!(
+            error.contains("does not vouch for") && error.contains("framing damage at byte 421"),
+            "the refusal must name the hour AND why it was excluded: {error}"
+        );
+
+        // An hour the map does not mention at all. Absence is not a claim.
+        let silent = fixture_hour_coverage(&[0, 2], &[]);
+        let error = refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &silent, path)
+            .unwrap_err();
+        assert!(
+            error.contains("names this hour nowhere at all"),
+            "an unmentioned hour is not covered: {error}"
+        );
+    }
+
+    /// A SEALED RECORDING MUST STATE ITS COVERAGE, AND STATE IT ADMISSIBLY.
+    ///
+    /// kills: making `read_sealed_hour_coverage` tolerate a missing
+    /// `host_finalize.hour_coverage` (returning an empty map). Every hour of
+    /// every recording would then be "not vouched for" or, worse, silently
+    /// admitted by a laxer leak guard — a consumer would be inventing the
+    /// per-hour claims the owner ruling requires the recording to make.
+    #[test]
+    fn a_sealed_recorder_manifest_without_a_coverage_map_is_refused() {
+        let error = read_sealed_hour_coverage(&json!({ "host_finalize": {} })).unwrap_err();
+        assert!(
+            error.contains("carries no host_finalize.hour_coverage"),
+            "{error}"
+        );
+
+        // Present but inadmissible: a verified hour with no digest to back it.
+        let mut forged = fixture_hour_coverage(&[0], &[]).to_json();
+        forged["hours"][0]
+            .as_object_mut()
+            .unwrap()
+            .insert("basis_sha256".to_string(), json!(""));
+        let error =
+            read_sealed_hour_coverage(&json!({ "host_finalize": { "hour_coverage": forged } }))
+                .unwrap_err();
+        assert!(
+            error.contains("without a digest-backed basis"),
+            "a verified hour with no basis must be refused at the decoder: {error}"
+        );
+
+        let good = fixture_hour_coverage(&[0, 1], &[(2, "the producer refused this frame")]);
+        let read = read_sealed_hour_coverage(
+            &json!({ "host_finalize": { "hour_coverage": good.to_json() } }),
+        )
+        .expect("an admissible map round-trips through the sealed manifest");
+        assert_eq!(read, good);
+        assert_eq!(read.excluded_hours().len(), 1);
     }
 
     /// Returns the bytes actually sealed into the container, which for an

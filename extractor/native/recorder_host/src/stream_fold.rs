@@ -27,7 +27,8 @@ use compact_contract::stream_validator::{
 };
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_DOMAIN_GAP,
     COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
@@ -40,6 +41,24 @@ use crate::world_fold::{FoldedSnapshotFile, WorldFold};
 
 /// Read granularity for the streaming fold. Bounded and independent of stream size.
 const CHUNK: usize = 8 * 1024 * 1024;
+
+/// How far a framing resynchronisation will keep buffering while it looks for
+/// the next well-formed record. Past this the damaged region is accounted as
+/// unframeable rather than held in memory: a recovery must not be able to turn
+/// a corrupt stream into unbounded resident memory.
+pub const MAX_RESYNC_WINDOW_BYTES: usize = 4 * 1024 * 1024;
+
+/// How many distinct game hours one damaged span will enumerate before it stops
+/// naming them individually.
+///
+/// The byte window above bounds the framing buffer; this bounds the SPAN's own
+/// bookkeeping, which is otherwise one entry per record for as long as the
+/// damage runs — a malformed spool carrying arbitrarily many distinct hours
+/// with no frame boundary would exhaust memory and lose the already-verified
+/// prefix (Codex review round 10). Both bounds exist for the same reason: a
+/// corrupt stream must not be able to turn recovery into unbounded resident
+/// memory.
+pub const MAX_RESYNC_CLAIMED_HOURS: usize = 512;
 
 /// FRAME_END carries the frame-wide aggregate, so lane-local interpretations do
 /// not apply there and any bit outside the assigned vocabulary is an unknown
@@ -177,6 +196,14 @@ pub struct FoldStreamStats {
     /// deliberately-collided cheap-hash source versions cannot merge into a
     /// mixed fold. Hex, empty when never computed.
     pub decoded_sha256: String,
+    /// Bytes skipped by a framing resynchronisation — read, but part of no
+    /// well-formed record. They are excluded from `bytes_folded` for the same
+    /// reason a torn tail is: that counter means "consumed as whole records".
+    pub unframeable_bytes: u64,
+    /// WHAT THIS RECORDING ASSERTS, per game hour. The seal publishes against
+    /// this map; `stop_reason`/`ends_at_frame_end` above remain the (unchanged)
+    /// whole-stream verdict that `take_index`/`certify_complete` still require.
+    pub hour_coverage: crate::hour_coverage::HourCoverageMap,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -347,7 +374,132 @@ pub struct BoundaryTracker {
     /// but `H4CJ` then `H4CU` certified, because nothing recorded the
     /// disclaimed span for the interval arm to find.
     disclaimed_spans: Vec<(i32, i32)>,
+    /// The FIRST rule violation, latched. This is the whole-stream verdict
+    /// [`BoundaryTracker::eof_check`] reports, and it is deliberately unchanged
+    /// by the per-hour arm below: `strict_stream_certification_verdict` still
+    /// means "walked end to end, every byte framed, every hour clean", which is
+    /// what `take_index`/`certify_complete` need. What changed is that the SEAL
+    /// no longer treats that verdict as the publish/refuse decision.
     violation: Option<String>,
+    // ---------------------------------------------------------------------
+    // Per-hour verified coverage (owner ruling 2026-08-11, task #188).
+    //
+    // The three fields below run ALONGSIDE the latched whole-stream verdict.
+    // They exist so an injury costs the hour it damaged rather than the
+    // recording: the tracker attributes each violation to the hour that was
+    // being read, names it, and then RESYNCHRONISES at the next frame boundary
+    // so every later hour is still judged on its own evidence.
+    // ---------------------------------------------------------------------
+    coverage: crate::hour_coverage::HourCoverageMap,
+    /// The hour currently being read, its byte span, and the running digest
+    /// that becomes its verification basis.
+    hour_span: Option<OpenHourSpan>,
+    /// Set while the walk is discarding the remains of a damaged hour. The
+    /// rule machine is NOT run in this state: its per-hour state is dirty by
+    /// construction, and re-running it would report the damage again as a
+    /// cascade of consequential violations.
+    resync: Option<ResyncState>,
+    /// Set by the two arms that can only fire when records are GONE (a sequence
+    /// hole, a sequence overflow) and by [`BoundaryTracker::note_framing_damage`].
+    /// Read once, when the resync that follows is opened, and reset with it.
+    records_lost_at_injury: bool,
+    /// Set the first time a framing loop resynchronised past bytes it could not
+    /// parse, and NEVER cleared.
+    ///
+    /// A resynchronised record boundary is a GUESS. The predicate that finds
+    /// one is two-deep, which rejects an isolated false positive, but no
+    /// predicate over these bytes can prove that a candidate is a TOP-LEVEL
+    /// record rather than something that happens to sit inside a damaged
+    /// record's payload — records nested in a payload that run to a plausible
+    /// frame boundary satisfy every check the framing layer can make (Codex
+    /// review round 3, finding 1).
+    ///
+    /// So nothing read after framing damage is VOUCHED FOR. Those hours are
+    /// still DELIVERED — recovering them instead of stopping dead is what the
+    /// resync is for, and a consumer can read them — but they are excluded from
+    /// the recording's verified coverage and named as recovered.
+    framing_damage_seen: bool,
+    /// (events, diagnosis of the latest). Counts sequence holes reconciled
+    /// BETWEEN frames — whole hours gone with the surrounding hours intact.
+    /// A monotone counter rather than a take-once flag so a walker can detect
+    /// the event through an immutable borrow, beside the resync transition.
+    lost_between_frames: (u64, String),
+    /// (events, hour, diagnosis). Raised the moment a damaged span is seen to
+    /// have swallowed an hour's own frame boundary: a record for a LATER hour
+    /// arrives while the span's first hour is still the one the fold has open.
+    /// A fold driven by this walk must close that hour without publishing, or
+    /// the two hours merge and publish under the later one's date.
+    abandoned_hour: (u64, i32, String),
+}
+
+/// The hour being read: where its first record started, how many bytes it has
+/// consumed, and the running digest that becomes its verification basis.
+///
+/// The digest covers every VARIABLE field of every record in the hour —
+/// sequence, game hour, domain, record type, payload length, flags, payload —
+/// length-delimited and in arrival order. The three fixed header fields (magic,
+/// version, header length) are not digested because `parse_compact_record_header`
+/// already proved each of them equal to its one legal value, so the digest plus
+/// the parse bind every byte of the hour's records.
+struct OpenHourSpan {
+    game_hour_raw: i32,
+    first_byte: u64,
+    len: u64,
+    hasher: Sha256,
+}
+
+impl std::fmt::Debug for OpenHourSpan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenHourSpan")
+            .field("game_hour_raw", &self.game_hour_raw)
+            .field("first_byte", &self.first_byte)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OpenHourSpan {
+    fn absorb(&mut self, header: &compact_contract::CompactRecordHeader, payload: &[u8]) {
+        self.len = self
+            .len
+            .saturating_add(header.record_len().try_into().unwrap_or(u64::MAX));
+        self.hasher.update(&header.sequence.to_le_bytes());
+        self.hasher.update(&header.game_hour_raw.to_le_bytes());
+        self.hasher.update(&header.domain_id.to_le_bytes());
+        self.hasher.update(&header.record_type.to_le_bytes());
+        self.hasher.update(&header.record_flags.to_le_bytes());
+        self.hasher
+            .update(&(payload.len() as u64).to_le_bytes());
+        self.hasher.update(payload);
+    }
+
+    fn basis(&self) -> String {
+        to_hex(&self.hasher.clone().finalize())
+    }
+}
+
+/// A damaged span being walked out. `hours` collects every hour the damaged
+/// bytes claimed, so all of them are excluded rather than only the one that
+/// happened to be open when the rule fired.
+#[derive(Debug)]
+struct ResyncState {
+    reason: String,
+    hours: BTreeSet<i32>,
+    first_byte: u64,
+    len: u64,
+    records_absorbed: u64,
+    /// Raised once, when the span is first seen to have swallowed an hour's
+    /// frame boundary. Once only: the fold has one hour to close.
+    abandoned_signalled: bool,
+    /// The span claimed more distinct hours than it will enumerate. The excess
+    /// is named as one range rather than row by row; see
+    /// [`MAX_RESYNC_CLAIMED_HOURS`].
+    hours_overflowed: bool,
+    /// True when records are known to be gone — a sequence hole, or bytes the
+    /// framing loop could not parse at all. This is the distinction the fold
+    /// needs: a lost record breaks every delta chain that ran through it, while
+    /// a structurally-odd but complete hour breaks none.
+    lost_records: bool,
 }
 
 impl BoundaryTracker {
@@ -376,15 +528,583 @@ impl BoundaryTracker {
             .copied()
     }
 
+    /// Observe one framed record.
+    ///
+    /// Two verdicts come out of this, and they are deliberately different
+    /// claims:
+    ///
+    ///  * the LATCHED whole-stream verdict (`self.violation`, reported by
+    ///    [`BoundaryTracker::eof_check`]) — unchanged: the first rule violation
+    ///    wins and nothing after it can clear it;
+    ///  * the PER-HOUR coverage map — each hour judged on its own evidence,
+    ///    which is what the seal publishes against.
+    ///
+    /// The rule machine is run once per record, but its own state is reset at
+    /// the next frame boundary after it fires, so hour N's injury does not
+    /// cascade into hour N+1's verdict.
     pub fn observe(
         &mut self,
         header: &compact_contract::CompactRecordHeader,
         payload: &[u8],
         at_byte: u64,
     ) {
-        if self.violation.is_some() {
-            return; // first violation is the diagnostic; state is already dirty
+        let record_len: u64 = header.record_len().try_into().unwrap_or(u64::MAX);
+        if self.resync.is_some() {
+            self.absorb_into_resync(header, at_byte, record_len);
+            return;
         }
+        // Whether an hour was already being read when this record arrived. It
+        // decides how a sequence hole is handled: a hole BETWEEN hours cost
+        // whole hours and nothing else, while a hole INSIDE one damaged the
+        // hour being read.
+        let span_was_open = self.hour_span.is_some();
+        self.absorb_into_hour(header, payload, at_byte);
+        // Hide the latched verdict so the rule machine can fire again for this
+        // hour, then restore it: the FIRST violation is what `eof_check`
+        // reports, exactly as before this per-hour arm existed.
+        let latched = self.violation.take();
+        self.observe_rules(header, payload, at_byte);
+        let fired = self.violation.take();
+        self.violation = latched.or_else(|| fired.clone());
+        match fired {
+            Some(reason) if self.records_lost_at_injury && !span_was_open => {
+                self.reconcile_hours_lost_between_frames(header, payload, at_byte, reason)
+            }
+            Some(reason) => self.begin_resync(header, at_byte, reason),
+            None => self.close_hour_if_boundary(header),
+        }
+    }
+
+    /// A sequence hole that opened BETWEEN two frames: whole game hours are
+    /// missing, and the record in hand is the clean first record of the hour
+    /// after them.
+    ///
+    /// Walking this out as a damaged span would be wrong, and measurably so:
+    /// lane GQ's cell (d) removes exactly one hour's records, and a span-based
+    /// recovery then swallowed the NEXT hour too — an intact hour lost to the
+    /// mechanism meant to save it. So the missing hours are named, the rule
+    /// machine is reset to this record as its new baseline, and the walk carries
+    /// on as if the hole were a closed hour.
+    ///
+    /// What is NOT forgiven: the whole-stream verdict still carries the
+    /// discontinuity (it was latched before this ran), and the fold is still
+    /// told records were lost, so every delta chain that ran through the hole
+    /// stops claiming to be observed.
+    fn reconcile_hours_lost_between_frames(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        payload: &[u8],
+        at_byte: u64,
+        reason: String,
+    ) {
+        self.records_lost_at_injury = false;
+        if let Some(last_closed) = self.last_closed_hour {
+            let mut missing = last_closed.saturating_add(1);
+            const MAX_ENUMERATED_MISSING_HOURS: i32 = 512;
+            if header.game_hour_raw.saturating_sub(missing) > MAX_ENUMERATED_MISSING_HOURS {
+                self.coverage.note_unattributed_loss(format!(
+                    "hours {missing}..={} are unaccounted for: {reason}",
+                    header.game_hour_raw.saturating_sub(1)
+                ));
+            } else {
+                while missing < header.game_hour_raw {
+                    self.coverage.record_excluded(
+                        missing,
+                        at_byte,
+                        0,
+                        format!(
+                            "game hour {missing} was never delivered: {reason}"
+                        ),
+                    );
+                    missing = missing.saturating_add(1);
+                }
+            }
+        } else {
+            self.coverage.note_unattributed_loss(reason.clone());
+        }
+        // AND THE HOUR THIS RECORD BELONGS TO IS EXCLUDED TOO.
+        //
+        // The hole is counted in RECORDS, and nothing binds an hour to a record
+        // COUNT — so "the missing records were exactly the whole hours
+        // enumerated above" is not something this walk can show. The record in
+        // hand may be the first of its hour, or it may be the second with its
+        // predecessor gone: a full-per-frame domain's DATA record deleted from
+        // the front of an hour leaves the hour's own PERF outcome intact, so
+        // even the FRAME_END cardinality check passes (Codex review round 8).
+        //
+        // Excluding it costs an hour that may well be whole. Vouching for it
+        // costs a digest that provably cannot cover all of that hour's records,
+        // over an hour the authority would then serve. The first is the
+        // fail-closed direction.
+        self.coverage.record_excluded(
+            header.game_hour_raw,
+            at_byte,
+            0,
+            format!(
+                "game hour {} may be missing records of its own: {reason}, and nothing binds \
+                 an hour to a record count, so the surviving records cannot be shown to be \
+                 all of them",
+                header.game_hour_raw
+            ),
+        );
+        // Reset the rule machine to this record as its baseline and re-run it,
+        // so the record opens its hour exactly as it would have on a clean
+        // stream. The sequence predecessor is set to this record's own
+        // predecessor rather than to the record itself, because that is the
+        // one value the check is written against.
+        self.open_hour = None;
+        self.pending_perf_hour = None;
+        self.terminal_outcome_domains.clear();
+        self.gap_domains.clear();
+        self.data_domains.clear();
+        self.prev_sequence = header.sequence.checked_sub(1);
+        self.lost_between_frames = (
+            self.lost_between_frames.0.saturating_add(1),
+            reason,
+        );
+        let latched = self.violation.take();
+        self.observe_rules(header, payload, at_byte);
+        let fired = self.violation.take();
+        self.violation = latched.or_else(|| fired.clone());
+        match fired {
+            // The record is bad on its own account too. Fall back to a damaged
+            // span rather than admitting it.
+            Some(second) => self.begin_resync(header, at_byte, second),
+            None => self.close_hour_if_boundary(header),
+        }
+    }
+
+    /// Attribute this record's bytes to the hour being read, opening a span if
+    /// none is open. The span's hour is the hour of its FIRST record: a garbage
+    /// header inside a damaged span must not be able to open an hour of its
+    /// own and put a hour that never existed into the coverage map.
+    fn absorb_into_hour(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        payload: &[u8],
+        at_byte: u64,
+    ) {
+        // The sequence-zero CID1 protocol header belongs to the stream, not to
+        // any hour; it is consumed by the identity validator before the fold
+        // and is not part of an hour's basis.
+        if header.record_type == compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER
+        {
+            return;
+        }
+        let span = self.hour_span.get_or_insert_with(|| OpenHourSpan {
+            game_hour_raw: header.game_hour_raw,
+            first_byte: at_byte,
+            len: 0,
+            hasher: Sha256::new(),
+        });
+        span.absorb(header, payload);
+    }
+
+    /// A clean frame boundary closes the open hour and writes its row.
+    fn close_hour_if_boundary(&mut self, header: &compact_contract::CompactRecordHeader) {
+        match header.record_type {
+            COMPACT_RECORD_TYPE_FRAME_END => {
+                if let Some(span) = self.hour_span.take() {
+                    if self.framing_damage_seen {
+                        // See `framing_damage_seen`: a resynchronised boundary
+                        // is a guess, so this hour's records cannot be shown to
+                        // be top-level records of this stream at all.
+                        self.coverage.record_excluded(
+                            span.game_hour_raw,
+                            span.first_byte,
+                            span.len,
+                            concat!(
+                                "this hour was recovered after framing damage earlier in ",
+                                "the stream; a resynchronised record boundary is a guess ",
+                                "rather than a proof, so its records are readable but not ",
+                                "vouched for"
+                            ),
+                        );
+                    } else {
+                        let basis = span.basis();
+                        self.coverage.record_verified(
+                            span.game_hour_raw,
+                            span.first_byte,
+                            span.len,
+                            basis,
+                        );
+                    }
+                }
+            }
+            COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+                // A refused hour is a CLOSED hour that published nothing. It is
+                // the plainest excluded hour there is, and before this arm
+                // existed it was simply ABSENT from the output with nothing
+                // anywhere saying it had existed and been refused (lane GQ cell
+                // (e): a consumer counting hours could not tell it apart from a
+                // capture that was one hour shorter).
+                if let Some(span) = self.hour_span.take() {
+                    self.coverage.record_excluded(
+                        span.game_hour_raw,
+                        span.first_byte,
+                        span.len,
+                        format!(
+                            "the producer refused this frame (FRAME_REFUSED at byte {}); the \
+                             hour was assembled and judged unpublishable",
+                            span.first_byte.saturating_add(span.len)
+                        ),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A rule fired. Name the hour it damaged, then start walking the damaged
+    /// span out so the next hour can be judged on its own evidence.
+    fn begin_resync(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        at_byte: u64,
+        reason: String,
+    ) {
+        let span = self.hour_span.take();
+        let (first_byte, len) = span
+            .as_ref()
+            .map(|span| (span.first_byte, span.len))
+            .unwrap_or((at_byte, 0));
+        let mut hours = BTreeSet::new();
+        if let Some(span) = span.as_ref() {
+            hours.insert(span.game_hour_raw);
+        }
+        // A sequence hole names hours that never arrived at all: everything
+        // strictly between the last hour this stream closed and the hour the
+        // record after the hole belongs to. They read no bytes, but they are
+        // hours this recording had and does not have, so they are named.
+        if let Some(last_closed) = self.last_closed_hour {
+            let next = header.game_hour_raw;
+            if next > last_closed {
+                let mut missing = last_closed.saturating_add(1);
+                // Bounded: a corrupt header can name an absurd hour, and
+                // enumerating that range would be unbounded work and unbounded
+                // output. Past the bound the loss is named as one span instead.
+                const MAX_ENUMERATED_MISSING_HOURS: i32 = 512;
+                if next.saturating_sub(missing) > MAX_ENUMERATED_MISSING_HOURS {
+                    self.coverage.note_unattributed_loss(format!(
+                        "hours {missing}..={} are unaccounted for after {reason}",
+                        next.saturating_sub(1)
+                    ));
+                } else {
+                    while missing < next {
+                        hours.insert(missing);
+                        missing = missing.saturating_add(1);
+                    }
+                }
+            }
+        }
+        self.resync = Some(ResyncState {
+            reason,
+            hours,
+            first_byte,
+            len,
+            records_absorbed: 0,
+            abandoned_signalled: false,
+            hours_overflowed: false,
+            lost_records: std::mem::take(&mut self.records_lost_at_injury),
+        });
+    }
+
+    /// Walk out a damaged span. The rule machine is not consulted: its state is
+    /// dirty by construction and every rule it would fire here is a consequence
+    /// of the injury already named.
+    fn absorb_into_resync(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        _at_byte: u64,
+        record_len: u64,
+    ) {
+        let closing = matches!(
+            header.record_type,
+            COMPACT_RECORD_TYPE_FRAME_END | COMPACT_RECORD_TYPE_FRAME_REFUSED
+        );
+        let mut abandoned = None;
+        {
+            let Some(state) = self.resync.as_mut() else {
+                return;
+            };
+            state.len = state.len.saturating_add(record_len);
+            state.records_absorbed = state.records_absorbed.saturating_add(1);
+            // BOUNDED. Every framed record inside a damaged span claims an
+            // hour, and a malformed spool can carry arbitrarily many distinct
+            // ones with no frame boundary ever arriving — one tree entry per
+            // record until EOF or allocation failure, which would lose the
+            // already-verified prefix to memory exhaustion instead of confining
+            // the damage (Codex review round 10). Past the bound the span stops
+            // enumerating and names the excess as one range.
+            if state.hours.len() >= MAX_RESYNC_CLAIMED_HOURS
+                && !state.hours.contains(&header.game_hour_raw)
+            {
+                state.hours_overflowed = true;
+                if closing {
+                    self.finish_resync(header);
+                }
+                return;
+            }
+            // The span's first hour is the one a fold driven by this walk still
+            // has open. A record for a LATER hour arriving inside the span means
+            // that hour's own frame boundary is gone: it will never be closed by
+            // the stream, so the fold has to be told to close it now, BEFORE the
+            // later hour's records are applied into it.
+            if let Some(first) = state.hours.iter().next().copied() {
+                if header.game_hour_raw > first && !state.abandoned_signalled {
+                    state.abandoned_signalled = true;
+                    abandoned = Some((first, state.reason.clone()));
+                }
+            }
+            state.hours.insert(header.game_hour_raw);
+        }
+        if let Some((hour, reason)) = abandoned {
+            self.abandoned_hour = (
+                self.abandoned_hour.0.saturating_add(1),
+                hour,
+                format!(
+                    "game hour {hour} lost its own frame boundary to stream damage ({reason}),                      so it is closed here without publishing"
+                ),
+            );
+        }
+        if closing {
+            self.finish_resync(header);
+        }
+    }
+
+    /// A frame boundary ends the damaged span. Every hour the span claimed is
+    /// excluded with the diagnosis, and the rule machine is reset to a clean
+    /// state pinned to what this boundary record actually said — so hour N+1 is
+    /// judged on its own evidence rather than on hour N's wreckage.
+    fn finish_resync(&mut self, header: &compact_contract::CompactRecordHeader) {
+        let Some(state) = self.resync.take() else {
+            return;
+        };
+        for hour in &state.hours {
+            self.coverage.record_excluded(
+                *hour,
+                state.first_byte,
+                state.len,
+                state.reason.clone(),
+            );
+        }
+        if state.hours_overflowed {
+            self.coverage.note_unattributed_loss(format!(
+                "the damaged span from byte {} claimed more than {MAX_RESYNC_CLAIMED_HOURS} \
+                 distinct game hours; those past the bound are not enumerated individually: {}",
+                state.first_byte, state.reason
+            ));
+        }
+        self.open_hour = None;
+        self.pending_perf_hour = None;
+        self.terminal_outcome_domains.clear();
+        self.gap_domains.clear();
+        self.data_domains.clear();
+        self.hour_span = None;
+        self.prev_sequence = Some(header.sequence);
+        self.last_record_kind = Some(header.record_type);
+        // The boundary record closed an hour, whatever the wreckage before it
+        // said. Pinning `last_closed_hour` here is what makes the following
+        // hour's monotonicity checks meaningful instead of a second cascade.
+        self.last_closed_hour = Some(match self.last_closed_hour {
+            Some(last) if last >= header.game_hour_raw => last,
+            _ => header.game_hour_raw,
+        });
+    }
+
+    /// Bytes the walk could not frame at all, named as a loss no hour owns.
+    /// Called by a framing loop that resynchronised past unparseable bytes.
+    pub fn note_framing_damage(&mut self, at_byte: u64, skipped_bytes: u64, reason: &str) {
+        let hour = self.hour_span.as_ref().map(|span| span.game_hour_raw);
+        let statement = match hour {
+            Some(hour) => format!(
+                "framing damage inside game hour {hour}: {skipped_bytes} byte(s) from byte \
+                 {at_byte} could not be framed ({reason})"
+            ),
+            None => format!(
+                "framing damage: {skipped_bytes} byte(s) from byte {at_byte} could not be \
+                 framed ({reason})"
+            ),
+        };
+        if self.violation.is_none() {
+            self.violation = Some(statement.clone());
+        }
+        // Unparseable bytes are records that are gone.
+        self.records_lost_at_injury = true;
+        self.framing_damage_seen = true;
+        if let Some(state) = self.resync.as_mut() {
+            state.len = state.len.saturating_add(skipped_bytes);
+            state.lost_records = true;
+            self.records_lost_at_injury = false;
+            return;
+        }
+        let span = self.hour_span.take();
+        let (first_byte, len) = span
+            .as_ref()
+            .map(|span| (span.first_byte, span.len))
+            .unwrap_or((at_byte, 0));
+        let mut hours = BTreeSet::new();
+        if let Some(span) = span.as_ref() {
+            hours.insert(span.game_hour_raw);
+        }
+        self.resync = Some(ResyncState {
+            reason: statement,
+            hours,
+            first_byte,
+            len: len.saturating_add(skipped_bytes),
+            records_absorbed: 0,
+            abandoned_signalled: false,
+            hours_overflowed: false,
+            lost_records: std::mem::take(&mut self.records_lost_at_injury),
+        });
+    }
+
+    /// The per-hour coverage this walk established. Seal-complete only after
+    /// [`BoundaryTracker::seal_coverage`] has been given the EOF residual.
+    pub fn coverage(&self) -> &crate::hour_coverage::HourCoverageMap {
+        &self.coverage
+    }
+
+    /// The game hour whose records are currently being read, if a hour is open.
+    pub fn open_hour_raw(&self) -> Option<i32> {
+        self.hour_span.as_ref().map(|span| span.game_hour_raw)
+    }
+
+    /// How many sequence holes have been reconciled between frames, and the
+    /// diagnosis of the latest. See [`BoundaryTracker::lost_between_frames`].
+    pub fn lost_between_frames(&self) -> (u64, &str) {
+        (self.lost_between_frames.0, self.lost_between_frames.1.as_str())
+    }
+
+    /// How many hours a damaged span has been seen to abandon, which hour the
+    /// latest one was, and why. See [`BoundaryTracker::abandoned_hour`].
+    pub fn abandoned_hour(&self) -> (u64, i32, &str) {
+        (
+            self.abandoned_hour.0,
+            self.abandoned_hour.1,
+            self.abandoned_hour.2.as_str(),
+        )
+    }
+
+    /// The first hour of the damaged span being walked out — the hour a fold
+    /// driven by this walk still has open and must close without publishing.
+    pub fn resync_hour(&self) -> Option<i32> {
+        self.resync
+            .as_ref()
+            .and_then(|state| state.hours.iter().next().copied())
+    }
+
+    /// The diagnosis of the damaged span currently being walked out, if any.
+    /// A walker uses this to stop feeding a damaged hour's records into the
+    /// fold: the hour is excluded from coverage, so applying its remains would
+    /// only put unvouched-for state into the hours that follow.
+    pub fn resynchronising(&self) -> Option<&str> {
+        self.resync.as_ref().map(|state| state.reason.as_str())
+    }
+
+    /// Are records KNOWN to be missing from the span being walked out? True for
+    /// a sequence hole and for bytes that could not be framed at all; false for
+    /// a structurally-odd but complete hour, where nothing was lost and no
+    /// delta chain was broken.
+    pub fn resync_lost_records(&self) -> bool {
+        self.resync
+            .as_ref()
+            .is_some_and(|state| state.lost_records)
+    }
+
+    /// Close the coverage map at end of stream: an hour still open read real
+    /// bytes and never closed, so it is excluded and named; residual bytes that
+    /// framed into no hour are named as an unattributed loss.
+    pub fn seal_coverage(
+        &mut self,
+        residual: &[u8],
+    ) -> crate::hour_coverage::HourCoverageMap {
+        let residual_carry = residual.len();
+        if let Some(state) = self.resync.take() {
+            for hour in &state.hours {
+                self.coverage.record_excluded(
+                    *hour,
+                    state.first_byte,
+                    state.len,
+                    state.reason.clone(),
+                );
+            }
+            if state.hours.is_empty() {
+                self.coverage.note_unattributed_loss(state.reason.clone());
+            }
+            if state.hours_overflowed {
+                self.coverage.note_unattributed_loss(format!(
+                    "the damaged span from byte {} claimed more than \
+                     {MAX_RESYNC_CLAIMED_HOURS} distinct game hours; those past the bound \
+                     are not enumerated individually: {}",
+                    state.first_byte, state.reason
+                ));
+            }
+        }
+        if let Some(span) = self.hour_span.take() {
+            self.coverage.record_excluded(
+                span.game_hour_raw,
+                span.first_byte,
+                span.len,
+                format!(
+                    "game hour {} was left open at end of stream: its records were read but \
+                     no canonical FRAME_END or FRAME_REFUSED ever closed it, so nothing \
+                     vouches for what the hour contained",
+                    span.game_hour_raw
+                ),
+            );
+        }
+        if residual_carry != 0 {
+            // A torn tail usually still carries a COMPLETE record header — 32
+            // bytes is small, and a capture dies mid-payload far more often
+            // than mid-header. That header names the game hour whose records
+            // were being written, which is the hour the recording lost. Naming
+            // it is the difference between "the stream is short" and "hour H is
+            // gone", and it is what lane GQ's cell (a) had no way to read.
+            match parse_compact_record_header(residual) {
+                Ok(header) => self.coverage.record_excluded(
+                    header.game_hour_raw,
+                    0,
+                    residual_carry as u64,
+                    format!(
+                        "the stream ends mid-record inside game hour {}: {residual_carry} \
+                         residual byte(s) form no complete record, so this hour and every \
+                         hour after it was never delivered",
+                        header.game_hour_raw
+                    ),
+                ),
+                Err(_) => {
+                    let last = self
+                        .coverage
+                        .rows()
+                        .last()
+                        .map(|row| row.game_hour_raw.to_string())
+                        .unwrap_or_else(|| "none".to_string());
+                    self.coverage.note_unattributed_loss(format!(
+                        "the stream ends mid-record: {residual_carry} residual byte(s) after \
+                         the last hour the walk reached (hour {last}) form no complete \
+                         record, and no readable header remains to name the hour they were \
+                         carrying"
+                    ));
+                }
+            }
+        }
+        if let Some(termination) = &self.termination {
+            self.coverage.note_unattributed_loss(format!(
+                "capture terminated abnormally after {} ms: reasons={:?}",
+                termination.elapsed_wall_ms,
+                termination.reasons.names(),
+            ));
+        }
+        self.coverage.clone()
+    }
+
+    fn observe_rules(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        payload: &[u8],
+        at_byte: u64,
+    ) {
         if self.termination.is_some() {
             self.violation = Some(format!(
                 "record type {} appears at byte {at_byte} after CAPTURE_TERMINATED",
@@ -402,6 +1122,10 @@ impl BoundaryTracker {
             }
             Some(prev) => {
                 let Some(expected) = prev.checked_add(1) else {
+                    // Records are GONE, not merely misframed: the counter is
+                    // the only witness to a record that never arrived, so the
+                    // fold is told the delta chains it fed are broken.
+                    self.records_lost_at_injury = true;
                     self.violation = Some(format!(
                         "sequence overflow at byte {at_byte}: {prev} cannot be followed \
                          without wrapping"
@@ -409,6 +1133,7 @@ impl BoundaryTracker {
                     return;
                 };
                 if header.sequence != expected {
+                    self.records_lost_at_injury = true;
                     self.violation = Some(format!(
                         "sequence discontinuity at byte {at_byte}: {prev} -> {} \
                          (expected {expected}; a record was swallowed or reordered)",
@@ -982,6 +1707,189 @@ impl BoundaryTracker {
     }
 }
 
+/// What a walker must tell the fold about the record it just observed, decided
+/// in ONE place rather than re-derived at each `observe` site.
+///
+/// **Every case still APPLIES the record.** Damage changes what the recording
+/// VOUCHES for — the coverage map — not what the decoder is willing to read.
+/// Suppressing a damaged hour's records here was tried and was wrong twice
+/// over: it stopped `HourCursor` delivering hours that tooling has always been
+/// able to read out of an uncertifiable stream (the checked-in legacy fixture,
+/// whose `FRAME_END` carries the pre-1000 frame domain, stopped decoding at
+/// all), and it made the fold miss observations that DID arrive, which every
+/// later hour is then built without.
+#[derive(Debug)]
+pub enum FoldDamageStep {
+    /// Records are KNOWN GONE at this point in the stream. The fold is told, so
+    /// every delta chain running through the hole stops claiming to be
+    /// observed; then the record is applied.
+    LostRecords { hour: i32, reason: String },
+    /// A damaged span swallowed an hour's own frame boundary, and the boundary
+    /// record now in hand closes a DIFFERENT hour. The fold still has the
+    /// earlier hour open, so it is closed without publishing before this record
+    /// is applied — otherwise the two hours merge and publish under the later
+    /// one's date, which is hour misattribution produced by the very mechanism
+    /// meant to prevent it.
+    CloseAbandonedHour { hour: i32, reason: String },
+    /// Ordinary record.
+    Clean,
+}
+
+/// Tell the fold what the walk just learned, BEFORE the record itself is
+/// applied. Both statements are about the state the record lands in, so they
+/// have to precede it.
+pub fn apply_fold_damage_step(step: FoldDamageStep, fold: &mut WorldFold) {
+    match step {
+        FoldDamageStep::LostRecords { hour, reason } => {
+            fold.record_framing_damage(hour, &reason)
+        }
+        FoldDamageStep::CloseAbandonedHour { hour, reason } => {
+            fold.close_damaged_hour(hour, &reason)
+        }
+        FoldDamageStep::Clean => {}
+    }
+}
+
+/// Tracker state captured immediately BEFORE `observe`, so the transition can
+/// be read afterwards.
+pub struct FoldDamageWatch {
+    resync_reason: Option<String>,
+    resync_hour: Option<i32>,
+    open_hour: Option<i32>,
+    lost_between_frames: u64,
+    abandoned_hours: u64,
+}
+
+impl FoldDamageWatch {
+    pub fn before(tracker: &BoundaryTracker) -> Self {
+        Self {
+            resync_reason: tracker.resynchronising().map(str::to_string),
+            resync_hour: tracker.resync_hour(),
+            open_hour: tracker.open_hour_raw(),
+            lost_between_frames: tracker.lost_between_frames().0,
+            abandoned_hours: tracker.abandoned_hour().0,
+        }
+    }
+
+    /// `fallback_hour` is used only when a damaged span is closed and neither
+    /// the span nor the tracker still knows which hour the fold has open —
+    /// callers pass the closing record's own game hour.
+    pub fn after(self, tracker: &BoundaryTracker, fallback_hour: i32) -> FoldDamageStep {
+        match (self.resync_reason, tracker.resynchronising()) {
+            // A damaged span just opened. Only a span that LOST records breaks
+            // a delta chain: a structurally-odd but COMPLETE hour breaks none,
+            // and marking every delta domain unknown for it would be a
+            // fabricated complaint about hours that are fine.
+            (None, Some(reason)) => match (tracker.resync_lost_records(), self.open_hour) {
+                (true, Some(hour)) => FoldDamageStep::LostRecords {
+                    hour,
+                    reason: reason.to_string(),
+                },
+                _ => FoldDamageStep::Clean,
+            },
+            _ => {
+                let (abandoned_events, abandoned_hour, abandoned_reason) =
+                    tracker.abandoned_hour();
+                if abandoned_events > self.abandoned_hours {
+                    return FoldDamageStep::CloseAbandonedHour {
+                        hour: abandoned_hour,
+                        reason: abandoned_reason.to_string(),
+                    };
+                }
+                let (events, reason) = tracker.lost_between_frames();
+                if events > self.lost_between_frames {
+                    FoldDamageStep::LostRecords {
+                        hour: fallback_hour,
+                        reason: reason.to_string(),
+                    }
+                } else {
+                    FoldDamageStep::Clean
+                }
+            }
+        }
+    }
+}
+
+/// Where a framing loop should pick the stream back up after bytes it could
+/// not parse (lane GQ finding GQ-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FramingResync {
+    /// Resume at this offset in the buffer.
+    At(usize),
+    /// No candidate in what is buffered, but the tail is too short to rule one
+    /// out. The caller must read more before deciding.
+    NeedMoreData,
+    /// Nothing in the rest of the buffer begins a record. At EOF this is the
+    /// unframeable tail.
+    Exhausted,
+}
+
+/// Scan forward for the next offset that begins a well-formed record.
+///
+/// Before this existed, `HourCursor` and `drive_fold_*` stopped dead at the
+/// first record whose magic or version would not parse, and the graceful-stop
+/// path attributed everything after it to `truncated_tail_bytes`. Measured on
+/// lane GQ's matrix: a single flipped bit in hour 1's record magic cost hours
+/// 2..8, all of which were physically present, correctly framed, and
+/// independently decodable.
+///
+/// The predicate is deliberately two-deep. `H4CR` is only four bytes and can
+/// occur inside a payload, so a candidate must parse AND its own record must
+/// land on either another parseable header or exactly the end of the buffered
+/// window. A false positive that survives both is not silent: it lands the walk
+/// mid-record, the boundary rules fire, and the hour is excluded — the same
+/// fail-closed direction, never a silently-accepted hour.
+pub fn find_frame_resync_offset(buf: &[u8], from: usize) -> FramingResync {
+    let Some(scan_end) = buf.len().checked_sub(COMPACT_RECORD_HEADER_LEN) else {
+        return FramingResync::NeedMoreData;
+    };
+    let mut candidate = from.saturating_add(1);
+    while candidate <= scan_end {
+        // The magic is the only cheap filter; everything else needs the parse.
+        if &buf[candidate..candidate + COMPACT_RECORD_MAGIC.len()] != COMPACT_RECORD_MAGIC {
+            candidate += 1;
+            continue;
+        }
+        let Ok(header) = parse_compact_record_header(&buf[candidate..]) else {
+            candidate += 1;
+            continue;
+        };
+        let end = candidate.saturating_add(header.record_len());
+        if end > buf.len() {
+            // A plausible record whose payload is not buffered yet. Deciding
+            // now would be guessing; the caller reads more and asks again.
+            return FramingResync::NeedMoreData;
+        }
+        if end == buf.len() || parse_compact_record_header(&buf[end..]).is_ok() {
+            return FramingResync::At(candidate);
+        }
+        candidate += 1;
+    }
+    // Nothing parseable, but a record could still begin in the last
+    // header-length-minus-one bytes once more data arrives.
+    FramingResync::NeedMoreData
+}
+
+/// The shared diagnostic text for a header that would not parse. One wording,
+/// so the framing stop, the resync account and the coverage reason agree.
+pub fn framing_stop_text(error: RecordFramingError, at: u64) -> String {
+    match error {
+        RecordFramingError::TruncatedHeader(actual) => {
+            format!("truncated record header ({actual} byte(s)) at byte {at}")
+        }
+        RecordFramingError::BadMagic => format!("invalid record magic at byte {at}"),
+        RecordFramingError::UnsupportedVersion(v) => {
+            format!("unsupported record version {v} at byte {at}")
+        }
+        RecordFramingError::UnsupportedHeaderLen(l) => {
+            format!("unsupported header length {l} at byte {at}")
+        }
+        RecordFramingError::PayloadTooLarge(l) => {
+            format!("payload length {l} exceeds the record bound at byte {at}")
+        }
+    }
+}
+
 /// One fail-closed structural certification verdict shared by extractor-side
 /// stream consumers. Fully-framed DOMAIN_DATA payload rejections are excluded
 /// and accounted separately; framing, tail, and closed-boundary failures stay
@@ -1039,6 +1947,45 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
     stream_path: &Path,
     identity_mode: StreamIdentityMode,
 ) -> io::Result<Vec<ExcludedDomainDataRecord>> {
+    let outcome = walk_stream_hour_coverage(stream_path, identity_mode)?;
+    match outcome.boundary_error {
+        Some(reason) => Err(io::Error::new(io::ErrorKind::InvalidData, reason)),
+        None => Ok(outcome.excluded_domain_data_records),
+    }
+}
+
+/// Everything a seal-time walk of an on-disk stream establishes.
+pub struct SealWalkOutcome {
+    pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
+    /// SHA-256 of the DECODED bytes this walk actually read.
+    ///
+    /// The coverage map below is a set of claims about specific bytes, and this
+    /// walk is not the one that packages them — so the caller binds the two by
+    /// digest. Without it a stream swapped between the walk and the pack would
+    /// seal one file's per-hour bases over another file's bytes (Codex review
+    /// round 3, finding 2).
+    pub decoded_sha256: String,
+    /// WHAT THIS RECORDING ASSERTS, per game hour — the seal gate's input.
+    pub hour_coverage: crate::hour_coverage::HourCoverageMap,
+    /// The whole-stream verdict, unchanged in meaning: `None` iff the stream
+    /// was walked end to end with every byte framed and every hour clean.
+    /// `verify_stream_logical_boundary_with_identity_mode` still turns this
+    /// into a hard error for the callers that need that stronger claim.
+    pub boundary_error: Option<String>,
+}
+
+/// The seal-time walk, reporting PER-HOUR coverage instead of one whole-stream
+/// verdict (owner ruling 2026-08-11, task #188).
+///
+/// It runs the same hour-aware state machine as `drive_fold_compressed` and
+/// folds nothing. What changed against the pre-ruling walker is where an injury
+/// lands: a framing error resynchronises at the next well-formed record instead
+/// of aborting the walk, and every hour it damaged is named in the coverage map
+/// instead of costing the recording.
+pub fn walk_stream_hour_coverage(
+    stream_path: &Path,
+    identity_mode: StreamIdentityMode,
+) -> io::Result<SealWalkOutcome> {
     let mut reader = compact_stream::open(stream_path)?;
     let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
     let mut chunk = vec![0u8; CHUNK];
@@ -1046,11 +1993,16 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
     let mut tracker = BoundaryTracker::default();
     let mut validator = stream_validator(identity_mode);
     let mut excluded = Vec::new();
-    loop {
+    // The FIRST hard structural failure, kept so the legacy strict wrapper
+    // above reports exactly the error it always did.
+    let mut hard_error: Option<String> = None;
+    let mut decoded_hasher = Sha256::new();
+    'read: loop {
         let n = reader.read(&mut chunk)?;
         if n == 0 {
             break;
         }
+        decoded_hasher.update(&chunk[..n]);
         carry.extend_from_slice(&chunk[..n]);
         let mut off = 0usize;
         loop {
@@ -1058,31 +2010,74 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
             if remaining < COMPACT_RECORD_HEADER_LEN {
                 break;
             }
-            let header = parse_compact_record_header(&carry[off..]).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "seal-time boundary check: {e} at byte {}",
-                        processed + off as u64
-                    ),
-                )
-            })?;
+            let at = processed + off as u64;
+            let header = match parse_compact_record_header(&carry[off..]) {
+                Ok(header) => header,
+                Err(e) => {
+                    if hard_error.is_none() {
+                        hard_error = Some(format!("seal-time boundary check: {e} at byte {at}"));
+                    }
+                    match find_frame_resync_offset(&carry, off) {
+                        FramingResync::At(next) => {
+                            tracker.note_framing_damage(
+                                at,
+                                (next - off) as u64,
+                                &framing_stop_text(e, at),
+                            );
+                            off = next;
+                            continue;
+                        }
+                        FramingResync::NeedMoreData
+                            if carry.len() - off <= MAX_RESYNC_WINDOW_BYTES =>
+                        {
+                            break;
+                        }
+                        // Past the window the scanned region is DISCARDED and
+                        // the walk keeps going — see the identical arm in
+                        // `drive_fold_compressed_with_identity_mode` for why
+                        // stopping here cost hours that had closed cleanly.
+                        FramingResync::NeedMoreData | FramingResync::Exhausted => {
+                            let keep = COMPACT_RECORD_HEADER_LEN.saturating_sub(1);
+                            let discard = (carry.len() - off).saturating_sub(keep);
+                            if discard == 0 {
+                                break;
+                            }
+                            tracker.note_framing_damage(
+                                at,
+                                discard as u64,
+                                &framing_stop_text(e, at),
+                            );
+                            off += discard;
+                            continue;
+                        }
+                    }
+                }
+            };
             let record_len = header.record_len();
             if record_len > remaining {
                 break;
             }
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
-            let accepted = validator
-                .validate_record(&header, payload)
-                .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "seal-time stream validation failed at byte {}: {error}",
-                            processed + off as u64
-                        ),
-                    )
-                })?;
+            let accepted = match validator.validate_record(&header, payload) {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    // A validator refusal is a statement about the STREAM's
+                    // identity protocol, not about one hour, so it stays a hard
+                    // failure and is also named against the hour being read.
+                    if hard_error.is_none() {
+                        hard_error = Some(format!(
+                            "seal-time stream validation failed at byte {at}: {error}"
+                        ));
+                    }
+                    tracker.note_framing_damage(
+                        at,
+                        record_len as u64,
+                        &format!("stream validation failed: {error}"),
+                    );
+                    off += record_len;
+                    continue;
+                }
+            };
             if accepted == AcceptedRecordKind::CampaignIdentity {
                 off += record_len;
                 continue;
@@ -1094,29 +2089,35 @@ pub fn verify_stream_logical_boundary_with_identity_mode(
                     header.record_flags,
                     header.sequence,
                     header.game_hour_raw,
-                    processed + off as u64,
+                    at,
                 ) {
                     excluded.push(ExcludedDomainDataRecord {
-                        stream_offset: processed + off as u64,
+                        stream_offset: at,
                         game_hour_raw: header.game_hour_raw,
                         domain_id: header.domain_id,
                         validation_reason,
                     });
                 }
             }
-            tracker.observe(&header, payload, processed + off as u64);
+            tracker.observe(&header, payload, at);
             off += record_len;
         }
         processed += off as u64;
         carry.drain(0..off);
     }
-    tracker.eof_check(carry.len()).map_err(|reason| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("seal-time boundary check: {reason}"),
-        )
-    })?;
-    Ok(excluded)
+    let boundary_error = hard_error.or_else(|| {
+        tracker
+            .eof_check(carry.len())
+            .err()
+            .map(|reason| format!("seal-time boundary check: {reason}"))
+    });
+    let hour_coverage = tracker.seal_coverage(&carry);
+    Ok(SealWalkOutcome {
+        excluded_domain_data_records: excluded,
+        decoded_sha256: to_hex(&decoded_hasher.finalize()),
+        hour_coverage,
+        boundary_error,
+    })
 }
 
 /// Default worker count for the parallel post-capture fold. The fold is OFFLINE
@@ -1518,25 +2519,67 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 Ok(h) => h,
                 Err(e) => {
                     let at = processed + off as u64;
-                    stats.stop_reason = Some(match e {
-                        RecordFramingError::TruncatedHeader(actual) => {
-                            format!("truncated record header ({actual} byte(s)) at byte {at}")
+                    let message = framing_stop_text(e, at);
+                    if stats.stop_reason.is_none() {
+                        stats.stop_reason = Some(message.clone());
+                    }
+                    // A COMPRESSED source is deliberately NOT resynchronised.
+                    // Its storage checksum proves the decoded bytes are exactly
+                    // what was sealed, so H4CR-invalid content there is
+                    // capture-time garbage inside a container that claims
+                    // integrity — a different failure from a torn raw spool,
+                    // and the one the sealed-source closed-boundary law exists
+                    // for. The per-hour model applies to the capture spool the
+                    // seal actually walks, which is raw.
+                    if compressed {
+                        hard_stop = true;
+                        break;
+                    }
+                    // GQ-2: a framing stop used to discard every intact byte
+                    // after it. Pick the stream back up at the next well-formed
+                    // record instead, name the skipped span, and let the hours
+                    // beyond it be judged on their own evidence.
+                    match find_frame_resync_offset(&carry, off) {
+                        FramingResync::At(next) => {
+                            let skipped = (next - off) as u64;
+                            let before = FoldDamageWatch::before(&tracker);
+                            tracker.note_framing_damage(at, skipped, &message);
+                            apply_fold_damage_step(before.after(&tracker, 0), fold);
+                            stats.unframeable_bytes =
+                                stats.unframeable_bytes.saturating_add(skipped);
+                            off = next;
+                            continue;
                         }
-                        RecordFramingError::BadMagic => {
-                            format!("invalid record magic at byte {at}")
+                        // No candidate yet. More bytes may still reveal one, up
+                        // to a bounded window.
+                        FramingResync::NeedMoreData
+                            if carry.len() - off <= MAX_RESYNC_WINDOW_BYTES =>
+                        {
+                            break;
                         }
-                        RecordFramingError::UnsupportedVersion(v) => {
-                            format!("unsupported record version {v} at byte {at}")
+                        // Past the window the scanned region is DISCARDED and
+                        // the walk keeps going. It must not stop: stopping here
+                        // left the stream half-read, and every route then
+                        // rejected the recording because the digest of what was
+                        // read did not match the capture — a confineable injury
+                        // costing hours that had already closed cleanly (Codex
+                        // review round 4). A header-length tail is kept in case
+                        // a record begins inside it.
+                        FramingResync::NeedMoreData | FramingResync::Exhausted => {
+                            let keep = COMPACT_RECORD_HEADER_LEN.saturating_sub(1);
+                            let discard = (carry.len() - off).saturating_sub(keep);
+                            if discard == 0 {
+                                break;
+                            }
+                            let before = FoldDamageWatch::before(&tracker);
+                            tracker.note_framing_damage(at, discard as u64, &message);
+                            apply_fold_damage_step(before.after(&tracker, 0), fold);
+                            stats.unframeable_bytes =
+                                stats.unframeable_bytes.saturating_add(discard as u64);
+                            off += discard;
+                            continue;
                         }
-                        RecordFramingError::UnsupportedHeaderLen(l) => {
-                            format!("unsupported header length {l} at byte {at}")
-                        }
-                        RecordFramingError::PayloadTooLarge(l) => {
-                            format!("payload length {l} exceeds the record bound at byte {at}")
-                        }
-                    });
-                    hard_stop = true;
-                    break;
+                    }
                 }
             };
             let record_len = header.record_len();
@@ -1551,15 +2594,29 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 && header.record_type
                     == compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
             if identity_mode == StreamIdentityMode::Legacy && is_cid1_envelope {
+                let at = processed + off as u64;
                 let error = validator
                     .validate_record(&header, payload)
                     .expect_err("Legacy validator must reject an IdentityV1 CID1 envelope");
-                stats.stop_reason = Some(format!(
-                    "stream validation failed at byte {}: {error}",
-                    processed + off as u64
-                ));
-                hard_stop = true;
-                break;
+                let message = format!("stream validation failed at byte {at}: {error}");
+                if stats.stop_reason.is_none() {
+                    stats.stop_reason = Some(message.clone());
+                }
+                // NAMED, not a hard stop. Stopping here left the stream
+                // half-read, so the fold's decoded digest covered only a prefix
+                // and the seal's coverage-to-capture binding then refused the
+                // whole recording — a confineable identity injury costing hours
+                // that had already closed cleanly (Codex review round 10; the
+                // decoder's own arm was fixed in round 9). Reporting it as
+                // stream damage names the loss AND latches `framing_damage_seen`,
+                // so nothing after it can be vouched for.
+                let before = FoldDamageWatch::before(&tracker);
+                tracker.note_framing_damage(at, record_len as u64, &message);
+                apply_fold_damage_step(before.after(&tracker, header.game_hour_raw), fold);
+                stats.unframeable_bytes =
+                    stats.unframeable_bytes.saturating_add(record_len as u64);
+                off += record_len;
+                continue;
             }
             if identity_mode == StreamIdentityMode::IdentityV1 && validated_cid1.is_none() {
                 match validator.validate_record(&header, payload) {
@@ -1616,7 +2673,9 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                             first_game_hour_raw: header.game_hour_raw,
                         });
                     malformed.records = malformed.records.saturating_add(1);
+                    let before = FoldDamageWatch::before(&tracker);
                     tracker.observe(&header, payload, processed + off as u64);
+                    apply_fold_damage_step(before.after(&tracker, header.game_hour_raw), fold);
                     fold.record_malformed_domain_payload(
                         header.game_hour_raw,
                         header.domain_id,
@@ -1635,8 +2694,9 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
                 _ => stats.other_records += 1,
             }
+            let before = FoldDamageWatch::before(&tracker);
             tracker.observe(&header, payload, processed + off as u64);
-
+            apply_fold_damage_step(before.after(&tracker, header.game_hour_raw), fold);
             fold.ingest_record(
                 header.sequence,
                 header.game_hour_raw,
@@ -1684,10 +2744,11 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
     if total_len == 0 {
         stats.stream_bytes = decoded_read;
     }
-    stats.bytes_folded = processed;
+    stats.bytes_folded = processed.saturating_sub(stats.unframeable_bytes);
     stats.truncated_tail_bytes = stats.stream_bytes.saturating_sub(processed);
     stats.hours_emitted = fold.emitted_hours_count() as u64;
     stats.ends_at_frame_end = tracker.eof_check(carry.len()).is_ok();
+    stats.hour_coverage = tracker.seal_coverage(&carry);
     stats.decoded_sha256 = to_hex(&decoded_hasher.finalize());
     if compressed {
         // A SEALED (checksummed zstd) container must end at a valid LOGICAL
@@ -2611,6 +3672,390 @@ mod tests {
     ) {
         let payload = vec![0u8; header.payload_len];
         tracker.observe(&header, &payload, at_byte);
+    }
+
+    /// Walk `hours` clean hours (d18 DATA + FRAME_END), returning the tracker
+    /// mid-stream so a test can inject after any of them.
+    fn walk_clean_hours(tracker: &mut BoundaryTracker, seq: &mut u64, hours: &[i64], at: &mut u64) {
+        for hour_index in hours {
+            let hour = raw_for(*hour_index);
+            let data = country_identity_payload(&[(47, "GER")]);
+            tracker.observe(
+                &boundary_header(*seq, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, data.len(), 0),
+                &data,
+                *at,
+            );
+            *seq += 1;
+            *at += (COMPACT_RECORD_HEADER_LEN + data.len()) as u64;
+            let seal = frame_end_payload(0, 0, 0, 0);
+            tracker.observe(
+                &boundary_header(
+                    *seq,
+                    hour,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_END,
+                    seal.len(),
+                    0,
+                ),
+                &seal,
+                *at,
+            );
+            *seq += 1;
+            *at += (COMPACT_RECORD_HEADER_LEN + seal.len()) as u64;
+        }
+    }
+
+    /// AN INJURY COSTS THE HOUR IT DAMAGED, NOT THE RECORDING.
+    ///
+    /// This is the owner's per-hour ruling (2026-08-11, task #188) at the level
+    /// where it is decided. Before it, `BoundaryTracker` latched the first rule
+    /// violation and stopped: every later hour was unjudged, and the seal turned
+    /// that one bit into a whole-recording refusal.
+    ///
+    /// The three things asserted here are the whole model:
+    ///  * hour A, clean and closed BEFORE the injury, is VERIFIED with a
+    ///    digest-backed basis;
+    ///  * hour B, the injured one, is EXCLUDED with a named reason;
+    ///  * hour C, clean and closed AFTER the injury, is VERIFIED — the tracker
+    ///    resynchronised instead of giving up.
+    ///
+    /// kills: making `observe` return early while `violation.is_some()` again
+    /// (the pre-ruling guard). Hour C then has no coverage row at all, the seal
+    /// has nothing to publish for it, and the recording is back to costing
+    /// every hour after the first injury.
+    #[test]
+    fn an_injured_hour_is_excluded_and_named_while_its_neighbours_stay_verified() {
+        let mut tracker = BoundaryTracker::default();
+        let mut seq = 1u64;
+        let mut at = 0u64;
+        walk_clean_hours(&mut tracker, &mut seq, &[HOUR_A], &mut at);
+
+        // Hour B opens, then a SECOND hour's DATA arrives while it is open —
+        // the hour-interleaving violation, one of the five structural injuries
+        // that used to refuse the whole run (lane GQ cells a/c1/c2/d/h).
+        let hour_b = raw_for(HOUR_B);
+        let data = country_identity_payload(&[(47, "GER")]);
+        tracker.observe(
+            &boundary_header(seq, hour_b, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, data.len(), 0),
+            &data,
+            at,
+        );
+        seq += 1;
+        at += (COMPACT_RECORD_HEADER_LEN + data.len()) as u64;
+        tracker.observe(
+            &boundary_header(
+                seq,
+                raw_for(HOUR_C),
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                data.len(),
+                0,
+            ),
+            &data,
+            at,
+        );
+        seq += 1;
+        at += (COMPACT_RECORD_HEADER_LEN + data.len()) as u64;
+        // Hour B's own FRAME_END closes the damaged span.
+        let seal = frame_end_payload(0, 0, 0, 0);
+        tracker.observe(
+            &boundary_header(
+                seq,
+                hour_b,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                seal.len(),
+                0,
+            ),
+            &seal,
+            at,
+        );
+        seq += 1;
+        at += (COMPACT_RECORD_HEADER_LEN + seal.len()) as u64;
+
+        // And a clean hour after the injury.
+        walk_clean_hours(&mut tracker, &mut seq, &[HOUR_C + 1], &mut at);
+
+        let coverage = tracker.seal_coverage(&[]);
+        coverage.validate().expect("the map the seal publishes must be admissible");
+        assert!(
+            coverage.is_hour_verified(raw_for(HOUR_A)),
+            "the hour BEFORE the injury is verified: {}",
+            coverage.summary()
+        );
+        assert!(
+            coverage.is_hour_verified(raw_for(HOUR_C + 1)),
+            "the hour AFTER the injury is verified — the whole point of the ruling: {}",
+            coverage.summary()
+        );
+        let excluded = coverage.excluded_hours();
+        assert!(
+            excluded.iter().any(|(hour, reason)| *hour == hour_b
+                && reason.contains("hour interleaving")),
+            "the injured hour is excluded and NAMED, got {excluded:?}"
+        );
+        // The whole-stream verdict is deliberately unchanged: it still reports
+        // the first violation, because `take_index`/`certify_complete` need
+        // that stronger end-to-end claim.
+        assert!(
+            tracker
+                .eof_check(0)
+                .unwrap_err()
+                .contains("hour interleaving"),
+            "the latched whole-stream verdict must be untouched by the per-hour arm"
+        );
+        crate::hour_coverage::per_hour_seal_verdict(&coverage)
+            .expect("a recording with verified hours seals");
+    }
+
+    /// A SEQUENCE HOLE BETWEEN FRAMES COSTS THE MISSING HOURS AND NOTHING ELSE.
+    ///
+    /// Lane GQ's cell (d) removes exactly one hour's records. A span-based
+    /// recovery walked out to the next frame boundary and so swallowed the NEXT
+    /// hour too — an intact hour lost to the mechanism meant to save it. The
+    /// hole is reconciled instead: the missing hours are named and the record in
+    /// hand opens its own hour normally.
+    ///
+    /// The hole costs the hours that never arrived AND the hour the stream
+    /// resumed in — a hole is counted in RECORDS, and nothing binds an hour to
+    /// a record count, so the resumed hour's surviving records cannot be shown
+    /// to be all of it. What it must NOT cost is everything after that.
+    ///
+    /// kills: routing a between-frames sequence hole through `begin_resync`
+    /// (deleting the `!span_was_open` arm in `observe`). The walk then chases
+    /// the damage to the next frame boundary and swallows hour D as well, so
+    /// the assertion that the next clean hour is verified fails.
+    ///
+    /// kills, second: deleting the `record_excluded(header.game_hour_raw, ...)`
+    /// call from `reconcile_hours_lost_between_frames`. Hour C is then VERIFIED
+    /// on a digest that provably cannot cover all of its records — the round-8
+    /// finding — and the assertion that it is excluded fails.
+    #[test]
+    fn a_sequence_hole_costs_the_missing_hours_and_the_one_it_resumed_in() {
+        let mut tracker = BoundaryTracker::default();
+        let mut seq = 1u64;
+        let mut at = 0u64;
+        walk_clean_hours(&mut tracker, &mut seq, &[HOUR_A], &mut at);
+        // Hour B's two records never arrived: the sequence jumps past them and
+        // the stream resumes with hour C's first record.
+        seq += 2;
+        walk_clean_hours(&mut tracker, &mut seq, &[HOUR_C, HOUR_C + 1], &mut at);
+
+        let coverage = tracker.seal_coverage(&[]);
+        coverage.validate().expect("admissible");
+        assert!(coverage.is_hour_verified(raw_for(HOUR_A)));
+        assert!(
+            coverage.is_hour_verified(raw_for(HOUR_C + 1)),
+            "the walk recovers: the next clean hour is verified, {}",
+            coverage.summary()
+        );
+        let excluded = coverage.excluded_hours();
+        assert_eq!(
+            excluded.len(),
+            2,
+            "the missing hour and the hour the stream resumed in, got {excluded:?}"
+        );
+        assert_eq!(excluded[0].0, raw_for(HOUR_B));
+        assert!(
+            excluded[0].1.contains("never delivered")
+                && excluded[0].1.contains("sequence discontinuity"),
+            "the missing hour names why it is missing, got {:?}",
+            excluded[0].1
+        );
+        assert_eq!(excluded[1].0, raw_for(HOUR_C));
+        assert!(
+            excluded[1].1.contains("may be missing records of its own"),
+            "the resumed hour names what cannot be shown about it, got {:?}",
+            excluded[1].1
+        );
+        // Records are KNOWN gone, which is the signal the fold acts on to stop
+        // every delta chain that ran through the hole from claiming to be
+        // observed.
+        assert_eq!(
+            tracker.lost_between_frames().0,
+            1,
+            "a hole between frames is reported to the fold exactly once"
+        );
+    }
+
+    /// A REFUSED HOUR IS NAMED, NOT MERELY ABSENT.
+    ///
+    /// Lane GQ cell (e): a `FRAME_REFUSED` hour sealed fine and confined its
+    /// loss, and the hour was then simply MISSING from the output with nothing
+    /// anywhere saying it had existed and been refused. A consumer counting
+    /// hours could not tell it apart from a capture that was one hour shorter.
+    ///
+    /// kills: dropping the `FRAME_REFUSED` arm from `close_hour_if_boundary`.
+    /// The refused hour then has no coverage row, `excluded_hours` is empty, and
+    /// the loss is unnamed again.
+    #[test]
+    fn a_refused_hour_is_excluded_by_name_rather_than_silently_absent() {
+        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+            refused_hour: raw_for(HOUR_B),
+            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                domain_id: 64,
+                status_flags: 0x0000_0100,
+                non_tolerated_flags: 0x0000_0100,
+                reason: "d64_rejected_timed_effect_frames=1".to_string(),
+            }],
+        }
+        .encode()
+        .expect("canonical refusal fixture");
+
+        let mut tracker = BoundaryTracker::default();
+        let mut seq = 1u64;
+        let mut at = 0u64;
+        walk_clean_hours(&mut tracker, &mut seq, &[HOUR_A], &mut at);
+        let data = country_identity_payload(&[(47, "GER")]);
+        tracker.observe(
+            &boundary_header(
+                seq,
+                raw_for(HOUR_B),
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                data.len(),
+                0,
+            ),
+            &data,
+            at,
+        );
+        seq += 1;
+        at += (COMPACT_RECORD_HEADER_LEN + data.len()) as u64;
+        tracker.observe(
+            &boundary_header(
+                seq,
+                raw_for(HOUR_B),
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_REFUSED,
+                refusal.len(),
+                0,
+            ),
+            &refusal,
+            at,
+        );
+        seq += 1;
+        at += (COMPACT_RECORD_HEADER_LEN + refusal.len()) as u64;
+        walk_clean_hours(&mut tracker, &mut seq, &[HOUR_C], &mut at);
+
+        let coverage = tracker.seal_coverage(&[]);
+        assert_eq!(
+            tracker.eof_check(0),
+            Ok(()),
+            "a refusal stream is honest and its whole-stream verdict stays clean"
+        );
+        let excluded = coverage.excluded_hours();
+        assert_eq!(excluded.len(), 1, "got {excluded:?}");
+        assert_eq!(excluded[0].0, raw_for(HOUR_B));
+        assert!(
+            excluded[0].1.contains("refused this frame"),
+            "the refused hour says it was refused, got {:?}",
+            excluded[0].1
+        );
+        assert_eq!(coverage.verified_count(), 2);
+    }
+
+    /// A TORN TAIL NAMES THE HOUR IT COST.
+    ///
+    /// Every structural refusal used to report byte offsets and nothing else —
+    /// `"stream ends mid-record (35 residual bytes)"` — so lane GQ's cell (a)
+    /// scored `injury unnamed` even though the truncated record's own HEADER was
+    /// intact and said which hour it belonged to.
+    ///
+    /// kills: dropping the `parse_compact_record_header(residual)` arm in
+    /// `seal_coverage` and going straight to the unattributed-loss branch. The
+    /// hour is then not in the map and the assertion below fails.
+    #[test]
+    fn a_torn_tail_names_the_game_hour_whose_records_it_interrupted() {
+        let mut tracker = BoundaryTracker::default();
+        let mut seq = 1u64;
+        let mut at = 0u64;
+        walk_clean_hours(&mut tracker, &mut seq, &[HOUR_A], &mut at);
+
+        // The residual carry: a complete 32-byte header for hour B's first
+        // record, and three bytes of a payload that never finished arriving.
+        let mut residual = Vec::new();
+        residual.extend_from_slice(COMPACT_RECORD_MAGIC);
+        residual.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+        residual.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        residual.extend_from_slice(&seq.to_le_bytes());
+        residual.extend_from_slice(&raw_for(HOUR_B).to_le_bytes());
+        residual.extend_from_slice(&18u16.to_le_bytes());
+        residual.extend_from_slice(&COMPACT_RECORD_TYPE_DOMAIN_DATA.to_le_bytes());
+        residual.extend_from_slice(&40u32.to_le_bytes());
+        residual.extend_from_slice(&0u32.to_le_bytes());
+        residual.extend_from_slice(&[0u8; 3]);
+
+        let coverage = tracker.seal_coverage(&residual);
+        coverage.validate().expect("admissible");
+        assert!(coverage.is_hour_verified(raw_for(HOUR_A)));
+        let excluded = coverage.excluded_hours();
+        assert_eq!(excluded.len(), 1, "got {excluded:?}");
+        assert_eq!(excluded[0].0, raw_for(HOUR_B));
+        assert!(
+            excluded[0].1.contains("ends mid-record inside game hour"),
+            "got {:?}",
+            excluded[0].1
+        );
+    }
+
+    /// THE RESYNC PREDICATE IS TWO-DEEP, BECAUSE `H4CR` IS FOUR BYTES.
+    ///
+    /// A record magic can occur inside a payload. A resync that accepted the
+    /// first magic it found would land mid-record on ordinary data and turn one
+    /// injury into a cascade of them.
+    ///
+    /// kills: relaxing `find_frame_resync_offset` to return the first offset
+    /// whose header merely parses. The false candidate planted inside the
+    /// payload below is then chosen and the assertion fails.
+    #[test]
+    fn a_framing_resync_refuses_a_record_magic_that_is_really_payload_bytes() {
+        // A real record: hour A's FRAME_END, preceded by garbage that CONTAINS
+        // a well-formed-looking header whose own record runs off into nothing.
+        let seal = frame_end_payload(0, 0, 0, 0);
+        let mut real = Vec::new();
+        real.extend_from_slice(COMPACT_RECORD_MAGIC);
+        real.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+        real.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        real.extend_from_slice(&7u64.to_le_bytes());
+        real.extend_from_slice(&raw_for(HOUR_A).to_le_bytes());
+        real.extend_from_slice(&COMPACT_DOMAIN_FRAME.to_le_bytes());
+        real.extend_from_slice(&COMPACT_RECORD_TYPE_FRAME_END.to_le_bytes());
+        real.extend_from_slice(&(seal.len() as u32).to_le_bytes());
+        real.extend_from_slice(&0u32.to_le_bytes());
+        real.extend_from_slice(&seal);
+
+        // The decoy: a parseable header claiming a payload far longer than what
+        // follows it, so the byte after its record is not another header.
+        let mut decoy = Vec::new();
+        decoy.extend_from_slice(COMPACT_RECORD_MAGIC);
+        decoy.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+        decoy.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        decoy.extend_from_slice(&99u64.to_le_bytes());
+        decoy.extend_from_slice(&raw_for(HOUR_A).to_le_bytes());
+        decoy.extend_from_slice(&18u16.to_le_bytes());
+        decoy.extend_from_slice(&COMPACT_RECORD_TYPE_DOMAIN_DATA.to_le_bytes());
+        decoy.extend_from_slice(&8u32.to_le_bytes());
+        decoy.extend_from_slice(&0u32.to_le_bytes());
+        decoy.extend_from_slice(&[0u8; 8]);
+
+        let mut buf = vec![0xAAu8; 16];
+        let decoy_at = buf.len();
+        buf.extend_from_slice(&decoy);
+        // Two filler bytes, so the decoy's record does NOT end on `real`.
+        buf.extend_from_slice(&[0xBB, 0xBB]);
+        let real_at = buf.len();
+        buf.extend_from_slice(&real);
+
+        match find_frame_resync_offset(&buf, 0) {
+            FramingResync::At(offset) => {
+                assert_ne!(
+                    offset, decoy_at,
+                    "the decoy header parses but its record lands on nothing — it must be rejected"
+                );
+                assert_eq!(offset, real_at, "the resync must land on the real record");
+            }
+            other => panic!("expected a resync onto the real record, got {other:?}"),
+        }
     }
 
     #[test]
@@ -4207,8 +5652,21 @@ mod tests {
 
     // Review finding (fix round 2): corruption that mangles a record HEADER
     // makes framing stop gracefully BEFORE the zstd footer, bypassing the
-    // content checksum. On a compressed source that must now hard-error; on a
-    // raw source the tolerant stop-with-reason behavior is preserved exactly.
+    // content checksum. On a compressed source that must hard-error.
+    //
+    // The RAW arm changed with the owner's per-hour ruling (2026-08-11, task
+    // #188) and this test now pins the new contract. It used to assert that
+    // corruption before the first FRAME_END emitted NO hours — every intact
+    // hour after the damage was discarded unread, which is exactly the loss
+    // lane GQ measured (cell c1). A raw source now resynchronises at the next
+    // well-formed record: the damaged hour is excluded and named in the
+    // coverage map, and the hours after it are delivered.
+    //
+    // kills: putting the unconditional framing hard-stop back in
+    // `drive_fold_compressed_with_identity_mode`'s parse-error arm. The raw
+    // fold then emits no hours and the "hours after the damage survive"
+    // assertion fails; the compressed assertions above keep passing, which is
+    // the point of asserting both in one test.
     #[test]
     fn header_corruption_in_compressed_stream_fails_fold_loudly() {
         let dir = TmpDir::new("zstd_hdr_flip");
@@ -4240,15 +5698,50 @@ mod tests {
         };
         assert_compressed_protocol_hard_error(&err, "invalid record magic");
 
-        // Raw: byte-identical tolerant behavior (stop reason preserved; the
-        // corruption sits before hour A's FRAME_END, so no hour completes).
+        // Raw: the walk RESYNCHRONISES — the hours after the damage are still
+        // delivered rather than discarded unread, which is what the framing
+        // stop used to cost. What none of them is, is VOUCHED FOR: this
+        // fixture's corruption lands in the SECOND record, so no hour closed
+        // before it and a resynchronised boundary is a guess rather than a
+        // proof. Every hour is therefore excluded, by name, and a recording
+        // with nothing to vouch for has nothing to seal.
+        //
+        // kills, first half: putting the unconditional framing hard-stop back
+        // in `drive_fold_compressed_with_identity_mode`'s parse-error arm. The
+        // fold then delivers no hours at all and the delivery assertion fails.
+        //
+        // kills, second half: dropping the `framing_damage_seen` arm from
+        // `BoundaryTracker::close_hour_if_boundary`. The recovered hours are
+        // then VERIFIED — a digest-backed claim over records that may have been
+        // read from inside a damaged record's payload — and the seal publishes
+        // them, so both the verified-count and the seal assertions fail.
         let (files, stats) =
             fold_compact_stream_file(&raw_path, "gid", &dir.0.join("raws")).unwrap();
-        assert!(
-            files.is_empty(),
-            "corruption before the first FRAME_END emits no hours"
-        );
         assert!(stats.stop_reason.is_some(), "raw stop keeps its diagnostic");
+        assert!(
+            !files.is_empty(),
+            "the hours after the damage are still delivered: {}",
+            stats.hour_coverage.summary()
+        );
+        let excluded = stats.hour_coverage.excluded_hours();
+        assert!(
+            excluded
+                .iter()
+                .any(|(_, reason)| reason.contains("framing damage")),
+            "the damaged hour is excluded and NAMED, got {excluded:?}"
+        );
+        assert_eq!(
+            stats.hour_coverage.verified_count(),
+            0,
+            "nothing read after framing damage may be vouched for: {}",
+            stats.hour_coverage.summary()
+        );
+        assert!(
+            crate::hour_coverage::per_hour_seal_verdict(&stats.hour_coverage)
+                .unwrap_err()
+                .contains("nothing to seal"),
+            "a recording with no verified hour has nothing to seal"
+        );
     }
 
     /// Scripted reader discriminating the post-framing-stop drain: serves a

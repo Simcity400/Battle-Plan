@@ -65,6 +65,15 @@ pub struct StreamVerifyReport {
     pub stream_entry_bytes: u64,
     /// Sum of every entry's uncompressed size (integrity accounting only).
     pub total_uncompressed: u64,
+    /// Entry path -> the decompressed sha256 this pass actually observed.
+    ///
+    /// Reported so a caller can bind a receipt minted BEFORE packing to the
+    /// bytes that were packed. Nothing else can: the packer hashes whatever
+    /// occupies a path at pack time and records that in the manifest, so a
+    /// pre-pack check of the same path proves nothing about the container
+    /// (Codex review rounds 5 and 6). These digests come from the retained
+    /// creation handle, not from a second open by name.
+    pub entry_sha256_by_path: std::collections::BTreeMap<String, String>,
 }
 
 /// A central-directory record we serve.
@@ -565,6 +574,9 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
         }
         report.entries_verified += 1;
         report.total_uncompressed = report.total_uncompressed.saturating_add(uncomp);
+        report
+            .entry_sha256_by_path
+            .insert(e.name.clone(), sha.clone());
         if e.name == canonical_stream_path {
             report.stream_entry_sha256 = Some(sha);
             report.stream_entry_bytes = uncomp;

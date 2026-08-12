@@ -26007,10 +26007,31 @@ fn d43_fold_refuses_a_payload_whose_two_trailers_state_different_widths() {
 /// that had forgotten the baseline, `reject_delta_before_baseline` would type
 /// that domain-hour unknown, and the hour would silently lose the domain.
 ///
+/// # The one exemption, and why it is not the case above
+///
+/// `WorldFold::record_framing_damage` may remove, and nothing else may. The
+/// invariant above is about a `DOMAIN_GAP`: a statement the producer MADE, on a
+/// whole stream, with its baseline pin intact — forgetting the baseline there
+/// discards data that is fine. `record_framing_damage` fires only when records
+/// are KNOWN GONE (a sequence hole, or bytes no framing could parse), which is
+/// the pin's own evidence missing: the consumer cannot know whether that
+/// domain's patch was in the lost span, so applying the NEXT patch on top of
+/// whatever value it still holds publishes `hour3 + delta5` under hour 5's date
+/// and calls it observed.
+///
+/// That exposure is NEW. Before the per-hour seal (owner ruling 2026-08-11,
+/// task #188) a stream with a hole was refused whole and never reached a
+/// consumer; now the healthy hours publish, so something has to stop the hours
+/// after a hole from publishing a patched-over-nothing value as clean.
+///
+/// The scan below is scoped rather than relaxed: removals are permitted ONLY
+/// inside that one function, so the general rule still holds everywhere else.
+///
 /// What production change makes this fail: any `remove`, `clear`, `retain`,
-/// `drain` or reassignment of `delta_baselines_seen` outside the constructor.
-/// That is exactly the mutation `fold_check`'s gate is proven against, and this
-/// test is what stops it appearing on a domain that gate does not cover.
+/// `drain` or reassignment of `delta_baselines_seen` outside the constructor
+/// and outside `record_framing_damage`. That is exactly the mutation
+/// `fold_check`'s gate is proven against, and this test is what stops it
+/// appearing on a domain that gate does not cover.
 #[test]
 fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
     // Line endings normalised because this repo checks the source out with
@@ -26018,13 +26039,40 @@ fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
     // than load-bearing, but the idiom is cheap and the trap is silent.
     let source = include_str!("../world_fold.rs").replace("\r\n", "\n");
 
+    // The ONE function permitted to forget a baseline, located by its own
+    // signature so the exemption is a byte range in the real source rather than
+    // a name a reviewer has to trust. The end is the next item at the same
+    // indentation, which is how every `impl` member in this file ends.
+    const EXEMPT_SIGNATURE: &str = "pub fn record_framing_damage(&mut self, game_hour_raw: i32, reason: &str) {";
+    let exempt_signature_at = source
+        .find(EXEMPT_SIGNATURE)
+        .expect("record_framing_damage must exist for its exemption to mean anything");
+    // Back up over the function's own doc block, which argues the exemption and
+    // therefore names the field in prose. The scan cannot tell code from
+    // comments, so the range has to cover both or the argument for the
+    // exemption would itself trip the rule it explains.
+    let exempt_start = source[..exempt_signature_at]
+        .rfind("\n\n")
+        .map(|at| at + 2)
+        .unwrap_or(exempt_signature_at);
+    let exempt_end = exempt_signature_at
+        + source[exempt_signature_at..]
+            .find("\n    }\n")
+            .expect("record_framing_damage must have a closing brace")
+        + "\n    }\n".len();
+
     let mut offenders = Vec::new();
     let mut references = 0usize;
+    let mut exempted = 0usize;
     let mut from = 0usize;
     while let Some(at) = source[from..].find("delta_baselines_seen") {
         let at = from + at;
         from = at + "delta_baselines_seen".len();
         references += 1;
+        if (exempt_start..exempt_end).contains(&at) {
+            exempted += 1;
+            continue;
+        }
         // What the reference is USED for is the next non-whitespace run.
         let tail: String = source[from..]
             .chars()
@@ -26048,6 +26096,13 @@ fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
         references > 20,
         "the delta-baseline set should be consulted by many folds, found {references} \
          references — the scan is looking at the wrong text"
+    );
+    // The exemption must stay NARROW: if it ever stops covering a real removal,
+    // the scan has silently become a scan of nothing.
+    assert!(
+        (1..=4).contains(&exempted),
+        "the lost-record exemption should cover a handful of references inside one \
+         function, found {exempted} — the exempt range is wrong"
     );
     assert!(
         offenders.is_empty(),
@@ -33168,5 +33223,164 @@ fn a_destructive_mutation_inside_a_refused_hour_is_named_on_the_next_published_h
         div17["equipment"],
         Value::Null,
         "the ambiguous key stays cleared; only its explanation was missing"
+    );
+}
+
+/// RECORDS LOST FROM THE STREAM STOP EVERY DELTA CHAIN FROM CLAIMING TO BE
+/// OBSERVED — AND THE DAMAGED HOUR IS CLOSED WITHOUT PUBLISHING.
+///
+/// The per-hour seal (owner ruling 2026-08-11, task #188) publishes recordings
+/// that have injured hours, which the all-or-nothing certification it replaced
+/// could never do. That makes the hours AFTER an injury the dangerous ones: a
+/// DELTA record patches the value the previous record left, so a hole in the
+/// stream leaves every delta-carried accumulator a patch applied over nothing.
+/// Lane GQ's matrix names this exactly (GQ-4): whatever replaced the whole-run
+/// refusal had to keep a lost record from turning into a silently-wrong hour,
+/// "which is worse".
+///
+/// The sequence walked here:
+///  1. hour 0 publishes a WHOLE d13 record — the delta baseline;
+///  2. records are lost inside hour 1, so the walker tells the fold and then
+///     closes that hour without publishing it;
+///  3. hour 2 sends an ordinary DELTA patch.
+///
+/// kills: deleting the `delta_baselines_seen.remove(&domain_id)` line from
+/// `record_framing_damage` (keeping the mark). Hour 2 then publishes its
+/// patched `tech_count` with `domain_problems: []` — a value made partly of a
+/// baseline nothing vouches for, in an hour asserting it is clean.
+///
+/// The problem hour 2 reports is `delta_before_baseline`, not
+/// `stream_records_lost`, and that is the design rather than a surprise:
+/// dropping the baseline routes the damage into the EXISTING fail-closed path a
+/// dropped keyframe already takes (lane GQ cell f2, "later hours degrade
+/// fail-closed and say so"). `record_framing_damage` invents no second
+/// vocabulary for the same condition; its own `stream_records_lost` mark
+/// belongs to the damaged hour, which by construction publishes nothing.
+///
+/// kills, second half: making `WorldFold::close_damaged_hour` not close the
+/// hour — deleting its `close_refused_hour(game_hour_raw)` call. The damaged
+/// hour's PER-HOUR bookkeeping then survives into the next published hour, so
+/// hour 2 carries hour 1's `stream_records_lost` problem as if it were its own,
+/// and the "no complaint that belongs to the damaged hour" assertion fails.
+///
+/// (Counting snapshots does NOT kill it: hour 1 publishes nothing either way,
+/// so the total stays at two whether or not the close runs. Codex review round
+/// 7 caught that, and the distinguishing assertion below is what replaced it.)
+///
+/// (This test drives the fold DIRECTLY, so it says nothing about which walker
+/// arm calls `close_damaged_hour`. The walker-side dispatch is exercised
+/// end-to-end by the fault-injection matrix, `runs/gy_per_hour_seal/`.)
+#[test]
+fn records_lost_from_the_stream_stop_a_delta_chain_from_claiming_to_be_observed() {
+    let base_hi = 16_959_360i64;
+    let mut fold = WorldFold::new("gy_framing_damage");
+
+    // Hour 0: the whole baseline.
+    let hour0 = raw_for(base_hi);
+    fold.ingest_record(
+        1,
+        hour0,
+        13,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &gq_tech_payload(47, 10, 0),
+        0,
+    );
+    fold.ingest_record(
+        2,
+        hour0,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+        0,
+    );
+
+    // Hour 1: one record arrives, then the stream is damaged and swallows this
+    // hour's own FRAME_END. The walker reports the loss, and when hour 2's
+    // first record appears it closes hour 1 without publishing — exactly what
+    // `stream_fold`'s `FoldDamageStep::LostRecords` and
+    // `::CloseAbandonedHour` arms do, in that order.
+    let hour1 = raw_for(base_hi + 1);
+    fold.ingest_record(
+        3,
+        hour1,
+        13,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &gq_tech_payload(47, 11, 0),
+        0,
+    );
+    fold.record_framing_damage(hour1, "invalid record magic at byte 421");
+    fold.close_damaged_hour(hour1, "invalid record magic at byte 421");
+
+    // Hour 2: an ordinary DELTA patch, on a chain whose baseline is no longer
+    // vouched for.
+    let hour2 = raw_for(base_hi + 2);
+    fold.ingest_record(
+        4,
+        hour2,
+        13,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &gq_tech_payload(47, 12, compact_contract::COMPACT_STATUS_DELTA_DATA),
+        0,
+    );
+    fold.ingest_record(
+        5,
+        hour2,
+        1000,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+        0,
+    );
+
+    let snapshots: Vec<Value> = fold
+        .finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect();
+    assert_eq!(
+        snapshots.len(),
+        2,
+        "the damaged hour publishes nothing, and does not merge into the next one"
+    );
+
+    // Hour 0 is the control: clean, and the baseline the rest is measured from.
+    assert_eq!(
+        snapshots[0]["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .map(Vec::len),
+        Some(0),
+        "hour 0 is clean: {}",
+        snapshots[0]["provenance"]["collector"]["domain_problems"]
+    );
+
+    // Hour 2 — the hour AFTER the loss — says its d13 state is not an
+    // observation.
+    let problems = &snapshots[1]["provenance"]["collector"]["domain_problems"];
+    assert!(
+        problems
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["domain_id"] == json!(13)
+                && row["problem"] == json!("delta_before_baseline"))),
+        "the hour after a lost record must not publish its delta chain as observed: {problems}"
+    );
+    // What must NOT travel is the damaged hour's structured per-hour
+    // bookkeeping: a problem entry is a claim about a named domain IN THE HOUR
+    // THAT CARRIES IT, so republishing hour 1's would assert something false
+    // about hour 2.
+    assert!(
+        problems
+            .as_array()
+            .is_some_and(|rows| rows
+                .iter()
+                .all(|row| row["problem"] != json!("stream_records_lost"))),
+        "the damaged hour's own complaint must not be stamped onto the next          published hour: {problems}"
+    );
+    // The damaged hour's NOTES do outlive it: `close_damaged_hour` goes through
+    // the refusal close, which carries every note the unpublished hour wrote
+    // onto the next hour that does publish, each stamped with its own hour.
+    let notes = snapshots[1]["provenance"]["notes"].to_string();
+    assert!(
+        notes.contains("records were lost from the stream")
+            && notes.contains("invalid record magic at byte 421"),
+        "the surviving hour must carry the damaged hour's account: {notes}"
     );
 }

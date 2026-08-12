@@ -13,6 +13,9 @@ pub mod early_render_launch;
 pub mod emitted_token_inventory;
 pub mod finalize_progress;
 pub mod gap_ledger;
+/// What a sealed recording asserts, per game hour. See the module header for
+/// the whole-stream verdict it replaced (owner ruling 2026-08-11, task #188).
+pub mod hour_coverage;
 /// Named resident-memory owners and the residual they do not explain. See the
 /// module header for why a process peak alone was not enough.
 pub mod mem_account;
