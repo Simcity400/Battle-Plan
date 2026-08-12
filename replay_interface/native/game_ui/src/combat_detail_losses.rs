@@ -2384,13 +2384,15 @@ mod tests {
     }
 
     /// The convoy-terminal owner/killer ceiling is the shared compact identity
-    /// bound, at its exact value: `2_048` is admitted, `2_049` is not. This
-    /// gate carried a hand-typed copy of the number, three layers away from
-    /// where the producer applies it. Spelling the boundary in the test as the
-    /// constant it guards would pass for whatever the constant happened to be.
+    /// bound, at its exact value: the ceiling is admitted and one past it is
+    /// not. This gate carried a hand-typed copy of the number, three layers
+    /// away from where the producer applies it. Spelling the boundary in the
+    /// test as the constant it guards would pass for whatever the constant
+    /// happened to be, so the ceiling is pinned to the id space's structural
+    /// width (`i32::MAX - 1`, lane GV).
     #[test]
     fn convoy_terminal_identity_ceiling_is_the_shared_compact_bound() {
-        assert_eq!(replay_core::MAX_COMPACT_OWNER_TAG_DB_ID, 2_048);
+        assert_eq!(replay_core::MAX_COMPACT_OWNER_TAG_DB_ID, 2_147_483_646);
         let admitted = |owner: u32, killer: u32| {
             let mut row =
                 convoy_terminal_row(1, ConvoyD70MutationKindExact::AppendFirstSeen);
@@ -2398,11 +2400,18 @@ mod tests {
             row.killer_tag_db_id = killer;
             validate_convoy_terminal(&Leaf::Measured(vec![row])).is_ok()
         };
+        let max = replay_core::MAX_COMPACT_OWNER_TAG_DB_ID as u32;
+        // Boundary walk: the old ceiling and one past it are ordinary admitted
+        // ids now; the structural ceiling is admitted exactly; one past it is
+        // refused on either side of the pair.
         assert!(admitted(2_048, 2_048));
-        assert!(!admitted(2_049, 2_048));
-        assert!(!admitted(2_048, 2_049));
-        assert!(!admitted(0, 2_048));
-        assert!(!admitted(2_048, 0));
+        assert!(admitted(2_049, 2_048));
+        assert!(admitted(2_048, 2_049));
+        assert!(admitted(max, max));
+        assert!(!admitted(max + 1, max));
+        assert!(!admitted(max, max + 1));
+        assert!(!admitted(0, max));
+        assert!(!admitted(max, 0));
     }
 
     #[test]
