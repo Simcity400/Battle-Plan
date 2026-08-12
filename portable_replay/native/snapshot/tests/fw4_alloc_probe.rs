@@ -59,7 +59,7 @@ use portable_replay_format::sha256::Sha256;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
-const FORMAT_VERSION: u16 = 3;
+const FORMAT_VERSION: u16 = 4;
 const CACHE_HEADER_LEN: u64 = 40;
 
 fn hex32(byte: u8) -> String {
@@ -145,8 +145,16 @@ fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
     index.extend_from_slice(&0u32.to_le_bytes());
     index.extend_from_slice(&0u32.to_le_bytes());
     index.extend_from_slice(&digest_of(&hex32(0x00)));
+    // H4IX v4's per-record digest. It is the REAL digest of the record above:
+    // this artifact is hostile in one declared COUNT and honest in every
+    // binding, so the reader has to reach the decoder to refuse it. A wrong
+    // digest here would confine the hour at admission and prove nothing about
+    // the allocation path.
+    index.extend_from_slice(&digest_of(&Sha256::hex(
+        &cache[record_offset as usize..(record_offset + record_len) as usize],
+    )));
     put_string(&mut index, "1936.1.1.1");
-    // H4IX v3: the excluded-hour section. This artifact serves its one hour and
+    // H4IX v4: the excluded-hour section. This artifact serves its one hour and
     // names no hole, which is what an uninjured recording looks like.
     index.extend_from_slice(&0u64.to_le_bytes()); // excluded hour count
 

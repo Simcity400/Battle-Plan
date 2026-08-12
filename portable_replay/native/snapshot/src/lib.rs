@@ -62,7 +62,8 @@ pub use recording_composition::{
     RAW_STREAM_OMITTED_REASON, RAW_STREAM_PACKAGING_FIELD,
 };
 pub use replay_cache::{
-    CacheBuildHour, CacheBuildHourMeta, CacheIdentityMode, CanonicalWorldHour,
+    CacheAudit, CacheAuditVerdict, CacheBuildHour, CacheBuildHourMeta, CacheIdentityMode,
+    CanonicalWorldHour, ConfinedHour,
     validate_checkpoint_cache_header, CertifiedCacheFile, CertifiedReplayCache, ReplayCacheEncoder,
     ReplayCacheError, ReplayCacheReader, ReplayExcludedHour, ReplayHourEntry, ReplayHourIndex,
     ReplaySeekReceipt,

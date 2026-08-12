@@ -377,6 +377,25 @@ fn a_receipt_whose_cache_is_not_on_disk_cannot_release_anything() {
     assert_eq!(whole, fixture.decoded, "the spool must be untouched");
 }
 
+/// A cache whose bytes have moved cannot authorise deleting the spool bytes it
+/// claims to hold — and since the reader gained per-record confinement (owner
+/// ruling 2026-08-12, task #191) it says so at a finer resolution: the flipped
+/// byte lands in one record, the reader admits the cache while refusing the
+/// hours that record serves, and the TRIM refuses because those hours are not
+/// durable anywhere.
+///
+/// kills: deleting the `confined_hours()` refusal in `verify_durable_hours`.
+/// The reader no longer refuses a damaged cache outright, so without that check
+/// the trim releases the source bytes of every confined hour — the only
+/// surviving copy of them.
+///
+/// The published-coverage receipt is re-signed over the DAMAGED cache here on
+/// purpose (Codex review round 1, finding 3). Left untouched it names the
+/// original digest and stops the trim on its own, so the confinement guard
+/// would be unfalsifiable behind it and this test would pin only which sentence
+/// comes out. Re-signing models the case that actually needs the guard: a
+/// recording whose receipt honestly describes the artifacts it has, one of
+/// whose records has rotted.
 #[test]
 fn a_rewritten_cache_cannot_release_anything() {
     let fixture = fixture("rewritten_cache", 4 << 20, 1 << 20);
@@ -384,9 +403,18 @@ fn a_rewritten_cache_cannot_release_anything() {
     let flip = bytes.len() / 2;
     bytes[flip] ^= 0xFF;
     fs::write(&fixture.receipt.checkpoint_cache_path, &bytes).unwrap();
+    let coverage_path = &fixture.receipt.published_coverage_path;
+    let mut coverage: serde_json::Value =
+        serde_json::from_slice(&fs::read(coverage_path).unwrap()).unwrap();
+    coverage["checkpoint_cache_sha256"] = json!(Sha256::hex(&bytes));
+    fs::write(coverage_path, serde_json::to_vec_pretty(&coverage).unwrap()).unwrap();
+
     let error = trim_spool_prefix(&fixture.stream_path, &fixture.frames, &fixture.receipt)
         .expect_err("a rewritten checkpoint cache must never authorise a release");
-    assert!(error.contains("not bound to this"), "{error}");
+    assert!(
+        error.contains("cannot serve") && error.contains("not durable"),
+        "{error}"
+    );
     assert!(read_journal(&fixture.stream_path).unwrap().is_none());
 }
 

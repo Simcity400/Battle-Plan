@@ -360,6 +360,26 @@ pub fn verify_durable_receipt(
             receipt.decoded_len, receipt.decoded_sha256
         )
     })?;
+    // A cache that cannot serve every hour it indexes is not durable, and this
+    // is the one place in the recorder where that distinction destroys data:
+    // what follows releases the SPOOL bytes those hours came from, on the
+    // strength of the cache holding them. The reader now admits a cache with
+    // damaged records and confines the hours they reach (owner ruling
+    // 2026-08-12, task #191) — which is right for a replay consumer and wrong
+    // here, so the producer's stricter posture is stated explicitly rather than
+    // inherited from a door that no longer refuses.
+    //
+    // kills: deleting this releases the source bytes of every hour a damaged
+    // record confines, leaving the recording with no copy of them at all.
+    if let Some(confined) = reader.confined_hours().first() {
+        return Err(format!(
+            "the durable checkpoint cache cannot serve {} of the hours it indexes, so the spool \
+             bytes behind them are not durable; the first is game hour {}: {}",
+            reader.confined_hours().len(),
+            confined.hour_index(),
+            confined.reason()
+        ));
+    }
     let hours = reader.index().hours();
     if hours.is_empty() {
         return Err("durable checkpoint cache holds no hours".to_string());

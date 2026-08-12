@@ -48,6 +48,7 @@ use crate::sha256::{to_hex, Sha256};
 use crate::zip::MAX_CONTAINER_ENTRY_BYTES;
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
@@ -75,18 +76,26 @@ pub const MAX_CHECKPOINT_INTERVAL_HOURS: u32 = 24 * 31;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
-/// Version 3 carries EXCLUDED-HOUR rows beside the served ones, so a recording
-/// whose middle is injured is still a composition rather than a refusal (owner
-/// ruling 2026-08-12, task #189).
+/// Version 4 carries a PER-RECORD digest on every served row, so damage to the
+/// packaged H4CP is attributable to the records it actually reached instead of
+/// refusing the whole cache (owner ruling 2026-08-12, task #191). Without it
+/// the only binding between index and cache was one whole-cache digest: a
+/// flipped byte anywhere failed it, and nothing could say which record moved.
 ///
-/// Version 2 carried scalar SPELLINGS and compact integers but had no way to
-/// say "this hour is a hole": every row was an hour it served, and a gap
-/// between two rows was a structural violation. Version 1 stored
-/// `serde_json`-normalised numbers behind fixed 32-bit length prefixes. Neither
-/// is readable here and neither ever will be — pre-production carries no
-/// backwards compatibility, and an older index cannot answer which hours its
-/// recording vouches for.
-const FORMAT_VERSION: u16 = 3;
+/// Version 3 carried EXCLUDED-HOUR rows beside the served ones, so a recording
+/// whose middle is injured is still a composition rather than a refusal (owner
+/// ruling 2026-08-12, task #189). Version 2 carried scalar SPELLINGS and
+/// compact integers but had no way to say "this hour is a hole": every row was
+/// an hour it served, and a gap between two rows was a structural violation.
+/// Version 1 stored `serde_json`-normalised numbers behind fixed 32-bit length
+/// prefixes. None is readable here and none ever will be — pre-production
+/// carries no backwards compatibility, and an older index can answer neither
+/// which hours its recording vouches for nor which of its records survived.
+///
+/// The H4CP header carries this same number, and deliberately so: an index and
+/// a cache from different format generations must never pair, and the per-hour
+/// digests only mean anything over records whose framing the index agrees with.
+const FORMAT_VERSION: u16 = 4;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
@@ -110,13 +119,19 @@ const RECORD_HEADER_LEN: u64 = 1 + 3 + 8 + 8 + 1;
 /// actually materializes, and it is deliberately the SAME number rather than a
 /// tighter one. Before this existed a record was bounded by the cache and the
 /// cache was bounded by the container's in-RAM cap, so no reader ever admitted
-/// a record above 2 GiB. Keeping the number identical makes the bound provably
-/// incapable of refusing anything a previously sealed container carries, which
-/// a tighter figure could not claim: the H4CP format version is unchanged, its
-/// encoder has never had a per-record ceiling, and a whole-world checkpoint can
-/// be arbitrarily large without violating the 256 MiB per-string bound. A
-/// smaller derived figure (512 MiB — twice [`MAX_STRING_BYTES`], a sixteenth of
-/// the 8 GiB floor) was considered and rejected for exactly that reason.
+/// a record above 2 GiB; keeping the number identical means the re-scoping
+/// introduced no new refusal.
+///
+/// It stays that number at v4. The old rationale — "no previously sealed
+/// container can be refused by it" — retired with the format bump (v4 makes
+/// every older H4CP unreadable anyway, which is what pre-production means), and
+/// what remains is the reason that never depended on compatibility: the encoder
+/// has no per-record ceiling of its own, and a whole-world CHECKPOINT can be
+/// arbitrarily large without violating the 256 MiB per-string bound, so any
+/// tighter figure would be an unrelated new restriction on how big one game
+/// hour may be. A smaller derived figure (512 MiB — twice [`MAX_STRING_BYTES`],
+/// a sixteenth of the 8 GiB floor) was considered and rejected for exactly that
+/// reason.
 ///
 /// It is not a formality. The cache entry itself is now packed under the 2 TiB
 /// streaming ceiling, so without this a corrupted or hostile `cache_record_len`
@@ -191,6 +206,20 @@ pub struct ReplayHourEntry {
     checkpoint_position: u32,
     delta_steps: u32,
     world_json_sha256: String,
+    /// SHA-256 over this hour's CACHE RECORD — its 21-byte header and its
+    /// payload, exactly the `[cache_record_offset, +cache_record_len)` window.
+    ///
+    /// This is the field that makes H4CP damage confinable. `world_json_sha256`
+    /// answers "did this hour reconstruct correctly", which can only be asked
+    /// after the record decodes; this answers "are these the bytes the seal
+    /// wrote", which can be asked of a record that no longer decodes at all,
+    /// and asked of every record in one streaming pass.
+    ///
+    /// Its coverage is total with the tiling the index already proves: the
+    /// records abut from [`CACHE_HEADER_LEN`] through `cache_len`, and the
+    /// header is fully determined by [`validate_checkpoint_cache_header`], so
+    /// every byte of a cache is pinned by an index that carries these.
+    cache_record_sha256: String,
 }
 
 impl ReplayHourEntry {
@@ -220,6 +249,10 @@ impl ReplayHourEntry {
     }
     pub fn world_json_sha256(&self) -> &str {
         &self.world_json_sha256
+    }
+    /// The digest of this hour's cache record bytes. See the field.
+    pub fn cache_record_sha256(&self) -> &str {
+        &self.cache_record_sha256
     }
 }
 
@@ -380,6 +413,7 @@ impl ReplayHourIndex {
             put_u32(&mut out, hour.checkpoint_position);
             put_u32(&mut out, hour.delta_steps);
             out.extend_from_slice(&decode_hex32(&hour.world_json_sha256)?);
+            out.extend_from_slice(&decode_hex32(&hour.cache_record_sha256)?);
             put_index_string(&mut out, &hour.date)?;
         }
         put_u64(
@@ -439,6 +473,7 @@ impl ReplayHourIndex {
                 checkpoint_position: reader.u32()?,
                 delta_steps: reader.u32()?,
                 world_json_sha256: to_hex(reader.array32()?),
+                cache_record_sha256: to_hex(reader.array32()?),
                 date: reader.index_string()?,
             });
         }
@@ -508,6 +543,7 @@ impl ReplayHourIndex {
         let mut active_checkpoint = usize::MAX;
         for (position, hour) in self.hours.iter().enumerate() {
             decode_hex32(&hour.world_json_sha256)?;
+            decode_hex32(&hour.cache_record_sha256)?;
             if hour.date.trim().is_empty()
                 || previous_hour.is_some_and(|value| hour.hour_index <= value)
                 || hour.h4cr_start_offset >= hour.h4cr_end_offset
@@ -664,6 +700,289 @@ impl ReplayHourIndex {
                 self.source_len
             )));
         }
+        Ok(())
+    }
+
+    /// THE CONFINEMENT LAW: a damaged cache record costs its own hour and the
+    /// rest of its checkpoint window, and nothing beyond it (owner ruling
+    /// 2026-08-12, task #191).
+    ///
+    /// Why exactly that set, and no smaller: a served hour is reconstructed by
+    /// decoding its window's checkpoint and applying every delta from there to
+    /// it, so an hour's reconstruction reads every record between its
+    /// checkpoint and itself. A record at position `p` is therefore read by
+    /// every hour at a position `q >= p` in the SAME window, and by no other
+    /// hour — the next checkpoint re-anchors the chain from bytes of its own.
+    /// Hours before `p` in the window never touch it.
+    ///
+    /// And no larger: the window is identified by the index's own
+    /// `checkpoint_position`, which `validate` has already proved names the
+    /// LATEST checkpoint at or before each row. Confining "everything after the
+    /// damage" instead would cost the rest of the recording for one flipped
+    /// byte, which is the whole-container refusal this replaces wearing a
+    /// different name.
+    ///
+    /// The reason string is minted here, once, so the reader's refusal and the
+    /// replay authority's coverage row cannot drift into two spellings of the
+    /// same injury.
+    pub fn confine_damaged_records(&self, damaged_positions: &[usize]) -> Vec<ConfinedHour> {
+        let mut confined: BTreeMap<i64, ConfinedHour> = BTreeMap::new();
+        for position in damaged_positions {
+            let Some(damaged) = self.hours.get(*position) else {
+                continue;
+            };
+            let checkpoint_position = damaged.checkpoint_position as usize;
+            let Some(checkpoint) = self.hours.get(checkpoint_position) else {
+                continue;
+            };
+            for hour in self.hours[*position..]
+                .iter()
+                .take_while(|hour| hour.checkpoint_position as usize == checkpoint_position)
+            {
+                // First damaged record in the window wins the naming: a later
+                // one in the same window costs no additional hour, and a row
+                // that names two causes names neither precisely.
+                confined
+                    .entry(hour.hour_index)
+                    .or_insert_with(|| ConfinedHour {
+                        hour_index: hour.hour_index,
+                        h4cr_start_offset: hour.h4cr_start_offset,
+                        h4cr_end_offset: hour.h4cr_end_offset,
+                        damaged_record_hour: damaged.hour_index,
+                        checkpoint_hour: checkpoint.hour_index,
+                        reason: format!(
+                            "the packaged H4CP record for game hour {} is not the record the \
+                             sealed H4IX published for it, and this hour reconstructs through \
+                             that record (checkpoint hour {}); one damaged record costs its \
+                             checkpoint window, never the recording",
+                            damaged.hour_index, checkpoint.hour_index
+                        ),
+                    });
+            }
+        }
+        confined.into_values().collect()
+    }
+}
+
+/// One game hour a cache cannot serve because a record it replays through no
+/// longer hashes to the digest the sealed index published for it.
+///
+/// This is post-seal ROT, not a recording-time hole, and the two are different
+/// claims about different moments: a [`ReplayExcludedHour`] says the recorder
+/// never vouched for the hour, while this says the recorder did vouch for it
+/// and the bytes moved afterwards. They are reported in the same vocabulary —
+/// an hour, its H4CR byte range, and one named reason — because a replay
+/// consumer's question ("can I have this hour, and if not, why") is the same
+/// either way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfinedHour {
+    hour_index: i64,
+    h4cr_start_offset: u64,
+    h4cr_end_offset: u64,
+    damaged_record_hour: i64,
+    checkpoint_hour: i64,
+    reason: String,
+}
+
+impl ConfinedHour {
+    pub fn hour_index(&self) -> i64 {
+        self.hour_index
+    }
+    pub fn h4cr_start_offset(&self) -> u64 {
+        self.h4cr_start_offset
+    }
+    pub fn h4cr_end_offset(&self) -> u64 {
+        self.h4cr_end_offset
+    }
+    /// The hour whose CACHE RECORD was damaged. Equal to [`Self::hour_index`]
+    /// for the hour that owns the damage, and different for every other hour
+    /// the same damage confines.
+    pub fn damaged_record_hour(&self) -> i64 {
+        self.damaged_record_hour
+    }
+    /// The hour holding the checkpoint this hour's window re-anchors from.
+    pub fn checkpoint_hour(&self) -> i64 {
+        self.checkpoint_hour
+    }
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+/// What one streaming pass over an H4CP proves about it, record by record.
+///
+/// `damaged_positions` are index positions, not hours, because the audit reads
+/// BYTES: it knows which window of the cache disagreed with the sealed index
+/// long before anything decodes far enough to have an opinion about hours.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheAuditVerdict {
+    header: Vec<u8>,
+    whole_cache_sha256: String,
+    damaged_positions: Vec<usize>,
+}
+
+impl CacheAuditVerdict {
+    /// The cache's own [`CHECKPOINT_CACHE_HEADER_LEN`]-byte header, retained so
+    /// a caller proves its identity from the same pass.
+    pub fn header(&self) -> &[u8] {
+        &self.header
+    }
+    /// SHA-256 over every byte that went past. Kept because it is the one check
+    /// that does not depend on the per-record account being complete; see
+    /// `admit_cache`'s totality argument.
+    pub fn whole_cache_sha256(&self) -> &str {
+        &self.whole_cache_sha256
+    }
+    pub fn damaged_positions(&self) -> &[usize] {
+        &self.damaged_positions
+    }
+    pub fn is_intact(&self) -> bool {
+        self.damaged_positions.is_empty()
+    }
+}
+
+/// A [`Write`] sink that verifies an H4CP against a sealed index as its bytes
+/// stream past, retaining the 40-byte header, two SHA-256 states (one over the
+/// whole cache, one over the record in flight) and one index position per
+/// DAMAGED record.
+///
+/// It exists because both consumers of a packaged cache have to reach the same
+/// verdict from different plumbing: the reader has the artifact on disk, while
+/// the container gate has it inside a ZIP entry it may only stream. Feeding one
+/// sink from both is what stops "which records are damaged" from acquiring two
+/// implementations that could disagree — and the answer to that question is
+/// what decides which hours a recording still serves.
+///
+/// Memory is O(1) in the cache and O(damaged records) in its damage: a 2 GB
+/// cache and a 2 KB one cost the same 40 retained header bytes plus two
+/// SHA-256 states whatever the record sizes, and one `usize` per record that
+/// disagrees with the sealed index — bounded by the hour count, and zero for
+/// every intact cache.
+pub struct CacheAudit<'a> {
+    index: &'a ReplayHourIndex,
+    /// Bytes consumed so far — also the absolute cache offset of the next byte.
+    seen: u64,
+    header: Vec<u8>,
+    whole: Sha256,
+    /// The record being hashed, and how many of its bytes are still to come.
+    position: usize,
+    record: Sha256,
+    record_remaining: u64,
+    damaged: Vec<usize>,
+}
+
+impl<'a> CacheAudit<'a> {
+    pub fn new(index: &'a ReplayHourIndex) -> Self {
+        Self {
+            index,
+            seen: 0,
+            header: Vec::with_capacity(CACHE_HEADER_LEN as usize),
+            whole: Sha256::new(),
+            position: 0,
+            record: Sha256::new(),
+            record_remaining: 0,
+            damaged: Vec::new(),
+        }
+    }
+
+    /// Close the audit. Refuses a cache whose LENGTH is not the one the index
+    /// published, because that damage is not attributable to a record: an
+    /// insertion moves every later byte out from under the offsets the index
+    /// named, and nothing here can tell an insertion from a truncation without
+    /// assuming which end moved. An injured hour is never guessed, only named,
+    /// so this is named and refused whole.
+    pub fn finish(mut self) -> Result<CacheAuditVerdict, ReplayCacheError> {
+        if self.seen != self.index.cache_len {
+            return Err(ReplayCacheError::new(format!(
+                "the checkpoint cache is {} bytes but the index published {}; a cache whose \
+                 length moved cannot be attributed to any record, because every record offset \
+                 the index names is measured from a length that no longer holds",
+                self.seen, self.index.cache_len
+            )));
+        }
+        // Only reachable when `seen == cache_len` and the last row's record was
+        // still open, which the index's own tiling rule forbids; spelled out so
+        // a future format change that broke the tiling cannot close an unclosed
+        // record silently.
+        self.close_record_if_complete();
+        Ok(CacheAuditVerdict {
+            header: self.header,
+            whole_cache_sha256: to_hex(&self.whole.finalize()),
+            damaged_positions: self.damaged,
+        })
+    }
+
+    /// Compare the record just finished against the digest its index row
+    /// publishes, and start the next one.
+    fn close_record_if_complete(&mut self) {
+        if self.record_remaining != 0 {
+            return;
+        }
+        if let Some(entry) = self.index.hours.get(self.position) {
+            if self.seen >= entry.cache_record_offset + entry.cache_record_len {
+                let digest = to_hex(&std::mem::replace(&mut self.record, Sha256::new()).finalize());
+                if digest != entry.cache_record_sha256 {
+                    self.damaged.push(self.position);
+                }
+                self.position += 1;
+                self.record_remaining = self
+                    .index
+                    .hours
+                    .get(self.position)
+                    .map(|next| next.cache_record_len)
+                    .unwrap_or(0);
+            }
+        }
+    }
+
+    /// Route one contiguous run of cache bytes into the header, the record
+    /// being hashed, or neither.
+    fn absorb(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            if self.seen < CACHE_HEADER_LEN {
+                let take = ((CACHE_HEADER_LEN - self.seen) as usize).min(bytes.len());
+                self.header.extend_from_slice(&bytes[..take]);
+                self.whole.update(&bytes[..take]);
+                self.seen += take as u64;
+                bytes = &bytes[take..];
+                if self.seen == CACHE_HEADER_LEN {
+                    self.record_remaining = self
+                        .index
+                        .hours
+                        .first()
+                        .map(|first| first.cache_record_len)
+                        .unwrap_or(0);
+                }
+                continue;
+            }
+            if self.record_remaining == 0 {
+                // Bytes belonging to no record. The index's tiling rule makes
+                // this unreachable for an index that parsed (the rows abut from
+                // the header through `cache_len`), and a stream longer than
+                // `cache_len` is refused by `finish`; they are still hashed so
+                // the whole-cache digest stays a digest of everything.
+                self.whole.update(bytes);
+                self.seen += bytes.len() as u64;
+                return;
+            }
+            let take = (self.record_remaining as usize).min(bytes.len());
+            self.record.update(&bytes[..take]);
+            self.whole.update(&bytes[..take]);
+            self.seen += take as u64;
+            self.record_remaining -= take as u64;
+            bytes = &bytes[take..];
+            self.close_record_if_complete();
+        }
+    }
+}
+
+impl Write for CacheAudit<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.absorb(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -999,6 +1318,16 @@ impl<W: Write> ReplayCacheEncoder<W> {
         put_i64(&mut header, hour.hour_index);
         put_u64(&mut header, payload_len);
         header.push(0);
+        // The record's OWN digest, over exactly the window the index row will
+        // publish. Taken here, from the bytes on their way to the writer, so it
+        // is a digest of what was written rather than of a second rendering of
+        // it. This is the second hash pass over the cache body (the first being
+        // the running whole-cache hash); on capture t48's 1.53 GB cache that is
+        // one extra SHA-256 sweep per finalize, measured in
+        // `runs/ha_entry_confinement/`.
+        let mut record_digest = Sha256::new();
+        record_digest.update(&header);
+        record_digest.update(&payload);
         self.write_hashed(&header)?;
         self.write_hashed(&payload)?;
         let record_len = self.offset - record_offset;
@@ -1013,12 +1342,15 @@ impl<W: Write> ReplayCacheEncoder<W> {
                 .map_err(|_| ReplayCacheError::new("checkpoint position does not fit u32"))?,
             delta_steps,
             world_json_sha256,
+            cache_record_sha256: to_hex(&record_digest.finalize()),
         });
         self.next_h4cr_offset = hour.h4cr_end_offset;
         self.last_hour_index = Some(hour.hour_index);
         if let Some(entry) = self.entries.last() {
             self.entries_string_bytes = self.entries_string_bytes.saturating_add(
-                (entry.date.capacity() + entry.world_json_sha256.capacity()) as u64,
+                (entry.date.capacity()
+                    + entry.world_json_sha256.capacity()
+                    + entry.cache_record_sha256.capacity()) as u64,
             );
         }
         self.previous = Some(value);
@@ -1047,7 +1379,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
     }
 
     /// Bytes the per-hour index rows own: the `Vec`'s reservation plus every
-    /// row's two `String`s.
+    /// row's three `String`s — its date and its two digests.
     ///
     /// This one DOES grow with session length — one row per game hour, for the
     /// whole recording — which is why it is published separately from the
@@ -1122,9 +1454,15 @@ pub struct ReplaySeekReceipt {
 /// serves every artifact big enough to matter.
 pub(crate) trait CacheRecords {
     fn cache_len(&self) -> u64;
-    /// SHA-256 over the WHOLE cache. This is the binding to H4IX and is
-    /// computed exactly once, at open.
-    fn cache_sha256(&self) -> Result<String, ReplayCacheError>;
+    /// Stream every byte of the cache, in order, past `sink`.
+    ///
+    /// This replaces the whole-cache `cache_sha256()` this trait used to
+    /// expose. The pass is the same pass — one sequential read of the whole
+    /// artifact at open — but what it feeds is now a [`CacheAudit`], which
+    /// answers the localisable question (which RECORDS are the sealed ones)
+    /// as well as the whole-artifact one. A backing that could only produce
+    /// one digest could not confine anything.
+    fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError>;
     /// The bytes of the record at `offset`, refusing any window that leaves the
     /// cache or exceeds [`MAX_CACHE_RECORD_BYTES`].
     fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError>;
@@ -1154,8 +1492,9 @@ impl<'a> CacheRecords for SliceCache<'a> {
         self.0.len() as u64
     }
 
-    fn cache_sha256(&self) -> Result<String, ReplayCacheError> {
-        Ok(Sha256::hex(self.0))
+    fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
+        sink.write_all(self.0)
+            .map_err(|error| ReplayCacheError::new(format!("audit resident cache: {error}")))
     }
 
     fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError> {
@@ -1199,7 +1538,7 @@ impl CacheRecords for CertifiedCacheFile {
         self.len
     }
 
-    fn cache_sha256(&self) -> Result<String, ReplayCacheError> {
+    fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
         let mut file = self
             .file
             .lock()
@@ -1207,7 +1546,6 @@ impl CacheRecords for CertifiedCacheFile {
         file.seek(SeekFrom::Start(0)).map_err(|error| {
             ReplayCacheError::new(format!("seek file-backed checkpoint cache: {error}"))
         })?;
-        let mut hasher = Sha256::new();
         let mut buf = vec![0u8; CACHE_HASH_CHUNK];
         let mut seen = 0u64;
         loop {
@@ -1217,16 +1555,19 @@ impl CacheRecords for CertifiedCacheFile {
             if read == 0 {
                 break;
             }
-            hasher.update(&buf[..read]);
+            sink.write_all(&buf[..read]).map_err(|error| {
+                ReplayCacheError::new(format!("audit file-backed checkpoint cache: {error}"))
+            })?;
             seen = seen.saturating_add(read as u64);
         }
         if seen != self.len {
             return Err(ReplayCacheError::new(format!(
-                "file-backed checkpoint cache changed length while hashing (opened {}, read {seen})",
+                "file-backed checkpoint cache changed length while being audited (opened {}, read \
+                 {seen})",
                 self.len
             )));
         }
-        Ok(to_hex(&hasher.finalize()))
+        Ok(())
     }
 
     fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError> {
@@ -1264,6 +1605,7 @@ impl CacheBacking {
 pub struct ReplayCacheReader<'a> {
     index: ReplayHourIndex,
     cache: &'a [u8],
+    confined: Vec<ConfinedHour>,
 }
 
 /// Bytes of the H4CP file header: magic, format version, flags, source digest.
@@ -1294,28 +1636,89 @@ pub fn validate_checkpoint_cache_header(
     Ok(())
 }
 
-/// Bind an index to a cache and prove the cache's own header agrees, without
-/// assuming the cache is resident. This is the single admission gate both
-/// reader shapes go through.
+/// Bind an index to a cache, prove the cache's own header agrees, and judge the
+/// cache RECORD BY RECORD. This is the single admission gate both reader shapes
+/// go through.
+///
+/// What changed with the per-record digest, and why the shape of the refusal
+/// changed with it: this used to compare one whole-cache digest and refuse the
+/// whole artifact when it disagreed, which meant a single flipped byte cost
+/// every hour in the recording. It now streams the same bytes past a
+/// [`CacheAudit`] — the same one pass, the same read — and returns the hours
+/// the damage actually reaches. Confining is not the same as forgiving: a
+/// confined hour is refused by name at every door, and every kind of damage
+/// that CANNOT be attributed to a record is still a whole-artifact refusal.
+///
+/// The four unattributable kinds, each refused here:
+///
+///  * the cache's LENGTH moved ([`CacheAudit::finish`]);
+///  * the cache's HEADER moved — its magic, format version, or the H4CR source
+///    it is bound to. That is the artifact's identity, not an hour's, and the
+///    per-record account rests on the framing it declares;
+///  * the whole-cache digest disagrees while every record agrees;
+///  * the whole-cache digest AGREES while a record disagrees. The last two are
+///    the index contradicting itself; see below.
 fn admit_cache(
     index_bytes: &[u8],
     cache: &dyn CacheRecords,
     expected_source_len: u64,
     expected_source_sha256: &str,
-) -> Result<ReplayHourIndex, ReplayCacheError> {
+) -> Result<(ReplayHourIndex, Vec<ConfinedHour>), ReplayCacheError> {
     let index = ReplayHourIndex::from_bytes(index_bytes)?;
     if index.source_len != expected_source_len
         || index.source_sha256 != expected_source_sha256
         || index.cache_len != cache.cache_len()
-        || index.cache_sha256 != cache.cache_sha256()?
     {
         return Err(ReplayCacheError::new(
             "replay index/cache is not bound to the selected canonical H4CR source",
         ));
     }
-    let header = cache.record(0, CACHE_HEADER_LEN.min(cache.cache_len()))?;
-    validate_checkpoint_cache_header(header.as_ref(), expected_source_sha256)?;
-    Ok(index)
+    let mut audit = CacheAudit::new(&index);
+    cache.read_all(&mut audit)?;
+    let verdict = audit.finish()?;
+    validate_checkpoint_cache_header(verdict.header(), expected_source_sha256)?;
+    // THE TWO ACCOUNTS MUST AGREE. The index states one whole-cache digest and
+    // one digest per record; over a cache of the published length those are two
+    // accounts of the same bytes, because `validate` has already proved the
+    // rows tile `[CACHE_HEADER_LEN, cache_len)` exactly and the header is
+    // exactly the leading `CACHE_HEADER_LEN` bytes.
+    //
+    // Nothing checks that the index's two accounts agree with EACH OTHER before
+    // a cache is in hand — `validate` has no cache to hash — so an index whose
+    // whole digest and row digests describe different caches parses cleanly and
+    // arrives here. That is what these arms are for, and both are pinned by
+    // `an_index_whose_two_accounts_disagree_is_not_an_authority` (Codex review
+    // round 6, finding 2). No recorder produces such an index: the encoder
+    // derives both from the same byte stream as it writes it.
+    //
+    // Both are refused rather than resolved, because an account that does not
+    // add up cannot be partially believed.
+    match (
+        verdict.whole_cache_sha256() == index.cache_sha256,
+        verdict.is_intact(),
+    ) {
+        (true, true) | (false, false) => {}
+        (false, true) => {
+            return Err(ReplayCacheError::new(format!(
+                "the checkpoint cache hashes to {} but the index is bound to {}, while every one \
+                 of its {} records matches the digest the index published; the per-record account \
+                 does not add up, so no part of it is trusted",
+                verdict.whole_cache_sha256(),
+                index.cache_sha256,
+                index.hours.len(),
+            )))
+        }
+        (true, false) => {
+            return Err(ReplayCacheError::new(format!(
+                "the checkpoint cache is byte-identical to the one the index is bound to, yet {} \
+                 of its records do not match the per-record digests the same index publishes; the \
+                 index describes two different caches, so it is not an authority over this one",
+                verdict.damaged_positions().len(),
+            )))
+        }
+    }
+    let confined = index.confine_damaged_records(verdict.damaged_positions());
+    Ok((index, confined))
 }
 
 /// Owned, once-authenticated cache suitable for repeated product seeks.
@@ -1327,6 +1730,10 @@ fn admit_cache(
 pub struct CertifiedReplayCache {
     index: ReplayHourIndex,
     cache: CacheBacking,
+    /// The hours this cache cannot serve because a record they replay through
+    /// rotted after sealing. Empty for an intact cache, which is every cache
+    /// the recorder writes.
+    confined: Vec<ConfinedHour>,
 }
 
 impl CertifiedReplayCache {
@@ -1337,7 +1744,7 @@ impl CertifiedReplayCache {
         expected_source_sha256: &str,
     ) -> Result<Self, ReplayCacheError> {
         let cache: Arc<[u8]> = Arc::from(cache);
-        let index = admit_cache(
+        let (index, confined) = admit_cache(
             index_bytes,
             &SliceCache(cache.as_ref()),
             expected_source_len,
@@ -1346,6 +1753,7 @@ impl CertifiedReplayCache {
         Ok(Self {
             index,
             cache: CacheBacking::Memory(cache),
+            confined,
         })
     }
 
@@ -1360,7 +1768,7 @@ impl CertifiedReplayCache {
         expected_source_sha256: &str,
     ) -> Result<Self, ReplayCacheError> {
         let cache = CertifiedCacheFile::new(cache)?;
-        let index = admit_cache(
+        let (index, confined) = admit_cache(
             index_bytes,
             &cache,
             expected_source_len,
@@ -1369,6 +1777,7 @@ impl CertifiedReplayCache {
         Ok(Self {
             index,
             cache: CacheBacking::File(Arc::new(cache)),
+            confined,
         })
     }
 
@@ -1376,10 +1785,17 @@ impl CertifiedReplayCache {
         &self.index
     }
 
+    /// The hours this cache refuses because of post-seal record damage, in hour
+    /// order. See [`ConfinedHour`].
+    pub fn confined_hours(&self) -> &[ConfinedHour] {
+        &self.confined
+    }
+
     pub fn reconstruct_json(
         &self,
         hour_index: i64,
     ) -> Result<(Vec<u8>, ReplaySeekReceipt), ReplayCacheError> {
+        refuse_confined_hour(&self.confined, hour_index)?;
         self.cache
             .with_records(|records| reconstruct_json_from(&self.index, records, hour_index))
     }
@@ -1387,9 +1803,63 @@ impl CertifiedReplayCache {
     /// See [`ReplayCacheReader::verify_every_hour`]. Identical proof, over
     /// whichever backing this cache was opened with.
     pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
+        refuse_confinement_in_a_total_proof(&self.confined)?;
         self.cache
             .with_records(|records| verify_every_hour_from(&self.index, records))
     }
+}
+
+/// Refuse one hour BY NAME because a record it replays through is damaged.
+///
+/// kills: deleting this call from `reconstruct_json` serves a confined hour out
+/// of a cache whose record for it no longer hashes to the sealed digest — the
+/// leak the confinement exists to prevent. The refusal carries the sealed
+/// reason verbatim so a consumer reads the same sentence the replay authority's
+/// coverage row carries.
+fn refuse_confined_hour(
+    confined: &[ConfinedHour],
+    hour_index: i64,
+) -> Result<(), ReplayCacheError> {
+    if let Ok(position) = confined.binary_search_by_key(&hour_index, ConfinedHour::hour_index) {
+        return Err(ReplayCacheError::new(format!(
+            "game hour {hour_index} is not served by this recording: {}",
+            confined[position].reason()
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a TOTAL proof over a cache that cannot serve every hour it indexes,
+/// BY NAME and before the walk starts.
+///
+/// `verify_every_hour` is the producer's proof — the seal path runs it before
+/// it publishes artifacts — and its claim is "every indexed hour reconstructs".
+/// A confined hour makes that claim false, so it is refused here rather than
+/// quietly narrowed.
+///
+/// kills: deleting this costs the DIAGNOSIS, not the refusal, and the
+/// difference is worth stating precisely (Codex review round 3, finding 1).
+/// The walk below would still fail on a moved record — it decodes every record
+/// and compares every reconstructed hour against its parity digest — and
+/// `spool_trim` refuses on `confined_hours()` of its own accord. What this
+/// precheck buys is that the producer is told *which hours the cache cannot
+/// serve and why*, instead of being handed whatever the decoder made of the
+/// first damaged payload, which for a flipped byte is usually a spurious
+/// complaint about the value model. `cache_and_index_corruption_fail_closed`
+/// asserts that message, not merely the refusal.
+fn refuse_confinement_in_a_total_proof(
+    confined: &[ConfinedHour],
+) -> Result<(), ReplayCacheError> {
+    let Some(first) = confined.first() else {
+        return Ok(());
+    };
+    Err(ReplayCacheError::new(format!(
+        "this checkpoint cache cannot serve {} of the hours it indexes, so no proof over every \
+         indexed hour is available; the first is game hour {}: {}",
+        confined.len(),
+        first.hour_index(),
+        first.reason()
+    )))
 }
 
 impl<'a> ReplayCacheReader<'a> {
@@ -1399,23 +1869,34 @@ impl<'a> ReplayCacheReader<'a> {
         expected_source_len: u64,
         expected_source_sha256: &str,
     ) -> Result<Self, ReplayCacheError> {
-        let index = admit_cache(
+        let (index, confined) = admit_cache(
             index_bytes,
             &SliceCache(cache),
             expected_source_len,
             expected_source_sha256,
         )?;
-        Ok(Self { index, cache })
+        Ok(Self {
+            index,
+            cache,
+            confined,
+        })
     }
 
     pub fn index(&self) -> &ReplayHourIndex {
         &self.index
     }
 
+    /// The hours this cache refuses because of post-seal record damage, in hour
+    /// order. See [`ConfinedHour`].
+    pub fn confined_hours(&self) -> &[ConfinedHour] {
+        &self.confined
+    }
+
     pub fn reconstruct_json(
         &self,
         hour_index: i64,
     ) -> Result<(Vec<u8>, ReplaySeekReceipt), ReplayCacheError> {
+        refuse_confined_hour(&self.confined, hour_index)?;
         reconstruct_json_from(&self.index, &SliceCache(self.cache), hour_index)
     }
 
@@ -1433,6 +1914,7 @@ impl<'a> ReplayCacheReader<'a> {
     /// 168, ~30 MB per hour) the rebuilding form did not finish in 46 minutes;
     /// it asks for ~54,000 patch applications where ~640 carry the same proof.
     pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
+        refuse_confinement_in_a_total_proof(&self.confined)?;
         verify_every_hour_from(&self.index, &SliceCache(self.cache))
     }
 }
@@ -2175,8 +2657,9 @@ const MIN_VALUE_BYTES: usize = 1;
 const MIN_TEXT_BYTES: usize = 1;
 const MIN_KEYED_VALUE_BYTES: usize = MIN_TEXT_BYTES + MIN_VALUE_BYTES;
 const MIN_INDEXED_PATCH_BYTES: usize = 1 + MIN_VALUE_BYTES;
-/// i64 + four u64s + two u32s + digest + an empty u32-length-prefixed date.
-const MIN_HOUR_ENTRY_BYTES: usize = 8 + 8 * 4 + 4 * 2 + 32 + 4;
+/// i64 + four u64s + two u32s + TWO digests (the reconstructed hour's and the
+/// cache record's) + an empty u32-length-prefixed date.
+const MIN_HOUR_ENTRY_BYTES: usize = 8 + 8 * 4 + 4 * 2 + 32 * 2 + 4;
 
 /// Smallest encoded excluded-hour row: hour, two offsets, an empty length
 /// prefix. Feeds the same count-vs-remaining bound every other counted
@@ -2589,6 +3072,277 @@ mod tests {
         (cache, index, source_sha)
     }
 
+    /// THE CONFINEMENT LAW, at the resolution it is stated in: one damaged
+    /// record costs its own hour and the rest of its checkpoint window.
+    ///
+    /// Nine hours at interval 4 give three windows — 0-3, 4-7, and the one-hour
+    /// remainder at 8 — so the damaged record here sits strictly inside the
+    /// second one, with intact hours before it in the same window and intact
+    /// windows on both sides. Hour 8 is not padding: it is what the "do not
+    /// widen past the window" assertion rests on.
+    ///
+    /// kills: confining the whole recording after the damage (hour 8 stops
+    /// serving); confining only the damaged hour (hours 6 and 7 are served out
+    /// of a delta chain that reads the moved record); confining hours before
+    /// the damage in the same window (hour 4 stops serving, though it never
+    /// reads that record).
+    ///
+    /// It does NOT pin that the window comes from the index's own
+    /// `checkpoint_position` rather than from `position % interval`: every
+    /// index the encoder can write places its checkpoints regularly, so the two
+    /// agree here (Codex review round 1, finding 1). What separates them is a
+    /// named hole, and that is
+    /// `a_named_hole_does_not_move_the_confined_window`.
+    #[test]
+    fn a_damaged_record_confines_its_checkpoint_window_and_nothing_else() {
+        let bodies: Vec<(i64, String)> = (0..9)
+            .map(|hour| (hour, format!(r#"{{"v":{hour}}}"#)))
+            .collect();
+        let hours: Vec<(i64, &str)> = bodies
+            .iter()
+            .map(|(hour, body)| (*hour, body.as_str()))
+            .collect();
+        let (cache, index, source_sha) = build(4, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 900;
+
+        // Position 5: the second window is 4..=7, so the damage costs 5, 6, 7.
+        let mut damaged = cache.clone();
+        let row = &index.hours()[5];
+        let last = (row.cache_record_offset() + row.cache_record_len() - 1) as usize;
+        damaged[last] ^= 0xff;
+
+        let reader =
+            ReplayCacheReader::open(&index_bytes, &damaged, source_len, &source_sha).unwrap();
+        assert_eq!(
+            reader
+                .confined_hours()
+                .iter()
+                .map(ConfinedHour::hour_index)
+                .collect::<Vec<i64>>(),
+            vec![5, 6, 7]
+        );
+        for confined in reader.confined_hours() {
+            assert_eq!(confined.damaged_record_hour(), 5);
+            assert_eq!(confined.checkpoint_hour(), 4);
+        }
+        for hour in [0, 1, 2, 3, 4, 8] {
+            let (json, _) = reader
+                .reconstruct_json(hour)
+                .unwrap_or_else(|error| panic!("hour {hour} must still serve: {error}"));
+            assert_eq!(json, world_json(hour, &bodies[hour as usize].1));
+        }
+        for hour in [5, 6, 7] {
+            let error = reader.reconstruct_json(hour).unwrap_err();
+            assert!(error.message().contains(&format!("game hour {hour}")), "{error}");
+        }
+    }
+
+    /// A NAMED HOLE does not move the checkpoint window a damaged record
+    /// confines.
+    ///
+    /// The two features meet here for the first time: lane GZ's holes are game
+    /// hours the recording never vouched for, so they hold no cache record and
+    /// take no position in the index's served rows — which is exactly why the
+    /// delta chain, and therefore the window, is counted over SERVED positions.
+    /// Six hours at interval 2 with hour 2 excluded gives served rows
+    /// 0,1,3,4,5, whose windows are {0,1}, {3,4} and {5}. Damaging hour 3's
+    /// record must cost hours 3 and 4 — not hour 5, and not hour 2, which is
+    /// refused for its own, older reason.
+    ///
+    /// kills: computing the window from GAME HOURS rather than from the index's
+    /// served positions and its `checkpoint_position` — the hole then shifts
+    /// the arithmetic and hour 5 is confined with the rest, or hour 4 escapes.
+    #[test]
+    fn a_named_hole_does_not_move_the_confined_window() {
+        let bodies: Vec<(i64, String)> = (0..6)
+            .map(|hour| (hour, format!(r#"{{"v":{hour}}}"#)))
+            .collect();
+        let hours: Vec<(i64, &str)> = bodies
+            .iter()
+            .map(|(hour, body)| (*hour, body.as_str()))
+            .collect();
+        let (cache, index, source_sha) = build_with_hole(2, 2, &hours);
+        assert_eq!(
+            index
+                .hours()
+                .iter()
+                .map(ReplayHourEntry::hour_index)
+                .collect::<Vec<i64>>(),
+            vec![0, 1, 3, 4, 5]
+        );
+        assert_eq!(index.hours()[2].hour_index(), 3, "position 2 serves hour 3");
+        assert_eq!(index.hours()[2].delta_steps(), 0, "and is a checkpoint");
+
+        let mut damaged = cache.clone();
+        let row = &index.hours()[2];
+        let last = (row.cache_record_offset() + row.cache_record_len() - 1) as usize;
+        damaged[last] ^= 0xff;
+        let index_bytes = index.to_bytes().unwrap();
+        let reader =
+            ReplayCacheReader::open(&index_bytes, &damaged, index.source_len(), &source_sha)
+                .unwrap();
+        assert_eq!(
+            reader
+                .confined_hours()
+                .iter()
+                .map(ConfinedHour::hour_index)
+                .collect::<Vec<i64>>(),
+            vec![3, 4]
+        );
+        for hour in [0, 1, 5] {
+            reader
+                .reconstruct_json(hour)
+                .unwrap_or_else(|error| panic!("hour {hour} must still serve: {error}"));
+        }
+        let hole = reader.reconstruct_json(2).unwrap_err();
+        assert!(
+            hole.message().contains("is not indexed"),
+            "an hour the recording never vouched for is refused as absent, not as confined: {hole}"
+        );
+    }
+
+    /// AN INDEX WHOSE TWO ACCOUNTS OF ITS CACHE DISAGREE IS NOT AN AUTHORITY
+    /// OVER IT.
+    ///
+    /// The index publishes a whole-cache digest and a digest per record. Over a
+    /// cache of the published length those describe the same bytes, but nothing
+    /// proves they agree with each other until a cache is in hand — `validate`
+    /// has no cache to hash — so an index that carries one honest account and
+    /// one forged one parses cleanly. Both directions are refused, and refused
+    /// WHOLE: a self-contradictory index cannot be trusted to attribute damage
+    /// to an hour, so confining anything on its word would be a guess.
+    ///
+    /// kills: either arm of the `(whole matches, records intact)` match in
+    /// `admit_cache`. Dropping `(false, true)` admits an index whose row
+    /// digests were rewritten to launder a substituted cache; dropping
+    /// `(true, false)` confines hours over an index that says, in its own two
+    /// voices, that the cache in hand both is and is not the sealed one.
+    #[test]
+    fn an_index_whose_two_accounts_disagree_is_not_an_authority() {
+        let (cache, index, source_sha) = build(2, &[(0, r#"{"v":0}"#), (1, r#"{"v":1}"#)]);
+
+        // The whole-cache digest is the honest one; a row's digest is not.
+        let mut forged_row = index.clone();
+        forged_row.hours[1].cache_record_sha256 = "ab".repeat(32);
+        let error = match ReplayCacheReader::open(
+            &forged_row.to_bytes().unwrap(),
+            &cache,
+            200,
+            &source_sha,
+        ) {
+            Ok(_) => panic!("an index that contradicts itself is refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.message().contains("describes two different caches"),
+            "{error}"
+        );
+
+        // The rows are honest; the whole-cache digest is not.
+        let mut forged_whole = index;
+        forged_whole.cache_sha256 = "cd".repeat(32);
+        let error = match ReplayCacheReader::open(
+            &forged_whole.to_bytes().unwrap(),
+            &cache,
+            200,
+            &source_sha,
+        ) {
+            Ok(_) => panic!("an index that contradicts itself is refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.message().contains("does not add up"),
+            "{error}"
+        );
+    }
+
+    /// A cache whose LENGTH moved is refused whole, because no record offset in
+    /// the index means anything over bytes that shifted under it.
+    ///
+    /// Asked of the audit directly: the readers compare the backing's own
+    /// length against the index before they stream anything, so this guard is
+    /// reachable only through the STREAMING consumer — the container gate,
+    /// which is handed an entry and cannot know its length in advance.
+    ///
+    /// kills: deleting `finish`'s length comparison. This is the ONLY guard
+    /// that reads the streamed length, so nothing else can be relied on to
+    /// refuse a stream that stops short (Codex review round 9, finding 5): the
+    /// reader's `cache_len` comparison is against the BACKING's length, not the
+    /// stream's, and the gate's four-outcome match would admit a short stream
+    /// that also carried one completed damaged record — `(Err, false)` with a
+    /// non-empty confinement — as an ordinary rotted cache. What makes the
+    /// deletion safe to reason about is not a fallback but this refusal, and
+    /// its diagnosis says which of the two accounts moved.
+    #[test]
+    fn an_audit_refuses_a_cache_whose_length_moved() {
+        let (cache, index, _) = build(2, &[(0, r#"{"v":0}"#), (1, r#"{"v":1}"#)]);
+        let mut short = CacheAudit::new(&index);
+        short.write_all(&cache[..cache.len() - 1]).unwrap();
+        let error = short.finish().unwrap_err();
+        assert!(error.message().contains("cannot be attributed"), "{error}");
+
+        let mut long = CacheAudit::new(&index);
+        long.write_all(&cache).unwrap();
+        long.write_all(b"\0").unwrap();
+        let error = long.finish().unwrap_err();
+        assert!(error.message().contains("cannot be attributed"), "{error}");
+
+        // The honest stream, fed in awkward chunks: a record boundary must be
+        // found from the index's offsets, never from where a write happened to
+        // land.
+        let mut split = CacheAudit::new(&index);
+        for chunk in cache.chunks(7) {
+            split.write_all(chunk).unwrap();
+        }
+        let verdict = split.finish().unwrap();
+        assert!(verdict.is_intact());
+        assert_eq!(verdict.whole_cache_sha256(), index.cache_sha256());
+        assert_eq!(verdict.header().len(), CACHE_HEADER_LEN as usize);
+    }
+
+    /// The per-record digest covers EXACTLY the window the index publishes for
+    /// that record — its 21-byte header and its payload, and nothing of its
+    /// neighbours.
+    ///
+    /// kills: hashing the payload alone, hashing a fixed length from the record
+    /// offset, or including the following record's header — each makes the row
+    /// publish a digest of bytes that are not the record, and the assertions
+    /// below fail.
+    ///
+    /// What payload-only hashing costs is the CONFINEMENT, not an admission
+    /// (Codex review round 5, finding 2): a rewritten record header still moves
+    /// the whole-cache digest, so `admit_cache`'s `(false, true)` arm refuses
+    /// the artifact outright — one flipped header byte becomes a whole-artifact
+    /// refusal again instead of one named window.
+    #[test]
+    fn the_per_record_digest_is_over_exactly_the_indexed_window() {
+        let (cache, index, _) = build(
+            3,
+            &[
+                (0, r#"{"v":0}"#),
+                (1, r#"{"v":1}"#),
+                (2, r#"{"v":2}"#),
+                (3, r#"{"v":3}"#),
+            ],
+        );
+        for row in index.hours() {
+            let start = row.cache_record_offset() as usize;
+            let end = start + row.cache_record_len() as usize;
+            assert_eq!(
+                row.cache_record_sha256(),
+                Sha256::hex(&cache[start..end]),
+                "hour {} row publishes a digest of some other bytes",
+                row.hour_index()
+            );
+            assert_ne!(
+                row.cache_record_sha256(),
+                Sha256::hex(&cache[start + RECORD_HEADER_LEN as usize..end]),
+                "the digest must cover the record HEADER too"
+            );
+        }
+    }
+
     /// Scratch file that removes itself, so a file-backed test leaves nothing.
     struct TempCacheFile(std::path::PathBuf);
 
@@ -2657,13 +3411,28 @@ mod tests {
         );
     }
 
-    /// A file whose bytes are not the cache the index is bound to is refused,
-    /// and the refusal comes from the same admission gate the resident reader
-    /// uses.
+    /// A file whose bytes are not the cache the index is bound to is judged by
+    /// the same admission gate the resident reader uses, and reaches the same
+    /// verdict: the hours a moved record reaches are refused by name, and a
+    /// file whose LENGTH moved is refused whole.
     ///
-    /// Production change that would make this fail: hashing only a prefix of the
-    /// file, trusting the H4IX-declared length instead of the file's own, or
-    /// skipping the binding when the backing is a handle.
+    /// kills: this test pins that a FINAL-BYTE mutation of a file-backed cache
+    /// is CONFINED rather than refused whole, and confined exactly. The flipped
+    /// byte is the very last one in the file — the position a pass that stopped
+    /// early would miss — and the two assertions divide the work (Codex review
+    /// round 8, finding 4): the `expect` fails if the per-record account misses
+    /// that byte while the whole-cache account still covers it, because
+    /// `admit_cache`'s `(false, true)` arm then refuses the artifact at open
+    /// and there is nothing to confine; the `confined_hours()` comparison fails
+    /// if the confinement is too wide (hour 0) or too narrow (empty).
+    ///
+    /// It does NOT pin the admission side of either failure, and the two
+    /// corrections are worth keeping straight: hashing a record PREFIX still
+    /// produces a digest that is not the sealed one, so the record is still
+    /// classified as damaged (Codex review round 5, finding 3); and dropping
+    /// the `cache_len` comparison in `admit_cache` is still caught one layer
+    /// down by `CacheAudit::finish` refusing a short stream, with a different
+    /// sentence (round 1, finding 4).
     #[test]
     fn a_file_backed_cache_that_is_not_the_indexed_one_is_refused() {
         let hours: Vec<(i64, &str)> = vec![(0, r#"{"v":1}"#), (1, r#"{"v":2}"#)];
@@ -2674,19 +3443,20 @@ mod tests {
         let last = flipped.len() - 1;
         flipped[last] ^= 0x01;
         let scratch = TempCacheFile::write("flipped", &flipped);
-        let error = match CertifiedReplayCache::open_file(
-            &index_bytes,
-            scratch.open(),
-            200,
-            &source_sha,
-        ) {
-            Ok(_) => panic!("a cache that hashes differently is not the indexed cache"),
-            Err(error) => error,
-        };
-        assert!(
-            error.message().contains("not bound to the selected canonical H4CR source"),
-            "{error}"
+        let confined =
+            CertifiedReplayCache::open_file(&index_bytes, scratch.open(), 200, &source_sha)
+                .expect("post-seal rot in one record costs that record's window, not the file");
+        assert_eq!(
+            confined
+                .confined_hours()
+                .iter()
+                .map(ConfinedHour::hour_index)
+                .collect::<Vec<i64>>(),
+            vec![1],
+            "the flipped byte is in hour 1's record"
         );
+        confined.reconstruct_json(0).expect("hour 0 still serves");
+        assert!(confined.reconstruct_json(1).is_err());
 
         let mut truncated = cache.clone();
         truncated.pop();
@@ -2813,8 +3583,8 @@ mod tests {
             self.inner.cache_len()
         }
 
-        fn cache_sha256(&self) -> Result<String, ReplayCacheError> {
-            self.inner.cache_sha256()
+        fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
+            self.inner.read_all(sink)
         }
 
         fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError> {
@@ -3106,6 +3876,22 @@ mod tests {
             .contains("change spells its member name differently"));
     }
 
+    /// Corruption of either artifact fails closed, each at the resolution it
+    /// can be attributed to: a damaged INDEX is refused outright (nothing else
+    /// can be believed once the authority itself moved), a damaged CACHE RECORD
+    /// costs the hours that read it, and an index whose rows do not reach the
+    /// end of the source cannot even be written.
+    ///
+    /// kills: dropping the `cache_record_sha256` comparison from `CacheAudit`.
+    /// Note what that costs, precisely (Codex review round 4, finding 2): NOT a
+    /// served bad hour — the whole-cache digest would still disagree while the
+    /// record verdict said "intact", and `admit_cache`'s `(false, true)` arm
+    /// refuses that as an account that does not add up. What it costs is the
+    /// CONFINEMENT: the `open` below stops returning a reader at all, and one
+    /// flipped byte is a whole-artifact refusal again, which is GY-2 restored.
+    /// Also kills: dropping the tiling rule's `next_offset != source_len` arm
+    /// (an index that accounts for only part of the source becomes encodable
+    /// again).
     #[test]
     fn cache_and_index_corruption_fail_closed() {
         let hours: Vec<(i64, &str)> = vec![(0, r#"{"x":1}"#), (1, r#"{"x":2}"#)];
@@ -3114,11 +3900,39 @@ mod tests {
         index_bytes[0] ^= 0x40;
         assert!(ReplayHourIndex::from_bytes(&index_bytes).is_err());
 
+        // A flipped cache byte fails closed AT HOUR RESOLUTION since the
+        // per-record digests (owner ruling 2026-08-12, task #191): the reader
+        // admits the artifact and refuses, by name, exactly the hours that
+        // replay through the record the byte landed in. The last byte is in the
+        // last record, and with a checkpoint every two hours that is hour 1's
+        // delta — so hour 0 still serves and hour 1 does not.
         let index_bytes = index.to_bytes().unwrap();
         let mut corrupt_cache = cache;
         let last = corrupt_cache.len() - 1;
         corrupt_cache[last] ^= 1;
-        assert!(ReplayCacheReader::open(&index_bytes, &corrupt_cache, 200, &source_sha).is_err());
+        let reader =
+            ReplayCacheReader::open(&index_bytes, &corrupt_cache, 200, &source_sha).unwrap();
+        assert_eq!(
+            reader
+                .confined_hours()
+                .iter()
+                .map(ConfinedHour::hour_index)
+                .collect::<Vec<i64>>(),
+            vec![1]
+        );
+        reader
+            .reconstruct_json(0)
+            .expect("an hour whose window the damage never reaches still serves");
+        let refused = reader.reconstruct_json(1).unwrap_err();
+        assert!(refused.message().contains("game hour 1"), "{refused}");
+        let total = reader.verify_every_hour().expect_err(
+            "a proof over EVERY indexed hour is not available once one is confined",
+        );
+        assert!(
+            total.message().contains("cannot serve 1 of the hours it indexes")
+                && total.message().contains("game hour 1"),
+            "the total proof must refuse by naming what cannot be served: {total}"
+        );
 
         let mut incomplete_source_index = index;
         incomplete_source_index
@@ -3269,15 +4083,26 @@ mod tests {
         );
 
         // And it fails on the same corruption a seek would: one flipped payload
-        // byte inside a delta record.
+        // byte inside a delta record, in an index REBOUND to the corrupt cache
+        // so the admission gate has nothing to object to. Both of the index's
+        // accounts of the cache have to be rebound — the whole-artifact digest
+        // and that record's own — because an index that carried one of each
+        // would be refused as self-contradictory before any hour was decoded,
+        // which is a different (and weaker) statement than the one this test
+        // makes: the CONTENT is wrong, and only replaying it can tell.
         let mut corrupt = cache.clone();
         let delta = index.hours()[3].cache_record_offset() as usize + 21;
         corrupt[delta] ^= 0x20;
         let mut rebound = index.clone();
         rebound.cache_sha256 = to_hex(&Sha256::digest(&corrupt));
+        let window = index.hours()[3].cache_record_offset() as usize
+            ..(index.hours()[3].cache_record_offset() + index.hours()[3].cache_record_len())
+                as usize;
+        rebound.hours[3].cache_record_sha256 = to_hex(&Sha256::digest(&corrupt[window]));
         let rebound_bytes = rebound.to_bytes().unwrap();
         let reader =
             ReplayCacheReader::open(&rebound_bytes, &corrupt, 4000, &source_sha).unwrap();
+        assert!(reader.confined_hours().is_empty(), "nothing is confined here");
         assert!(reader.verify_every_hour().is_err());
     }
 
@@ -3332,11 +4157,12 @@ mod tests {
     /// Build a cache with one hour SKIPPED BY NAME — the shape a recording with
     /// an injured hour now has.
     fn build_with_hole(
+        interval: u32,
         hole_hour: i64,
         hours: &[(i64, &str)],
     ) -> (Vec<u8>, ReplayHourIndex, String) {
         let source_sha = "ab".repeat(32);
-        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 168).unwrap();
+        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, interval).unwrap();
         let mut last = 0i64;
         for (hour, body) in hours {
             if *hour == hole_hour {
@@ -3368,7 +4194,8 @@ mod tests {
     /// condition.
     #[test]
     fn an_interior_hole_is_carried_by_the_format_and_an_unnamed_gap_is_not() {
-        let (cache, index, sha) = build_with_hole(1, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C), (3, OBJ_D)]);
+        let (cache, index, sha) =
+            build_with_hole(168, 1, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C), (3, OBJ_D)]);
         assert_eq!(
             index
                 .hours()
@@ -3505,13 +4332,13 @@ mod tests {
     #[test]
     fn a_leading_hole_and_a_trailing_hole_both_still_tile_the_source() {
         // Leading: the first SERVED hour no longer starts at offset zero.
-        let (_, leading, _) = build_with_hole(0, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C)]);
+        let (_, leading, _) = build_with_hole(168, 0, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C)]);
         assert_eq!(leading.hours()[0].h4cr_start_offset(), 100);
         assert_eq!(leading.excluded_hours()[0].h4cr_start_offset(), 0);
         leading.validate().expect("a leading hole tiles the source");
 
         // Trailing: the last SERVED hour no longer reaches the source end.
-        let (_, trailing, _) = build_with_hole(2, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C)]);
+        let (_, trailing, _) = build_with_hole(168, 2, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C)]);
         assert_eq!(trailing.hours().last().unwrap().h4cr_end_offset(), 200);
         assert_eq!(trailing.excluded_hours()[0].h4cr_end_offset(), 300);
         trailing.validate().expect("a trailing hole tiles the source");

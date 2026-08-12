@@ -56,6 +56,12 @@ gq-bad-hour = []
 # nothing outside the scratch directory it is given, is never on by default and
 # is never packaged.
 gz-interior-holes = []
+# Lane HA entry-confinement harness. Builds one clean artifact pair with the
+# real production build, then flips one byte inside a chosen packaged H4CP
+# record and reports which hours the real consumer door still serves and which
+# it refuses by name. Measurement only: it writes nothing outside the scratch
+# directory it is given, is never on by default and is never packaged.
+ha-entry-confinement = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -112,6 +118,11 @@ required-features = ["gq-bad-hour"]
 name = "gz_interior_holes"
 path = "src/bin/gz_interior_holes.rs"
 required-features = ["gz-interior-holes"]
+
+[[bin]]
+name = "ha_entry_confinement"
+path = "src/bin/ha_entry_confinement.rs"
+required-features = ["ha-entry-confinement"]
 
 [[test]]
 name = "prefold_worker_process"

@@ -4029,15 +4029,95 @@ fn load_verified_replay_authority(
             replay_path.display()
         )
     })?;
-    // A damaged entry that serves NO single game hour is refused here, before
-    // anything is read out of the container: the recorder manifest, the index
-    // and the certified cache are what every other claim rests on, so damage
-    // to them cannot be confined to an hour. Naming the entry and its role is
-    // what the first-failure abort could not do.
+    // NO ARTIFACT MAY ALSO BE SOME HOUR'S SNAPSHOT (Codex review round 5).
+    //
+    // `EntryVerification::hour_index` is resolved by matching an entry's path
+    // against the container INDEX's snapshot file names, which says nothing
+    // about the entry's ROLE. So an index that lists the canonical H4CP (or
+    // H4IX) path as, say, hour 5's snapshot makes that artifact's row carry
+    // hour 5 — and the per-hour damage fold below would then exclude hour 5
+    // because the CACHE was damaged, on top of the checkpoint window the damage
+    // actually reaches. A healthy hour would be dropped for an injury that
+    // never touched it, which is precisely the exactness the confinement law
+    // exists to keep.
+    //
+    // The guard is a refusal rather than a repair: one file cannot be both a
+    // replay artifact and an hour's snapshot, and a container that says
+    // otherwise is contradictory whether or not anything is damaged.
+    //
+    // It is a LIVE guard, and only the FIRST indexed snapshot is out of its
+    // reach: `Container::open` decodes that one as the representative it checks
+    // mod and build identity against — and an H4CP, which begins with the four
+    // bytes `H4CP`, cannot be a JSON document — while every later snapshot row
+    // stays lazy. So an alias behind a valid snapshot opens fine and arrives
+    // here. `a_replay_artifact_indexed_as_an_hours_snapshot_refuses_the_container`
+    // covers both positions.
     {
+        let aliased: Vec<String> = entry_report
+            .iter()
+            .filter(|entry| {
+                entry.hour_index.is_some()
+                    && matches!(
+                        entry.role.as_deref(),
+                        Some(snapshot::CHECKPOINT_CACHE_ROLE) | Some(snapshot::HOUR_INDEX_ROLE)
+                    )
+            })
+            .map(|entry| {
+                format!(
+                    "{} (role {:?}) is also indexed as the snapshot for hour_index {}",
+                    entry.path,
+                    entry.role.as_deref().unwrap_or("none"),
+                    entry.hour_index.unwrap_or_default()
+                )
+            })
+            .collect();
+        if !aliased.is_empty() {
+            return Err(format!(
+                "replay container {} indexes {} replay_decoder artifact(s) as per-hour \
+                 snapshots, so damage to them could not be attributed to the hours they really \
+                 serve: {}",
+                replay_path.display(),
+                aliased.len(),
+                aliased.join("; ")
+            ));
+        }
+    }
+
+    // A damaged entry that serves NO single game hour is refused here, before
+    // anything is read out of the container: the recorder manifest and the
+    // index are what every other claim rests on, so damage to them cannot be
+    // confined to an hour. Naming the entry and its role is what the
+    // first-failure abort could not do.
+    //
+    // THE ONE EXEMPTION is the certified CACHE, and only on the cache-only
+    // route (owner ruling 2026-08-12, task #191). The H4CP serves no single
+    // hour, but it is the one entry whose damage is attributable to hours from
+    // inside the recording's own sealed authority: every record carries a
+    // digest in the sealed H4IX, so `certify_cache_only_recording`'s link 6
+    // streams it, names the records that moved, and confines the checkpoint
+    // windows they belong to — refusing the whole recording itself whenever the
+    // damage is NOT attributable (a changed length, a damaged header, or the
+    // container's account and the seal's disagreeing about the same bytes).
+    //
+    // The exemption cannot be talked into existence by a file on disk. It is
+    // conditioned on the same `declared_packaging` that routes the
+    // certification, and the cache-only route's link 1 re-reads the composition
+    // from the CONTAINER-AUTHENTICATED recorder manifest and refuses if the two
+    // disagree — so a packaged recording that rewrote its run-dir manifest to
+    // claim `omitted` loses the whole container a few lines further down, with
+    // its H4CP damage still unjudged.
+    {
+        let defer_to_per_record_attribution = |entry: &snapshot::container::EntryVerification| {
+            matches!(declared_packaging, snapshot::RawStreamPackaging::Omitted)
+                && entry.role.as_deref() == Some(snapshot::CHECKPOINT_CACHE_ROLE)
+        };
         let unisolatable: Vec<String> = entry_report
             .iter()
-            .filter(|entry| entry.error.is_some() && entry.hour_index.is_none())
+            .filter(|entry| {
+                entry.error.is_some()
+                    && entry.hour_index.is_none()
+                    && !defer_to_per_record_attribution(entry)
+            })
             .map(|entry| {
                 format!(
                     "{} (role {:?}): {}",
@@ -4261,6 +4341,54 @@ fn load_verified_replay_authority(
     // dropping a good hour with an invented excuse.
     bind_index_holes_to_sealed_coverage(&stream_details, &hour_coverage, &replay_path)?;
 
+    // POST-SEAL CACHE DAMAGE, confined to the checkpoint windows it reached and
+    // folded into the same map (owner ruling 2026-08-12, task #191).
+    //
+    // These hours are NOT joined against the sealed coverage map the way the
+    // index's holes are, and the difference is the whole point of the ruling:
+    // the seal verified these hours, so the map vouches for them and a join
+    // would only ever confirm that. What changed is later than the seal — the
+    // packaged record rotted — which is exactly the "excluded because its entry
+    // rotted AFTER sealing" case the leak guard above deliberately runs before.
+    let confined_by_cache_damage: Vec<Value> = stream_details
+        .get(CACHE_DAMAGE_CONFINED_HOURS_FIELD)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for confined in &confined_by_cache_damage {
+        let hour_index = confined
+            .get("hour_index")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "confined hour row has no hour_index".to_string())?;
+        let reason = confined
+            .get("reason")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("confined hour {hour_index} names no reason"))?;
+        let game_hour_raw = i32::try_from(hour_index)
+            .ok()
+            .and_then(|hour| hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST))
+            .ok_or_else(|| {
+                format!("cache damage confines an out-of-range hour_index {hour_index}")
+            })?;
+        let first_byte = confined
+            .get("h4cr_start_offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let end = confined
+            .get("h4cr_end_offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(first_byte);
+        // The byte attribution comes from the SEALED H4IX's own served row for
+        // this hour, which is exact by construction: the tiling law makes the
+        // served rows and the named holes account for every source byte once.
+        hour_coverage.record_excluded(
+            game_hour_raw,
+            first_byte,
+            end.saturating_sub(first_byte),
+            reason,
+        );
+    }
+
     // Container damage is judged at ENTRY granularity and folded into the SAME
     // map, so a consumer reads one statement per hour rather than having to
     // join a coverage map against a separate integrity report. The entries that
@@ -4389,6 +4517,10 @@ fn refuse_hours_the_coverage_map_does_not_vouch_for(
 
 /// Where a cache-only certification reports the packaged index's hole rows.
 const INDEX_EXCLUDED_HOURS_FIELD: &str = "index_excluded_hours";
+
+/// Where a cache-only certification reports the hours a DAMAGED packaged cache
+/// record confines — the seal vouched for them and the bytes rotted after.
+const CACHE_DAMAGE_CONFINED_HOURS_FIELD: &str = "cache_damage_confined_hours";
 
 /// Read one artifact digest out of the SEALED `host_finalize.fold` receipt.
 ///
@@ -4537,11 +4669,18 @@ fn read_sealed_hour_coverage(
 ///    manifest states. This is the only place the source bytes are actually
 ///    touched.
 /// 5. `h4ix_source_identity` — the packaged H4IX states that same source hash
-///    AND the same source length, and its own cache binding (`cache_len`,
-///    `cache_sha256`) matches the packaged H4CP bytes.
-/// 6. `h4cp_source_digest` — the packaged H4CP header carries that same source
-///    digest. NOTE: H4CP carries the source DIGEST but NOT the length, so the
-///    length link rests on H4IX alone; that is why link 5 checks both.
+///    AND the same source length, and its `cache_sha256` names the same cache
+///    the seal's own receipt does. That is a binding between two SEALED claims,
+///    not between a claim and the packaged bytes: since the confinement ruling
+///    a packaged H4CP is admitted RECORD BY RECORD, so a rotted one is expected
+///    to differ from `cache_sha256` and is not refused for it.
+/// 6. `h4cp_source_digest` — the packaged H4CP is streamed past a `CacheAudit`,
+///    which proves its length, its header identity (the same source digest —
+///    NOTE that H4CP carries the source DIGEST but NOT the length, so the length
+///    link rests on H4IX alone) and, for every record, that its bytes are the
+///    ones the sealed H4IX published for it. Records that are not confine their
+///    checkpoint windows by name; damage that belongs to no hour still refuses
+///    the recording.
 ///
 /// What this DOES NOT do, and must never be reported as doing: re-hash the
 /// source bytes from inside the container. A cache-only recording cannot do
@@ -4819,58 +4958,58 @@ fn certify_cache_only_recording(
     }
 
     // Link 6: H4CP. Its header carries the source digest (and not the length),
-    // and the index's own cache binding must hold over these exact bytes.
+    // and the index's own cache binding must hold over these exact bytes —
+    // RECORD BY RECORD (owner ruling 2026-08-12, task #191).
     let cache_entry = single_cache_entry(
         container,
         snapshot::CHECKPOINT_CACHE_ROLE,
         snapshot::CHECKPOINT_CACHE_FILE,
         CACHE_ONLY_LINK_CHECKPOINT_CACHE,
     )?;
-    // This link proves identity, not seekability: it needs the cache's length,
-    // its digest, and its 40-byte header — never its body. Streaming the entry
-    // past a sink that retains only the header keeps that true at any size. The
-    // H4CP is the one container entry whose length tracks campaign length
-    // (t32: 2.21 GB for 656 hours), so materializing it here was a peak-memory
-    // term that grew with the recording it was meant to check.
-    let mut header_probe = LeadingBytesSink::new(
-        usize::try_from(snapshot::CHECKPOINT_CACHE_HEADER_LEN).unwrap_or(usize::MAX),
+    // The entry streams past a `CacheAudit`, which retains the 40-byte header,
+    // two SHA-256 states and one index position per damaged record — never the
+    // body. The H4CP is the
+    // one container entry whose length tracks campaign length (t32: 2.21 GB for
+    // 656 hours), so materializing it here was a peak-memory term that grew
+    // with the recording it was meant to check.
+    //
+    // The audit is THE SAME sink `snapshot`'s reader admission feeds. That is
+    // deliberate: this gate and the reader must agree, hour for hour, about
+    // which records survived, and a second implementation of "which records are
+    // damaged" is a second answer waiting to happen.
+    let mut audit = snapshot::CacheAudit::new(&hour_index);
+    let copy_outcome = container.copy_entry_to_unpublished_writer_bounded(
+        &cache_entry.path,
+        &mut audit,
+        snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
     );
-    let cache_receipt = container
-        .copy_entry_to_unpublished_writer_bounded(
-            &cache_entry.path,
-            &mut header_probe,
-            snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+    // The audit's verdict is read even when the copy REFUSED, and only in one
+    // direction: to attribute damage, never to admit anything. Its authority is
+    // the sealed H4IX (link 5b bound the index to the finalize receipt), which
+    // is strictly stronger than the container manifest digest the copy checks —
+    // a record whose bytes hash to the digest the SEAL published is that
+    // record, whatever the container's own entry account says. Bytes are never
+    // published from here: what leaves this block is a list of damaged record
+    // positions.
+    let verdict = audit.finish().map_err(|error| {
+        cache_only_link_refusal(
+            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+            format!(
+                "the packaged {} cannot be attributed record by record: {error}{}",
+                cache_entry.path,
+                match &copy_outcome {
+                    Err(copy_error) => format!(" (the container also refused it: {copy_error})"),
+                    Ok(_) => String::new(),
+                }
+            ),
         )
-        .map_err(|error| {
-            cache_only_link_refusal(
-                CACHE_ONLY_LINK_CHECKPOINT_CACHE,
-                format!("cannot read {} from the container: {error}", cache_entry.path),
-            )
-        })?;
-    if hour_index.cache_len() != cache_receipt.uncompressed_len() {
-        return Err(cache_only_link_refusal(
-            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
-            format!(
-                "H4IX states a {}-byte cache but the packaged H4CP is {} bytes",
-                hour_index.cache_len(),
-                cache_receipt.uncompressed_len(),
-            ),
-        ));
-    }
-    if hour_index.cache_sha256() != cache_receipt.sha256() {
-        return Err(cache_only_link_refusal(
-            CACHE_ONLY_LINK_CHECKPOINT_CACHE,
-            format!(
-                "the packaged H4CP hashes to {}, not the {} H4IX is bound to",
-                cache_receipt.sha256(),
-                hour_index.cache_sha256(),
-            ),
-        ));
-    }
+    })?;
     // Everything the shared reader checks except the H4CP header identity has
     // now been proved with its own name, so a failure here IS the header. The
-    // header check is the shared one, not a second spelling of it.
-    snapshot::validate_checkpoint_cache_header(header_probe.bytes(), &attested_sha256).map_err(
+    // header check is the shared one, not a second spelling of it. It runs
+    // BEFORE any confinement, because the header is the artifact's identity —
+    // damage there belongs to no single hour and confining it would be a guess.
+    snapshot::validate_checkpoint_cache_header(verdict.header(), &attested_sha256).map_err(
         |error| {
             cache_only_link_refusal(
                 CACHE_ONLY_LINK_CHECKPOINT_CACHE,
@@ -4880,19 +5019,93 @@ fn certify_cache_only_recording(
             )
         },
     )?;
+    let confined_hours = hour_index.confine_damaged_records(verdict.damaged_positions());
+    // THE FOUR OUTCOMES of streaming one packaged cache past the sealed index,
+    // each named. Two are agreements and are handled below; two are
+    // disagreements between the container's own entry account and the seal's,
+    // and neither can be attributed to an hour, so both refuse the recording.
+    match (&copy_outcome, verdict.is_intact()) {
+        // The container verified the entry and every record is the sealed one.
+        (Ok(_), true) => {}
+        // The container refused the entry and the sealed index says exactly
+        // which records moved. This is GY-2's case, and the confinement below
+        // is the whole point of the lane.
+        (Err(_), false) => {}
+        (Ok(receipt), false) => {
+            return Err(cache_only_link_refusal(
+                CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+                format!(
+                    "the container verified {} against its own manifest digest {}, yet {} of its \
+                     records do not match the per-record digests the sealed H4IX publishes; the \
+                     two accounts of the same bytes disagree, so neither is trusted",
+                    cache_entry.path,
+                    receipt.sha256(),
+                    verdict.damaged_positions().len(),
+                ),
+            ))
+        }
+        // THE ONE ARM NO FIXTURE HERE CAN REACH, and it is documented rather
+        // than claimed to be pinned: the packer derives an entry's manifest
+        // digest FROM the bytes it packs, so a container whose account refuses
+        // an entry whose every record still matches the seal cannot be built by
+        // this repository. It is kept because the disagreement is real in the
+        // field — a rotted or rewritten container manifest — and because an
+        // account of an entry that contradicts the seal's account of the same
+        // bytes is attributable to no hour.
+        (Err(copy_error), true) => {
+            return Err(cache_only_link_refusal(
+                CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+                format!(
+                    "the container refused {} ({copy_error}), but every one of its {} records \
+                     matches the per-record digest the sealed H4IX publishes; the damage is in \
+                     the container's own account of the entry, which serves no single game hour",
+                    cache_entry.path,
+                    hour_index.hours().len(),
+                ),
+            ))
+        }
+    }
 
     // Link 6b: the packaged H4CP is the cache the SEAL certified. Symmetric
     // with link 5b, and stated separately because the two artifacts are sealed
     // as two separate receipts and can rot independently.
+    //
+    // It is now a WHOLE-ARTIFACT FAST PATH rather than the binding itself: the
+    // sealed H4IX carries a digest per record, and link 5b binds the H4IX to
+    // the same finalize receipt, so every record already has a per-record
+    // binding to the seal. What this adds is the statement "and nothing at all
+    // moved", which is worth making when it is true and must not be a
+    // whole-recording refusal when it is false.
     let sealed_cache_sha256 = sealed_artifact_digest(embedded_manifest, "checkpoint_cache_sha256")?;
-    if cache_receipt.sha256() != sealed_cache_sha256 {
+    // The two SEALED claims about the cache must name the same artifact before
+    // either is used to judge the packaged bytes. This is what the deleted
+    // `H4IX cache_sha256 vs the streamed digest` comparison becomes under
+    // confinement: comparing a sealed claim against damaged bytes could only
+    // ever refuse the whole recording, while comparing the two sealed claims
+    // against each other catches the same substitution — an index bound to some
+    // other cache — without costing an hour.
+    if hour_index.cache_sha256() != sealed_cache_sha256 {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_SEALED_ARTIFACTS,
+            format!(
+                "the packaged H4IX is bound to a {} cache, but the container-authenticated \
+                 recorder manifest sealed host_finalize.fold.checkpoint_cache_sha256 \
+                 {sealed_cache_sha256}; the index and the seal describe different caches",
+                hour_index.cache_sha256(),
+            ),
+        ));
+    }
+    let cache_matches_seal = verdict.whole_cache_sha256() == sealed_cache_sha256;
+    if !cache_matches_seal && confined_hours.is_empty() {
         return Err(cache_only_link_refusal(
             CACHE_ONLY_LINK_SEALED_ARTIFACTS,
             format!(
                 "the packaged {} hashes to {}, but the container-authenticated recorder manifest \
-                 sealed host_finalize.fold.checkpoint_cache_sha256 {sealed_cache_sha256}",
+                 sealed host_finalize.fold.checkpoint_cache_sha256 {sealed_cache_sha256}, and no \
+                 record of it disagrees with the sealed H4IX; the artifact moved somewhere the \
+                 per-record account does not reach",
                 cache_entry.path,
-                cache_receipt.sha256(),
+                verdict.whole_cache_sha256(),
             ),
         ));
     }
@@ -4920,6 +5133,12 @@ fn certify_cache_only_recording(
         "hour_index_sha256": index_entry.sha256,
         "checkpoint_cache_entry": cache_entry.path,
         "checkpoint_cache_sha256": cache_entry.sha256,
+        // Self-describing, because "the packaged cache is byte-identical to the
+        // sealed one" and "every record a served hour needs is the sealed one"
+        // are now different claims and a report must never let the weaker read
+        // as the stronger.
+        "checkpoint_cache_matches_seal_whole": cache_matches_seal,
+        "checkpoint_cache_damaged_records": verdict.damaged_positions().len(),
         "indexed_hours": hour_index.hours().len(),
         // EVERY hour this container will actually SERVE. A cache-only recording
         // publishes no per-hour snapshot entries at all, so the container's
@@ -4945,6 +5164,26 @@ fn certify_cache_only_recording(
                 "reason": hole.reason(),
                 "h4cr_start_offset": hole.h4cr_start_offset(),
                 "h4cr_end_offset": hole.h4cr_end_offset(),
+            }))
+            .collect::<Vec<Value>>(),
+        // The hours this container SERVED AT SEAL TIME and cannot serve now,
+        // because the packaged cache record they replay through rotted
+        // afterwards. Same vocabulary as the sealed holes above — an hour, its
+        // H4CR byte range, one reason — because a replay consumer's question is
+        // the same either way; a DIFFERENT field because the claims are not:
+        // a hole says the recorder never vouched for the hour, and this says it
+        // did and the bytes moved. `load_verified_replay_authority` folds these
+        // into the per-hour coverage map, and they must never be joined against
+        // the sealed map the way holes are.
+        CACHE_DAMAGE_CONFINED_HOURS_FIELD: confined_hours
+            .iter()
+            .map(|confined| json!({
+                "hour_index": confined.hour_index(),
+                "reason": confined.reason(),
+                "h4cr_start_offset": confined.h4cr_start_offset(),
+                "h4cr_end_offset": confined.h4cr_end_offset(),
+                "damaged_record_hour": confined.damaged_record_hour(),
+                "checkpoint_hour": confined.checkpoint_hour(),
             }))
             .collect::<Vec<Value>>(),
     });
@@ -5008,45 +5247,6 @@ fn bind_run_stream_to_certification(
                 ));
             }
         }
-    }
-}
-
-/// A sink that retains the leading bytes of what is written to it and discards
-/// the rest.
-///
-/// It exists so a consumer that needs only an artifact's header can still be
-/// handed the whole authenticated entry — the container's spool derives length
-/// and SHA-256 from every byte it writes, so discarding the body here weakens
-/// nothing — without the entry's size becoming this process's memory ceiling.
-struct LeadingBytesSink {
-    kept: Vec<u8>,
-    limit: usize,
-}
-
-impl LeadingBytesSink {
-    fn new(limit: usize) -> Self {
-        Self {
-            kept: Vec::with_capacity(limit),
-            limit,
-        }
-    }
-
-    fn bytes(&self) -> &[u8] {
-        &self.kept
-    }
-}
-
-impl std::io::Write for LeadingBytesSink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let room = self.limit.saturating_sub(self.kept.len());
-        if room > 0 {
-            self.kept.extend_from_slice(&buf[..room.min(buf.len())]);
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
@@ -9646,7 +9846,12 @@ mod tests {
             "the length refusal must say why H4IX alone carries it: {error}"
         );
 
-        // h4cp: the packaged cache bytes are not the ones H4IX is bound to.
+        // h4cp: the packaged cache bytes are not the ones H4IX is bound to, and
+        // the CONTAINER's own account agrees with those bytes — the shape of a
+        // substituted cache rather than a rotted one. The two accounts of the
+        // same entry disagree, which is attributable to nothing, so the whole
+        // recording is refused (post-seal rot, which IS attributable, is
+        // `post_seal_cache_record_damage_costs_its_checkpoint_window`).
         let error = cache_only_authority_error(
             "cache_only_cache_bytes",
             CacheOnlyBreak {
@@ -9655,7 +9860,14 @@ mod tests {
             },
         );
         assert!(error.contains(CACHE_ONLY_LINK_CHECKPOINT_CACHE), "{error}");
-        assert!(error.contains("hashes to"), "{error}");
+        assert!(
+            error.contains("do not match the per-record digests"),
+            "{error}"
+        );
+        assert!(
+            error.contains("two accounts of the same bytes disagree"),
+            "{error}"
+        );
 
         // h4cp header digest: index and cache agree on everything EXCEPT the
         // source the cache header was built over.
@@ -11812,6 +12024,289 @@ mod tests {
         );
     }
 
+    /// A DAMAGED CACHE RECORD COSTS ITS CHECKPOINT WINDOW, NOT THE CONTAINER.
+    ///
+    /// Owner ruling 2026-08-12 (task #191), closing GY-2. The container's own
+    /// entry account still describes the cache the recorder sealed; the bytes
+    /// on disk no longer are it. Before this the loader refused the whole
+    /// recording twice over — once because a damaged entry serving no single
+    /// game hour is unisolatable, and once because H4IX bound the H4CP with a
+    /// single whole-cache digest — so one flipped byte cost every hour.
+    ///
+    /// The fixture builds four hours at checkpoint interval 2, so hours 0-1 and
+    /// 2-3 are two whole windows, and rots the record of hour 2, which is the
+    /// second window's CHECKPOINT.
+    ///
+    /// kills, and each at the point it actually fails (Codex review round 4,
+    /// finding 1):
+    ///
+    ///  * dropping the `CHECKPOINT_CACHE_ROLE` exemption from the unisolatable
+    ///    refusal — the `expect` below fails, because the whole container is
+    ///    refused before any attribution runs;
+    ///  * dropping the per-record confinement from link 6 — the `expect` below
+    ///    fails too, but one link later: with no confined hour to explain the
+    ///    moved whole-cache digest, link 6b's empty-confinement guard refuses
+    ///    the container. The coverage assertions are never reached in either
+    ///    case, and that is the point — this test's `expect` is the assertion
+    ///    that a damaged record is not a whole-container refusal;
+    ///  * widening the confinement past the window — hour 0 or 1 stops serving
+    ///    and `verified_hours` is no longer 2;
+    ///  * narrowing it — hour 3 is served out of a chain that reads a record
+    ///    whose bytes no longer hash to the sealed digest, and the confined
+    ///    hours assertion fails.
+    #[test]
+    fn post_seal_cache_record_damage_costs_its_checkpoint_window() {
+        let dir = TmpDir::new("ha_post_seal_record_rot");
+        let recording = write_cache_only_replay_fixture(
+            &dir.0,
+            "g",
+            CacheOnlyBreak {
+                cache_hours: Some(4),
+                checkpoint_interval: Some(2),
+                rot_cache_record: Some(2),
+                sealed_coverage: Some((vec![0, 1, 2, 3], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        let authority = load_verified_replay_authority(
+            &recording.manifest,
+            &recording.manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .expect("one damaged record must not cost the container");
+
+        // The SEALED index still serves every hour — the seal vouched for all
+        // four, and that claim is not retracted by later rot.
+        assert_eq!(authority.details["indexed_hour_indexes"], json!([0, 1, 2, 3]));
+        assert_eq!(
+            authority.details["checkpoint_cache_matches_seal_whole"],
+            json!(false),
+            "the whole-artifact claim must report itself false rather than be omitted"
+        );
+        assert_eq!(
+            authority.details["checkpoint_cache_damaged_records"],
+            json!(1)
+        );
+
+        // Exactly the damaged record's window is confined, by name.
+        let confined = authority.details[CACHE_DAMAGE_CONFINED_HOURS_FIELD]
+            .as_array()
+            .expect("confined hours are reported")
+            .clone();
+        let hours: Vec<i64> = confined
+            .iter()
+            .map(|row| row["hour_index"].as_i64().unwrap())
+            .collect();
+        assert_eq!(hours, vec![2, 3], "the second window, and only it");
+        for row in &confined {
+            assert_eq!(row["damaged_record_hour"], json!(2));
+            assert_eq!(row["checkpoint_hour"], json!(2));
+            assert!(
+                row["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("one damaged record costs its checkpoint window"),
+                "{row}"
+            );
+        }
+
+        // And the per-hour coverage map a replay consumer reads says the same
+        // thing, in the same words, for those hours and no others.
+        let coverage = &authority.details
+            [recorder_host::hour_coverage::HOUR_COVERAGE_FIELD];
+        assert_eq!(coverage["verified_hours"], json!(2));
+        let excluded: Vec<i64> = coverage["excluded_hours"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                row["game_hour_raw"].as_i64().unwrap()
+                    - i64::from(compact_contract::calendar::DATE_EPOCH_CONST)
+            })
+            .collect();
+        assert_eq!(excluded, vec![2, 3]);
+        assert!(
+            coverage["excluded_hours"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("game hour 2"),
+            "the exclusion names the record that rotted: {coverage}"
+        );
+    }
+
+    /// DAMAGE THE PER-RECORD ACCOUNT CANNOT ATTRIBUTE IS STILL A WHOLE-CONTAINER
+    /// REFUSAL.
+    ///
+    /// The confinement above is not a licence to serve whatever survives. FIVE
+    /// shapes of H4CP damage belong to no single hour. The first is the
+    /// artifact's LENGTH moving, refused by `CacheAudit::finish` and pinned on
+    /// the snapshot side by `an_audit_refuses_a_cache_whose_length_moved`
+    /// (Codex review round 7, finding 2). Of the remaining four, two are pinned
+    /// here:
+    ///
+    ///  * the file HEADER — the artifact's own identity and the framing every
+    ///    record offset is measured from;
+    ///  * the packaged index and the sealed receipt naming different caches.
+    ///
+    /// A fourth — "the container verified the entry against its own manifest
+    /// digest, yet a record disagrees with the seal" — is pinned by
+    /// `every_broken_attestation_link_refuses_by_its_own_name`'s
+    /// `corrupt_cache_bytes` cell, which damages the cache BEFORE packing so
+    /// the container's account covers the damaged bytes (Codex review round 6,
+    /// finding 2).
+    ///
+    /// The fifth — "the container refused the entry, yet every record matches
+    /// the seal" — is documented at its code site rather than pinned: it needs
+    /// a container whose own manifest digest contradicts bytes it was derived
+    /// from, which this packer cannot build.
+    ///
+    /// kills: this test pins the DIAGNOSIS each unattributable shape gets, not
+    /// the refusal itself — the refusals are layered on purpose and each shape
+    /// has a fallback (Codex review round 1, finding 2). Delete the header
+    /// validation and the rotted header is still refused, by the "the container
+    /// refused the entry yet every record matches the seal" arm; delete the
+    /// index-versus-seal comparison and the substituted index is still refused,
+    /// by link 6b's empty-confinement guard. What either deletion costs is the
+    /// sentence: a reader learns "something about this container is wrong"
+    /// instead of which artifact moved. Both assertions below are on the
+    /// message for exactly that reason.
+    ///
+    /// What it DOES pin as an admission: neither shape may be CONFINED. A
+    /// change that let the confinement run on the strength of the record
+    /// account alone would serve hours out of a cache bound to a different
+    /// source, and the `expect_err` here is what refuses that.
+    #[test]
+    fn unattributable_cache_damage_still_refuses_the_whole_container() {
+        let header = cache_only_authority_error(
+            "ha_post_seal_header_rot",
+            CacheOnlyBreak {
+                cache_hours: Some(4),
+                checkpoint_interval: Some(2),
+                rot_cache_header: true,
+                sealed_coverage: Some((vec![0, 1, 2, 3], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(header.contains(CACHE_ONLY_LINK_CHECKPOINT_CACHE), "{header}");
+        assert!(
+            header.contains("header is not bound to source"),
+            "the header refusal names the identity it broke: {header}"
+        );
+
+        // The index's cache binding and the seal's receipt naming different
+        // caches. This is what the deleted "H4IX cache_sha256 vs the streamed
+        // bytes" comparison becomes under confinement: comparing two SEALED
+        // claims catches the substitution without an hour paying for it, and
+        // it must still be a whole-recording refusal, because an index that is
+        // not the seal's index cannot attribute anything.
+        let substituted = cache_only_authority_error(
+            "ha_index_and_seal_disagree",
+            CacheOnlyBreak {
+                cache_hours: Some(4),
+                checkpoint_interval: Some(2),
+                sealed_cache_digest: Some("c".repeat(64)),
+                sealed_coverage: Some((vec![0, 1, 2, 3], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            substituted.contains(CACHE_ONLY_LINK_SEALED_ARTIFACTS),
+            "{substituted}"
+        );
+        assert!(
+            substituted.contains("describe different caches"),
+            "{substituted}"
+        );
+    }
+
+    /// A REPLAY ARTIFACT INDEXED AS AN HOUR'S SNAPSHOT REFUSES THE CONTAINER.
+    ///
+    /// The concern is real and worth pinning (Codex review round 5, finding 1):
+    /// `EntryVerification::hour_index` is resolved by matching an entry's path
+    /// against the container index's snapshot file names and says nothing about
+    /// the entry's ROLE, so an index that listed the canonical H4CP as hour 9's
+    /// snapshot would make the cache's damage row carry hour 9 — and the
+    /// per-hour damage fold would exclude hour 9 on top of the checkpoint window
+    /// the damage actually reaches. A healthy hour dropped for an injury that
+    /// never touched it is exactly the exactness the confinement law exists to
+    /// keep.
+    ///
+    /// WHERE the alias is refused depends on its POSITION in the index, and
+    /// both positions are covered here (Codex review round 6, finding 1):
+    ///
+    ///  * FIRST — `Container::open` decodes the first indexed snapshot as the
+    ///    representative it checks mod and build identity against, so an H4CP
+    ///    in that position never opens: it begins with the four bytes `H4CP`,
+    ///    which no JSON document can, and a damaged one fails its CRC first.
+    ///  * BEHIND a valid snapshot — open leaves later snapshots lazy, so the
+    ///    container opens and the alias reaches `load_verified_replay_authority`.
+    ///    That is the case the guard exists for, and it is a LIVE guard, not a
+    ///    documented-dead one.
+    ///
+    /// kills: deleting the alias guard. The damaged later-alias case then loads
+    /// with hour 1 excluded beside the confined window {2,3} — a healthy hour
+    /// dropped for an injury that never touched it — and the clean later-alias
+    /// case loads a container that claims one file is both the certified cache
+    /// and an hour's world state.
+    #[test]
+    fn a_replay_artifact_indexed_as_an_hours_snapshot_refuses_the_container() {
+        // BEHIND a valid snapshot: the container opens, and the authority's own
+        // guard is what refuses. Hour 1 is deliberately OUTSIDE the damaged
+        // record's window {2,3}, so without the guard it would be excluded by
+        // the entry-damage fold on top of the confinement.
+        let damaged_alias = cache_only_authority_error(
+            "ha_aliased_cache_behind_damaged",
+            CacheOnlyBreak {
+                cache_hours: Some(4),
+                checkpoint_interval: Some(2),
+                rot_cache_record: Some(2),
+                alias_cache_as_snapshot_hour: Some(1),
+                sealed_coverage: Some((vec![0, 1, 2, 3], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            damaged_alias.contains("indexes 1 replay_decoder artifact(s) as per-hour snapshots"),
+            "{damaged_alias}"
+        );
+        assert!(damaged_alias.contains("hour_index 1"), "{damaged_alias}");
+
+        // The same alias with nothing damaged: the contradiction IS the alias,
+        // so the refusal does not wait for an injury.
+        let clean_alias = cache_only_authority_error(
+            "ha_aliased_cache_behind_clean",
+            CacheOnlyBreak {
+                cache_hours: Some(4),
+                checkpoint_interval: Some(2),
+                alias_cache_as_snapshot_hour: Some(1),
+                sealed_coverage: Some((vec![0, 1, 2, 3], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            clean_alias.contains("indexes 1 replay_decoder artifact(s) as per-hour snapshots"),
+            "{clean_alias}"
+        );
+
+        // FIRST position: refused by the container reader, before the authority
+        // sees anything.
+        let first = cache_only_authority_error(
+            "ha_aliased_cache_first",
+            CacheOnlyBreak {
+                cache_hours: Some(4),
+                checkpoint_interval: Some(2),
+                alias_cache_as_first_snapshot_hour: Some(9),
+                sealed_coverage: Some((vec![0, 1, 2, 3], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            first.contains("cannot open replay container") && first.contains("container json"),
+            "an aliased artifact must not decode as the representative snapshot: {first}"
+        );
+    }
+
     /// THE PACKAGED ARTIFACTS MUST BE THE ONES THE SEAL CERTIFIED.
     ///
     /// The name join above binds an H4IX hole's HOUR and REASON to the sealed
@@ -12123,6 +12618,41 @@ mod tests {
         /// Removing them from the run-dir copy alone would refuse on the
         /// run-dir/sealed binding instead, which is a different link.
         omit_artifact_receipts: bool,
+        /// Build this many served hours, tiling the source, at
+        /// [`Self::checkpoint_interval`]. `None` builds the single-hour cache
+        /// every other test here wants.
+        cache_hours: Option<usize>,
+        /// Build the cache at this checkpoint interval instead of the
+        /// production 168, so a fixture small enough to read has more than one
+        /// checkpoint WINDOW in it.
+        checkpoint_interval: Option<u32>,
+        /// POST-SEAL ROT: flip one byte inside the cache record at this index
+        /// position AFTER the container is packed.
+        ///
+        /// This is the injury GY-2 names, and it is not the same fixture as
+        /// [`Self::corrupt_cache_bytes`]: that one damages the cache BEFORE
+        /// packing, so the container's own entry digest covers the damaged
+        /// bytes and the recording is a substitution the recorder could never
+        /// have produced. This one leaves the container's account describing
+        /// the bytes the recorder sealed, and the bytes on disk no longer being
+        /// them — a rotted file, which is what actually happens.
+        rot_cache_record: Option<usize>,
+        /// The same rot, in the H4CP FILE HEADER: damage to the artifact's own
+        /// identity, which serves no single game hour.
+        rot_cache_header: bool,
+        /// Index the canonical H4CP path as THIS hour's snapshot, BEHIND a
+        /// real first snapshot, so the container claims one file is both a
+        /// replay artifact and an hour's world state.
+        ///
+        /// The position matters: `Container::open` decodes only the FIRST
+        /// indexed snapshot, as the representative it checks mod and build
+        /// identity against, and leaves the rest lazy. An alias in first
+        /// position therefore never opens (the H4CP is not JSON); an alias
+        /// behind a valid snapshot opens fine and reaches the authority.
+        alias_cache_as_snapshot_hour: Option<i64>,
+        /// The same alias in FIRST position, with no real snapshot in front of
+        /// it — the shape the container reader itself refuses.
+        alias_cache_as_first_snapshot_hour: Option<i64>,
     }
 
     /// Replace the single occurrence of one raw 32-byte digest inside an H4IX
@@ -12143,6 +12673,27 @@ mod tests {
             "the fixture digest must appear exactly once in the H4IX image"
         );
         bytes[positions[0]..positions[0] + 32].copy_from_slice(&to);
+    }
+
+    /// Flip one byte of a STORED cache entry inside an already-packed
+    /// container, at `offset` within the cache artifact.
+    ///
+    /// The entry is located by its own bytes rather than by parsing the ZIP, and
+    /// the occurrence is required to be unique so a test can never damage some
+    /// other entry that happened to contain the same run.
+    fn rot_sealed_cache_byte(packed: &mut [u8], sealed_cache: &[u8], offset: usize) {
+        let positions: Vec<usize> = packed
+            .windows(sealed_cache.len())
+            .enumerate()
+            .filter(|(_, window)| *window == sealed_cache)
+            .map(|(position, _)| position)
+            .collect();
+        assert_eq!(
+            positions.len(),
+            1,
+            "the sealed cache must appear exactly once in the packed container"
+        );
+        packed[positions[0] + offset] ^= 0xff;
     }
 
     fn hex32(value: &str) -> Vec<u8> {
@@ -12207,24 +12758,41 @@ mod tests {
         let source_len = breakage
             .index_source_len
             .unwrap_or(folded_from.len() as u64);
-        let mut encoder =
-            snapshot::ReplayCacheEncoder::new(Vec::new(), &header_sha256, 168).unwrap();
+        let mut encoder = snapshot::ReplayCacheEncoder::new(
+            Vec::new(),
+            &header_sha256,
+            breakage.checkpoint_interval.unwrap_or(168),
+        )
+        .unwrap();
         match &breakage.index_hole_reason {
             None => {
-                let world = serde_json::to_vec(&json!({
-                    "date": "1936.1.1.12",
-                    "hour_index": 0,
-                }))
-                .unwrap();
-                encoder
-                    .push(snapshot::CacheBuildHour {
-                        hour_index: 0,
-                        date: "1936.1.1.12".into(),
-                        h4cr_start_offset: 0,
-                        h4cr_end_offset: source_len,
-                        world_json: world,
-                    })
+                // N hours tiling the source, N = 1 unless a test asks for the
+                // windows to be observable.
+                let hours = breakage.cache_hours.unwrap_or(1) as u64;
+                let span = source_len / hours;
+                for hour in 0..hours {
+                    let start = span * hour;
+                    let end = if hour + 1 == hours {
+                        source_len
+                    } else {
+                        span * (hour + 1)
+                    };
+                    let date = format!("1936.1.1.{}", hour + 12);
+                    let world = serde_json::to_vec(&json!({
+                        "date": date,
+                        "hour_index": hour,
+                    }))
                     .unwrap();
+                    encoder
+                        .push(snapshot::CacheBuildHour {
+                            hour_index: hour as i64,
+                            date,
+                            h4cr_start_offset: start,
+                            h4cr_end_offset: end,
+                            world_json: world,
+                        })
+                        .unwrap();
+                }
             }
             Some(reason) => {
                 // Three hours over the same source, the middle one skipped by
@@ -12273,6 +12841,15 @@ mod tests {
         if breakage.corrupt_cache_bytes {
             *cache_bytes.last_mut().unwrap() ^= 0xff;
         }
+        // Kept for the post-seal rot below, which has to find these exact bytes
+        // inside the packed container and can only do so because this fixture
+        // packs STORED (`deflate: false`), so an entry appears verbatim.
+        let sealed_cache_bytes = cache_bytes.clone();
+        let record_windows: Vec<(u64, u64)> = replay_index
+            .hours()
+            .iter()
+            .map(|row| (row.cache_record_offset(), row.cache_record_len()))
+            .collect();
 
         // THE ARTIFACT RECEIPTS GO IN BOTH COPIES, and are written here rather
         // than with the rest of the manifest because they are digests OF the
@@ -12326,10 +12903,31 @@ mod tests {
         };
 
         let (static_artifacts, mut static_entries) = replay_test_static_artifacts(game_id);
+        // The container index is the FILENAME authority for snapshots, and it
+        // names files relative to `payload/<game>/`. Pointing one of its rows at
+        // the certified cache is how a container claims that artifact is also
+        // an hour's world state.
+        const FIXTURE_SNAPSHOT_FILE: &str = "snapshots/000000000000.snapshot.json";
+        let mut snapshots: Vec<Value> = Vec::new();
+        if let Some(hour) = breakage.alias_cache_as_first_snapshot_hour {
+            snapshots.push(json!({
+                "hour_index": hour,
+                "file": snapshot::CHECKPOINT_CACHE_FILE,
+            }));
+        }
+        if let Some(hour) = breakage.alias_cache_as_snapshot_hour {
+            // A real snapshot first — the one `Container::open` decodes as its
+            // representative — and the artifact behind it.
+            snapshots.push(json!({ "hour_index": 0, "file": FIXTURE_SNAPSHOT_FILE }));
+            snapshots.push(json!({
+                "hour_index": hour,
+                "file": snapshot::CHECKPOINT_CACHE_FILE,
+            }));
+        }
         let container_index = serde_json::to_vec(&json!({
             "game_id": game_id,
             "schema_version": "1",
-            "snapshots": [],
+            "snapshots": snapshots,
             "static_artifacts": static_artifacts,
             snapshot::RAW_STREAM_PACKAGING_FIELD: snapshot::RawStreamPackaging::Omitted.as_str(),
             "raw_stream_absence_reason": snapshot::RAW_STREAM_OMITTED_REASON,
@@ -12361,6 +12959,18 @@ mod tests {
                 hour_index: None,
             },
         ];
+        if breakage.alias_cache_as_snapshot_hour.is_some() {
+            // The representative snapshot the index names first. Its content is
+            // deliberately minimal: `Container::open` reads it to compare mod
+            // and build identity, and absence on either side is a measured
+            // absence that passes.
+            entries.push(snapshot::PackEntry {
+                path: format!("payload/{game_id}/{FIXTURE_SNAPSHOT_FILE}"),
+                bytes: b"{}".to_vec(),
+                role: "snapshot",
+                hour_index: Some(0),
+            });
+        }
         if breakage.package_stream_entry {
             entries.push(snapshot::PackEntry {
                 path: format!("payload/{game_id}/collector_raw/collector_stream.bin"),
@@ -12390,6 +13000,23 @@ mod tests {
             false,
         )
         .unwrap();
+        // POST-SEAL ROT, applied to the SEALED CONTAINER rather than to the
+        // bytes handed to the packer. Everything the container says about this
+        // entry — its length, its digest, its CRC — still describes what the
+        // recorder sealed; only the bytes on disk have moved. Corrupting before
+        // the pack could not model this: the packer would have derived its
+        // account from the damaged bytes.
+        let mut packed = packed;
+        if let Some(position) = breakage.rot_cache_record {
+            let (offset, len) = record_windows[position];
+            rot_sealed_cache_byte(&mut packed, &sealed_cache_bytes, (offset + len - 1) as usize);
+        }
+        if breakage.rot_cache_header {
+            // Byte 8 is the first byte of the 32-byte H4CR source digest the
+            // header carries — neither the magic nor the version, so what it
+            // provokes is the identity check.
+            rot_sealed_cache_byte(&mut packed, &sealed_cache_bytes, 8);
+        }
         fs::write(dir.join("native_session.battleplan"), packed).unwrap();
         if !breakage.omit_run_dir_stream {
             let on_disk = breakage.run_dir_stream_override.as_ref().unwrap_or(&stream);
