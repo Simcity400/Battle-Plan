@@ -14,7 +14,7 @@ use portable_replay_format::sha256::Sha256;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
-const FORMAT_VERSION: u16 = 2;
+const FORMAT_VERSION: u16 = 3;
 const RECORD_CHECKPOINT: u8 = 1;
 /// `H4CP` + version + flags + 32-byte source digest.
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
@@ -103,6 +103,9 @@ fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
     index.extend_from_slice(&0u32.to_le_bytes()); // delta steps
     index.extend_from_slice(&digest_of(&hex32(0x00))); // world json sha
     put_string(&mut index, "1936.1.1.1");
+    // H4IX v3: the excluded-hour section. This artifact serves its one hour and
+    // names no hole, which is what an uninjured recording looks like.
+    index.extend_from_slice(&0u64.to_le_bytes()); // excluded hour count
 
     (index, cache, source_len, source_sha)
 }

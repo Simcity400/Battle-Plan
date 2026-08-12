@@ -119,8 +119,18 @@ const fn round_up_to_chunk(bytes: usize) -> usize {
 const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 
 /// Persisted format marker for a source-bound, fully certified stream index.
-const LEGACY_CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v1";
-const CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v2";
+/// Version 3 carries the recording's EXCLUDED hours beside its served ones
+/// (owner ruling 2026-08-12, task #189), which changes what a reader must
+/// account for rather than merely adding an optional field: without those rows
+/// a served hour's byte range runs to the next SERVED hour and silently covers
+/// an excluded hour's records.
+///
+/// The identifier moves with the grammar so a v2 document is refused BY NAME
+/// rather than parsed as a recording that happens to have no holes. The v1 and
+/// v2 acceptance arms are deleted rather than kept: pre-production carries no
+/// backwards compatibility, and there is no honest reading of an index written
+/// before the format could say which hours its recording refuses.
+const CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v3";
 
 /// Manifest role of the compact stream inside a `.battleplan` container.
 pub const STREAM_ROLE: &str = "collector_compact_stream";
@@ -797,6 +807,12 @@ pub enum SeekError {
     Decode(DecodeError),
     /// The target hour is not present in the index / stream.
     HourNotFound(i64),
+    /// The recording NAMES this hour and REFUSES it. Distinct from
+    /// [`SeekError::HourNotFound`] on purpose: "the recording does not have
+    /// this hour" and "the recording has this hour's records and does not
+    /// vouch for them" are different answers, and only the second one can say
+    /// why.
+    HourExcluded { hour_index: i64, reason: String },
     /// The persisted index is structurally invalid or is not the certified
     /// index for the exact source/options being sought.
     InvalidIndex(String),
@@ -808,6 +824,10 @@ impl std::fmt::Display for SeekError {
             SeekError::Open(e) => write!(f, "open: {e}"),
             SeekError::Decode(e) => write!(f, "decode: {e}"),
             SeekError::HourNotFound(h) => write!(f, "hour {h} not found in stream"),
+            SeekError::HourExcluded { hour_index, reason } => write!(
+                f,
+                "hour {hour_index} is excluded from this recording's verified coverage: {reason}"
+            ),
             SeekError::InvalidIndex(s) => write!(f, "invalid stream index: {s}"),
         }
     }
@@ -1225,7 +1245,7 @@ pub struct CertifiedReplayArtifacts {
 type ReplayCacheEncoderFile = snapshot::ReplayCacheEncoder<fs::File>;
 
 /// One closed game hour on its way from the fold to the checkpoint cache.
-struct CacheEmitJob {
+struct CacheEmitHour {
     hour_index: i64,
     date: String,
     start_offset: u64,
@@ -1236,6 +1256,20 @@ struct CacheEmitJob {
     /// which is why nothing else may build this struct, and dropped by the
     /// consumer the moment the bytes are.
     snapshot_charge: recorder_host::mem_account::Charge,
+}
+
+/// What the producer hands the cache-encoding consumer, in stream order.
+///
+/// Holes travel down the SAME channel as hours, deliberately. The encoder keeps
+/// one H4CR cursor for both kinds, so the order it sees them in is the order
+/// that decides whether the account tiles; routing exclusions around the
+/// channel would let a hole be declared after the hour that follows it and turn
+/// a representable recording into an unexplained gap.
+enum CacheEmitJob {
+    Hour(CacheEmitHour),
+    /// An hour the recording does not vouch for: no cache record is written,
+    /// the H4CR bytes are named and skipped.
+    Hole(snapshot::ReplayExcludedHour),
 }
 
 /// A cache encoder and the charges for what it retains, moved together.
@@ -1278,24 +1312,67 @@ impl ChargedCacheEncoder {
 }
 
 impl CacheEmitJob {
-    /// The only way to build a job, so its snapshot bytes cannot enter the
-    /// pipeline uncharged — and the only way to move an hour's bytes into one,
-    /// so they cannot be charged TWICE either. The hour's existing guard is
-    /// carried over rather than a second one minted: the bytes did not change,
-    /// so neither should their charge.
+    /// The only way to build an hour job, so its snapshot bytes cannot enter
+    /// the pipeline uncharged — and the only way to move an hour's bytes into
+    /// one, so they cannot be charged TWICE either. The hour's existing guard
+    /// is carried over rather than a second one minted: the bytes did not
+    /// change, so neither should their charge.
     fn from_hour(hour: WorldHour, start_offset: u64, end_offset: u64) -> Self {
         let hour_index = hour.hour_index;
         let date = hour.date.clone();
         let (world_json, snapshot_charge) = hour.into_charged_snapshot();
-        Self {
+        Self::Hour(CacheEmitHour {
             hour_index,
             date,
             start_offset,
             end_offset,
             world_json,
             snapshot_charge,
-        }
+        })
     }
+}
+
+/// Is this delivered hour a HOLE, and if so what does the recording call it?
+///
+/// `None` means the recording vouches for the hour and it is cached. `Some` is
+/// the named hole the artifacts carry in its place — reason taken verbatim from
+/// the coverage map, never composed here, so the name a replay consumer reads
+/// out of the format is the same name the seal published.
+///
+/// An hour the map does not mention AT ALL is a hole too: absence is not a
+/// claim of coverage, and it is refused with exactly that stated rather than
+/// being served on the strength of nobody having objected.
+fn hole_for(
+    coverage: &recorder_host::hour_coverage::HourCoverageMap,
+    hour: &WorldHour,
+    start_offset: u64,
+    end_offset: u64,
+) -> Option<snapshot::ReplayExcludedHour> {
+    let raw = i32::try_from(hour.hour_index)
+        .ok()
+        .and_then(|index| index.checked_add(compact_contract::calendar::DATE_EPOCH_CONST));
+    if raw.is_some_and(|raw| coverage.is_hour_verified(raw)) {
+        return None;
+    }
+    let reason = raw
+        .and_then(|raw| coverage.row(raw))
+        .and_then(|row| match &row.coverage {
+            recorder_host::hour_coverage::HourCoverage::Excluded { reason } => Some(reason.clone()),
+            recorder_host::hour_coverage::HourCoverage::Verified { .. } => None,
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "this recording's verified-coverage map names game hour {} nowhere at all, and \
+                 absence is not a claim of coverage",
+                hour.hour_index
+            )
+        });
+    Some(snapshot::ReplayExcludedHour::new(
+        hour.hour_index,
+        start_offset,
+        end_offset,
+        reason,
+    ))
 }
 
 /// In-flight hours between the finalize pipeline's producer and consumer.
@@ -1373,18 +1450,30 @@ fn emit_cache_hour(
     cache_encoder: &mut ReplayCacheEncoderFile,
     job: CacheEmitJob,
 ) -> Result<(), OpenError> {
+    // A hole writes no cache record and no render blob: the recording does not
+    // vouch for the hour, so nothing about it may be published. What it does do
+    // is advance the encoder's H4CR cursor past the hour's bytes, by name, so
+    // the next served hour's range starts where it should.
+    let hour = match job {
+        CacheEmitJob::Hole(hole) => {
+            return cache_encoder
+                .exclude_hour(hole)
+                .map_err(|error| OpenError::Certification(error.to_string()))
+        }
+        CacheEmitJob::Hour(hour) => hour,
+    };
     // Destructured rather than field-accessed so the snapshot charge can be
     // dropped at the exact instant the bytes are: `parse` consumes the `Vec`
     // and releases it once it has the digest, so a guard that lived to the end
     // of this function would report a copy of the world that no longer exists.
-    let CacheEmitJob {
+    let CacheEmitHour {
         hour_index,
         date,
         start_offset,
         end_offset,
         world_json,
         snapshot_charge,
-    } = job;
+    } = hour;
     let prepared = snapshot::CanonicalWorldHour::parse(world_json, hour_index)
         .map_err(|error| OpenError::Certification(error.to_string()))?;
     drop(snapshot_charge);
@@ -1531,9 +1620,6 @@ pub fn build_certified_replay_artifacts(
     let (jobs_tx, jobs_rx) = mpsc::sync_channel::<CacheEmitJob>(FINALIZE_PIPELINE_DEPTH);
     let mut pending: Option<(WorldHour, u64)> = None;
     let mut legacy_json_bytes_avoided = 0u64;
-    /// The first hour left out of the cache, if any. Only a TRAILING run of
-    /// them is representable; see the refusal below.
-    let mut skipped_hour: Option<i64> = None;
 
     let pipeline_result = thread::scope(|scope| {
         let consumer_dir = output_dir.clone();
@@ -1585,53 +1671,30 @@ pub fn build_certified_replay_artifacts(
                                 "legacy JSON byte accounting overflowed u64".to_string(),
                             )
                         })?;
-                    // AN EXCLUDED HOUR IS NOT CACHED. The cursor still DELIVERS
-                    // it — tooling has always been able to read an uncertifiable
-                    // stream — but the certified cache is what a replay consumer
-                    // is served from, so an hour the recording does not vouch
-                    // for must not be in it (Codex review round 1, finding 2).
+                    // AN EXCLUDED HOUR IS NOT CACHED, IT IS NAMED. The cursor
+                    // still DELIVERS it — tooling has always been able to read
+                    // an uncertifiable stream — but the certified cache is what
+                    // a replay consumer is served from, so an hour the
+                    // recording does not vouch for must not be in it (Codex
+                    // review round 1, finding 2).
                     //
                     // The end offset handed to the previous hour is the NEXT
                     // hour's start whether or not that hour is emitted, so
                     // skipping one cannot silently widen its neighbour's byte
                     // range over the skipped hour's records.
-                    let verified = i32::try_from(previous.hour_index)
-                        .ok()
-                        .and_then(|hour| {
-                            hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST)
-                        })
-                        .is_some_and(|raw| cursor.live_hour_coverage().is_hour_verified(raw));
-                    // The cache's rows must abut exactly, so only a TRAILING
-                    // exclusion can be dropped. A verified hour arriving after
-                    // a skipped one is refused here, by name, rather than
-                    // reaching the encoder as an unexplained contiguity error
-                    // (Codex review round 2, finding 1; residual GY-4).
-                    if verified {
-                        if let Some(excluded) = skipped_hour {
-                            return Err(OpenError::Certification(format!(
-                                "game hour {excluded} is excluded from this recording's \
-                                 verified coverage but hour {} after it is verified; the \
-                                 certified checkpoint cache is contiguous by construction, \
-                                 so an INTERIOR excluded hour cannot be represented in it",
-                                previous.hour_index
-                            )));
-                        }
-                    } else {
-                        skipped_hour = Some(previous.hour_index);
-                    }
+                    let job = match hole_for(cursor.live_hour_coverage(), &previous, previous_start, start_offset)
+                    {
+                        // The hole travels down the same channel, in stream
+                        // order, so the encoder's single H4CR cursor sees it
+                        // between the hours it actually sits between.
+                        Some(hole) => CacheEmitJob::Hole(hole),
+                        None => CacheEmitJob::from_hour(previous, previous_start, start_offset),
+                    };
                     // A closed receiver means the consumer already failed. Stop
                     // producing and let the join below surface ITS error, which
                     // is the real one, rather than a send failure describing the
                     // symptom.
-                    if verified
-                        && jobs_tx
-                            .send(CacheEmitJob::from_hour(
-                                previous,
-                                previous_start,
-                                start_offset,
-                            ))
-                            .is_err()
-                    {
+                    if jobs_tx.send(job).is_err() {
                         return Ok(());
                     }
                 }
@@ -1707,17 +1770,35 @@ pub fn build_certified_replay_artifacts(
             // Same rule as every other hour, asked against the CERTIFIED INDEX
             // rather than the cursor (which `take_index` has already consumed).
             // Asking the index is the stronger question anyway: it is what the
-            // cache must agree with entry for entry.
-            if stream_index
+            // cache must agree with entry for entry — including on the holes,
+            // which is why the hole is taken from the index's own row rather
+            // than recomputed from the coverage map here.
+            let last_job = if stream_index
                 .hours
                 .iter()
                 .any(|row| row.hour_index == last.hour_index)
             {
-                let _ = jobs_tx.send(CacheEmitJob::from_hour(
+                Some(CacheEmitJob::from_hour(
                     last,
                     last_start,
                     expected_source_len,
-                ));
+                ))
+            } else {
+                stream_index
+                    .excluded
+                    .iter()
+                    .find(|hole| hole.hour_index == last.hour_index)
+                    .map(|hole| {
+                        CacheEmitJob::Hole(snapshot::ReplayExcludedHour::new(
+                            hole.hour_index,
+                            hole.start_offset,
+                            hole.end_offset,
+                            hole.reason.clone(),
+                        ))
+                    })
+            };
+            if let Some(job) = last_job {
+                let _ = jobs_tx.send(job);
             }
             Ok((
                 excluded,
@@ -1798,18 +1879,55 @@ pub fn build_certified_replay_artifacts(
     cache_file.sync_all()?;
     drop(cache_file);
 
+    // The END offsets are compared, not only the starts.
+    //
+    // A served row of the certified fold index carries no end — its bytes run
+    // to wherever the next row starts, hole or hour — while the packaged H4IX
+    // states one outright. Comparing only the starts left the one difference
+    // that matters unchecked: a hole missing from one of the two accounts makes
+    // the neighbouring hour's range reach OVER the excluded hour's records,
+    // which is hour misattribution and is invisible from the starts alone.
+    let stream_end_offsets = stream_index.served_end_offsets();
     if replay_index.hours().len() != stream_index.hours.len()
         || replay_index
             .hours()
             .iter()
-            .zip(&stream_index.hours)
-            .any(|(artifact, stream)| {
+            .zip(stream_index.hours.iter().zip(&stream_end_offsets))
+            .any(|(artifact, (stream, stream_end))| {
                 artifact.hour_index() != stream.hour_index
                     || artifact.h4cr_start_offset() != stream.start_offset
+                    || artifact.h4cr_end_offset() != *stream_end
             })
     {
         return Err(OpenError::Certification(
             "binary replay hour index disagrees with the certified H4CR fold index".to_string(),
+        ));
+    }
+    // THE HOLES ARE COMPARED TOO, and for the same reason the served hours are.
+    //
+    // The two structures are built by two different paths out of one walk — the
+    // certified fold index by `take_index`, the packaged H4IX by the cache
+    // encoder as the producer declared skips to it — so requiring them to agree
+    // row for row is what stops a hole existing in one account and not the
+    // other. Without this the packaged artifact could name a different set of
+    // holes, with different reasons, from the index the seal certified, and the
+    // disagreement would be invisible.
+    if replay_index.excluded_hours().len() != stream_index.excluded.len()
+        || replay_index
+            .excluded_hours()
+            .iter()
+            .zip(&stream_index.excluded)
+            .any(|(artifact, stream)| {
+                artifact.hour_index() != stream.hour_index
+                    || artifact.h4cr_start_offset() != stream.start_offset
+                    || artifact.h4cr_end_offset() != stream.end_offset
+                    || artifact.reason() != stream.reason
+            })
+    {
+        return Err(OpenError::Certification(
+            "binary replay hour index names different excluded hours from the certified H4CR \
+             fold index"
+                .to_string(),
         ));
     }
     let index_bytes = replay_index
@@ -2815,60 +2933,100 @@ impl HourCursor {
         // decides it, because every certified artifact — H4IX rows, H4CP cache
         // hours, the hour count on the manifest — is derived from this vector.
         //
-        // ONLY A TRAILING EXCLUSION CAN BE DROPPED, and that is a property of
-        // the H4IX/H4CP contract rather than a choice made here: the index's
-        // first hour must sit at decoded offset zero and consecutive cache
-        // rows must have exactly contiguous H4CR ranges
-        // (`StreamIndex::validate_structure`, `ReplayCacheEncoder`). An
-        // INTERIOR excluded hour cannot be represented in either structure, so
-        // it is refused here by name instead of producing an index the format
-        // rejects for a reason that says nothing about the hour (Codex review
-        // round 2, finding 1). See `runs/gy_per_hour_seal/MATRIX.md`, residual
-        // GY-4.
-        {
-            let mut seen_excluded: Option<i64> = None;
-            for row in &self.index_hours {
-                let verified = i32::try_from(row.hour_index)
-                    .ok()
-                    .and_then(|hour| {
-                        hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST)
-                    })
-                    .is_some_and(|raw| self.boundary_tracker.coverage().is_hour_verified(raw));
-                match (verified, seen_excluded) {
-                    (false, None) => seen_excluded = Some(row.hour_index),
-                    (true, Some(excluded)) => {
-                        return Err(IndexCertificationError::Stream(format!(
-                            "game hour {excluded} is excluded from this recording's verified \
-                             coverage but hour {} after it is verified; the certified hour \
-                             index and checkpoint cache are contiguous by construction (the \
-                             first hour sits at decoded offset zero and consecutive hours \
-                             must abut), so an INTERIOR excluded hour cannot be represented \
-                             in them. {}",
-                            row.hour_index,
-                            self.stats.hour_coverage.summary()
-                        )));
-                    }
-                    _ => {}
-                }
-            }
-        }
+        // AN EXCLUDED HOUR THE WALK DELIVERED BECOMES A NAMED HOLE, and it
+        // KEEPS ITS PLACE in the byte account.
+        //
+        // Until the owner's interior-hole ruling (2026-08-12, task #189) only
+        // a TRAILING exclusion could be dropped: the certified structures were
+        // contiguous by construction — first row at decoded offset zero,
+        // consecutive rows abutting — so an interior excluded hour was refused
+        // by name instead of producing an index the format rejects for a reason
+        // that says nothing about the hour (lane GY, residual GY-4). The
+        // structures now carry hole rows, so the hour is skipped by name
+        // instead of costing the recording.
+        //
+        // Keeping the place is the load-bearing half. A served hour's byte
+        // range runs to the NEXT row's start, so a dropped hour that left no
+        // row behind would stretch its neighbour's range over records the
+        // neighbour never contained — hour misattribution, produced by the
+        // mechanism meant to prevent it.
+        //
+        // WHICH EXCLUDED HOURS GET A HOLE ROW, AND WHICH DO NOT. Only hours the
+        // walk DELIVERED are considered here, and that boundary is deliberate:
+        //
+        //  * an hour whose records never arrived (a sequence hole) occupies no
+        //    bytes, so there is nothing for a row to account for; the coverage
+        //    map names it and `entry` returns `None` for it, which is already a
+        //    refusal — absence is not a claim of coverage;
+        //  * an hour closed by a canonical `FRAME_REFUSED` owns bytes, but
+        //    those bytes deliberately remain inside the FOLLOWING served hour's
+        //    H4CR range, because the refused hour's records were folded into
+        //    the state that hour was built from — a range starting after them
+        //    reconstructs a different world than the hour it names
+        //    (`HourCursor` does not advance `cur_hour_start` at a
+        //    `FRAME_REFUSED`; see `tests::a_stream_that_ends_on_a_canonical_frame_refused_certifies`
+        //    and the refused-hour index test beside it). The owner ruled that
+        //    exact arrangement correct on 2026-08-12 (lane GY, residual GY-3:
+        //    *"an excluded hour's STATE still reaches the next published hour,
+        //    and that hour's H4CR range still covers the excluded hour's bytes
+        //    … the semantics as built are correct"*). A hole row for it is
+        //    therefore not merely unnecessary but unrepresentable: its range
+        //    would OVERLAP the following served hour's, which the tiling law
+        //    refuses. It, too, is named by the coverage map.
+        //
         // The tracker's live map, not `stats.hour_coverage`: `finalize_done`
         // has run by the time a cursor can be consumed, but reading the tracker
         // directly is what keeps this correct if that ever stops being true.
         let coverage = self.boundary_tracker.coverage().clone();
-        self.index_hours.retain(|row| {
-            i32::try_from(row.hour_index)
+        let decoded_len = self.decoded_read;
+        let mut excluded = Vec::new();
+        let mut served = Vec::new();
+        for (position, row) in self.index_hours.iter().enumerate() {
+            let end_offset = self
+                .index_hours
+                .get(position + 1)
+                .map_or(decoded_len, |next| next.start_offset);
+            let raw = i32::try_from(row.hour_index)
                 .ok()
-                .and_then(|hour| hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST))
-                .is_some_and(|raw| coverage.is_hour_verified(raw))
-        });
-        if self.index_hours.is_empty() {
+                .and_then(|hour| hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST));
+            match raw {
+                Some(raw) if coverage.is_hour_verified(raw) => served.push(row.clone()),
+                _ => {
+                    // Absence is not a claim: an hour with no coverage row at
+                    // all, or one whose index does not map into the calendar,
+                    // is refused with that stated rather than served.
+                    let reason = raw
+                        .and_then(|raw| coverage.row(raw))
+                        .and_then(|row| match &row.coverage {
+                            recorder_host::hour_coverage::HourCoverage::Excluded { reason } => {
+                                Some(reason.clone())
+                            }
+                            recorder_host::hour_coverage::HourCoverage::Verified { .. } => None,
+                        })
+                        .unwrap_or_else(|| {
+                            format!(
+                                "this recording's verified-coverage map names game hour {} \
+                                 nowhere at all, and absence is not a claim of coverage",
+                                row.hour_index
+                            )
+                        });
+                    excluded.push(ExcludedHour {
+                        hour_index: row.hour_index,
+                        start_offset: row.start_offset,
+                        end_offset,
+                        reason,
+                    });
+                }
+            }
+        }
+        if served.is_empty() {
             return Err(IndexCertificationError::Stream(format!(
                 "no game hour in this recording is verified, so no certified index can be \
                  minted ({})",
                 self.stats.hour_coverage.summary()
             )));
         }
+        self.index_hours = served;
         let descriptor = self
             .index_source
             .ok_or(IndexCertificationError::UnidentifiedSource)?;
@@ -2882,6 +3040,7 @@ impl HourCursor {
             game_id: self.meta.game_id,
             identity_mode: self.identity_mode,
             hours: self.index_hours,
+            excluded,
         };
         index
             .validate_structure()
@@ -3652,6 +3811,30 @@ pub struct StreamIndex {
     pub identity_mode: StreamIdentityMode,
     /// Emitted hours in stream order.
     pub hours: Vec<HourOffset>,
+    /// The hours this recording refuses, in stream order, each naming why.
+    ///
+    /// Empty for an uninjured capture. When it is not empty, these rows are
+    /// what keeps [`StreamIndex::hours`] honest: a served hour's byte range
+    /// runs to the next row's start whichever kind that row is, so an excluded
+    /// hour that held its place cannot silently widen its neighbour's range
+    /// over bytes the neighbour never contained.
+    pub excluded: Vec<ExcludedHour>,
+}
+
+/// One game hour a certified index carries but refuses to serve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludedHour {
+    pub hour_index: i64,
+    /// Decoded-stream byte offset this hour's records begin at.
+    pub start_offset: u64,
+    /// One past the last decoded byte attributed to this hour. Equal to
+    /// `start_offset` for an hour whose records never arrived at all: the hour
+    /// occupies no bytes, and is still named at the position it would have
+    /// occupied.
+    pub end_offset: u64,
+    /// The reason the recording's per-hour coverage map gave. Never invented
+    /// here — an injured hour is never guessed, only named.
+    pub reason: String,
 }
 
 /// Full identity of the decoded H4CR source covered by an authoritative index.
@@ -3687,14 +3870,8 @@ impl StreamIndex {
         {
             return Err("decoded_sha256 is not 64 lower-case hexadecimal characters".to_string());
         }
-        let first = self
-            .hours
-            .first()
-            .ok_or_else(|| "certified index contains no emitted hours".to_string())?;
-        if first.start_offset != 0 || !first.cheap_seek_point {
-            return Err(
-                "first hour must be the sole cheap seek point at decoded offset zero".to_string(),
-            );
+        if self.hours.is_empty() {
+            return Err("certified index contains no emitted hours".to_string());
         }
         let mut previous_offset = None;
         for (position, hour) in self.hours.iter().enumerate() {
@@ -3704,9 +3881,22 @@ impl StreamIndex {
                     hour.start_offset, self.source.decoded_len
                 ));
             }
-            if position > 0 && hour.cheap_seek_point {
+            // A CHEAP SEEK POINT IS EXACTLY AN HOUR AT DECODED OFFSET ZERO, and
+            // the flag is checked in both directions rather than by position.
+            //
+            // Positionally — "only the first row may carry it, and it must" —
+            // was the same statement while the first served hour was always the
+            // first hour of the stream. It stops being the same statement the
+            // moment a LEADING hole exists: the first served hour then starts
+            // after bytes that a fresh fold would have had to read, so folding
+            // forward from it does NOT reproduce its state, and a positional
+            // rule would have forced the index to claim it does. A recording
+            // whose first hour is excluded honestly has no cheap seek point.
+            if hour.cheap_seek_point != (hour.start_offset == 0) {
                 return Err(format!(
-                    "hour at position {position} forges an unsupported non-initial cheap seek point"
+                    "hour at position {position} claims cheap_seek_point={} at decoded offset {}; \
+                     a cheap seek point is exactly an hour whose records start at offset zero",
+                    hour.cheap_seek_point, hour.start_offset
                 ));
             }
             if let Some(previous) = previous_offset {
@@ -3718,7 +3908,132 @@ impl StreamIndex {
             }
             previous_offset = Some(hour.start_offset);
         }
+        self.validate_hour_account()
+    }
+
+    /// The served hours and the named holes together account for the whole
+    /// decoded source, in hour order, once each.
+    ///
+    /// A served row carries no end offset — its bytes run to wherever the NEXT
+    /// row begins, and the last served row runs to the decoded length. That is
+    /// what makes this check necessary rather than decorative: without the hole
+    /// rows holding their places, dropping an injured hour would silently
+    /// stretch its neighbour's range over the injured hour's records, which is
+    /// hour misattribution produced by the very mechanism meant to prevent it.
+    fn validate_hour_account(&self) -> Result<(), String> {
+        #[derive(Clone, Copy)]
+        enum Kind {
+            Served,
+            Hole { end: u64 },
+        }
+        let mut merged: Vec<(i64, u64, Kind)> = Vec::with_capacity(self.hours.len() + self.excluded.len());
+        merged.extend(
+            self.hours
+                .iter()
+                .map(|hour| (hour.hour_index, hour.start_offset, Kind::Served)),
+        );
+        for hole in &self.excluded {
+            if hole.reason.trim().is_empty() {
+                return Err(format!(
+                    "excluded hour {} names no reason; an injured hour is never guessed, only \
+                     named",
+                    hole.hour_index
+                ));
+            }
+            if hole.start_offset > hole.end_offset || hole.end_offset > self.source.decoded_len {
+                return Err(format!(
+                    "excluded hour {} declares the out-of-range byte range [{}, {})",
+                    hole.hour_index, hole.start_offset, hole.end_offset
+                ));
+            }
+            merged.push((
+                hole.hour_index,
+                hole.start_offset,
+                Kind::Hole {
+                    end: hole.end_offset,
+                },
+            ));
+        }
+        merged.sort_by_key(|(hour_index, _, _)| *hour_index);
+
+        let mut expected_start = 0u64;
+        let mut previous_hour: Option<i64> = None;
+        for (position, (hour_index, start, kind)) in merged.iter().enumerate() {
+            if previous_hour.is_some_and(|previous| *hour_index <= previous) {
+                return Err(format!(
+                    "certified index names game hour {hour_index} twice, or out of order"
+                ));
+            }
+            if *start != expected_start {
+                return Err(format!(
+                    "game hour {hour_index} starts at decoded offset {start} but the hours before \
+                     it account for the source through {expected_start}"
+                ));
+            }
+            expected_start = match kind {
+                Kind::Hole { end } => *end,
+                // A served hour's bytes run to the next row's start; the last
+                // one runs to the decoded length. Its own end is therefore not
+                // asserted here, only that it is nonempty.
+                Kind::Served => match merged.get(position + 1) {
+                    Some((next_hour, next_start, _)) => {
+                        if next_start <= start {
+                            return Err(format!(
+                                "served game hour {hour_index} is empty: game hour {next_hour} \
+                                 after it starts at the same decoded offset {next_start}"
+                            ));
+                        }
+                        *next_start
+                    }
+                    None => self.source.decoded_len,
+                },
+            };
+            previous_hour = Some(*hour_index);
+        }
+        if expected_start != self.source.decoded_len {
+            return Err(format!(
+                "certified index accounts for the source through {expected_start} of {} decoded \
+                 byte(s)",
+                self.source.decoded_len
+            ));
+        }
         Ok(())
+    }
+
+    /// Where each SERVED hour's bytes end, in `hours` order.
+    ///
+    /// A served row carries only its start; its end is wherever the next row
+    /// begins — served or hole — and the last row's end is the decoded length.
+    /// Making that implication explicit is what lets the packaged H4IX, whose
+    /// rows DO carry an end, be checked against this index rather than merely
+    /// derived from the same walk. A hole row that went missing from one of the
+    /// two accounts shows up here as an end offset that reaches over it.
+    /// Linear, not a scan per hour: both inputs are already in offset order, so
+    /// one merged sweep answers every row. An index carries a row per game hour
+    /// for the whole recording, so a per-row search here would be quadratic in
+    /// session length — the shape of cost this repo has been bitten by before.
+    pub fn served_end_offsets(&self) -> Vec<u64> {
+        let mut boundaries: Vec<u64> = self
+            .hours
+            .iter()
+            .map(|hour| hour.start_offset)
+            .chain(self.excluded.iter().map(|hole| hole.start_offset))
+            .collect();
+        boundaries.sort_unstable();
+        let mut ends = Vec::with_capacity(self.hours.len());
+        let mut next = 0usize;
+        for hour in &self.hours {
+            while next < boundaries.len() && boundaries[next] <= hour.start_offset {
+                next += 1;
+            }
+            ends.push(
+                boundaries
+                    .get(next)
+                    .copied()
+                    .unwrap_or(self.source.decoded_len),
+            );
+        }
+        ends
     }
 
     /// The `[first, last]` emitted hour indices, or `None` if empty.
@@ -3758,13 +4073,19 @@ impl StreamIndex {
                 "start_offset": h.start_offset,
                 "cheap_seek_point": h.cheap_seek_point,
             })).collect::<Vec<_>>(),
+            "excluded_hours": self.excluded.iter().map(|h| serde_json::json!({
+                "hour_index": h.hour_index,
+                "start_offset": h.start_offset,
+                "end_offset": h.end_offset,
+                "reason": h.reason,
+            })).collect::<Vec<_>>(),
         })
     }
 
     /// Parse an index previously produced by [`StreamIndex::to_json`].
     pub fn from_json(v: &serde_json::Value) -> Option<StreamIndex> {
         let index_schema = v.get("index_schema")?.as_str()?;
-        if index_schema != CERTIFIED_INDEX_SCHEMA && index_schema != LEGACY_CERTIFIED_INDEX_SCHEMA {
+        if index_schema != CERTIFIED_INDEX_SCHEMA {
             return None;
         }
         let source_json = v.get("source")?;
@@ -3775,14 +4096,9 @@ impl StreamIndex {
             decoded_sha256: source_json.get("decoded_sha256")?.as_str()?.to_string(),
         };
         let game_id = v.get("game_id")?.as_str()?.to_string();
-        let identity_mode = match (
-            index_schema,
-            v.get("identity_mode").and_then(|mode| mode.as_str()),
-        ) {
-            // The v1 grammar had no mode and every v1 decoder was Legacy.
-            (LEGACY_CERTIFIED_INDEX_SCHEMA, None) => StreamIdentityMode::Legacy,
-            (CERTIFIED_INDEX_SCHEMA, Some("legacy")) => StreamIdentityMode::Legacy,
-            (CERTIFIED_INDEX_SCHEMA, Some("identity_v1")) => StreamIdentityMode::IdentityV1,
+        let identity_mode = match v.get("identity_mode").and_then(|mode| mode.as_str()) {
+            Some("legacy") => StreamIdentityMode::Legacy,
+            Some("identity_v1") => StreamIdentityMode::IdentityV1,
             _ => return None,
         };
         let mut hours = Vec::new();
@@ -3793,11 +4109,26 @@ impl StreamIndex {
                 cheap_seek_point: h.get("cheap_seek_point")?.as_bool()?,
             });
         }
+        // Required, not optional: an index that says nothing about its holes
+        // is one whose reader would have to assume it has none, and assuming
+        // coverage is the guessing the per-hour ruling forbids. Pre-production
+        // carries no backwards compatibility, so an index written before this
+        // field existed is simply not readable.
+        let mut excluded = Vec::new();
+        for hole in v.get("excluded_hours")?.as_array()? {
+            excluded.push(ExcludedHour {
+                hour_index: hole.get("hour_index")?.as_i64()?,
+                start_offset: hole.get("start_offset")?.as_u64()?,
+                end_offset: hole.get("end_offset")?.as_u64()?,
+                reason: hole.get("reason")?.as_str()?.to_string(),
+            });
+        }
         let index = StreamIndex {
             source,
             game_id,
             identity_mode,
             hours,
+            excluded,
         };
         index.validate_structure().ok()?;
         Some(index)
@@ -3864,6 +4195,53 @@ pub fn seek_to_hour(
             "persisted index does not match the freshly certified source, options, offsets, or flags"
                 .to_string(),
         ));
+    }
+    // AN EXCLUDED HOUR IS NOT SEEKABLE, AND IT IS REFUSED BY NAME.
+    //
+    // Asked HERE, of the freshly CERTIFIED index, and not earlier of the
+    // caller's copy. Both halves of that matter:
+    //
+    //  * it has to be asked at all because holes made it reachable. The cursor
+    //    DELIVERS an excluded hour — tooling has always been able to read an
+    //    uncertifiable stream — so `found` holds it like any other hour. The
+    //    only thing that stopped this certified API returning it before was
+    //    that a recording with an interior exclusion minted no index at all,
+    //    and `take_index` now mints one (Codex review round 3, finding 1).
+    //  * it has to be asked of the CERTIFIED index because the caller's copy is
+    //    unauthenticated until the equality check above passes. Refusing from
+    //    it earlier — which is what this did first — let a stale or foreign
+    //    index declare any hour excluded and supply any reason, from a source
+    //    this function had not opened, which is precisely the source-binding
+    //    contract the rest of this function exists to keep (Codex review round
+    //    4, finding 1). The refusal costs a full decode; so does every other
+    //    answer this API gives.
+    if let Some(hole) = certified
+        .excluded
+        .iter()
+        .find(|hole| hole.hour_index == target)
+    {
+        return Err(SeekError::HourExcluded {
+            hour_index: target,
+            reason: hole.reason.clone(),
+        });
+    }
+    // ONLY A SERVED HOUR IS RETURNED.
+    //
+    // This is the CONFINEMENT; the check above is the NAME. They are separate
+    // on purpose, and each survives the other's deletion: without this one an
+    // hour absent from `hours` but also absent from `excluded` would be handed
+    // back on the strength of the cursor having delivered it, and without the
+    // one above a sealed, named exclusion degrades into a bare
+    // `HourNotFound` — false, because the recording HAS that hour's records and
+    // is refusing to vouch for them.
+    //
+    // No input reaches this refusal today: `found` can only hold an hour the
+    // cursor delivered, and `take_index` partitions EVERY delivered hour into
+    // `hours` or `excluded`. It is kept because this is the door that hands out
+    // hours, and "the certified index does not carry it" must never become a
+    // reason to serve it if that partition ever stops being total.
+    if !certified.hours.iter().any(|row| row.hour_index == target) {
+        return Err(SeekError::HourNotFound(target));
     }
     found.ok_or(SeekError::HourNotFound(target))
 }

@@ -75,16 +75,30 @@ pub const MAX_CHECKPOINT_INTERVAL_HOURS: u32 = 24 * 31;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
-/// Version 2 carries scalar SPELLINGS and encodes lengths, counts and small
-/// integers compactly. Version 1 stored `serde_json`-normalised numbers behind
-/// fixed 32-bit length prefixes; it is not readable here and never will be,
-/// because its records cannot answer what the fold actually wrote.
-const FORMAT_VERSION: u16 = 2;
+/// Version 3 carries EXCLUDED-HOUR rows beside the served ones, so a recording
+/// whose middle is injured is still a composition rather than a refusal (owner
+/// ruling 2026-08-12, task #189).
+///
+/// Version 2 carried scalar SPELLINGS and compact integers but had no way to
+/// say "this hour is a hole": every row was an hour it served, and a gap
+/// between two rows was a structural violation. Version 1 stored
+/// `serde_json`-normalised numbers behind fixed 32-bit length prefixes. Neither
+/// is readable here and neither ever will be — pre-production carries no
+/// backwards compatibility, and an older index cannot answer which hours its
+/// recording vouches for.
+const FORMAT_VERSION: u16 = 3;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
 const MAX_STRING_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOURS: usize = 2_000_000;
+/// An exclusion reason is PROSE naming one injured hour, not a payload. The
+/// bound is deliberately far tighter than [`MAX_STRING_BYTES`]: the longest
+/// reason the recorder actually mints is a few hundred bytes, and without a
+/// bound of its own an index could carry two million rows of quarter-gigabyte
+/// strings. It is enforced at both ends — an encoder cannot write a longer one
+/// and a reader will not admit one.
+const MAX_EXCLUSION_REASON_BYTES: usize = 4096;
 
 /// Fixed prefix of every cache record: kind, three reserved bytes, the hour,
 /// the payload length, and one trailing reserved byte.
@@ -209,6 +223,66 @@ impl ReplayHourEntry {
     }
 }
 
+/// One game hour the recording does NOT vouch for, and the H4CR bytes it
+/// occupies.
+///
+/// This is what makes an INTERIOR injury representable. Before it existed the
+/// index was contiguous by construction — the first row at decoded offset zero,
+/// consecutive rows abutting exactly — so an hour dropped out of the middle
+/// left a gap the format read as corruption, and the only honest answer was to
+/// refuse the whole build (lane GY, residual GY-4).
+///
+/// A hole row is not a weakening of that law, it is the law's other half: the
+/// served rows and the hole rows TOGETHER must still tile `[0, source_len)`
+/// exactly, so every source byte is still accounted for — as an hour that is
+/// served, or as an hour that is named and refused. What changed is that
+/// "accounted for" gained a second, honest spelling.
+///
+/// `reason` is the exact string the recording's per-hour coverage map gave for
+/// this hour. It is never invented here: an injured hour is never guessed, only
+/// named, and the name a replay consumer reads out of the format must be the
+/// same name the seal published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayExcludedHour {
+    hour_index: i64,
+    /// Offset of the hour's first H4CR byte. Equal to `h4cr_end_offset` for an
+    /// hour that occupies no bytes at all — an hour whose records never reached
+    /// the spool is still named, and it is named at the position it would have
+    /// occupied.
+    h4cr_start_offset: u64,
+    h4cr_end_offset: u64,
+    reason: String,
+}
+
+impl ReplayExcludedHour {
+    pub fn new(
+        hour_index: i64,
+        h4cr_start_offset: u64,
+        h4cr_end_offset: u64,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            hour_index,
+            h4cr_start_offset,
+            h4cr_end_offset,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn hour_index(&self) -> i64 {
+        self.hour_index
+    }
+    pub fn h4cr_start_offset(&self) -> u64 {
+        self.h4cr_start_offset
+    }
+    pub fn h4cr_end_offset(&self) -> u64 {
+        self.h4cr_end_offset
+    }
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayHourIndex {
     game_id: String,
@@ -220,6 +294,9 @@ pub struct ReplayHourIndex {
     cache_len: u64,
     cache_sha256: String,
     hours: Vec<ReplayHourEntry>,
+    /// The hours this recording refuses, in hour order. Empty for an
+    /// uninjured capture, which is every capture the recorder hopes to make.
+    excluded: Vec<ReplayExcludedHour>,
 }
 
 impl ReplayHourIndex {
@@ -249,6 +326,23 @@ impl ReplayHourIndex {
     }
     pub fn hours(&self) -> &[ReplayHourEntry] {
         &self.hours
+    }
+    /// The hours this recording names and refuses, in hour order.
+    ///
+    /// A consumer that asks [`Self::entry`] for one of these gets `None`; this
+    /// is where it learns WHY, without having to join against a document
+    /// outside the artifact.
+    pub fn excluded_hours(&self) -> &[ReplayExcludedHour] {
+        &self.excluded
+    }
+    /// Why this recording refuses `hour_index`, or `None` if it does not refuse
+    /// it. `None` is not a claim that the hour is served — ask [`Self::entry`]
+    /// for that.
+    pub fn exclusion_reason(&self, hour_index: i64) -> Option<&str> {
+        self.excluded
+            .binary_search_by_key(&hour_index, ReplayExcludedHour::hour_index)
+            .ok()
+            .map(|position| self.excluded[position].reason())
     }
     pub fn entry(&self, hour_index: i64) -> Option<&ReplayHourEntry> {
         self.hours
@@ -287,6 +381,17 @@ impl ReplayHourIndex {
             put_u32(&mut out, hour.delta_steps);
             out.extend_from_slice(&decode_hex32(&hour.world_json_sha256)?);
             put_index_string(&mut out, &hour.date)?;
+        }
+        put_u64(
+            &mut out,
+            u64::try_from(self.excluded.len())
+                .map_err(|_| ReplayCacheError::new("excluded hour count does not fit u64"))?,
+        );
+        for hole in &self.excluded {
+            put_i64(&mut out, hole.hour_index);
+            put_u64(&mut out, hole.h4cr_start_offset);
+            put_u64(&mut out, hole.h4cr_end_offset);
+            put_index_string(&mut out, &hole.reason)?;
         }
         Ok(out)
     }
@@ -337,6 +442,26 @@ impl ReplayHourIndex {
                 date: reader.index_string()?,
             });
         }
+        let excluded_count = usize::try_from(reader.u64()?)
+            .map_err(|_| ReplayCacheError::new("excluded hour count does not fit usize"))?;
+        if excluded_count > MAX_HOURS {
+            return Err(ReplayCacheError::new(format!(
+                "hour index excludes {excluded_count} hour(s), which exceeds {MAX_HOURS}"
+            )));
+        }
+        bound_count_by_remaining(excluded_count, MIN_EXCLUDED_ENTRY_BYTES, reader.remaining())?;
+        let mut excluded = Vec::new();
+        reserve_exact(&mut excluded, excluded_count)?;
+        for _ in 0..excluded_count {
+            excluded.push(ReplayExcludedHour {
+                hour_index: reader.i64()?,
+                h4cr_start_offset: reader.u64()?,
+                h4cr_end_offset: reader.u64()?,
+                // Bounded BEFORE the copy: `validate` would refuse an
+                // over-long reason too, but only after every row is resident.
+                reason: reader.index_string_bounded(MAX_EXCLUSION_REASON_BYTES)?,
+            });
+        }
         reader.finish()?;
         let index = Self {
             game_id,
@@ -348,6 +473,7 @@ impl ReplayHourIndex {
             cache_len,
             cache_sha256,
             hours,
+            excluded,
         };
         index.validate()?;
         Ok(index)
@@ -378,7 +504,6 @@ impl ReplayHourIndex {
             ));
         }
         let mut previous_hour = None;
-        let mut previous_h4cr_end = None;
         let mut previous_cache_end = CACHE_HEADER_LEN;
         let mut active_checkpoint = usize::MAX;
         for (position, hour) in self.hours.iter().enumerate() {
@@ -387,7 +512,6 @@ impl ReplayHourIndex {
                 || previous_hour.is_some_and(|value| hour.hour_index <= value)
                 || hour.h4cr_start_offset >= hour.h4cr_end_offset
                 || hour.h4cr_end_offset > self.source_len
-                || previous_h4cr_end.is_some_and(|value| hour.h4cr_start_offset != value)
                 || hour.cache_record_offset != previous_cache_end
                 || hour.cache_record_len < 21
                 || hour
@@ -430,16 +554,115 @@ impl ReplayHourIndex {
                 )));
             }
             previous_hour = Some(hour.hour_index);
-            previous_h4cr_end = Some(hour.h4cr_end_offset);
             previous_cache_end = hour.cache_record_offset + hour.cache_record_len;
         }
-        if self.hours[0].h4cr_start_offset != 0
-            || previous_h4cr_end != Some(self.source_len)
-            || previous_cache_end != self.cache_len
-        {
+        if previous_cache_end != self.cache_len {
             return Err(ReplayCacheError::new(
-                "hour index does not cover the cache/source from its first byte through its final record",
+                "hour index does not cover the checkpoint cache through its final record",
             ));
+        }
+        self.validate_h4cr_tiling()
+    }
+
+    /// THE TILING LAW: the served hours and the named holes TOGETHER account
+    /// for every byte of the H4CR source, once each, in hour order.
+    ///
+    /// This is the generalisation of the rule it replaces, not a relaxation of
+    /// it. The old rule — first served row at offset zero, consecutive served
+    /// rows abutting exactly, last row reaching `source_len` — is exactly this
+    /// one for a recording with no holes, and it is what made an INTERIOR
+    /// injury unrepresentable: dropping the injured hour's row left a gap that
+    /// the format could only read as corruption.
+    ///
+    /// What a hole row buys is the ability to say "these bytes belong to an
+    /// hour this recording refuses, and here is why" instead of either lying
+    /// about them (stretching a neighbour's range over them, which is hour
+    /// misattribution — the owner's stop condition) or refusing the whole
+    /// recording. What it must NOT buy is silence: a gap that no hole row
+    /// claims is still refused here, so bytes cannot quietly leave the account.
+    fn validate_h4cr_tiling(&self) -> Result<(), ReplayCacheError> {
+        if self.excluded.len() > MAX_HOURS {
+            return Err(ReplayCacheError::new(
+                "hour index excludes more hours than the format admits",
+            ));
+        }
+        let mut previous_excluded_hour = None;
+        for (position, hole) in self.excluded.iter().enumerate() {
+            if hole.reason.trim().is_empty() {
+                return Err(ReplayCacheError::new(format!(
+                    "excluded hour entry {position} names no reason; an injured hour is never \
+                     guessed, only named"
+                )));
+            }
+            if hole.reason.len() > MAX_EXCLUSION_REASON_BYTES {
+                return Err(ReplayCacheError::new(format!(
+                    "excluded hour entry {position} carries a {}-byte reason, above the \
+                     {MAX_EXCLUSION_REASON_BYTES}-byte bound",
+                    hole.reason.len()
+                )));
+            }
+            if previous_excluded_hour.is_some_and(|value| hole.hour_index <= value)
+                || hole.h4cr_start_offset > hole.h4cr_end_offset
+                || hole.h4cr_end_offset > self.source_len
+            {
+                return Err(ReplayCacheError::new(format!(
+                    "excluded hour entry {position} violates ordering or source bounds"
+                )));
+            }
+            previous_excluded_hour = Some(hole.hour_index);
+        }
+
+        // Merge the two hour-ordered sequences into one and require it to tile
+        // the source. Both inputs are already proved strictly increasing, so a
+        // linear merge that also refuses a TIE is a total statement: no hour
+        // may be both served and refused.
+        let mut served = self.hours.iter().peekable();
+        let mut holes = self.excluded.iter().peekable();
+        let mut next_offset = 0u64;
+        let mut previous_hour: Option<i64> = None;
+        loop {
+            let take_hole = match (served.peek(), holes.peek()) {
+                (None, None) => break,
+                (None, Some(_)) => true,
+                (Some(_), None) => false,
+                (Some(hour), Some(hole)) => {
+                    if hour.hour_index == hole.hour_index {
+                        return Err(ReplayCacheError::new(format!(
+                            "hour index both serves and excludes game hour {}",
+                            hour.hour_index
+                        )));
+                    }
+                    hole.hour_index < hour.hour_index
+                }
+            };
+            let (hour_index, start, end) = if take_hole {
+                let hole = holes.next().expect("peeked");
+                (hole.hour_index, hole.h4cr_start_offset, hole.h4cr_end_offset)
+            } else {
+                let hour = served.next().expect("peeked");
+                (hour.hour_index, hour.h4cr_start_offset, hour.h4cr_end_offset)
+            };
+            if previous_hour.is_some_and(|value| hour_index <= value) {
+                return Err(ReplayCacheError::new(format!(
+                    "hour index is not in strictly increasing hour order at game hour {hour_index}"
+                )));
+            }
+            if start != next_offset {
+                return Err(ReplayCacheError::new(format!(
+                    "game hour {hour_index} starts at H4CR offset {start} but the hours before it \
+                     account for the source through {next_offset}; served hours and named holes \
+                     must together cover every source byte exactly once"
+                )));
+            }
+            previous_hour = Some(hour_index);
+            next_offset = end;
+        }
+        if next_offset != self.source_len {
+            return Err(ReplayCacheError::new(format!(
+                "hour index accounts for the H4CR source through {next_offset} of {} byte(s); the \
+                 unaccounted tail belongs to no served hour and to no named hole",
+                self.source_len
+            )));
         }
         Ok(())
     }
@@ -554,6 +777,22 @@ pub struct ReplayCacheEncoder<W: Write> {
     checkpoint_interval_hours: u32,
     previous: Option<CanonValue>,
     entries: Vec<ReplayHourEntry>,
+    /// The hours the caller told this encoder to SKIP, each with the reason its
+    /// recording gave. They write no cache record — an excluded hour is never
+    /// served — but they hold their place in the H4CR account, which is what
+    /// lets the served rows around them stay honest about their own byte
+    /// ranges.
+    excluded: Vec<ReplayExcludedHour>,
+    /// The H4CR offset the next hour, served or excluded, must begin at.
+    ///
+    /// One cursor for both kinds is the whole point: it keeps the encoder's
+    /// refusal of an UNEXPLAINED gap exactly as strict as it was before holes
+    /// existed. A caller that skips an hour without declaring it still fails
+    /// here.
+    next_h4cr_offset: u64,
+    /// The last hour index accepted through either door, so hours stay strictly
+    /// increasing across the merged sequence rather than only within each kind.
+    last_hour_index: Option<i64>,
     checkpoint_position: usize,
     /// What `previous`'s tree owns, carried from the parse that built it.
     previous_heap_bytes: u64,
@@ -586,6 +825,9 @@ impl<W: Write> ReplayCacheEncoder<W> {
             checkpoint_interval_hours,
             previous: None,
             entries: Vec::new(),
+            excluded: Vec::new(),
+            next_h4cr_offset: 0,
+            last_hour_index: None,
             checkpoint_position: 0,
             previous_heap_bytes: 0,
             entries_string_bytes: 0,
@@ -631,17 +873,70 @@ impl<W: Write> ReplayCacheEncoder<W> {
         self.encode_prepared(meta, prepared)
     }
 
+    /// SKIP an hour this recording does not vouch for, naming why.
+    ///
+    /// The hour writes no cache record, so nothing can ever serve it — that is
+    /// the point. What it does write is its place in the H4CR account, so the
+    /// next served hour can start where this one ended without the encoder
+    /// having to accept an unexplained jump. Declaring the skip is therefore
+    /// mandatory: `push`ing across a gap still fails, exactly as it did before
+    /// holes were representable.
+    ///
+    /// `reason` must be the reason the recording's own coverage map gave. This
+    /// encoder cannot check that — it has never seen the coverage map — so the
+    /// producer asserts it and the replay authority re-joins the two.
+    pub fn exclude_hour(&mut self, hole: ReplayExcludedHour) -> Result<(), ReplayCacheError> {
+        if hole.reason.trim().is_empty() {
+            return Err(ReplayCacheError::new(format!(
+                "game hour {} cannot be excluded without a named reason",
+                hole.hour_index
+            )));
+        }
+        if hole.reason.len() > MAX_EXCLUSION_REASON_BYTES {
+            return Err(ReplayCacheError::new(format!(
+                "game hour {}'s exclusion reason is {} bytes, above the \
+                 {MAX_EXCLUSION_REASON_BYTES}-byte bound",
+                hole.hour_index,
+                hole.reason.len()
+            )));
+        }
+        if hole.h4cr_start_offset > hole.h4cr_end_offset {
+            return Err(ReplayCacheError::new(format!(
+                "game hour {}'s excluded H4CR range runs backwards",
+                hole.hour_index
+            )));
+        }
+        self.check_hour_order_and_placement(hole.hour_index, hole.h4cr_start_offset)?;
+        self.next_h4cr_offset = hole.h4cr_end_offset;
+        self.last_hour_index = Some(hole.hour_index);
+        self.excluded.push(hole);
+        Ok(())
+    }
+
     fn check_ordered_and_contiguous(
         &self,
         meta: &CacheBuildHourMeta,
     ) -> Result<(), ReplayCacheError> {
-        if meta.date.trim().is_empty()
-            || meta.h4cr_start_offset >= meta.h4cr_end_offset
-            || self.entries.last().is_some_and(|previous| {
-                meta.hour_index <= previous.hour_index
-                    || meta.h4cr_start_offset != previous.h4cr_end_offset
-            })
-            || (self.entries.is_empty() && meta.h4cr_start_offset != 0)
+        if meta.date.trim().is_empty() || meta.h4cr_start_offset >= meta.h4cr_end_offset {
+            return Err(ReplayCacheError::new(
+                "cache input hours are not strictly ordered and contiguous",
+            ));
+        }
+        self.check_hour_order_and_placement(meta.hour_index, meta.h4cr_start_offset)
+    }
+
+    /// The one placement rule both doors go through: hours arrive in strictly
+    /// increasing order and each begins exactly where the previous one ended,
+    /// with the first at decoded offset zero.
+    fn check_hour_order_and_placement(
+        &self,
+        hour_index: i64,
+        h4cr_start_offset: u64,
+    ) -> Result<(), ReplayCacheError> {
+        if self
+            .last_hour_index
+            .is_some_and(|previous| hour_index <= previous)
+            || h4cr_start_offset != self.next_h4cr_offset
         {
             return Err(ReplayCacheError::new(
                 "cache input hours are not strictly ordered and contiguous",
@@ -719,6 +1014,8 @@ impl<W: Write> ReplayCacheEncoder<W> {
             delta_steps,
             world_json_sha256,
         });
+        self.next_h4cr_offset = hour.h4cr_end_offset;
+        self.last_hour_index = Some(hour.hour_index);
         if let Some(entry) = self.entries.last() {
             self.entries_string_bytes = self.entries_string_bytes.saturating_add(
                 (entry.date.capacity() + entry.world_json_sha256.capacity()) as u64,
@@ -787,6 +1084,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
             cache_len: self.offset,
             cache_sha256: to_hex(&self.hasher.finalize()),
             hours: self.entries,
+            excluded: self.excluded,
         };
         index.validate()?;
         Ok((self.writer, index))
@@ -1880,6 +2178,11 @@ const MIN_INDEXED_PATCH_BYTES: usize = 1 + MIN_VALUE_BYTES;
 /// i64 + four u64s + two u32s + digest + an empty u32-length-prefixed date.
 const MIN_HOUR_ENTRY_BYTES: usize = 8 + 8 * 4 + 4 * 2 + 32 + 4;
 
+/// Smallest encoded excluded-hour row: hour, two offsets, an empty length
+/// prefix. Feeds the same count-vs-remaining bound every other counted
+/// collection here goes through, so a forged count cannot buy an allocation.
+const MIN_EXCLUDED_ENTRY_BYTES: usize = 8 + 8 + 8 + 4;
+
 /// Reserve a count-fed collection fallibly so hostile input can never turn an
 /// allocator refusal into a process abort.
 fn reserve_exact<T>(vector: &mut Vec<T>, count: usize) -> Result<(), ReplayCacheError> {
@@ -2075,9 +2378,25 @@ impl<'a> ByteReader<'a> {
     }
 
     fn index_string(&mut self) -> Result<String, ReplayCacheError> {
+        self.index_string_bounded(MAX_STRING_BYTES)
+    }
+
+    /// Decode a length-prefixed string, refusing an over-long one BEFORE the
+    /// copy rather than after.
+    ///
+    /// The order matters. A field with a tight semantic ceiling — an exclusion
+    /// reason is prose naming one hour — inherits nothing from a validation
+    /// pass that runs once every row is already materialized: an authenticated
+    /// H4IX could carry rows whose declared reasons sum to hundreds of
+    /// megabytes, and the reader would duplicate all of them before producing
+    /// the typed refusal the bound exists to produce (Codex review round 1,
+    /// finding 3).
+    fn index_string_bounded(&mut self, max_bytes: usize) -> Result<String, ReplayCacheError> {
         let len = self.u32()? as usize;
-        if len > MAX_STRING_BYTES {
-            return Err(ReplayCacheError::new("binary string exceeds the size bound"));
+        if len > max_bytes {
+            return Err(ReplayCacheError::new(format!(
+                "binary string declares {len} bytes, above the {max_bytes}-byte bound"
+            )));
         }
         String::from_utf8(self.take(len)?.to_vec())
             .map_err(|_| ReplayCacheError::new("binary replay string is not UTF-8"))
@@ -2997,5 +3316,277 @@ mod tests {
             "delta record is {delta} bytes for a change worth {json_equivalent} bytes of JSON"
         );
         assert!(cache.len() > delta, "sanity: the checkpoint dominates");
+    }
+
+    // -----------------------------------------------------------------------
+    // Lane GZ — interior holes (owner ruling 2026-08-12, task #189)
+    // -----------------------------------------------------------------------
+
+    // Four world bodies that differ, so a delta record is not empty and a
+    // reconstruction proof is not vacuous.
+    const OBJ_A: &str = r#"{"n":1}"#;
+    const OBJ_B: &str = r#"{"n":2}"#;
+    const OBJ_C: &str = r#"{"n":3}"#;
+    const OBJ_D: &str = r#"{"n":4}"#;
+
+    /// Build a cache with one hour SKIPPED BY NAME — the shape a recording with
+    /// an injured hour now has.
+    fn build_with_hole(
+        hole_hour: i64,
+        hours: &[(i64, &str)],
+    ) -> (Vec<u8>, ReplayHourIndex, String) {
+        let source_sha = "ab".repeat(32);
+        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 168).unwrap();
+        let mut last = 0i64;
+        for (hour, body) in hours {
+            if *hour == hole_hour {
+                encoder
+                    .exclude_hour(ReplayExcludedHour::new(
+                        *hour,
+                        (*hour as u64) * 100,
+                        (*hour as u64 + 1) * 100,
+                        "sequence discontinuity at byte 421",
+                    ))
+                    .unwrap();
+            } else {
+                encoder.push(world(*hour, body)).unwrap();
+            }
+            last = *hour;
+        }
+        let source_len = (last as u64 + 1) * 100;
+        let (cache, index) = encoder
+            .finish("g", "1", CacheIdentityMode::IdentityV1, source_len)
+            .unwrap();
+        (cache, index, source_sha)
+    }
+
+    /// kills: dropping the excluded-hour section from `to_bytes`/`from_bytes`,
+    /// or letting `validate` accept an index whose served rows leave a gap no
+    /// hole row claims. Either turns a recording that names its injured hour
+    /// into one that silently stretches a good hour's byte range over the
+    /// injured hour's records — hour misattribution, the owner's stop
+    /// condition.
+    #[test]
+    fn an_interior_hole_is_carried_by_the_format_and_an_unnamed_gap_is_not() {
+        let (cache, index, sha) = build_with_hole(1, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C), (3, OBJ_D)]);
+        assert_eq!(
+            index
+                .hours()
+                .iter()
+                .map(ReplayHourEntry::hour_index)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 3],
+            "the excluded hour must not be served"
+        );
+        assert_eq!(index.excluded_hours().len(), 1);
+        assert_eq!(index.excluded_hours()[0].hour_index(), 1);
+        assert_eq!(index.entry(1), None, "an excluded hour is not seekable");
+        assert_eq!(
+            index.exclusion_reason(1),
+            Some("sequence discontinuity at byte 421"),
+            "the refusal is BY NAME"
+        );
+
+        // The whole point: the artifact still serves everything it vouches for.
+        let bytes = index.to_bytes().unwrap();
+        let reader = ReplayCacheReader::open(&bytes, &cache, index.source_len(), &sha)
+            .expect("a holed index still binds to its cache");
+        reader
+            .verify_every_hour()
+            .expect("every served hour reconstructs");
+        assert_eq!(
+            ReplayHourIndex::from_bytes(&bytes).unwrap(),
+            index,
+            "the hole survives the binary encoding"
+        );
+
+        // Take the hole row away and leave the served rows as they were: the
+        // bytes hour 1 occupied are then claimed by nobody.
+        let mut unnamed = index;
+        unnamed.excluded.clear();
+        let error = unnamed.validate().expect_err("an unclaimed gap must refuse");
+        assert!(
+            error.message().contains("account for the source"),
+            "unexpected: {error}"
+        );
+    }
+
+    /// kills: removing the tie arm from the merge in `validate_h4cr_tiling`.
+    ///
+    /// Stated precisely, because the obvious stronger claim would be wrong: an
+    /// index that both serves and refuses one hour is refused EITHER WAY, since
+    /// the general merged-order check downstream sees the hour twice. What the
+    /// tie arm buys is the DIAGNOSIS — "hour index both serves and excludes
+    /// game hour N" instead of "not in strictly increasing hour order" — and
+    /// that is what this test pins, by asserting the message rather than only
+    /// the refusal. A producer that has published a contradictory index needs
+    /// to be told which contradiction it published (Codex review round 3,
+    /// finding 2).
+    #[test]
+    fn an_hour_cannot_be_both_served_and_excluded() {
+        let (_, index, _) = build(168, &[(0, OBJ_A), (1, OBJ_B)]);
+        let mut forged = index;
+        forged.excluded.push(ReplayExcludedHour::new(
+            1,
+            100,
+            200,
+            "claimed injured while also being served",
+        ));
+        let error = forged
+            .validate()
+            .expect_err("a doubly-claimed hour must refuse");
+        assert!(
+            error.message().contains("both serves and excludes"),
+            "unexpected: {error}"
+        );
+    }
+
+    /// kills: dropping the empty-reason refusal from `exclude_hour` or from
+    /// `validate_h4cr_tiling`. An hour skipped with nothing said about why is
+    /// silent loss wearing the exclusion label — exactly the guessing the
+    /// per-hour ruling forbids.
+    #[test]
+    fn a_hole_is_never_admitted_without_a_named_reason() {
+        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &"ab".repeat(32), 168).unwrap();
+        encoder.push(world(0, OBJ_A)).unwrap();
+        let error = encoder
+            .exclude_hour(ReplayExcludedHour::new(1, 100, 200, "   "))
+            .expect_err("an unnamed skip must refuse at the encoder");
+        assert!(
+            error.message().contains("without a named reason"),
+            "unexpected: {error}"
+        );
+
+        // ...and a hand-built index carrying one is refused by the READER too,
+        // so the encoder is not the only thing holding the line.
+        let (_, index, _) = build(168, &[(0, OBJ_A), (1, OBJ_B)]);
+        let mut forged = index;
+        forged
+            .excluded
+            .push(ReplayExcludedHour::new(2, 200, 200, ""));
+        assert!(forged
+            .validate()
+            .expect_err("an unnamed hole must refuse")
+            .message()
+            .contains("names no reason"));
+    }
+
+    /// kills: giving `push` and `exclude_hour` separate placement cursors, or
+    /// restoring `check_ordered_and_contiguous`'s old "compare against the last
+    /// SERVED row" rule. Either lets a caller skip an hour WITHOUT declaring
+    /// it — the misattribution the hole rows exist to prevent — and it would
+    /// pass silently, because the resulting index is internally consistent.
+    #[test]
+    fn the_encoder_refuses_a_skip_that_was_never_declared() {
+        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &"ab".repeat(32), 168).unwrap();
+        encoder.push(world(0, OBJ_A)).unwrap();
+        let error = encoder
+            .push(world(2, OBJ_C))
+            .expect_err("jumping over hour 1 without declaring it must refuse");
+        assert!(
+            error.message().contains("ordered and contiguous"),
+            "unexpected: {error}"
+        );
+
+        // Declaring it is the whole difference.
+        encoder
+            .exclude_hour(ReplayExcludedHour::new(1, 100, 200, "records never arrived"))
+            .expect("a declared skip is admitted");
+        encoder
+            .push(world(2, OBJ_C))
+            .expect("and the next hour then fits");
+    }
+
+    /// kills: restoring the old "first served row at offset zero, last served
+    /// row at `source_len`" pair as the only placement law. Those are the two
+    /// positions an injury actually lands on in production — a crashed recorder
+    /// tears the tail, and a stream whose opening hour never arrived starts
+    /// late — and both were whole-recording refusals.
+    #[test]
+    fn a_leading_hole_and_a_trailing_hole_both_still_tile_the_source() {
+        // Leading: the first SERVED hour no longer starts at offset zero.
+        let (_, leading, _) = build_with_hole(0, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C)]);
+        assert_eq!(leading.hours()[0].h4cr_start_offset(), 100);
+        assert_eq!(leading.excluded_hours()[0].h4cr_start_offset(), 0);
+        leading.validate().expect("a leading hole tiles the source");
+
+        // Trailing: the last SERVED hour no longer reaches the source end.
+        let (_, trailing, _) = build_with_hole(2, &[(0, OBJ_A), (1, OBJ_B), (2, OBJ_C)]);
+        assert_eq!(trailing.hours().last().unwrap().h4cr_end_offset(), 200);
+        assert_eq!(trailing.excluded_hours()[0].h4cr_end_offset(), 300);
+        trailing.validate().expect("a trailing hole tiles the source");
+
+        // Slide a hole off its place and the account stops adding up.
+        let mut slipped = trailing;
+        slipped.excluded[0].h4cr_start_offset = 250;
+        assert!(slipped
+            .validate()
+            .expect_err("a hole that does not abut its neighbour must refuse")
+            .message()
+            .contains("account for the source"));
+    }
+
+    /// kills: decoding a hole's reason through the GENERIC `index_string`
+    /// instead of `index_string_bounded(MAX_EXCLUSION_REASON_BYTES)`. The
+    /// structural `validate` check would still refuse the index — but only
+    /// after every declared reason has been copied out of the input, so an
+    /// authenticated H4IX could make a replay consumer materialize hundreds of
+    /// megabytes before producing the refusal the bound exists to produce. The
+    /// refusal has to happen at the LENGTH, not at the value.
+    #[test]
+    fn an_oversized_reason_is_refused_at_its_length_prefix_not_after_the_copy() {
+        let (_, index, _) = build(168, &[(0, OBJ_A), (1, OBJ_B)]);
+        let mut bytes = index.to_bytes().unwrap();
+        // The encoded excluded-hour section is the tail: a zero count. Replace
+        // it with one row whose reason DECLARES a length no honest index has,
+        // and supply none of those bytes. A reader that trusts the declared
+        // length would try to take them; a reader that bounds first refuses
+        // without reading past the prefix.
+        assert_eq!(
+            &bytes[bytes.len() - 8..],
+            &0u64.to_le_bytes(),
+            "an uninjured index ends with a zero excluded-hour count"
+        );
+        bytes.truncate(bytes.len() - 8);
+        bytes.extend_from_slice(&1u64.to_le_bytes()); // one excluded row
+        bytes.extend_from_slice(&2i64.to_le_bytes()); // hour_index
+        bytes.extend_from_slice(&200u64.to_le_bytes()); // start
+        bytes.extend_from_slice(&200u64.to_le_bytes()); // end
+        bytes.extend_from_slice(&(64u32 * 1024 * 1024).to_le_bytes()); // 64 MiB reason
+        let error = ReplayHourIndex::from_bytes(&bytes)
+            .expect_err("a 64 MiB exclusion reason must be refused");
+        assert!(
+            error.message().contains("above the")
+                && error.message().contains(&MAX_EXCLUSION_REASON_BYTES.to_string()),
+            "the refusal must name the reason bound rather than the generic string bound or a \
+             short-input error: {error}"
+        );
+    }
+
+    /// kills: removing `MAX_EXCLUSION_REASON_BYTES` from either the encoder or
+    /// the reader's structural validation. A reason is prose naming one hour;
+    /// without a bound of its own an index could carry two million rows of
+    /// quarter-gigabyte strings under the generic string bound.
+    #[test]
+    fn an_exclusion_reason_is_bounded_at_both_ends() {
+        let huge = "x".repeat(MAX_EXCLUSION_REASON_BYTES + 1);
+        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &"ab".repeat(32), 168).unwrap();
+        encoder.push(world(0, OBJ_A)).unwrap();
+        assert!(encoder
+            .exclude_hour(ReplayExcludedHour::new(1, 100, 200, huge.clone()))
+            .expect_err("an oversized reason must refuse at the encoder")
+            .message()
+            .contains("above the"));
+
+        let (_, index, _) = build(168, &[(0, OBJ_A), (1, OBJ_B)]);
+        let mut forged = index;
+        forged
+            .excluded
+            .push(ReplayExcludedHour::new(2, 200, 200, huge));
+        assert!(forged
+            .validate()
+            .expect_err("an oversized reason must refuse at the reader")
+            .message()
+            .contains("above the"));
     }
 }

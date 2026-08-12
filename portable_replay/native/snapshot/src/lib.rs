@@ -64,7 +64,8 @@ pub use recording_composition::{
 pub use replay_cache::{
     CacheBuildHour, CacheBuildHourMeta, CacheIdentityMode, CanonicalWorldHour,
     validate_checkpoint_cache_header, CertifiedCacheFile, CertifiedReplayCache, ReplayCacheEncoder,
-    ReplayCacheError, ReplayCacheReader, ReplayHourEntry, ReplayHourIndex, ReplaySeekReceipt,
+    ReplayCacheError, ReplayCacheReader, ReplayExcludedHour, ReplayHourEntry, ReplayHourIndex,
+    ReplaySeekReceipt,
     CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_HEADER_LEN, CHECKPOINT_CACHE_ROLE,
     DEFAULT_CHECKPOINT_INTERVAL_HOURS, HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CACHE_RECORD_BYTES,
     MAX_CHECKPOINT_INTERVAL_HOURS, PUBLISHED_COVERAGE_FILE, PUBLISHED_COVERAGE_SCHEMA,

@@ -1348,22 +1348,35 @@ fn seek_matches_linear_iteration() {
 
     // Index survives a JSON round-trip.
     let json = index.to_json();
-    assert_eq!(json["index_schema"], "h4cr-certified-index-v2");
+    assert_eq!(json["index_schema"], "h4cr-certified-index-v3");
     assert_eq!(json["identity_mode"], "legacy");
+    assert_eq!(
+        json["excluded_hours"],
+        serde_json::json!([]),
+        "an uninjured recording states that it refuses nothing, rather than \
+         leaving a reader to infer it"
+    );
     let round = StreamIndex::from_json(&json).expect("index json round-trip");
     assert_eq!(round, index);
 
-    // The old v1 grammar had no mode and is explicitly interpreted as Legacy;
-    // v2 never permits a missing or unknown mode.
-    let mut legacy_json = json.clone();
-    legacy_json["index_schema"] = serde_json::json!("h4cr-certified-index-v1");
-    legacy_json.as_object_mut().unwrap().remove("identity_mode");
-    assert_eq!(
-        StreamIndex::from_json(&legacy_json)
-            .expect("v1 migration")
-            .identity_mode,
-        StreamIdentityMode::Legacy
-    );
+    // THE OLDER GRAMMARS ARE REFUSED, NOT MIGRATED.
+    //
+    // kills: restoring a v1/v2 acceptance arm to `from_json`. Those documents
+    // carry no `excluded_hours`, so reading one as "a recording that refuses
+    // nothing" would serve every hour of a recording that may have refused
+    // some — coverage inferred from a field's absence, which the per-hour
+    // ruling forbids. Pre-production carries no backwards compatibility, so
+    // the honest answer is to refuse them by name.
+    for retired in ["h4cr-certified-index-v1", "h4cr-certified-index-v2"] {
+        let mut older = json.clone();
+        older["index_schema"] = serde_json::json!(retired);
+        older.as_object_mut().unwrap().remove("excluded_hours");
+        assert!(
+            StreamIndex::from_json(&older).is_none(),
+            "{retired} must be refused, not read as a recording with no holes"
+        );
+    }
+    // The current grammar never permits a missing or unknown mode.
     let mut missing_mode = json.clone();
     missing_mode
         .as_object_mut()
@@ -3159,4 +3172,252 @@ fn terminal_outcomes_do_not_relax_hour_interleaving_or_a_bare_frame_end() {
         format!("{error}").contains("terminal domain outcome for hour"),
         "the strict machine, not only the shared boundary tracker, must refuse this: {error}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Lane GZ — interior holes (owner ruling 2026-08-12, task #189)
+// ---------------------------------------------------------------------------
+
+/// Four game hours whose SECOND hour's records never reached the spool.
+///
+/// The sequence is numbered as though every record were present, so the loss
+/// leaves a sequence hole — the production shape of "an hour never arrived",
+/// and the one shape a reader can actually detect. The walk excludes the
+/// missing hour AND the hour the stream resumed in, so the recording ends up
+/// with a genuinely INTERIOR pair of excluded hours between verified ones.
+fn stream_with_an_absent_second_hour() -> Vec<u8> {
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for hour in 0..4i64 {
+        let raw = raw_for(HOUR_A + hour);
+        // Two sequence numbers are consumed per hour whether or not the records
+        // are written, so the surviving records carry the sequence they would
+        // have carried.
+        let base = seq;
+        seq += 2;
+        if hour == 1 {
+            continue;
+        }
+        push_record(
+            &mut stream,
+            base,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record(
+            &mut stream,
+            base + 1,
+            raw,
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+    }
+    stream
+}
+
+/// kills: restoring `take_index`'s whole-index refusal for an INTERIOR excluded
+/// hour, or dropping an excluded hour's row without putting a hole in its
+/// place. The first costs the recording every hour it could have served; the
+/// second is worse — a served hour's byte range runs to the next row's start,
+/// so a hole that left no row behind silently stretches its neighbour's range
+/// over records the neighbour never contained, which is hour misattribution.
+#[test]
+fn an_interior_excluded_hour_becomes_a_named_hole_and_the_rest_of_the_recording_indexes() {
+    let dir = TmpDir::new("gz_interior_hole");
+    let path = dir.0.join("collector_stream.bin");
+    let stream = stream_with_an_absent_second_hour();
+    std::fs::write(&path, &stream).unwrap();
+
+    let index = build_index(&Source::StreamFile(path), &OpenOptions::default())
+        .expect("an interior hole must not cost the whole recording");
+
+    let served: Vec<i64> = index.hours.iter().map(|hour| hour.hour_index).collect();
+    let holes: Vec<i64> = index
+        .excluded
+        .iter()
+        .map(|hole| hole.hour_index)
+        .collect();
+    assert_eq!(
+        served,
+        vec![HOUR_A, HOUR_A + 3],
+        "every hour the recording vouches for is still served: served={served:?} holes={holes:?}"
+    );
+    assert_eq!(
+        holes,
+        vec![HOUR_A + 2],
+        "the hour the stream resumed in is the DELIVERED excluded hour, so it is the one that \
+         holds a place in the byte account; hour {} never arrived at all and occupies no bytes",
+        HOUR_A + 1
+    );
+    for hole in &index.excluded {
+        assert!(
+            !hole.reason.trim().is_empty(),
+            "an excluded hour is never guessed, only named: {hole:?}"
+        );
+        assert!(
+            hole.end_offset > hole.start_offset,
+            "the resuming hour's records are real bytes: {hole:?}"
+        );
+    }
+
+    // THE MISATTRIBUTION CHECK. Hour A's replayable range must stop where the
+    // excluded hour's records begin, not reach over them to the next served
+    // hour.
+    let ends = index.served_end_offsets();
+    assert_eq!(ends.len(), 2);
+    assert_eq!(
+        ends[0], index.excluded[0].start_offset,
+        "hour {HOUR_A}'s range must end where the excluded hour's records start"
+    );
+    assert!(
+        ends[0] < index.hours[1].start_offset,
+        "and must NOT reach over them to hour {}",
+        HOUR_A + 3
+    );
+    assert_eq!(
+        index.excluded[0].end_offset, index.hours[1].start_offset,
+        "the hole's own range must abut the next served hour"
+    );
+    assert_eq!(ends[1], index.source.decoded_len);
+
+    // The account is total, and the JSON form carries it.
+    index
+        .validate_structure()
+        .expect("served hours and holes tile the source");
+    assert_eq!(
+        StreamIndex::from_json(&index.to_json()).as_ref(),
+        Some(&index),
+        "the holes survive the persisted form"
+    );
+
+    // AND THE CERTIFIED SEEK API REFUSES THE EXCLUDED HOUR, BY NAME.
+    //
+    // kills: dropping the `certified.excluded` check from `seek_to_hour`. What
+    // that costs is the NAME, not the confinement: the served-membership guard
+    // beside it still refuses the hour, so the recording's sealed, named
+    // exclusion degrades into a bare `HourNotFound` — "this recording does not
+    // have that hour", which is false, instead of "this recording has that
+    // hour's records and does not vouch for them, because …". An injured hour
+    // is never guessed, only named, and that is the half this pins (Codex
+    // review rounds 3 and 5).
+    //
+    // The reason is compared EXACTLY, not merely for non-emptiness: the point
+    // of a named refusal is that the name is the recording's own.
+    let source = Source::StreamFile(dir.0.join("collector_stream.bin"));
+    let expected_reason = index.excluded[0].reason.clone();
+    match seek_to_hour(&source, &index, HOUR_A + 2, &OpenOptions::default()) {
+        Err(SeekError::HourExcluded { hour_index, reason }) => {
+            assert_eq!(hour_index, HOUR_A + 2);
+            assert_eq!(
+                reason, expected_reason,
+                "the refusal must carry the recording's own reason verbatim"
+            );
+        }
+        other => panic!("an excluded hour must be refused by name, got {other:?}"),
+    }
+    // An hour the recording never had at all is still the OTHER answer.
+    match seek_to_hour(&source, &index, 999_999, &OpenOptions::default()) {
+        Err(SeekError::HourNotFound(999_999)) => {}
+        other => panic!("expected HourNotFound, got {other:?}"),
+    }
+    // Every SERVED hour still seeks.
+    for served in [HOUR_A, HOUR_A + 3] {
+        seek_to_hour(&source, &index, served, &OpenOptions::default())
+            .unwrap_or_else(|error| panic!("verified hour {served} must still seek: {error}"));
+    }
+
+    // THE NAMED REFUSAL IS STILL SOURCE-BOUND.
+    //
+    // kills: refusing an excluded hour from the CALLER's index before the
+    // source is opened and certified — which is where this check was first
+    // written. A stale or foreign index would then be able to declare any hour
+    // excluded, and supply any reason, over a source this function never read
+    // (Codex review round 4, finding 1). The whole point of `seek_to_hour` is
+    // that every answer it gives is bound to the source it certified.
+    let other_dir = TmpDir::new("gz_interior_hole_other_source");
+    let other_path = other_dir.0.join("collector_stream.bin");
+    std::fs::write(&other_path, three_hour_stream()).unwrap();
+    match seek_to_hour(
+        &Source::StreamFile(other_path),
+        &index,
+        HOUR_A + 2,
+        &OpenOptions::default(),
+    ) {
+        Err(SeekError::InvalidIndex(_)) => {}
+        other => panic!(
+            "an index from another recording must not be able to name an hour excluded: {other:?}"
+        ),
+    }
+}
+
+/// kills: replacing the `cheap_seek_point == (start_offset == 0)` rule with the
+/// old positional one ("only the first row may carry it, and it must"). Once a
+/// LEADING hole exists the first served hour starts after bytes a fresh fold
+/// would have had to read, so folding forward from it does not reproduce its
+/// state — the positional rule would force the index to claim it does, which is
+/// a seek that silently returns the wrong hour.
+#[test]
+fn a_recording_whose_first_hour_is_excluded_claims_no_cheap_seek_point() {
+    let dir = TmpDir::new("gz_leading_hole");
+    let path = dir.0.join("collector_stream.bin");
+    // Drop the FIRST hour's records, so the hour the stream resumes in is
+    // excluded and holds decoded offset zero.
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    for hour in 0..4i64 {
+        let raw = raw_for(HOUR_A + hour);
+        let base = seq;
+        seq += 2;
+        if hour == 0 {
+            continue;
+        }
+        push_record(
+            &mut stream,
+            base,
+            raw,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record(
+            &mut stream,
+            base + 1,
+            raw,
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+    }
+    std::fs::write(&path, &stream).unwrap();
+
+    let index = build_index(&Source::StreamFile(path), &OpenOptions::default())
+        .expect("a leading hole must not cost the whole recording");
+    assert_eq!(
+        index.excluded.first().map(|hole| hole.start_offset),
+        Some(0),
+        "the excluded hour holds decoded offset zero: {:?}",
+        index.excluded
+    );
+    assert!(
+        index.hours[0].start_offset > 0,
+        "the first SERVED hour starts after the hole"
+    );
+    assert!(
+        index.cheap_seek_points().is_empty(),
+        "no hour of this recording can be folded to from a fresh fold, so none may claim to be"
+    );
+    index
+        .validate_structure()
+        .expect("a leading hole still tiles the source");
+
+    // Forging the flag back on is refused, in both directions.
+    let mut forged = index.clone();
+    forged.hours[0].cheap_seek_point = true;
+    assert!(forged
+        .validate_structure()
+        .expect_err("a non-zero-offset cheap seek point must refuse")
+        .contains("cheap seek point"));
 }

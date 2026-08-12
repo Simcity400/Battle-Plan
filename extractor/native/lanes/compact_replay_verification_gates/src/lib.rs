@@ -2207,6 +2207,23 @@ const CACHE_ONLY_LINK_SOURCE_READABLE: &str = "run_dir_source_readable";
 const CACHE_ONLY_LINK_STREAM_STORAGE: &str = "stream_storage_identity";
 const CACHE_ONLY_LINK_HOUR_INDEX: &str = "h4ix_source_identity";
 const CACHE_ONLY_LINK_CHECKPOINT_CACHE: &str = "h4cp_source_digest";
+/// The packaged artifacts are the ones the SEAL was taken over.
+///
+/// Every other link binds an artifact to the SOURCE. This one binds it to the
+/// FINALIZE that certified it, and it is what carries the artifacts' internal
+/// structure — which hours are served, which are named holes, and what byte
+/// range each one owns — into the replay authority.
+///
+/// Without it the authority could only join the artifacts' hour NAMES against
+/// the sealed coverage map, never their byte account, because the coverage map
+/// is not a byte-range authority (see `runs/gz_interior_holes/MATRIX.md`,
+/// residual GZ-1). A repacked or regression-built index could then move a hole
+/// off the injured hour's records, or omit it and let a served hour's range
+/// stretch over them — hour misattribution reaching replay. The digest closes
+/// that transitively: `build_certified_replay_artifacts` compares the packaged
+/// H4IX against the certified fold index row for row — hours, holes, reasons,
+/// start AND end offsets — and only then hashes the bytes this link checks.
+const CACHE_ONLY_LINK_SEALED_ARTIFACTS: &str = "sealed_artifact_receipt";
 
 /// The refusal wording every broken cache-only link shares.
 fn cache_only_link_refusal(link: &str, detail: impl AsRef<str>) -> String {
@@ -4231,6 +4248,18 @@ fn load_verified_replay_authority(
     served_hours.sort_unstable();
     served_hours.dedup();
     refuse_hours_the_coverage_map_does_not_vouch_for(&served_hours, &hour_coverage, &replay_path)?;
+    // THE OTHER HALF OF THE LEAK GUARD, since the certified index gained hole
+    // rows (owner ruling 2026-08-12, task #189): every hour the packaged index
+    // NAMES AND REFUSES must be an hour the sealed coverage map refuses, for
+    // the same stated reason.
+    //
+    // Without it the artifact's holes would be a SECOND, unjoined naming of the
+    // recording's injuries — the exact shape lane GY's GY-5 finding closed on
+    // the digests. A container could then serve eight hours while its index
+    // blamed the ninth on something the seal never said, and nothing would
+    // notice; or a hole could quietly appear over an hour the seal verified,
+    // dropping a good hour with an invented excuse.
+    bind_index_holes_to_sealed_coverage(&stream_details, &hour_coverage, &replay_path)?;
 
     // Container damage is judged at ENTRY granularity and folded into the SAME
     // map, so a consumer reads one statement per hour rather than having to
@@ -4353,6 +4382,111 @@ fn refuse_hours_the_coverage_map_does_not_vouch_for(
                     })
                     .unwrap_or_else(|| "the map names this hour nowhere at all".to_string())
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Where a cache-only certification reports the packaged index's hole rows.
+const INDEX_EXCLUDED_HOURS_FIELD: &str = "index_excluded_hours";
+
+/// Read one artifact digest out of the SEALED `host_finalize.fold` receipt.
+///
+/// Required, not optional, and read only from the container-authenticated copy.
+/// A recording that states no digest for an artifact it ships is one whose
+/// artifact-to-seal binding a consumer would have to assume, and assuming is
+/// what this whole chain exists to replace.
+fn sealed_artifact_digest(embedded_manifest: &Value, field: &str) -> Result<String, String> {
+    embedded_manifest
+        .get("host_finalize")
+        .and_then(|finalize| finalize.get("fold"))
+        .and_then(|fold| fold.get(field))
+        .and_then(Value::as_str)
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_SEALED_ARTIFACTS,
+                format!(
+                    "the container-authenticated recorder manifest carries no 64-character \
+                     host_finalize.fold.{field}; without it nothing binds the packaged artifact \
+                     to the finalize that certified its hours and its holes"
+                ),
+            )
+        })
+}
+
+/// Every hour the packaged certified index refuses must be an hour the SEALED
+/// coverage map refuses, with the same reason.
+///
+/// The direction matters and only one direction is asserted. An hour the
+/// coverage map excludes need not appear in the index at all — an hour whose
+/// records never reached the spool occupies no bytes, so the index has nothing
+/// to say about it and its absence is already a refusal (`entry` returns
+/// `None`, and absence is not a claim of coverage). What must never happen is
+/// the reverse: the index naming a hole the recording did not seal, or blaming
+/// it on something the recording never said.
+///
+/// The reasons are compared verbatim, not merely checked for presence. A
+/// paraphrase is a second author, and the whole point of the join is that the
+/// recording has exactly one.
+fn bind_index_holes_to_sealed_coverage(
+    stream_details: &Value,
+    coverage: &recorder_host::hour_coverage::HourCoverageMap,
+    replay_path: &Path,
+) -> Result<(), String> {
+    let Some(holes) = stream_details
+        .get(INDEX_EXCLUDED_HOURS_FIELD)
+        .and_then(Value::as_array)
+    else {
+        // Only the cache-only route publishes this field; a packaged-stream
+        // recording is certified by byte comparison and has no certified index
+        // of its own here. Absent means "no such claim was made", which is not
+        // the same as "no holes", and is why nothing is inferred from it.
+        return Ok(());
+    };
+    for hole in holes {
+        let hour_index = hole
+            .get("hour_index")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "packaged index hole row has no hour_index".to_string())?;
+        let reason = hole
+            .get("reason")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("packaged index hole for hour {hour_index} names no reason"))?;
+        let game_hour_raw = i32::try_from(hour_index)
+            .ok()
+            .and_then(|hour| hour.checked_add(compact_contract::calendar::DATE_EPOCH_CONST))
+            .ok_or_else(|| {
+                format!("packaged index excludes an out-of-range hour_index {hour_index}")
+            })?;
+        match coverage.row(game_hour_raw).map(|row| &row.coverage) {
+            Some(recorder_host::hour_coverage::HourCoverage::Excluded { reason: sealed })
+                if sealed == reason => {}
+            Some(recorder_host::hour_coverage::HourCoverage::Excluded { reason: sealed }) => {
+                return Err(format!(
+                    "replay container {} excludes game hour {game_hour_raw} in its packaged index \
+                     for {reason:?}, but the recording sealed {sealed:?}; a recording names each \
+                     injured hour once",
+                    replay_path.display()
+                ))
+            }
+            Some(recorder_host::hour_coverage::HourCoverage::Verified { .. }) => {
+                return Err(format!(
+                    "replay container {} refuses game hour {game_hour_raw} in its packaged index \
+                     for {reason:?}, but the recording's sealed coverage map VERIFIES that hour; \
+                     a good hour must not be dropped on an excuse the seal never made",
+                    replay_path.display()
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "replay container {} refuses game hour {game_hour_raw} in its packaged index \
+                     for {reason:?}, but the recording's sealed coverage map names that hour \
+                     nowhere at all",
+                    replay_path.display()
+                ))
+            }
         }
     }
     Ok(())
@@ -4662,6 +4796,28 @@ fn certify_cache_only_recording(
         ));
     }
 
+    // Link 5b: the packaged H4IX is the index the SEAL certified.
+    //
+    // The links around it bind the artifacts to the SOURCE; this one binds them
+    // to the finalize that produced them, and it is the only thing that carries
+    // the index's internal account — served hours, named holes, and the byte
+    // range each owns — into this loader. See CACHE_ONLY_LINK_SEALED_ARTIFACTS.
+    let sealed_index_sha256 = sealed_artifact_digest(embedded_manifest, "hour_index_sha256")?;
+    let observed_index_sha256 = Sha256::hex(&index_bytes);
+    if observed_index_sha256 != sealed_index_sha256 {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_SEALED_ARTIFACTS,
+            format!(
+                "the packaged {} hashes to {observed_index_sha256}, but the \
+                 container-authenticated recorder manifest sealed \
+                 host_finalize.fold.hour_index_sha256 {sealed_index_sha256}; this index is not \
+                 the one the seal certified, so nothing vouches for which hours it serves and \
+                 which it names as holes",
+                index_entry.path
+            ),
+        ));
+    }
+
     // Link 6: H4CP. Its header carries the source digest (and not the length),
     // and the index's own cache binding must hold over these exact bytes.
     let cache_entry = single_cache_entry(
@@ -4725,6 +4881,22 @@ fn certify_cache_only_recording(
         },
     )?;
 
+    // Link 6b: the packaged H4CP is the cache the SEAL certified. Symmetric
+    // with link 5b, and stated separately because the two artifacts are sealed
+    // as two separate receipts and can rot independently.
+    let sealed_cache_sha256 = sealed_artifact_digest(embedded_manifest, "checkpoint_cache_sha256")?;
+    if cache_receipt.sha256() != sealed_cache_sha256 {
+        return Err(cache_only_link_refusal(
+            CACHE_ONLY_LINK_SEALED_ARTIFACTS,
+            format!(
+                "the packaged {} hashes to {}, but the container-authenticated recorder manifest \
+                 sealed host_finalize.fold.checkpoint_cache_sha256 {sealed_cache_sha256}",
+                cache_entry.path,
+                cache_receipt.sha256(),
+            ),
+        ));
+    }
+
     let details = json!({
         "stream_certification_chain": [
             CACHE_ONLY_LINK_COMPOSITION,
@@ -4733,6 +4905,7 @@ fn certify_cache_only_recording(
             CACHE_ONLY_LINK_STREAM_STORAGE,
             CACHE_ONLY_LINK_HOUR_INDEX,
             CACHE_ONLY_LINK_CHECKPOINT_CACHE,
+            CACHE_ONLY_LINK_SEALED_ARTIFACTS,
         ],
         // The container carries no source bytes, so none were compared. Stated
         // explicitly so a report can never read this as the stronger proof.
@@ -4759,6 +4932,21 @@ fn certify_cache_only_recording(
             .iter()
             .map(|entry| entry.hour_index())
             .collect::<Vec<i64>>(),
+        // The hours the packaged index NAMES AND REFUSES, carried through so a
+        // replay consumer reads the named gaps out of the same report as the
+        // served ones — and so `bind_index_holes_to_sealed_coverage` can join
+        // each one against the sealed coverage map before the authority
+        // returns.
+        INDEX_EXCLUDED_HOURS_FIELD: hour_index
+            .excluded_hours()
+            .iter()
+            .map(|hole| json!({
+                "hour_index": hole.hour_index(),
+                "reason": hole.reason(),
+                "h4cr_start_offset": hole.h4cr_start_offset(),
+                "h4cr_end_offset": hole.h4cr_end_offset(),
+            }))
+            .collect::<Vec<Value>>(),
     });
     Ok((
         StreamCertification::ManifestAttestedThroughDeltaCache {
@@ -11524,6 +11712,181 @@ mod tests {
         );
     }
 
+    /// A CACHE-ONLY CONTAINER BUILDS OVER AN INTERIOR HOLE, SERVES EVERY
+    /// VERIFIED HOUR, AND REFUSES THE EXCLUDED ONE BY NAME.
+    ///
+    /// This is the replay end of the owner's interior-hole ruling (2026-08-12,
+    /// task #189). Before it the recording could not be built at all; the
+    /// question here is the one that only appears afterwards — whether the
+    /// authority still admits it, and whether it can tell the difference
+    /// between a hole the recording sealed and a hole the artifact invented.
+    ///
+    /// kills: dropping `bind_index_holes_to_sealed_coverage` from
+    /// `load_verified_replay_authority`. The artifact's holes are then a
+    /// SECOND, unjoined naming of the recording's injuries — the same shape
+    /// lane GY's GY-5 finding closed on the digests — so a container could drop
+    /// a good hour on an excuse the seal never made and nothing would notice.
+    #[test]
+    fn a_cache_only_container_serves_around_a_named_interior_hole() {
+        const SEALED_REASON: &str = "sequence discontinuity at byte 421: 3 -> 7";
+        let dir = TmpDir::new("gz_interior_hole_authority");
+        let recording = write_cache_only_replay_fixture(
+            &dir.0,
+            "g",
+            CacheOnlyBreak {
+                index_hole_reason: Some(SEALED_REASON.to_string()),
+                sealed_coverage: Some((
+                    vec![0, 2],
+                    vec![(1, SEALED_REASON.to_string())],
+                )),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        let authority = load_verified_replay_authority(
+            &recording.manifest,
+            &recording.manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .expect("an interior hole must not cost the whole recording");
+
+        assert_eq!(
+            authority.details["indexed_hour_indexes"],
+            json!([0, 2]),
+            "every verified hour is still served"
+        );
+        assert_eq!(
+            authority.details[INDEX_EXCLUDED_HOURS_FIELD][0]["hour_index"],
+            json!(1)
+        );
+        assert_eq!(
+            authority.details[INDEX_EXCLUDED_HOURS_FIELD][0]["reason"],
+            json!(SEALED_REASON),
+            "the excluded hour is refused BY NAME, in the same words the seal used"
+        );
+        let excluded = &authority.details
+            [recorder_host::hour_coverage::HOUR_COVERAGE_FIELD]["excluded_hours"];
+        assert_eq!(excluded[0]["reason"], json!(SEALED_REASON));
+
+        // A hole the recording did NOT seal in those words.
+        let paraphrased = cache_only_authority_error(
+            "gz_hole_paraphrased",
+            CacheOnlyBreak {
+                index_hole_reason: Some("something went wrong".to_string()),
+                sealed_coverage: Some((vec![0, 2], vec![(1, SEALED_REASON.to_string())])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            paraphrased.contains("names each injured hour once"),
+            "a paraphrase is a second author: {paraphrased}"
+        );
+
+        // A hole over an hour the recording VERIFIES: a good hour dropped on an
+        // excuse the seal never made.
+        let invented = cache_only_authority_error(
+            "gz_hole_invented",
+            CacheOnlyBreak {
+                index_hole_reason: Some(SEALED_REASON.to_string()),
+                sealed_coverage: Some((vec![0, 1, 2], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            invented.contains("sealed coverage map VERIFIES that hour"),
+            "an invented hole must be refused: {invented}"
+        );
+
+        // A hole over an hour the map does not mention at all.
+        let unmentioned = cache_only_authority_error(
+            "gz_hole_unmentioned",
+            CacheOnlyBreak {
+                index_hole_reason: Some(SEALED_REASON.to_string()),
+                sealed_coverage: Some((vec![0, 2], vec![])),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            unmentioned.contains("names that hour nowhere at all"),
+            "absence is not a claim, in this direction either: {unmentioned}"
+        );
+    }
+
+    /// THE PACKAGED ARTIFACTS MUST BE THE ONES THE SEAL CERTIFIED.
+    ///
+    /// The name join above binds an H4IX hole's HOUR and REASON to the sealed
+    /// coverage map. It cannot bind the hole's BYTE RANGE, because the coverage
+    /// map is not a byte-range authority — measured in
+    /// `runs/gz_interior_holes/MATRIX.md`, residual GZ-1: a torn tail's row
+    /// reports `[0, 36)` for an hour at the end of the stream. So a container
+    /// could otherwise carry an index that names the right hours for the right
+    /// reasons while placing a hole over the wrong records, or omitting one and
+    /// letting a served hour's range stretch across the injured hour — hour
+    /// misattribution reaching replay.
+    ///
+    /// This closes it transitively. `build_certified_replay_artifacts` compares
+    /// the packaged H4IX against the certified fold index row for row — hours,
+    /// holes, reasons, start AND end offsets — and only afterwards hashes the
+    /// bytes; the seal carries that digest. Requiring the packaged bytes to
+    /// match it makes the build-time comparison binding at replay time.
+    ///
+    /// kills: dropping link 5b (the H4IX receipt), dropping link 6b (the H4CP
+    /// receipt), or making `sealed_artifact_digest` tolerate a missing field.
+    /// Each is perturbed separately below, because each is a separate receipt
+    /// that can rot on its own; a test that only bent the index digest would
+    /// leave the cache link free to be deleted with the suite still green.
+    #[test]
+    fn a_packaged_artifact_must_be_the_one_the_seal_certified() {
+        // Link 5b: the packaged H4IX is not the index the seal certified.
+        let swapped_index = cache_only_authority_error(
+            "gz_index_not_sealed",
+            CacheOnlyBreak {
+                sealed_index_digest: Some("ab".repeat(32)),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            swapped_index.contains(CACHE_ONLY_LINK_SEALED_ARTIFACTS)
+                && swapped_index.contains("not the one the seal certified")
+                && swapped_index.contains("hour_index_sha256"),
+            "a packaged index the seal never certified must refuse by this link's own name, \
+             naming the index receipt: {swapped_index}"
+        );
+
+        // Link 6b: the packaged H4CP is not the cache the seal certified. A
+        // SEPARATE receipt, so a separate mutation.
+        let swapped_cache = cache_only_authority_error(
+            "gz_cache_not_sealed",
+            CacheOnlyBreak {
+                sealed_cache_digest: Some("cd".repeat(32)),
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            swapped_cache.contains(CACHE_ONLY_LINK_SEALED_ARTIFACTS)
+                && swapped_cache.contains("checkpoint_cache_sha256"),
+            "a packaged cache the seal never certified must refuse by this link's own name, \
+             naming the cache receipt: {swapped_cache}"
+        );
+
+        // No receipts at all, in BOTH copies — a recording that ships artifacts
+        // it never committed to. Removing them from the run-dir copy alone
+        // would refuse on the run-dir/sealed manifest binding instead, which is
+        // a different link and would not pin this one.
+        let absent = cache_only_authority_error(
+            "gz_no_artifact_receipt",
+            CacheOnlyBreak {
+                omit_artifact_receipts: true,
+                ..CacheOnlyBreak::default()
+            },
+        );
+        assert!(
+            absent.contains(CACHE_ONLY_LINK_SEALED_ARTIFACTS)
+                && absent.contains("carries no 64-character"),
+            "an artifact-to-seal binding a consumer has to assume is not a binding: {absent}"
+        );
+    }
+
     /// A SEALED RECORDING MUST STATE ITS COVERAGE, AND STATE IT ADMISSIBLY.
     ///
     /// kills: making `read_sealed_hour_coverage` tolerate a missing
@@ -11742,6 +12105,24 @@ mod tests {
         /// of the session-format identifier the recorder writes. The RECORDER
         /// MANIFEST's vocabulary — a different field on a different artifact.
         manifest_schema: Option<String>,
+        /// Build a THREE-hour cache whose middle hour is a named H4IX hole,
+        /// carrying this reason — the shape a recording with one injured hour
+        /// has since the interior-hole ruling (2026-08-12, task #189).
+        index_hole_reason: Option<String>,
+        /// Seal this coverage map into the container manifest instead of the
+        /// fixture default, as `(verified hours, (excluded hour, reason))`.
+        sealed_coverage: Option<(Vec<i64>, Vec<(i64, String)>)>,
+        /// Seal this `host_finalize.fold.hour_index_sha256` instead of the
+        /// digest of the H4IX the container actually ships — the shape of a
+        /// container whose index is not the one finalize certified.
+        sealed_index_digest: Option<String>,
+        /// The same, for `host_finalize.fold.checkpoint_cache_sha256`.
+        sealed_cache_digest: Option<String>,
+        /// Seal NO artifact receipts at all, in BOTH manifest copies — the
+        /// shape of a recording that ships artifacts it never committed to.
+        /// Removing them from the run-dir copy alone would refuse on the
+        /// run-dir/sealed binding instead, which is a different link.
+        omit_artifact_receipts: bool,
     }
 
     /// Replace the single occurrence of one raw 32-byte digest inside an H4IX
@@ -11813,11 +12194,6 @@ mod tests {
                 json!(snapshot::RAW_STREAM_OMITTED_REASON),
             );
         }
-        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-        // The run directory keeps its absolute paths; the container carries the
-        // portable projection, exactly as the recorder seals it.
-        let sealed_manifest_bytes = sealed_manifest_bytes(&manifest_bytes);
-
         let folded_from = breakage
             .cache_folded_from
             .clone()
@@ -11831,22 +12207,59 @@ mod tests {
         let source_len = breakage
             .index_source_len
             .unwrap_or(folded_from.len() as u64);
-        let world = serde_json::to_vec(&json!({
-            "date": "1936.1.1.12",
-            "hour_index": 0,
-        }))
-        .unwrap();
         let mut encoder =
             snapshot::ReplayCacheEncoder::new(Vec::new(), &header_sha256, 168).unwrap();
-        encoder
-            .push(snapshot::CacheBuildHour {
-                hour_index: 0,
-                date: "1936.1.1.12".into(),
-                h4cr_start_offset: 0,
-                h4cr_end_offset: source_len,
-                world_json: world,
-            })
-            .unwrap();
+        match &breakage.index_hole_reason {
+            None => {
+                let world = serde_json::to_vec(&json!({
+                    "date": "1936.1.1.12",
+                    "hour_index": 0,
+                }))
+                .unwrap();
+                encoder
+                    .push(snapshot::CacheBuildHour {
+                        hour_index: 0,
+                        date: "1936.1.1.12".into(),
+                        h4cr_start_offset: 0,
+                        h4cr_end_offset: source_len,
+                        world_json: world,
+                    })
+                    .unwrap();
+            }
+            Some(reason) => {
+                // Three hours over the same source, the middle one skipped by
+                // name. The three spans still tile the source exactly, which is
+                // what the format requires of a holed index.
+                let third = source_len / 3;
+                for hour in 0..3i64 {
+                    let start = third * hour as u64;
+                    let end = if hour == 2 { source_len } else { third * (hour as u64 + 1) };
+                    if hour == 1 {
+                        encoder
+                            .exclude_hour(snapshot::ReplayExcludedHour::new(
+                                hour, start, end, reason.clone(),
+                            ))
+                            .unwrap();
+                        continue;
+                    }
+                    let date = format!("1936.1.1.{}", hour + 12);
+                    let world = serde_json::to_vec(&json!({
+                        "date": date,
+                        "hour_index": hour,
+                    }))
+                    .unwrap();
+                    encoder
+                        .push(snapshot::CacheBuildHour {
+                            hour_index: hour,
+                            date,
+                            h4cr_start_offset: start,
+                            h4cr_end_offset: end,
+                            world_json: world,
+                        })
+                        .unwrap();
+                }
+            }
+        }
         let (mut cache_bytes, replay_index) = encoder
             .finish(game_id, "1", snapshot::CacheIdentityMode::Legacy, source_len)
             .unwrap();
@@ -11860,6 +12273,57 @@ mod tests {
         if breakage.corrupt_cache_bytes {
             *cache_bytes.last_mut().unwrap() ^= 0xff;
         }
+
+        // THE ARTIFACT RECEIPTS GO IN BOTH COPIES, and are written here rather
+        // than with the rest of the manifest because they are digests OF the
+        // artifacts: the recorder seals a receipt for exactly the H4IX and H4CP
+        // it packaged, and that receipt is what binds the artifacts' internal
+        // account — which hours are served, which are named holes, and what
+        // byte range each owns — to the finalize that certified them. They are
+        // ordinary `host_finalize.fold` fields, not sealed-only ones, so a
+        // fixture that put them in the container copy alone would fail the
+        // run-dir/sealed binding.
+        if !breakage.omit_artifact_receipts {
+            let fold = manifest
+                .get_mut("host_finalize")
+                .and_then(|finalize| finalize.get_mut("fold"))
+                .and_then(Value::as_object_mut)
+                .unwrap();
+            fold.insert(
+                "hour_index_sha256".to_string(),
+                json!(breakage
+                    .sealed_index_digest
+                    .clone()
+                    .unwrap_or_else(|| Sha256::hex(&index_bytes))),
+            );
+            fold.insert(
+                "checkpoint_cache_sha256".to_string(),
+                json!(breakage
+                    .sealed_cache_digest
+                    .clone()
+                    .unwrap_or_else(|| Sha256::hex(&cache_bytes))),
+            );
+        }
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        // The run directory keeps its absolute paths; the container carries the
+        // portable projection, exactly as the recorder seals it. The coverage
+        // map is the one sealed-only field here.
+        let sealed_manifest_bytes = match &breakage.sealed_coverage {
+            None => sealed_manifest_bytes(&manifest_bytes),
+            Some((verified, excluded)) => {
+                let mut sealed: Value = serde_json::from_slice(&manifest_bytes).unwrap();
+                let excluded: Vec<(i64, &str)> = excluded
+                    .iter()
+                    .map(|(hour, reason)| (*hour, reason.as_str()))
+                    .collect();
+                sealed["host_finalize"].as_object_mut().unwrap().insert(
+                    recorder_host::hour_coverage::HOUR_COVERAGE_FIELD.to_string(),
+                    fixture_hour_coverage(verified, &excluded).to_json(),
+                );
+                let sealed_bytes = serde_json::to_vec_pretty(&sealed).unwrap();
+                sealed_manifest_bytes(&sealed_bytes)
+            }
+        };
 
         let (static_artifacts, mut static_entries) = replay_test_static_artifacts(game_id);
         let container_index = serde_json::to_vec(&json!({
