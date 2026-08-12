@@ -1,8 +1,8 @@
 //! d34 `air_base_status` — per-air-base capacity, level and basing occupancy.
 //!
-//! Derived from `world_fold.rs:18374`-`:18442`
+//! Derived from `world_fold.rs:18435`-`:18503`
 //! (`fold_air_base_status`), its payload constants at `:985`-`:986`, `:758` and
-// @world-fold-authority domain=34 functions=fold_air_base_status lines=18374-18442 sha256=0e6293b25e2e6e55325fcc90c3b9ba786a4e539a7f57df49fad575fb7e67cb3f closure=d2f130b8330b65c06f791431fa72a14b838874e6d7c60a42df2174600b9b8d47
+// @world-fold-authority domain=34 functions=fold_air_base_status lines=18435-18503 sha256=0e6293b25e2e6e55325fcc90c3b9ba786a4e539a7f57df49fad575fb7e67cb3f closure=d2f130b8330b65c06f791431fa72a14b838874e6d7c60a42df2174600b9b8d47
 //! `:499`, the accumulator it folds into (`:1870`), the two consumers of that
 //! accumulator (`:8169`-`:8219`, `:8926`-`:8962`), and the collector read and
 //! payload writer that produce the rows

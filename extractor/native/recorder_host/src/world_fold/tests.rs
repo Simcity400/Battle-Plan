@@ -33,6 +33,7 @@ use resolved_tooltip_instances_live_lane as tooltip72_lane;
 use scripted_state_flags_variables_live_lane as scripted84_lane;
 use session_multiplayer_metadata_live as session57_lane;
 use sunk_ship_history_live_lane as sunk86_lane;
+use theatre_selector_live_lane as theatre98_lane;
 
 #[test]
 fn d81_v3_fold_keeps_raw_simulation_inputs_and_rejects_presentation_era_v2() {
@@ -2591,6 +2592,110 @@ fn xui17_g8_envelope_satisfies_the_replay_schema_4_admission() {
     )]);
     assert_eq!(stale["_r2_character_presentation_live"], Value::Null);
     assert_eq!(stale["_r2_character_presentation_panel_live"], Value::Null);
+}
+
+/// EIR-NE-012: the THS2 projection speaks the v6 evidence key, and no longer carries the
+/// pre-production spelling replay refuses on sight.
+///
+/// `theatre_selector.rs:1462`-`:1466` returns `unavailable` from a bare
+/// `domain.contains_key("producer_manifest_sha256")` -- before it reads any value, and
+/// regardless of what else the frame carries. XUI07's contract says the same in words
+/// (`THEATRE_EXTRACTOR_DEPENDENCY_CONTRACT.md:264`-`:268`: the legacy spelling "is not a v6
+/// compatibility alias and Replay must reject a frame that supplies that legacy key, alone or
+/// beside the v6 key"), so emitting both would have been no better than emitting the old one.
+/// The v6 array replay reads instead is `producer_evidence_sha256`
+/// (`theatre_selector.rs:1467`-`:1481`).
+///
+/// The array's CONTENT is deliberately not replay's full 31-entry
+/// `REQUIRED_PRODUCER_EVIDENCE_SHA256` (`theatre_selector.rs:46`-`:78`). It is the four
+/// exact-a729 manifests this producer's own read laws rest on, in the order the THS2 binary
+/// carrier already stores them; they are that set's first four entries, transcribed below as
+/// literals so a drift on either side fails. The other 27 authenticate controller laws this
+/// producer does not implement or cannot evaluate (`runs/gs_theatre_reads/READ_LAWS.md` §2),
+/// and declaring them would assert reads that never happened.
+///
+/// Replay therefore still refuses this carrier -- at the schema check first (4, not 6, which
+/// `theatre_selector_live/src/lib.rs:62`-`:68` explains) and at the evidence-set size after --
+/// but for two causes that are both true of the producer, instead of for a legacy key.
+///
+/// kills: restoring the `producer_manifest_sha256` spelling in `fold_theatre_selector` (alone
+/// or beside the new one), reordering or altering the four evidence identities, or bumping the
+/// projected schema to 6 while the two virtual-call controller leaves remain unmeasured.
+#[test]
+fn ths2_projection_carries_the_v6_producer_evidence_key_and_not_the_legacy_manifest_key() {
+    let hour = 16_959_360u64;
+    let frame = theatre98_lane::TheatreSelectorFrame {
+        elapsed_wall_ms: 2,
+        status_flags: 0,
+        frame_hour: hour,
+        source_sequence: 7,
+        authority: theatre98_lane::AuthorityState::ExactA729,
+        content_identity: Some(theatre98_lane::ContentIdentity {
+            language: "l_english".into(),
+            localization_content_sha256: [0x11; 32],
+            ordered_layers: vec![theatre98_lane::ContentLayer {
+                ordinal: 0,
+                layer_kind: theatre98_lane::ContentLayerKind::Base,
+                layer_id: "base".into(),
+                content_sha256: [0x22; 32],
+            }],
+            engine_roster: theatre98_lane::EngineContentRoster::default(),
+        }),
+        snapshot: Some(theatre98_lane::TheatreSelectorSnapshot {
+            census: vec![1],
+            sections: vec![theatre98_lane::CountrySection {
+                owner_tag_db_id: 1,
+                admission: theatre98_lane::SectionAdmission::Admitted(
+                    theatre98_lane::SectionBody::default(),
+                ),
+            }],
+            producer_complete: true,
+        }),
+    };
+    let snapshot = snapshot_for_domain_records(vec![(
+        theatre98_lane::DOMAIN_ID,
+        theatre98_lane::encode_payload(&frame).expect("exact d98 payload"),
+    )]);
+    let view = &snapshot["_r2_theatre_selector_live"];
+    let envelope = view.as_object().expect("theatre selector envelope");
+
+    // theatre_selector.rs:1462-1466 -- presence alone refuses the frame.
+    assert!(
+        !envelope.contains_key("producer_manifest_sha256"),
+        "the legacy evidence spelling must not appear at all"
+    );
+    // theatre_selector.rs:1467-1481 -- the ordered array replay authenticates.
+    assert_eq!(
+        view["producer_evidence_sha256"],
+        json!([
+            "7b7a98857d4f1b772a78dbf5d38842029f9dbf3456caf081571b52219d2399bf",
+            "8aa941bb10f7613af820251eaa4a33cce67ed3f1a72205a05e1b7b05731544bb",
+            "35c8a1d66ef64dafd88d5ddfb817cd071e711996666b70a655950c0be0adeb18",
+            "eee5a6c973edc425a709864071f940ebb002b4f741d138f09864dab4dc017ed6",
+        ]),
+        "the evidence array is this producer's four established manifests, in carrier order"
+    );
+    // theatre_selector.rs:1447-1460 -- the authority check (`:1447`-`:1451`), the schema check
+    // (`:1452`-`:1457`) and the executable-identity check (`:1458`-`:1460`). Authority and
+    // executable are already the v6 ones; the schema is not, deliberately.
+    assert_eq!(
+        view["authority"],
+        json!("exact_a729_all_country_theatre_selector")
+    );
+    assert_eq!(
+        view["executable_sha256"],
+        json!("870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad")
+    );
+    assert_eq!(view["schema_version"], json!(4));
+    // The producer's own statement of what it does not carry stays beside the evidence array;
+    // v6's parser ignores unknown keys, so this costs replay nothing and tells a reader why the
+    // schema is still 4.
+    assert!(
+        view["uncaptured_controller_fields"]
+            .as_array()
+            .is_some_and(|fields| !fields.is_empty()),
+        "the uncaptured-field declaration must survive the evidence-key change"
+    );
 }
 
 #[test]
@@ -15237,6 +15342,142 @@ fn chunk2_folds_d56_naval_supremacy_under_naval_air() {
     assert_eq!(rows[2]["controller"], json!("USA"));
     assert_eq!(rows[2]["target_raw"], json!(448_057_205));
     assert_eq!(rows[2]["base_target_raw"], json!(76_245_200));
+}
+
+/// GP-F1 / GP-F2: the two map-mode seams replay walks, and the fate of BOTH spellings.
+///
+/// Replay's decoder is an exact `obj.get` with no prefix tolerance (`walk_path`,
+/// `replay_core/src/world.rs:5493`), so the `_r2_`-prefixed keys this fold emits were never
+/// reachable from `naval_supremacy` (root, `world.rs:8724`) or `naval_air.air_superiority`
+/// (`world.rs:8893`) -- both views were permanently `DomainAbsent` although the data was
+/// captured.
+///
+/// Renaming the payloads into those keys would have been wrong, not just insufficient. Both
+/// views are ONE row per region carrying a HOLDER (`naval_supremacy_tint.rs:287` "the country
+/// whose colour tints the zone"; `mapmode_air.rs:271` "the side holding air superiority"),
+/// while both producers are multi-owner per region: `(region, controller)` is explicitly
+/// non-unique for D56 (`wire_format/src/d56.rs:178`-`:180`) and D31/D38 are keyed by
+/// `(region, owner, mission_mask[, variant])`. The fixture below builds exactly that -- region
+/// 16 with two supremacy occurrences, region 88 with two air owners -- so the collapse replay's
+/// shape demands has no measured answer.
+///
+/// So each seam is spelled and refused: an explicit null is `DomainUnavailable`
+/// (`world.rs:5743`), which says the producer has no usable view, rather than the silent
+/// `DomainAbsent` (`:5742`) that says it never heard of the domain. The measured rows keep
+/// their `_r2_` spelling untouched for the lane that reads the holder law.
+///
+/// kills: dropping either seam key from `world_fold.rs` (each returns its view to the silent
+/// `DomainAbsent` this closes — caught by the `contains_key` assertions, NOT by the null
+/// comparisons, which a missing key also satisfies); emitting the measured rows under either
+/// seam key instead of beside it (the null comparison and the `_r2_` assertions both fail); or
+/// collapsing the multi-owner rows to one row per region in ANY of the three producers this
+/// fixture builds — D56's `_r2_naval_supremacy` (`row_count` plus its two controllers), D38's
+/// `_r2_air_superiority_inputs`, or D31's `_r2_air_region_activity` (each has a length and a
+/// per-owner assertion below, so no one of them can collapse silently).
+#[test]
+fn gp_f1_f2_naval_and_air_map_seams_are_spelled_and_explicitly_refused() {
+    let task_forces = [d56_row(201, 200, 1, 12345, 0)];
+    let supremacy_rows = [
+        naval56::NavalSupremacyRow {
+            region_id: 16,
+            controller_tag_db_id: 2,
+            current_raw: 67_962_800,
+            target_raw: 67_962_800,
+            base_target_raw: 67_962_800,
+            previous_raw: 67_962_800,
+            decline_from_raw: 67_962_800,
+            individual_ratio_raw: 87_173,
+        },
+        // A SECOND controller in the same region. Replay's row has one
+        // `controller` field; this pair is why no honest value fits in it.
+        naval56::NavalSupremacyRow {
+            region_id: 16,
+            controller_tag_db_id: 44,
+            current_raw: 448_057_205,
+            target_raw: 448_057_205,
+            base_target_raw: 76_245_200,
+            previous_raw: 448_057_205,
+            decline_from_raw: 448_057_205,
+            individual_ratio_raw: 97_816,
+        },
+    ];
+    let snap = chunk1_one_snapshot(vec![
+        (
+            18,
+            country_identity_payload(&[(1, "GER"), (2, "ENG"), (44, "USA")]),
+        ),
+        (56, d56_payload_with_supremacy(0, &task_forces, &supremacy_rows)),
+        // The same shape on the air side: region 88, two owners.
+        (
+            31,
+            d31_air_region_activity_payload(&[(88, 1, 7, 100), (88, 2, 7, 40)], 0),
+        ),
+        (
+            38,
+            d38_air_superiority_inputs_payload(
+                &[(88, 1, 7, 900, 100_000), (88, 2, 7, 901, 40_000)],
+                0,
+            ),
+        ),
+    ]);
+
+    // The seams replay actually walks: PRESENT, and explicitly unavailable.
+    //
+    // `contains_key` is the load-bearing half and must come first. Indexing a
+    // `serde_json::Value` with a missing key yields `Value::Null`, so an
+    // `assert_eq!(..., Value::Null)` alone passes whether the fold spells the key
+    // or not -- which is exactly the difference between `DomainUnavailable`
+    // (`world.rs:5743`) and the `DomainAbsent` (`:5742`) this test exists to close.
+    let root = snap.as_object().expect("snapshot root object");
+    assert!(
+        root.contains_key("naval_supremacy"),
+        "root naval_supremacy must be SPELLED (world.rs:8724); an absent key is DomainAbsent"
+    );
+    assert_eq!(
+        root["naval_supremacy"],
+        Value::Null,
+        "root naval_supremacy must be refused, not carry an invented per-region holder"
+    );
+    let naval_air = snap["naval_air"].as_object().expect("naval_air object");
+    assert!(
+        naval_air.contains_key("air_superiority"),
+        "naval_air.air_superiority must be SPELLED (world.rs:8893); an absent key is DomainAbsent"
+    );
+    assert_eq!(
+        naval_air["air_superiority"],
+        Value::Null,
+        "naval_air.air_superiority must be refused, not carry an invented per-region holder"
+    );
+
+    // The measured spellings are untouched, and still carry every occurrence.
+    let naval = &snap["naval_air"]["_r2_naval_supremacy"];
+    assert_eq!(naval["row_count"], json!(2));
+    let rows = naval["rows"].as_array().expect("supremacy rows");
+    assert_eq!(rows[0]["region_id"], json!(16));
+    assert_eq!(rows[0]["controller"], json!("ENG"));
+    assert_eq!(rows[1]["region_id"], json!(16));
+    assert_eq!(rows[1]["controller"], json!("USA"));
+
+    let air = snap["naval_air"]["_r2_air_superiority_inputs"]
+        .as_array()
+        .expect("air superiority inputs");
+    assert_eq!(air.len(), 2);
+    assert_eq!(air[0]["region_id"], json!(88));
+    assert_eq!(air[0]["owner"], json!("GER"));
+    assert_eq!(air[1]["region_id"], json!(88));
+    assert_eq!(air[1]["owner"], json!("ENG"));
+
+    // D31 is the second multi-owner producer this fixture builds, and the `kills:` line
+    // above claims a collapse ANYWHERE in the fold fails here -- so it has to be asserted
+    // too, or a D31-only collapse would pass while the claim said it could not.
+    let activity = snap["naval_air"]["_r2_air_region_activity"]
+        .as_array()
+        .expect("air region activity");
+    assert_eq!(activity.len(), 2, "region 88 keeps both D31 owners");
+    assert_eq!(activity[0]["region_id"], json!(88));
+    assert_eq!(activity[0]["owner"], json!("GER"));
+    assert_eq!(activity[1]["region_id"], json!(88));
+    assert_eq!(activity[1]["owner"], json!("ENG"));
 }
 
 #[test]

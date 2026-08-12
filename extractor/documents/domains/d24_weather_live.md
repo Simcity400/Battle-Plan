@@ -123,7 +123,7 @@ See also d23.
 
 ## Files about this domain
 
-44 tracked files name this domain.
+42 tracked files name this domain.
 
 ### Pinned evidence (1) — byte-exact, do not merge
 
@@ -131,7 +131,7 @@ Production code verifies these hashes. They stay where they are.
 
 - `extractor/coverage_audit/atlas_generated/residual_fixture_blocked_catalog.csv` — `b8c46f2cac4fc0ba`
 
-### Prose evidence (14) — mergeable
+### Prose evidence (13) — mergeable
 
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/LIVE_ACCEPTANCE_RUNBOOK.md`
@@ -143,7 +143,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/documents/domains/d74_power_balance_presentation_live.md`
 - `extractor/native/collector/README.md`
 - `extractor/native/lanes/weather_live/README.md`
-- `extractor/native/lanes/weather_visual_drivers_live/README.md`
 - `extractor/native/project_progress_live_lane/README.md`
 - `extractor/native/recorder_host/README.md`
 - `replay_interface/documents/REPLAY_DATA_REQUIREMENTS.md`
@@ -163,7 +162,7 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (17)
+### Code (16)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/src/attach_log.rs`
@@ -175,7 +174,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/lanes/weather_live/domain24_weather_sandstorm_v3.rs`
 - `extractor/native/lanes/weather_live/weather_sandstorm_v3_gate.rs`
 - `extractor/native/lanes/weather_live/weather_temporal_drift_gate.rs`
-- `extractor/native/lanes/weather_visual_drivers_live/domain24_weather_visual_v2.rs`
 - `extractor/native/recorder_host/src/main.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/scripts/c0_domain_census.py`
