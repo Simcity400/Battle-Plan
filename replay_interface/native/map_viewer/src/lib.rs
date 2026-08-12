@@ -282,12 +282,14 @@ pub use m01_runtime_admission::{
 };
 pub use map_authority::{
     admit_map_authority_json, admit_map_authority_projection,
-    map_authority_projection_from_world_frame, map_authority_requirement_metadata,
-    refuse_missing_xmap00_authority, refuse_product_map_until_xmap01,
-    require_promoted_xmap01_renderer, MapAuthorityAdmission, MapAuthorityGap,
+    map_authority_observed_status_label, map_authority_owner_proven_admission,
+    map_authority_projection_from_world_frame,
+    map_authority_requirement_metadata, refuse_missing_xmap00_authority,
+    refuse_product_map_until_xmap01, require_promoted_xmap01_renderer, MapAuthorityAdmission,
+    MapAuthorityAdmittedInput, MapAuthorityGap, MapAuthorityOwnerProvenAdmission,
     MapAuthorityProjection, MapAuthorityRequirement, MapAuthorityRequirementDisposition,
     MapAuthorityRequirementMetadata, Xmap01ProductMapRefusal, MAP_AUTHORITY_INPUT_SCHEMA,
-    MAP_AUTHORITY_REQUIRED_INPUTS,
+    MAP_AUTHORITY_OWNER_PROVEN_INPUTS, MAP_AUTHORITY_REQUIRED_INPUTS,
 };
 pub use map_furniture::{
     associate_naval_spawns_to_provinces, base_icon_defines_from_resolver, base_icon_frame,

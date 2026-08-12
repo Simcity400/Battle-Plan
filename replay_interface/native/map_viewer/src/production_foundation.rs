@@ -5,7 +5,7 @@
 //! exact XMAP01+XMAP02 content-operation receipt. Recorder-selected
 //! presentation is not an argument and cannot be recovered through this API.
 
-use crate::{MapAuthorityAdmission, MapAuthorityGap, Result};
+use crate::{MapAuthorityAdmission, MapAuthorityAdmittedInput, MapAuthorityGap, Result};
 use portable_render_stream::{
     FamilyCoverageRow, FamilyDisposition, FoundationGap, FoundationRenderEnvelope, MapVisualFamily,
     FOUNDATION_RENDER_SCHEMA,
@@ -230,6 +230,10 @@ pub struct FoundationFeatureContext<'a> {
     pub world_frame: &'a WorldFrame,
     pub viewer: &'a ViewerOwnedMapState,
     pub map_authority_gaps: &'a [MapAuthorityGap],
+    /// The XMAP00 inputs this hour's authority admitted from the authenticated
+    /// `WorldFrame` under an owner-proven production contract. An input is in
+    /// exactly one of this slice and `map_authority_gaps`, never both.
+    pub map_authority_admitted: &'a [MapAuthorityAdmittedInput],
     assigned_stage_schedule: Option<&'a portable_render_stream::AssignedStageSchedule>,
     pub product_modset_sha256: &'a str,
     pub effective_vfs_manifest_sha256: &'a str,
@@ -1065,6 +1069,7 @@ fn prepare_foundation_frame_inner(
             world_frame,
             viewer,
             map_authority_gaps: map_admission.gaps(),
+            map_authority_admitted: map_admission.admitted(),
             assigned_stage_schedule: adapters.assigned_stage_schedule.as_ref(),
             product_modset_sha256: &manifest.product_modset_sha256,
             effective_vfs_manifest_sha256: &manifest.effective_vfs_manifest_sha256,

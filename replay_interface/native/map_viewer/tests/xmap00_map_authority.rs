@@ -1,9 +1,43 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use map_viewer::{
-    admit_map_authority_json, admit_map_authority_projection, map_authority_requirement_metadata,
-    refuse_missing_xmap00_authority, refuse_product_map_until_xmap01,
-    require_promoted_xmap01_renderer, MapAuthorityProjection, MapAuthorityRequirement,
-    MapAuthorityRequirementDisposition, MAP_AUTHORITY_INPUT_SCHEMA, MAP_AUTHORITY_REQUIRED_INPUTS,
+    admit_map_authority_json, admit_map_authority_projection,
+    map_authority_observed_status_label, map_authority_owner_proven_admission,
+    map_authority_projection_from_world_frame,
+    map_authority_requirement_metadata, refuse_missing_xmap00_authority,
+    refuse_product_map_until_xmap01, require_promoted_xmap01_renderer, MapAuthorityProjection,
+    MapAuthorityRequirement, MapAuthorityRequirementDisposition, MAP_AUTHORITY_INPUT_SCHEMA,
+    MAP_AUTHORITY_OWNER_PROVEN_INPUTS, MAP_AUTHORITY_REQUIRED_INPUTS,
 };
+use replay_core::{
+    ContentManifest, RawFrame, ReplaySource, SourceError, SourceGameIdentity,
+    SourceProfileIdentity, WorldFrame, WorldTimeline, PORTABLE_CONTENT_MANIFEST_SCHEMA,
+};
+use serde_json::{json, Map, Value};
+
+/// The authoritative XMAP00 semantic ledger. The admission table in
+/// `map_authority.rs` is a transcription of this file's `xmap00_disposition`
+/// column and must not be able to drift from it.
+const XMAP00_LEDGER_TSV: &str = include_str!(
+    "../../../re_evidence/rendering_laws/XMAP00/non_ui_visual_input_ledger_20260730.tsv"
+);
+
+fn xmap00_ledger_rows() -> Vec<BTreeMap<String, String>> {
+    let mut lines = XMAP00_LEDGER_TSV.lines();
+    let header: Vec<&str> = lines.next().expect("ledger header").split('\t').collect();
+    lines
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(fields.len(), header.len(), "ragged ledger row: {line}");
+            header
+                .iter()
+                .zip(fields)
+                .map(|(key, value)| ((*key).to_string(), value.to_string()))
+                .collect()
+        })
+        .collect()
+}
 
 fn unresolved_requirement(input_id: &str) -> MapAuthorityRequirement {
     let metadata = map_authority_requirement_metadata(input_id).unwrap();
@@ -11,28 +45,123 @@ fn unresolved_requirement(input_id: &str) -> MapAuthorityRequirement {
     assert_eq!(metadata.payload_schema, None);
     assert_eq!(metadata.cadence, None);
     assert_eq!(metadata.identity_order, None);
+    // An owner-proven family's refusal always names the status the frame
+    // reported, because its availability is a fact about the recording rather
+    // than a pending proof; an unproven family may be refused with no status
+    // at all (the projection has no accessor to consult for it yet).
+    let blocker = if map_authority_owner_proven_admission(input_id).is_some() {
+        format!(
+            "{}; WorldFrame {} is DomainUnavailable",
+            metadata.blocker,
+            map_authority_observed_status_label(input_id)
+        )
+    } else {
+        metadata.blocker.to_string()
+    };
     MapAuthorityRequirement {
         input_id: input_id.to_string(),
         payload_schema: None,
         cadence: None,
         identity_order: None,
         disposition: MapAuthorityRequirementDisposition::Unavailable,
-        blocker: metadata.blocker.to_string(),
+        blocker: Some(blocker),
     }
 }
 
+// --------------------------------------------------------------------------
+// A WorldFrame built from an in-memory snapshot, so the derived seam can be
+// driven at every status a real recording can produce.
+// --------------------------------------------------------------------------
+
+struct InMemorySource {
+    hours: Vec<i64>,
+    rest: Map<String, Value>,
+}
+
+impl ReplaySource for InMemorySource {
+    fn game_id(&self) -> &str {
+        "xmap00-authority-seam"
+    }
+    fn hours(&self) -> &[i64] {
+        &self.hours
+    }
+    fn warnings(&self) -> &[String] {
+        &[]
+    }
+    fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+        Ok(RawFrame {
+            hour_index,
+            date: None,
+            save_version: None,
+            schema_version: None,
+            rest: self.rest.clone(),
+        })
+    }
+}
+
+fn world_frame_with(rest: Value) -> std::sync::Arc<WorldFrame> {
+    let rest = rest.as_object().expect("snapshot object").clone();
+    let timeline = WorldTimeline::open(Box::new(InMemorySource {
+        hours: vec![7],
+        rest,
+    }))
+    .expect("timeline");
+    timeline.frame(7).expect("frame")
+}
+
+fn fixture_manifest() -> ContentManifest {
+    let mut manifest = ContentManifest {
+        schema: PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "11".repeat(32),
+        source_game: SourceGameIdentity {
+            version: "1.19.2".into(),
+            build: "a729".into(),
+            executable_sha256:
+                "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
+            build_profile: "xmap00-authority-seam".into(),
+        },
+        source_profile: SourceProfileIdentity {
+            profile_id: "xmap00-authority-seam".into(),
+            playset_id: "vanilla".into(),
+            selection_sha256: "00".repeat(32),
+        },
+        effective_vfs_manifest_sha256: "22".repeat(32),
+        ordered_layers: Vec::new(),
+        dlc_selection: Vec::new(),
+        localisation_language: "l_english".into(),
+        required_settings: BTreeMap::new(),
+        required_content: Vec::new(),
+        manifest_digest_sha256: None,
+    };
+    manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+    manifest.with_computed_digest().unwrap()
+}
+
+fn requirement<'a>(
+    projection: &'a MapAuthorityProjection,
+    input_id: &str,
+) -> &'a MapAuthorityRequirement {
+    projection
+        .requirements
+        .iter()
+        .find(|row| row.input_id == input_id)
+        .unwrap_or_else(|| panic!("projection omitted {input_id}"))
+}
+
 fn unresolved_projection() -> MapAuthorityProjection {
-    MapAuthorityProjection {
-        schema: MAP_AUTHORITY_INPUT_SCHEMA.to_string(),
-        hour_index: 42,
-        content_manifest_digest_sha256: "1".repeat(64),
-        product_modset_sha256: "2".repeat(64),
-        effective_vfs_manifest_sha256: "3".repeat(64),
-        requirements: MAP_AUTHORITY_REQUIRED_INPUTS
+    // Nothing a caller assembles carries a frame-derivation witness, which is
+    // exactly the point: this is the untrusted shape.
+    MapAuthorityProjection::from_untrusted_parts(
+        MAP_AUTHORITY_INPUT_SCHEMA.to_string(),
+        42,
+        "1".repeat(64),
+        "2".repeat(64),
+        "3".repeat(64),
+        MAP_AUTHORITY_REQUIRED_INPUTS
             .iter()
             .map(|input_id| unresolved_requirement(input_id))
             .collect(),
-    }
+    )
 }
 
 #[test]
@@ -153,7 +282,7 @@ fn family_identity_order_and_unresolved_metadata_are_fail_closed() {
     }
 
     let mut changed_blocker = unresolved_projection();
-    changed_blocker.requirements[0].blocker = "caller says complete".into();
+    changed_blocker.requirements[0].blocker = Some("caller says complete".into());
     assert!(admit_map_authority_projection(&changed_blocker)
         .unwrap_err()
         .contains("canonical unresolved blocker"));
@@ -171,32 +300,555 @@ fn absent_and_unavailable_require_distinct_canonical_blocker_forms() {
 
     let metadata =
         map_authority_requirement_metadata(&forged_absent.requirements[0].input_id).unwrap();
-    forged_absent.requirements[0].blocker = format!(
-        "{}; WorldFrame root status is DomainAbsent",
-        metadata.blocker
-    );
+    forged_absent.requirements[0].blocker = Some(format!(
+        "{}; WorldFrame {} is DomainAbsent",
+        metadata.blocker,
+        map_authority_observed_status_label(&forged_absent.requirements[0].input_id)
+    ));
     let admitted = admit_map_authority_json(&serde_json::to_vec(&forged_absent).unwrap()).unwrap();
     assert_eq!(
         admitted.gaps()[0].disposition,
         MapAuthorityRequirementDisposition::Absent
     );
     assert_eq!(
-        admitted.gaps()[0].reason,
-        forged_absent.requirements[0].blocker
+        Some(&admitted.gaps()[0].reason),
+        forged_absent.requirements[0].blocker.as_ref()
     );
 
     let mut forged_unavailable = unresolved_projection();
     let metadata =
         map_authority_requirement_metadata(&forged_unavailable.requirements[0].input_id).unwrap();
-    forged_unavailable.requirements[0].blocker = format!(
-        "{}; WorldFrame root status is DomainAbsent",
-        metadata.blocker
-    );
+    forged_unavailable.requirements[0].blocker = Some(format!(
+        "{}; WorldFrame {} is DomainAbsent",
+        metadata.blocker,
+        map_authority_observed_status_label(&forged_unavailable.requirements[0].input_id)
+    ));
     assert!(
         admit_map_authority_json(&serde_json::to_vec(&forged_unavailable).unwrap())
             .unwrap_err()
             .contains("canonical unresolved blocker")
     );
+}
+
+// --------------------------------------------------------------------------
+// The derived seam: the ledger's disposition column decides which inputs may
+// admit; the authenticated frame decides whether they do.
+// --------------------------------------------------------------------------
+
+/// kills: adding, dropping or renaming an entry in
+/// `MAP_AUTHORITY_OWNER_PROVEN_INPUTS` (or changing one of its transcribed
+/// ledger columns) without the authoritative XMAP00 TSV's own
+/// `xmap00_disposition`/`owner_packet`/`portable_path`/`status_accessor`
+/// columns agreeing.
+#[test]
+fn the_owner_proven_admission_table_is_exactly_the_ledgers_disposition_column() {
+    let rows = xmap00_ledger_rows();
+    let semantic: Vec<&BTreeMap<String, String>> = rows
+        .iter()
+        .filter(|row| row["class"] == "semantic")
+        .collect();
+    assert_eq!(semantic.len(), 45, "XMAP00 semantic census drifted");
+
+    let mut ledger_ids: Vec<&str> = semantic.iter().map(|row| row["id"].as_str()).collect();
+    ledger_ids.sort_unstable();
+    assert_eq!(
+        ledger_ids, MAP_AUTHORITY_REQUIRED_INPUTS,
+        "required-input list drifted from the ledger's semantic rows"
+    );
+
+    let ledger_proven: BTreeSet<&str> = semantic
+        .iter()
+        .filter(|row| row["xmap00_disposition"] == "owner_proven_production_consumer")
+        .map(|row| row["id"].as_str())
+        .collect();
+    let code_proven: BTreeSet<&str> = MAP_AUTHORITY_OWNER_PROVEN_INPUTS
+        .iter()
+        .map(|admission| admission.input_id)
+        .collect();
+    assert_eq!(
+        ledger_proven, code_proven,
+        "admission table is not the ledger's owner-proven set"
+    );
+    assert_eq!(code_proven.len(), 3);
+
+    for row in &semantic {
+        let id = row["id"].as_str();
+        let disposition = row["xmap00_disposition"].as_str();
+        match map_authority_owner_proven_admission(id) {
+            Some(admission) => {
+                assert_eq!(disposition, "owner_proven_production_consumer", "{id}");
+                assert_eq!(admission.owner_packet, row["owner_packet"], "{id}");
+                assert_eq!(admission.payload_schema, row["portable_path"], "{id}");
+                assert_eq!(admission.status_accessor, row["status_accessor"], "{id}");
+                assert!(!admission.cadence.is_empty(), "{id}");
+                assert!(!admission.identity_order.is_empty(), "{id}");
+            }
+            None => {
+                assert_eq!(disposition, "unavailable_until_owner_proves", "{id}");
+                // An unproven family keeps its named blocker and nothing else.
+                let metadata = map_authority_requirement_metadata(id).unwrap();
+                assert!(!metadata.blocker.is_empty(), "{id}");
+                assert_eq!(metadata.payload_schema, None, "{id}");
+            }
+        }
+    }
+}
+
+/// kills: reverting `map_authority_projection_from_world_frame` to build every
+/// row through `unavailable_requirement`, or admitting a proven input from
+/// anything other than its own view's `Present` status.
+#[test]
+fn owner_proven_inputs_admit_from_the_frames_own_measured_views() {
+    let manifest = fixture_manifest();
+    let frame = world_frame_with(json!({
+        "combats": [{"combat_id": 11, "generation": 1, "kind": "land", "location_province": 42}],
+        "ended_combats": [{"combat_id": 9, "generation": 2, "lifecycle": "ended"}],
+        "naval_combats": [],
+    }));
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+
+    for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+        let row = requirement(&projection, proven.input_id);
+        assert_eq!(
+            row.disposition,
+            MapAuthorityRequirementDisposition::Admitted,
+            "{} was not admitted from measured data",
+            proven.input_id
+        );
+        assert_eq!(row.payload_schema.as_deref(), Some(proven.payload_schema));
+        assert_eq!(row.cadence.as_deref(), Some(proven.cadence));
+        assert_eq!(row.identity_order.as_deref(), Some(proven.identity_order));
+        assert_eq!(row.blocker, None);
+    }
+
+    let admission = admit_map_authority_projection(&projection).unwrap();
+    assert_eq!(admission.admitted().len(), 3);
+    assert_eq!(
+        admission.gaps().len(),
+        MAP_AUTHORITY_REQUIRED_INPUTS.len() - 3
+    );
+    for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+        assert!(admission.is_admitted(proven.input_id));
+        assert!(
+            !admission
+                .gaps()
+                .iter()
+                .any(|gap| gap.input_id == proven.input_id),
+            "{} is both admitted and a gap",
+            proven.input_id
+        );
+        let admitted = admission
+            .admitted()
+            .iter()
+            .find(|input| input.input_id == proven.input_id)
+            .unwrap();
+        assert_eq!(admitted.owner_packet, proven.owner_packet);
+        assert_eq!(admitted.payload_schema, proven.payload_schema);
+        assert_eq!(admitted.cadence, proven.cadence);
+        assert_eq!(admitted.identity_order, proven.identity_order);
+    }
+
+    // Nothing else moved: the other 42 keep their named blockers.
+    for gap in admission.gaps() {
+        assert!(map_authority_owner_proven_admission(&gap.input_id).is_none());
+        assert!(!gap.reason.is_empty(), "{} lost its blocker", gap.input_id);
+    }
+}
+
+/// kills: admitting a proven input whose view the recording did not measure —
+/// i.e. treating an absent or explicitly unobtained collection as data.
+#[test]
+fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
+    let manifest = fixture_manifest();
+
+    let absent = map_authority_projection_from_world_frame(&world_frame_with(json!({})), &manifest)
+        .unwrap();
+    let unobtained = map_authority_projection_from_world_frame(
+        &world_frame_with(json!({
+            "combats": Value::Null,
+            "ended_combats": Value::Null,
+            "naval_combats": Value::Null,
+        })),
+        &manifest,
+    )
+    .unwrap();
+
+    for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+        let blocker = map_authority_requirement_metadata(proven.input_id)
+            .unwrap()
+            .blocker;
+        let label = map_authority_observed_status_label(proven.input_id);
+        let absent_row = requirement(&absent, proven.input_id);
+        assert_eq!(
+            absent_row.disposition,
+            MapAuthorityRequirementDisposition::Absent
+        );
+        assert_eq!(
+            absent_row.blocker.as_deref(),
+            Some(format!("{blocker}; WorldFrame {label} is DomainAbsent").as_str())
+        );
+        assert_eq!(absent_row.payload_schema, None);
+
+        let unobtained_row = requirement(&unobtained, proven.input_id);
+        assert_eq!(
+            unobtained_row.disposition,
+            MapAuthorityRequirementDisposition::Unavailable
+        );
+        assert_eq!(
+            unobtained_row.blocker.as_deref(),
+            Some(format!("{blocker}; WorldFrame {label} is DomainUnavailable").as_str())
+        );
+        assert_eq!(unobtained_row.payload_schema, None);
+    }
+
+    for projection in [&absent, &unobtained] {
+        let admission = admit_map_authority_projection(projection).unwrap();
+        assert!(admission.admitted().is_empty());
+        assert_eq!(admission.gaps().len(), MAP_AUTHORITY_REQUIRED_INPUTS.len());
+        assert_eq!(
+            refuse_product_map_until_xmap01(&admission).gap_ids.len(),
+            MAP_AUTHORITY_REQUIRED_INPUTS.len()
+        );
+    }
+}
+
+/// kills: letting a caller mark an unproven family admitted, or letting an
+/// admitted row carry a contract other than the one the owner proved.
+#[test]
+fn an_input_without_owner_proven_evidence_can_never_be_admitted() {
+    let unproven = "control.controller_by_province";
+    assert!(map_authority_owner_proven_admission(unproven).is_none());
+    let mut forged = unresolved_projection();
+    let index = forged
+        .requirements
+        .iter()
+        .position(|row| row.input_id == unproven)
+        .unwrap();
+    forged.requirements[index].disposition = MapAuthorityRequirementDisposition::Admitted;
+    forged.requirements[index].payload_schema = Some("WorldFrame.map.control_by_province".into());
+    forged.requirements[index].cadence = Some("one decoded view per canonical recorded hour".into());
+    forged.requirements[index].identity_order = Some("province id ascending".into());
+    forged.requirements[index].blocker = None;
+    assert!(admit_map_authority_projection(&forged)
+        .unwrap_err()
+        .contains("has no owner-proven production admission"));
+
+    // A proven row still cannot invent its own contract.
+    for (field, value) in [
+        ("payload_schema", "WorldFrame.selected_present"),
+        ("cadence", "whenever the viewer asks"),
+        ("identity_order", "caller order"),
+    ] {
+        let mut drifted = unresolved_projection();
+        drifted.requirements[0].disposition = MapAuthorityRequirementDisposition::Admitted;
+        let proven = map_authority_owner_proven_admission(&drifted.requirements[0].input_id)
+            .expect("requirements[0] is an owner-proven row");
+        drifted.requirements[0].payload_schema = Some(proven.payload_schema.into());
+        drifted.requirements[0].cadence = Some(proven.cadence.into());
+        drifted.requirements[0].identity_order = Some(proven.identity_order.into());
+        drifted.requirements[0].blocker = None;
+        match field {
+            "payload_schema" => drifted.requirements[0].payload_schema = Some(value.into()),
+            "cadence" => drifted.requirements[0].cadence = Some(value.into()),
+            _ => drifted.requirements[0].identity_order = Some(value.into()),
+        }
+        assert!(
+            admit_map_authority_projection(&drifted)
+                .unwrap_err()
+                .contains("owner-proven payload/cadence/identity-order contract"),
+            "{field} drift was accepted"
+        );
+    }
+}
+
+/// kills: dropping the frame-derivation witness (or checking it only at the
+/// JSON door). Without it a caller can copy an admitted projection's rows into
+/// a hand-assembled projection, or edit a derived one, and have the in-process
+/// door accept the admission.
+#[test]
+fn only_a_frame_derived_projection_can_carry_an_admission() {
+    let manifest = fixture_manifest();
+    let frame = world_frame_with(json!({
+        "combats": [],
+        "ended_combats": [],
+        "naval_combats": [],
+    }));
+    let derived = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert!(derived.is_frame_derived());
+    assert_eq!(
+        admit_map_authority_projection(&derived)
+            .unwrap()
+            .admitted()
+            .len(),
+        3
+    );
+
+    // Byte-identical rows, assembled by a caller rather than derived.
+    let copied = MapAuthorityProjection::from_untrusted_parts(
+        derived.schema.clone(),
+        derived.hour_index,
+        derived.content_manifest_digest_sha256.clone(),
+        derived.product_modset_sha256.clone(),
+        derived.effective_vfs_manifest_sha256.clone(),
+        derived.requirements.clone(),
+    );
+    assert!(!copied.is_frame_derived());
+    assert!(admit_map_authority_projection(&copied)
+        .unwrap_err()
+        .contains("not derived from an authenticated WorldFrame"));
+
+    // Editing a derived projection breaks the witness too — including edits to
+    // rows that are not themselves admitted.
+    let mut edited_gap = derived.clone();
+    let gap_index = edited_gap
+        .requirements
+        .iter()
+        .position(|row| row.disposition != MapAuthorityRequirementDisposition::Admitted)
+        .unwrap();
+    edited_gap.requirements[gap_index].blocker = Some("caller says complete".into());
+    assert!(!edited_gap.is_frame_derived());
+    assert!(admit_map_authority_projection(&edited_gap).is_err());
+
+    let mut edited_hour = derived.clone();
+    edited_hour.hour_index += 1;
+    assert!(!edited_hour.is_frame_derived());
+    assert!(admit_map_authority_projection(&edited_hour)
+        .unwrap_err()
+        .contains("not derived from an authenticated WorldFrame"));
+
+    // A projection with no admissions at all needs no witness: the untrusted
+    // gap report stays a supported shape.
+    assert!(admit_map_authority_projection(&unresolved_projection()).is_ok());
+}
+
+/// kills: admitting `combat.naval_air_epoch` on the merged root status alone.
+/// That status lets any measured sibling dominate, so an unread naval census
+/// would be presented as a measured-empty one.
+#[test]
+fn the_naval_air_epoch_needs_its_own_partition_measured_not_a_measured_sibling() {
+    let manifest = fixture_manifest();
+    let sibling_only = world_frame_with(json!({
+        "naval_combats": Value::Null,
+        "naval_air": {"_r2_air_combat_losses_live": []},
+    }));
+    // Precondition: the merged root status this input's ledger accessor names
+    // really does read Present here, while the naval census does not.
+    assert_eq!(
+        sibling_only.naval_air_combat_status(),
+        replay_core::ViewStatus::Present
+    );
+    assert_eq!(
+        sibling_only.naval_air_combat().naval_combats_status,
+        replay_core::ViewStatus::DomainUnavailable
+    );
+
+    let projection = map_authority_projection_from_world_frame(&sibling_only, &manifest).unwrap();
+    let row = requirement(&projection, "combat.naval_air_epoch");
+    assert_eq!(
+        row.disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+        "an unread naval census was admitted behind a measured sibling"
+    );
+    let blocker = map_authority_requirement_metadata("combat.naval_air_epoch")
+        .unwrap()
+        .blocker;
+    assert_eq!(
+        row.blocker.as_deref(),
+        Some(format!("{blocker}; WorldFrame naval_combats_status is DomainUnavailable").as_str()),
+        "the refusal must name the census it actually read, not the root it did not"
+    );
+    let admission = admit_map_authority_projection(&projection).unwrap();
+    assert!(!admission.is_admitted("combat.naval_air_epoch"));
+
+    // The naval census on its own is what admits it.
+    let measured = world_frame_with(json!({"naval_combats": []}));
+    let projection = map_authority_projection_from_world_frame(&measured, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "combat.naval_air_epoch").disposition,
+        MapAuthorityRequirementDisposition::Admitted
+    );
+}
+
+/// kills: admitting `combat.land_terminal_detail` straight off
+/// `ended_combats_status`. That status stays `Present` after the decoder skips
+/// malformed terminal rows, so the raw reading turns a census that lost rows
+/// into a measured one.
+#[test]
+fn a_terminal_census_that_dropped_rows_is_not_a_measured_one() {
+    let manifest = fixture_manifest();
+    let lossy = world_frame_with(json!({"ended_combats": [7]}));
+    // Precondition: the raw status really does still read Present, and the
+    // decoder really does record the drop in this exact vocabulary.
+    assert_eq!(
+        lossy.ended_combats_status(),
+        replay_core::ViewStatus::Present
+    );
+    assert!(lossy.ended_combats().is_empty());
+    assert!(
+        lossy.coverage_warnings().iter().any(|warning| {
+            warning.starts_with("ended_combats[") && warning.contains("row skipped")
+        }),
+        "decoder drop vocabulary moved; the completeness check no longer sees it: {:?}",
+        lossy.coverage_warnings()
+    );
+
+    let projection = map_authority_projection_from_world_frame(&lossy, &manifest).unwrap();
+    let row = requirement(&projection, "combat.land_terminal_detail");
+    assert_eq!(
+        row.disposition,
+        MapAuthorityRequirementDisposition::Unavailable
+    );
+    let blocker = map_authority_requirement_metadata("combat.land_terminal_detail")
+        .unwrap()
+        .blocker;
+    assert_eq!(
+        row.blocker.as_deref(),
+        Some(
+            format!("{blocker}; WorldFrame certified ended_combats_status is DomainUnavailable")
+                .as_str()
+        )
+    );
+    assert!(!admit_map_authority_projection(&projection)
+        .unwrap()
+        .is_admitted("combat.land_terminal_detail"));
+
+    // A clean terminal census still admits, so the check is a completeness
+    // gate and not a blanket refusal.
+    let clean = world_frame_with(json!({
+        "ended_combats": [{"combat_id": 9, "generation": 2, "lifecycle": "ended"}],
+    }));
+    assert!(!clean.coverage_warnings().iter().any(|warning| {
+        warning.starts_with("ended_combats[") && warning.contains("row skipped")
+    }));
+    let projection = map_authority_projection_from_world_frame(&clean, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "combat.land_terminal_detail").disposition,
+        MapAuthorityRequirementDisposition::Admitted
+    );
+}
+
+/// kills: wiring a proven input's derivation to a neighbouring view's status.
+/// Each proven input must track its own view and nothing else.
+#[test]
+fn each_proven_input_tracks_only_its_own_view() {
+    let manifest = fixture_manifest();
+    let key_of = |input_id: &str| match input_id {
+        "combat.land_active_epoch" => "combats",
+        "combat.land_terminal_detail" => "ended_combats",
+        _ => "naval_combats",
+    };
+    for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+        let mut snapshot = Map::new();
+        for other in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+            snapshot.insert(
+                key_of(other.input_id).to_string(),
+                if other.input_id == proven.input_id {
+                    Value::Null
+                } else {
+                    json!([])
+                },
+            );
+        }
+        let projection = map_authority_projection_from_world_frame(
+            &world_frame_with(Value::Object(snapshot)),
+            &manifest,
+        )
+        .unwrap();
+        for other in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+            let expected = if other.input_id == proven.input_id {
+                MapAuthorityRequirementDisposition::Unavailable
+            } else {
+                MapAuthorityRequirementDisposition::Admitted
+            };
+            assert_eq!(
+                requirement(&projection, other.input_id).disposition,
+                expected,
+                "unobtaining {} moved {}",
+                proven.input_id,
+                other.input_id
+            );
+        }
+    }
+}
+
+/// kills: dropping the JSON door's admission refusal, which would let bytes
+/// that never saw a WorldFrame assert that a proven input was measured.
+#[test]
+fn caller_supplied_bytes_cannot_establish_an_admission() {
+    let manifest = fixture_manifest();
+    let frame = world_frame_with(json!({
+        "combats": [],
+        "ended_combats": [],
+        "naval_combats": [],
+    }));
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    // The same value admits in process, where it was derived from the frame.
+    assert_eq!(
+        admit_map_authority_projection(&projection)
+            .unwrap()
+            .admitted()
+            .len(),
+        3
+    );
+    let error = admit_map_authority_json(&serde_json::to_vec(&projection).unwrap()).unwrap_err();
+    assert!(
+        error.contains("derived from the authenticated WorldFrame")
+            && error.contains("combat.land_active_epoch"),
+        "{error}"
+    );
+}
+
+/// kills: letting an admitted row keep a blocker, or a refused row drop one —
+/// either would make the gap report's reason strings unreliable.
+#[test]
+fn admitted_rows_carry_no_blocker_and_refused_rows_must_keep_theirs() {
+    let mut admitted_with_blocker = unresolved_projection();
+    let proven = map_authority_owner_proven_admission(&admitted_with_blocker.requirements[0].input_id)
+        .expect("requirements[0] is an owner-proven row");
+    admitted_with_blocker.requirements[0].disposition =
+        MapAuthorityRequirementDisposition::Admitted;
+    admitted_with_blocker.requirements[0].payload_schema = Some(proven.payload_schema.into());
+    admitted_with_blocker.requirements[0].cadence = Some(proven.cadence.into());
+    admitted_with_blocker.requirements[0].identity_order = Some(proven.identity_order.into());
+    assert!(admit_map_authority_projection(&admitted_with_blocker)
+        .unwrap_err()
+        .contains("is admitted and carries a blocker"));
+
+    let mut refused_without_blocker = unresolved_projection();
+    refused_without_blocker.requirements[0].blocker = None;
+    assert!(admit_map_authority_projection(&refused_without_blocker)
+        .unwrap_err()
+        .contains("is refused without a blocker"));
+
+    // A proven input cannot be refused while its own view reported Present:
+    // the derivation turns that status into an admission, so the pairing is a
+    // contradiction rather than a conservative refusal.
+    let mut contradictory = unresolved_projection();
+    let blocker = map_authority_requirement_metadata(&contradictory.requirements[0].input_id)
+        .unwrap()
+        .blocker;
+    contradictory.requirements[0].blocker = Some(format!(
+        "{blocker}; WorldFrame {} is Present",
+        map_authority_observed_status_label(&contradictory.requirements[0].input_id)
+    ));
+    assert!(admit_map_authority_projection(&contradictory)
+        .unwrap_err()
+        .contains("canonical unresolved blocker"));
+    // The same pairing stays legal for a family whose owner still owes a proof.
+    let mut unproven_present = unresolved_projection();
+    let index = unproven_present
+        .requirements
+        .iter()
+        .position(|row| map_authority_owner_proven_admission(&row.input_id).is_none())
+        .unwrap();
+    let blocker = map_authority_requirement_metadata(&unproven_present.requirements[index].input_id)
+        .unwrap()
+        .blocker;
+    unproven_present.requirements[index].blocker = Some(format!(
+        "{blocker}; WorldFrame {} is Present",
+        map_authority_observed_status_label(&unproven_present.requirements[index].input_id)
+    ));
+    assert!(admit_map_authority_projection(&unproven_present).is_ok());
 }
 
 fn shipping_performance_run(source: &str) -> &str {
