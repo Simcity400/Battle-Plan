@@ -3962,6 +3962,139 @@ function Read-ProductionSuspendingCodeMutationBaseline {
     return $pinned
 }
 
+function Get-ProductionSuspendingCodeMutationRepinInstruction {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    # Named, runnable, and derived from the repo root the caller is actually in,
+    # so a worktree lane is not told to repin the main checkout.
+    #
+    # Why this exists. Lane GR's purge removed two pinned hook sites in
+    # land_combat_detail_events_live without regenerating the baseline, and the
+    # only thing the gate said was that a case called 'thread-suspending code
+    # mutation matches the accepted baseline' had failed. Every -Mode Final and
+    # -Mode Release on the tree then stopped at that gate, for everyone, and the
+    # route back was to hand-edit a 1,600-line JSON pin. A gate that can be put
+    # into a state nobody is told how to leave is a gate that gets deleted, so
+    # the drift now names the command that regenerates the pin.
+    #
+    # This is NOT an invitation to repin without reading. The switch prints
+    # every difference it is accepting and refuses to run while any other
+    # closure case is failing; accepting the inventory stays a human review
+    # decision, exactly as the roster comment in the test file says.
+    $script = Join-Path ([IO.Path]::GetFullPath($RepoRoot)) `
+        'extractor\native\scripts\Test-ProductionInteractionClosure.ps1'
+    # The path is QUOTED. It is interpolated from the caller's repo root, and a
+    # checkout under a directory with a space ("C:\HOI4 Project\...") otherwise
+    # produces a command PowerShell splits at the space - a named remediation
+    # that is not runnable is not a remediation.
+    return (
+        'To accept the measured inventory, READ the differences above and then run: ' +
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$script`" " +
+        '-AcceptMeasuredSuspendingBaseline'
+    )
+}
+
+function Write-ProductionSuspendingCodeMutationBaseline {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Measured
+    )
+
+    # Written through the same Get-ProductionSuspendingCodeMutationBaseline
+    # shape the comparison reads, so the regenerator and the gate can never
+    # disagree about the format: there is one producer of this document.
+    #
+    # Depth 6 is not arbitrary. The document is
+    # baseline -> units[] -> direct_evidence[]/delegated_patchers[] -> fields,
+    # and ConvertTo-Json silently replaces anything deeper than -Depth with the
+    # type name, which would write a pin that reads back as agreement with
+    # nothing. Round-tripped below rather than trusted.
+    $json = ($Measured | ConvertTo-Json -Depth 6)
+    $roundTripped = ($json | ConvertFrom-Json)
+    $defects = @(Get-ProductionSuspendingCodeMutationBaselineDefects -Pinned $roundTripped)
+    if ($defects.Count -gt 0) {
+        throw (
+            @("refusing to write a malformed suspending code mutation baseline: $Path") +
+            @($defects | ForEach-Object { "  $_" })
+        ) -join [Environment]::NewLine
+    }
+    $residual = @(Compare-ProductionSuspendingCodeMutationBaseline `
+        -Measured $Measured -Pinned $roundTripped)
+    if ($residual.Count -gt 0) {
+        throw (
+            @("refusing to write a suspending code mutation baseline that does not " +
+              "read back as what was measured: $Path") +
+            @($residual | ForEach-Object { "  $_" })
+        ) -join [Environment]::NewLine
+    }
+    # Written beside the target and renamed over it, never truncated in place.
+    # Set-Content opens the real pin for writing before it has written a byte,
+    # so a cancellation, a crash or an I/O error between truncation and
+    # completion destroyed the previous VALID pin and left a partial document
+    # behind. The next gate would refuse that file - correctly - but the
+    # regenerator would have taken away the only good copy on the way. The
+    # rename is the last step and replaces one complete document with another.
+    $temporary = "$Path.regenerating"
+    if (Test-Path -LiteralPath $temporary) {
+        Remove-Item -LiteralPath $temporary -Force
+    }
+    try {
+        Set-Content -LiteralPath $temporary -Value $json -Encoding UTF8
+        # [IO.File]::Replace, not Move-Item -Force. Windows PowerShell 5.1's
+        # filesystem provider implements the move as FileInfo.MoveTo, which has
+        # no overwrite semantics for an existing leaf file: -Force does not make
+        # it replace one, it throws, the finally below removes the temporary,
+        # and the regenerator prints "accepting" and then changes nothing. That
+        # is worse than the bug it was written to fix, and it would never have
+        # worked - the switch had not been exercised against an existing pin
+        # when it was introduced. Proved both ways now: see
+        # runs/ib_harness_fixes/repin_05_* (drift -> repin -> PASS).
+        #
+        # Replace() is the atomic same-volume swap that was intended: both files
+        # are in the same directory by construction, and the destination is
+        # required to exist, which it does whenever there is drift to accept.
+        #
+        # The backup path is REAL, not $null. Windows PowerShell 5.1 converts a
+        # $null argument to an empty string when binding a [string] parameter,
+        # and File.Replace rejects an empty backup path with "The path is not of
+        # a legal form" - measured, not assumed, and it is why this function is
+        # now exercised against an existing pin before being believed. The
+        # backup is a second safety net while the swap happens and is removed
+        # once the new pin is in place.
+        if (Test-Path -LiteralPath $Path -PathType Container) {
+            # Not a "first creation": a directory standing where the pin belongs
+            # is a broken tree, and the Move-Item branch below would cheerfully
+            # move the temporary INTO it and report success.
+            throw (
+                'refusing to write the suspending code mutation baseline: a ' +
+                "directory exists where the pin belongs: $Path"
+            )
+        }
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            # A UNIQUE backup name, so this never has to delete a pre-existing
+            # one to make room. Deleting `<pin>.previous` first would destroy the
+            # last valid copy in exactly the case that matters - the active pin
+            # already malformed, the backup the only good file - if the Replace
+            # then threw.
+            $backup = "$Path.previous.$([Guid]::NewGuid().ToString('N'))"
+            [IO.File]::Replace($temporary, $Path, $backup)
+            # Only after Replace has returned. Until this line the previous pin
+            # exists under $backup, so every failure path above still has a
+            # complete document on disk.
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            # Genuinely nothing there: nothing to replace, and nothing to lose.
+            Move-Item -LiteralPath $temporary -Destination $Path
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Compare-ProductionSuspendingCodeMutationBaseline {
     param(
         [Parameter(Mandatory = $true)]$Measured,

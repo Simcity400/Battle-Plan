@@ -1,5 +1,14 @@
 ﻿[CmdletBinding()]
-param()
+param(
+    # Regenerates the accepted thread-suspending code-mutation inventory from
+    # what this tree currently measures, and does nothing else. Never passed by
+    # Invoke-CentralRustValidation.ps1: this is a human operation, it prints
+    # every difference it accepts, and it refuses while any other closure case
+    # is failing so it cannot be used to paper over unrelated breakage. The
+    # drift message names it, because the drift it answers is otherwise a dead
+    # end - see Get-ProductionSuspendingCodeMutationRepinInstruction.
+    [switch]$AcceptMeasuredSuspendingBaseline
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -438,9 +447,25 @@ $cases++
 # the case fails when a NEW patcher appears, when a unit starts suspending, when
 # a site moves to another file, or when a pinned site is gone. The roster is
 # printed either way - accepting these sites is not the same as hiding them.
-$suspendingCodeMutationFindings = Get-ProductionSuspendingCodeMutationFindings `
-    -RepoRoot $repoRoot `
-    -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $repoRoot)
+#
+# The measurement itself is fenced. Get-ProductionInteractionSourceTreeAuthority
+# walks the production lane roots, and a lane directory that has just been
+# purged makes it throw - which killed this whole script with a raw PowerShell
+# exception, before any later case ran and before anything named the pin that
+# needed regenerating. An inventory that cannot be MEASURED is a failed case
+# with a name, exactly like an inventory that disagrees with the pin.
+$suspendingRepinInstruction =
+    Get-ProductionSuspendingCodeMutationRepinInstruction -RepoRoot $repoRoot
+$suspendingCodeMutationFindings = $null
+$suspendingMeasurementFailure = ''
+try {
+    $suspendingCodeMutationFindings = Get-ProductionSuspendingCodeMutationFindings `
+        -RepoRoot $repoRoot `
+        -Authority (Get-ProductionInteractionSourceTreeAuthority -RepoRoot $repoRoot)
+}
+catch {
+    $suspendingMeasurementFailure = [string]$_.Exception.Message
+}
 # On stderr, not stdout. This script's stdout is a single JSON document and
 # Invoke-CentralRustValidation.ps1 pipes the whole captured transcript into
 # ConvertFrom-Json; printing the roster to stdout put 131 lines of prose in
@@ -449,27 +474,42 @@ $suspendingCodeMutationFindings = Get-ProductionSuspendingCodeMutationFindings `
 # printed - that is the point of the comment above - and a caller that wants it
 # in a log redirects 2>&1, which is what the deployment-acceptance wrapper
 # already does.
-[Console]::Error.WriteLine((Format-ProductionSuspendingCodeMutationFindings `
-    -Findings $suspendingCodeMutationFindings))
-$measuredSuspendingBaseline = Get-ProductionSuspendingCodeMutationBaseline `
-    -Findings $suspendingCodeMutationFindings
 $suspendingBaselinePath =
     Get-ProductionSuspendingCodeMutationBaselinePath -RepoRoot $repoRoot
-$suspendingBaselineDifferences = @(
-    try {
-        Compare-ProductionSuspendingCodeMutationBaseline `
-            -Measured $measuredSuspendingBaseline `
-            -Pinned (Read-ProductionSuspendingCodeMutationBaseline `
-                -Path $suspendingBaselinePath)
-    }
-    catch {
-        $_.Exception.Message
-    }
-)
+$measuredSuspendingBaseline = $null
+if ($suspendingMeasurementFailure) {
+    $suspendingBaselineDifferences = @(
+        "the inventory could not be measured at all: $suspendingMeasurementFailure"
+    )
+}
+else {
+    [Console]::Error.WriteLine((Format-ProductionSuspendingCodeMutationFindings `
+        -Findings $suspendingCodeMutationFindings))
+    $measuredSuspendingBaseline = Get-ProductionSuspendingCodeMutationBaseline `
+        -Findings $suspendingCodeMutationFindings
+    $suspendingBaselineDifferences = @(
+        try {
+            Compare-ProductionSuspendingCodeMutationBaseline `
+                -Measured $measuredSuspendingBaseline `
+                -Pinned (Read-ProductionSuspendingCodeMutationBaseline `
+                    -Path $suspendingBaselinePath)
+        }
+        catch {
+            $_.Exception.Message
+        }
+    )
+}
 foreach ($difference in $suspendingBaselineDifferences) {
     [Console]::Error.WriteLine("  baseline drift: $difference")
 }
-Assert-ClosureCase 'thread-suspending code mutation matches the accepted baseline' (
+if ($suspendingBaselineDifferences.Count -ne 0) {
+    # The instruction goes next to the drift, not only into the throw at the
+    # bottom: -Mode Final runs this script as a child and reports only its exit
+    # code, so the stderr the operator actually reads has to carry the way out.
+    [Console]::Error.WriteLine("  $suspendingRepinInstruction")
+}
+$suspendingBaselineCase = 'thread-suspending code mutation matches the accepted baseline'
+Assert-ClosureCase $suspendingBaselineCase (
     $suspendingBaselineDifferences.Count -eq 0
 )
 $cases++
@@ -803,18 +843,73 @@ Assert-ClosureCase 'isolation document binds injected observation and minimal ho
 )
 $cases++
 
+# The regeneration path. Deliberately at the very bottom: it can only run once
+# every other case has had its verdict, so it is impossible to repin a tree that
+# is failing for some other reason.
+if ($AcceptMeasuredSuspendingBaseline) {
+    $unrelated = @($failedCases | Where-Object { $_ -cne $suspendingBaselineCase })
+    if ($unrelated.Count -ne 0) {
+        throw (
+            'refusing to accept a measured suspending-code-mutation inventory while ' +
+            'other interaction-closure cases are failing: ' +
+            (($unrelated | ForEach-Object { "`n  - $_" }) -join '')
+        )
+    }
+    if ($suspendingMeasurementFailure) {
+        throw (
+            'refusing to accept an inventory that could not be measured: ' +
+            $suspendingMeasurementFailure
+        )
+    }
+    if ($suspendingBaselineDifferences.Count -eq 0) {
+        [Console]::Error.WriteLine(
+            'accepted suspending code mutation baseline already matches this tree; nothing written'
+        )
+    }
+    else {
+        foreach ($difference in $suspendingBaselineDifferences) {
+            [Console]::Error.WriteLine("  accepting: $difference")
+        }
+        Write-ProductionSuspendingCodeMutationBaseline `
+            -Path $suspendingBaselinePath `
+            -Measured $measuredSuspendingBaseline
+    }
+    [pscustomobject]@{
+        schema = 'battle-plan.production_interaction_closure_test.v1'
+        status = 'REPINNED'
+        cases = $cases
+        accepted_differences = @($suspendingBaselineDifferences)
+        baseline = [IO.Path]::GetFullPath($suspendingBaselinePath)
+        driver = [IO.Path]::GetFullPath($driverPath)
+        policy = 'passive_injected_observer'
+    } | ConvertTo-Json -Depth 4
+    # REPINNED is not PASS, and Invoke-CentralRustValidation.ps1 admits only
+    # PASS. Re-run the gate without this switch: the accepted inventory is a
+    # review decision, and the run that certifies the tree must be one that
+    # could still have failed.
+    return
+}
+
 if ($failedCases.Count -ne 0) {
+    $remediation = @()
+    if ($failedCases -ccontains $suspendingBaselineCase) {
+        $remediation = @($suspendingRepinInstruction)
+    }
     [pscustomobject]@{
         schema = 'battle-plan.production_interaction_closure_test.v1'
         status = 'FAIL'
         cases = $cases
         failed_cases = @($failedCases)
+        baseline_drift = @($suspendingBaselineDifferences)
+        remediation = @($remediation)
         driver = [IO.Path]::GetFullPath($driverPath)
         policy = 'passive_injected_observer'
     } | ConvertTo-Json -Depth 4
     throw (
         'production interaction-closure test failed: ' +
-        (($failedCases | ForEach-Object { "`n  - $_" }) -join '')
+        (($failedCases | ForEach-Object { "`n  - $_" }) -join '') +
+        (($suspendingBaselineDifferences | ForEach-Object { "`n    drift: $_" }) -join '') +
+        $(if ($remediation.Count -ne 0) { "`n  $suspendingRepinInstruction" } else { '' })
     )
 }
 

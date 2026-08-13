@@ -1,0 +1,53 @@
+# Extractor workspace nextest profile.
+#
+# WHY THIS FILE EXISTS
+#
+# The Extractor workspace had no nextest configuration at all, so it ran on
+# cargo-nextest's built-in defaults. Those mark a test SLOW after 60 s and then
+# do nothing further, forever. A test that genuinely hangs therefore wedges the
+# whole battery with no name attached to it, and the operator sees a progress
+# counter that has stopped -- which is indistinguishable from a test that is
+# merely taking a long time. That ambiguity cost this repo a full diagnosis
+# cycle: an inline_detour run that stalled and then completed in 42.81 s was
+# reported as a hang, and the actual defect (a test whose stop condition is a
+# rare OS interleaving, measured between 1.7 s and 176.8 s over 13 runs) was
+# only found by re-measuring from scratch.
+#
+# `terminate-after` is the whole point. With it, a hung test is killed and
+# REPORTED, by name, as a TIMEOUT, and the run fails; without it there is no
+# upper bound on any test in this workspace.
+#
+# This file deliberately does NOT set a `default-filter`. The Replay workspace's
+# .config/nextest.toml carries a large one and is passed explicitly with
+# --config-file; adding one here would silently change which Extractor tests
+# run, which is not what this file is for.
+#
+# The runner reaches this file by discovery, not by a flag: nextest reads
+# .config/nextest.toml from the workspace root, and Invoke-CentralRustValidation
+# .ps1 passes --config-file/--profile only for the Replay workspace.
+
+[profile.default]
+# period: how long a test runs before it is reported SLOW, by name, and how
+#   long each subsequent period lasts.
+# terminate-after: the period at which termination BEGINS, counted from the
+#   start of the test - not the number of further periods after the first SLOW
+#   report. 4 periods x 60 s = termination begins at 240 s; the grace period
+#   below then allows 10 s for a clean shutdown before the process is forced,
+#   so the worst case is about 250 s.
+#   The slowest legitimate Extractor test measured on this machine is well
+#   inside 60 s once freeze::tests' rare-event wait moved to the evidence tier,
+#   so 240 s is a 4x margin over the first SLOW report: generous for a real
+#   test and still bounded for a hung one.
+# on-timeout: the terminated test is a TIMEOUT failure, not a silent pass.
+slow-timeout = { period = "60s", terminate-after = 4, grace-period = "10s", on-timeout = "fail" }
+# So the run's final summary names anything that got near the bound, instead of
+# only what failed. A test that starts creeping toward the timeout is the early
+# warning that it is about to become a wedge.
+final-status-level = "slow"
+
+# The evidence tier: tests that need real OS timing races or long stress to
+# prove anything. `-Mode Evidence` runs these (--run-ignored all); Final does
+# not. They are allowed to take much longer, and are still bounded.
+[profile.evidence]
+slow-timeout = { period = "120s", terminate-after = 5, grace-period = "10s", on-timeout = "fail" }
+final-status-level = "slow"

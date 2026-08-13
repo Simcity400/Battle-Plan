@@ -50,6 +50,69 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+
+# THE TREE THIS VALIDATES IS THE ONE THIS FILE LIVES IN, not the one you are
+# standing in. Everything below derives from $PSScriptRoot, so invoking the
+# MAIN checkout's copy of this script by absolute path while working in a
+# worktree validates the main checkout and reports green without ever having
+# compiled the caller's diff. That is the worst failure a gate can have: it does
+# not fail, it certifies the wrong tree, and the lane finds out at merge.
+#
+# Found by lane IC (2026-08-13). Refused rather than warned, because a warning
+# on a green run is exactly the thing an operator scrolls past.
+#
+# The refusal is deliberately narrow: it fires ONLY when both the caller's
+# directory and this script's directory resolve to git working trees AND those
+# trees differ. A caller standing outside any git tree, or a machine without
+# git, gets a warning instead - there is nothing to compare, and refusing on
+# absent evidence would break invocations that are not the defect.
+function Test-CentralValidationTreeMatchesCaller {
+    param([Parameter(Mandatory = $true)][string]$ScriptRepoRoot)
+
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -eq $git) {
+        Write-Warning (
+            'git is not on PATH, so this run cannot check that it is validating the ' +
+            'tree you are standing in. It validates ' + $ScriptRepoRoot + '.'
+        )
+        return
+    }
+    # `git -C <dir>` so the answer is about that directory, and 2>$null because
+    # "not a git repository" is an ANSWER here, not an error to propagate.
+    $callerTree = (& git -C (Get-Location).Path rev-parse --show-toplevel 2>$null)
+    $callerOk = ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($callerTree))
+    $scriptTree = (& git -C $ScriptRepoRoot rev-parse --show-toplevel 2>$null)
+    $scriptOk = ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($scriptTree))
+    if (-not $callerOk -or -not $scriptOk) {
+        Write-Warning (
+            'could not establish whether this run validates the tree you are standing ' +
+            'in; it validates ' + $ScriptRepoRoot + '.'
+        )
+        return
+    }
+    # git answers with forward slashes; compare as resolved full paths so the
+    # separator and any 8.3/relative spelling cannot make two equal trees differ.
+    $callerFull = [IO.Path]::GetFullPath(($callerTree.Trim() -replace '/', '\'))
+    $scriptFull = [IO.Path]::GetFullPath(($scriptTree.Trim() -replace '/', '\'))
+    if ($callerFull -ieq $scriptFull) {
+        return
+    }
+    throw (
+        "refusing to validate a different working tree than the caller's." +
+        [Environment]::NewLine +
+        "  this script validates: $scriptFull" +
+        [Environment]::NewLine +
+        "  you are standing in:   $callerFull" +
+        [Environment]::NewLine +
+        'Everything this runner does is derived from its own location, so this run ' +
+        'would have reported on a tree that does not contain your changes. Invoke ' +
+        'YOUR checkout''s copy instead:' +
+        [Environment]::NewLine +
+        "  $callerFull\extractor\native\scripts\Invoke-CentralRustValidation.ps1"
+    )
+}
+Test-CentralValidationTreeMatchesCaller -ScriptRepoRoot $repoRoot
+
 $targetDir = Join-Path $repoRoot ".cargo-target"
 $timingReportDir = Join-Path $repoRoot ".cargo-timings"
 $nextestConfig = Join-Path $repoRoot ".config\nextest.toml"
@@ -1233,7 +1296,14 @@ try {
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "soak"
                 }
                 "Evidence" {
-                    $evidenceProfileSelection = if ($workspaceName -eq "Replay") { @("--profile", "evidence") } else { @() }
+                    # Both workspaces now define an `evidence` profile: Replay's
+                    # in the config passed with --config-file, Extractor's in
+                    # its own .config\nextest.toml, which nextest discovers from
+                    # the workspace root. Selecting it for Extractor too is what
+                    # gives the ignored, deliberately long tests a bound of
+                    # their own instead of the default profile's, which is sized
+                    # for the routine gate and would kill them.
+                    $evidenceProfileSelection = @("--profile", "evidence")
                     $arguments = @("nextest", "run", "--no-fail-fast", "--run-ignored", "all") +
                         $nextestConfigSelection + $evidenceProfileSelection +
                         $timingSelection + $featureSelection + $targetSelection + $selection
