@@ -15,6 +15,15 @@
 - The hot path is copying bytes. Discovery runs once, invalidated only by proven
   change signals; validation runs post-bracket on the frozen copy. Per-hour
   rediscovery is a defect class.
+- **Capture is attach-and-play (owner, 2026-08-13):** the operator never
+  interacts with the client for the recorder's benefit — no staged panels, no
+  timed actions, no capture-this-moment fixture requests. Every datum is
+  located by RE in authoritative state and read passively on every capture. A
+  value that only materialises after client interaction gets its authoritative
+  upstream source found by RE, or is derived at replay from recorded state +
+  installed content + engine logic, or is refused/descheduled with a named reason.
+  "Ask the owner to stage it during a capture" is never a valid residual or
+  fixture row.
 - Fail-closed: unproven values are refused with a named wire reason. Hour
   misattribution is the owner stop condition. Zero-loss-typical is the goal;
   guaranteed zero is impossible and must not be claimed.
