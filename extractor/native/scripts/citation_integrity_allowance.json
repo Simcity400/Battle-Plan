@@ -1089,6 +1089,7 @@
       "attach_log.rs:132937": 1,
       "attach_log.rs:13851": 1,
       "attach_log.rs:58783": 1,
+      "attach_log.rs:84393": 1,
       "attach_log.rs:89496": 1,
       "capitulation_war_state_live/src/lib.rs:12-15": 1,
       "character_presentation_g8.rs:182-183": 1,
@@ -1123,6 +1124,7 @@
       "lanes/weather_live/domain24_weather_sandstorm_v3.rs:3-4": 1,
       "map_authority.rs:18": 1,
       "map_authority.rs:202": 1,
+      "map_icon_runtime.rs:1299": 1,
       "map_viewer/src/mapmode_air.rs:271": 1,
       "map_viewer/src/naval_supremacy_tint.rs:287": 1,
       "map_viewer/src/production_features/xmap05.rs:1150": 1,
@@ -1133,6 +1135,9 @@
       "production_features/xmap06.rs:32": 1,
       "production_features/xmap14.rs:21": 1,
       "production_features/xmap14.rs:3844": 1,
+      "production_features/xmap15.rs:1458": 1,
+      "production_features/xmap18.rs:771": 1,
+      "production_foundation.rs:1820": 2,
       "production_lines.rs:388": 2,
       "production_lines.rs:748": 1,
       "production_lines.rs:915": 1,
@@ -1151,11 +1156,13 @@
       "replay_app/src/ui_runtime.rs:9623": 1,
       "replay_app/src/ui_runtime.rs:9745": 1,
       "replay_app/src/ui_runtime.rs:9927": 1,
+      "replay_core/src/source.rs:3386-3392": 1,
       "replay_core/src/theatre_selector.rs:35": 1,
       "replay_core/src/world.rs:19936": 1,
       "replay_core/src/world.rs:22744": 1,
       "replay_core/src/world.rs:29604": 1,
       "replay_core/src/world.rs:33390": 1,
+      "replay_core/src/world.rs:3833": 1,
       "replay_core/src/world.rs:43148": 1,
       "replay_core/src/world.rs:8248": 1,
       "replay_core/src/world.rs:8724": 1,
@@ -1194,11 +1201,13 @@
       "world.rs:8737": 1,
       "world.rs:8893": 3,
       "world.rs:9274": 1,
+      "world_fold.rs:4186": 1,
       "xmap05.rs:1146": 1,
       "xmap17_player_labels.rs:13": 1,
       "xmap17_player_labels.rs:23": 1,
       "xmap17_player_labels.rs:489": 1,
       "xmap17_player_labels.rs:578": 1,
+      "xmap18.rs:1442": 1,
       "xui26_frontend.rs:13": 1
     },
     "extractor/documents/SERIAL_TAIL_RESTRUCTURE.md": {
@@ -1471,8 +1480,7 @@
       "replay_core/src/world.rs:24016": 1
     },
     "extractor/native/recorder_host/src/world_fold/wave2_sidecars/decision_evaluation.rs": {
-      "replay_core/src/decision_evaluation.rs:14": 1,
-      "replay_core/src/decision_evaluation.rs:397": 1
+      "replay_core/src/decision_evaluation.rs:14": 1
     },
     "extractor/native/recorder_host/src/world_fold/wave2_sidecars/intelligence_presentation.rs": {
       "replay_core/src/intelligence_presentation.rs:12": 1,
@@ -1484,9 +1492,6 @@
       "trade_compositor.rs:522": 1,
       "world.rs:9303-9305": 1,
       "xmap05.rs:1162-1166": 1
-    },
-    "extractor/native/recorder_host/src/world_fold/wave2_sidecars/national_focus_observer.rs": {
-      "replay_core/src/world.rs:33390": 2
     },
     "extractor/native/recorder_host/src/world_fold/wave2_sidecars/occupation_ui_supplement.rs": {
       "replay_core/src/world.rs:19936": 1,
@@ -3996,6 +4001,9 @@
       "extractor/native/collector/src/attach_log.rs:85263-85275": 1,
       "hud_role_index.rs:148-168": 1,
       "portable_replay/native/snapshot/src/design_catalog.rs:265-280": 1
+    },
+    "replay_interface/native/map_viewer/src/map_authority.rs": {
+      "extractor/native/wire_format/src/d24.rs:541": 1
     },
     "replay_interface/native/map_viewer/src/weather_law.rs": {
       "color_lut.rs:128-130": 1
