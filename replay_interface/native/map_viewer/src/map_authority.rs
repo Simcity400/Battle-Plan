@@ -35,7 +35,7 @@
 
 use std::collections::BTreeSet;
 
-use replay_core::{ContentManifest, ViewStatus, WorldFrame};
+use replay_core::{ContentManifest, Leaf, ViewStatus, WorldFrame};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snapshot::sha256::Sha256;
@@ -132,9 +132,17 @@ pub struct MapAuthorityOwnerProvenAdmission {
     pub owner_packet: &'static str,
     /// Ledger `portable_path` column — the presentation-free payload identity.
     pub payload_schema: &'static str,
-    /// Ledger `status_accessor` column. This is the *only* accessor whose
-    /// `Present` may admit this input; it is named here so the derivation
-    /// cannot silently drift onto a neighbouring view's status.
+    /// Ledger `status_accessor` column: the accessor the derivation is allowed
+    /// to read, named here so it cannot silently drift onto a neighbouring
+    /// view's status.
+    ///
+    /// Usually that accessor returns a `ViewStatus` and `Present` is what
+    /// admits. `world.calendar_time` is the exception and the field is a name,
+    /// not a promise about the type: its payload is the `hour_index;date` pair,
+    /// `WorldFrame::date` returns `Option<&str>`, and the derivation admits only
+    /// when the stamp parses on the engine's calendar **and** encodes the
+    /// frame's own `hour_index`. A valid stamp with the wrong sort key is
+    /// refused, which no `Present`/absent reading of `date` alone could express.
     pub status_accessor: &'static str,
     pub cadence: &'static str,
     pub identity_order: &'static str,
@@ -171,13 +179,20 @@ pub struct MapAuthorityOwnerProvenAdmission {
     pub can_report_absent: bool,
 }
 
-/// The owner-proven admission table, mirroring the
+/// The owner-proven admission table, mirroring exactly the
 /// `owner_proven_production_consumer` rows of
-/// `re_evidence/rendering_laws/XMAP00/non_ui_visual_input_ledger_20260730.tsv`.
+/// `re_evidence/rendering_laws/XMAP00/non_ui_visual_input_ledger_20260730.tsv`
+/// — no more and no fewer. The count is deliberately not restated here: it is
+/// checked against the ledger by
+/// `map_viewer/tests/xmap00_map_authority.rs::the_owner_proven_admission_table_is_exactly_the_ledgers_disposition_column`,
+/// and a number in this comment would only be a second place for it to go
+/// stale.
 ///
 /// `cadence` is the `WorldFrame` contract and is the same sentence for every
-/// row: one decoded view per canonical recorded hour (`WorldFrame::hour_index`).
-/// It is spelled out per row rather than shared through a constant because
+/// row that carries a decoded view: one decoded view per canonical recorded
+/// hour (`WorldFrame::hour_index`). `world.calendar_time` carries no view, only
+/// the frame's own stamp, and says so in its own words. It is spelled out per
+/// row rather than shared through a constant because
 /// `Audit-NonUiVisualInputLedger.ps1` reads these entries out of the source
 /// text and can only see a literal.
 ///
@@ -191,7 +206,11 @@ pub struct MapAuthorityOwnerProvenAdmission {
 /// `exact_d18_country_roster` walks the `countries` object in TAG order and
 /// refuses any partial prefix; `build_country_identities`,
 /// `build_diplomacy` and `build_rail_replay` all key their censuses by
-/// `BTreeMap`, so each is ascending by its own key.
+/// `BTreeMap`, so each is ascending by its own key; and
+/// `build_weather_province_snow` collects its rows into a `BTreeMap` keyed by
+/// the parsed province id, so that census is ascending by province id.
+/// `world.calendar_time` has no census at all — it is a
+/// single scalar pair — and its entry says exactly that.
 pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission] = &[
     MapAuthorityOwnerProvenAdmission {
         input_id: "combat.land_active_epoch",
@@ -247,6 +266,35 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         // or `DomainUnavailable` and can never observe `DomainAbsent`.
         can_report_absent: false,
     },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "weather.province_snow_accumulator",
+        owner_packet: "XMAP07",
+        payload_schema: "WorldFrame.weather_province_snow",
+        status_accessor: "weather_province_snow_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "ascending province id",
+        status: province_snow_accumulator_status,
+        // `build_weather_province_snow` returns `DomainAbsent` when `map` or
+        // `map._r2_weather_live.provinces` is missing, and
+        // `certified_census_status` passes a refusal through unchanged, so this
+        // predicate does observe `DomainAbsent`.
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "world.calendar_time",
+        owner_packet: "XMAP09",
+        payload_schema: "WorldFrame.hour_index;WorldFrame.date",
+        status_accessor: "date",
+        cadence: "one calendar stamp per canonical recorded hour",
+        identity_order: "single scalar pair; no census",
+        status: calendar_time_status,
+        // `calendar_time_status` maps every `None` — absent stamp, unobtained
+        // stamp, unparseable stamp, stamp disagreeing with `hour_index` — to
+        // `DomainUnavailable`, deliberately, because `WorldFrame::date` is an
+        // `Option<&str>` that cannot tell those cases apart. The predicate
+        // therefore never observes `DomainAbsent`.
+        can_report_absent: false,
+    },
 ];
 
 /// The accessor whose value a refusal reports.
@@ -257,13 +305,21 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
 /// while the admitted payload is absent, unobtained, incomplete, or a retained
 /// observation of an earlier hour. Each such row's `status` predicate reads
 /// something strictly stronger, and the label below is what that predicate
-/// actually consulted. Both [`unavailable_requirement`] and
+/// actually consulted — `combat.naval_air_epoch` a partition inside a composite
+/// view, `combat.land_terminal_detail` and `weather.province_snow_accumulator`
+/// completeness-checked readings of their statuses rather than the raw ones,
+/// `country.d18_complete_roster` and `diplomacy.faction_roster` the fail-closed
+/// verdicts one level inside the composite the ledger names, and
+/// `world.calendar_time` neither a view nor a status but the `hour_index;date`
+/// pair checked against itself. Both [`unavailable_requirement`] and
 /// [`validate_requirement`] resolve the label through this one function, so a
 /// row cannot carry a blocker that names an accessor the derivation never read.
 pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
     match input_id {
         "combat.naval_air_epoch" => "naval_combats_status",
         "combat.land_terminal_detail" => "certified ended_combats_status",
+        "weather.province_snow_accumulator" => "certified weather_province_snow_status",
+        "world.calendar_time" => "derived hour_index;date pair",
         // These two ARE read off the accessor the ledger names, but "root
         // status" would be a lie about which one: `countries_status` and
         // `diplomacy.status` are both `Present` for any `countries` object,
@@ -272,6 +328,202 @@ pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
         "diplomacy.faction_roster" => "faction_roster_status",
         _ => "root status",
     }
+}
+
+/// Fold a completeness proof into a raw view status.
+///
+/// A status that is already a refusal keeps its own value, so the blocker still
+/// distinguishes an absent key from an explicitly unobtained one. A `Present`
+/// status survives only when the census behind it was proved complete;
+/// otherwise it becomes `DomainUnavailable`, which is what an incomplete
+/// measurement is.
+fn certified_census_status(status: ViewStatus, complete: bool) -> ViewStatus {
+    if status == ViewStatus::Present && !complete {
+        return ViewStatus::DomainUnavailable;
+    }
+    status
+}
+
+/// The admission status for `weather.province_snow_accumulator`.
+///
+/// `build_weather_province_snow` drops a province whose object key is not
+/// numeric, and keeps a province whose row failed its own `province_id`
+/// authentication or range check as an `Unobtained` leaf — in both cases
+/// returning `Present`. The first loses membership, the second loses the value,
+/// and this input is the per-province accumulator, so both are refusals.
+/// D24 also states its own row count, and that is the only evidence that can
+/// catch a province lost *before* the snapshot was written — a member that is
+/// simply not in the object leaves no warning and no unmeasured leaf, so the
+/// two checks above cannot see it. The wire format carries
+/// `observed_province_rows` and the producer already enforces
+/// `province_count == observed_province_rows` for a non-delta frame
+/// (`extractor/native/wire_format/src/d24.rs:541`). `WeatherProvinceSnowView`
+/// does not carry the witness through, so it is read from the same raw `map`
+/// object the view was built from.
+///
+/// A frame that omits the witness entirely is refused rather than trusted: an
+/// absent row count is not a statement that nothing is missing.
+///
+/// The dropped-key case needs no `coverage_warnings` check of its own. An
+/// earlier version had one and review showed it could never be the deciding
+/// conjunct: a dropped key always leaves the decoded map shorter than the raw
+/// object, so the count chain refuses first in every case. A guard whose
+/// removal no test can detect is not defence in depth, it is dead logic, so it
+/// was deleted rather than kept with a test that cannot isolate it.
+fn province_snow_accumulator_status(frame: &WorldFrame) -> ViewStatus {
+    let view = frame.weather_province_snow();
+    let every_province_measured = view
+        .by_province
+        .values()
+        .all(|snow| matches!(snow, Leaf::Measured(_)));
+    let weather = frame
+        .domain("map")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|map| map.get("_r2_weather_live"))
+        .and_then(serde_json::Value::as_object);
+    let declared_rows = weather
+        .and_then(|weather| weather.get("observed_province_rows"))
+        .and_then(serde_json::Value::as_u64);
+    // The raw member count has to be checked as well as the decoded one. The
+    // decoder keys `by_province` by the parsed `u32`, so two distinct object
+    // keys that parse to the same id — `"0"` and `"00"` — collapse into one
+    // `BTreeMap` entry with no warning: the second `insert` silently replaces
+    // the first. Comparing the declared count only against the decoded length
+    // would then see 1 == 1 and admit a census that lost a member.
+    let raw_rows = weather
+        .and_then(|weather| weather.get("provinces"))
+        .and_then(serde_json::Value::as_object)
+        .map(serde_json::Map::len);
+    // Counts alone are still not membership. `observed_province_rows` is the
+    // engine's province-array size, and the collector authenticates every row
+    // against that index — `province_id as usize >= observed_province_rows` is
+    // a hard error there (`extractor/native/recorder_host/src/world_fold.rs`,
+    // "the engine-owned province array is indexed `0..observed-1`"). So the
+    // measured set is exactly `0..declared`, and a snapshot that drops province
+    // 1 while substituting an out-of-range province 2 keeps all three counts
+    // equal. Requiring every decoded id to be in range closes that: with the
+    // counts already equal and `BTreeMap` keys already unique, in-range forces
+    // the complete dense set.
+    // A declared zero is not a measured-empty census, it is a failed read. The
+    // wire permits `observed_province_rows == 0`
+    // (`extractor/native/wire_format/src/d24.rs`), but a *measured* census is
+    // `MIN_PROVINCE_ROWS..=MAX_PROVINCE_ROWS` = `2..=65_536`; the collector
+    // returns no rows and flags the domain `SOURCE_UNAVAILABLE` when the sample
+    // fails. Counting alone would see `0 == 0 == 0` and admit that failure as a
+    // complete measurement — the measured-empty-for-absent collapse this seam
+    // exists to prevent — so the declared count has to be inside the producer's
+    // own measured range before its equalities mean anything.
+    const MIN_MEASURED_PROVINCE_ROWS: u64 = 2;
+    const MAX_MEASURED_PROVINCE_ROWS: u64 = 65_536;
+    let declared_row_count_is_met = match (declared_rows, raw_rows) {
+        (Some(declared), Some(raw)) => {
+            let declared_len = declared as usize;
+            (MIN_MEASURED_PROVINCE_ROWS..=MAX_MEASURED_PROVINCE_ROWS).contains(&declared)
+                && declared_len == raw
+                && raw == view.by_province.len()
+                && view
+                    .by_province
+                    .keys()
+                    .all(|province_id| (*province_id as u64) < declared)
+        }
+        _ => false,
+    };
+    certified_census_status(
+        certified_census_status(view.status, every_province_measured),
+        declared_row_count_is_met,
+    )
+}
+
+
+
+
+/// The admission status for `world.calendar_time`.
+///
+/// This row has no census and therefore no membership question: its whole
+/// payload is the hour's calendar stamp, which the ledger names as the **pair**
+/// `WorldFrame.hour_index;WorldFrame.date`. The derivation used to pass `None`
+/// unconditionally, so the row could never be admitted whatever the recording
+/// carried.
+///
+/// The guard never has to decide *what kind* of absence a `None` is — the
+/// distinction that would have needed a new `replay_core` view. Mapping a
+/// measured stamp to `Present` and **every** `None` to `DomainUnavailable`
+/// refuses strictly more than a full absent/unobtained/measured trichotomy
+/// would, and can never admit an hour whose calendar was not captured.
+///
+/// Both halves of the pair are checked, and against each other. `hour_index` is
+/// the schema's canonical sort key and is *derived from* `date`
+/// (`REPLAY_SCHEMA.md` §0.3), so recomputing it from the stamp and requiring
+/// equality is what makes this a statement about the admitted payload rather
+/// than about one field of it. A stamp that parses but disagrees with the sort
+/// key is not a measurement of anything.
+fn calendar_time_status(frame: &WorldFrame) -> ViewStatus {
+    let measured = frame
+        .date()
+        .is_some_and(|date| engine_calendar_hour_index(date) == Some(frame.hour_index()));
+    if measured {
+        ViewStatus::Present
+    } else {
+        ViewStatus::DomainUnavailable
+    }
+}
+
+/// Month lengths of the **engine's** calendar, which is 365-day with **no leap
+/// years** (`extractor/native/compact_contract/src/calendar.rs`,
+/// `REPLAY_SCHEMA.md` §0.3). February is always 28: a Gregorian rule here would
+/// admit `1936.2.29`, which the game cannot produce.
+const ENGINE_MONTH_LENGTHS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/// The schema `hour_index` a Clausewitz `year.month.day.hour` stamp encodes, or
+/// `None` if the stamp is not one the engine can emit.
+///
+/// Rejects, in order: a field count other than four; a field that is empty,
+/// signed or zero-padded (the schema states the engine does not pad, and
+/// `date_from_raw` formats unsigned fields, so `+1936.1.1.12` and
+/// `01936.01.01.012` are not strings any recorder writes); a month outside
+/// `1..=12`; a day its month does not have on a no-leap calendar; and an hour
+/// past 23. What survives is converted with the schema's own formula,
+/// `((year * 365 + day_of_year_index) * 24 + hour)`, with a zero-based
+/// `day_of_year_index`.
+///
+/// The final bound is applied to the **converted hour**, not to the year field,
+/// because that is how the producer applies it: `raw_date_in_range` fails
+/// closed outside `[1850*365*24, 2200*365*24]` inclusive, which is the first
+/// hour of 1850 to the **first hour of 2200** — not all of 2200. Checking a
+/// `1850..=2200` year range instead would admit almost a full year the recorder
+/// itself rejects.
+fn engine_calendar_hour_index(date: &str) -> Option<i64> {
+    // Mirrors `RAW_DATE_MIN`/`RAW_DATE_MAX` with the epoch constant cancelled,
+    // i.e. the schema `hour_index` window rather than the raw counter's.
+    const MIN_HOUR_INDEX: i64 = 1850 * 365 * 24;
+    const MAX_HOUR_INDEX: i64 = 2200 * 365 * 24;
+    let mut fields = date.split('.');
+    let mut next = || {
+        let field = fields.next()?;
+        // Canonical spelling only: no sign, no padding, no empty field.
+        if field.is_empty()
+            || !field.bytes().all(|byte| byte.is_ascii_digit())
+            || (field.len() > 1 && field.starts_with('0'))
+        {
+            return None;
+        }
+        field.parse::<u32>().ok()
+    };
+    let (year, month, day, hour) = (next()?, next()?, next()?, next()?);
+    if fields.next().is_some() || !(1..=12).contains(&month) || hour > 23 {
+        return None;
+    }
+    let month_index = usize::try_from(month - 1).ok()?;
+    if day == 0 || day > ENGINE_MONTH_LENGTHS[month_index] {
+        return None;
+    }
+    let day_of_year_index: u32 =
+        ENGINE_MONTH_LENGTHS[..month_index].iter().sum::<u32>() + (day - 1);
+    let hour_index =
+        (i64::from(year) * 365 + i64::from(day_of_year_index)) * 24 + i64::from(hour);
+    (MIN_HOUR_INDEX..=MAX_HOUR_INDEX)
+        .contains(&hour_index)
+        .then_some(hour_index)
 }
 
 /// The admission status for `combat.land_active_epoch`.
@@ -707,11 +959,21 @@ pub fn map_authority_requirement_metadata(
         "country.d18_complete_roster" => {
             "the recording carries no complete measured D18 country roster for this hour"
         }
-        "terrain.snow_mud_semantic" | "weather.province_snow_accumulator" => {
-            "these semantic accumulators remain independently unavailable and cannot substitute for XMAP07's exact passive global dense texture/fade carrier"
+        "terrain.snow_mud_semantic" => {
+            "this semantic accumulator remains independently unavailable and cannot substitute for XMAP07's exact passive global dense texture/fade carrier"
         }
-        "lighting.point_light_lifecycle" | "world.calendar_time" => {
-            "XMAP09 must prove the exact time/light lifecycle, caster joins, cadence, and authenticated producer contract"
+        // XMAP07 has proved this row; its blocker names the hour's missing or
+        // incomplete measurement rather than a pending proof.
+        "weather.province_snow_accumulator" => {
+            "the recording carries no complete measured per-province snow accumulator for this hour"
+        }
+        "lighting.point_light_lifecycle" => {
+            "XMAP09 must prove the exact light lifecycle, caster joins, cadence, and authenticated producer contract"
+        }
+        // XMAP09 has proved the calendar stamp; its blocker names the hour's
+        // missing measurement rather than a pending proof.
+        "world.calendar_time" => {
+            "the recording carries no engine calendar stamp for this hour that agrees with its own hour index"
         }
         "postfx.temporal_exposure_state" => {
             "XMAP10 must prove the presentation-independent temporal exposure state, cadence, and authenticated producer contract"
@@ -986,7 +1248,14 @@ pub fn map_authority_projection_from_world_frame(
             "weather.visual_membership_lifecycle",
             Some(frame.weather_visual_lifecycle().status),
         ),
-        projector.derive_requirement("world.calendar_time", None),
+        // `world.calendar_time`'s ledger accessor is `date`, not `none`, so this
+        // arm may not be the status-free form: `Audit-NonUiVisualInputLedger.ps1`
+        // holds the `derive_requirement(_, None)` census equal to exactly the
+        // rows whose `status_accessor` column is `none`. `WorldFrame::date` is an
+        // `Option<&str>` rather than a `ViewStatus`, so the reading passed here is
+        // the derived one; being a proven row, it is discarded in favour of the
+        // table's own `calendar_time_status` either way.
+        projector.derive_requirement("world.calendar_time", Some(calendar_time_status(frame))),
     ];
     requirements.sort_by(|left, right| left.input_id.cmp(&right.input_id));
     let mut projection = MapAuthorityProjection::from_untrusted_parts(

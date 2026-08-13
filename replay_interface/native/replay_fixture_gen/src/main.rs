@@ -2654,11 +2654,19 @@ mod tests {
         expected: &BTreeMap<String, Vec<u8>>,
         actual: &BTreeMap<String, Vec<u8>>,
     ) {
-        // This capture is authenticated external evidence, not output owned by
-        // replay_fixture_gen. Keep it in the committed corpus without making a
-        // deterministic generator claim for its bytes.
-        const EXTERNAL_FIXTURES: &[&str] =
-            &["positive/fx_naval_invasion_paradrop_orders.battleplan"];
+        // These are authenticated external evidence, not output owned by
+        // replay_fixture_gen. Keep them in the committed corpus without making a
+        // deterministic generator claim for their bytes. Exempting a file here
+        // loses nothing only because each one's bytes are pinned somewhere else:
+        // the capture by its own recorded identity, and the XMAP17 joint
+        // certification by the SHA-256 assertion in
+        // `replay_core::xmap17_player_labels::lane_hy_joint_certification_fixture_is_admitted`,
+        // which also panics when the file is absent. Nothing may be added here
+        // without that second pin.
+        const EXTERNAL_FIXTURES: &[&str] = &[
+            "positive/fx_naval_invasion_paradrop_orders.battleplan",
+            "xmap17_faction_joint_certification.json",
+        ];
         let mut differences = Vec::new();
         for path in expected.keys().chain(actual.keys()) {
             if label == "committed replay_interface/fixtures corpus"
