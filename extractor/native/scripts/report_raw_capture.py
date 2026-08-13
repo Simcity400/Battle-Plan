@@ -950,8 +950,8 @@ def main() -> int:
         # This report builds its rows from `per_domain`, so a domain that never
         # produced anything is invisible to every list above. For a domain that
         # was never scheduled that absence is correct but unexplained, so carry
-        # the decision through verbatim rather than leaving the roster short by
-        # five with no reason attached.
+        # the decision through verbatim rather than leaving the roster short
+        # with no reason attached.
         "descheduled_domains": stream.get("descheduled_domains", {}) or {},
         # The wire's own account of every degraded/refused hour, keyed by domain
         # id. Carried whole so a JSON consumer is not limited to the rows this
@@ -995,12 +995,21 @@ def main() -> int:
     if not_scheduled:
         block = report["descheduled_domains"]
         line("deliberately not scheduled", f"{len(not_scheduled)}: {', '.join(not_scheduled)}")
-        line("  decision", f"{block.get('decided_on', '?')}"
-                           f" by {block.get('decided_by', '?')}"
-                           f" ({block.get('authority', '?')})")
+        # PER RULING. The block-level date is when the MECHANISM was
+        # established, not when each domain was ruled out -- d85's ruling is
+        # 2026-08-13 and the other five are 2026-08-03 -- so printing the block
+        # date against the whole list would attribute the wrong decision to it.
         # Without the reason the line reads as an unexplained shortfall, which
         # is the thing this record exists to stop it being.
-        line("  reason", block.get("reason", "?"))
+        by_ruling = {}
+        for entry in block.get("domains", []) or []:
+            key = (str(entry.get("decided_on") or "?"), str(entry.get("reason") or "?"))
+            by_ruling.setdefault(key, []).append(entry.get("domain") or "<unnamed>")
+        for (decided_on, reason), domains in sorted(by_ruling.items()):
+            line(f"  ruling {decided_on}",
+                 f"by {block.get('decided_by', '?')}"
+                 f" ({block.get('authority', '?')}): {', '.join(sorted(domains))}")
+            line("    reason", reason)
 
     print("\n--- gate verdict ---")
     line("hourly requirement met", report["hourly_requirement_met"])

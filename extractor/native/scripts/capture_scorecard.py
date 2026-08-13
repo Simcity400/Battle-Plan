@@ -100,8 +100,8 @@ def load_manifest(run_dir):
 def descheduled(manifest):
     """The domains the capture deliberately did not schedule.
 
-    Returned separately from `score` because this is not an axis: zero
-    descheduled domains is not better than five. It exists so a reader can tell
+    Returned separately from `score` because this is not an axis: fewer
+    descheduled domains is not better. It exists so a reader can tell
     "we chose not to capture this" from "this failed to produce" — the two look
     identical once a domain is simply absent from every ledger.
     """
@@ -113,7 +113,7 @@ def registry_descheduled(native_root=None):
     """(id, wire name) pairs the domain registry marks out of capture scope.
 
     An external expectation is what makes the record check more than a
-    non-emptiness test: without it a manifest can drop four of five entries, or
+    non-emptiness test: without it a manifest can drop entries, or
     invent one, and still look complete. Returns None when the registry is not
     reachable — the scorecard is runnable against a run directory copied away
     from the tree, and an unavailable cross-check must not masquerade as a
@@ -395,6 +395,20 @@ def score(manifest):
         for field in ("reason", "decided_on", "decided_by", "authority"):
             if not str(descheduled_block.get(field) or "").strip():
                 record_faults.append(f"descheduled_domains.{field} is missing or empty")
+        # The rulings are not one event. The block-level date is the date the
+        # MECHANISM was established, and each entry carries the ruling that
+        # actually covered it -- d85's is 2026-08-13 while the other five are
+        # 2026-08-03. Checking only the block would let a record publish six
+        # domains under one date, read as complete, and still say something
+        # false about one of them, which is the exact failure this section
+        # exists to prevent.
+        for entry in descheduled_block.get("domains", []) or []:
+            name = entry.get("domain") or "<unnamed>"
+            for field in ("decided_on", "reason"):
+                if not str(entry.get(field) or "").strip():
+                    record_faults.append(
+                        f"descheduled domain {name} publishes no {field}; a reader cannot "
+                        "tell which ruling covered it")
         # Non-emptiness alone lets a record drop entries or invent one. Compare
         # it against the registry, which owns the decision.
         expected_pairs = registry_descheduled()
@@ -735,13 +749,23 @@ def main():
     # scorecard must still say what it was not asked to capture. A capture that
     # scores COMPLETE over a silently shrunken roster is the failure this
     # section exists to prevent.
-    names = [entry.get("domain") for entry in not_scheduled.get("domains", []) or []]
+    entries = not_scheduled.get("domains", []) or []
+    names = [entry.get("domain") for entry in entries]
     if names:
         print(f"\n  deliberately not scheduled ({len(names)}): {', '.join(names)}")
-        print(f"    reason:    {not_scheduled.get('reason', '?')}")
-        print(f"    decided:   {not_scheduled.get('decided_on', '?')}"
-              f" by {not_scheduled.get('decided_by', '?')}"
-              f" ({not_scheduled.get('authority', '?')})")
+        # PER RULING, never one block-level line. Printing the block's date
+        # against all six would tell a reader d85 was part of the 2026-08-03
+        # decision, which it was not. Domains sharing a ruling group onto one
+        # line so the common case stays short.
+        by_ruling = {}
+        for entry in entries:
+            key = (str(entry.get("decided_on") or "?"), str(entry.get("reason") or "?"))
+            by_ruling.setdefault(key, []).append(entry.get("domain") or "<unnamed>")
+        for (decided_on, reason), domains in sorted(by_ruling.items()):
+            print(f"    ruling {decided_on}"
+                  f" by {not_scheduled.get('decided_by', '?')}"
+                  f" ({not_scheduled.get('authority', '?')}): {', '.join(sorted(domains))}")
+            print(f"      reason:  {reason}")
     else:
         print("\n  deliberately not scheduled: no record in this manifest"
               " (see the record-fault axis above)")

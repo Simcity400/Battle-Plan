@@ -9,6 +9,7 @@
 - registry name: `active_command_abilities_live`
 - status: `production_complete`
 - schedulable: `True`
+- capture scheduled: `False` — the owner ruled this domain out of capture scope; it stays individually schedulable for evidence work. Ruling: `documents/DECISIONS.md`.
 
 ## Condensed knowledge
 

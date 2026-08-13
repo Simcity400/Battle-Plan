@@ -590,8 +590,9 @@ function Get-ProductionCapturePromotionEvidence {
     $expectedDomains = @(
         @(Get-ProductionPromotionProperty $registry 'domains') |
             Where-Object {
-                # Read through PSObject.Properties: the key is ABSENT on the 83
-                # of 88 domains that are still scheduled, and a direct
+                # Read through PSObject.Properties: the key is ABSENT on every
+                # domain that is still scheduled -- it marks the exception, not
+                # the rule -- and a direct
                 # `$_.capture_scheduled` is a terminating PropertyNotFoundStrict
                 # under Set-StrictMode -Version Latest. Four scripts carried the
                 # same direct read; this is one of them.

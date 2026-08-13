@@ -19,13 +19,20 @@
 //! Because the descriptor carries `schedulable` and `status` too, this checks
 //! all three facts rather than only the wire name, so registry-vs-table drift
 //! fails closed here instead of surfacing as a mysteriously short roster.
+//!
+//! WHO IS IN THE ROSTER is `compact_contract::passive_production_roster()` and
+//! nothing else. This tool used to re-derive membership from the registry rows
+//! with its own copy of the filter clauses, and that copy was missing
+//! `is_optional_fail_closed_companion` — the same class of re-derivation the
+//! Python scraper above was deleted for, one level up. The registry walk is a
+//! drift check and a name join, not a second definition of the roster.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use compact_contract::{
     assigned_descriptor_by_id, domain_status_registry_key, is_descheduled_from_capture,
-    passive_production_admits, status_in_production_profile, CompactDomainId,
+    passive_production_roster, CompactDomainId,
 };
 
 fn usage() -> ! {
@@ -66,6 +73,18 @@ fn main() {
         std::process::exit(1);
     });
 
+    // MEMBERSHIP COMES FROM THE CRATE, NOT FROM THIS LOOP. The registry walk
+    // below is a DRIFT CHECK — it proves the two authorities agree about
+    // schedulable/status/deschedule for every row — and it supplies the
+    // registry's own `name` for the `--json` output. It must not also decide
+    // who is in the roster: re-deriving membership here is what let this tool
+    // omit `is_optional_fail_closed_companion` while `fold_check`'s expected
+    // roster applied it, so the tool that picks the roster and the tool that
+    // certifies it could disagree by a domain.
+    let membership: BTreeMap<CompactDomainId, &'static str> = passive_production_roster()
+        .into_iter()
+        .map(|descriptor| (descriptor.id, descriptor.wire_name))
+        .collect();
     let mut roster: BTreeMap<CompactDomainId, (String, &'static str)> = BTreeMap::new();
     let mut problems: Vec<String> = Vec::new();
 
@@ -117,23 +136,29 @@ fn main() {
             ));
         }
 
-        // Production-profile status is not admissibility. The collector refuses
-        // a few production-profile domains outright in the shipped passive
-        // product, and emitting them here produced a roster that every live
-        // passive capture was guaranteed to reject at attach time. The refusal
-        // set is owned by compact_contract so this cannot drift again.
+        // Membership was decided by `passive_production_roster()`; all this
+        // does is join the registry's `name` onto it. Every reason a domain is
+        // absent — non-production status, passive-product refusal, the owner's
+        // deschedule, optional fail-closed companion — is stated once, in
+        // compact_contract, and never restated here.
         //
-        // A descheduled domain is excluded here for a different reason — the
-        // owner ruled it out of capture scope, not the transport. This tool's
-        // stdout cannot say so (see the output note below), so the record that
-        // keeps the shorter roster explicable is
+        // This tool's stdout cannot carry those reasons (see the output note
+        // below), so the record that keeps a shorter roster explicable is
         // `compact_stream.descheduled_domains` in the session manifest.
-        if schedulable
-            && status_in_production_profile(descriptor.status)
-            && passive_production_admits(id)
-            && !descriptor_descheduled
-        {
-            roster.insert(id, (name, descriptor.wire_name));
+        if let Some(wire_name) = membership.get(&id) {
+            roster.insert(id, (name, *wire_name));
+        }
+    }
+    // The join has to be total in one direction: every domain the crate put in
+    // the roster must have been reached by the registry walk. A crate-side
+    // domain missing from `domain_registry.json` would otherwise be silently
+    // dropped from the roster the recorder is handed.
+    for (id, wire_name) in &membership {
+        if !roster.contains_key(id) {
+            problems.push(format!(
+                "domain {id} ({wire_name}) is in the passive production roster but \
+                 domain_registry.json has no row for it"
+            ));
         }
     }
 

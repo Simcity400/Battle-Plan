@@ -470,12 +470,16 @@ impl ExpectedRoster {
         // 71-domain frame no passive capture can produce and refused every
         // live capture on the roster count alone (t26 and t27 both).
         //
+        // That composition now lives in the crate, as
+        // `passive_production_roster()`, so the tool that PICKS the roster
+        // (`domain_roster`) and this tool, which certifies what the capture
+        // then contained, cannot express it differently.
+        //
         // If a non-passive product (authenticated early-render owners) ever
         // ships, its captures need their own expected profile rather than a
         // widening of this one.
-        let domains = compact_contract::production_profile_domains()
+        let domains = compact_contract::passive_production_roster()
             .into_iter()
-            .filter(|descriptor| compact_contract::passive_production_admits(descriptor.id))
             .map(|descriptor| {
                 (
                     descriptor.id,

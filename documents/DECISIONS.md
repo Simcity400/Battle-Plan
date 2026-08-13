@@ -50,17 +50,22 @@ The user experience is the contract:
 
 ### Out of capture scope: POV-local presentation
 
-**Owner decision, 2026-08-03.** These five domains are not scheduled in any production capture:
+**Owner decision, 2026-08-03, extended 2026-08-13.** These domains are not scheduled in any production
+capture:
 
-| # | Domain |
-|---|---|
-| d72 | `resolved_tooltip_instances_live` |
-| d75 | `fired_event_popups_live` |
-| d79 | `hud_surface_activation_live` |
-| d88 | `active_command_abilities_live` |
-| d89 | `national_focus_presentation_live` |
+| # | Domain | Ruled on |
+|---|---|---|
+| d72 | `resolved_tooltip_instances_live` | 2026-08-03 |
+| d75 | `fired_event_popups_live` | 2026-08-03 |
+| d79 | `hud_surface_activation_live` | 2026-08-03 |
+| d85 | `selected_designer_identity_live` | 2026-08-13 |
+| d88 | `active_command_abilities_live` | 2026-08-03 |
+| d89 | `national_focus_presentation_live` | 2026-08-03 |
 
-They capture POV-local presentation — what one client's screen had already resolved — which **Observer
+The rulings are separate events and each domain carries its own date and reason on the wire; a reader of
+a sealed manifest never has to guess which ruling covered the domain in front of them.
+
+The 2026-08-03 five capture POV-local presentation — what one client's screen had already resolved — which **Observer
 only** puts outside what the recorder records. The replay is an observer-mode model: it derives each of
 these panels from authoritative captured domains at render time rather than replaying one player's
 screen, so capturing them adds nothing the viewer can use.
@@ -69,8 +74,38 @@ This is a scheduling decision, not a deletion. The producers stay in the tree an
 production-complete status, so the decision is cheap to reverse and the domains remain individually
 schedulable for evidence work.
 
-**Not covered by this decision:** d85 `selected_designer_identity_live`, d95 `pov_spotted_units_live` and
-d97 `peace_conference_live` stay scheduled. d95 in particular is in-scope class A.
+**d85 `selected_designer_identity_live`, owner decision 2026-08-13.** The 2026-08-03 decision explicitly
+left it out; this reverses that. It is client UI selection state, the same class as the five above, and
+lane HH measured the second half of the case: **as built d85 can never publish a clean word.** Its source
+returns an error whenever no designer family has been observed, the collector can only encode that as
+`SOURCE_UNAVAILABLE`, and the promotion gate on this page makes source-unavailable non-promotable for a
+`production_complete` domain. So every passive capture was permanently non-promotable on d85 for what is
+the ordinary state of the game — nobody has a designer open. Measured identically on t48, t49 and t50:
+`extractor/native/runs/hh_zero_rows/VERDICTS.md`.
+
+Because it is descheduled, the `0x1410b6280` mis-scope in its selection hook is not being fixed: nothing
+downstream reads its verdict any more. **It is not inert, though, and saying so would be false.** A
+passive capture builds the production hook registry unconditionally, and that registry's install unit for
+d85 is not gated on the domain being requested — so its detours are still installed and still take
+1,229–1,929 callbacks per capture for a domain nobody now asks for. The unit patches **eight** sites, not
+five: seven in the selected-designer module (five selection observers plus two destruction observers that
+retire the `handler -> view` join before the engine frees the memory it names) and d78's designer-refresh
+prerequisite. Gating the unit is the open follow-up, and it is not a one-liner: the receipt group is woven
+through the partial-install abort steps, the roster ordering, teardown and the receipt census, and
+dropping the d78 prerequisite with it needs its own argument.
+
+d85 is not unique in having production-installed hooks while descheduled. d75's producer edge is
+installed in production too, because it supplies d64's dispatch prerequisite and the two share one
+install unit by design. Any gating work must preserve that dependency rather than assume a descheduled
+domain's hooks are always free to drop.
+
+Reviving d85 means giving it a presence read that can say "nothing is selected" (the owner slots at
+`0x140B52390 +0x250/+0x258/+0x260/+0x268`, the way d97 uses its container count) and closing that
+mis-scope first.
+
+**Not covered by any of this:** d95 `pov_spotted_units_live` and d97 `peace_conference_live` stay
+scheduled. d95 in particular is in-scope class A, and d97 already publishes a clean `SOURCE_EMPTY` for
+its own idle state — exactly the vocabulary d85 lacks.
 
 A domain that was deliberately not scheduled must never be indistinguishable from one that failed to
 produce. The set is owned by `compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS`, mirrored into

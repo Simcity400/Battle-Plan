@@ -506,5 +506,59 @@ class FailureStatusNames(unittest.TestCase):
         self.assertIn("unknown_bits=0x100000", spelled)
 
 
+class DescheduledRecordTests(unittest.TestCase):
+    """The deliberately-not-scheduled record must carry a PER-DOMAIN ruling.
+
+    The rulings are not one event: d85 was ruled out on 2026-08-13 and the
+    other five on 2026-08-03. A record that publishes six domains under one
+    block-level date says something false about one of them, and the whole
+    point of this record is that a reader never has to guess why a roster is
+    short.
+
+    kills: dropping the per-entry `decided_on`/`reason` loop from
+    `capture_scorecard.score`, or reverting `descheduled_domains_json` in
+    `recorder_host/src/main.rs` to a block-level-only reason and date.
+    """
+
+    AXIS = "faults in the deliberately-not-scheduled record"
+
+    def block(self, domains):
+        return {
+            "compact_stream": {
+                "descheduled_domains": {
+                    "domains": domains,
+                    "reason": "each domain below carries its own ruling",
+                    "decided_on": "2026-08-03",
+                    "decided_by": "owner",
+                    "authority": "documents/DECISIONS.md",
+                },
+            },
+        }
+
+    def faults(self, manifest):
+        for axis, count, detail in SCORECARD.score(manifest):
+            if axis == self.AXIS:
+                return count, detail
+        self.fail(f"no {self.AXIS!r} axis")
+
+    def test_an_entry_without_its_own_ruling_is_a_fault(self):
+        _, detail = self.faults(self.block([
+            {"domain": "selected_designer_identity_live"},
+        ]))
+        self.assertIn("selected_designer_identity_live publishes no decided_on", detail)
+        self.assertIn("selected_designer_identity_live publishes no reason", detail)
+
+    def test_a_per_domain_ruling_clears_that_fault(self):
+        _, detail = self.faults(self.block([
+            {
+                "domain": "selected_designer_identity_live",
+                "decided_on": "2026-08-13",
+                "reason": "client UI selection state; cannot publish a clean word",
+            },
+        ]))
+        self.assertNotIn("publishes no decided_on", detail)
+        self.assertNotIn("publishes no reason", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

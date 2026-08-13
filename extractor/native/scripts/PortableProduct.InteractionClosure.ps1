@@ -1646,12 +1646,19 @@ function Get-ProductionPassiveSourceAdmissionClosure {
     # `capture_scheduled: false` marks a domain the owner ruled out of capture
     # scope; the key is absent for every domain that is still scheduled. These
     # are not production sources, so asking whether their source is statically
-    # impossible is the wrong question: their producer hooks are deliberately
-    # never installed in a passive capture, which is exactly the shape this
-    # closure blocks the package for. Owned by
+    # impossible is the wrong question -- this closure blocks a package for the
+    # shape where a production source cannot exist, and a domain nobody requests
+    # is not that shape. Owned by
     # compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS.
-    # The key is read through PSObject.Properties because it is ABSENT on the
-    # 83 of 88 domains that are still scheduled, and `$_.capture_scheduled` on
+    #
+    # NOT because their hooks are absent. Most descheduled producers do sit
+    # behind `!passive_product_capture`, but two do not: d75's edge is installed
+    # for d64, which depends on it, and d85's whole unit is installed
+    # unconditionally by the production hook registry (an open follow-up, see
+    # documents/DECISIONS.md). Reasoning from this list to "these hooks are not
+    # installed" is what would mis-scope that work.
+    # The key is read through PSObject.Properties because it is ABSENT on every
+    # domain that is still scheduled (the key marks the exception, not the rule), and `$_.capture_scheduled` on
     # an object that does not have it is a terminating PropertyNotFoundStrict
     # under the Set-StrictMode -Version Latest that every caller of this
     # function runs with. The package builder, the receipt verifier and the

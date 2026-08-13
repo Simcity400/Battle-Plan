@@ -164,8 +164,19 @@ def main() -> int:
             f"- registry name: `{name}`",
             f"- status: `{meta.get('status', 'unknown')}`",
             f"- schedulable: `{meta.get('schedulable', 'unknown')}`",
-            "",
         ]
+        # A domain the owner ruled out of capture scope reads as production-
+        # complete and schedulable, because it is both. Without this line the
+        # dossier is silently wrong about the one fact a reader most needs:
+        # no production capture requests it. `capture_scheduled` absent means
+        # scheduled, which is why the default is True rather than "unknown".
+        if not meta.get("capture_scheduled", True):
+            lines.append(
+                "- capture scheduled: `False` — the owner ruled this domain out of capture "
+                "scope; it stays individually schedulable for evidence work. Ruling: "
+                "`documents/DECISIONS.md`."
+            )
+        lines.append("")
 
         path = out_root / f"d{did:02d}_{name}.md"
         keep = existing_condensed(path)

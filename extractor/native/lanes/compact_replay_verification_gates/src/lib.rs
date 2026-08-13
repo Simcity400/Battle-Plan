@@ -3639,12 +3639,38 @@ const SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS: &[&str] = &[
     recorder_host::hour_coverage::HOUR_COVERAGE_FIELD,
 ];
 
+/// TOP-LEVEL manifest fields the RUN-DIR copy may carry and the sealed copy
+/// must NOT.
+///
+/// Same rule as `RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS` above, at the
+/// other nesting level, because the recorder writes one post-pack field at the
+/// manifest root rather than inside `host_finalize`.
+///
+/// `spool_trim` is the storage-release outcome of
+/// `recorder_host::release_sealed_spool_storage`, recorded by
+/// `record_spool_trim_telemetry`, which runs LATER than every other post-pack
+/// write: after the container is packed AND after the finalize-progress
+/// receipt has published `complete`. The sealed copy is built before the
+/// container exists, so it provably cannot carry it — under
+/// `--keep-spool-after-seal` the run-dir copy carries
+/// `{"released": false, "reason": "--keep-spool-after-seal"}` against a sealed
+/// copy that has no such key at all, and the binding refused it at
+/// `$.spool_trim` on every keep-spool capture (measured on t49 and t50,
+/// `runs/hd_hb_defects/`).
+///
+/// Unbinding it costs the container nothing, and specifically costs it no
+/// spool integrity: whether the spool was trimmed is decided by
+/// `recorder_host::spool_trim::require_whole_spool`, which reads the trim
+/// JOURNAL beside the stream, never this telemetry field. A rewritten
+/// `spool_trim` cannot make a trimmed spool look whole to any consumer.
+const RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS: &[&str] = &["spool_trim"];
+
 /// The divergence is DIRECTIONAL, and so is the allowlist. A field is removed
 /// only from the side that is allowed to have it, and refused outright on the
 /// other side — otherwise the mutable run-dir file could invent
 /// `standalone_manifest_is_authoritative` (or any other sealed-only marker) and
 /// the binding would shrug. The census over all 19 sealed containers measured
-/// each of these eight fields on exactly one side, never both.
+/// each of these fields on exactly one side, never both.
 ///
 /// Everything else in the manifest — every domain roster, every identity, every
 /// hash, `host_finalize.fold.*`, `host_finalize.stream_sha256` — stays bound to
@@ -3679,14 +3705,24 @@ struct SealedManifestBinding {
 ///     absolute paths on purpose, for recovery and audit on the recording
 ///     machine.
 ///  2. The sealed copy is built BEFORE the container is packed, so it cannot
-///     carry finalize timing, peak memory, or the container's own verification
-///     report. Those are written back into the run-dir copy afterwards.
+///     carry finalize timing, peak memory, the container's own verification
+///     report, or the spool storage-release outcome. Those are written back
+///     into the run-dir copy afterwards — the first three inside
+///     `host_finalize`, `spool_trim` at the manifest root.
 ///
 /// Measured on capture t31 (`extractor/native/runs/live_unlock/t31/`): the
 /// run-dir copy is 17,957,105 bytes, the sealed copy 17,957,028 — 77 bytes
 /// apart, in 11 places, every one of them an instance of (1) or (2). The same
 /// census over all 19 sealed containers under `extractor/native/runs/` leaves
 /// ZERO residual difference once (1) and (2) are accounted for.
+///
+/// That census had a blind spot, closed here: it enumerated instances of (2)
+/// only inside `host_finalize`, and the recorder writes one of them —
+/// `spool_trim` — at the manifest root. So every `--keep-spool-after-seal`
+/// capture refused at `$.spool_trim` while the two copies were in fact
+/// agreeing (t49 and t50, `runs/hd_hb_defects/`). (2) is a statement about
+/// WHEN a field is written, not about where it sits, so the allowlist is
+/// applied at both levels.
 ///
 /// So the binding is: the sealed document, EXACTLY AS SEALED, against the
 /// run-dir document, allowing at each value and each object key only the two
@@ -3774,20 +3810,32 @@ fn bind_run_dir_manifest_to_sealed_authority(
     }
 
     // Directional allowlist: each field is refused on the side that must not
-    // carry it, and removed only from the side that may.
-    take_directional_host_finalize_fields(
+    // carry it, and removed only from the side that may. The same rule runs at
+    // both nesting levels the recorder writes post-pack telemetry at — inside
+    // `host_finalize`, and at the manifest root.
+    take_directional_fields(
         &mut run_dir,
-        &mut sealed,
+        &sealed,
+        Some("host_finalize"),
         RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS,
         "run-dir",
         "sealed",
     )?;
-    take_directional_host_finalize_fields(
+    take_directional_fields(
         &mut sealed,
-        &mut run_dir,
+        &run_dir,
+        Some("host_finalize"),
         SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS,
         "sealed",
         "run-dir",
+    )?;
+    take_directional_fields(
+        &mut run_dir,
+        &sealed,
+        None,
+        RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS,
+        "run-dir",
+        "sealed",
     )?;
 
     let mut redactions = 0usize;
@@ -3795,8 +3843,9 @@ fn bind_run_dir_manifest_to_sealed_authority(
         return Err(format!(
             "run-dir native_session_manifest.json contradicts the authoritative sealed \
              recorder_manifest at {violation}; the only sanctioned post-seal divergences are \
-             absolute-path redaction of a run-dir value and host_finalize {:?}",
-            post_seal_mutable_host_finalize_fields()
+             absolute-path redaction of a run-dir value, host_finalize {:?}, and top-level {:?}",
+            post_seal_mutable_host_finalize_fields(),
+            RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS
         ));
     }
     Ok(SealedManifestBinding {
@@ -3804,31 +3853,49 @@ fn bind_run_dir_manifest_to_sealed_authority(
     })
 }
 
-/// Remove `fields` from `owner`'s `host_finalize`, having first refused any of
-/// them appearing in `forbidden`'s. The unbinding is one-directional: a name
-/// only the sealed copy may carry must not appear in the mutable file, and vice
+/// Remove `fields` from `owner`'s `block` object — or from `owner`'s own top
+/// level when `block` is `None` — having first refused any of them appearing in
+/// the same place in `forbidden`. The unbinding is one-directional: a name only
+/// the sealed copy may carry must not appear in the mutable file, and vice
 /// versa.
-fn take_directional_host_finalize_fields(
+///
+/// `block` exists because the recorder writes post-pack telemetry at two
+/// nesting levels: `host_finalize.{finalize_seconds,verify,…}` inside the
+/// block, and `spool_trim` at the manifest root. A rule that only knew the
+/// nested level refused every `--keep-spool-after-seal` capture at
+/// `$.spool_trim`.
+fn take_directional_fields(
     owner: &mut Value,
     forbidden: &Value,
+    block: Option<&str>,
     fields: &[&str],
     owner_label: &str,
     forbidden_label: &str,
 ) -> Result<(), String> {
-    if let Some(block) = forbidden.get("host_finalize").and_then(Value::as_object) {
-        if let Some(found) = fields.iter().find(|field| block.contains_key(**field)) {
+    let qualified = |field: &str| match block {
+        Some(name) => format!("{name}.{field}"),
+        None => field.to_string(),
+    };
+    let forbidden_object = match block {
+        Some(name) => forbidden.get(name).and_then(Value::as_object),
+        None => forbidden.as_object(),
+    };
+    if let Some(object) = forbidden_object {
+        if let Some(found) = fields.iter().find(|field| object.contains_key(**field)) {
             return Err(format!(
-                "host_finalize.{found} is a {owner_label}-copy-only post-seal field but the \
-                 {forbidden_label} copy carries it; the sanctioned divergence is directional"
+                "{} is a {owner_label}-copy-only post-seal field but the {forbidden_label} copy \
+                 carries it; the sanctioned divergence is directional",
+                qualified(found)
             ));
         }
     }
-    if let Some(block) = owner
-        .get_mut("host_finalize")
-        .and_then(Value::as_object_mut)
-    {
+    let owner_object = match block {
+        Some(name) => owner.get_mut(name).and_then(Value::as_object_mut),
+        None => owner.as_object_mut(),
+    };
+    if let Some(object) = owner_object {
         for field in fields {
-            block.remove(*field);
+            object.remove(*field);
         }
     }
     Ok(())
@@ -4449,6 +4516,7 @@ fn load_verified_replay_authority(
         "external_manifest_path_redaction_applied": manifest_binding.path_redaction_applied,
         "run_dir_only_post_seal_host_finalize_fields": RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS,
         "sealed_only_pre_pack_host_finalize_fields": SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS,
+        "run_dir_only_post_seal_top_level_fields": RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS,
         "static_artifacts": static_artifacts,
         "signed": container.signed,
         "unsigned": container.unsigned,
@@ -9104,6 +9172,127 @@ mod tests {
                 "refusal must name the field: {error}"
             );
         }
+    }
+
+    /// The `--keep-spool-after-seal` shape, which the binding refused outright
+    /// until HD: the recorder writes `spool_trim` at the manifest ROOT, after
+    /// the container is packed and after the finalize-progress receipt has
+    /// published `complete`, so the sealed copy provably cannot carry it. t49
+    /// and t50 both sealed clean recordings and both were refused at
+    /// `$.spool_trim` (`runs/hd_hb_defects/`).
+    ///
+    /// The cell is deliberately four-armed, because the failure mode of a fix
+    /// like this is not "it does not admit", it is "it admits everything at the
+    /// manifest root". Arms 2–4 are what make arm 1 a binding rather than a
+    /// hole: an unlisted extra root key still refuses, the field forged into
+    /// the SEALED copy still refuses by direction, and a genuinely contradicted
+    /// bound field still refuses by name even while the keep-spool divergence
+    /// is present.
+    ///
+    /// kills: deleting `RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS` from the
+    /// binding (arm 1 fails); replacing it with a blanket "ignore run-dir-only
+    /// root keys" or dropping the trailing unconsumed-key check in
+    /// `first_binding_violation` (arm 2 fails); passing `forbidden` as an empty
+    /// value in the top-level `take_directional_fields` call so the allowlist
+    /// stops being directional (arm 3 fails); short-circuiting the binding to
+    /// `Ok` once a sanctioned root divergence is seen (arm 4 fails).
+    #[test]
+    fn a_keep_spool_after_seal_manifest_pair_binds_without_unbinding_the_root() {
+        const SPOOL_TRIM: &str = "spool_trim";
+        // Byte-for-byte the summary `release_sealed_spool_storage` records for
+        // a `--keep-spool-after-seal` capture.
+        let keep_spool = || json!({ "released": false, "reason": "--keep-spool-after-seal" });
+
+        // Arm 1: the run-dir copy carries it, the sealed copy does not, and the
+        // recording is admitted — because the two copies AGREE about every
+        // field the container can attest, not because the check went soft.
+        let dir = TmpDir::new("keep_spool_binds");
+        let (mut run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        run_dir_manifest[SPOOL_TRIM] = keep_spool();
+        assert!(
+            sealed_manifest.get(SPOOL_TRIM).is_none(),
+            "the sealed copy is built before the container exists, so it cannot carry {SPOOL_TRIM}"
+        );
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let authority =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect("a --keep-spool-after-seal capture must be admissible");
+        assert_eq!(
+            authority.manifest, sealed_manifest,
+            "the SEALED copy is still the authority handed downstream"
+        );
+        assert!(
+            authority.manifest.get(SPOOL_TRIM).is_none(),
+            "admitting the divergence must not smuggle the run-dir field into the authority"
+        );
+        assert_eq!(
+            authority.details["run_dir_only_post_seal_top_level_fields"],
+            json!(RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS),
+            "the report names what it unbound instead of leaving a reader to infer it"
+        );
+
+        // Arm 2: an UNLISTED extra root key is still a contradiction. This is
+        // the arm that proves arm 1 unbound one named field rather than the
+        // manifest root.
+        let mut unlisted = run_dir_manifest.clone();
+        unlisted["spool_trim_extra"] = keep_spool();
+        let bytes = serde_json::to_vec_pretty(&unlisted).unwrap();
+        let error = load_verified_replay_authority(&unlisted, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+            .expect_err("an unlisted root key must still contradict the sealed copy");
+        assert!(
+            error.contains("$.spool_trim_extra"),
+            "the refusal must name the unlisted key: {error}"
+        );
+
+        // Arm 3: the direction holds. The sealed copy claiming a post-pack
+        // field it cannot have measured is refused, not shrugged at.
+        let dir = TmpDir::new("keep_spool_direction");
+        let (run_dir_manifest, mut forged_seal) = live_shaped_manifest_pair(&dir.0, "g");
+        forged_seal[SPOOL_TRIM] = keep_spool();
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&forged_seal).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .expect_err("a run-dir-only root field in the sealed copy must refuse");
+        assert!(error.contains(SPOOL_TRIM), "refusal must name the field: {error}");
+        assert!(error.contains("directional"), "{error}");
+
+        // Arm 4: a genuinely divergent pair still refuses BY NAME, with the
+        // sanctioned keep-spool divergence present at the same time — so the
+        // one admitted root divergence cannot mask a contradicted bound field.
+        let dir = TmpDir::new("keep_spool_still_refuses");
+        let (mut run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        write_replay_fixture(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        run_dir_manifest[SPOOL_TRIM] = keep_spool();
+        run_dir_manifest["host_finalize"]["stream_sha256"] = json!("0".repeat(64));
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("a contradicted bound field must refuse even on a keep-spool capture");
+        assert!(
+            error.contains("$.host_finalize.stream_sha256"),
+            "the refusal must name the contradicted field: {error}"
+        );
     }
 
     /// A `.battleplan` is meant to be handed to someone else, so the sealed

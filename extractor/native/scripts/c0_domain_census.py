@@ -125,9 +125,9 @@ ROSTER = {
     "convoy_transport_attack_live": (90, True),
     "frame": (1000, False),
 }
-# d72, d75, d79, d88 and d89 are pinned out of the profile because the owner
-# ruled them out of capture scope on 2026-08-03 (POV-local presentation; see
-# `documents/DECISIONS.md`). They keep a production status and stay schedulable,
+# d72, d75, d79, d85, d88 and d89 are pinned out of the profile because the
+# owner ruled them out of capture scope -- five on 2026-08-03 (POV-local
+# presentation) and d85 on 2026-08-13; see `documents/DECISIONS.md`. They keep a production status and stay schedulable,
 # so `schedulable and status` alone still classifies them as in-profile;
 # `descheduled_capture_ids()` is what makes the computed value agree with these
 # pins. See the KNOWN GATE DRIFT note below for what this file still owes.

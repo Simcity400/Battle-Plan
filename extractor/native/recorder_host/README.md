@@ -72,6 +72,15 @@ the standalone `native_session_manifest.json` after pack/verify completes, and
 the embedded copy is marked `host_finalize.embedded_copy_phase = "pre_pack"`
 with `post_pack_fields_in_standalone_manifest_only` naming them.
 
+That list is scoped to the `host_finalize` block it sits in. There is one more
+post-pack, standalone-only field, and it is at the manifest ROOT rather than in
+the block: `spool_trim`, the storage-release outcome, written by
+`record_spool_trim_telemetry` later than any of the above — after the
+finalize-progress receipt has published `complete`. The binding therefore
+sanctions the divergence at both nesting levels
+(`RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS`); a rule that only knew the block
+refused every `--keep-spool-after-seal` capture at `$.spool_trim`.
+
 That block also carries `host_finalize.standalone_manifest_is_authoritative =
 true`. Read it narrowly: it means the standalone copy is the FULLER telemetry
 record, because it is the only one that can carry the post-pack numbers. It does

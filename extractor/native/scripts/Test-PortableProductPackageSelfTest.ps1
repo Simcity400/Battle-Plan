@@ -4139,8 +4139,8 @@ pub fn observer_only() {}
         $registry.domains |
             Where-Object {
                 # Read through PSObject.Properties, exactly as the promotion
-                # authority does: the key is ABSENT on the 83 of 88 domains that
-                # are still scheduled, and a direct `$_.capture_scheduled` is a
+                # authority does: the key is ABSENT on every domain that is
+                # still scheduled, and a direct `$_.capture_scheduled` is a
                 # terminating PropertyNotFoundStrict under the strict mode this
                 # script sets.
                 $descheduled = $_.PSObject.Properties['capture_scheduled']

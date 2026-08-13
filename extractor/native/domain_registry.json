@@ -77,7 +77,7 @@
     { "id": 82, "name": "character_presentation_live", "status": "production_complete", "schedulable": true, "requires_data_record": true },
     { "id": 83, "name": "nuke_stockpile_live", "status": "production_complete", "schedulable": true, "requires_data_record": true },
     { "id": 84, "name": "scripted_gui_runtime_live", "status": "validated_slice", "schedulable": true, "requires_data_record": false },
-    { "id": 85, "name": "selected_designer_identity_live", "status": "production_complete", "schedulable": true, "requires_data_record": true },
+    { "id": 85, "name": "selected_designer_identity_live", "status": "production_complete", "schedulable": true, "requires_data_record": true, "capture_scheduled": false },
     { "id": 86, "name": "sunk_ship_history_live", "status": "production_complete", "schedulable": true, "requires_data_record": true },
     { "id": 87, "name": "decision_panel_live", "status": "production_complete", "schedulable": true, "requires_data_record": true },
     { "id": 88, "name": "active_command_abilities_live", "status": "production_complete", "schedulable": true, "requires_data_record": true, "capture_scheduled": false },
