@@ -34666,3 +34666,90 @@ fn records_lost_from_the_stream_stop_a_delta_chain_from_claiming_to_be_observed(
         "the surviving hour must carry the damaged hour's account: {notes}"
     );
 }
+
+/// Lane HW: the producer half of the XMAP00 admission seams (task #183, Wave 4).
+///
+/// `map_viewer::map_authority` admits an XMAP00 input only when the decoded
+/// `WorldFrame` reports it measured, and what the frame can report is decided
+/// here, by what this fold spells. This test pins the four producer facts the
+/// lane's row-by-row proof rests on — one that lets a row be admitted and three
+/// that make a row the gap map calls ADMISSION-PROOF-ONLY unadmittable — so the
+/// admission table and the producer cannot drift apart silently.
+/// Row-by-row derivation: `runs/hw_admission_a/ROW_PROOFS.md`.
+///
+/// kills:
+///  * dropping or renaming `countries.<TAG>._r2_tag_db_id`. `country.d18_complete_roster`
+///    is admitted from `exact_d18_country_roster`, which reads exactly that key;
+///  * spelling a validated-null cosmetic tag as anything other than JSON null.
+///    That assertion pins a *defect*, deliberately: replay's `walk_path` turns
+///    explicit null into `Leaf::Unobtained`, which XMAP05's presentation-identity
+///    byte law has no discriminator for (it has only "legitimately absent" and
+///    "measured"), so `country.presentation_identity` cannot be admitted until
+///    this spelling changes. The day it does, this test fails and whoever
+///    changed it is told to promote the row.
+///
+/// Deliberately NOT asserted here: the D81 carrier's authority string and the
+/// absence of an all-country `complete_pov_roster` FOW1 census, the other two
+/// producer facts this lane's refusals rest on. Both were `include_str!` source
+/// scans in the first draft of this test, which Codex's review correctly called
+/// brittle — hoisting a literal to a constant, or merely naming the string in a
+/// comment, would have failed them for no behavioural reason. The D81 authority
+/// is already asserted behaviourally by this file's existing rail-fold tests,
+/// and both facts are derived, with their scoped-grep proofs, in
+/// `runs/hw_admission_a/ROW_PROOFS.md` §B.2 and §B.3.
+#[test]
+fn hw_the_producer_seams_the_xmap00_admission_reads() {
+    // D14 is folded alongside D18 so the `politics` object the capital-state
+    // assertion below inspects is the REAL one the D14 fold route builds. With
+    // D18 alone the object would be trivially absent and the assertion would
+    // pass however D14 changed, which is the defect Codex's round-2 review
+    // found in this test's first draft.
+    // A country object exists in the fold only once some domain has written a
+    // leaf into it (`WorldFold::country_mut`), so BOTH tags carry a D14 record;
+    // D18 alone would leave `countries` empty and the lookups below would panic
+    // rather than assert.
+    let snap = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(1, "GER"), (2, "ENG")])),
+        (14, politics_payload(1, 0, &[("neutrality", 100_000)], &[], &[], &[])),
+        (14, politics_payload(2, 0, &[("neutrality", 100_000)], &[], &[], &[])),
+    ]);
+    let countries = snap["countries"].as_object().expect("countries object");
+    assert_eq!(
+        countries.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["ENG", "GER"],
+        "the fold must key both countries by TAG for the D18 roster seam to resolve"
+    );
+    for (tag, tag_db_id) in [("GER", 1u32), ("ENG", 2u32)] {
+        let country = countries[tag].as_object().expect("country object");
+        assert!(
+            country.contains_key("_r2_tag_db_id"),
+            "{tag} lost the D18 roster seam replay's exact_d18_country_roster reads"
+        );
+        assert_eq!(country["_r2_tag_db_id"], json!(tag_db_id), "{tag}");
+        // The wire's three-valued cosmetic marker (absent / null / present)
+        // collapses to two states across this seam: no key, or JSON null.
+        assert!(country.contains_key("cosmetic_tag"), "{tag}");
+        assert_eq!(
+            country["cosmetic_tag"],
+            Value::Null,
+            "{tag}: the validated-null cosmetic marker is spelled as JSON null"
+        );
+    }
+    // GER's `politics` object is the one the D14 fold route actually built, so
+    // this is the behavioural form of HW-F6: the D14 carrier reaches the
+    // snapshot, and `capital_state` is not on it. Replay reads
+    // `countries.<TAG>.politics.capital_state`, so the row stays refused until
+    // this assertion fails.
+    let ger_politics = countries["GER"]
+        .get("politics")
+        .and_then(Value::as_object)
+        .expect("the D14 fold route must build GER's politics object");
+    assert!(
+        ger_politics.contains_key("ruling_party"),
+        "the D14 politics fixture no longer reaches the snapshot, so the assertion below proves nothing"
+    );
+    assert!(
+        !ger_politics.contains_key("capital_state"),
+        "the D14 fold now emits politics.capital_state; promote country.current_capital_state"
+    );
+}

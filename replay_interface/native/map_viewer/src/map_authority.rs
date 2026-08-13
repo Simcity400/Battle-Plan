@@ -33,8 +33,11 @@
 //! [`MapAuthorityProjection`] closes the narrower hole this module owns, namely
 //! asserting an admission *without* any frame at all.
 
+use std::collections::BTreeSet;
+
 use replay_core::{ContentManifest, ViewStatus, WorldFrame};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use snapshot::sha256::Sha256;
 
 pub const MAP_AUTHORITY_INPUT_SCHEMA: &str = "battle-plan-map-authority-input-v4";
@@ -135,22 +138,60 @@ pub struct MapAuthorityOwnerProvenAdmission {
     pub status_accessor: &'static str,
     pub cadence: &'static str,
     pub identity_order: &'static str,
+    /// The certified admission predicate, carried by the row itself.
+    ///
+    /// # Why the predicate lives in the table
+    ///
+    /// [`map_authority_projection_from_world_frame`] holds a hand-written arm
+    /// per required input, and until this field existed a proven row's
+    /// disposition came from whatever `ViewStatus` that arm happened to pass.
+    /// The `status_accessor` string above was then only a comment: nothing
+    /// connected it to the value actually consulted, so a proven row could be
+    /// wired to a neighbouring view — or to a composite root that is `Present`
+    /// while this row's own payload is absent — and no test could see it.
+    ///
+    /// [`derive_requirement`] now ignores the arm's status entirely for a
+    /// proven input and calls this function instead, so the admission table is
+    /// the single place a proven row's measurement is decided. Most of these
+    /// are partition-local or completeness-checked readings rather than the
+    /// ledger's root accessor, for the reason each one's doc comment states;
+    /// [`map_authority_observed_status_label`] names what was really read so a
+    /// refusal can never claim a root status it did not consult.
+    pub status: fn(&WorldFrame) -> ViewStatus,
+    /// Whether [`Self::status`] can ever return `ViewStatus::DomainAbsent`.
+    ///
+    /// [`validate_requirement`] otherwise accepts an `Absent` disposition with
+    /// the canonical `DomainAbsent` blocker for ANY proven row, and a gap-only
+    /// projection needs no frame witness — so a caller could hand back a
+    /// refusal claiming an observation the row's predicate is incapable of
+    /// making. `diplomacy.faction_roster` is the case that motivates the flag:
+    /// `build_diplomacy` forces a missing faction carrier to `Leaf::Unobtained`
+    /// rather than `Leaf::Absent`, so its predicate reports only `Present` or
+    /// `DomainUnavailable`, and an `Absent` row for it is a fabricated reading.
+    pub can_report_absent: bool,
 }
 
-/// The owner-proven admission table, mirroring the three
+/// The owner-proven admission table, mirroring the
 /// `owner_proven_production_consumer` rows of
 /// `re_evidence/rendering_laws/XMAP00/non_ui_visual_input_ledger_20260730.tsv`.
 ///
-/// `cadence` is the `WorldFrame` contract: one decoded view per canonical
-/// recorded hour (`WorldFrame::hour_index`). `identity_order` is read out of
-/// the decoder that builds each view in
-/// `replay_interface/native/replay_core/src/world.rs`:
-/// `build_combats` (`:7290`) preserves the recorder census order and carries
-/// `(combat_id, generation)` per row; `build_ended_combats` (`:7345`) keys a
-/// `BTreeMap` by `(combat_id, generation)`, so terminal rows are ascending by
-/// that key; `build_naval_air_combat` (`:30947`) keeps the naval census in
-/// recorder order and exposes the sunk-convoy and air partitions as separate
-/// typed leaves.
+/// `cadence` is the `WorldFrame` contract and is the same sentence for every
+/// row: one decoded view per canonical recorded hour (`WorldFrame::hour_index`).
+/// It is spelled out per row rather than shared through a constant because
+/// `Audit-NonUiVisualInputLedger.ps1` reads these entries out of the source
+/// text and can only see a literal.
+///
+/// `identity_order` is read out of the decoder that builds each view in
+/// `replay_interface/native/replay_core/src/world.rs`, never invented here:
+/// `build_combats` preserves the recorder census order and carries
+/// `(combat_id, generation)` per row; `build_ended_combats` keys a `BTreeMap`
+/// by `(combat_id, generation)`, so terminal rows are ascending by that key;
+/// `build_naval_air_combat` keeps the naval census in recorder order and
+/// exposes the sunk-convoy and air partitions as separate typed leaves;
+/// `exact_d18_country_roster` walks the `countries` object in TAG order and
+/// refuses any partial prefix; `build_country_identities`,
+/// `build_diplomacy` and `build_rail_replay` all key their censuses by
+/// `BTreeMap`, so each is ascending by its own key.
 pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission] = &[
     MapAuthorityOwnerProvenAdmission {
         input_id: "combat.land_active_epoch",
@@ -159,6 +200,8 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         status_accessor: "combats_status",
         cadence: "one decoded view per canonical recorded hour",
         identity_order: "(combat_id, generation) per row, in recorder census order",
+        status: land_active_epoch_status,
+        can_report_absent: true,
     },
     MapAuthorityOwnerProvenAdmission {
         input_id: "combat.land_terminal_detail",
@@ -167,6 +210,8 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         status_accessor: "ended_combats_status",
         cadence: "one decoded view per canonical recorded hour",
         identity_order: "(combat_id, generation) ascending",
+        status: land_terminal_detail_status,
+        can_report_absent: true,
     },
     MapAuthorityOwnerProvenAdmission {
         input_id: "combat.naval_air_epoch",
@@ -175,24 +220,67 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         status_accessor: "naval_air_combat_status",
         cadence: "one decoded view per canonical recorded hour",
         identity_order: "naval census in recorder order; sunk-convoy and air partitions typed separately",
+        status: naval_air_epoch_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "country.d18_complete_roster",
+        owner_packet: "XMAP05",
+        payload_schema: "WorldFrame.countries._r2_tag_db_id",
+        status_accessor: "d18_country_roster.status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "TAG-ascending, each with a unique nonzero tag_db_id; no partial prefix",
+        status: d18_complete_roster_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "diplomacy.faction_roster",
+        owner_packet: "XMAP18",
+        payload_schema: "WorldFrame.diplomacy.faction_members",
+        status_accessor: "faction_roster_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order:
+            "faction id ascending; member TAGs in recorder order, each in at most one faction and each present in the complete D18 roster, under the producer's own D53 completeness witness",
+        status: faction_roster_status,
+        // `build_diplomacy` forces a missing faction carrier to
+        // `Leaf::Unobtained`, so `faction_roster_status` reports only `Present`
+        // or `DomainUnavailable` and can never observe `DomainAbsent`.
+        can_report_absent: false,
     },
 ];
 
 /// The accessor whose value a refusal reports.
 ///
-/// Most inputs are read straight off a `WorldFrame` root accessor and their
-/// blocker says so. Two owner-proven inputs are not, and must not claim they
-/// are: `combat.naval_air_epoch` binds to a partition inside a composite view,
-/// and `combat.land_terminal_detail` binds to a completeness-checked reading of
-/// its status rather than the raw one. Both [`unavailable_requirement`] and
+/// An unproven family is read straight off a `WorldFrame` root accessor and its
+/// blocker says so. Most owner-proven families are NOT, and must not claim they
+/// are: the ledger's `status_accessor` names a composite that can be `Present`
+/// while the admitted payload is absent, unobtained, incomplete, or a retained
+/// observation of an earlier hour. Each such row's `status` predicate reads
+/// something strictly stronger, and the label below is what that predicate
+/// actually consulted. Both [`unavailable_requirement`] and
 /// [`validate_requirement`] resolve the label through this one function, so a
 /// row cannot carry a blocker that names an accessor the derivation never read.
 pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
     match input_id {
         "combat.naval_air_epoch" => "naval_combats_status",
         "combat.land_terminal_detail" => "certified ended_combats_status",
+        // These two ARE read off the accessor the ledger names, but "root
+        // status" would be a lie about which one: `countries_status` and
+        // `diplomacy.status` are both `Present` for any `countries` object,
+        // while these predicates are the fail-closed verdicts one level in.
+        "country.d18_complete_roster" => "d18_country_roster.status",
+        "diplomacy.faction_roster" => "faction_roster_status",
         _ => "root status",
     }
+}
+
+/// The admission status for `combat.land_active_epoch`.
+///
+/// The only proven row whose ledger root accessor is already exactly its own
+/// payload's verdict: `build_combats` downgrades to `DomainUnavailable` the
+/// moment it skips a malformed row, so `Present` is a complete census.
+fn land_active_epoch_status(frame: &WorldFrame) -> ViewStatus {
+    frame.combats_status()
 }
 
 /// The admission status for `combat.naval_air_epoch`.
@@ -248,6 +336,140 @@ fn ended_combats_dropped_rows(frame: &WorldFrame) -> bool {
     frame.coverage_warnings().iter().any(|warning| {
         warning.starts_with("ended_combats[") && warning.contains("row skipped")
     })
+}
+
+/// The complete D18 country roster, or the status that refuses it.
+///
+/// This is the only view in the frame that states, fail-closed, *which*
+/// countries the hour measured, so it is the completeness reference any
+/// per-country census must join to. `exact_d18_country_roster` already refuses
+/// a partial prefix — a missing, zero, duplicate or malformed `_r2_tag_db_id`,
+/// or a roster that does not cover the whole typed `countries` view, makes the
+/// roster unavailable rather than a shorter list — so a census checked against
+/// it cannot be complete against a roster that silently lost members.
+///
+/// It returns the TAG set rather than a bare status because that is what a
+/// joining census needs; `country.current_capital_state` was the first such
+/// census and is currently refused for a producer-side reason recorded in
+/// `extractor/native/runs/hw_admission_a/ROW_PROOFS.md` (HW-F6).
+fn complete_d18_roster(frame: &WorldFrame) -> Result<BTreeSet<String>, ViewStatus> {
+    let roster = frame.d18_country_roster();
+    if roster.status != ViewStatus::Present {
+        return Err(roster.status);
+    }
+    // A `Present` roster is never empty (`exact_d18_country_roster` refuses an
+    // empty `countries` object), but a census joined to an empty roster would
+    // be vacuously complete, so this refuses rather than relying on that.
+    if roster.entries.is_empty() {
+        return Err(ViewStatus::DomainUnavailable);
+    }
+    Ok(roster
+        .entries
+        .iter()
+        .map(|entry| entry.tag.clone())
+        .collect())
+}
+
+/// The admission status for `country.d18_complete_roster`.
+///
+/// This is the one row whose ledger accessor is already exactly its payload's
+/// own fail-closed completeness verdict, so the predicate is the accessor.
+fn d18_complete_roster_status(frame: &WorldFrame) -> ViewStatus {
+    match complete_d18_roster(frame) {
+        Ok(_) => ViewStatus::Present,
+        Err(status) => status,
+    }
+}
+
+/// The admission status for `diplomacy.faction_roster`.
+///
+/// `DiplomacyView::faction_roster_status` is the atomic verdict over the single
+/// `faction_members` leaf — an absent or unobtained carrier is unavailable, and
+/// a measured map distinguishes empty from nonempty. That is necessary but NOT
+/// sufficient, because the leaf has two producers.
+///
+/// `build_diplomacy` prefers the modern D53 witness
+/// (`read_domain53_faction_roster`) and falls back to the legacy
+/// `diplomacy_live.faction_members` object when a recording predates it. The
+/// legacy reader accepts any well-formed nonempty object as `Leaf::Measured`:
+/// it validates each row's shape and member exclusivity but has **no expected
+/// faction count and no completeness witness**, so a recording that captured
+/// one faction and missed another is indistinguishable from a complete one. The
+/// modern route is the opposite — `faction_roster_status` is a stated
+/// `measured_empty` / `measured_nonempty` / `unavailable` claim the producer
+/// made about its own coverage.
+///
+/// So this admits only a roster the producer WITNESSED as complete: the modern
+/// claim must be present and state a measurement, and `replay_core` must
+/// independently have turned it into a measured leaf. The second half is what
+/// keeps this from re-implementing the parse — a witness that says "measured"
+/// over rows that do not parse leaves `faction_roster_status` `Unavailable` and
+/// is refused here.
+///
+/// A third conjunct covers identity. A faction row's members are TAG strings,
+/// and neither side joins them to the country census: when the recorder cannot
+/// map a member's `tag_db_id` it emits the numeric id as the key rather than
+/// fabricating a TAG (`world_fold.rs`'s `resolve_country_key`), and
+/// `parse_domain53_faction_rows` accepts any nonempty string. A witnessed row
+/// naming `"999"` would otherwise be admitted as a measured membership census
+/// while that member is explicitly unresolved. So every member TAG must appear
+/// in the complete D18 roster — the frame's own statement of which countries
+/// this hour identified. A measured-empty roster has no members and joins
+/// vacuously, which is correct: it asserts no identity.
+fn faction_roster_status(frame: &WorldFrame) -> ViewStatus {
+    let diplomacy = frame.diplomacy();
+    let measured = match diplomacy.faction_roster_status() {
+        replay_core::world::FactionRosterStatus::Unavailable => false,
+        replay_core::world::FactionRosterStatus::MeasuredEmpty
+        | replay_core::world::FactionRosterStatus::MeasuredNonEmpty => true,
+    };
+    if !measured {
+        return ViewStatus::DomainUnavailable;
+    }
+    let witnessed = frame
+        .domain("diplomacy_world")
+        .and_then(Value::as_object)
+        .and_then(|world| world.get("domain53_extra"))
+        .and_then(Value::as_object)
+        .and_then(|extra| extra.get("faction_roster_status"))
+        .and_then(Value::as_str)
+        .is_some_and(|claim| claim == "measured_empty" || claim == "measured_nonempty");
+    if !witnessed {
+        return ViewStatus::DomainUnavailable;
+    }
+    let Some(members) = diplomacy.faction_members.measured() else {
+        // Unreachable while `measured` is true, but this is a refusal rather
+        // than an `expect`: an admission must never rest on an invariant this
+        // module does not own.
+        return ViewStatus::DomainUnavailable;
+    };
+    if members.values().flatten().next().is_none() {
+        // Measured-empty: no membership identity is being asserted, so there is
+        // nothing to join and the D18 roster is not required.
+        return ViewStatus::Present;
+    }
+    // A failing roster is NOT propagated verbatim. `complete_d18_roster` reports
+    // `DomainAbsent` when the frame carries no `countries` key at all, and this
+    // row's carrier is independent of that key — a witnessed faction roster can
+    // be measured on a frame with no country census. Reporting `DomainAbsent`
+    // here would therefore describe a different view's absence, and because
+    // `can_report_absent` is false for this row `validate_requirement` would
+    // reject the whole projection rather than record a gap. What is true is
+    // that this row's identity cannot be established, which is an
+    // unavailability of this row.
+    let roster = match complete_d18_roster(frame) {
+        Ok(roster) => roster,
+        Err(_) => return ViewStatus::DomainUnavailable,
+    };
+    let identified = members
+        .values()
+        .flatten()
+        .all(|member| roster.contains(member));
+    if identified {
+        ViewStatus::Present
+    } else {
+        ViewStatus::DomainUnavailable
+    }
 }
 
 /// The owner-proven admission evidence for `input_id`, or `None` when the
@@ -466,13 +688,24 @@ pub fn map_authority_requirement_metadata(
         "control.controller_by_province"
         | "control.controller_by_state"
         | "control.owner_by_state"
-        | "country.d18_complete_roster"
         | "country.presentation_identity"
         | "fog.province_visibility_by_pov"
         | "fog.spotted_land_by_pov"
         | "fog.spotted_taskforces_by_pov"
         | "fog.spotted_wings_by_pov" => {
             "XMAP05 must prove the exact complete identity/POV payload, enumeration, cadence, and authenticated producer contract"
+        }
+        // XMAP05 has proved its roster row (ledger disposition
+        // `owner_proven_production_consumer`), so its blocker names the hour's
+        // missing measurement instead of a pending proof. Its sibling rows above
+        // keep theirs, each for a producer-side reason recorded in
+        // `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`: the POV rows need
+        // the all-country `complete_pov_roster` FOW1 census no producer emits,
+        // and `country.presentation_identity` needs a cosmetic-tag spelling that
+        // distinguishes "legitimately absent" from "could not read" across the
+        // seam, which the current `cosmetic_tag: null` emission does not.
+        "country.d18_complete_roster" => {
+            "the recording carries no complete measured D18 country roster for this hour"
         }
         "terrain.snow_mud_semantic" | "weather.province_snow_accumulator" => {
             "these semantic accumulators remain independently unavailable and cannot substitute for XMAP07's exact passive global dense texture/fade carrier"
@@ -510,14 +743,27 @@ pub fn map_authority_requirement_metadata(
         "orders.army_battleplans_semantic" => {
             "XMAP15 must prove the semantic order/member/control payload and lifecycle; Replay geometry is derived and never recorder authority"
         }
+        // XMAP16's three rows stay unproven: `build_rail_replay` admits only the
+        // `exact_a729_crailwaygfx_carrier` document, and the recorder's D81 fold
+        // emits `exact_a729_supply_simulation_tables` with a different field set,
+        // so no capture can make `rail_replay` anything but unavailable. Recorded
+        // in `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`.
         "logistics.rail_hub_frames" | "logistics.rail_topology_state" | "mapmode.supply_state" => {
             "XMAP16 must prove exact topology/hub/state identities, order, completeness, and authenticated producer/content joins"
         }
+        // `country.current_capital_state` stays unproven for a producer reason,
+        // not a replay one: `capital_state` is minted only by the collector's
+        // direct-JSON country renderer and appears nowhere in `recorder_host/`,
+        // so the fold never writes it into the hourly snapshot. HW-F6 in
+        // `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`.
         "country.current_capital_state" | "map_furniture.current_victory_points" => {
             "XMAP21 must prove the exact live furniture value, identity, cadence, completeness, and authenticated producer/content joins"
         }
-        "diplomacy.faction_roster"
-        | "diplomacy.pair_relations"
+        // XMAP18 has proved the faction roster; its other rows still owe a proof.
+        "diplomacy.faction_roster" => {
+            "the recording carries no measured faction-membership roster for this hour"
+        }
+        "diplomacy.pair_relations"
         | "mapmode.air_superiority"
         | "mapmode.infrastructure_state"
         | "mapmode.intelligence"
@@ -575,27 +821,57 @@ fn unavailable_requirement(input_id: &str, status: Option<ViewStatus>) -> MapAut
 ///
 /// The single admitting branch of the whole authority: an input is admitted
 /// only when its owning packet has supplied owner-proven production admission
-/// **and** the frame's own status accessor for that input reports `Present`.
-/// `Present` on a `replay_core` view means the recorder measured the
-/// collection this hour — a measured-empty collection is `Present` with no
+/// **and** the admission table's own certified predicate reports `Present` for
+/// this frame. `Present` on a `replay_core` view means the recorder measured
+/// the collection this hour — a measured-empty collection is `Present` with no
 /// rows, which is a fact, while an absent key is `DomainAbsent` and an
 /// explicitly unobtained one is `DomainUnavailable`. Both of those fall
 /// through to [`unavailable_requirement`] and keep their named blocker, so an
 /// absent input is never presented as measured-empty.
-fn derive_requirement(input_id: &str, status: Option<ViewStatus>) -> MapAuthorityRequirement {
-    if let Some(admission) = map_authority_owner_proven_admission(input_id) {
-        if status == Some(ViewStatus::Present) {
-            return MapAuthorityRequirement {
-                input_id: input_id.to_string(),
-                payload_schema: Some(admission.payload_schema.to_string()),
-                cadence: Some(admission.cadence.to_string()),
-                identity_order: Some(admission.identity_order.to_string()),
-                disposition: MapAuthorityRequirementDisposition::Admitted,
-                blocker: None,
-            };
+///
+/// `status` is the hand-written arm's reading in
+/// [`map_authority_projection_from_world_frame`]. It is used for UNPROVEN
+/// families only, which is all it can honestly describe: for a proven family
+/// the arm's composite root can be `Present` while the admitted payload is
+/// not, so the table's predicate is consulted instead and the arm's value is
+/// deliberately discarded. That is what makes it structurally impossible to
+/// admit a proven row off a neighbouring or too-weak accessor.
+/// The frame one projection is derived from.
+///
+/// This exists so `derive_requirement` can reach the frame while keeping the
+/// input id as its first literal argument at every call site.
+/// `Audit-NonUiVisualInputLedger.ps1` proves the projection covers all 45
+/// semantic ledger rows by matching `derive_requirement(\s*"<id>"` — and the
+/// missing-status census by matching `derive_requirement(\s*"<id>",\s*None\s*)`
+/// — against this file's source text, so threading the frame through a leading
+/// parameter or a wrapper closure would silently blind that audit rather than
+/// fail it.
+struct RequirementProjector<'a> {
+    frame: &'a WorldFrame,
+}
+
+impl RequirementProjector<'_> {
+    fn derive_requirement(
+        &self,
+        input_id: &str,
+        status: Option<ViewStatus>,
+    ) -> MapAuthorityRequirement {
+        let Some(admission) = map_authority_owner_proven_admission(input_id) else {
+            return unavailable_requirement(input_id, status);
+        };
+        let derived = (admission.status)(self.frame);
+        if derived != ViewStatus::Present {
+            return unavailable_requirement(input_id, Some(derived));
+        }
+        MapAuthorityRequirement {
+            input_id: input_id.to_string(),
+            payload_schema: Some(admission.payload_schema.to_string()),
+            cadence: Some(admission.cadence.to_string()),
+            identity_order: Some(admission.identity_order.to_string()),
+            disposition: MapAuthorityRequirementDisposition::Admitted,
+            blocker: None,
         }
     }
-    unavailable_requirement(input_id, status)
 }
 
 /// Project immutable content identity plus each family's derived disposition.
@@ -610,151 +886,107 @@ pub fn map_authority_projection_from_world_frame(
         .manifest_digest_sha256
         .clone()
         .ok_or_else(|| "map authority requires a finalized content manifest".to_string())?;
-    let faction_roster_status = match frame.diplomacy().faction_roster_status() {
-        replay_core::world::FactionRosterStatus::Unavailable => ViewStatus::DomainUnavailable,
-        replay_core::world::FactionRosterStatus::MeasuredEmpty
-        | replay_core::world::FactionRosterStatus::MeasuredNonEmpty => ViewStatus::Present,
-    };
+    // Every arm below passes the accessor the XMAP00 ledger's `status_accessor`
+    // column names for that input, and nothing else. For an UNPROVEN family
+    // that reading is the whole story. For a PROVEN one it is discarded:
+    // `derive_requirement` consults the admission table's own certified
+    // predicate instead, because these root accessors are exactly the
+    // composites that can be `Present` while the admitted payload is not.
+    let projector = RequirementProjector { frame };
     let mut requirements = vec![
-        derive_requirement("combat.land_active_epoch", Some(frame.combats_status())),
-        derive_requirement(
+        projector.derive_requirement("combat.land_active_epoch", Some(frame.combats_status())),
+        projector.derive_requirement(
             "combat.land_terminal_detail",
-            Some(land_terminal_detail_status(frame)),
+            Some(frame.ended_combats_status()),
         ),
-        derive_requirement("combat.naval_air_epoch", Some(naval_air_epoch_status(frame))),
-        derive_requirement(
+        projector.derive_requirement(
+            "combat.naval_air_epoch",
+            Some(frame.naval_air_combat_status()),
+        ),
+        projector.derive_requirement(
             "control.controller_by_province",
             Some(frame.control_by_province_status()),
         ),
-        derive_requirement(
+        projector.derive_requirement(
             "control.controller_by_state",
             Some(frame.control_by_state_status()),
         ),
-        derive_requirement(
-            "control.owner_by_state",
-            Some(frame.owner_by_state_status()),
-        ),
-        derive_requirement(
-            "country.current_capital_state",
-            Some(frame.diplomacy().status),
-        ),
-        derive_requirement(
+        projector.derive_requirement("control.owner_by_state", Some(frame.owner_by_state_status())),
+        projector.derive_requirement("country.current_capital_state", Some(frame.diplomacy().status)),
+        projector.derive_requirement(
             "country.d18_complete_roster",
             Some(frame.d18_country_roster().status),
         ),
-        derive_requirement(
+        projector.derive_requirement(
             "country.presentation_identity",
             Some(frame.country_identities_status()),
         ),
-        derive_requirement("diplomacy.faction_roster", Some(faction_roster_status)),
-        derive_requirement("diplomacy.pair_relations", Some(frame.diplomacy().status)),
-        derive_requirement(
+        projector.derive_requirement("diplomacy.faction_roster", Some(frame.diplomacy().status)),
+        projector.derive_requirement("diplomacy.pair_relations", Some(frame.diplomacy().status)),
+        projector.derive_requirement(
             "effects.semantic_lifecycle",
             Some(frame.xmap20_effects_status()),
         ),
-        derive_requirement(
+        projector.derive_requirement(
             "fog.province_visibility_by_pov",
             Some(frame.visibility_status()),
         ),
-        derive_requirement("fog.spotted_land_by_pov", Some(frame.visibility_status())),
-        derive_requirement(
+        projector.derive_requirement("fog.spotted_land_by_pov", Some(frame.visibility_status())),
+        projector.derive_requirement(
             "fog.spotted_taskforces_by_pov",
             Some(frame.visibility_status()),
         ),
-        derive_requirement("fog.spotted_wings_by_pov", None),
-        derive_requirement("lighting.point_light_lifecycle", None),
-        derive_requirement(
-            "logistics.rail_hub_frames",
-            Some(
-                if frame.rail_replay().status == ViewStatus::Present
-                    && frame.rail_replay().hub_visual_states_complete
-                    && frame.rail_replay().hub_effective_cutoffs.is_some()
-                    && frame.rail_replay().hub_visual_states.is_some()
-                {
-                    ViewStatus::Present
-                } else {
-                    ViewStatus::DomainUnavailable
-                },
-            ),
-        ),
-        derive_requirement(
+        projector.derive_requirement("fog.spotted_wings_by_pov", None),
+        projector.derive_requirement("lighting.point_light_lifecycle", None),
+        projector.derive_requirement("logistics.rail_hub_frames", Some(frame.rail_replay().status)),
+        projector.derive_requirement(
             "logistics.rail_topology_state",
-            Some(
-                if frame.rail_replay().status == ViewStatus::Present
-                    && frame.rail_replay().pair_transitions_complete
-                    && frame.rail_replay().pair_transitions.is_some()
-                {
-                    ViewStatus::Present
-                } else {
-                    ViewStatus::DomainUnavailable
-                },
-            ),
+            Some(frame.rail_replay().status),
         ),
-        derive_requirement("map_furniture.current_victory_points", None),
-        derive_requirement(
-            "mapmode.air_superiority",
-            Some(frame.air_superiority_status()),
-        ),
-        derive_requirement(
-            "mapmode.infrastructure_state",
-            Some(frame.buildings_status()),
-        ),
-        derive_requirement("mapmode.intelligence", Some(frame.diplomacy().status)),
-        derive_requirement(
-            "mapmode.naval_supremacy",
-            Some(frame.naval_supremacy_status()),
-        ),
-        derive_requirement(
+        projector.derive_requirement("map_furniture.current_victory_points", None),
+        projector.derive_requirement("mapmode.air_superiority", Some(frame.air_superiority_status())),
+        projector.derive_requirement("mapmode.infrastructure_state", Some(frame.buildings_status())),
+        projector.derive_requirement("mapmode.intelligence", Some(frame.diplomacy().status)),
+        projector.derive_requirement("mapmode.naval_supremacy", Some(frame.naval_supremacy_status())),
+        projector.derive_requirement(
             "mapmode.occupation_resistance_compliance",
             Some(frame.occupation_status()),
         ),
-        derive_requirement("mapmode.raids", Some(frame.raids_status())),
-        derive_requirement("mapmode.resource_deposits", None),
-        derive_requirement("mapmode.scripted_inputs", Some(frame.scripted_gui_status())),
-        derive_requirement(
-            "mapmode.supply_state",
-            Some(
-                if frame.rail_replay().status == ViewStatus::Present
-                    && frame.rail_replay().supply_arrows_complete
-                    && frame.rail_replay().supply_arrows.is_some()
-                {
-                    ViewStatus::Present
-                } else {
-                    ViewStatus::DomainUnavailable
-                },
-            ),
-        ),
-        derive_requirement(
+        projector.derive_requirement("mapmode.raids", Some(frame.raids_status())),
+        projector.derive_requirement("mapmode.resource_deposits", None),
+        projector.derive_requirement("mapmode.scripted_inputs", Some(frame.scripted_gui_status())),
+        projector.derive_requirement("mapmode.supply_state", Some(frame.rail_replay().status)),
+        projector.derive_requirement(
             "objects.building_state_damage",
             Some(frame.d48_buildings_status()),
         ),
-        derive_requirement("objects.city_population", None),
-        derive_requirement("objects.generic_population_lifecycle", None),
-        derive_requirement(
+        projector.derive_requirement("objects.city_population", None),
+        projector.derive_requirement("objects.generic_population_lifecycle", None),
+        projector.derive_requirement(
             "orders.army_battleplans_semantic",
             Some(frame.army_battleplans().status),
         ),
-        derive_requirement("orders.theatre_army_hierarchy", None),
-        derive_requirement("postfx.temporal_exposure_state", None),
-        derive_requirement(
+        projector.derive_requirement("orders.theatre_army_hierarchy", None),
+        projector.derive_requirement("postfx.temporal_exposure_state", None),
+        projector.derive_requirement(
             "session.player_country_set",
             Some(frame.session_metadata().status),
         ),
-        derive_requirement("terrain.snow_mud_semantic", Some(frame.snow_mud_status())),
-        derive_requirement("units.air_base_location", Some(frame.wings_status())),
-        derive_requirement("units.divisions", Some(frame.division_units_status())),
-        derive_requirement("units.taskforces_fleets", Some(frame.fleets_status())),
-        derive_requirement("units.wings", Some(frame.wings_status())),
-        derive_requirement(
+        projector.derive_requirement("terrain.snow_mud_semantic", Some(frame.snow_mud_status())),
+        projector.derive_requirement("units.air_base_location", Some(frame.wings_status())),
+        projector.derive_requirement("units.divisions", Some(frame.division_units_status())),
+        projector.derive_requirement("units.taskforces_fleets", Some(frame.fleets_status())),
+        projector.derive_requirement("units.wings", Some(frame.wings_status())),
+        projector.derive_requirement(
             "weather.province_snow_accumulator",
             Some(frame.weather_province_snow_status()),
         ),
-        derive_requirement("weather.region_gameplay", Some(frame.weather_status())),
-        derive_requirement(
+        projector.derive_requirement("weather.region_gameplay", Some(frame.weather_status())),
+        projector.derive_requirement(
             "weather.visual_membership_lifecycle",
             Some(frame.weather_visual_lifecycle().status),
         ),
-        derive_requirement("world.calendar_time", None),
+        projector.derive_requirement("world.calendar_time", None),
     ];
     requirements.sort_by(|left, right| left.input_id.cmp(&right.input_id));
     let mut projection = MapAuthorityProjection::from_untrusted_parts(
@@ -921,6 +1153,20 @@ fn validate_requirement(row: &MapAuthorityRequirement) -> Result<(), String> {
     } else {
         &[ViewStatus::DomainUnavailable, ViewStatus::Present]
     };
+    // A refusal states what was OBSERVED, so it may not claim an observation
+    // the row's own predicate cannot make. A gap-only projection carries no
+    // frame witness and is otherwise accepted on its blocker text alone, so
+    // without this a caller could hand back `diplomacy.faction_roster` as
+    // `Absent` — a reading `faction_roster_status` never produces, because
+    // `build_diplomacy` forces a missing carrier to `Leaf::Unobtained`.
+    if row.disposition == MapAuthorityRequirementDisposition::Absent
+        && proven.is_some_and(|admission| !admission.can_report_absent)
+    {
+        return Err(format!(
+            "{} cannot observe DomainAbsent and must not be refused as absent",
+            row.input_id
+        ));
+    }
     let label = map_authority_observed_status_label(&row.input_id);
     let blocker_is_canonical = match row.disposition {
         MapAuthorityRequirementDisposition::Absent => {

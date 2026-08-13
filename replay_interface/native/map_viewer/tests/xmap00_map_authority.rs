@@ -11,7 +11,8 @@ use map_viewer::{
 };
 use replay_core::{
     ContentManifest, RawFrame, ReplaySource, SourceError, SourceGameIdentity,
-    SourceProfileIdentity, WorldFrame, WorldTimeline, PORTABLE_CONTENT_MANIFEST_SCHEMA,
+    SourceProfileIdentity, ViewStatus, WorldFrame, WorldTimeline,
+    PORTABLE_CONTENT_MANIFEST_SCHEMA,
 };
 use serde_json::{json, Map, Value};
 
@@ -146,6 +147,124 @@ fn requirement<'a>(
         .iter()
         .find(|row| row.input_id == input_id)
         .unwrap_or_else(|| panic!("projection omitted {input_id}"))
+}
+
+// --------------------------------------------------------------------------
+// Owner-proven fixtures.
+//
+// Every proven row gets one snapshot that measures it and one that does not.
+// For the rows whose ledger `status_accessor` is a COMPOSITE weaker than the
+// admitted payload, the unmeasured snapshot deliberately leaves that composite
+// `Present` — that is the frame in which reverting the row to its ledger
+// accessor would wrongly admit, and `ledger_accessor_stays_present` marks it so
+// the test can assert the fixture really is that frame instead of assuming it.
+// --------------------------------------------------------------------------
+
+/// Two countries with a complete, unique, nonzero D18 identity each.
+fn measured_countries() -> Value {
+    json!({
+        "ENG": {"_r2_tag_db_id": 2},
+        "GER": {"_r2_tag_db_id": 1},
+    })
+}
+
+/// A frame in which every owner-proven input is measured.
+fn fully_measured_snapshot() -> Value {
+    json!({
+        "combats": [{"combat_id": 11, "generation": 1, "kind": "land", "location_province": 42}],
+        "ended_combats": [{"combat_id": 9, "generation": 2, "lifecycle": "ended"}],
+        "naval_combats": [],
+        "countries": measured_countries(),
+        "diplomacy_world": {
+            "domain53_extra": {
+                "faction_roster_status": "measured_empty",
+                "faction_rows": [],
+            },
+        },
+    })
+}
+
+/// One proven row's unmeasured fixture.
+struct UnmeasuredFixture {
+    snapshot: Value,
+    /// Whether this fixture leaves the row's ledger `status_accessor` reporting
+    /// `Present`. True only for rows whose ledger accessor is a composite the
+    /// certified predicate strengthens; for a row whose ledger accessor already
+    /// IS its payload's fail-closed verdict there is no such frame, and
+    /// claiming one would be a fiction.
+    ledger_accessor_stays_present: bool,
+}
+
+/// The snapshot in which `input_id`'s own payload is not measured.
+fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
+    let mut snapshot = fully_measured_snapshot();
+    let object = snapshot.as_object_mut().unwrap();
+    let ledger_accessor_stays_present = match input_id {
+        // `combats_status` IS this row's payload verdict: `build_combats`
+        // downgrades to `DomainUnavailable` on a malformed row, so there is no
+        // frame where the accessor is Present and the census is not measured.
+        "combat.land_active_epoch" => {
+            object.insert("combats".into(), Value::Null);
+            false
+        }
+        // `ended_combats_status` stays `Present` after the decoder drops a
+        // malformed terminal row; only the certified reading sees the loss.
+        "combat.land_terminal_detail" => {
+            object.insert(
+                "ended_combats".into(),
+                json!([{"combat_id": 0, "generation": 2, "lifecycle": "ended"}]),
+            );
+            true
+        }
+        // The merged naval/air root is `Present` because the AIR partition is
+        // (`build_naval_air_combat` combines the naval, sunk-convoy and air
+        // statuses, and any `Present` dominates); the naval census itself was
+        // explicitly unobtained.
+        "combat.naval_air_epoch" => {
+            object.insert("naval_combats".into(), Value::Null);
+            object.insert(
+                "naval_air".into(),
+                json!({"_r2_air_combat_losses_live": []}),
+            );
+            true
+        }
+        // `d18_country_roster.status` IS this row's payload verdict. ENG has no
+        // identity, so the roster is unavailable — and so is the accessor.
+        "country.d18_complete_roster" => {
+            object.insert("countries".into(), json!({"ENG": {}, "GER": {"_r2_tag_db_id": 1}}));
+            false
+        }
+        // `faction_roster_status` IS this row's payload verdict, over a single
+        // atomic leaf. Removing the witness unavailables both.
+        "diplomacy.faction_roster" => {
+            object.remove("diplomacy_world");
+            false
+        }
+        other => panic!("no unmeasured fixture for {other}"),
+    };
+    UnmeasuredFixture {
+        snapshot,
+        ledger_accessor_stays_present,
+    }
+}
+
+/// The accessor the XMAP00 ledger's `status_accessor` column names for each
+/// proven row, read off the frame directly. This is deliberately the LEDGER's
+/// reading and not the admission table's predicate: the two agreeing or
+/// disagreeing is the thing under test.
+fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
+    match input_id {
+        "combat.land_active_epoch" => frame.combats_status(),
+        "combat.land_terminal_detail" => frame.ended_combats_status(),
+        "combat.naval_air_epoch" => frame.naval_air_combat_status(),
+        "country.d18_complete_roster" => frame.d18_country_roster().status,
+        "diplomacy.faction_roster" => match frame.diplomacy().faction_roster_status() {
+            replay_core::world::FactionRosterStatus::Unavailable => ViewStatus::DomainUnavailable,
+            replay_core::world::FactionRosterStatus::MeasuredEmpty
+            | replay_core::world::FactionRosterStatus::MeasuredNonEmpty => ViewStatus::Present,
+        },
+        other => panic!("no ledger accessor for {other}"),
+    }
 }
 
 fn unresolved_projection() -> MapAuthorityProjection {
@@ -369,7 +488,12 @@ fn the_owner_proven_admission_table_is_exactly_the_ledgers_disposition_column() 
         ledger_proven, code_proven,
         "admission table is not the ledger's owner-proven set"
     );
-    assert_eq!(code_proven.len(), 3);
+    // XMAP14's three combat rows (lane GX) plus the two lane HW proved from
+    // committed capture evidence. Every other semantic row is still refused;
+    // the reason each of lane HW's remaining ten candidates could NOT be
+    // promoted is recorded per row in
+    // `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`.
+    assert_eq!(code_proven.len(), 5);
 
     for row in &semantic {
         let id = row["id"].as_str();
@@ -400,11 +524,7 @@ fn the_owner_proven_admission_table_is_exactly_the_ledgers_disposition_column() 
 #[test]
 fn owner_proven_inputs_admit_from_the_frames_own_measured_views() {
     let manifest = fixture_manifest();
-    let frame = world_frame_with(json!({
-        "combats": [{"combat_id": 11, "generation": 1, "kind": "land", "location_province": 42}],
-        "ended_combats": [{"combat_id": 9, "generation": 2, "lifecycle": "ended"}],
-        "naval_combats": [],
-    }));
+    let frame = world_frame_with(fully_measured_snapshot());
     let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
 
     for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
@@ -421,11 +541,12 @@ fn owner_proven_inputs_admit_from_the_frames_own_measured_views() {
         assert_eq!(row.blocker, None);
     }
 
+    let proven_count = MAP_AUTHORITY_OWNER_PROVEN_INPUTS.len();
     let admission = admit_map_authority_projection(&projection).unwrap();
-    assert_eq!(admission.admitted().len(), 3);
+    assert_eq!(admission.admitted().len(), proven_count);
     assert_eq!(
         admission.gaps().len(),
-        MAP_AUTHORITY_REQUIRED_INPUTS.len() - 3
+        MAP_AUTHORITY_REQUIRED_INPUTS.len() - proven_count
     );
     for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
         assert!(admission.is_admitted(proven.input_id));
@@ -448,7 +569,7 @@ fn owner_proven_inputs_admit_from_the_frames_own_measured_views() {
         assert_eq!(admitted.identity_order, proven.identity_order);
     }
 
-    // Nothing else moved: the other 42 keep their named blockers.
+    // Nothing else moved: every unproven family keeps its named blocker.
     for gap in admission.gaps() {
         assert!(map_authority_owner_proven_admission(&gap.input_id).is_none());
         assert!(!gap.reason.is_empty(), "{} lost its blocker", gap.input_id);
@@ -468,6 +589,8 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "combats": Value::Null,
             "ended_combats": Value::Null,
             "naval_combats": Value::Null,
+            "countries": Value::Null,
+            "diplomacy_live": Value::Null,
         })),
         &manifest,
     )
@@ -478,25 +601,48 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             .unwrap()
             .blocker;
         let label = map_authority_observed_status_label(proven.input_id);
+        // `diplomacy.faction_roster`'s carrier is a single `Leaf`, and
+        // `faction_roster_status` maps BOTH of its refusal states to
+        // `DomainUnavailable` on purpose: "no faction carrier at all" is not
+        // positive knowledge of an empty roster, so it fails closed rather than
+        // reporting the softer `DomainAbsent`. Every other proven row can tell
+        // a missing key from an unobtained one and reports `DomainAbsent`.
+        let empty_frame_disposition = if proven.input_id == "diplomacy.faction_roster" {
+            MapAuthorityRequirementDisposition::Unavailable
+        } else {
+            MapAuthorityRequirementDisposition::Absent
+        };
+        let empty_frame_status = if proven.input_id == "diplomacy.faction_roster" {
+            "DomainUnavailable"
+        } else {
+            "DomainAbsent"
+        };
         let absent_row = requirement(&absent, proven.input_id);
         assert_eq!(
-            absent_row.disposition,
-            MapAuthorityRequirementDisposition::Absent
+            absent_row.disposition, empty_frame_disposition,
+            "{}",
+            proven.input_id
         );
         assert_eq!(
             absent_row.blocker.as_deref(),
-            Some(format!("{blocker}; WorldFrame {label} is DomainAbsent").as_str())
+            Some(format!("{blocker}; WorldFrame {label} is {empty_frame_status}").as_str()),
+            "{}",
+            proven.input_id
         );
         assert_eq!(absent_row.payload_schema, None);
 
         let unobtained_row = requirement(&unobtained, proven.input_id);
         assert_eq!(
             unobtained_row.disposition,
-            MapAuthorityRequirementDisposition::Unavailable
+            MapAuthorityRequirementDisposition::Unavailable,
+            "{}",
+            proven.input_id
         );
         assert_eq!(
             unobtained_row.blocker.as_deref(),
-            Some(format!("{blocker}; WorldFrame {label} is DomainUnavailable").as_str())
+            Some(format!("{blocker}; WorldFrame {label} is DomainUnavailable").as_str()),
+            "{}",
+            proven.input_id
         );
         assert_eq!(unobtained_row.payload_schema, None);
     }
@@ -727,47 +873,428 @@ fn a_terminal_census_that_dropped_rows_is_not_a_measured_one() {
     );
 }
 
-/// kills: wiring a proven input's derivation to a neighbouring view's status.
-/// Each proven input must track its own view and nothing else.
+/// kills: pointing any proven row's `status` predicate at a view that reports a
+/// measurement its own payload did not get. The property is one-directional and
+/// holds for every proven row regardless of how strong its ledger accessor is:
+/// the certified predicate may be STRICTER than the ledger's
+/// `status_accessor`, never more permissive. A row wired to a neighbouring view
+/// — the defect the old combinatorial test tried and failed to express — breaks
+/// it on the frames below, because each unmeasures exactly one carrier.
 #[test]
-fn each_proven_input_tracks_only_its_own_view() {
+fn no_proven_predicate_is_more_permissive_than_its_ledger_accessor() {
     let manifest = fixture_manifest();
-    let key_of = |input_id: &str| match input_id {
-        "combat.land_active_epoch" => "combats",
-        "combat.land_terminal_detail" => "ended_combats",
-        _ => "naval_combats",
-    };
+    let mut frames = vec![
+        world_frame_with(fully_measured_snapshot()),
+        world_frame_with(json!({})),
+    ];
     for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
-        let mut snapshot = Map::new();
-        for other in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
-            snapshot.insert(
-                key_of(other.input_id).to_string(),
-                if other.input_id == proven.input_id {
-                    Value::Null
-                } else {
-                    json!([])
-                },
+        frames.push(world_frame_with(unmeasured_fixture(proven.input_id).snapshot));
+    }
+    for frame in &frames {
+        let projection = map_authority_projection_from_world_frame(frame, &manifest).unwrap();
+        for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+            if requirement(&projection, proven.input_id).disposition
+                == MapAuthorityRequirementDisposition::Admitted
+            {
+                assert_eq!(
+                    ledger_accessor_status(frame, proven.input_id),
+                    ViewStatus::Present,
+                    "{} admitted while its ledger accessor {} refused",
+                    proven.input_id,
+                    proven.status_accessor
+                );
+            }
+        }
+    }
+}
+
+/// kills: weakening any proven row's predicate so that its own unmeasured
+/// payload still admits. For the two rows whose ledger accessor is a composite
+/// (`ended_combats_status`, `naval_air_combat_status`), the fixture ALSO leaves
+/// that composite `Present` — asserted, not assumed — so reverting the row's
+/// `status` field to its ledger accessor makes exactly that row admit.
+#[test]
+fn a_proven_input_refuses_when_its_own_payload_is_unmeasured() {
+    let manifest = fixture_manifest();
+    let mut composites_covered = 0;
+    for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+        let fixture = unmeasured_fixture(proven.input_id);
+        let frame = world_frame_with(fixture.snapshot);
+        if fixture.ledger_accessor_stays_present {
+            composites_covered += 1;
+            assert_eq!(
+                ledger_accessor_status(&frame, proven.input_id),
+                ViewStatus::Present,
+                "{}'s fixture no longer leaves its ledger accessor Present, so it proves nothing",
+                proven.input_id
             );
         }
+        let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+        let row = requirement(&projection, proven.input_id);
+        assert_eq!(
+            row.disposition,
+            MapAuthorityRequirementDisposition::Unavailable,
+            "{} admitted on an unmeasured payload",
+            proven.input_id
+        );
+        assert_eq!(row.payload_schema, None, "{}", proven.input_id);
+        let blocker = map_authority_requirement_metadata(proven.input_id)
+            .unwrap()
+            .blocker;
+        let label = map_authority_observed_status_label(proven.input_id);
+        assert_eq!(
+            row.blocker.as_deref(),
+            Some(format!("{blocker}; WorldFrame {label} is DomainUnavailable").as_str()),
+            "{}",
+            proven.input_id
+        );
+        assert!(!admit_map_authority_projection(&projection)
+            .unwrap()
+            .is_admitted(proven.input_id));
+    }
+    assert_eq!(
+        composites_covered, 2,
+        "the composite-accessor cases are the ones this test exists for"
+    );
+}
+
+/// kills: unmeasuring one proven input silently moving another. Each fixture
+/// mutates one carrier; every proven row that does not read that carrier must
+/// still admit.
+#[test]
+fn unmeasuring_one_proven_input_leaves_its_siblings_admitted() {
+    let manifest = fixture_manifest();
+    for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
         let projection = map_authority_projection_from_world_frame(
-            &world_frame_with(Value::Object(snapshot)),
+            &world_frame_with(unmeasured_fixture(proven.input_id).snapshot),
             &manifest,
         )
         .unwrap();
         for other in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
-            let expected = if other.input_id == proven.input_id {
-                MapAuthorityRequirementDisposition::Unavailable
-            } else {
-                MapAuthorityRequirementDisposition::Admitted
-            };
+            if other.input_id == proven.input_id {
+                continue;
+            }
             assert_eq!(
                 requirement(&projection, other.input_id).disposition,
-                expected,
-                "unobtaining {} moved {}",
+                MapAuthorityRequirementDisposition::Admitted,
+                "unmeasuring {} moved {}",
                 proven.input_id,
                 other.input_id
             );
         }
+    }
+}
+
+/// kills: accepting a refusal that claims an observation the row's predicate
+/// cannot make. `faction_roster_status` never reports `DomainAbsent` —
+/// `build_diplomacy` forces a missing carrier to `Leaf::Unobtained` — and a
+/// gap-only projection carries no frame witness, so without the
+/// `can_report_absent` check a caller could hand back a fabricated absence and
+/// have it validated.
+#[test]
+fn a_proven_row_cannot_be_refused_with_an_observation_it_cannot_make() {
+    let mut projection = unresolved_projection();
+    let index = projection
+        .requirements
+        .iter()
+        .position(|row| row.input_id == "diplomacy.faction_roster")
+        .unwrap();
+    let blocker = map_authority_requirement_metadata("diplomacy.faction_roster")
+        .unwrap()
+        .blocker;
+    let label = map_authority_observed_status_label("diplomacy.faction_roster");
+    projection.requirements[index].disposition = MapAuthorityRequirementDisposition::Absent;
+    projection.requirements[index].blocker =
+        Some(format!("{blocker}; WorldFrame {label} is DomainAbsent"));
+    let error = admit_map_authority_projection(&projection).unwrap_err();
+    assert!(
+        error.contains("cannot observe DomainAbsent"),
+        "{error}"
+    );
+
+    // A row whose predicate CAN observe an absence keeps the same form legal.
+    let mut projection = unresolved_projection();
+    let index = projection
+        .requirements
+        .iter()
+        .position(|row| row.input_id == "combat.land_active_epoch")
+        .unwrap();
+    let blocker = map_authority_requirement_metadata("combat.land_active_epoch")
+        .unwrap()
+        .blocker;
+    let label = map_authority_observed_status_label("combat.land_active_epoch");
+    projection.requirements[index].disposition = MapAuthorityRequirementDisposition::Absent;
+    projection.requirements[index].blocker =
+        Some(format!("{blocker}; WorldFrame {label} is DomainAbsent"));
+    assert!(admit_map_authority_projection(&projection).is_ok());
+}
+
+/// kills: admitting the D18 roster from a partial identity census. Each row
+/// below keeps `countries_status` `Present` and breaks the roster in one way
+/// `exact_d18_country_roster` is documented to refuse.
+#[test]
+fn the_d18_roster_refuses_every_partial_identity_census() {
+    let manifest = fixture_manifest();
+    let cases: &[(&str, Value)] = &[
+        (
+            "missing identity",
+            json!({"ENG": {}, "GER": {"_r2_tag_db_id": 1}}),
+        ),
+        (
+            "zero identity",
+            json!({"ENG": {"_r2_tag_db_id": 0}, "GER": {"_r2_tag_db_id": 1}}),
+        ),
+        (
+            "duplicate identity",
+            json!({"ENG": {"_r2_tag_db_id": 1}, "GER": {"_r2_tag_db_id": 1}}),
+        ),
+        ("empty census", json!({})),
+    ];
+    for (name, countries) in cases {
+        let frame = world_frame_with(json!({"countries": countries}));
+        assert_eq!(
+            frame.countries_status(),
+            ViewStatus::Present,
+            "{name}: fixture no longer keeps the weak accessor Present"
+        );
+        let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+        assert_ne!(
+            requirement(&projection, "country.d18_complete_roster").disposition,
+            MapAuthorityRequirementDisposition::Admitted,
+            "{name} was admitted as a complete roster"
+        );
+    }
+}
+
+/// kills: admitting the faction roster on the diplomacy root, collapsing a
+/// measured-empty roster into an unavailable one, or — the case Codex's
+/// round-2 review found — admitting the LEGACY `diplomacy_live.faction_members`
+/// object. Every frame below keeps `diplomacy.status` `Present` through the
+/// `countries` sibling, so the root alone cannot distinguish any of them.
+///
+/// The legacy reader accepts any well-formed nonempty object as measured: it
+/// has no expected faction count and no completeness witness, so a recording
+/// that captured one faction and missed another is indistinguishable from a
+/// complete one. Only the modern D53 route carries the producer's own coverage
+/// claim, and only that may admit. A measured-EMPTY roster under that witness
+/// is a measurement and must admit.
+#[test]
+fn only_a_witnessed_faction_roster_admits() {
+    let manifest = fixture_manifest();
+    let admits = |snapshot: Value| {
+        let frame = world_frame_with(snapshot);
+        assert_eq!(frame.diplomacy().status, ViewStatus::Present);
+        let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+        requirement(&projection, "diplomacy.faction_roster").disposition
+            == MapAuthorityRequirementDisposition::Admitted
+    };
+    assert!(
+        admits(json!({
+            "countries": measured_countries(),
+            "diplomacy_world": {
+                "domain53_extra": {
+                    "faction_roster_status": "measured_nonempty",
+                    // The modern row schema `parse_domain53_faction_rows`
+                    // enforces: numeric nonzero `faction_id`, a nonempty
+                    // duplicate-free TAG array, a `member_count` that agrees
+                    // with it, and a `leader` drawn from the members.
+                    "faction_rows": [{
+                        "faction_id": 1,
+                        "members": ["GER", "ENG"],
+                        "member_count": 2,
+                        "leader": "GER",
+                    }],
+                },
+            },
+        })),
+        "a witnessed nonempty roster must admit"
+    );
+    assert!(
+        admits(json!({
+            "countries": measured_countries(),
+            "diplomacy_world": {
+                "domain53_extra": {
+                    "faction_roster_status": "measured_empty",
+                    "faction_rows": [],
+                },
+            },
+        })),
+        "a witnessed measured-empty roster is a measurement and must admit"
+    );
+    assert!(
+        !admits(json!({
+            "countries": measured_countries(),
+            "diplomacy_live": {"faction_members": {"1": ["GER", "ENG"]}},
+        })),
+        "an unwitnessed legacy roster was admitted as complete"
+    );
+    assert!(
+        !admits(json!({
+            "countries": measured_countries(),
+            "diplomacy_world": {
+                "domain53_extra": {"faction_roster_status": "unavailable"},
+            },
+        })),
+        "an explicitly unavailable modern roster was admitted"
+    );
+    assert!(
+        !admits(json!({
+            "countries": measured_countries(),
+            "diplomacy_live": {"faction_members": Value::Null},
+        })),
+        "an unobtained legacy faction carrier was admitted"
+    );
+    assert!(
+        !admits(json!({"countries": measured_countries()})),
+        "an absent faction carrier was admitted"
+    );
+}
+
+/// kills: dropping the member-identity join from `faction_roster_status`.
+///
+/// When the recorder cannot map a member's `tag_db_id` to a TAG it emits the
+/// numeric id rather than fabricating one, and `parse_domain53_faction_rows`
+/// accepts any nonempty string as a member. A witnessed row naming an
+/// unresolved member therefore decodes as a measured nonempty roster, and
+/// without the join it would be admitted as a measured membership census while
+/// that member is explicitly unidentified. Found by Codex's round-4 review.
+#[test]
+fn a_faction_member_outside_the_d18_roster_is_not_a_measured_identity() {
+    let manifest = fixture_manifest();
+    let witnessed = |members: Value, member_count: u64, leader: &str| {
+        json!({
+            "countries": measured_countries(),
+            "diplomacy_world": {
+                "domain53_extra": {
+                    "faction_roster_status": "measured_nonempty",
+                    "faction_rows": [{
+                        "faction_id": 1,
+                        "members": members,
+                        "member_count": member_count,
+                        "leader": leader,
+                    }],
+                },
+            },
+        })
+    };
+    let disposition = |snapshot: Value| {
+        let frame = world_frame_with(snapshot);
+        // The precondition the whole test rests on: replay_core really does
+        // decode the unresolved member as a MEASURED roster, so the refusal
+        // below can only come from the admission predicate.
+        assert!(
+            matches!(
+                frame.diplomacy().faction_roster_status(),
+                replay_core::world::FactionRosterStatus::MeasuredNonEmpty
+            ),
+            "fixture no longer decodes as a measured nonempty roster"
+        );
+        let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+        requirement(&projection, "diplomacy.faction_roster").disposition
+    };
+    // "999" is what the fold emits for a member whose tag_db_id it could not
+    // resolve; the D18 roster is GER/ENG only.
+    assert_eq!(
+        disposition(witnessed(json!(["GER", "999"]), 2, "GER")),
+        MapAuthorityRequirementDisposition::Unavailable,
+        "an unresolved faction member was admitted as measured identity"
+    );
+    assert_eq!(
+        disposition(witnessed(json!(["GER", "ENG"]), 2, "GER")),
+        MapAuthorityRequirementDisposition::Admitted,
+        "a fully resolved witnessed roster must still admit"
+    );
+}
+
+/// kills: propagating the D18 roster's own status out of `faction_roster_status`.
+///
+/// The faction carrier is independent of the `countries` key, so a witnessed
+/// nonempty roster can be measured on a frame that carries no country census at
+/// all. `complete_d18_roster` reports `DomainAbsent` for that frame; returning
+/// it verbatim would describe a different view's absence, and because this row
+/// declares `can_report_absent: false` the derived projection would then be
+/// REJECTED WHOLESALE by `validate_requirement` instead of recording a gap —
+/// one row's missing identity would cost the entire admission report.
+#[test]
+fn a_faction_roster_without_a_country_census_is_a_gap_not_a_rejected_projection() {
+    let manifest = fixture_manifest();
+    let frame = world_frame_with(json!({
+        "diplomacy_world": {
+            "domain53_extra": {
+                "faction_roster_status": "measured_nonempty",
+                "faction_rows": [{
+                    "faction_id": 1,
+                    "members": ["GER", "ENG"],
+                    "member_count": 2,
+                    "leader": "GER",
+                }],
+            },
+        },
+    }));
+    assert!(
+        matches!(
+            frame.diplomacy().faction_roster_status(),
+            replay_core::world::FactionRosterStatus::MeasuredNonEmpty
+        ),
+        "fixture no longer decodes as a measured nonempty roster"
+    );
+    assert_eq!(
+        frame.d18_country_roster().status,
+        ViewStatus::DomainAbsent,
+        "fixture must have no country census for this test to mean anything"
+    );
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    let row = requirement(&projection, "diplomacy.faction_roster");
+    assert_eq!(
+        row.disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+        "the roster's own DomainAbsent leaked out of the faction predicate"
+    );
+    // The whole projection must still admit as a gap report.
+    let admission = admit_map_authority_projection(&projection).unwrap();
+    assert!(!admission.is_admitted("diplomacy.faction_roster"));
+}
+
+/// kills: promoting one of lane HW's nine remaining candidates without first
+/// closing the producer-side defect that blocks it. Each id below is a row the
+/// gap map classifies ADMISSION-PROOF-ONLY and this lane proved is not:
+/// `extractor/native/runs/hw_admission_a/ROW_PROOFS.md` names the exact producer
+/// fact for each. Promoting any of them here — without that fact changing —
+/// would put a row into the admission table that no capture can ever satisfy,
+/// which is worse than a gap because it reads as a live seam.
+#[test]
+fn lane_hw_rows_with_an_open_producer_defect_stay_unproven() {
+    for input_id in [
+        // `capital_state` is minted only by the collector's direct-JSON country
+        // renderer; `git grep -c capital_state HEAD -- extractor/native/recorder_host/`
+        // returns no hits, so the fold never writes it into the snapshot.
+        "country.current_capital_state",
+        // XMAP05 production needs the all-country `complete_pov_roster` FOW1
+        // census; `complete_pov_roster` appears nowhere in `extractor/`.
+        "fog.province_visibility_by_pov",
+        "fog.spotted_land_by_pov",
+        "fog.spotted_taskforces_by_pov",
+        // The producer spells a legitimately-absent cosmetic tag as JSON null,
+        // which arrives at the typed seam as `Unobtained`.
+        "country.presentation_identity",
+        // `build_rail_replay` admits only `exact_a729_crailwaygfx_carrier`; the
+        // recorder emits `exact_a729_supply_simulation_tables`.
+        "logistics.rail_hub_frames",
+        "logistics.rail_topology_state",
+        "mapmode.supply_state",
+        // The ledger's own evidence anchor for this row is `map_authority.rs`
+        // itself and its engine object reads "intelligence projection
+        // unresolved"; promoting it would be circular.
+        "mapmode.intelligence",
+        // D57 is scheduled in none of the committed captures.
+        "session.player_country_set",
+    ] {
+        assert!(
+            map_authority_owner_proven_admission(input_id).is_none(),
+            "{input_id} was promoted while its producer-side blocker is open"
+        );
+        let metadata = map_authority_requirement_metadata(input_id).unwrap();
+        assert!(!metadata.blocker.is_empty(), "{input_id}");
     }
 }
 
@@ -776,11 +1303,7 @@ fn each_proven_input_tracks_only_its_own_view() {
 #[test]
 fn caller_supplied_bytes_cannot_establish_an_admission() {
     let manifest = fixture_manifest();
-    let frame = world_frame_with(json!({
-        "combats": [],
-        "ended_combats": [],
-        "naval_combats": [],
-    }));
+    let frame = world_frame_with(fully_measured_snapshot());
     let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
     // The same value admits in process, where it was derived from the frame.
     assert_eq!(
@@ -788,7 +1311,7 @@ fn caller_supplied_bytes_cannot_establish_an_admission() {
             .unwrap()
             .admitted()
             .len(),
-        3
+        MAP_AUTHORITY_OWNER_PROVEN_INPUTS.len()
     );
     let error = admit_map_authority_json(&serde_json::to_vec(&projection).unwrap()).unwrap_err();
     assert!(
