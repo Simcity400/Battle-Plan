@@ -457,8 +457,14 @@ pub const ORDER_TYPE_AREA_DEFENSE: i32 = 5;
 /// `lane lib.rs:79`-`:86`. Only the bounds the *validator* applies are here; the
 /// collector-side read bounds (`MAX_CHILD_ROWS`, `MAX_INLINE_CHILD_ROWS`) never
 /// reach a payload and are named in the docs instead.
-pub const MAX_STATE_ID: u32 = 65_535;
-pub const MAX_PROVINCE_ID: u32 = 65_535;
+///
+/// Both id bounds were `65_535`, a guess; both are now their own id space's
+/// STRUCTURAL width (`claim_39c989ce13504504353c`,
+/// `claim_347234c20a542ca79032`; dossier `runs/ia_province_caps/SWEEP.md`).
+/// The COUNT bounds named above deliberately did NOT move with them — they
+/// bound reads, not identities.
+pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
+pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_ARMY_ID: u32 = i32::MAX as u32;
 pub const MAX_SLOT_INDEX: u32 = 64;
 pub const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;

@@ -121,12 +121,18 @@ pub const SCHEMA_VERSION: u32 = 2;
 /// gives `i32::MAX - 1`. Pinned by
 /// `tests/producer_consumer_admission_agreement.rs`.
 pub const MAX_COUNTRY_COUNT: u32 = (i32::MAX as u32) - 1;
-/// `MAX_PROVINCE_ID`, `lib.rs:80` (`validate_row:353`). A REPRESENTATION
-/// ENVELOPE, not a province count — see the producer's note; both spellings were
-/// `20_000`, a guess at content scale, and are now the build's settled 65 535.
-pub const MAX_PROVINCE_ID: u32 = 65_535;
-/// `MAX_STATE_ID`, `lib.rs:81` (`validate_row:359`).
-pub const MAX_STATE_ID: u32 = 65_535;
+/// `MAX_PROVINCE_ID`, `lib.rs:80` (`validate_row:353`). Was `20_000`, then
+/// `65_535` and documented as "a REPRESENTATION ENVELOPE". Both were guesses:
+/// the 65 535 family's stated derivation cited three constants that are bare
+/// literals, and the engine stores a province id in 32 bits. It is now the
+/// province id space's STRUCTURAL width (`claim_347234c20a542ca79032`,
+/// `runs/ia_province_caps/SWEEP.md`).
+pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
+/// `MAX_STATE_ID`, `lib.rs:81` (`validate_row:359`). The state id space's
+/// structural width, on its own evidence (`claim_39c989ce13504504353c`) — a
+/// separate constant from the province one on purpose, even though the two
+/// numbers coincide.
+pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 
 pub const ROW_FLAG_COUNTRY_VERIFIED: u32 = 1 << 0;
 pub const ROW_FLAG_STRUCT_VERIFIED: u32 = 1 << 1;

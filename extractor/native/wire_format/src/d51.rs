@@ -287,8 +287,10 @@ pub const MAX_DELAYED_EVENT_DUE_HOURS: u32 = 500_000;
 /// Pinned by `tests/producer_consumer_admission_agreement.rs`.
 pub const MAX_COUNTRY_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_STATE_ID` (`scripted_state_compact.rs:62`) — authority-only, never a
-/// fold bound.
-pub const MAX_STATE_ID: u32 = 65_535;
+/// fold bound. Was `65_535`, a guess; now the state id space's STRUCTURAL
+/// width, proven from `ai_theatre_graph.cpp:0x86`
+/// (`claim_39c989ce13504504353c`, dossier `runs/ia_province_caps/SWEEP.md`).
+pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_KEY_BYTES` / `MAX_KEY_TABLE_BYTES` (`scripted_state_compact.rs:60`-`:61`)
 /// — authority-only.
 pub const MAX_KEY_BYTES: usize = 512;
@@ -3441,7 +3443,9 @@ mod tests {
         // engine's structural id-space width: `id < *(int32*)(db + 0x0C)` with
         // a signed-`int` size gives `i32::MAX - 1`.
         assert_eq!(MAX_COUNTRY_TAG_DB_ID, 2_147_483_646);
-        assert_eq!(MAX_STATE_ID, 65_535);
+        // Was `65_535`, a guess with a circular derivation. Now the state id
+        // space's structural width (`claim_39c989ce13504504353c`).
+        assert_eq!(MAX_STATE_ID, 2_147_483_646);
         assert_eq!(MAX_KEY_BYTES, 512);
         assert_eq!(MAX_KEY_TABLE_BYTES, 8 * 1024 * 1024);
         assert_eq!(DELAYED_EVENTS_BADGE_KEY, "root_unresolved:delayed_events");

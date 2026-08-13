@@ -248,7 +248,15 @@ pub const SCALE_DIGITS: u8 = 5;
 /// together with a zero rejection.
 pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 /// `MAX_LOCATION_ID`, `:92`, enforced at `:1884` (zero also rejected).
-pub const MAX_LOCATION_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+///
+/// Was `1_000_000`. This constant is named for the FIELD (`location`) rather
+/// than the SPACE, which is why lane IA's name-based census -- built around
+/// `MAX_PROVINCE_ID` and `MAX_STATE_ID` -- did not see it for fourteen review
+/// rounds. The value it bounds is read from an authenticated `CProvince` and is
+/// a province id like any other. Dossier:
+/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_REGION_ID`, `:93`, enforced at `:1897` (zero also rejected).
 pub const MAX_REGION_ID: u32 = 100_000;
 /// `MAX_POSITIONING_RAW`, `:96`. The lane admits a present positioning cell only
@@ -1709,7 +1717,17 @@ mod tests {
             .is_ok());
         // location_id / region_id: zero and over the bound reject, the bound itself
         // is accepted.
-        for (loc, reg) in [(0u32, 1u32), (MAX_LOCATION_ID + 1, 1), (1, 0), (1, MAX_REGION_ID + 1)] {
+        // `2_147_483_647` as a LITERAL beside the derived probe: a probe
+        // written as `MAX + 1` pins the distance from the ceiling, not the
+        // ceiling, so it moves with a widening and cannot see it. This is the
+        // same correction rounds 12 and 13 applied to five other fixtures.
+        for (loc, reg) in [
+            (0u32, 1u32),
+            (MAX_LOCATION_ID + 1, 1),
+            (2_147_483_647, 1),
+            (1, 0),
+            (1, MAX_REGION_ID + 1),
+        ] {
             assert!(
                 record_from_row(&c, &live_row(1, 1, loc, reg, [0, 0], [0, 0], [0, 0]), 0).is_err(),
                 "location {loc} region {reg}"

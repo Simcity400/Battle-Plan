@@ -235,7 +235,9 @@ pub const MAX_OOB_ID: u32 = 4_000_000;
 /// gives `i32::MAX - 1`.
 pub const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_PROVINCE_ID`, `domain56_compact.rs:32`.
-pub const MAX_PROVINCE_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_REGION_ID`, `domain56_compact.rs:33`.
 pub const MAX_REGION_ID: u32 = 100_000;
 /// `MAX_MISSION_ENUM`, `domain56_compact.rs:35`: the exact build-870ebf

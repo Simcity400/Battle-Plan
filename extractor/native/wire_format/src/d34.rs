@@ -165,11 +165,28 @@ pub const ROW_FLAG_DELETED: u32 = 1;
 /// producer-widened / consumer-still-narrow shape
 /// `tests/producer_consumer_admission_agreement.rs` exists to prevent.
 ///
-/// It is a REPRESENTATION ENVELOPE, not a province count: nothing here knows how
-/// many provinces the loaded mod set defines, and the number that does is on the
-/// producer side. `tests/producer_consumer_admission_agreement.rs` pins this
-/// spelling to the shared one.
-pub const MAX_PROVINCE_ID: u32 = 65_535;
+/// It was then `65_535` and documented here as "a REPRESENTATION ENVELOPE".
+/// **That was a guess too, and lane IA retired it.** Its stated derivation ("the
+/// u16 index space, the same ceiling the tree already applies ... from
+/// independent evidence") was circular: all three constants cited as that
+/// independent evidence are bare literals in `collector/src/attach_log/
+/// offsets.rs` with no derivation, and this constant cited them while they
+/// cited nothing.
+///
+/// It is now the province id space's STRUCTURAL width, `i32::MAX - 1`, proven
+/// `int` province id against a signed `int` size at `ai_area.cpp:0xcc`
+/// (`claim_347234c20a542ca79032`). The engine also stores a province id in
+/// THIRTY-TWO bits (`CProvince + 0xA4`), so 65 535 was never a field width
+/// here; no wire row in this tree carries a province id in sixteen bits, which
+/// is why this is a bounds edit and not a format change. Full dossier:
+/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+///
+/// Still not a province count: nothing here knows how many provinces the loaded
+/// mod set defines, and the number that does is on the producer side, which
+/// bounds against the engine's own array length.
+/// `tests/producer_consumer_admission_agreement.rs` pins this spelling to the
+/// shared one.
+pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 
 /// The sentinel the fold documents as "province unobtained"
 /// (`world_fold.rs::fold_air_base_status`). Mapped to [`Value::Unknown`].
@@ -976,10 +993,20 @@ mod tests {
         );
         assert!(
             parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, 65_535)).is_ok(),
-            "65_535 is the shared envelope's top and must be admitted"
+            "65_535 was the retired ceiling and is an ordinary province id"
         );
-        assert!(parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, 65_536)).is_err());
-        for bad in [MAX_PROVINCE_ID + 1, 100_000, u32::MAX] {
+        assert!(
+            parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, 65_536)).is_ok(),
+            "65_536 is the FIRST id the retired 65_535 ceiling discarded, which              is exactly the loss that ceiling caused on any map above it"
+        );
+        assert!(
+            parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, 1_000_000)).is_ok(),
+            "1_000_000 was a THIRD spelling of this same ceiling elsewhere in              the tree; one id space cannot have four ceilings"
+        );
+        // `2_147_483_647` is spelled out for the reason the derived probe
+        // cannot cover: `MAX_PROVINCE_ID + 1` tracks the constant, so widening
+        // the ceiling by one carries the probe along and this arm stays green.
+        for bad in [MAX_PROVINCE_ID + 1, 2_147_483_647, u32::MAX] {
             assert!(
                 parse_row(&raw_row(1, 1, 0, 0, 0, 0, 0, bad)).is_err(),
                 "province {bad} exceeds {MAX_PROVINCE_ID}"

@@ -942,7 +942,9 @@ pub fn parse_collaboration(trailer: &[u8]) -> core::result::Result<Collaboration
 pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_STATE_ID`, `domain44_compact.rs:49` — a lane-contract bound, not a fold
 /// one, so it is enforced in [`check_authority_payload`] and nowhere else.
-pub const MAX_STATE_ID: u32 = 65_535;
+/// Was `65_535`, a guess; now the state id space's STRUCTURAL width
+/// (`claim_39c989ce13504504353c`, `runs/ia_province_caps/SWEEP.md`).
+pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_ABS_FIXED_RAW`, `domain44_compact.rs:51` — likewise lane-contract only.
 pub const MAX_ABS_FIXED_RAW: i32 = 100_000_000;
 
@@ -3138,14 +3140,15 @@ mod tests {
         // rejected by `check_authority_payload` (so a real stream carrying it is
         // refused) and folded by the recorder (so the mapper must map it).
         let c = states_collection();
-        let cases: [(&str, RawRow); 4] = [
-            (
-                "a state_id past the lane's 65535 bound",
-                RawRow {
-                    state_id: 70_000,
-                    ..full_row()
-                },
-            ),
+        // The `state_id: 70_000` case was retired by lane IA: 70 000 is an
+        // ORDINARY state id now, so the lane contract no longer refuses it and
+        // this list would be asserting the defect rather than the rule. The
+        // state id space's structural width is `i32::MAX - 1`
+        // (`claim_39c989ce13504504353c`); a state id past THAT is covered by
+        // the boundary walk in
+        // `tests/producer_consumer_admission_agreement.rs`, which probes the
+        // structural edge rather than a content-scale number.
+        let cases: [(&str, RawRow); 3] = [
             (
                 "a tag past the lane's id-space bound",
                 RawRow {

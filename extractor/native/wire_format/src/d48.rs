@@ -336,9 +336,15 @@ pub const ROW_ID_DELETED: u32 = 1 << 31;
 /// `build_profile.rs:1175`-`:1176`, restated per the note above.
 pub const SCOPE_STATE: u32 = 1;
 pub const SCOPE_PROVINCE: u32 = 2;
-/// `build_profile.rs:1177`-`:1178`.
-pub const MAX_STATE_ID: u32 = 65_535;
-pub const MAX_PROVINCE_ID: u32 = 65_535;
+/// `build_profile::MAX_STATE_ID` / `::MAX_PROVINCE_ID`. Both were `65_535`, a
+/// guess with a circular derivation; both are now their id space's STRUCTURAL
+/// width, proven from the engine's own signed-int subscript law
+/// (`claim_39c989ce13504504353c` for states, `claim_347234c20a542ca79032` for
+/// provinces; the dossier is `runs/ia_province_caps/SWEEP.md`). Spelled per
+/// space, and pinned to the producer's spelling by
+/// `tests/producer_consumer_admission_agreement.rs`.
+pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
+pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 /// `build_profile.rs`'s `MAX_COMPACT_OWNER_TAG_DB_ID`, pinned to
 /// `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID` by
 /// `tests/producer_consumer_admission_agreement.rs`.
@@ -831,13 +837,26 @@ pub fn parse_construction_row(row: &[u8]) -> Result<ConstructionRow, String> {
         return Err("construction row target_location_id/target_scope presence mismatch".into());
     }
     if let (Some(location_id), Some(scope)) = (parsed.target_location_id, parsed.target_scope) {
-        if location_id == 0 || location_id > MAX_PROVINCE_ID {
+        // SCOPE FIRST, then bind the location to the id space that scope names.
+        // `target_location_id` is a STATE id for state buildings and a PROVINCE
+        // id for province buildings, and this consumer used to apply
+        // `MAX_PROVINCE_ID` to both, checking the scope only afterwards. The
+        // two spaces carry the same width on a729, so the numbers hid a state
+        // identity being authenticated against the province space -- and an
+        // unclassifiable scope was being range-checked as a province before it
+        // was rejected as a scope.
+        if scope != SCOPE_STATE && scope != SCOPE_PROVINCE {
+            return Err(format!("construction row invalid target_scope {scope}"));
+        }
+        let space_max = if scope == SCOPE_STATE {
+            MAX_STATE_ID
+        } else {
+            MAX_PROVINCE_ID
+        };
+        if location_id == 0 || location_id > space_max {
             return Err(format!(
                 "construction row invalid target_location_id {location_id}"
             ));
-        }
-        if scope != SCOPE_STATE && scope != SCOPE_PROVINCE {
-            return Err(format!("construction row invalid target_scope {scope}"));
         }
         if scope == SCOPE_STATE && parsed.target_state_id != Some(location_id) {
             return Err("construction row state target location/state mismatch".into());

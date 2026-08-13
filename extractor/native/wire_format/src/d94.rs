@@ -120,8 +120,17 @@ pub const HOUR_LEN: usize = 8;
 /// One province slot is one byte. The "row" of this domain is that byte; its
 /// position in the vector is its identity (see the module docs).
 pub const ROW_LEN: usize = 1;
-/// `MAX_PROVINCE_SLOTS`, `pov_visibility.rs:7`.
+/// `MAX_PROVINCE_SLOTS`, `pov_visibility.rs`. A COUNT and a transport budget:
+/// this domain is a DENSE one-byte-per-province vector, so this number sizes a
+/// buffer taken from a stream word and must never be widened to the province
+/// id space's structural width. The reasoning is recorded once, at the
+/// contract's definition.
 pub const MAX_PROVINCE_SLOTS: usize = 65_535;
+/// `MAX_PROVINCE_SLOT_INDEX`, `pov_visibility.rs`. The ID side, DERIVED from
+/// the count above: a d94 province id is a POSITION in the dense vector, so
+/// the widest addressable index is one less than the widest vector. It does
+/// NOT track `build_profile::MAX_PROVINCE_ID` and must not be pinned to it.
+pub const MAX_PROVINCE_SLOT_INDEX: u32 = (MAX_PROVINCE_SLOTS - 1) as u32;
 /// `MAX_POV_COUNTRY_ID`, `pov_visibility.rs`, which is the family bound
 /// `build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`.
 ///
@@ -309,7 +318,7 @@ pub fn key_from_province_slot(
             "pov_province_visibility POV country ID {pov_country_id} is outside the admitted range"
         ));
     }
-    if province_id as usize >= MAX_PROVINCE_SLOTS {
+    if province_id > MAX_PROVINCE_SLOT_INDEX {
         return Err(format!(
             "pov_province_visibility province id {province_id} is outside the admitted range"
         ));
