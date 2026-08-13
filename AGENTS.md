@@ -1,5 +1,7 @@
 # Agent guidance
 
+This file changes only with the owner's permission.
+
 ## Goals
 
 Perfect clean captures, small recordings, straight into replay, minimal
