@@ -26,8 +26,13 @@
 //! Per frame, from the domain-250 lane-wall probe:
 //!
 //! * `span` = `lw_worker_span_us`, the fan-out wall. THE number under study.
-//! * `prewarm` = `lw_prewarm_us`, the d47 root prewarm, which runs serially
-//!   BEFORE the span opens and is therefore not part of it.
+//! * `prewarm` = `lw_prewarm_us`, the serial-prefix span BEFORE the fan-out
+//!   opens, and therefore not part of `span`. Through t50 this carried d47's
+//!   root prewarm (p50 ~34 ms); lane HT (2026-08-13) moved d47's discovery
+//!   inside its worker, so on later captures this unit is the residual ~0 of
+//!   the prefix and d47's discovery cost rides `lw_d47_inb_us` instead. The
+//!   unit is retained because its SAMPLE COUNT is the accounting join
+//!   ("frames - backpressure == prewarm samples").
 //! * `main_wall` = `lw_lmain_wall_us`, the sum of the MAIN-lane serial reads.
 //!   These run on the sweep thread inside the span — some before
 //!   `thread::scope` opens, some after it joins — so they are serial with the

@@ -394,25 +394,15 @@ fn a_hold_refuses_the_retained_roots_without_destroying_them() {
 }
 
 // ---------------------------------------------------------------------------
-// The prewarm's OWN hour, not just the hour it was retained from.
+// Discovery's OWN hour, not just the hour its roots were retained from.
 //
-// The tests above are about roots that OUTLIVE their prewarm. These are about
-// the prewarm itself: it is a serial main-thread phase that ran inside no
-// clock bracket at all, and it is the phase that reads the TEXT the frame walk
-// copies into the row. t17 (`runs/live_unlock/t17`, 490 frames whose prewarm
-// ran) carries 24 frames — 4.90% — whose wire witnesses put the label -> label+1
-// tick at or before that phase: 21 frames where a worker's bracket opened at
-// label+1 while no worker witnessed the label -> label+1 tick at all (so it fell
-// in the one unbracketed window OR in the frame preamble that precedes it), and
-// 3 where the independent stable clock read taken earlier in the same frame —
-// at the top of the heavy sweep, before this phase, not adjacent to it — was
-// already past the label. That is a LOWER bound: a tick inside the prewarm
-// leaves no wire witness unless a SECOND tick then lands inside some worker.
-// Scaling the fan-out's own fully-witnessed rate (32.45% of heavy frames over a
-// 65.2 ms window) to the 25.2 ms prewarm gives 12.55%, and 62.65% of heavy
-// frames witnessed no tick anywhere, so the true rate is bounded only between
-// 4.90% and 62.65%. `domain47_prewarm_clock_verdict` on the wire is what will
-// resolve it exactly in the next capture.
+// The tests above are about roots that OUTLIVE their discovery. These are
+// about discovery itself: it reads the TEXT the frame walk copies into the
+// row, and since lane HT it runs INSIDE the d47 worker's clock bracket. The
+// worker judges its bracket's OPENING read against the frame label BEFORE
+// spending anything (`domain47_worker_clock_precheck`); a straddle DURING
+// discovery is the worker bracket's own Torn, minted by
+// `rejected_bracket_domains` like any other split reader's.
 // ---------------------------------------------------------------------------
 
 const FRAME_HOUR: i32 = 60_832_014;
@@ -423,93 +413,48 @@ fn clock(hour: i32, ordinal: u64) -> Option<ClockObservation> {
     Some(clock_obs(hour, ordinal))
 }
 
-/// Each way the prewarm's bracket can land, and what it proves.
+/// Each way the worker's opening read can land, and what it proves.
 ///
-/// MUTATION RUN: in `domain47_prewarm_clock_verdict`, delete the label check
-///   `if opening.0 != game_hour_raw { return WrongHour; }`
-/// OBSERVED: this test fails at the "wrong hour" case —
-///   `assertion `left == right` failed: wrong hour: a prewarm that ran wholly
-///    in another hour is not this frame's observation
-///      left: InFrameHour
-///     right: WrongHour`
-/// and `a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore` fails
-/// with it (7 passed, 2 failed). Because the loop stops at the first bad case,
-/// this run does NOT separately re-prove the straddle and unreadable arms; the
-/// straddle arm is proven by `a_straddled_prewarm_bracket_rejects_d47_as_torn`.
+/// kills: in `domain47_worker_clock_precheck`, delete the label check
+/// (`observation.hour != game_hour_raw => WrongHour`) — the "wrong hour" case
+/// fails here (left `InFrameHour`, right `WrongHour`) and
+/// `a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore` fails with
+/// it; make the `None` arm return `InFrameHour` and the "opening unreadable"
+/// case fails instead.
 #[test]
-fn the_prewarm_clock_verdict_separates_the_three_failures() {
+fn the_precheck_separates_the_two_clock_failures() {
     #[allow(clippy::type_complexity)]
     let cases: [(
         &str,
         Domain47PrewarmClockVerdict,
-        bool,
-        Option<ClockObservation>,
         Option<ClockObservation>,
         bool,
-    ); 7] = [
-        // (name, expected, scheduled, opening, closing, roots_unpublishable)
-        (
-            "not scheduled",
-            Domain47PrewarmClockVerdict::NotScheduled,
-            false,
-            None,
-            None,
-            false,
-        ),
+    ); 3] = [
+        // (name, expected, opening, roots_unpublishable)
         (
             "clean",
             Domain47PrewarmClockVerdict::InFrameHour,
-            true,
             clock(FRAME_HOUR, 1),
-            clock(FRAME_HOUR, 2),
             false,
-        ),
-        (
-            "straddle",
-            Domain47PrewarmClockVerdict::Straddled,
-            true,
-            clock(FRAME_HOUR, 1),
-            clock(FRAME_HOUR + 1, 2),
-            true,
         ),
         (
             "wrong hour",
             Domain47PrewarmClockVerdict::WrongHour,
-            true,
             clock(FRAME_HOUR + 1, 1),
-            clock(FRAME_HOUR + 1, 2),
             true,
         ),
         (
             "opening unreadable",
             Domain47PrewarmClockVerdict::Unreadable,
-            true,
-            None,
-            clock(FRAME_HOUR, 2),
-            true,
-        ),
-        (
-            "closing unreadable",
-            Domain47PrewarmClockVerdict::Unreadable,
-            true,
-            clock(FRAME_HOUR, 1),
-            None,
-            true,
-        ),
-        (
-            "scheduled but never read",
-            Domain47PrewarmClockVerdict::Unreadable,
-            true,
-            None,
             None,
             true,
         ),
     ];
-    for (name, expected, scheduled, opening, closing, unpublishable) in cases {
-        let verdict = domain47_prewarm_clock_verdict(scheduled, opening, closing, FRAME_HOUR);
+    for (name, expected, opening, unpublishable) in cases {
+        let verdict = domain47_worker_clock_precheck(opening, FRAME_HOUR);
         assert_eq!(
             verdict, expected,
-            "{name}: a prewarm that ran wholly in another hour is not this frame's observation"
+            "{name}: a worker that opened in another hour is not this frame's observation"
         );
         assert_eq!(
             verdict.roots_are_unpublishable(),
@@ -517,12 +462,20 @@ fn the_prewarm_clock_verdict_separates_the_three_failures() {
             "{name}: publishability"
         );
     }
+    // The unspawned worker's shape: the default summary carries NotScheduled,
+    // which refuses nothing because nothing was built.
+    assert_eq!(
+        Domain47PrewarmSummary::default().clock_verdict,
+        Domain47PrewarmClockVerdict::NotScheduled,
+    );
+    assert!(!Domain47PrewarmClockVerdict::NotScheduled.roots_are_unpublishable());
     // Every arm reports a DISTINCT code, or a capture cannot name which clock
-    // failure refused its hour.
+    // failure refused its hour. Code 2 (the retired `Straddled`) must stay
+    // unassigned: a straddle is the worker bracket's Torn now, and reusing its
+    // code would relabel old captures' straddles as something else.
     let codes: Vec<u64> = [
         Domain47PrewarmClockVerdict::NotScheduled,
         Domain47PrewarmClockVerdict::InFrameHour,
-        Domain47PrewarmClockVerdict::Straddled,
         Domain47PrewarmClockVerdict::WrongHour,
         Domain47PrewarmClockVerdict::Unreadable,
     ]
@@ -533,13 +486,19 @@ fn the_prewarm_clock_verdict_separates_the_three_failures() {
     distinct.sort_unstable();
     distinct.dedup();
     assert_eq!(distinct.len(), codes.len(), "verdict codes must be distinct");
+    assert!(
+        !codes.contains(&2),
+        "code 2 (Straddled) is retired, not reassigned"
+    );
 }
 
-/// A straddled prewarm must reach the wire as a Torn DOMAIN_GAP for d47 and
-/// for nothing else. This is the shape the production path records — the
-/// honest (opening, closing) pair, under d47's tag, with `worker_panicked`
-/// false — fed to the same `rejected_bracket_domains` every worker's bracket
-/// goes through.
+/// A straddled d47 WORKER bracket must reach the wire as a Torn DOMAIN_GAP for
+/// d47 and for nothing else. This is the shape `spawn_gated_split`'s guard
+/// records — the honest (opening, closing) pair, under d47's tag, with
+/// `worker_panicked` false — fed to the same `rejected_bracket_domains` every
+/// worker's bracket goes through. Since lane HT this ONE bracket covers
+/// discovery (census + role walk) as well as the frame walk, so a boundary
+/// landing anywhere inside either phase is this rejection.
 ///
 /// LIMIT: this proves the recorded SHAPE rejects d47. It cannot prove the
 /// production site records it, because that site is inside
@@ -588,14 +547,15 @@ fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
     );
 }
 
-/// The `WrongHour` arm is the one a bracket CANNOT catch: opening == closing,
-/// so `rejected_bracket_domains` accepts it, and without the direct refusal
-/// the frame publishes the other hour's text CLEAN. This drives the real
-/// production function over the real root cache and the real frame builder.
+/// The `WrongHour` arm is the one the TEAR machinery cannot catch: opening ==
+/// closing, so a `CountOnly` reconciliation accepts it, and without the direct
+/// refusal the frame publishes the other hour's text CLEAN. Since lane HT the
+/// pre-check ALSO spares the ~34 ms discovery walk on such a frame — but the
+/// refusal, not the saving, is what this test pins. This drives the real
+/// production functions over the real root cache and the real frame builder.
 ///
-/// MUTATION RUN: in `domain47_apply_prewarm_clock_verdict`, narrow the refusal
-/// to straddles only —
-///   `if verdict == Domain47PrewarmClockVerdict::Straddled { poison }`
+/// MUTATION RUN (pre-HT shape, same arms): in
+/// `domain47_apply_prewarm_clock_verdict`, drop the poison for `WrongHour`.
 /// OBSERVED: `a prewarm that ran in another hour must not publish its text:
 /// row_count 3, status 128` (left 3, right 0) — three rows carrying the
 /// fixture's text published under a label the phase never observed, and status
@@ -606,13 +566,8 @@ fn a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore() {
     let mut cache = adopted_cache(roots);
     let mut summary = Domain47PrewarmSummary::default();
 
-    // Nothing tore: both reads agree, and both disagree with the label.
-    let verdict = domain47_prewarm_clock_verdict(
-        true,
-        clock(FRAME_HOUR + 1, 1),
-        clock(FRAME_HOUR + 1, 2),
-        FRAME_HOUR,
-    );
+    // Nothing tore: the worker's opening read disagrees with the label.
+    let verdict = domain47_worker_clock_precheck(clock(FRAME_HOUR + 1, 1), FRAME_HOUR);
     // PREMISE, and the reason d47's own refusal is not redundant. This frame's
     // bracket does not tear, so the TEAR machinery -- the only thing guarding
     // the other 67 domains when this test was written -- cannot see it.
@@ -677,14 +632,12 @@ fn a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore() {
 /// would still pass if the verdict refused unconditionally — and d47 would
 /// lose every hour rather than the ones it cannot attribute.
 ///
-/// MUTATION RUN: in `roots_are_unpublishable`, move `InFrameHour` into the
-/// `true` arm.
-/// OBSERVED: 7 passed, 2 failed. This test stops one assertion EARLIER than
-/// the row check — `an in-hour prewarm must not poison its own roots`, left 1,
-/// right 0 — and `the_prewarm_clock_verdict_separates_the_three_failures` fails
-/// at `clean: publishability`, left true / right false. The blunt fix costs the
-/// whole domain, which is exactly the trade this lane was told not to make
-/// silently.
+/// kills: in `roots_are_unpublishable`, move `InFrameHour` into the `true`
+/// arm — this test stops at `an in-hour prewarm must not poison its own
+/// roots` (left 1, right 0), and
+/// `the_precheck_separates_the_two_clock_failures` fails at
+/// `clean: publishability` with it. The blunt fix costs the whole domain,
+/// which is exactly the trade this lane was told not to make silently.
 #[test]
 fn an_in_hour_prewarm_publishes_unchanged() {
     let (mem, roots) = stale_root_world();
@@ -692,12 +645,7 @@ fn an_in_hour_prewarm_publishes_unchanged() {
     let mut summary = Domain47PrewarmSummary::default();
 
     domain47_apply_prewarm_clock_verdict(
-        domain47_prewarm_clock_verdict(
-            true,
-            clock(FRAME_HOUR, 1),
-            clock(FRAME_HOUR, 2),
-            FRAME_HOUR,
-        ),
+        domain47_worker_clock_precheck(clock(FRAME_HOUR, 1), FRAME_HOUR),
         &mut cache,
         &mut summary,
     );
@@ -716,31 +664,24 @@ fn an_in_hour_prewarm_publishes_unchanged() {
     assert!(rows.contains(STALE_NAME));
 }
 
-/// A frame that did not schedule d47 must not be charged a clock failure. The
-/// prewarm did not run, so there is nothing to attribute and nothing to
-/// refuse; recording a bracket for it would mint a ClockUnreadable rejection
-/// for a domain that was never read.
+/// A frame that did not schedule d47 must not be charged a clock failure.
+/// Since lane HT an unscheduled frame spawns no d47 worker at all, so no
+/// pre-check runs and the summary stays at its default — this pins that the
+/// default verdict (`NotScheduled`) refuses nothing, so a path that applied it
+/// anyway could not poison a domain that was never read.
 ///
-/// MUTATION RUN: drop the `scheduled` early return from
-/// `domain47_prewarm_clock_verdict` (both clock reads are `None` when the
-/// phase is skipped, so it falls through to the unreadable arm).
-/// OBSERVED: 7 passed, 2 failed — this test with `an unscheduled d47 is not a
-/// clock failure` (left `Unreadable`, right `NotScheduled`), and
-/// `the_prewarm_clock_verdict_separates_the_three_failures` at its own "not
-/// scheduled" case. The follow-on poison assertion is never reached, because
-/// the verdict assertion fires first; the poison it would have observed is the
-/// one `roots_are_unpublishable` returns for `Unreadable`.
+/// kills: move `NotScheduled` into `roots_are_unpublishable`'s `true` arm —
+/// the poison assertion below fails (left 1, right 0).
 #[test]
 fn an_unscheduled_prewarm_is_not_a_clock_failure() {
     let (_mem, roots) = stale_root_world();
     let mut cache = adopted_cache(roots);
     let mut summary = Domain47PrewarmSummary::default();
 
-    let verdict = domain47_prewarm_clock_verdict(false, None, None, FRAME_HOUR);
+    let verdict = Domain47PrewarmClockVerdict::NotScheduled;
     assert_eq!(
-        verdict,
-        Domain47PrewarmClockVerdict::NotScheduled,
-        "an unscheduled d47 is not a clock failure"
+        summary.clock_verdict, verdict,
+        "the default summary's verdict is NotScheduled"
     );
     domain47_apply_prewarm_clock_verdict(verdict, &mut cache, &mut summary);
     assert_eq!(

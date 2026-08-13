@@ -1589,7 +1589,7 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
             &lanes,
             COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
             hour,
-            move || D81ObserveOutcome::Complete(observed_read),
+            move |_bracket_opening| D81ObserveOutcome::Complete(observed_read),
             d81_finish_rail_replay_state,
             d81_preserve_measurement,
             |refusal, observed| d81_bracket_refused_outcome(refusal, observed, 0),
@@ -1995,10 +1995,13 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
         .expect("the end of the observe scope")
         .0;
     assert!(
-        observed_scope.contains("let _clock_guard = ReaderClockBracketGuard::new_reporting(")
-            && observed_scope.contains("observe()"),
+        observed_scope.contains("let clock_guard = ReaderClockBracketGuard::new_reporting(")
+            && observed_scope.contains("observe(bracket_opening)"),
         "the guard must be scoped to the OBSERVE half alone; a guard that lives \
-         to the end of the worker is the shape this lane exists to remove"
+         to the end of the worker is the shape this lane exists to remove. \
+         (Since lane HT the guard binding is named — its opening observation \
+         is handed to the observe closure — and the observation is passed as \
+         `observe(bracket_opening)`.)"
     );
     assert!(
         !observed_scope.contains("compute(") && split.contains("compute(observed)"),
