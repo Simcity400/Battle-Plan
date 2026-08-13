@@ -349,23 +349,74 @@ Assert-True `
     -Message 'the control helper still refuses on a zero gate, with a throw'
 
 # =============================================================================
-Write-Host 'case: the PRODUCTION closure shape resolves in a clean 5.1 child'
+Write-Host 'case: the PRODUCTION functions resolve and describe in clean 5.1 children'
 # The cases above drive the wait with self-contained scriptblocks, so none of
 # them exercises what the harness actually passes: closures built inside a
-# script-scope function that CALL another script-scope function, which in turn
-# reads a script-scope variable, handed to a dot-sourced library and invoked
-# there. Review raised `.GetNewClosure()` scoping as a suspected production-only
-# failure precisely because no test covered it. This runs that exact shape in a
-# fresh `powershell.exe -File` child against the real library.
+# script-scope function that CALL other script-scope functions, handed to a
+# dot-sourced library and invoked there. `.GetNewClosure()` scoping was raised in
+# review as a suspected production-only failure precisely because no test covered
+# it, and t27 once spent its whole 600 s budget on exactly that.
 #
-# RED WHEN: `.GetNewClosure()` is dropped from the harness callbacks (the
-# captured epoch then fails to resolve under StrictMode), when the callback
-# signature stops carrying what the observer needs, or if a future PowerShell
-# really does stop resolving script-scope commands from a closure module.
+# THE PRODUCTION FUNCTIONS THEMSELVES RUN HERE, lifted out of the harness by AST
+# rather than hand-copied. A replica would keep passing while production lost its
+# `-DescribeStall` wiring, which makes the RED WHEN below a fiction.
+#
+# AND IN BOTH INVOCATION MODES. `-File` makes a script's functions global, so a
+# by-name call from inside a closure resolves there and the capture-by-value the
+# harness does would look unnecessary. `-Command "& script"` keeps the script's
+# own scope, which is the mode that broke t27 and the only one that can prove
+# the captured variables are doing work.
+#
+# RED WHEN: `.GetNewClosure()` is dropped, when the harness stops passing
+# -DescribeStall, when the describer's helpers are called by name instead of
+# through captured values (the `-Command` child then fails), or when the
+# selection, the log path or the banner verdict stops reaching the message.
 $replicaDir = Join-Path ([IO.Path]::GetTempPath()) ("hoi4-wrg-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $replicaDir -Force | Out-Null
 try {
+    $harnessPath = Join-Path $scriptDir 'Invoke-HeadlessRawCapture.ps1'
+    $replicaParseErrors = $null
+    $replicaTokens = $null
+    $replicaAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $harnessPath, [ref]$replicaTokens, [ref]$replicaParseErrors)
+    if ($replicaParseErrors.Count -gt 0) {
+        throw "harness does not parse: $($replicaParseErrors[0].Message)"
+    }
+    $wanted = @(
+        'Wait-Hoi4WorldReady',
+        'Read-Hoi4SharedText',
+        'Select-Hoi4CurrentSessionLog',
+        'Get-Hoi4TextDigest',
+        'Test-Hoi4SessionLaunchBanner',
+        'New-Hoi4StallDescription'
+    )
+    $lifted = @{}
+    foreach ($node in $replicaAst.FindAll(
+            {
+                param($n)
+                $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
+            }, $true)) {
+        if ($wanted -contains $node.Name -and -not $lifted.ContainsKey($node.Name)) {
+            $lifted[$node.Name] = $node.Extent.Text
+        }
+    }
+    $missingFns = @($wanted | Where-Object { -not $lifted.ContainsKey($_) })
+    if ($missingFns.Count -gt 0) {
+        throw ("the harness no longer defines: $($missingFns -join ', '). Either they " +
+            'were renamed, or the stall-description path moved somewhere this case ' +
+            'does not reach.')
+    }
+    $productionText = ($wanted | ForEach-Object { $lifted[$_] }) -join "`n`n"
+
+    # A real log file, so Read-Hoi4SharedText's share mode and disposal run for
+    # real. It carries no launch banner: the shape t44 left behind.
+    $replicaLog = Join-Path $replicaDir 'game.log'
+    Set-Content -LiteralPath $replicaLog -Encoding UTF8 -NoNewline -Value (
+        "[08:25:35][no_game_date][defines.cpp:270]: 4469 defines loaded`n" +
+        "[08:25:46][1936.01.01.12][history.cpp:165]: Executing History to 1936.1.1.12")
+
     $libLiteral = "'" + (Join-Path $scriptDir 'Hoi4WorldReady.Gate.ps1').Replace("'", "''") + "'"
+    $logLiteral = "'" + $replicaLog.Replace("'", "''") + "'"
     $replica = @"
 Set-StrictMode -Version Latest
 `$ErrorActionPreference = 'Stop'
@@ -394,44 +445,208 @@ function Invoke-BoundedHoi4Observation {
     }
 }
 
-function Wait-Hoi4WorldReady {
-    param(
-        [Parameter(Mandatory = `$true)][int]`$TargetProcessId,
-        [Parameter(Mandatory = `$true)][int]`$TimeoutSeconds,
-        [Parameter(Mandatory = `$true)][uint64]`$ExpectedCreationFiletimeUtc
-    )
-    return (Wait-Hoi4WorldReadyState ``
-        -TargetProcessId `$TargetProcessId ``
-        -TimeoutSeconds `$TimeoutSeconds ``
-        -Observe {
-            param(`$RemainingSeconds)
-            Invoke-BoundedHoi4Observation ``
-                -TargetProcessId `$TargetProcessId ``
-                -TimeoutSeconds `$RemainingSeconds ``
-                -ExpectedCreationFiletimeUtc `$ExpectedCreationFiletimeUtc
-        }.GetNewClosure() ``
-        -TestAlive { `$null -ne (Get-Process -Id `$PID -ErrorAction SilentlyContinue) }.GetNewClosure() ``
-        -Sleep { param(`$ms) } ``
-        -ReportProgress { param(`$p) })
-}
+# --- lifted verbatim from Invoke-HeadlessRawCapture.ps1 ----------------------
+$productionText
+# --- end lifted ---------------------------------------------------------------
 
-`$state = Wait-Hoi4WorldReady -TargetProcessId 4242 -TimeoutSeconds 60 ``
+# The child's OWN pid: production's TestAlive really calls Get-Process, so a
+# made-up id makes the wait exit with "the target exited" before anything here
+# is exercised.
+`$selfPid = `$PID
+
+# FIRST: a healthy campaign. The describer must never run.
+`$state = Wait-Hoi4WorldReady -TargetProcessId `$selfPid -TimeoutSeconds 60 ``
     -ExpectedCreationFiletimeUtc ([uint64]133700000000000000)
 if (`$state.PlayerInputGate -ne 1) { throw "gate=`$(`$state.PlayerInputGate)" }
-if (`$state.Pid -ne 4242) { throw "closure lost TargetProcessId: `$(`$state.Pid)" }
+if (`$state.Pid -ne `$selfPid) { throw "closure lost TargetProcessId: `$(`$state.Pid)" }
 if (`$state.Epoch -ne 133700000000000000) { throw "closure lost the epoch: `$(`$state.Epoch)" }
 if (`$script:ObserveCalls -ne 3) { throw "calls=`$(`$script:ObserveCalls)" }
+
+# SECOND: the stall. Singletons never come up and the real log on disk shows no
+# session launch, so the timeout must carry the selection and the banner verdict.
+# BOUNDED to 3 s: this case is about the closure resolving, not about the budget.
+`$script:ObserveCalls = 0
+function Invoke-BoundedHoi4Observation {
+    param(
+        [Parameter(Mandatory = `$true)][int]`$TargetProcessId,
+        [ValidateRange(1, 120)][int]`$TimeoutSeconds = 30,
+        [uint64]`$ExpectedCreationFiletimeUtc = 0
+    )
+    `$script:ObserveCalls++
+    throw 'CInGameIdler singleton pair is null, incoherent, or misaligned.'
+}
+`$startedAt = [DateTime]::UtcNow
+`$stalled = `$null
+try {
+    Wait-Hoi4WorldReady -TargetProcessId `$selfPid -TimeoutSeconds 3 ``
+        -ExpectedCreationFiletimeUtc ([uint64]133700000000000000) ``
+        -ContinueSelection ([pscustomobject]@{
+            Title = 'Imperial Japan 1941.9.20.19'
+            Filename = 'JAP_1941_09_20_17.hoi4'
+        }) ``
+        -GameLogPath $logLiteral ``
+        -GameLogPriorLength 0 ``
+        -GameLogPriorDigest ''
+} catch {
+    `$stalled = `$_.Exception.Message
+}
+`$elapsed = ([DateTime]::UtcNow - `$startedAt).TotalSeconds
+if (`$elapsed -gt 40) { throw "the bounded wait ran `$elapsed s" }
+if (`$stalled -notlike '*did not expose stable world singletons*') {
+    throw "the real refusal was replaced: `$stalled"
+}
+foreach (`$fragment in @('Imperial Japan 1941.9.20.19', 'JAP_1941_09_20_17.hoi4',
+        'NO campaign session')) {
+    if (`$stalled -notlike "*`$fragment*") {
+        throw "the stall description lost '`$fragment': `$stalled"
+    }
+}
 Write-Host 'REPLICA-OK'
 "@
     $replicaPath = Join-Path $replicaDir 'replica.ps1'
     Set-Content -LiteralPath $replicaPath -Value $replica -Encoding UTF8
-    $child = & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
-        -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $replicaPath 2>&1 | Out-String
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+    $child = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $replicaPath 2>&1 | Out-String
     Assert-True -Condition ($child -match 'REPLICA-OK') `
-        -Message "the production closure shape resolves in a clean child (child said: $($child.Trim()))"
+        -Message "the production functions resolve and describe under -File (child said: $($child.Trim()))"
+
+    # The mode that actually motivates the capture-by-value: run via -Command so
+    # the script keeps its own scope and its functions are NOT global.
+    $commandChild = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -Command "& '$($replicaPath.Replace("'", "''"))'" 2>&1 | Out-String
+    Assert-True -Condition ($commandChild -match 'REPLICA-OK') `
+        -Message ("the production functions resolve and describe under -Command, " +
+            "where script-scope functions are not global (child said: $($commandChild.Trim()))")
 } finally {
     Remove-Item -LiteralPath $replicaDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# =============================================================================
+Write-Host 'case: the stall description reaches the timeout that had no cause'
+# THIS IS THE DEFECT (ledger #165). A game whose continue selection the engine
+# declined sits at the frontend: no singletons, gate never set, and the wait
+# spends its budget and then reports "did not expose stable world singletons",
+# which reads as an offsets or process fault. t44 paid that twice and the real
+# cause was only ever visible in the game's own log.
+#
+# RED WHEN: the describer is not consulted, its text is dropped from the
+# message, or it is consulted on the wrong arm. Any of those puts the message
+# back to the one that sent t44's diagnosis to the wrong place.
+Reset-Clock
+$script:DescribeCalls = 0
+$timeoutMessage = $null
+try {
+    Wait-Hoi4WorldReadyState `
+        -TargetProcessId 4242 `
+        -TimeoutSeconds 300 `
+        -Observe { param($r) throw 'CInGameIdler singleton pair is null.' } `
+        -TestAlive { $true } `
+        -DescribeStall {
+            param($waited)
+            $script:DescribeCalls++
+            return "LAUNCHED ON 'Vichy France 1944' AFTER $waited s"
+        } `
+        -UtcNow $virtualNow -Sleep $virtualSleep
+} catch {
+    $timeoutMessage = $_.Exception.Message
+}
+Assert-Equal -Expected 1 -Actual $script:DescribeCalls `
+    -Message 'the describer is consulted exactly once, when the budget runs out'
+Assert-True -Condition ($timeoutMessage -like '*did not expose stable world singletons*') `
+    -Message 'the original diagnosis is kept'
+Assert-True -Condition ($timeoutMessage -like "*LAUNCHED ON 'Vichy France 1944' AFTER 300 s*") `
+    -Message "the describer's text reaches the message, with the seconds waited"
+
+# =============================================================================
+Write-Host 'case: the describer can NEVER shorten or fail a wait'
+# The previous two designs could, and both were wrong: refusing on a missing
+# banner aborts a slow load, and refusing on "missing banner AND quiet log"
+# aborts a silent deserialize. Refusing a healthy capture costs a game hour; a
+# misleading timeout costs a reader ten minutes.
+#
+# RED WHEN: the describer is moved back into the poll loop, or its return value
+# is ever allowed to become a throw. Either change makes the wait end early
+# here, and both assertions fail.
+Reset-Clock
+$script:DescribeCalls = 0
+$script:Polls = 0
+$result = Wait-Hoi4WorldReadyState `
+    -TargetProcessId 4242 `
+    -TimeoutSeconds 600 `
+    -Observe {
+        param($r)
+        $script:Polls++
+        # Unreadable for well over any plausible grace window, then ready --
+        # the healthy-but-slow campaign the earlier designs refused.
+        if ($script:Polls -le 400) { throw 'CInGameIdler singleton pair is null.' }
+        return (New-Observation -PlayerInputGate 1)
+    } `
+    -TestAlive { $true } `
+    -DescribeStall {
+        param($waited)
+        $script:DescribeCalls++
+        return 'this must never be reached'
+    } `
+    -UtcNow $virtualNow -Sleep $virtualSleep
+Assert-Equal -Expected 1 -Actual $result.PlayerInputGate `
+    -Message 'a campaign that is slow past any grace window still reaches readiness'
+Assert-Equal -Expected 0 -Actual $script:DescribeCalls `
+    -Message 'a wait that succeeds never consults the describer at all'
+
+# =============================================================================
+Write-Host 'case: a describer that THROWS cannot replace the real refusal'
+# It is decoration on a refusal that is already happening, so its own failure
+# must not become the reported cause.
+#
+# RED WHEN: the try/catch around the describer is removed (the describer's
+# exception then replaces the timeout), or the failure is swallowed silently so
+# nothing says the description was lost.
+Reset-Clock
+$timeoutMessage = $null
+try {
+    Wait-Hoi4WorldReadyState `
+        -TargetProcessId 4242 `
+        -TimeoutSeconds 120 `
+        -Observe { param($r) throw 'CInGameIdler singleton pair is null.' } `
+        -TestAlive { $true } `
+        -DescribeStall { param($waited) throw 'the describer is broken' } `
+        -UtcNow $virtualNow -Sleep $virtualSleep
+} catch {
+    $timeoutMessage = $_.Exception.Message
+}
+Assert-True -Condition ($timeoutMessage -like '*did not expose stable world singletons*') `
+    -Message 'a throwing describer leaves the real refusal intact'
+Assert-True -Condition ($timeoutMessage -like '*stall description failed: the describer is broken*') `
+    -Message 'the describer failure is reported rather than swallowed'
+
+# =============================================================================
+Write-Host 'case: a wait that DID observe a session is not described'
+# The description is about a launch that never announced itself. Once any
+# observation succeeded the campaign demonstrably exists, and the other timeout
+# arm already explains itself.
+#
+# RED WHEN: the `-not $sawObservation` guard on the describer is dropped, which
+# would append launch speculation to a refusal that is really about the gate.
+Reset-Clock
+$script:DescribeCalls = 0
+$timeoutMessage = $null
+try {
+    Wait-Hoi4WorldReadyState `
+        -TargetProcessId 4242 `
+        -TimeoutSeconds 120 `
+        -Observe { param($r) New-Observation -PlayerInputGate 0 } `
+        -TestAlive { $true } `
+        -DescribeStall { param($waited) $script:DescribeCalls++; return 'must not appear' } `
+        -UtcNow $virtualNow -Sleep $virtualSleep
+} catch {
+    $timeoutMessage = $_.Exception.Message
+}
+Assert-Equal -Expected 0 -Actual $script:DescribeCalls `
+    -Message 'the describer is not consulted when observations succeeded'
+Assert-True -Condition ($timeoutMessage -like '*in-game-session latch*') `
+    -Message 'that arm keeps its own explanation'
 
 # =============================================================================
 Write-Host ''

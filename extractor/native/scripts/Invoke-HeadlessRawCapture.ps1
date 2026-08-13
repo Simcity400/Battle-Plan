@@ -2449,6 +2449,322 @@ function Get-Hoi4Processes {
     return @(Get-Process -Name the game -ErrorAction SilentlyContinue)
 }
 
+# --- The continue selection, and the refusal it used to hide ------------------
+#
+# t43's exit wrote a `continue_game.json` the game then silently declined. Every
+# `--continuelastsave` launch dropped to the frontend menu, where no in-game
+# session exists, so every world-ready observation failed on a null CInGameIdler
+# pair and the phase burned its entire 600 s budget -- twice -- before saying
+# anything, and what it finally said blamed the singletons. The discriminator
+# was never in the harness's own log. It was in the game's, which showed the
+# menu bookmark and no session launch at all.
+#
+# Two guards. They cover DIFFERENT failures and neither is the other's fallback:
+#
+#   * BEFORE launch, `Resolve-Hoi4ContinueSelection`: the selection must name a
+#     save that is actually on disk. The harness used to check only that
+#     continue_game.json EXISTED, so a selection left pointing at a deleted save
+#     read as perfectly healthy.
+#   * IN THE TIMEOUT, a stall description: the engine can decline a selection
+#     whose file IS present -- a foreign game version, an incompatible modset, a
+#     truncated save. Nothing readable off disk predicts that, and it is what
+#     actually happened in t43: the declined selection named
+#     `JAP_1941_09_20_17.hoi4`, a file that is still in `save games` to this day.
+#     So the world-ready timeout now names the selection the process was
+#     launched on, and says whether the engine's own log shows it starting a
+#     campaign session (frontend.cpp writes that banner when, and only when, one
+#     starts).
+#
+# WHAT THIS DELIBERATELY DOES NOT DO IS REFUSE EARLY. Two versions of this code
+# tried. Refusing when the banner was absent aborts a slow load that has not
+# reached its banner yet. Refusing when the banner is absent AND the log has
+# gone quiet aborts a silent deserialize -- a review reproduced exactly that
+# against these functions, refusing a campaign that became ready seconds later
+# -- and a modset that renames or suppresses the banner fails the same way.
+#
+# Refusing a healthy capture costs a game hour; a misleading timeout costs the
+# reader ten minutes. Those are not the same price, so the description ships and
+# the early refusal does not. Closing the fast half needs an affirmative,
+# engine-proven "this process is at the frontend menu" observable, which does
+# not exist in this tree today -- recorded as a residual rather than
+# approximated by a proxy.
+
+<#
+.SYNOPSIS
+    The whole text of a file the game still holds open.
+
+.DESCRIPTION
+    the game keeps its logs open for the whole session, so this takes the widest
+    share mode and never asks for write access.
+
+    Reads the file WHOLE. Deciding which part belongs to the current session is
+    `Select-Hoi4CurrentSessionLog`'s job, and it is separated from the I/O so it
+    can be tested without one.
+
+    Returns `$null` on any failure. The caller must treat that as "no opinion",
+    never as "no banner" -- see the block comment above.
+#>
+function Read-Hoi4SharedText {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path
+    )
+
+    $stream = $null
+    try {
+        $share = [System.IO.FileShare](
+            [int][System.IO.FileShare]::ReadWrite -bor
+            [int][System.IO.FileShare]::Delete
+        )
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            $share
+        )
+        $reader = [System.IO.StreamReader]::new($stream)
+        try {
+            return $reader.ReadToEnd()
+        } finally {
+            $reader.Dispose()
+            $stream = $null
+        }
+    } catch {
+        return $null
+    } finally {
+        if ($null -ne $stream) {
+            try { $stream.Dispose() } catch { }
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+    The part of a log that belongs to the session launched after the sample.
+
+.DESCRIPTION
+    LENGTH ALONE CANNOT IDENTIFY A FILE GENERATION. If the engine truncates
+    `game.log` at launch and then writes MORE than the file previously held --
+    ordinary after a minute of loading -- a length comparison says "grew", and
+    slicing at the pre-launch offset lands in the middle of the CURRENT session,
+    past its launch banner.
+
+    NEITHER CAN A HEAD SAMPLE. Two consecutive sessions open with near-identical
+    lines, so a rewrite that preserves the first few hundred characters compares
+    equal and gets sliced when it should not have been.
+
+    So the whole pre-launch region has to be proven unchanged, and this takes a
+    DIGEST of exactly that region. Same length or longer, and the first
+    `PriorLength` characters still hash to what they hashed to before the
+    launch: an append, and only the remainder is new. Anything else -- shorter,
+    different digest, a digest the caller could not compute -- is a file this
+    function cannot prove continuous, and it returns the whole text.
+
+    AMBIGUITY RESOLVES TOWARD MORE TEXT, always. The caller uses this to decide
+    what it can SAY about a stalled launch, so extra text can at worst make it
+    describe an older session's banner, while missing text would make it report
+    a launch that did happen as one that did not.
+#>
+function Select-Hoi4CurrentSessionLog {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$AllText,
+        [Parameter(Mandatory = $true)][long]$PriorLength,
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$PriorDigest
+    )
+
+    if ($null -eq $AllText) {
+        return $null
+    }
+    # Nothing was there before, or nothing could be proven about it, so all of
+    # this is treated as the current session's.
+    if ($PriorLength -le 0 -or [string]::IsNullOrWhiteSpace($PriorDigest)) {
+        return $AllText
+    }
+    if ($AllText.Length -lt $PriorLength) {
+        return $AllText
+    }
+    $head = $AllText.Substring(0, [int]$PriorLength)
+    if (-not (Get-Hoi4TextDigest -Text $head).Equals(
+            $PriorDigest, [StringComparison]::OrdinalIgnoreCase)) {
+        return $AllText
+    }
+    if ($AllText.Length -eq $PriorLength) {
+        return ''
+    }
+    return $AllText.Substring([int]$PriorLength)
+}
+
+<#
+.SYNOPSIS
+    A stable digest of a string, for proving a file region is unchanged.
+#>
+function Get-Hoi4TextDigest {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+        return [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+<#
+.SYNOPSIS
+    True when the log text shows the engine starting a campaign session.
+
+.DESCRIPTION
+    The engine emits one `[[ Launching <MODE>-game ]]` banner from frontend.cpp
+    per campaign start, immediately followed by the campaign's start date. A
+    launch that lands on the frontend menu instead never reaches it.
+
+    `$null` and empty text are FALSE, and the caller must not confuse that with
+    a proven absence: a log that could not be read returns `$null` from
+    `Read-Hoi4SharedText` and the caller stops there.
+#>
+function Test-Hoi4SessionLaunchBanner {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$LogText
+    )
+
+    if ([string]::IsNullOrEmpty($LogText)) {
+        return $false
+    }
+    return ($LogText -match '\[\[\s*Launching\s+[A-Za-z]+-game\s*\]\]')
+}
+
+<#
+.SYNOPSIS
+    Admit the launcher's continue selection, or refuse it by name.
+
+.DESCRIPTION
+    Takes the raw `continue_game.json` text rather than a path so the admission
+    is a function of its inputs and can be exercised without a game.
+
+    A selection flagged `is_remote` is NOT checked against the local save
+    directory: the engine resolves those through the cloud provider, and
+    refusing one for being absent locally would be a false refusal.
+#>
+function Resolve-Hoi4ContinueSelection {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Json,
+        [Parameter(Mandatory = $true)][string]$SaveGamesDir,
+        [Parameter(Mandatory = $true)][string]$ContinueGamePath
+    )
+
+    $parsed = $null
+    try {
+        $parsed = $Json | ConvertFrom-Json
+    } catch {
+        throw (
+            "ContinueSelectionRefused: '$ContinueGamePath' is not readable as JSON " +
+            "($($_.Exception.Message)). --continuelastsave would drop the game to the " +
+            'frontend menu and the world-ready wait would then spend its whole budget ' +
+            'on a campaign that was never loaded.'
+        )
+    }
+    if ($null -eq $parsed) {
+        throw "ContinueSelectionRefused: '$ContinueGamePath' parsed as JSON null."
+    }
+    $present = @($parsed.PSObject.Properties.Name)
+    foreach ($field in @('title', 'filename')) {
+        if ($present -notcontains $field) {
+            throw (
+                "ContinueSelectionRefused: '$ContinueGamePath' carries no '$field' " +
+                "field, so the launcher selection cannot be checked at all."
+            )
+        }
+    }
+    $title = [string]$parsed.title
+    $filename = [string]$parsed.filename
+    if ([string]::IsNullOrWhiteSpace($filename)) {
+        throw "ContinueSelectionRefused: '$ContinueGamePath' names an empty save filename."
+    }
+    # The engine resolves the selection inside its own save directory. A name
+    # carrying a separator is not a selection this can check, and silently
+    # accepting one would let the guard pass on a path it never looked at.
+    if ($filename.IndexOfAny([char[]]@('\', '/', ':')) -ge 0) {
+        throw (
+            "ContinueSelectionRefused: '$ContinueGamePath' names '$filename', which is " +
+            'a path rather than a save-directory entry.'
+        )
+    }
+    $isRemote = ($present -contains 'is_remote') -and [bool]$parsed.is_remote
+    $savePath = Join-Path $SaveGamesDir $filename
+    if (-not $isRemote -and -not (Test-Path -LiteralPath $savePath -PathType Leaf)) {
+        throw (
+            "ContinueSelectionRefused: launcher continue selection '$title' names " +
+            "'$filename', which is not in '$SaveGamesDir'. --continuelastsave would " +
+            'drop the game to the frontend menu and the world-ready wait would then ' +
+            'spend its whole budget on a campaign that was never loaded. Resume a save ' +
+            'interactively once to let the launcher rewrite the selection.'
+        )
+    }
+    return [pscustomobject]@{
+        Title      = $title
+        Filename   = $filename
+        SavePath   = $savePath
+        IsRemote   = $isRemote
+        SaveOnDisk = (-not $isRemote)
+    }
+}
+
+<#
+.SYNOPSIS
+    What to add to a world-ready timeout about the launch that never arrived.
+
+.DESCRIPTION
+    Reports two facts and draws no conclusion from them: which continue
+    selection the process was launched on, and whether the engine's own log
+    shows it starting a campaign session.
+
+    IT DOES NOT SAY THE SELECTION WAS DECLINED. `$BannerSeen` false is
+    consistent with a declined selection AND with a load that never got that
+    far, and nothing available here separates them -- an earlier version of this
+    code refused captures on that distinction and was wrong to. What it does is
+    put the selection in front of the reader, which is exactly what t43/t44
+    lacked: the failure was diagnosable only from the game's own log, and the
+    harness's message pointed at the singletons instead.
+#>
+function New-Hoi4StallDescription {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Title,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Filename,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$GameLogPath,
+        [Parameter(Mandatory = $true)][AllowNull()][object]$BannerSeen
+    )
+
+    $launch = (
+        "This process was launched with --continuelastsave on '$Title' " +
+        "($Filename)."
+    )
+    if ($null -eq $BannerSeen) {
+        return (
+            "$launch The engine's log at '$GameLogPath' could not be read, so " +
+            'whether it started a campaign session is unknown from here.'
+        )
+    }
+    if ([bool]$BannerSeen) {
+        return (
+            "$launch The engine's log at '$GameLogPath' DOES show it starting a " +
+            'campaign session, so the selection was accepted and the stall is ' +
+            'after the load began.'
+        )
+    }
+    return (
+        "$launch The engine's log at '$GameLogPath' shows NO campaign session " +
+        'starting. That is consistent with the engine declining the selection ' +
+        'and dropping to the frontend menu -- the t43/t44 failure, where a save ' +
+        'that was present on disk was refused for reasons invisible from here -- ' +
+        'and equally consistent with a load that never reached its session. ' +
+        'Read that log before blaming the singletons or the offsets. If the ' +
+        'selection is the cause, resuming the save interactively once lets the ' +
+        'launcher rewrite continue_game.json.'
+    )
+}
+
 # Readiness is "the campaign is loaded AND in play", not "the singletons are
 # readable". Those are not the same condition and the gap between them is a
 # whole savegame load: the CGameState and CInGameIdler singletons are coherent,
@@ -2484,7 +2800,15 @@ function Wait-Hoi4WorldReady {
     param(
         [Parameter(Mandatory = $true)][int]$TargetProcessId,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
-        [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc
+        [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc,
+        # The launcher selection this process was started on, or $null when the
+        # harness did not launch it. The PASSIVE path reuses a game the owner
+        # started by hand: there is no selection to blame and no launch offset
+        # to read from, so it gets no probe at all.
+        [AllowNull()][object]$ContinueSelection,
+        [AllowEmptyString()][string]$GameLogPath = '',
+        [long]$GameLogPriorLength = 0,
+        [AllowEmptyString()][string]$GameLogPriorDigest = ''
     )
     # Captured as a VALUE, not called by name: `.GetNewClosure()` parents the
     # closure's dynamic module on the GLOBAL scope, so a script-scoped function
@@ -2495,9 +2819,40 @@ function Wait-Hoi4WorldReady {
     # 600 s budget failing every probe. A variable IS captured by the closure,
     # in every invocation mode.
     $observeFn = ${function:Invoke-BoundedHoi4Observation}
+    # Same capture-by-value rule for the four the describer needs.
+    $readTextFn = ${function:Read-Hoi4SharedText}
+    $selectSessionFn = ${function:Select-Hoi4CurrentSessionLog}
+    $bannerFn = ${function:Test-Hoi4SessionLaunchBanner}
+    $describeFn = ${function:New-Hoi4StallDescription}
+    $describeStall = $null
+    if ($null -ne $ContinueSelection -and -not [string]::IsNullOrWhiteSpace($GameLogPath)) {
+        # Runs ONCE, inside the timeout path, and cannot shorten or fail the
+        # wait. $null BannerSeen means the log could not be read, which the
+        # description reports as unknown rather than as an absent banner.
+        $describeStall = {
+            param($WaitedSeconds)
+            $bannerSeen = $null
+            $all = & $readTextFn -Path $GameLogPath
+            if ($null -ne $all) {
+                $text = & $selectSessionFn `
+                    -AllText $all `
+                    -PriorLength $GameLogPriorLength `
+                    -PriorDigest $GameLogPriorDigest
+                if ($null -ne $text) {
+                    $bannerSeen = [bool](& $bannerFn -LogText $text)
+                }
+            }
+            return (& $describeFn `
+                -Title $ContinueSelection.Title `
+                -Filename $ContinueSelection.Filename `
+                -GameLogPath $GameLogPath `
+                -BannerSeen $bannerSeen)
+        }.GetNewClosure()
+    }
     return (Wait-Hoi4WorldReadyState `
         -TargetProcessId $TargetProcessId `
         -TimeoutSeconds $TimeoutSeconds `
+        -DescribeStall $describeStall `
         -Observe {
             param($RemainingSeconds)
             & $observeFn `
@@ -2523,6 +2878,13 @@ function Wait-Hoi4WorldReady {
 $launchedProcess = $null
 $gamePid = 0
 $recorderProcess = $null
+# Set only on the launch path. The passive path reuses a game the owner started
+# and configured, so the harness has neither a selection it chose nor a launch
+# boundary in the log to read from.
+$continueSelection = $null
+$gameLogPath = Join-Path (Join-Path $PdxUserDir 'logs') 'game.log'
+$gameLogPriorLength = 0L
+$gameLogPriorDigest = ''
 
 if ($reuseRunningGame) {
     $running = @(Get-Hoi4Processes)
@@ -2552,8 +2914,34 @@ if ($reuseRunningGame) {
     if (-not (Test-Path -LiteralPath $continueGame -PathType Leaf)) {
         throw "Launcher continue selection is missing: $continueGame"
     }
-    $continueTitle = (Get-Content -LiteralPath $continueGame -Raw | ConvertFrom-Json).title
-    Write-Host "phase=launch continue_title=$continueTitle"
+    $continueSelection = Resolve-Hoi4ContinueSelection `
+        -Json (Get-Content -LiteralPath $continueGame -Raw) `
+        -SaveGamesDir (Join-Path $PdxUserDir 'save games') `
+        -ContinueGamePath $continueGame
+    # Sampled BEFORE the game is created, so the stall description can tell this
+    # session's log from the previous one. Length AND a digest of exactly that
+    # much text: neither the size nor a head sample can identify a generation on
+    # its own, because a truncating engine that then writes more than the file
+    # used to hold looks like an append and two sessions open alike. See
+    # Select-Hoi4CurrentSessionLog.
+    $gameLogPriorLength = 0L
+    $gameLogPriorDigest = ''
+    if (Test-Path -LiteralPath $gameLogPath -PathType Leaf) {
+        # No sample means the whole file is treated as current, which can only
+        # make the description mention an older session's banner.
+        $priorText = Read-Hoi4SharedText -Path $gameLogPath
+        if ($null -ne $priorText) {
+            $gameLogPriorLength = [long]$priorText.Length
+            $gameLogPriorDigest = Get-Hoi4TextDigest -Text $priorText
+        }
+    }
+    Write-Host (
+        "phase=launch continue_title=$($continueSelection.Title) " +
+        "continue_file=$($continueSelection.Filename) " +
+        "save_on_disk=$($continueSelection.SaveOnDisk) " +
+        "game_log_prior_chars=$gameLogPriorLength " +
+        "game_log_prior_digest=$(if ([string]::IsNullOrEmpty($gameLogPriorDigest)) { 'none' } else { $gameLogPriorDigest.Substring(0, 12) })"
+    )
 
     # Launch through WMI rather than Start-Process. The recorder refuses a
     # target that already belongs to a job object (it takes its own injection
@@ -2642,7 +3030,11 @@ if ($null -ne $cpuAffinityPlan) {
 $readyState = Wait-Hoi4WorldReady `
     -TargetProcessId $gamePid `
     -TimeoutSeconds $WorldReadyTimeoutSeconds `
-    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc
+    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+    -ContinueSelection $continueSelection `
+    -GameLogPath $gameLogPath `
+    -GameLogPriorLength $gameLogPriorLength `
+    -GameLogPriorDigest $gameLogPriorDigest
 Write-Host "phase=world_ready pid=$gamePid initial_paused=$($readyState.Paused) initial_speed=$($readyState.Speed) player_input_gate=$($readyState.PlayerInputGate)"
 
 if ($EvidenceOnlyDriveGame) {

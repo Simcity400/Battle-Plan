@@ -54,13 +54,20 @@ if ($null -eq $functionAst) {
 # a definition placed after the recorder is launched would turn any upstream
 # throw into an undefined-command error inside the cleanup -- abandoning the
 # compact-status arbitration the harness depends on.
-$mainTry = $ast.FindAll(
-    {
-        param($node)
-        $node -is [System.Management.Automation.Language.TryStatementAst]
-    }, $true) |
-    Sort-Object { $_.Extent.StartLineNumber } |
-    Where-Object { $_.Extent.StartLineNumber -gt 1000 } |
+# TOP-LEVEL statements only, not "the first try past line 1000". That line
+# threshold was a stand-in for "past the function definitions", and the harness
+# outgrew it: it now selects a `try` nested inside a `Where-Object` filter in
+# `Invoke-BoundedWmiLaunch`, which is not a cleanup boundary and is not even a
+# statement the script executes at load. The check then failed on a harness that
+# is correct -- a red that says nothing is worse than no check, because the next
+# reader learns to ignore this file.
+#
+# The real boundary is structural: a `try` that is a direct statement of the
+# script's end block is one whose `finally` runs on the way out of the capture.
+# Taking the FIRST of them is the strictest form of the requirement.
+$mainTry = @($ast.EndBlock.Statements |
+    Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] } |
+    Sort-Object { $_.Extent.StartLineNumber }) |
     Select-Object -First 1
 if ($null -eq $mainTry) { throw 'could not locate the harness main try block.' }
 if ($functionAst.Extent.StartLineNumber -ge $mainTry.Extent.StartLineNumber) {

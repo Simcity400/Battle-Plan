@@ -168,13 +168,24 @@ function New-Hoi4WorldReadyTimeoutMessage {
         [Parameter(Mandatory = $true)][int]$WaitedSeconds,
         [Parameter(Mandatory = $true)][bool]$SawObservation,
         [AllowNull()][object]$LastPlayerInputGate,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$LastError
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$LastError,
+        [AllowEmptyString()][string]$StallDescription = ''
     )
 
     if (-not $SawObservation) {
+        # The caller's extra evidence goes HERE, on the arm that says nothing
+        # about why. "Did not expose stable world singletons" reads as an
+        # offsets or process fault, and in t43/t44 it was neither -- the game
+        # was at the frontend because it had declined the continue selection,
+        # and nothing in this message pointed there.
+        $extra = if ([string]::IsNullOrWhiteSpace($StallDescription)) {
+            ''
+        } else {
+            " $StallDescription"
+        }
         return (
             "the game PID $TargetProcessId did not expose stable world singletons within " +
-            "$TimeoutSeconds s. Last probe error: $LastError"
+            "$TimeoutSeconds s. Last probe error: $LastError$extra"
         )
     }
     $observed = if ($null -eq $LastPlayerInputGate) { 'unknown' } else { [string]$LastPlayerInputGate }
@@ -210,6 +221,32 @@ function New-Hoi4WorldReadyTimeoutMessage {
 .PARAMETER ReportProgress
     Called with a hashtable describing the wait so the caller can log it. The
     wait itself prints nothing.
+
+.PARAMETER DescribeStall
+    Optional. Called with the whole seconds waited, ONLY while building the
+    timeout message, and only when no observation ever succeeded. Returns extra
+    text to append to that message, or an empty string for "nothing to add".
+
+    IT CANNOT SHORTEN OR FAIL THE WAIT, and that is the whole design. An
+    earlier version of this parameter could: it let the caller refuse early when
+    the engine's own log showed no session launch banner. That was wrong, and
+    the reason is worth keeping. A campaign that is loading and a game parked at
+    the frontend with its continue selection declined look identical from here
+    -- no readable singletons, gate never seen set -- and every discriminator
+    available off disk turned out to be a proxy. "No banner yet" is true of a
+    slow load. "No banner and the log has gone quiet" is true of a silent
+    deserialize, which a review reproduced against these very functions: a
+    healthy campaign that became ready after six seconds was refused after
+    three and a half. A modset that renames or suppresses the banner fails the
+    same way.
+
+    Refusing a healthy capture is strictly worse than the misleading timeout
+    this was meant to improve on, so the diagnosis stays and the refusal goes.
+    Closing the fast half needs an affirmative, engine-proven "this process is
+    at the frontend menu" observable, which does not exist in this tree today.
+
+    The callback runs inside the timeout path, so a throw from it is caught and
+    reported rather than replacing the real refusal.
 
 .OUTPUTS
     The FIRST observation whose gate is set. Never an observation with a zero
@@ -256,6 +293,7 @@ function Wait-Hoi4WorldReadyState {
         [Parameter(Mandatory = $true)][scriptblock]$Observe,
         [Parameter(Mandatory = $true)][scriptblock]$TestAlive,
         [AllowNull()][scriptblock]$ReportProgress,
+        [AllowNull()][scriptblock]$DescribeStall,
         [AllowNull()][scriptblock]$Sleep,
         [AllowNull()][scriptblock]$UtcNow,
         [ValidateRange(1, 60000)][int]$PollMilliseconds = 750,
@@ -319,11 +357,26 @@ function Wait-Hoi4WorldReadyState {
     }
 
     $waited = [int][Math]::Floor(((& $UtcNow) - $startedAt).TotalSeconds)
+    # Only on the arm where the caller's extra evidence is relevant: an hour
+    # spent with no coherent observation at all is the arm that used to blame
+    # the singletons for a selection the engine declined.
+    $stall = ''
+    if ($null -ne $DescribeStall -and -not $sawObservation) {
+        try {
+            $stall = [string](& $DescribeStall $waited)
+        } catch {
+            # The describer is decoration on a refusal that is already
+            # happening. Its failure must not replace the real cause, so it is
+            # reported in place of what it would have said.
+            $stall = "(stall description failed: $($_.Exception.Message))"
+        }
+    }
     throw (New-Hoi4WorldReadyTimeoutMessage `
         -TargetProcessId $TargetProcessId `
         -TimeoutSeconds $TimeoutSeconds `
         -WaitedSeconds $waited `
         -SawObservation $sawObservation `
         -LastPlayerInputGate $lastGate `
-        -LastError $lastError)
+        -LastError $lastError `
+        -StallDescription $stall)
 }
