@@ -48,6 +48,24 @@
 //! nor the v2 cache format. `verify_every_hour`, checkpoint framing, the H4IX
 //! index and the whole-cache SHA are in NEITHER lane -- v3 would still owe all
 //! of them, and the report says so rather than quietly banking their absence.
+//!
+//! # A band names the file it opened
+//!
+//! Every report carries `executable_path` and `executable_sha256`: the pathname
+//! `current_exe` returns, and the SHA-256 of the file opened by resolving that
+//! pathname, read as the report is written. Nothing more is claimed -- not the
+//! running image, not the file the process was launched from, because the
+//! pathname is resolved a second time at open. `executable_identity`'s note
+//! states the mechanism and the three things that do not follow from it. Lane GE's `PROVENANCE.txt` had
+//! to record even this much by hand, and said in its own words that it was "NOT
+//! an independent binding of a binary to a JSON"; the report now carries it.
+//!
+//! That matters more here than it would elsewhere, because this instrument's
+//! numbers are read across sessions and the CONFIGURATION lives in the binary:
+//! `COVERED_SECTIONS` is a const, so a band measured over 39 sections and one
+//! measured over 41 are indistinguishable in the JSON except by the digest. Two
+//! reports with different digests are two different experiments, whatever their
+//! fields say.
 
 use std::collections::BTreeMap;
 use std::path::Path as FsPath;
@@ -669,8 +687,165 @@ fn build_span_for(section: &str) -> Option<usize> {
     }
 }
 
+/// A JSON string literal, by SUBSTITUTION rather than escaping.
+///
+/// Backslashes become forward slashes and quotes become apostrophes, which is
+/// lossy and deliberately so: every value that reaches here is a name, a path or
+/// a diagnostic, and a report that is readable in a terminal is worth more than
+/// one that round-trips a quote.
+///
+/// Control characters are substituted too, and that is not cosmetic. Two of the
+/// strings reaching this function are outside this program's control — the
+/// `section_filter` comes from `argv`, and the executable-identity refusals
+/// carry an OS error message — and a raw control character inside a JSON string
+/// makes the WHOLE report unparseable, so one stray byte would cost the run
+/// rather than the field.
 fn json_string(body: &str) -> String {
-    format!("\"{}\"", body.replace('\\', "/").replace('"', "'"))
+    let sanitized: String = body
+        .chars()
+        .map(|c| match c {
+            '\\' => '/',
+            '"' => '\'',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    format!("\"{sanitized}\"")
+}
+
+/// The pathname `current_exe` returns, and a best-effort digest of the file
+/// opened by resolving it, as `(path, sha256)`.
+///
+/// The name is deliberately neither "the identity of the binary writing this
+/// report" nor "the file the process was launched from". Both are claims this
+/// function cannot make: the pathname is resolved once to obtain it and again
+/// to open it, so what is hashed is whatever that pathname resolved to at OPEN
+/// time. Four review rounds cut this sentence down; the section below is what
+/// survived.
+///
+/// # Why the report carries it
+///
+/// Nothing else does. Lane GE's `PROVENANCE.txt` says so in its own words: it is
+/// "the lane's own record of the runs" and "NOT an independent binding of a
+/// binary to a JSON", because "nothing in a run JSON names or hashes the binary
+/// that wrote it, so a reader is trusting this record for the mapping". A band
+/// is only as good as the code that produced it, and this instrument's numbers
+/// have already been read across builds that differed by an uncommitted hunk.
+/// Hashing the file that pathname resolves to, at the moment we report, is
+/// enough to tell two builds apart in the artifact rather than in a note beside
+/// it — which is the whole job. It is not, and does not claim to be, an
+/// attestation.
+///
+/// # Why a failure is reported and not fatal
+///
+/// A run that has already spent its measurement window must not be thrown away
+/// because `current_exe` was unavailable — but it must not silently look bound
+/// either. A refusal string is neither a path nor a 64-hex digest, so no reader
+/// can mistake one for the other.
+///
+/// The encoding is PER FIELD, and the asymmetry is deliberate. If `current_exe`
+/// itself fails there is no path to report, so both fields carry the refusal. If
+/// the pathname resolves and the file it names cannot be opened or read, the
+/// path is KEPT and only `executable_sha256` carries the refusal — a reader
+/// learns which pathname was reported and that the file it resolved to could
+/// not be read, which is strictly more than blanking both.
+///
+/// # Exactly what this is, stated as narrowly as it is true
+///
+/// It is the SHA-256 of the bytes read from one file object, obtained by
+/// resolving the pathname `current_exe` returned, on an unsynchronised
+/// filesystem. That sentence is the whole guarantee. Three things follow from
+/// it that a reader must not assume away:
+///
+/// * **Not atomic with the naming.** `current_exe` resolves a pathname and
+///   `File::open` resolves that same pathname again. A replacement, a rename,
+///   or a redirected reparse point between the two calls means the digest is of
+///   whatever the path named at OPEN time.
+/// * **Not a content snapshot.** The read is a sequence of 64 KiB reads from
+///   one handle. Holding a handle fixes the file OBJECT across later renames;
+///   it does not freeze the object's contents. A writer truncating or
+///   rewriting the file mid-read can produce a digest spliced from two states,
+///   or a short read that ends the loop early. Nothing here detects that.
+/// * **Not the loaded module.** Proving the bytes are the ones the loader
+///   mapped needs the loader's mapping, not a file read; and nothing covers a
+///   replacement between process start and this call.
+///
+/// Two earlier revisions of this comment overstated it — first claiming
+/// `File::open` closed the naming gap that `fs::read` left (it does not; both
+/// resolve the pathname), then claiming one handle gave "one consistent view of
+/// one file" (it does not; a handle is not a snapshot). Both were caught in
+/// review, and the second is why this section now states the mechanism rather
+/// than a property.
+///
+/// # Why that is enough here, and what would be needed if it were not
+///
+/// The job is to tell two builds of an off-by-default measurement instrument
+/// apart inside its own report, on a developer machine, where the executable is
+/// not being rewritten while it runs. For that, a best-effort digest is exactly
+/// right and a fail-closed would throw away a spent measurement window for a
+/// condition that does not occur.
+///
+/// If this ever needs to be an attestation, the closure is not in the standard
+/// library: bring the path back OUT of the handle
+/// (`GetFinalPathNameByHandleW`), and take the content from a stable source —
+/// the loader's own mapping, or a file opened with sharing denied so no writer
+/// can move under the read. Both are platform-specific unsafe calls, which is
+/// the dependency this instrument declines to carry, not an oversight.
+fn executable_identity() -> (String, String) {
+    let path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            let refusal = format!("unavailable: current_exe failed: {error}");
+            return (refusal.clone(), refusal);
+        }
+    };
+    let display = path.to_string_lossy().into_owned();
+    // Opened once and read through the handle. That is not a snapshot and not
+    // atomic with the naming above; the function's own note states both rather
+    // than implying them away.
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) => {
+            return (
+                display,
+                format!("unavailable: opening the file at that path failed: {error}"),
+            )
+        }
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        match std::io::Read::read(&mut file, &mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(error) => {
+                return (
+                    display,
+                    format!("unavailable: reading the file at that path failed: {error}"),
+                )
+            }
+        }
+    }
+    (display, snapshot::sha256::to_hex(&hasher.finalize()))
+}
+
+/// THE ONE PLACE a report becomes a report.
+///
+/// `run` builds the body and hands it here; this adds the schema and the
+/// executable-file identity and closes the object. It exists so those two are not
+/// optional: a report cannot be emitted without going through this function, so
+/// a test that drives this function covers what every report carries. The
+/// alternative — splicing the identity into `run`'s own `format!` — was
+/// untestable in this crate, because `run` takes a capture spool and a test
+/// that deleted the splice stayed green.
+fn report_envelope(body: &str) -> String {
+    let (path, sha) = executable_identity();
+    format!(
+        "{{\"schema\":\"dq-v3-prototype-v1\",\
+         \"executable_path\":{},\"executable_sha256\":{},{body}}}",
+        json_string(&path),
+        json_string(&sha)
+    )
 }
 
 /// Parse a grain-depth spec: a default depth, optionally followed by
@@ -1270,9 +1445,19 @@ pub fn run(
         .map(|name| json_string(name))
         .collect();
 
-    // `apply_domain_data` is 54-58% of the projected budget and v3 does not
-    // touch it, so a cut to it survives whatever the fold state looks like. One
-    // number over ~70 reducers cannot say where to cut; these rows can.
+    // `apply_domain_data` is a large share of the projected budget and v3 does
+    // not touch it, so a cut to it survives whatever the fold state looks like.
+    // One number over ~70 reducers cannot say where to cut; these rows can.
+    //
+    // The share was MEASURED at 54-58% by lane GE on the t30/t31 streams under
+    // the 39-section configuration (`runs/ge_v3_stage3/MEASUREMENT_TABLE.txt`).
+    // That is a reading of a run, not a property of this code, and it is stated
+    // as history here because two things have moved under it since: the covered
+    // set is now 41 sections including the re-added air sections, and the fold
+    // no longer writes five air members into `strategic_air` as well as
+    // `naval_air`. Both change the denominator. `projected_full_conversion` is
+    // computed per run from that run's own spans, so the report is not affected
+    // — only a reader carrying the old percentage forward would be.
     let domain_rows: Vec<String> = foldprof::domain_rows()
         .into_iter()
         .map(|(domain, ns, records, payload)| {
@@ -1291,8 +1476,8 @@ pub fn run(
         })
         .collect();
 
-    Ok(format!(
-        "{{\"schema\":\"dq-v3-prototype-v1\",\"grain_depth\":{grain_depth},\
+    Ok(report_envelope(&format!(
+        "\"grain_depth\":{grain_depth},\
          \"grain_depth_spec\":{},\"grain_depths\":[{}],\
          \"hours\":{hours},\"document_bytes_last\":{document_bytes_last},\
          \"document_member_bytes_last\":{document_member_bytes_last},\
@@ -1330,7 +1515,7 @@ pub fn run(
          \"unpriced_v3_obligations\":\"checkpoint framing, H4IX index, whole-cache \
          SHA-256, verify_every_hour, container write\",\
          \"apply_domain_data_by_domain\":[{}],\
-         \"verdict\":{},\"sections\":[{}]}}",
+         \"verdict\":{},\"sections\":[{}]",
         json_string(grain_depth_spec),
         depth_rows.join(","),
         absent_rows.join(","),
@@ -1359,7 +1544,7 @@ pub fn run(
         domain_rows.join(","),
         json_string(verdict),
         rows.join(","),
-    ))
+    )))
 }
 
 #[cfg(test)]
@@ -1626,5 +1811,104 @@ mod tests {
         assert_eq!(default, 3);
         assert_eq!(overrides.get("supply"), Some(&2));
         assert_eq!(overrides.get("order_of_battle"), Some(&4));
+    }
+
+    /// Every report carries the digest of the file `current_exe` names, under
+    /// the two field names, and the whole report parses as JSON.
+    ///
+    /// Named for what it checks. An earlier name, "binds itself to the running
+    /// binary", was a claim the mechanism does not support (Codex round 10).
+    ///
+    /// kills: hashing anything but that file's bytes — a constant, the source
+    /// path, `argv[0]` unresolved, or a digest of the empty slice. Each of
+    /// those still produces 64 hex characters, so only comparing against an
+    /// independently computed digest of the same file can tell them apart.
+    /// Also kills renaming or dropping either field from [`report_envelope`],
+    /// dropping the schema, and breaking the chunked read (a truncated or
+    /// double-counted buffer changes the digest).
+    ///
+    /// What it CANNOT kill, so the contract is not read as more than it is:
+    /// this test resolves the pathname a second time itself and reads the file
+    /// the same unsynchronised way, so it detects neither the non-atomicity
+    /// between `current_exe`'s naming and `File::open`'s resolution nor a
+    /// writer moving the file's contents under either read. Both are properties
+    /// of the environment rather than of this code; [`executable_identity`]'s
+    /// note states them and names what closing them would take.
+    ///
+    /// It drives `report_envelope` rather than a fragment, and that is the
+    /// point: `run` cannot produce a report except through it, so there is no
+    /// longer an emission path this test does not cover. An earlier version
+    /// spliced the fields into `run`'s own `format!` and asserted on a helper —
+    /// deleting the splice left every report without them and the test green.
+    #[test]
+    fn the_report_carries_the_digest_of_the_file_current_exe_names() {
+        let (path, sha) = executable_identity();
+
+        // THE EXPECTATION IS OBTAINED INDEPENDENTLY. Hashing the path the
+        // production function returned would pass for ANY readable file it
+        // chose to name -- including the source path its `kills:` contract
+        // claims to rule out. So the test asks the OS itself, asserts the
+        // production path is that path, and hashes the file the test resolved.
+        let named = std::env::current_exe().expect("the test process has a path");
+        assert_eq!(
+            std::path::PathBuf::from(&path),
+            named,
+            "the reported path must be the one `current_exe` names, not some other              readable file"
+        );
+        assert!(named.is_file(), "and it must be a real file: {named:?}");
+        let expected = snapshot::sha256::to_hex(&Sha256::digest(
+            &std::fs::read(&named).expect("the file at that path is readable"),
+        ));
+        assert_eq!(
+            sha, expected,
+            "the reported digest must be the digest of the file at that path"
+        );
+        assert_eq!(sha.len(), 64);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // A WHOLE REPORT, parsed the way a reader parses one. The body is a
+        // stand-in for the ~40 measured fields; what is under test is the
+        // envelope every report is wrapped in.
+        let report = report_envelope("\"hours\":3,\"verdict\":\"inconclusive\"");
+        let object: serde_json::Value =
+            serde_json::from_str(&report).expect("a report must be valid JSON");
+        assert_eq!(
+            object["schema"].as_str(),
+            Some("dq-v3-prototype-v1"),
+            "the envelope carries the schema"
+        );
+        assert_eq!(
+            object["executable_sha256"].as_str(),
+            Some(expected.as_str()),
+            "and the digest, under that exact name"
+        );
+        assert_eq!(
+            object["executable_path"].as_str(),
+            Some(json_string(&named.to_string_lossy()).trim_matches('"')),
+            "and the path, through the report's own substitution"
+        );
+        // And the body survives the wrapping, so the envelope cannot be
+        // satisfied by dropping what it wraps.
+        assert_eq!(object["hours"].as_u64(), Some(3));
+        assert_eq!(object["verdict"].as_str(), Some("inconclusive"));
+    }
+
+    /// A control character in a value this program does not control must not be
+    /// able to make the whole report unparseable.
+    ///
+    /// kills: removing the `is_control` arm from `json_string`. Both strings
+    /// exercised here reach it in production — `section_filter` straight from
+    /// `argv`, and the executable-identity refusal, which carries an OS error
+    /// message.
+    #[test]
+    fn json_string_cannot_emit_a_raw_control_character() {
+        let hostile = "a\u{0}b\nc\td\u{1b}e\"f\\g";
+        let emitted = json_string(hostile);
+        assert!(
+            !emitted.chars().any(char::is_control),
+            "emitted {emitted:?}"
+        );
+        assert_eq!(emitted, "\"a b c d e'f/g\"");
+        assert!(serde_json::from_str::<serde_json::Value>(&emitted).is_ok());
     }
 }

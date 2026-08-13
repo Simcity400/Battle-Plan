@@ -1299,6 +1299,12 @@ pub fn d81_plan_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) -> u
         R::ConditionalUnresolved { .. } => 15,
         R::ClosedIntervalReopened { .. } => 16,
         R::Malformed { .. } => 17,
+        // APPENDED, per this vocabulary's own rule: a new variant takes the next
+        // number and no existing number moves. Lane HZ added
+        // `anchor_on_carry_holder` to the substrate; d81's shipped plan does not
+        // set it, so this ordinal cannot be reached from here today — but the
+        // mapping has to be total or the wire silently reports `unknown`.
+        R::CarryHolderUnknown { .. } => 18,
     }
 }
 
@@ -1323,6 +1329,7 @@ pub fn d81_plan_refusal_unit_name(ordinal: u32) -> &'static str {
         15 => "d81_plan_refusal_15_conditional_unresolved",
         16 => "d81_plan_refusal_16_closed_interval_reopened",
         17 => "d81_plan_refusal_17_malformed",
+        18 => "d81_plan_refusal_18_carry_holder_unknown",
         _ => "d81_plan_refusal_00_unknown",
     }
 }

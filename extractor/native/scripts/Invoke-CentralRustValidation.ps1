@@ -10,6 +10,19 @@ param(
 
     [string]$FilterExpression = "",
 
+    # Cargo features to switch on for a targeted Check/Build/Test run, spelled
+    # exactly as cargo takes them (`package/feature` across a workspace).
+    #
+    # WHY THIS EXISTS: `Final` builds the workspace with default features, so a
+    # module behind an off-by-default feature is never compiled by the battery
+    # and its tests never run — a green Final says nothing about it. Lane HZ hit
+    # that with `replay_decoder/dq-v3-prototype`: production edits and two new
+    # tests sat in a module the complete battery could not see. A targeted
+    # feature-enabled run is what closes that, and it belongs in the narrow
+    # deterministic tiers rather than in `Final`, which must stay one canonical
+    # configuration.
+    [string[]]$Features = @(),
+
     [switch]$Lib,
 
     [string[]]$Bin = @(),
@@ -48,6 +61,16 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# BEFORE ANY EARLY RETURN AND BEFORE THE MACHINE-WIDE MUTEX. `-Features` is
+# honoured by three modes; every other mode must REFUSE it rather than run and
+# silently ignore it, and `Stats` returns long before the argument assembly
+# below, so a check down there would let `-Mode Stats -Features …` pass
+# quietly. A selector that is accepted in silence is the same defect as a gate
+# that validates the wrong tree.
+if ($Features.Count -gt 0 -and $Mode -notin @("Check", "Build", "Test")) {
+    throw "-Features is accepted by Check, Build and Test only; Final is one canonical configuration."
+}
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 
@@ -1202,6 +1225,15 @@ try {
         $timingSelection += "--timings"
     }
     $featureSelection = @()
+    # Explicit features are honoured by the narrow deterministic tiers only.
+    # `Final` is the canonical configuration and must not vary with a flag, and
+    # the Evidence tier owns its own feature selection below.
+    # The mode restriction itself is enforced at the top of the script, ahead of
+    # the `Stats` early return and the mutex; by here it has already held.
+    $requestedFeatureSelection = @()
+    if ($Features.Count -gt 0) {
+        $requestedFeatureSelection = @('--features', ($Features -join ','))
+    }
     $evidenceClientDrivingRequested = $Bin -ccontains 'collector_record_evidence'
     if ($evidenceClientDrivingRequested) {
         if ($Mode -cne 'Evidence' -or $Workspace -cne 'Extractor' -or
@@ -1246,16 +1278,16 @@ try {
 
             switch ($Mode) {
                 "Check" {
-                    Invoke-Checked -Program "cargo" -Arguments (@("check") + $timingSelection + $targetSelection + $selection)
+                    Invoke-Checked -Program "cargo" -Arguments (@("check") + $timingSelection + $requestedFeatureSelection + $targetSelection + $selection)
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "check"
                 }
                 "Build" {
-                    Invoke-Checked -Program "cargo" -Arguments (@("build") + $timingSelection + $targetSelection + $selection)
+                    Invoke-Checked -Program "cargo" -Arguments (@("build") + $timingSelection + $requestedFeatureSelection + $targetSelection + $selection)
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "build"
                 }
                 "Test" {
                     $arguments = @("nextest", "run") + $nextestConfigSelection +
-                        $timingSelection + $targetSelection + $selection
+                        $timingSelection + $requestedFeatureSelection + $targetSelection + $selection
                     if ($FilterExpression) {
                         $arguments += @("-E", $FilterExpression)
                     }

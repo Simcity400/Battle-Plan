@@ -370,6 +370,403 @@ fn a_key_decoded_at_one_site_selects_a_row_two_waves_later() {
     );
 }
 
+/// A carried-key join can anchor on the interval its KEY came from, so the
+/// object it stands on no longer has to be copied from `+0`.
+///
+/// This is lane GC's residual 7, in a synthetic shape. The branch reaches a
+/// rail-info-like object and copies only the window the reader consumes,
+/// `[+0x38, +0x48)`, leaving the object's low `0x38` bytes uncopied — which is
+/// what a plan wants when the object may straddle a confirmed-range boundary
+/// with its prefix unreadable. The join then stands on the object's base, and
+/// the base is not owned.
+///
+/// WHAT MAKES THIS NON-VACUOUS: it is run BOTH ways over the same memory, the
+/// same recipe and the same fixture, and the two arms disagree. Without the
+/// modifier the anchor is `owners.find(site.base)` and the recipe refuses
+/// `FieldNotCaptured` on the object's unread base; with it the join resolves
+/// and the row it selects is reachable in the view. A test that only ran the
+/// second arm would pass just as well if the anchoring change had done nothing
+/// but widen the copy.
+///
+/// kills:
+///  * deleting the `modifier.anchor_on_carry_holder` branch in the
+///    `key_from_carry` arm, or making it fall back to `owners.find(site.base)`
+///    when the holder is absent — arm two goes back to `FieldNotCaptured`;
+///  * dropping the holder in `resolve_carry` (returning `None` for the `Field`
+///    source) — arm two refuses `CarryHolderUnknown` instead of resolving;
+///  * gating the holder lookup per OP instead of per RECIPE — the carry is set
+///    at op 2 and read at op 6, so a per-op gate records no holder and arm two
+///    refuses `CarryHolderUnknown`.
+///
+/// It does NOT kill removing the `validate` rule; that is
+/// `anchoring_without_a_carried_key_is_malformed`'s job, and this test would
+/// pass unchanged without it.
+#[test]
+fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
+    const ROOT: u64 = 0x10_0000;
+    const HOP: u64 = 0x11_0000;
+    const HEADER: u64 = 0x12_0000;
+    const TABLE: u64 = 0x20_0000;
+    const INFO: u64 = 0x30_0000;
+    const ROW_OBJECT: u64 = 0x40_0000;
+    const OBJECT_STRIDE: u64 = 0x1000;
+    const STRIDE: u32 = 0x10;
+    // The window the reader actually consumes, far enough into the object that
+    // copying from `+0` is a materially different request.
+    const CONSUMED_OFFSET: i64 = 0x38;
+    const CONSUMED_LEN: u32 = 0x10;
+
+    let build_recipe = |anchor: bool| {
+        Recipe::new(
+            RecipeId(1),
+            ConsumerId(1),
+            vec![
+                // 0 root: carries the key, and reaches both the table header
+                //   and the info object.
+                RecipeOp::CopyHeader {
+                    size: 0x20,
+                    next: vec![1, 2],
+                },
+                // 1 the table header
+                RecipeOp::DecodePointer {
+                    offset: 0x08,
+                    guard: None,
+                    next: 3,
+                },
+                // 2 a hop, so the join lands a wave AFTER the extent that
+                //   registers its table rather than beside it. Intra-wave
+                //   registration order is the task queue's and this test is
+                //   about the anchor, not about that.
+                RecipeOp::DecodePointer {
+                    offset: 0x10,
+                    guard: None,
+                    next: 11,
+                },
+                // 3 register the table
+                RecipeOp::CopyHeader {
+                    size: 0x20,
+                    next: vec![5],
+                },
+                // 4 the info object's consumed window, and nothing else
+                RecipeOp::CopyRanges {
+                    windows: vec![RelWindow::new(CONSUMED_OFFSET, CONSUMED_LEN)],
+                    next: vec![6],
+                },
+                // 5 the table array
+                RecipeOp::DecodeExtent {
+                    count_offset: 0,
+                    count_width: 4,
+                    ptr_offset: 0x08,
+                    stride: STRIDE,
+                    max_count: 64,
+                    max_bytes: 1 << 20,
+                    trailer_elements: 0,
+                    guard: None,
+                    register: Some(TableId(1)),
+                    element: vec![9],
+                },
+                // 6 the join, standing on the info object's UNCOPIED base
+                RecipeOp::JoinBounded {
+                    table: TableId(1),
+                    key_offset: 0,
+                    key_width: 4,
+                    next: 7,
+                },
+                // 7 the selected row
+                RecipeOp::CopyHeader {
+                    size: STRIDE,
+                    next: vec![8],
+                },
+                // 8 follow it
+                RecipeOp::DecodePointer {
+                    offset: 0,
+                    guard: None,
+                    next: 10,
+                },
+                // 9 freeze
+                RecipeOp::Freeze,
+                // 10 the row's object
+                RecipeOp::CopyHeader {
+                    size: 0x10,
+                    next: vec![9],
+                },
+                // 11 the hop object, whose pointer reaches the info object
+                RecipeOp::CopyHeader {
+                    size: 0x20,
+                    next: vec![12],
+                },
+                // 12 the info object, reached by pointer. Its base is NOT
+                //    copied: op 4 copies only the consumed window.
+                RecipeOp::DecodePointer {
+                    offset: 0,
+                    guard: None,
+                    next: 4,
+                },
+            ],
+            vec![Root { op: 0, addr: ROOT }],
+        )
+        .with_mods(mods(
+            13,
+            &[
+                // The carry sits on the DECODE op that leaves the root, not on
+                // the root copy itself: `validate` refuses a carry modifier on a
+                // copy op, and the site here still stands on the root's copied
+                // bytes, so `+0x18` reads the same word and the holder is the
+                // root header's own interval.
+                (
+                    2,
+                    OpMod {
+                        carry: Some(CarrySource::Field {
+                            offset: 0x18,
+                            width: 4,
+                        }),
+                        ..OpMod::default()
+                    },
+                ),
+                (
+                    6,
+                    OpMod {
+                        key_from_carry: true,
+                        anchor_on_carry_holder: anchor,
+                        ..OpMod::default()
+                    },
+                ),
+            ],
+        ))
+    };
+
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(ROOT, 0x20);
+    memory.map_zeroed(HOP, 0x20);
+    memory.map_zeroed(HEADER, 0x20);
+    memory.map_zeroed(TABLE, 8 * STRIDE as usize);
+    // The info object exists from its base; what the RECIPE does not do is copy
+    // that base. The precondition being modelled is the plan's, not the
+    // memory's: a plan that must copy `+0` cannot choose not to.
+    memory.map_zeroed(INFO, 0x80);
+    memory.write_u32(ROOT + 0x18, 3);
+    memory.write_u64(ROOT + 0x08, HEADER);
+    memory.write_u64(ROOT + 0x10, HOP);
+    memory.write_u64(HOP, INFO);
+    memory.write_u32(HEADER, 8);
+    memory.write_u64(HEADER + 0x08, TABLE);
+    for slot in 0..8u64 {
+        let object = ROW_OBJECT + slot * OBJECT_STRIDE;
+        memory.map_zeroed(object, 0x10);
+        memory.write_u64(object, 0xB000 + slot);
+        memory.write_u64(TABLE + slot * u64::from(STRIDE), object);
+    }
+
+    // ARM ONE: today's anchor. The join's own base is not captured, so the
+    // recipe refuses even though the key it needs was captured elsewhere.
+    let without = observe(&[build_recipe(false)], &memory, config()).expect("custody");
+    let refusal = refusal_of(&without, 1).expect("the unanchored join must refuse");
+    assert!(
+        matches!(refusal.refusal, Refusal::FieldNotCaptured { .. }),
+        "got {:?}",
+        refusal.refusal
+    );
+
+    // ARM TWO: anchored on the key's holder. Same memory, same copies.
+    let with = observe(&[build_recipe(true)], &memory, config()).expect("custody");
+    assert!(
+        refusal_of(&with, 1).is_none(),
+        "{:?}",
+        refusal_of(&with, 1)
+    );
+    let view = with.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
+    assert_eq!(
+        view.u64_le(ROW_OBJECT + 3 * OBJECT_STRIDE)
+            .expect("row 3's object was reached through the anchored join"),
+        0xB003,
+    );
+    assert!(
+        view.bytes(INFO, 8).is_err(),
+        "and the object's base was never copied: that is the whole point",
+    );
+}
+
+/// Recording the carry's holder cost no width on the hot structs.
+///
+/// `CarrySlot` is memcpy'd into and out of the wave queue and the site stack
+/// once per task and once per decode site — the substrate's own bench measured
+/// +23% on `dispatch: construct + queue push` and +81% on
+/// `dispatch: decode_wave` for a spelling of the CARRY ALONE that was eight
+/// bytes wider. The holder had to fit in the padding, and it does.
+///
+/// kills: widening the holder to a `u64` (8 + 8 + 2 = 24 after alignment), or
+/// spelling it `Option<IntervalId>` (which has no niche here, so 8 + 8 + 2 =
+/// 24). Both also widen `CopyTask` and `DecodeSite`.
+///
+/// It does NOT kill adding a third `bool`: `u64` + `u32` + three `bool`s is 15
+/// bytes and still pads to 16. The padding is the budget this test protects,
+/// not the field count.
+#[test]
+fn carry_slot_is_still_sixteen_bytes() {
+    assert_eq!(std::mem::size_of::<super::executor::CarrySlot>(), 16);
+}
+
+/// A carry that was never read out of any interval cannot be an anchor, and
+/// says so rather than borrowing one.
+///
+/// kills: making the missing-holder arm fall through to
+/// `owners.find(site.base)`, which would silently restore the old anchor for a
+/// constant carry and re-impose the base copy it was meant to remove; and
+/// reporting `CarryNotSet`, which would send a reader looking for an absent
+/// `carry` modifier that is in fact present.
+#[test]
+fn anchoring_on_a_constant_carry_is_refused_by_name() {
+    const ROOT: u64 = 0x10_0000;
+    const TABLE: u64 = 0x20_0000;
+    const STRIDE: u32 = 8;
+
+    let mut memory = SyntheticMemory::new();
+    memory.map_zeroed(ROOT, 0x20);
+    memory.map_zeroed(TABLE, 4 * STRIDE as usize);
+    memory.write_u32(ROOT, 4);
+    memory.write_u64(ROOT + 0x08, TABLE);
+
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: vec![1, 2],
+            },
+            RecipeOp::DecodeExtent {
+                count_offset: 0,
+                count_width: 4,
+                ptr_offset: 0x08,
+                stride: STRIDE,
+                max_count: 64,
+                max_bytes: 1 << 20,
+                trailer_elements: 0,
+                guard: None,
+                register: Some(TableId(1)),
+                element: vec![4],
+            },
+            RecipeOp::JoinBounded {
+                table: TableId(1),
+                key_offset: 0,
+                key_width: 4,
+                next: 3,
+            },
+            // A join's `next` must be a COPY op; a `Freeze` there is a
+            // structural defect and would refuse before the modifier is
+            // reached, which is not what this test is about.
+            RecipeOp::CopyHeader {
+                size: STRIDE,
+                next: vec![4],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: ROOT }],
+    )
+    .with_mods(mods(
+        5,
+        &[(
+            // Both the carry and the anchoring sit on the join: a carry
+            // modifier is illegal on a copy op, and `resolve_carry` runs at the
+            // top of the join's own arm, so the constant is in force before the
+            // key is taken.
+            2,
+            OpMod {
+                carry: Some(CarrySource::Constant(1)),
+                key_from_carry: true,
+                anchor_on_carry_holder: true,
+                ..OpMod::default()
+            },
+        )],
+    ));
+
+    let build = observe(&[recipe], &memory, config()).expect("custody");
+    let refusal = refusal_of(&build, 1).expect("a constant carry has no holder");
+    assert!(
+        matches!(refusal.refusal, Refusal::CarryHolderUnknown { op: 2, .. }),
+        "got {:?}",
+        refusal.refusal
+    );
+}
+
+/// The vocabulary is opt-in per op, and a spelling that could not mean anything
+/// is a structural defect rather than a silent no-op.
+///
+/// kills: deleting the `anchor_on_carry_holder` clause from `validate`.
+#[test]
+fn anchoring_without_a_carried_key_is_malformed() {
+    let ops = vec![
+        RecipeOp::CopyHeader {
+            size: 0x20,
+            next: vec![1],
+        },
+        RecipeOp::JoinBounded {
+            table: TableId(1),
+            key_offset: 0,
+            key_width: 4,
+            next: 2,
+        },
+        // The join's `next` is a COPY op, so the recipe is structurally sound
+        // and the ONLY thing wrong with it is the modifier. A `Freeze` here
+        // would refuse `ExpectedCopyOp` first and the test would pass without
+        // the rule it is named after ever running.
+        RecipeOp::CopyHeader {
+            size: 8,
+            next: vec![3],
+        },
+        RecipeOp::Freeze,
+    ];
+    let anchored_without_carried_key = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        ops.clone(),
+        vec![Root { op: 0, addr: 0x10_0000 }],
+    )
+    .with_mods(mods(
+        4,
+        &[(
+            1,
+            OpMod {
+                anchor_on_carry_holder: true,
+                ..OpMod::default()
+            },
+        )],
+    ));
+    assert!(matches!(
+        validate(&anchored_without_carried_key),
+        Err(Refusal::Malformed {
+            reason: MalformedReason::ModOnWrongOp { op: 1 },
+            ..
+        })
+    ));
+
+    // And on an op that is not a join at all.
+    let anchored_on_a_copy = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        ops,
+        vec![Root { op: 0, addr: 0x10_0000 }],
+    )
+    .with_mods(mods(
+        4,
+        &[(
+            0,
+            OpMod {
+                key_from_carry: true,
+                anchor_on_carry_holder: true,
+                ..OpMod::default()
+            },
+        )],
+    ));
+    assert!(matches!(
+        validate(&anchored_on_a_copy),
+        Err(Refusal::Malformed {
+            reason: MalformedReason::ModOnWrongOp { .. },
+            ..
+        })
+    ));
+}
+
 /// One logical table decoded once per instance used to overwrite its own
 /// binding, so the last registration won and every earlier join silently
 /// indexed the wrong array.
@@ -1637,6 +2034,198 @@ fn a_stage_reached_after_its_declared_close_refuses() {
             assert_eq!(reopened_in_wave, 1, "the wave it was actually reached in");
         }
         other => panic!("expected ClosedIntervalReopened, got {other:?}"),
+    }
+}
+
+/// A dependency edge attached AFTER its parent's closing witness was taken is
+/// still an edge, and a changed witness on that parent still invalidates
+/// through it.
+///
+/// This is the property that says a graph mutation is not a byte mutation, and
+/// it is worth a test because this lane spent three review rounds assuming
+/// otherwise and refusing the shape. `witness.rs` compares post-bracket and
+/// builds its `children` map from the FINAL snapshot's links, so WHEN an edge
+/// was added does not matter; only that it is there when the walk runs.
+///
+/// The world gives one object two discoverers. `left` and `right` are separate
+/// intervals, both point at `shared`, and both reach it through the SAME op —
+/// so whichever is discovered second produces a task that is a duplicate under
+/// the visited key `(recipe, op, address)` and is PRUNED, with a parent the
+/// expanded task does not share. Both discovery orders are run, so one arm is
+/// the pruned-`right` case whichever way the queue orders them. `right` closes
+/// mid-walk at the end of the wave that copied it, a full wave before
+/// `link_pruned` runs at all, and the fixture rewrites `right` between its two
+/// images so its witness CHANGES. `shared` can then only be invalidated through
+/// an edge naming `right`: `left` is the only other parent and it never changed.
+///
+/// kills:
+///  * dropping a pruned task whose parent is closed (the "its edge is
+///    redundant" argument) — `shared` stops being invalidated;
+///  * refusing it instead, in `link_pruned_into` or by putting `task.parent`
+///    back into `mid_walk_reopened`'s loop — the recipe refuses
+///    `ClosedIntervalReopened` and there are no rows to invalidate. That second
+///    mutation is not hypothetical: it was in this tree, and it took 25 tests
+///    with it, including the shipped d81 plan;
+///  * dropping `add_edge` from the pruned path entirely — same failure.
+///
+/// It does NOT kill the SPAN half of `mid_walk_reopened` (bytes copied into an
+/// interval after its closing image): no request here reaches a closed
+/// interval. `a_wave_that_reaches_an_already_closed_interval_refuses` owns that.
+#[test]
+fn a_pruned_duplicates_edge_onto_a_closed_parent_is_kept_and_still_invalidates() {
+    const ROOT: u64 = 0x10_0000;
+    const LEFT: u64 = 0x21_0000;
+    const RIGHT: u64 = 0x22_0000;
+    const SHARED: u64 = 0x30_0000;
+    // Copies, in order: 1 root (wave 0), 2 left, 3 right (wave 1), 4 right's
+    // MID-WALK closing image, 5 shared (wave 2), then the final wave's closes.
+    // The edit lands immediately before copy 4, so it is after `right`'s
+    // opening image and inside its closing one — which is what makes the
+    // witness change — and `shared` is copied after it, so nothing about the
+    // pointer graph moves.
+    const TRIGGER: u64 = 4;
+
+    // RUN BOTH DISCOVERY ORDERS. Which of the two tasks is expanded and which
+    // is pruned follows from the order the root's two decode sites are listed
+    // in, and that is an executor detail this test must not depend on: if
+    // `right` happened to be discovered FIRST, its edge would come from the
+    // ordinary path and the pruned one would be `left`'s, which this test's
+    // assertion cannot see. Running the recipe with the two `next` orders makes
+    // one of the two arms the pruned case whichever way the queue orders them,
+    // and both arms must invalidate.
+    let run = |left_first: bool| {
+        let mut world = SyntheticMemory::new();
+        world.map_zeroed(ROOT, 0x20);
+        world.map_zeroed(LEFT, 0x20);
+        world.map_zeroed(RIGHT, 0x20);
+        world.map_zeroed(SHARED, 0x10);
+        world.write_u64(ROOT, LEFT);
+        world.write_u64(ROOT + 0x08, RIGHT);
+        world.write_u64(LEFT, SHARED);
+        world.write_u64(RIGHT, SHARED);
+        world.write_u64(SHARED, 0xC0DE);
+        // NOT the pointer word. A changed pointer would be a different
+        // experiment.
+        let edit = vec![(RIGHT + 0x08, 0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes().to_vec())];
+        let memory = MutatingMemory::new(world, TRIGGER, edit);
+
+        let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        vec![
+            // 0 the root, wave 0. Both its pointers are read out of ONE
+            //   interval, so the fork has to happen a wave lower.
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: if left_first { vec![1, 2] } else { vec![2, 1] },
+            },
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 3,
+            },
+            RecipeOp::DecodePointer {
+                offset: 0x08,
+                guard: None,
+                next: 4,
+            },
+            // 3 left, wave 1.
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: vec![5],
+            },
+            // 4 right, wave 1: the interval that closes mid-walk and changes.
+            RecipeOp::CopyHeader {
+                size: 0x20,
+                next: vec![6],
+            },
+            // 5 and 6 continue into op 7 at the same address, which is what
+            //   makes the two tasks duplicates by the visited key.
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 7,
+            },
+            RecipeOp::DecodePointer {
+                offset: 0,
+                guard: None,
+                next: 7,
+            },
+            // 7 the shared object, wave 2.
+            RecipeOp::CopyHeader {
+                size: 0x10,
+                next: vec![8],
+            },
+            RecipeOp::Freeze,
+        ],
+        vec![Root { op: 0, addr: ROOT }],
+    )
+    .with_mods(mods(
+        9,
+        &[(
+            4,
+            OpMod {
+                stage: 1,
+                ..OpMod::default()
+            },
+        )],
+    ))
+    .with_closing(ClosingProgram {
+        stages: vec![CloseStage {
+            stage: 1,
+            elide_into: None,
+            when: CloseWhen::AfterWave(1),
+        }],
+    });
+
+        let build = observe(&[recipe], &memory, config()).expect("custody");
+        assert!(
+            refusal_of(&build, 1).is_none(),
+            "a late edge onto a closed parent is not a refusal: {:?}",
+            refusal_of(&build, 1)
+        );
+        let closed = build.close_witnesses();
+        assert!(
+            memory.mutation_applied(),
+            "the fixture must actually have rewritten `right`"
+        );
+        let start_of = |id: IntervalId| {
+            closed
+                .snapshot
+                .intervals()
+                .iter()
+                .find(|record| record.id() == id)
+                .expect("record")
+                .start()
+        };
+        let changed: Vec<u64> = closed
+            .witness
+            .changed
+            .iter()
+            .map(|id| start_of(*id))
+            .collect();
+        let invalidated: Vec<u64> = closed
+            .witness
+            .invalidated
+            .iter()
+            .map(|id| start_of(*id))
+            .collect();
+        (changed, invalidated)
+    };
+
+    for left_first in [true, false] {
+        let (changed, invalidated) = run(left_first);
+        assert_eq!(
+            changed,
+            vec![RIGHT],
+            "left_first={left_first}: exactly the interval the fixture rewrote \
+             between its two images"
+        );
+        assert!(
+            invalidated.contains(&SHARED),
+            "left_first={left_first}: `shared` was reached through `right` and the \
+             edge recording it was attached after `right` closed: {invalidated:?}"
+        );
     }
 }
 

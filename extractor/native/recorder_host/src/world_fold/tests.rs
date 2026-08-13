@@ -16978,6 +16978,10 @@ fn chunk2_folds_design_and_variant_domains_without_key_collisions() {
     );
 }
 
+/// kills (L7 section routing): moving this member's `insert_air_*` helper between
+/// `build_naval_air` and `build_strategic_air`. The section named in every path
+/// below is the one its consumer reads; a helper called from the other section
+/// puts the rows where no reader looks, and this test stops finding them.
 #[test]
 fn chunk2_folds_air_sections_and_keeps_d42_out_of_events() {
     let snap = chunk1_one_snapshot(vec![
@@ -16997,30 +17001,104 @@ fn chunk2_folds_air_sections_and_keeps_d42_out_of_events() {
     );
     assert_eq!(snap["strategic_air"]["air_bases"][0]["id"], json!(9001));
     assert_eq!(
-        snap["strategic_air"]["_r2_air_superiority_inputs"][0]["variant_id"],
+        snap["naval_air"]["_r2_air_superiority_inputs"][0]["variant_id"],
         json!(900)
     );
     assert_eq!(
-        snap["strategic_air"]["_r2_air_combat_losses_live"][0]["count_delta"],
+        snap["naval_air"]["_r2_air_combat_losses_live"][0]["count_delta"],
         json!(-4)
     );
     assert_eq!(
-        snap["strategic_air"]["_r2_air_combat_losses_live"][0]["air_accidents"],
+        snap["naval_air"]["_r2_air_combat_losses_live"][0]["air_accidents"],
         json!(3)
     );
     assert!(
-        (snap["strategic_air"]["_r2_air_combat_losses_live"][0]["experience"]
+        (snap["naval_air"]["_r2_air_combat_losses_live"][0]["experience"]
             .as_f64()
             .unwrap()
             - 0.42)
             .abs()
             < 0.000001
     );
-    let cumulative = &snap["strategic_air"]["_r2_air_wing_cumulative_scalars"];
+    let cumulative = &snap["naval_air"]["_r2_air_wing_cumulative_scalars"];
     assert_eq!(cumulative[0]["wing_id"], json!(700));
     assert_eq!(cumulative[0]["air_accidents"], json!(3));
     assert_eq!(cumulative[0]["experience_raw"], json!(42_000));
     assert_eq!(snap["events"], json!([]));
+}
+
+/// Every air member belongs to exactly ONE section, and to the section its
+/// consumer reads.
+///
+/// kills: adding `self.insert_air_combat_losses(&mut out, unresolved)` (or any
+/// of the other three naval_air air helpers) back into `build_strategic_air`,
+/// or moving `insert_air_loss_stats` out of `build_strategic_air` and into
+/// `build_naval_air`. Both were the shipped behaviour: the four helpers emitted
+/// SIX keys and the fold wrote every one of them into both sections, which
+/// restated
+/// `_r2_air_region_combat_stats` twice — 251,965,891 bytes in each section over
+/// the same 640 deltas (`DELTA_WIRE_DESIGN.md` §9.2).
+///
+/// The homes are not a preference. `replay_core/src/world.rs:31322` and `:31362`
+/// read `naval_air._r2_air_combat_losses_live` and
+/// `naval_air._r2_air_region_combat_stats`; `world.rs:10906` reads
+/// `_r2_air_loss_stats_live` out of the `strategic_air` object `:10888` fetched; `REPLAY_PRODUCER_GAP_MAP.md` binds
+/// `_r2_air_superiority_inputs` (XMAP00 #21, GP-F2) and `_r2_air_region_activity`
+/// (XMAP00 #41) to `naval_air`. A member emitted into the other section is
+/// invisible to its reader AND paid for on the wire.
+///
+/// `_r2_air_region_combat_stats` — the member the 251,965,891-byte measurement
+/// is of — is deliberately NOT a row below. It is emitted by
+/// `insert_air_combat_losses`, the same helper as
+/// `_r2_air_combat_losses_live`, so it cannot be moved between sections without
+/// moving that one; the row that IS below pins both. Giving it its own row would
+/// need a second d42 payload in this fixture (the stats arm only fires with
+/// `d42_air_combat_losses_with_region_stats_payload`), and a row that the
+/// fixture cannot make fire would be decoration.
+#[test]
+fn air_members_are_emitted_into_exactly_one_section() {
+    let mut channels = [0; airloss61_lane::CHANNEL_COUNT];
+    channels[3] = 10_400_000;
+    let loss_row = airloss61_lane::AirLossStatRow {
+        owner_tag_db_id: 1,
+        country_idx: 1,
+        flags: airloss61_lane::ROW_FLAG_BINDING_VERIFIED | airloss61_lane::ROW_FLAG_STRUCT_VERIFIED,
+        channels,
+    };
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "GER")])),
+        (31, d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0)),
+        (34, d34_air_base_status_payload(&[(9001, 64, 6508, 100)], 0)),
+        (
+            38,
+            d38_air_superiority_inputs_payload(&[(88, 1, 7, 900, 100_000)], 0),
+        ),
+        (42, d42_air_combat_losses_payload(0, 1)),
+        (61, air_loss_stats_payload(0, &[loss_row])),
+    ]);
+
+    // (member, the section that owns it, the section that must not carry it)
+    for (member, owner, forbidden) in [
+        ("_r2_air_region_activity", "naval_air", "strategic_air"),
+        ("_r2_air_superiority_inputs", "naval_air", "strategic_air"),
+        ("_r2_air_combat_losses_live", "naval_air", "strategic_air"),
+        (
+            "_r2_air_wing_cumulative_scalars",
+            "naval_air",
+            "strategic_air",
+        ),
+        ("_r2_air_loss_stats_live", "strategic_air", "naval_air"),
+    ] {
+        assert!(
+            snap[owner].get(member).is_some(),
+            "{owner}.{member} must be emitted: it is where the consumer reads it"
+        );
+        assert!(
+            snap[forbidden].get(member).is_none(),
+            "{forbidden}.{member} is a second copy of a member no reader takes from \
+             there; it is stream weight and nothing else"
+        );
+    }
 }
 
 // Fold half of the d31/d38 withheld-baseline contract (collector half:
@@ -17085,13 +17163,17 @@ fn d31_change_carried_only_by_a_discarded_partial_record_never_reaches_the_fold(
     );
 }
 
+/// kills (L7 section routing): moving this member's `insert_air_*` helper between
+/// `build_naval_air` and `build_strategic_air`. The section named in every path
+/// below is the one its consumer reads; a helper called from the other section
+/// puts the rows where no reader looks, and this test stops finding them.
 #[test]
 fn chunk2_folds_d42_exact_air_region_combat_causes() {
     let snap = chunk1_one_snapshot(vec![
         (18, country_identity_payload(&[(1, "GER")])),
         (42, d42_air_combat_losses_with_region_stats_payload()),
     ]);
-    let row = &snap["strategic_air"]["_r2_air_region_combat_stats"][0];
+    let row = &snap["naval_air"]["_r2_air_region_combat_stats"][0];
     assert_eq!(row["owner"], json!("GER"));
     assert_eq!(row["region_id"], json!(88));
     assert_eq!(row["wing_id"], json!(700));
@@ -17153,6 +17235,10 @@ fn d42_rows_payload(rows: impl FnOnce(&mut Vec<u8>) -> u32) -> Vec<u8> {
     p
 }
 
+/// kills (L7 section routing): moving this member's `insert_air_*` helper between
+/// `build_naval_air` and `build_strategic_air`. The section named in every path
+/// below is the one its consumer reads; a helper called from the other section
+/// puts the rows where no reader looks, and this test stops finding them.
 #[test]
 fn d42_baseline_rows_feed_cumulative_map_without_event_rows() {
     let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
@@ -17171,16 +17257,20 @@ fn d42_baseline_rows_feed_cumulative_map_without_event_rows() {
     ]);
     // No loss/reinforcement/delete flags -> no hourly event rows.
     assert_eq!(
-        snap["strategic_air"]["_r2_air_combat_losses_live"],
+        snap["naval_air"]["_r2_air_combat_losses_live"],
         json!([])
     );
-    let cumulative = &snap["strategic_air"]["_r2_air_wing_cumulative_scalars"];
+    let cumulative = &snap["naval_air"]["_r2_air_wing_cumulative_scalars"];
     assert_eq!(cumulative.as_array().unwrap().len(), 2);
     assert_eq!(cumulative[0]["wing_id"], json!(700));
     assert_eq!(cumulative[0]["air_accidents"], json!(3));
     assert_eq!(cumulative[1]["wing_id"], json!(701));
 }
 
+/// kills (L7 section routing): moving this member's `insert_air_*` helper between
+/// `build_naval_air` and `build_strategic_air`. The section named in every path
+/// below is the one its consumer reads; a helper called from the other section
+/// puts the rows where no reader looks, and this test stops finding them.
 #[test]
 fn d42_deleted_row_removes_wing_from_cumulative_map() {
     let baseline_flags = AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS
@@ -17210,15 +17300,15 @@ fn d42_deleted_row_removes_wing_from_cumulative_map() {
         )],
     ]);
     assert_eq!(
-        snaps[0]["strategic_air"]["_r2_air_wing_cumulative_scalars"][0]["wing_id"],
+        snaps[0]["naval_air"]["_r2_air_wing_cumulative_scalars"][0]["wing_id"],
         json!(700)
     );
     assert_eq!(
-        snaps[1]["strategic_air"]["_r2_air_wing_cumulative_scalars"],
+        snaps[1]["naval_air"]["_r2_air_wing_cumulative_scalars"],
         json!([])
     );
     assert_eq!(
-        snaps[1]["strategic_air"]["_r2_air_combat_losses_live"][0]["wing_id"],
+        snaps[1]["naval_air"]["_r2_air_combat_losses_live"][0]["wing_id"],
         json!(700)
     );
 }
@@ -17266,6 +17356,10 @@ fn d42_duplicate_wing_id_in_one_payload_fails_fold_closed() {
             .contains("appears twice in one payload")));
 }
 
+/// kills (L7 section routing): moving this member's `insert_air_*` helper between
+/// `build_naval_air` and `build_strategic_air`. The section named in every path
+/// below is the one its consumer reads; a helper called from the other section
+/// puts the rows where no reader looks, and this test stops finding them.
 #[test]
 fn chunk2_sparse_unflagged_followups_preserve_prior_rows() {
     let snaps = chunk1_snapshots(vec![
@@ -17368,7 +17462,7 @@ fn chunk2_sparse_unflagged_followups_preserve_prior_rows() {
         2
     );
     assert_eq!(
-        snaps[1]["strategic_air"]["_r2_air_superiority_inputs"]
+        snaps[1]["naval_air"]["_r2_air_superiority_inputs"]
             .as_array()
             .unwrap()
             .len(),

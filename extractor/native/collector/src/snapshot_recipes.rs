@@ -575,6 +575,17 @@ pub enum Refusal {
     /// a key that was never carried is a silently-zero key, which is the join
     /// equivalent of truncation-as-success.
     CarryNotSet { recipe: RecipeId, op: u16 },
+    /// An op declared `anchor_on_carry_holder` and the branch's carry records
+    /// no holder: either the carry is a [`executor::CarrySource::Constant`],
+    /// which was never read out of any interval, or the site that set the carry
+    /// stood on bytes this observation does not own.
+    ///
+    /// Distinct from [`Refusal::CarryNotSet`] on purpose. That one says the
+    /// branch carries no VALUE; this one says the value is there and its
+    /// PROVENANCE is not, which is the thing an anchored join needs. Reporting
+    /// the second as the first would send a reader looking for a missing
+    /// `carry` modifier when the modifier is present and correct.
+    CarryHolderUnknown { recipe: RecipeId, op: u16 },
     /// A `SelectByValue` could not resolve: its probe bytes were not captured,
     /// or its predicate was false and it declared no `otherwise` arm.
     ConditionalUnresolved { recipe: RecipeId, op: u16 },
@@ -719,6 +730,7 @@ impl Refusal {
             | Refusal::AddressNotRepresentable { recipe, .. }
             | Refusal::PointerNotAdmissible { recipe, .. }
             | Refusal::CarryNotSet { recipe, .. }
+            | Refusal::CarryHolderUnknown { recipe, .. }
             | Refusal::ConditionalUnresolved { recipe, .. }
             | Refusal::ClosedIntervalReopened { recipe, .. }
             | Refusal::Malformed { recipe, .. } => recipe,

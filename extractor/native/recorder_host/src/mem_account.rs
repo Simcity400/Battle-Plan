@@ -189,6 +189,21 @@ pub enum Component {
     /// report is taken. The old code did the opposite and that is why this
     /// component did not exist.
     ManifestDocument = 7,
+    /// The finalize gap phase's H4DG-side indices: the per-domain cover index
+    /// (`H4dgCoverIndex`) and the projection order the derivation walk builds.
+    ///
+    /// Its own row rather than a share of [`Component::ManifestGapLedger`],
+    /// because it is a SURCHARGE on top of `summary.domain_gaps` and the
+    /// question asked of it is how large that surcharge is. Folded into the
+    /// ledger it was unreadable, and half of it -- the projection order -- was
+    /// not charged at all while a comment claimed it was.
+    ///
+    /// Both terms are O(observations) and neither is a copy of an observation:
+    /// the cover index holds twelve bytes per observation (a `(first, last)`
+    /// pair and one prefix-maximum) against the sixty-four an observation
+    /// already costs, and the projection order holds one `usize` per
+    /// EXPECTED-domain observation for the length of the walk.
+    H4dgIndex = 8,
 }
 
 impl Component {
@@ -202,6 +217,7 @@ impl Component {
         Component::CacheHourEntries,
         Component::ManifestGapLedger,
         Component::ManifestDocument,
+        Component::H4dgIndex,
     ];
 
     /// The stable manifest key for this component. Changing one of these
@@ -216,6 +232,7 @@ impl Component {
             Component::CacheHourEntries => "cache_hour_entries",
             Component::ManifestGapLedger => "manifest_gap_ledger",
             Component::ManifestDocument => "manifest_document",
+            Component::H4dgIndex => "h4dg_index",
         }
     }
 
@@ -236,6 +253,7 @@ impl Component {
             Component::CacheHourEntries => Scaling::SessionLength,
             Component::ManifestGapLedger => Scaling::SessionLength,
             Component::ManifestDocument => Scaling::SessionLength,
+            Component::H4dgIndex => Scaling::SessionLength,
         }
     }
 }
@@ -263,7 +281,7 @@ impl Scaling {
     }
 }
 
-pub const COMPONENT_COUNT: usize = 8;
+pub const COMPONENT_COUNT: usize = 9;
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO: AtomicU64 = AtomicU64::new(0);

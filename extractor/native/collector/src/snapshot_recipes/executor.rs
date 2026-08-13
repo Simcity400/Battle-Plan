@@ -360,10 +360,24 @@ pub type Carry = Option<u64>;
 /// and once per decode site, which is the hottest loop the substrate has, and
 /// the `Option` spelling measured at +23% on `dispatch: construct + queue push`
 /// and +81% on `dispatch: decode_wave` in the substrate's own bench.
+///
+/// It carries the value AND the interval the value was read out of, and both
+/// fit in the same sixteen bytes the value alone occupied —
+/// `carry_slot_is_still_sixteen_bytes` holds that.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct CarrySlot {
     value: u64,
+    /// The interval the carried scalar was read out of, when one is recorded.
+    ///
+    /// A `u32` and a flag rather than `Option<IntervalId>` for the same reason
+    /// the value is not an `Option<u64>`: this rides inside [`CopyTask`] and
+    /// [`DecodeSite`], and both were sized to the byte. `value: u64` +
+    /// `holder: u32` + two `bool`s is sixteen bytes, exactly what `value` + one
+    /// `bool` already occupied, so recording the holder costs nothing on the
+    /// queue-push and decode-wave paths.
+    holder: u32,
     set: bool,
+    holder_set: bool,
 }
 
 impl CarrySlot {
@@ -376,14 +390,26 @@ impl CarrySlot {
         }
     }
 
+    /// The interval the carried scalar came from, for an op that anchors on it.
     #[inline]
-    fn from(carry: Carry) -> Self {
+    fn holder(self) -> Option<IntervalId> {
+        if self.set && self.holder_set {
+            Some(IntervalId(self.holder))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn with_holder(carry: Carry, holder: Option<IntervalId>) -> Self {
         match carry {
-            Some(value) => Self { value, set: true },
-            None => Self {
-                value: 0,
-                set: false,
+            Some(value) => Self {
+                value,
+                holder: holder.map_or(0, |id| id.0),
+                set: true,
+                holder_set: holder.is_some(),
             },
+            None => Self::default(),
         }
     }
 }
@@ -628,6 +654,30 @@ pub struct OpMod {
     pub carry: Option<CarrySource>,
     /// `JoinBounded` only: index by the carried scalar rather than a field.
     pub key_from_carry: bool,
+    /// `JoinBounded` with `key_from_carry` only: anchor the dependency edge on
+    /// the interval the CARRY was read from, not on the interval containing
+    /// this site's own base.
+    ///
+    /// # The copy this exists to stop being forced
+    ///
+    /// A carried-key join reads no field of the object under it — that is what
+    /// carrying the key means — but it still has to record WHICH captured bytes
+    /// its result depends on, and it took the interval holding `site.base`.
+    /// That makes the object's `+0` a required copy even when the reader
+    /// consumes a window far into it, because a branch rooted on an unowned
+    /// base refuses `FieldNotCaptured`. d81's rail-info object is the case: the
+    /// reader consumes `[+0x38, +0x48)` and the converted plan has to copy from
+    /// `+0` anyway, so a rail-info object straddling a
+    /// `range_confirmed_good` boundary with its low `0x38` bytes unreadable
+    /// voids a base nothing needed and refuses the recipe rather than the
+    /// branch (lane GC's residual 7).
+    ///
+    /// With this set the edge is anchored on the interval the key itself came
+    /// from — bytes the branch demonstrably owns, because they were read out of
+    /// a captured interval — and the object's unread prefix is never asked for.
+    /// It is a statement about what a dependency edge MEANS, so it is opt-in per
+    /// op: the default remains "this result depends on the bytes under it".
+    pub anchor_on_carry_holder: bool,
     /// `DecodeExtent`/`JoinBounded` only: scope the table binding to the
     /// carried scalar, so one logical table has independent per-instance
     /// bindings.
@@ -654,6 +704,7 @@ static UNQUALIFIED: OpMod = OpMod {
     admit: None,
     carry: None,
     key_from_carry: false,
+    anchor_on_carry_holder: false,
     instance_from_carry: false,
     samples: SampleSpec {
         count: 1,
@@ -673,6 +724,7 @@ impl OpMod {
             && self.admit.is_none()
             && self.carry.is_none()
             && !self.key_from_carry
+            && !self.anchor_on_carry_holder
             && !self.instance_from_carry
             && self.samples == SampleSpec::default()
             && self.tolerance == Tolerance::default()
@@ -968,6 +1020,34 @@ impl Recipe {
             .iter()
             .any(|modifier| matches!(modifier.carry, Some(CarrySource::Field { .. })))
     }
+
+    /// Whether any op of this recipe anchors on the carry's holder.
+    ///
+    /// Read ONCE PER OBSERVATION, into `RecipeState::anchors_on_carry_holder`,
+    /// which is what the decode path consults. This walks the modifier table,
+    /// so calling it per site would put that scan inside the hot loop for a
+    /// property that cannot change while an observation runs.
+    ///
+    /// THE INVARIANT THAT MAKES THE GATE SOUND: it is a property of the RECIPE,
+    /// not of the op or the branch, so within one recipe either every carry
+    /// records its holder or none does. An anchoring op therefore never meets a
+    /// carry that was set without one — the only carries with no holder are the
+    /// ones that cannot have one (`Constant`) or whose site stood on bytes this
+    /// observation does not own, and both of those refuse by name. A per-op or
+    /// per-branch gate would not have that property: a carry set on an op the
+    /// author did not think of would silently arrive holderless.
+    ///
+    /// WHY IT IS GATED AT ALL rather than always recorded: recording the holder
+    /// unconditionally would put one `OwnershipMap::find` on every carry-setting
+    /// site of every recipe in the tree, for a value only this vocabulary reads
+    /// — the same cost [`DecodeSite`]'s own note says was refused when it
+    /// declined to carry the interval its base sits in. Recipes that do not use
+    /// the vocabulary pay a bool test.
+    pub(super) fn anchors_on_carry_holder(&self) -> bool {
+        self.mods
+            .iter()
+            .any(|modifier| modifier.anchor_on_carry_holder)
+    }
 }
 
 /// Structural check. Runs before any memory is touched.
@@ -1204,6 +1284,16 @@ fn validate_mod(recipe: &Recipe, here: u16, op: &RecipeOp) -> Result<(), Malform
         return Err(wrong);
     }
     if modifier.key_from_carry && !matches!(op, RecipeOp::JoinBounded { .. }) {
+        return Err(wrong);
+    }
+    // Anchoring on the carry's holder only means anything where the key IS the
+    // carry: a join that reads its key from a field already anchors on the
+    // interval that field was read from, and one that does not carry a key has
+    // no holder to anchor on. Both spellings are recipe defects rather than
+    // silent no-ops, so they are refused here rather than ignored at run time.
+    if modifier.anchor_on_carry_holder
+        && (!modifier.key_from_carry || !matches!(op, RecipeOp::JoinBounded { .. }))
+    {
         return Err(wrong);
     }
     if modifier.instance_from_carry
@@ -1777,6 +1867,15 @@ struct RecipeState {
     scoped_voids: u32,
     pointers_rejected: u32,
     refusal: Option<RefusalRecord>,
+    /// Whether any op of this recipe declares `anchor_on_carry_holder`.
+    ///
+    /// COMPUTED ONCE PER OBSERVATION, next to the other per-recipe state, and
+    /// not per site. It is read at every site that SETS a carry to decide
+    /// whether the holder is worth an ownership lookup, and `d81`'s rail walk
+    /// sets one per province element — so asking the modifier table each time
+    /// would put a scan of the whole table inside the decode hot path for a
+    /// property that cannot change during an observation.
+    anchors_on_carry_holder: bool,
 }
 
 impl RecipeState {
@@ -1790,6 +1889,7 @@ impl RecipeState {
             scoped_voids: 0,
             pointers_rejected: 0,
             refusal: None,
+            anchors_on_carry_holder: false,
         }
     }
 }
@@ -2011,7 +2111,14 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             config,
             arena,
             owners,
-            states: recipes.iter().map(|_| RecipeState::new()).collect(),
+            states: recipes
+                .iter()
+                .map(|recipe| {
+                    let mut state = RecipeState::new();
+                    state.anchors_on_carry_holder = recipe.anchors_on_carry_holder();
+                    state
+                })
+                .collect(),
             tables: BTreeMap::new(),
             annot: {
                 let mut annot = super::annot::Annotations::new();
@@ -3666,7 +3773,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     recipe,
                     depth: depth + 1,
                     parent: Some(holder),
-                    carry: CarrySlot::from(carry!()),
+                    carry: carry!(),
                     body: TaskBody::Op {
                         op: next,
                         addr: value,
@@ -3715,7 +3822,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     recipe,
                     depth: depth + 1,
                     parent,
-                    carry: CarrySlot::from(carry!()),
+                    carry: carry!(),
                     body: TaskBody::Op {
                         op: next,
                         addr: site.base,
@@ -3859,7 +3966,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 // instead of the second registration overwriting the first.
                 let carry = carry!();
                 let instance = if self.recipes[recipe].op_mod(site.op).instance_from_carry {
-                    match carry {
+                    match carry.get() {
                         Some(value) => value,
                         None => {
                             let witness = self.witness_at(recipe, site);
@@ -3912,7 +4019,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     recipe,
                     depth: depth + 1,
                     parent: Some(base_holder),
-                    carry: CarrySlot::from(carry),
+                    carry,
                     body: TaskBody::Extent {
                         op: site.op,
                         span,
@@ -3930,8 +4037,11 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 let (table, key_offset, key_width, next) =
                     (*table, *key_offset, *key_width, *next);
                 let modifier = self.recipes[recipe].op_mod(site.op);
-                let (key_from_carry, instance_from_carry) =
-                    (modifier.key_from_carry, modifier.instance_from_carry);
+                let (key_from_carry, anchor_on_carry_holder, instance_from_carry) = (
+                    modifier.key_from_carry,
+                    modifier.anchor_on_carry_holder,
+                    modifier.instance_from_carry,
+                );
                 // M2. The key may be the scalar the branch is carrying rather
                 // than a field of the object under the site. A province id
                 // decoded at the topology can therefore select into a table two
@@ -3939,7 +4049,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                 // express at all.
                 let carry = carry!();
                 let (key, key_holder) = if key_from_carry {
-                    let Some(value) = carry else {
+                    let Some(value) = carry.get() else {
                         let witness = self.witness_at(recipe, site);
                         self.refuse_witnessed(
                             recipe,
@@ -3952,18 +4062,50 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         return;
                     };
                     // The carried scalar was decoded from bytes some interval
-                    // holds, but not necessarily one under this site, so the
-                    // dependency edge is anchored on the site's own interval.
-                    match self.owners.find(site.base) {
-                        Some(holder) => (value, holder),
-                        None => {
-                            let witness = RefusalWitness {
-                                raw: value,
-                                read_addr: site.base,
-                                ..self.witness_at(recipe, site)
-                            };
-                            self.field_not_captured(recipe, Span::new(site.base, 1), witness);
-                            return;
+                    // holds, but not necessarily one under this site. By
+                    // default the dependency edge is anchored on the site's own
+                    // interval — which makes the object's base a required copy.
+                    // `anchor_on_carry_holder` anchors it on the interval the
+                    // carry itself came from instead; see the modifier's own
+                    // note for the copy that forces.
+                    if anchor_on_carry_holder {
+                        match carry.holder() {
+                            // A HOLDER THAT HAS ALREADY CLOSED IS FINE, and
+                            // nothing here or downstream gates it. The edge is
+                            // read post-bracket, off the finalized graph -- see
+                            // `mid_walk_reopened`'s note and `witness.rs`'s
+                            // header -- so anchoring backwards in time changes
+                            // which interval the edge NAMES and nothing about
+                            // when the comparison sees it.
+                            Some(holder) => (value, holder),
+                            None => {
+                                let witness = RefusalWitness {
+                                    raw: value,
+                                    ..self.witness_at(recipe, site)
+                                };
+                                self.refuse_witnessed(
+                                    recipe,
+                                    Refusal::CarryHolderUnknown {
+                                        recipe: id,
+                                        op: site.op,
+                                    },
+                                    witness,
+                                );
+                                return;
+                            }
+                        }
+                    } else {
+                        match self.owners.find(site.base) {
+                            Some(holder) => (value, holder),
+                            None => {
+                                let witness = RefusalWitness {
+                                    raw: value,
+                                    read_addr: site.base,
+                                    ..self.witness_at(recipe, site)
+                                };
+                                self.field_not_captured(recipe, Span::new(site.base, 1), witness);
+                                return;
+                            }
                         }
                     }
                 } else {
@@ -3988,7 +4130,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     }
                 };
                 let instance = if instance_from_carry {
-                    match carry {
+                    match carry.get() {
                         Some(value) => value,
                         None => {
                             let witness = self.witness_at(recipe, site);
@@ -4065,7 +4207,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     recipe,
                     depth: depth + 1,
                     parent: Some(key_holder),
-                    carry: CarrySlot::from(carry),
+                    carry,
                     body: TaskBody::Op {
                         op: next,
                         addr,
@@ -4089,7 +4231,7 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                         op: *op,
                         base: site.base,
                         region: site.region,
-                        carry: CarrySlot::from(carry!()),
+                        carry: carry!(),
                         index: site.index,
                     });
                 }
@@ -4105,19 +4247,41 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         }
     }
 
-    /// The carried scalar in force at a site.
+    /// The carried scalar in force at a site, with the interval it came from
+    /// when the recipe has an op that anchors on it.
     ///
-    /// `Err(())` means the recipe has been refused and the caller must stop;
-    /// `Ok(None)` means nothing on this branch has set one, which is legal
-    /// until something asks for it.
+    /// `Err(())` means the recipe has been refused and the caller must stop; a
+    /// slot with nothing set means nothing on this branch has set a carry,
+    /// which is legal until something asks for one.
+    ///
+    /// # Where a holder comes from, per source
+    ///
+    /// * `Field` — the interval the field was READ out of, which `read_uint`
+    ///   already resolved and this used to discard. Exactly the bytes the
+    ///   carried value depends on.
+    /// * `ElementIndex` — the interval holding the element the index names. The
+    ///   index is not read from anywhere, but it is only meaningful as a
+    ///   position WITHIN that extent, so the extent's bytes are what a
+    ///   consumer of the index depends on. This is d81's case.
+    /// * `Constant` — no holder, and there cannot be one: a literal was not
+    ///   read out of any interval. An op that anchors on it refuses
+    ///   [`Refusal::CarryHolderUnknown`] rather than inventing an anchor.
     #[inline]
-    fn resolve_carry(&mut self, recipe: usize, site: &DecodeSite) -> Result<Carry, ()> {
+    fn resolve_carry(&mut self, recipe: usize, site: &DecodeSite) -> Result<CarrySlot, ()> {
         let Some(source) = self.recipes[recipe].op_mod(site.op).carry else {
-            return Ok(site.carry.get());
+            return Ok(site.carry);
         };
+        let wants_holder = self.states[recipe].anchors_on_carry_holder;
         match source {
-            CarrySource::Constant(value) => Ok(Some(value)),
-            CarrySource::ElementIndex => Ok(Some(u64::from(site.index))),
+            CarrySource::Constant(value) => Ok(CarrySlot::with_holder(Some(value), None)),
+            CarrySource::ElementIndex => {
+                let holder = if wants_holder {
+                    self.owners.find(site.base)
+                } else {
+                    None
+                };
+                Ok(CarrySlot::with_holder(Some(u64::from(site.index)), holder))
+            }
             CarrySource::Field { offset, width } => {
                 let addr = match site.base.checked_add(u64::from(offset)) {
                     Some(addr) => addr,
@@ -4127,7 +4291,10 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
                     }
                 };
                 match self.read_uint(recipe, addr, width as usize) {
-                    Some((value, _)) => Ok(Some(value)),
+                    Some((value, holder)) => Ok(CarrySlot::with_holder(
+                        Some(value),
+                        if wants_holder { Some(holder) } else { None },
+                    )),
                     None => {
                         let id = self.recipes[recipe].id;
                         let witness = RefusalWitness {
@@ -4588,6 +4755,21 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
             let request = requests[key.request as usize];
             let consumer = self.recipes[key.recipe as usize].consumer;
             let parent = (key.parent != NO_HINT).then(|| IntervalId(key.parent));
+            // A PRUNED TASK'S EDGE IS ALWAYS ATTACHED, including onto a parent
+            // some stage has already closed, and that is deliberate.
+            //
+            // The visited key is `(recipe, op, address)` and does NOT include
+            // the parent, so two tasks can be duplicates by that key and still
+            // have DIFFERENT parents; the second is retained precisely because
+            // its dependency edge is real and nothing else records it. Dropping
+            // it -- or refusing it -- would leave a consumer whose rows a
+            // changed closing witness on that parent no longer invalidates.
+            //
+            // Attaching it late costs nothing, because the invalidation walk
+            // reads the graph post-bracket: see the note in `mid_walk_reopened`
+            // for the evidence, and `witness.rs`'s header for the rule.
+            // `a_pruned_duplicates_edge_onto_a_closed_parent_is_kept_and_still_invalidates`
+            // is the regression.
             self.owners
                 .sweep_overlapping(&mut cursor, request.span, owned);
             for id in owned.iter() {
@@ -4806,6 +4988,29 @@ impl<'a, M: SnapshotMemory> Observation<'a, M> {
         };
         let stage = self.recipes[recipe].op_mod(op).stage;
         let mut reopened = false;
+        // THE PARENT IS DELIBERATELY NOT CHECKED HERE, and the reason is what
+        // this gate is about. It refuses BYTES asked for after their witness was
+        // taken: a closing image is a copy of one span, and a span copied into
+        // an interval after that image cannot appear in it. A dependency EDGE is
+        // not bytes. `witness.rs` says so in its own header -- "Comparison
+        // happens HERE, post-bracket. Nothing in this file runs while the
+        // observation window is open" -- and the invalidation walk builds its
+        // `children` map from the FINAL snapshot's links, after every wave. An
+        // edge added at wave 5 onto an interval closed at wave 0 is therefore in
+        // the graph the walk reads, and a changed witness on that parent
+        // invalidates its subtree exactly as it would have.
+        //
+        // This was gated for one lane-HZ round in each of two places, and it
+        // refused real captures: every mid-walk close whose interval has a child
+        // in the next wave took `ClosedIntervalReopened`, because a parent
+        // copied in wave W closes at the end of W and its children attach in
+        // W + 1. That is d81's shipped plan, and 25 tests said so
+        // (`runs/hz_hk_briefs/gate_final_8.log`, including
+        // `d81_production_plan::the_shipped_d81_plan_produces_the_same_rows_as_a_direct_read_walk`;
+        // `diag_parent_term_removed2.log` is the same 53 tests green with this
+        // term gone). `anchor_on_carry_holder` needs no gate of its own for the
+        // same reason: it moves which interval the edge names, not when the
+        // graph is read.
         for &id in owned {
             if !self.mid_walk_closed_already(id) {
                 continue;
