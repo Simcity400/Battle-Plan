@@ -63,10 +63,15 @@
 - Negatives: prove absence with `git grep <pat> HEAD -- <scope>`; "could not
   determine X" is a finding that names the one step that would close it, never
   a conclusion.
-- Every discovered defect gets staffed or fixed in place — filing it is not
-  handling it. Simple fixes land in the finding lane and are reported
-  separately. Never call anything complete with open residuals; each residual
-  names an owner.
+- Every discovered defect gets FIXED IN THE LANE THAT FOUND IT (owner directive
+  2026-08-13). A residual is legitimate ONLY when it is (a) an owner decision,
+  (b) needs a live capture/game session or the owner present, (c) inside
+  another ACTIVE lane's territory (hand over with exact state), or (d) outside
+  the lane's authorized scope. "Unstaffed", "future lane", "next session", or
+  "too far from my brief" are NOT valid residual reasons for something the
+  lane could fix — fix it, gate it, and have it re-reviewed before reporting.
+  Never call anything complete with open residuals; each residual names its
+  qualifying category and owner.
 - Max 7 concurrent implementation lanes; queue beyond that.
 
 ## Agent delegation
