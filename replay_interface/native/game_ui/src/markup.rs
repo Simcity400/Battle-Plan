@@ -8,8 +8,8 @@
 //!   comment *"Global text colors used in the entire game, for use in loc files
 //!   ex: \"§G Text Text§!\""*). Codes are CASE-SENSITIVE (`b` = black vs
 //!   `B` = blue, `g` = grey vs `G` = green). `§!` resets to the text box's
-//!   base colour. This replaces the previous hard-coded (and wrong) colour map
-//!   in `font.rs::colorize_hoi4_text`.
+//!   base colour. This replaces the previous hard-coded (and wrong) colour map,
+//!   `colorize_hoi4_text` in `font.rs`, which was deleted with it.
 //! * `£<key>` / `£<key>|<frame>` is an inline sprite/icon token (resolved to a
 //!   `GFX_` sprite by the caller). It is tokenised out of the text run so it
 //!   never leaks as literal glyphs and never corrupts measured text width.

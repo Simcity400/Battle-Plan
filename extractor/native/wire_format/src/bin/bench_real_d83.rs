@@ -40,7 +40,7 @@
 //!   the open hour and only that hour, and closed hours strictly increase;
 //! - that tracker's DOMAIN_PERF hour binding (`:328`-`:365`), including the DATA
 //!   arm's pending-PERF rule (`:378`-`:386`);
-//! - FRAME_END seal validation (`stream_fold.rs:46`-`:89`) and the seal's count
+//! - FRAME_END seal validation (`recorder_host/src/stream_fold.rs:46`-`:89`) and the seal's count
 //!   cross-check against distinct non-probe PERF domains (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
 //!   hour left open, at least one FRAME_END, and the final record is a FRAME_END;
@@ -63,11 +63,11 @@
 //! `d83::fold_payload`, which performs the block walk.
 //! The regression test proves malformed excluded payloads still reach
 //! `split_payload` for every failure bit. Identity mode is stated by the caller
-//! (`stream_fold.rs:220`), never sniffed from the first record.
+//! (`recorder_host/src/stream_fold.rs:220`), never sniffed from the first record.
 //!
 //! The DATA payloads of every domain other than 83 pass UNVALIDATED beyond
 //! header sanity, the stream validator and the hour-boundary rules —
-//! production validates every domain's payload (`stream_fold.rs:593`); this
+//! production validates every domain's payload (`recorder_host/src/stream_fold.rs:593`); this
 //! harness owns only d83's grammar. That unvalidated remainder is explicitly
 //! BOUNDED: every closed game hour must carry exactly one d83 DATA record of
 //! any status (the `d83_records == closed_hours` completeness check in
@@ -339,7 +339,7 @@ fn scan_stream(
     identity_mode: StreamIdentityMode,
 ) -> Result<StreamScan, String> {
     // Production receives the identity mode from its caller
-    // (`stream_fold.rs:220`); the first record cannot state it safely.
+    // (`recorder_host/src/stream_fold.rs:220`); the first record cannot state it safely.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -632,7 +632,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d83 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d83's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d83's
     // grammar, so a d83 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture
@@ -1618,30 +1618,30 @@ mod tests {
         // A block the FOLD rejects must make the SCAN fail, not be accepted and
         // then unwind while measuring. The whole rejection space, not one case.
         let mut invalid: Vec<Vec<u8>> = Vec::new();
-        // zero tag_db_id (`lib.rs:249`)
+        // zero tag_db_id (`lanes/nuke_stockpile_live/src/lib.rs:249`)
         invalid.push(d83_payload(0, 0, 0));
         let body_at = d83::HEADER_LEN + 12;
-        // capacity below NUKE_TYPE_COUNT (`lib.rs:252`)
+        // capacity below NUKE_TYPE_COUNT (`lanes/nuke_stockpile_live/src/lib.rs:252`)
         let mut capacity = d83_payload(0, 7, 0);
         capacity[body_at + 4..body_at + 8].copy_from_slice(&1i32.to_le_bytes());
         invalid.push(capacity);
-        // entry_count that is not NUKE_TYPE_COUNT (`lib.rs:255`)
+        // entry_count that is not NUKE_TYPE_COUNT (`lanes/nuke_stockpile_live/src/lib.rs:255`)
         let mut entry_count = d83_payload(0, 7, 0);
         entry_count[body_at + 8..body_at + 12].copy_from_slice(&3u32.to_le_bytes());
         invalid.push(entry_count);
-        // a type ordinal that is not its own index (`lib.rs:258`)
+        // a type ordinal that is not its own index (`lanes/nuke_stockpile_live/src/lib.rs:258`)
         let mut ordinal = d83_payload(0, 7, 0);
         ordinal[body_at + 12..body_at + 16].copy_from_slice(&1u32.to_le_bytes());
         invalid.push(ordinal);
-        // a non-zero entry reserved word (`lib.rs:369`)
+        // a non-zero entry reserved word (`lanes/nuke_stockpile_live/src/lib.rs:369`)
         let mut reserved = d83_payload(0, 7, 0);
         reserved[body_at + 16..body_at + 20].copy_from_slice(&1u32.to_le_bytes());
         invalid.push(reserved);
-        // a changed authority blob (`lib.rs:337`)
+        // a changed authority blob (`lanes/nuke_stockpile_live/src/lib.rs:337`)
         let mut blob = d83_payload(0, 7, 0);
         blob[32] ^= 0x01;
         invalid.push(blob);
-        // a receipted frame carrying a status word (`lib.rs:281`)
+        // a receipted frame carrying a status word (`lanes/nuke_stockpile_live/src/lib.rs:281`)
         let mut dirty = d83_payload(0, 7, 0);
         dirty[12..16].copy_from_slice(&1u32.to_le_bytes());
         invalid.push(dirty);
@@ -1662,7 +1662,7 @@ mod tests {
         }
 
         // A country repeated within ONE snapshot is a rejected snapshot
-        // (`lib.rs:249`), and it must be caught in the scan.
+        // (`lanes/nuke_stockpile_live/src/lib.rs:249`), and it must be caught in the scan.
         let mut payload = d83_payload(0, 7, 0);
         let block = payload[d83::HEADER_LEN + 12..].to_vec();
         payload.extend_from_slice(&block);

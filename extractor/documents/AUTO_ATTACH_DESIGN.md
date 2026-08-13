@@ -112,8 +112,8 @@ Retain full-precision creation FILETIME, canonical image path, stable executable
 size/SHA-256, Windows session id, process-token user SID, and parent PID (telemetry
 only). Existing code queries full image path via
 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`/`QueryFullProcessImageNameW`
-(`modset.rs:602-616`) and creation time via `GetProcessTimes`
-(`modset.rs:619-642`); extract and reuse those functions.
+(`extractor/native/recorder_host/src/modset.rs:602-616`) and creation time via `GetProcessTimes`
+(`extractor/native/recorder_host/src/modset.rs:619-642`); extract and reuse those functions.
 
 Accept only when basename is `hoi4.exe` (Windows case-insensitive), token SID and
 process session equal the coordinator user/session, the identity re-read just
@@ -121,20 +121,20 @@ before injection still matches, and the modset is fully resolved. WMI SID/sessio
 fields are hints; the live token/handle is authority.
 
 Never scan Steam libraries or assume a drive. The live process supplies its path;
-`resolve_modset` already hashes/records it (`modset.rs:353-376`). Resolve installed
+`resolve_modset` already hashes/records it (`extractor/native/recorder_host/src/modset.rs:353-376`). Resolve installed
 payload relative to the packaged app executable or signed manifest, never this repo.
 
 Reuse the strong user-dir proof:
 
 - candidate contains `dlc_load.json`;
 - attached PID holds an open handle below canonical `logs/`; Restart Manager errors
-  fail closed (`modset.rs:790-829`);
+  fail closed (`extractor/native/recorder_host/src/modset.rs:790-829`);
 - executable/config/mod/DLC evidence is stability-checked and ordered against
-  process start (`modset.rs:328-420`, `modset.rs:913-948`).
+  process start (`extractor/native/recorder_host/src/modset.rs:328-420`, `extractor/native/recorder_host/src/modset.rs:913-948`).
 
 Do **not** reuse its candidate list unchanged. It probes only
 `%USERPROFILE%\\Documents` and `%USERPROFILE%\\OneDrive\\Documents`
-(`modset.rs:951-998`). Product candidates, canonical-deduplicated, are the proven
+(`extractor/native/recorder_host/src/modset.rs:951-998`). Product candidates, canonical-deduplicated, are the proven
 process command line's `-userdir`, `FOLDERID_Documents` from
 `SHGetKnownFolderPath`, runtime-discovered OneDrive consumer/business roots, and
 the two legacy paths as compatibility candidates.
@@ -144,7 +144,8 @@ Exactly one physical directory may survive. Zero/multiple remains
 `WaitingForIdentity`, listing all candidates/reasons. Normal product exposes no
 `--pdx-user-dir`; a support override cannot turn unresolved evidence into resolved.
 The recorder currently continues after unresolved modset evidence
-(`main.rs:1164-1180`); auto-attach blocks injection while preserving errors.
+(`recorder_host/src/main.rs::run`, at its `resolve_modset` call); auto-attach
+blocks injection while preserving errors.
 
 ## 4. State machine
 
@@ -174,17 +175,22 @@ loud and retains diagnostics.
 The launcher passes `--pid`, `--dll`, output, profile, session, and static catalogs
 to `collector_record` (`Start-Hoi4ProductionSpeed5Capture.ps1:307-326`). The host:
 
-- writes `collector_control.json` beside the DLL (`main.rs:5150-5210`);
-- creates a PID plus unique-token pipe (`main.rs:1181-1199`);
+- writes `collector_control.json` beside the DLL
+  (`recorder_host/src/main.rs::write_control_file`);
+- creates a PID plus unique-token pipe (`recorder_host/src/main.rs::run`);
 - finds a visible PID-owned window, resolves `Hoi4ReplayGetMsgProc`, and installs
-  `WH_GETMESSAGE` hooks (`main.rs:5213-5258`);
-- pokes target threads, then holds/removes hooks (`main.rs:5259-5281`).
+  `WH_GETMESSAGE` hooks (the `attach_hook` function; **retired since this
+  document was written** — the passive-capture wave 39573eb8 deleted it, and no
+  hook is installed today);
+- pokes target threads, then holds/removes hooks (the same retired
+  `attach_hook`).
 
 The DLL starts one guarded worker from `DllMain`/hook callback
-(`extractor/native/collector/src/lib.rs:1122-1163`, `extractor/native/collector/src/lib.rs:71063-71096`), reads control
-beside its module, and connects to the PID/token pipe
-(`extractor/native/collector/src/lib.rs:1184-1219`, `extractor/native/collector/src/lib.rs:2087-2103`,
-`extractor/native/collector/src/lib.rs:45808-45833`). Auto-attach must reuse this, not add
+(`collector/src/attach_log.rs::dll_main`, exported as
+`collector/src/lib.rs::DllMain`), reads control beside its module, and connects
+to the PID/token pipe (`collector/src/attach_log.rs::write_attach_heartbeat`,
+`collector/src/attach_log.rs::collector_control`,
+`collector/src/attach_log.rs::open_pipe`). Auto-attach must reuse this, not add
 `CreateRemoteThread` or a second collector.
 
 ### Required ordering
@@ -203,10 +209,12 @@ beside its module, and connects to the PID/token pipe
    emits delta rows before its baseline. Failure-status domains remain explicit
    coverage failures; they are never omitted or relabelled clean.
 
-The pipe barrier is mandatory. Today the host spawns the pipe thread and immediately
-calls `attach_hook` (`main.rs:1193-1203`), while the DLL tries `CreateFileW` once and
-returns `None` on failure (`extractor/native/collector/src/lib.rs:45808-45833`). That leaves an
-avoidable connect-before-listen race.
+The pipe barrier is mandatory. When this was written the host spawned the pipe
+thread and immediately called `attach_hook` (`recorder_host/src/main.rs::run`;
+`attach_hook` itself was deleted in 39573eb8), while the DLL tried `CreateFileW`
+once and returned `None` on failure
+(`collector/src/attach_log.rs::open_pipe`). That leaves an avoidable
+connect-before-listen race.
 
 Do not retry an uncertain hook/handshake outcome in the same live process. A second
 unique DLL has independent module statics, so its worker guard does not prevent two
@@ -227,7 +235,7 @@ failure is visible and never permits path reuse.
 ### Mid-load or menu
 
 Process-start can precede the main window. The injector requires a visible
-PID-owned window (`main.rs:5213-5221`), so `WaitingForWindow` is normal. Once window
+PID-owned window (the retired `attach_hook`), so `WaitingForWindow` is normal. Once window
 and identity resolve, inject even if no campaign is loaded. Preserve heartbeat,
 root-validation, and status records in `WaitingForWorld`; do not label menu/invalid
 roots as campaign hours. A frame with no valid session clock/root cannot start
@@ -266,14 +274,14 @@ Dev `FullGame` is a finite 21,600-second window
 - DLL checks stop between capture attempts; pipe write failure stops the worker and
   releases its module pin;
 - game exit breaks the pipe; host already classifies `ERROR_BROKEN_PIPE` as clean
-  EOF (`main.rs:5335-5341`);
+  EOF (`recorder_host/src/main.rs::classify_pipe_read_error`);
 - explicit quit signals stop, waits for acknowledgement/EOF, removes hooks, and
   finalizes;
 - supervisor places workers in a kill-on-close Job Object. After supervisor crash,
   restart waits until the old unique module is proven unloaded before reinjection.
 
 Raw pipe data is already streamed to disk in bounded memory
-(`main.rs:1191-1203`, `main.rs:5345-5354`). A game crash finalizes a valid verified
+(`recorder_host/src/main.rs::run`, `recorder_host/src/main.rs::capture_pipe_to_file`). A game crash finalizes a valid verified
 prefix with abnormal termination. Truncated/unverifiable streams remain failed
 artifacts and are never promoted.
 
@@ -285,7 +293,7 @@ unique staging/DLL path, pipe/control/stop tokens, output directory, session id,
 recorder child, raw stream, and later stitching decision. One global finalization
 semaphore prevents folding one ended session from starving live capture on a weaker
 PC. The proof code notes two simultaneous instances may share one user dir and the
-same `dlc_load.json` (`modset.rs:790-798`); their streams remain distinct.
+same `dlc_load.json` (`extractor/native/recorder_host/src/modset.rs:790-798`); their streams remain distinct.
 
 A named current-user/current-session singleton prevents duplicate coordinators. A
 second app invocation reconnects/activates the first; it never starts another

@@ -46,7 +46,7 @@
 //!   hours strictly increase;
 //! - that tracker's DOMAIN_PERF hour binding (`:328`-`:365`) and the DATA arm's
 //!   pending-PERF rule (`:378`-`:386`);
-//! - the FRAME_END seal fields (`stream_fold.rs:46`-`:89`) and the seal's
+//! - the FRAME_END seal fields (`recorder_host/src/stream_fold.rs:46`-`:89`) and the seal's
 //!   domain-count cross-check against distinct non-probe PERF domains
 //!   (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
@@ -60,7 +60,7 @@
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
 //! full authority. Production's `validate_domain_data_payload_at`
-//! (`stream_fold.rs:594`) also applies `decode_compact_fuel_data_payload`
+//! (`recorder_host/src/stream_fold.rs:594`) also applies `decode_compact_fuel_data_payload`
 //! (`domain_data_authority.rs:932`-`:1011`) to every d10 DATA record whatever its
 //! status. `d10::split_payload`, already before the exclusion, covers its header,
 //! exact-length, scale, changed-row, and duplicate-key predicates. The remaining
@@ -74,7 +74,7 @@
 //!
 //! **Only d10 DATA payloads are validated.** Production runs
 //! `validate_domain_data_payload_at` on the DATA payload of EVERY domain
-//! (`stream_fold.rs:593`); this harness cannot, because validating another
+//! (`recorder_host/src/stream_fold.rs:593`); this harness cannot, because validating another
 //! domain's payload means owning that domain's authority, and `wire_format`
 //! must not depend on `recorder_host`. Every DATA record of any other domain
 //! therefore passes with its H4CR header, sequence continuity, hour-boundary,
@@ -90,7 +90,7 @@
 //!
 //! The seal fields, PERF binding, pending-PERF rule, status-independent payload
 //! authority, and stated identity mode are the five-check sweep. Production
-//! receives that mode from its caller (`stream_fold.rs:220`); the capture is
+//! receives that mode from its caller (`recorder_host/src/stream_fold.rs:220`); the capture is
 //! legacy, so `main` defaults to `legacy`.
 //!
 //! Outputs, for the compression step (`compress_arms.py` beside the run):
@@ -179,7 +179,7 @@ const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNO
 const PROBE_DOMAIN_ID: u16 = 250;
 
 /// `recorder_host::stream_fold::validate_frame_end_seal_fields`
-/// (`stream_fold.rs:46`-`:89`), kept local because `wire_format` cannot depend on
+/// (`recorder_host/src/stream_fold.rs:46`-`:89`), kept local because `wire_format` cannot depend on
 /// `recorder_host`.
 fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
     if payload.len() != COMPACT_FRAME_END_PAYLOAD_LEN {
@@ -261,7 +261,7 @@ fn scan_stream(
     collection: &wire_format::Collection,
     identity_mode: StreamIdentityMode,
 ) -> Result<StreamScan, String> {
-    // Production takes identity mode from its caller (`stream_fold.rs:220`);
+    // Production takes identity mode from its caller (`recorder_host/src/stream_fold.rs:220`);
     // sniffing cannot distinguish legacy from IdentityV1 with CID1 removed.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
@@ -578,7 +578,7 @@ fn scan_stream(
 
     // COMPLETENESS: every closed game hour must carry exactly one d10 DATA
     // record, of any status. Production validates the payload of EVERY domain's
-    // DATA record (`stream_fold.rs:593`); this harness cannot (module docs), so
+    // DATA record (`recorder_host/src/stream_fold.rs:593`); this harness cannot (module docs), so
     // a d10 record relabelled to another domain id — or lost outright — would
     // otherwise be silently ignored and the run would report a plausible
     // measurement over fewer hours. Per-hour uniqueness is already enforced

@@ -14,13 +14,13 @@
 //! and record semantics go through `compact_contract`'s parser and
 //! `StatefulStreamValidator`. The bin re-implements the wire-format crate's
 //! documented subset of `recorder_host::stream_fold::BoundaryTracker`
-//! (`stream_fold.rs:277`-`:482`): DATA/PERF hour binding, monotonic closed
+//! (`recorder_host/src/stream_fold.rs:277`-`:482`): DATA/PERF hour binding, monotonic closed
 //! hours, one d20 record per hour, and clean FRAME_END/EOF boundaries.
 //!
 //! The five-check sweep additionally carries:
 //!
 //! - FRAME_END seal-field validation from
-//!   `validate_frame_end_seal_fields` (`stream_fold.rs:46`-`:89`), before the
+//!   `validate_frame_end_seal_fields` (`recorder_host/src/stream_fold.rs:46`-`:89`), before the
 //!   open-hour match, plus the seal's distinct non-probe PERF-domain count
 //!   cross-check (`:401`-`:419`);
 //! - DOMAIN_PERF hour binding (`:328`-`:365`) and the DATA arm's pending-PERF
@@ -39,7 +39,7 @@
 //!   baseline remains `world_fold::fold_divisions` behavior
 //!   (`world_fold.rs:19022`-`:19029`) and is not invented as payload corruption;
 //! - identity mode as a stated `StreamIdentityMode` parameter, matching
-//!   production's caller-selected protocol (`stream_fold.rs:220`), never a
+//!   production's caller-selected protocol (`recorder_host/src/stream_fold.rs:220`), never a
 //!   sniff of the first record.
 //!
 //! Production also validates payloads for every *other* DOMAIN_DATA domain.
@@ -759,7 +759,7 @@ fn check_authority_payload(
 }
 
 /// FRAME_END seal validation copied from production's
-/// `validate_frame_end_seal_fields` (`stream_fold.rs:46`-`:89`).
+/// `validate_frame_end_seal_fields` (`recorder_host/src/stream_fold.rs:46`-`:89`).
 fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
     if payload.len() != COMPACT_FRAME_END_PAYLOAD_LEN {
         return Err(format!(

@@ -32,7 +32,7 @@
 //!   the open hour and only that hour, and closed hours strictly increase;
 //! - that tracker's DOMAIN_PERF hour binding (`:328`-`:365`), including the DATA
 //!   arm's pending-PERF rule (`:378`-`:386`);
-//! - FRAME_END seal validation (`stream_fold.rs:46`-`:89`) and the seal's count
+//! - FRAME_END seal validation (`recorder_host/src/stream_fold.rs:46`-`:89`) and the seal's count
 //!   cross-check against distinct non-probe PERF domains (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
 //!   hour left open, at least one FRAME_END, and the final record is a FRAME_END.
@@ -50,11 +50,11 @@
 //! existing row pass [`check_authority_payload`] and keeps it before status:
 //! bounds, motorization level, and the exact verification-flag set all apply to
 //! excluded records. Duplicate keys remain a fold-only, post-exclusion rule.
-//! Identity mode is stated by the caller (`stream_fold.rs:220`), never sniffed.
+//! Identity mode is stated by the caller (`recorder_host/src/stream_fold.rs:220`), never sniffed.
 //!
 //! The DATA payloads of every domain other than 62 pass UNVALIDATED beyond
 //! header sanity, the stream validator and the hour-boundary rules —
-//! production validates every domain's payload (`stream_fold.rs:593`); this
+//! production validates every domain's payload (`recorder_host/src/stream_fold.rs:593`); this
 //! harness owns only d62's grammar. That unvalidated remainder is explicitly
 //! BOUNDED: every closed game hour must carry exactly one d62 DATA record of
 //! any status (the `d62_records == closed_hours` completeness check in
@@ -210,7 +210,7 @@ fn scan_stream(
     identity_mode: StreamIdentityMode,
 ) -> Result<StreamScan, String> {
     // Production receives the identity mode from its caller
-    // (`stream_fold.rs:220`); the first record cannot state it safely.
+    // (`recorder_host/src/stream_fold.rs:220`); the first record cannot state it safely.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -515,7 +515,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d62 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d62's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d62's
     // grammar, so a d62 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture
@@ -1589,12 +1589,12 @@ mod tests {
             d62_payload(status_flags, &[row(16, 17, 13071, 0)]), // level 0
             d62_payload(status_flags, &[row(16, 17, 13071, 3)]), // level 3
         ];
-        // A zero state_id (`lib.rs:346`).
+        // A zero state_id (`lanes/hub_motorization_live/src/lib.rs:346`).
         let mut zero_state = d62_payload(status_flags, &[row(16, 17, 13071, 1)]);
         zero_state[d62::HEADER_LEN + 12..d62::HEADER_LEN + 16].copy_from_slice(&0u32.to_le_bytes());
         invalid.push(zero_state);
         // A missing verification witness, an unknown flag bit, and no flags at
-        // all (`lib.rs:358`-`:368`).
+        // all (`lanes/hub_motorization_live/src/lib.rs:358`-`:368`).
         for flags in [
             d62::REQUIRED_FLAGS & !d62::ROW_FLAG_ACTOR_VERIFIED,
             d62::REQUIRED_FLAGS | (1 << 20),

@@ -40,7 +40,7 @@
 //!   open hour and only that hour, and closed hours strictly increase;
 //! - that tracker's DOMAIN_PERF hour binding (`:328`-`:365`), including the DATA
 //!   arm's pending-PERF rule (`:378`-`:386`);
-//! - FRAME_END seal validation (`stream_fold.rs:46`-`:89`) and the seal's count
+//! - FRAME_END seal validation (`recorder_host/src/stream_fold.rs:46`-`:89`) and the seal's count
 //!   cross-check against distinct non-probe PERF domains (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
 //!   hour left open, at least one FRAME_END, and the final record is a FRAME_END.
@@ -60,7 +60,7 @@
 //! tags; country flags confined to bits 0..=1; exact declared timed-row totals;
 //! and nonzero timed tags with bounded days and state. It runs before every
 //! failure-status exclusion. Identity mode is likewise stated by the caller
-//! (`stream_fold.rs:220`), never inferred from the first record.
+//! (`recorder_host/src/stream_fold.rs:220`), never inferred from the first record.
 //!
 //! ## The failure-status decision, made explicitly
 //!
@@ -106,7 +106,7 @@
 //!
 //! **Only d16 DATA payloads are validated.** Production runs
 //! `validate_domain_data_payload_at` on the DATA payload of EVERY domain
-//! (`stream_fold.rs:593`); this harness cannot, because validating another
+//! (`recorder_host/src/stream_fold.rs:593`); this harness cannot, because validating another
 //! domain's payload means owning that domain's authority, and `wire_format`
 //! must not depend on `recorder_host`. Every DATA record of any other domain
 //! therefore passes with its H4CR header, sequence continuity, hour-boundary,
@@ -669,7 +669,7 @@ fn scan_stream(
 
     // COMPLETENESS: every closed game hour must carry exactly one d16 DATA
     // record, of any status. Production validates the payload of EVERY domain's
-    // DATA record (`stream_fold.rs:593`); this harness cannot (module docs), so
+    // DATA record (`recorder_host/src/stream_fold.rs:593`); this harness cannot (module docs), so
     // a d16 record relabelled to another domain id — or lost outright — would
     // otherwise be silently ignored and the run would report a plausible
     // measurement over fewer hours. Per-hour uniqueness is already enforced

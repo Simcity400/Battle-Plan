@@ -103,7 +103,7 @@
 //!    (`world_fold.rs:10309`), and production's own status-independent authority
 //!    decodes every d92 record whatever its status
 //!    (`domain_data_authority.rs:13195`-`:13212`) and clears the stream's
-//!    `decodable` verdict on a parse error (`main.rs:16628`). So a malformed
+//!    `decodable` verdict on a parse error (`recorder_host/src/main.rs:16628`). So a malformed
 //!    payload invalidates the run rather than skipping an hour — d83's shape, not
 //!    d63's, and the reason [`d92::split_payload`] carries the WHOLE decode and
 //!    there is no cheaper header-only exit to preserve. Framing, boundary, seal,
@@ -137,7 +137,7 @@
 //! - every record header through `compact_contract::parse_compact_record_header`;
 //! - every record through `compact_contract::stream_validator::StatefulStreamValidator`;
 //! - the hour-boundary rules of `recorder_host::stream_fold::BoundaryTracker`
-//!   (`stream_fold.rs:277`), its DOMAIN_PERF hour binding (`:328`-`:365`) and the
+//!   (`recorder_host/src/stream_fold.rs:277`), its DOMAIN_PERF hour binding (`:328`-`:365`) and the
 //!   DATA arm's pending-PERF rule (`:378`-`:386`);
 //! - FRAME_END seal-field validation (`:46`-`:89`, `:401`-`:409`) and the seal's
 //!   domain-count cross-check against distinct non-probe PERF domains
@@ -149,7 +149,7 @@
 //! (`:537`), which `wire_format` must not depend on. The DATA payloads of every
 //! domain other than 92 and 18 pass UNVALIDATED beyond header sanity, the
 //! stream validator and the hour-boundary rules — production validates every
-//! domain's payload (`stream_fold.rs:593`); this harness owns only d92's
+//! domain's payload (`recorder_host/src/stream_fold.rs:593`); this harness owns only d92's
 //! grammar and the d18 mirror. That unvalidated remainder is explicitly
 //! BOUNDED: every closed game hour must carry exactly one d92 DATA record of
 //! any status, and the d18 lane must be all-or-nothing — exactly one record
@@ -168,7 +168,7 @@
 //!   away.
 //! - **Global `tactic_database_id` ↔ `tactic_id` stability.** The codec requires
 //!   the mapping to be injective within ONE payload
-//!   (`preferred_tactic.rs:203`-`:209`) and nothing extends that across payloads,
+//!   (`compact_contract/src/preferred_tactic.rs:203`-`:209`) and nothing extends that across payloads,
 //!   which is why `d92.rs` carries both fields. Whether the mapping happens to be
 //!   globally constant on THIS capture is measured and printed — a property of
 //!   one stream, never a licence to drop a field.
@@ -204,7 +204,7 @@ const BLOCK_HOURS: usize = 48;
 const FRAME_END_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 const PROBE_DOMAIN_ID: u16 = 250;
 
-// --- FRAME_END seal (`stream_fold.rs:46`-`:89`). -----------------------------
+// --- FRAME_END seal (`recorder_host/src/stream_fold.rs:46`-`:89`). -----------------------------
 
 fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
     if payload.len() != COMPACT_FRAME_END_PAYLOAD_LEN {
@@ -288,7 +288,7 @@ struct D18Mirror {
 /// The D18 payload authority's status-independent checks that the FOLD does not
 /// make — applied fail-closed, as a stream rejection.
 ///
-/// `validate_domain_data_payload_at` (`stream_fold.rs:593`) runs
+/// `validate_domain_data_payload_at` (`recorder_host/src/stream_fold.rs:593`) runs
 /// `decode_compact_country_identity_data_payload`
 /// (`domain_data_authority.rs:1013`) on EVERY d18 DOMAIN_DATA record whatever its
 /// status, and a parse error clears the stream's decodable verdict. Its checks are
@@ -829,7 +829,7 @@ struct StreamScan {
 /// shorter measurement and never a panic.
 fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<StreamScan, String> {
     // Identity is a caller-stated protocol, never inferred from bytes:
-    // `stream_fold.rs:220`, `stream_validator.rs:328`.
+    // `recorder_host/src/stream_fold.rs:220`, `stream_validator.rs:328`.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -1224,7 +1224,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // one record per closed hour when scheduled, none at all when not. This
     // bounds what this harness canNOT validate: production runs
     // `validate_domain_data_payload_at` on EVERY domain's DATA payload
-    // (`stream_fold.rs:593`), while this harness owns only d92's and d18's
+    // (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d92's and d18's
     // grammars, so a record of either domain whose header was relabelled — or
     // lost outright — would otherwise be silently ignored: a lost d92 record
     // shrinks the run, and a lost d18 record silently turns its hour's d92

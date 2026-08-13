@@ -2776,8 +2776,9 @@ mod tests {
 
     /// Asserts the repair emits the spelling the consumer will accept.
     ///
-    /// The rule this mirrors is `map_viewer/src/frame_bundle.rs::
-    /// map_frame_reflected_constant_buffer_binding_blockers`: a bundle is
+    /// The rule this mirrors is
+    /// `map_viewer/src/frame_bundle.rs::map_frame_reflected_constant_buffer_binding_blockers`:
+    /// a bundle is
     /// blocked when a captured constant-buffer binding at some stage/slot does
     /// not carry the same declared name the active shader's reflection uses for
     /// that slot. Because the repair canonicalises the reflection too, that

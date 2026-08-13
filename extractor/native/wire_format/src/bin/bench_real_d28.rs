@@ -52,7 +52,7 @@
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
 //! full authority. The five-check sweep adds FRAME_END seal validation
-//! (`stream_fold.rs:46`-`:89`, sited at `:401`-`:409`), DOMAIN_PERF hour binding
+//! (`recorder_host/src/stream_fold.rs:46`-`:89`, sited at `:401`-`:409`), DOMAIN_PERF hour binding
 //! (`:328`-`:365`) and seal count accounting (`:411`-`:419`), the DATA arm's
 //! pending-PERF rule (`:378`-`:386`), and caller-stated identity mode (`:220`).
 //!
@@ -113,7 +113,7 @@
 //!
 //! **Only d28 DATA payloads are validated.** Production runs
 //! `validate_domain_data_payload_at` on the DATA payload of EVERY domain
-//! (`stream_fold.rs:593`); this harness cannot, because validating another
+//! (`recorder_host/src/stream_fold.rs:593`); this harness cannot, because validating another
 //! domain's payload means owning that domain's authority, and `wire_format`
 //! must not depend on `recorder_host`. Every DATA record of any other domain
 //! therefore passes with its H4CR header, sequence continuity, hour-boundary,
@@ -786,7 +786,7 @@ fn scan_stream(
 
     // COMPLETENESS: every closed game hour must carry exactly one d28 DATA
     // record, of any status. Production validates the payload of EVERY domain's
-    // DATA record (`stream_fold.rs:593`); this harness cannot (module docs), so
+    // DATA record (`recorder_host/src/stream_fold.rs:593`); this harness cannot (module docs), so
     // a d28 record relabelled to another domain id — or lost outright — would
     // otherwise be silently ignored and the run would report a plausible
     // measurement over fewer hours. Per-hour uniqueness is already enforced

@@ -16,7 +16,7 @@
 //! schema carries player tag / DLC mask / start date / save version / session /
 //! ideology / cosmetic tag / build banner and *no* `game_unique_*` field — see
 //! `world_fold.rs::fold_session_header` and
-//! `main.rs::decode_compact_session_header_data_payload`). Consequently every
+//! `domain_data_authority.rs::decode_compact_session_header_data_payload`). Consequently every
 //! real capture at this revision resolves to `state = "unavailable"` (d68 rows
 //! were seen but the components are not sourced) or `state = "unbound"` (no d68
 //! row was observed at all). Identity is NEVER fabricated from witnesses; a

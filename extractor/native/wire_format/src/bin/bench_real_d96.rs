@@ -135,7 +135,7 @@
 //! - every record header through `compact_contract::parse_compact_record_header`;
 //! - every record through `compact_contract::stream_validator::StatefulStreamValidator`;
 //! - the hour-boundary rules of `recorder_host::stream_fold::BoundaryTracker`
-//!   (`stream_fold.rs:277`), its DOMAIN_PERF hour binding (`:328`-`:365`) and the
+//!   (`recorder_host/src/stream_fold.rs:277`), its DOMAIN_PERF hour binding (`:328`-`:365`) and the
 //!   DATA arm's pending-PERF rule (`:378`-`:386`);
 //! - FRAME_END seal-field validation (`:46`-`:89`, `:401`-`:409`) and the seal's
 //!   domain-count cross-check against distinct non-probe PERF domains
@@ -149,7 +149,7 @@
 //! `wire_format` must not depend on. The DATA payloads of every domain other than
 //! 96, 92 and 18 pass UNVALIDATED beyond header sanity, the stream validator and
 //! the hour-boundary rules — production validates every domain's payload
-//! (`stream_fold.rs:593`). That unvalidated remainder is explicitly BOUNDED:
+//! (`recorder_host/src/stream_fold.rs:593`). That unvalidated remainder is explicitly BOUNDED:
 //! every closed game hour must carry exactly one d96 DATA record of any status,
 //! and the d92 and d18 lanes must each be all-or-nothing — exactly one record per
 //! closed hour when scheduled — so a d96, d92 or d18 record relabelled to another
@@ -163,7 +163,7 @@
 //!   make it a §6 derived field. The fold enforces nothing of the kind, so
 //!   `d96.rs` carries it as a plain value and this harness MEASURES the identity.
 //! - **`modifier_key` stability per tactic.** The grammar requires only a
-//!   non-zero key (`tactic_weight.rs:314`), so a frame whose key differs from the
+//!   non-zero key (`compact_contract/src/tactic_weight.rs:314`), so a frame whose key differs from the
 //!   previous hour's for the same tactic is a frame the fold folds. Whether the
 //!   mapping is in fact constant on this capture is measured and printed — a
 //!   property of one stream, never a licence to drop a field.
@@ -240,7 +240,7 @@ fn assert_status_predicates_agree() {
     }
 }
 
-// --- FRAME_END seal (`stream_fold.rs:46`-`:89`). -----------------------------
+// --- FRAME_END seal (`recorder_host/src/stream_fold.rs:46`-`:89`). -----------------------------
 
 fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), String> {
     if payload.len() != COMPACT_FRAME_END_PAYLOAD_LEN {
@@ -323,7 +323,7 @@ struct D18Mirror {
 /// The D18 payload authority's status-independent checks that the FOLD does not
 /// make — applied fail-closed, as a stream rejection.
 ///
-/// `validate_domain_data_payload_at` (`stream_fold.rs:593`) runs
+/// `validate_domain_data_payload_at` (`recorder_host/src/stream_fold.rs:593`) runs
 /// `decode_compact_country_identity_data_payload`
 /// (`domain_data_authority.rs:1013`) on EVERY d18 DOMAIN_DATA record whatever its
 /// status, and a parse error clears the stream's decodable verdict. Its checks are
@@ -991,7 +991,7 @@ struct StreamScan {
 /// measurement and never a panic.
 fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<StreamScan, String> {
     // Identity is a caller-stated protocol, never inferred from bytes:
-    // `stream_fold.rs:220`, `stream_validator.rs:328`.
+    // `recorder_host/src/stream_fold.rs:220`, `stream_validator.rs:328`.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -1464,7 +1464,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // record per closed hour when scheduled, none at all when not. This bounds
     // what this harness canNOT validate: production runs
     // `validate_domain_data_payload_at` on EVERY domain's DATA payload
-    // (`stream_fold.rs:593`), while this harness owns only d96's, d92's and d18's
+    // (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d96's, d92's and d18's
     // grammars, so a record of any of the three whose header was relabelled — or
     // lost outright — would otherwise be silently ignored: a lost d96 record
     // shrinks the run, and a lost d92 or d18 record silently turns its hour's d96

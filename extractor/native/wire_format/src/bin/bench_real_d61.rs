@@ -32,7 +32,7 @@
 //!   the open hour and only that hour, and closed hours strictly increase;
 //! - that tracker's DOMAIN_PERF hour binding (`:328`-`:365`), including the DATA
 //!   arm's pending-PERF rule (`:378`-`:386`);
-//! - FRAME_END seal validation (`stream_fold.rs:46`-`:89`) and the seal's count
+//! - FRAME_END seal validation (`recorder_host/src/stream_fold.rs:46`-`:89`) and the seal's count
 //!   cross-check against distinct non-probe PERF domains (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
 //!   hour left open, at least one FRAME_END, and the final record is a FRAME_END.
@@ -44,7 +44,7 @@
 //!
 //! The DATA payloads of every domain other than 61 pass UNVALIDATED beyond
 //! header sanity, the stream validator and the hour-boundary rules —
-//! production validates every domain's payload (`stream_fold.rs:593`); this
+//! production validates every domain's payload (`recorder_host/src/stream_fold.rs:593`); this
 //! harness owns only d61's grammar. That unvalidated remainder is explicitly
 //! BOUNDED: every closed game hour must carry exactly one d61 DATA record of
 //! any status (the `d61_records == closed_hours` completeness check in
@@ -215,7 +215,7 @@ fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), St
 /// The recorder's status-independent payload authority for this domain,
 /// `decode_compact_air_loss_stats_live_data_payload`
 /// (`recorder_host/src/domain_data_authority.rs:8200`-`:8245`), calls the lane's
-/// lenient summary decoder `decode_payload` (`lib.rs:218`), which checks strictly
+/// lenient summary decoder `decode_payload` (`lanes/air_loss_stats_live/src/lib.rs:218`), which checks strictly
 /// less than this: it validates `field_count`, `row_len`, the body multiple, the
 /// declared row count and the channel bands, but not `schema_version` and not the
 /// row flag set. The fold is the higher authority (recipe step 1) and the fold
@@ -238,7 +238,7 @@ fn scan_stream(
     identity_mode: StreamIdentityMode,
 ) -> Result<StreamScan, String> {
     // Production receives the identity mode from its caller
-    // (`stream_fold.rs:220`); the first record cannot state it safely.
+    // (`recorder_host/src/stream_fold.rs:220`); the first record cannot state it safely.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -546,7 +546,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d61 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d61's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d61's
     // grammar, so a d61 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture

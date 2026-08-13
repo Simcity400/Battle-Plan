@@ -407,7 +407,7 @@ fn scan_stream<R: Read>(
     }
 
     // The protocol is stated by the caller, never inferred from the first record
-    // (`stream_fold.rs:220`; `stream_validator.rs:328`). A decapitated IdentityV1
+    // (`recorder_host/src/stream_fold.rs:220`; `stream_validator.rs:328`). A decapitated IdentityV1
     // stream otherwise looks exactly like legacy.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
@@ -504,7 +504,7 @@ fn scan_stream<R: Read>(
                 }
                 Some(_) => {}
                 None => {
-                    // `stream_fold.rs:378`-`:386`: DATA must open the hour any
+                    // `recorder_host/src/stream_fold.rs:378`-`:386`: DATA must open the hour any
                     // pending PERF records already bound.
                     if let Some(pending) = pending_perf_hour {
                         if pending != header.game_hour_raw {
@@ -529,7 +529,7 @@ fn scan_stream<R: Read>(
             },
             COMPACT_RECORD_TYPE_FRAME_END => {
                 // Seal validation precedes the open-hour match in production
-                // (`stream_fold.rs:401`-`:419`).
+                // (`recorder_host/src/stream_fold.rs:401`-`:419`).
                 let (emitted_domains, scheduled_domains) = check_frame_end_seal(payload, pos)?;
                 let observed_perf_domains =
                     non_probe_perf_domains.len().min(u32::MAX as usize) as u32;
@@ -633,7 +633,7 @@ fn scan_stream<R: Read>(
             }
 
             // The structural half of the independent payload authority, on every
-            // DOMAIN_DATA record whatever its status (`stream_fold.rs:594`).
+            // DOMAIN_DATA record whatever its status (`recorder_host/src/stream_fold.rs:594`).
             check_authority_payload(payload, pos)?;
 
             // The fold's own predicate, not a copied bit mask: it applies d49's
@@ -735,7 +735,7 @@ fn scan_stream<R: Read>(
     // record of any status, and exactly one d50 DATA record. This bounds what
     // this harness canNOT validate: production runs
     // `validate_domain_data_payload_at` on EVERY domain's DATA payload
-    // (`stream_fold.rs:593`), while this harness owns only d49's grammar, so a
+    // (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d49's grammar, so a
     // record of either domain whose header was relabelled — or lost outright —
     // would otherwise be silently ignored: a lost d49 record shrinks the run,
     // and a lost d50 record hides the other writer of the recorder's

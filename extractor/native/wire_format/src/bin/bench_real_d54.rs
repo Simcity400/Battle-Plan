@@ -99,7 +99,7 @@
 //!
 //! The DATA payloads of every domain other than 54 pass UNVALIDATED beyond header
 //! sanity, the stream validator and the hour-boundary rules — production validates
-//! every domain's payload (`stream_fold.rs:593`); this harness owns only d54's
+//! every domain's payload (`recorder_host/src/stream_fold.rs:593`); this harness owns only d54's
 //! grammar. That unvalidated remainder is explicitly BOUNDED: every closed game
 //! hour must carry exactly one d54 DATA record of any status, and the d27 and d28
 //! lanes must each be all-or-nothing — exactly one record per closed hour when
@@ -934,7 +934,7 @@ fn scan_stream(
     // record of any status, and each dependency lane must be all-or-nothing.
     // This bounds what this harness canNOT validate: production runs
     // `validate_domain_data_payload_at` on EVERY domain's DATA payload
-    // (`stream_fold.rs:593`), while this harness owns only d54's grammar, so a
+    // (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d54's grammar, so a
     // d54 record whose header was relabelled — or lost outright — would
     // otherwise be silently ignored, shrinking the run. A per-capture
     // completeness assertion, NOT a grammar rule (`bench_real_d65.rs`

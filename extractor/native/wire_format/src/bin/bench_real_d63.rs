@@ -237,7 +237,7 @@ fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), St
 ///    (`domain_data_authority.rs:11969`-`:12081`). This one runs on EVERY
 ///    DOMAIN_DATA record whatever its status, and any error it reports makes the
 ///    record `malformed_payload_records`, which
-///    `strict_stream_certification_verdict` (`stream_fold.rs:507`-`:510`)
+///    `strict_stream_certification_verdict` (`recorder_host/src/stream_fold.rs:507`-`:510`)
 ///    refuses.
 ///
 /// **Unlike d38's, this domain's second authority DOES walk the rows**
@@ -310,7 +310,7 @@ fn scan_stream(
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
     // The DOMAIN_PERF hour-binding state, `BoundaryTracker`'s own
-    // (`stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
+    // (`recorder_host/src/stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
     let mut pending_perf_hour: Option<i32> = None;
     let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     // Hour of the last d63 DATA record of ANY status — the uniqueness rule.
@@ -344,7 +344,7 @@ fn scan_stream(
 
         // The hour-boundary subset of `BoundaryTracker::observe`.
         match header.record_type {
-            // `stream_fold.rs:328`-`:365`. PERF records carry no d63 data, but
+            // `recorder_host/src/stream_fold.rs:328`-`:365`. PERF records carry no d63 data, but
             // they bind the hour: a duplicate non-probe domain, a PERF for an
             // hour other than the open one, a PERF for an already-closed hour, or
             // two different pending hours before any DATA record opens one are
@@ -400,7 +400,7 @@ fn scan_stream(
                 }
                 Some(_) => {}
                 None => {
-                    // `stream_fold.rs:378`-`:386`, and it comes BEFORE the
+                    // `recorder_host/src/stream_fold.rs:378`-`:386`, and it comes BEFORE the
                     // monotonicity check, as it does there: a DATA record may only
                     // open the hour the pending PERF records already bound. The
                     // PERF arm alone does not cover this, because a single pending
@@ -428,7 +428,7 @@ fn scan_stream(
             },
             COMPACT_RECORD_TYPE_FRAME_END => {
                 // The seal fields come first, as they do in the production tracker
-                // (`stream_fold.rs:401`-`:409`): a FRAME_END that does not seal is
+                // (`recorder_host/src/stream_fold.rs:401`-`:409`): a FRAME_END that does not seal is
                 // a refused stream whatever hour it claims to close.
                 let (emitted_domains, scheduled_domains) = check_frame_end_seal(payload, pos)?;
                 // `:411`-`:419`: the seal's counts must equal the distinct
@@ -469,7 +469,7 @@ fn scan_stream(
                         ));
                     }
                 }
-                // `stream_fold.rs:449`-`:451`.
+                // `recorder_host/src/stream_fold.rs:449`-`:451`.
                 open_hour = None;
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
@@ -607,7 +607,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d63 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d63's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d63's
     // grammar, so a d63 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture
@@ -1503,7 +1503,7 @@ mod tests {
     #[test]
     fn a_frame_end_that_does_not_seal_its_hour_refuses_the_stream() {
         // The seal predicate of `validate_frame_end_seal_fields`
-        // (`stream_fold.rs:46`-`:89`), swept over the whole predicate rather than
+        // (`recorder_host/src/stream_fold.rs:46`-`:89`), swept over the whole predicate rather than
         // one input. Before this check a FRAME_END with a nonzero reserved word —
         // a stream production refuses — produced an unchanged, plausible
         // measurement here.
@@ -1642,7 +1642,7 @@ mod tests {
     fn perf_hour_binding_is_enforced() {
         // DOMAIN_PERF records carry no d63 data, but they bind the hour, and
         // production refuses a stream that violates that binding
-        // (`stream_fold.rs:328`-`:365`). Swept over the whole predicate.
+        // (`recorder_host/src/stream_fold.rs:328`-`:365`). Swept over the whole predicate.
         //
         // The shape of a healthy hour: PERF for each scheduled domain, the d63
         // DATA record, then a FRAME_END whose seal counts equal the observed
@@ -1723,7 +1723,7 @@ mod tests {
         );
 
         // And the seal's domain counts must equal the observed non-probe PERF
-        // domains (`stream_fold.rs:411`-`:419`), in both directions.
+        // domains (`recorder_host/src/stream_fold.rs:411`-`:419`), in both directions.
         for (emitted, scheduled) in [(1u32, 1u32), (3, 3), (2, 3), (3, 2)] {
             let mut s = Vec::new();
             s.extend(perf(1, 100, 20));
@@ -1763,7 +1763,7 @@ mod tests {
 
     #[test]
     fn a_data_record_must_open_the_hour_the_pending_perf_records_bound() {
-        // `stream_fold.rs:378`-`:386`. The PERF arm alone does not cover this,
+        // `recorder_host/src/stream_fold.rs:378`-`:386`. The PERF arm alone does not cover this,
         // because one pending PERF hour is legal until a DATA record disagrees
         // with it — this reproducer passes with the PERF arm present and the DATA
         // arm's `pending_perf_hour` consultation missing.
@@ -1956,7 +1956,7 @@ mod tests {
         // A sniffing harness reads a decapitated IdentityV1 stream — one whose
         // mandatory CID1 record has been spliced off — as a healthy legacy stream
         // and measures it, because both begin with an ordinary record at sequence
-        // 1. Production takes the mode from its caller (`stream_fold.rs:220`) and
+        // 1. Production takes the mode from its caller (`recorder_host/src/stream_fold.rs:220`) and
         // the validator never sniffs (`stream_validator.rs:328`), so the mode is a
         // parameter here too and a mismatch fails closed in BOTH directions.
         use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;

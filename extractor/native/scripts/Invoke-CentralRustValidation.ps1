@@ -91,6 +91,12 @@ $productionSourceCapabilityPaths = [ordered]@{
 $portablePackageReceiptPath = Join-Path $targetDir "release\hoi4-portable-package-receipt.json"
 $worldFoldCitationVerifier = Join-Path $PSScriptRoot "verify_world_fold_citations.py"
 $worldFoldCitationTests = Join-Path $PSScriptRoot "test_verify_world_fold_citations.py"
+# The repo-wide half. The world-fold gate above covers citations of ONE file;
+# this one covers every `<file>:<line>` / `<file>::<item>` reference in the
+# source and document trees, which is where the other 1,143 measured citations
+# live. Its allowance is a ratchet: it may shrink, and a NEW line citation fails.
+$citationIntegrityVerifier = Join-Path $PSScriptRoot "verify_citation_integrity.py"
+$citationIntegrityTests = Join-Path $PSScriptRoot "test_verify_citation_integrity.py"
 $captureScorecardTests = Join-Path $PSScriptRoot "test_capture_scorecard.py"
 $clockBaselineSummaryTests = Join-Path $PSScriptRoot "test_clock_baseline_summary.py"
 # The sealed manifest's gap ledger is expanded by THREE implementations (Rust,
@@ -773,6 +779,7 @@ try {
         # promotion authority is removed. A changed shipping fold must first
         # force an explicit review of every wire-format transcription it backs.
         Invoke-Checked -Program "python" -Arguments @($worldFoldCitationTests)
+        Invoke-Checked -Program "python" -Arguments @($citationIntegrityTests)
         Invoke-Checked -Program "python" -Arguments @($captureScorecardTests)
         Invoke-Checked -Program "python" -Arguments @($clockBaselineSummaryTests)
         Invoke-Checked -Program "python" -Arguments @($gapLedgerTests)
@@ -783,6 +790,11 @@ try {
         )
         Invoke-Checked -Program "python" -Arguments @(
             $worldFoldCitationVerifier,
+            "--repo-root",
+            $repoRoot
+        )
+        Invoke-Checked -Program "python" -Arguments @(
+            $citationIntegrityVerifier,
             "--repo-root",
             $repoRoot
         )

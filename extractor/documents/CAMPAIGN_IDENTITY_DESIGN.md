@@ -47,12 +47,13 @@ cloned lineages from engine state alone; this residual is explicit.
 
 d68 is a single-record snapshot rooted at the validated `CGameState` singleton. Its payload
 carries five independently presence-badged u32 scalars - controlled-player tag DB id, DLC mask,
-campaign start date, save version, and `session` - plus ideology, cosmetic tag, and build banner
-(`extractor/native/collector/src/lib.rs:5638-5675`). The reader obtains header scalars at
-`CGameState+0xD4`, `+0x4A8`, `+0x58`, and `+0x490`; a bad game-state root produces
-`SOURCE_UNAVAILABLE`, and individual bad reads remain absent rather than fabricated
-(`extractor/native/collector/src/lib.rs:37520-37543`,
-`extractor/native/collector/src/lib.rs:37595-37634`).
+campaign start date, save version, and `session` - plus ideology, cosmetic tag, and build banner.
+The reader obtains header scalars at `CGameState+0xD4`, `+0x4A8`, `+0x58`, and `+0x490`; a bad
+game-state root produces `SOURCE_UNAVAILABLE`, and individual bad reads remain absent rather than
+fabricated. The wire layout is `collector/src/attach_log.rs::compact_session_header_data_payload`
+over `collector/src/attach_log.rs::CompactSessionHeader`; the reader is
+`collector/src/attach_log.rs::read_compact_session_header`. All three were in
+`collector/src/lib.rs` when this was written, before commit a4224794 moved the module body out.
 
 The build-profile evidence distinguishes the fields:
 

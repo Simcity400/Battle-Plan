@@ -78,21 +78,22 @@ latchsoak2 stream partitions the 3,471 d47 records exactly (reconciles to the ma
 
 Three composing defects (all verified against source):
 1. **Stale root cache never refreshes (96.6%, dominant).** `prewarm_...roots`
-   (`extractor/native/collector/src/lib.rs:17867`) returns early forever once `has_stable_roots()`; it never
+   (`collector/src/attach_log.rs::prewarm_compact_characters_leaders_cabinet_roots`)
+   returns early forever once `has_stable_roots()`; it never
    re-checks the shared heap-sweep generation the roots came from (:17925). One cached
    character dying → `has_rejections()` (adapter.rs:126, `rejected_roots != 0`) → the
    scheduler discards the whole populated frame for a rowless PARTIAL (scheduled.rs:96-102).
    Two deaths this run (hours 60824244, 60824352) then failed every subsequent frame. New
    characters are also never added after the first prewarm.
 2. **d47 consumes a CHANGED-ONLY politics delta as if it were a full snapshot** (latent).
-   `domain47_country_politics_roots` (`extractor/native/collector/src/lib.rs:18507`) iterates only emitted
+   `collector/src/attach_log.rs::domain47_country_politics_roots` iterates only emitted
    politics delta rows; empty→BRIDGE_UNAVAILABLE, but a nonempty SUBSET is accepted as
    complete (adapter.rs:301) while the fold clears d47 country fields before applying
    (world_fold.rs:7675) — a full replacement. A changed-subset hour could silently replace
    the whole active-ruler set. (Not the cause of THIS run's zeros, but real.)
 3. **read_time_us=0 is a measurement lie** (finding 4): `empty_native_scheduled_read`
    hardcodes `read_time_us: 0` (scheduled.rs:136), and the wrapper rebuilds status from the
-   OUTER status not `frame.status_flags` (`extractor/native/collector/src/lib.rs:18371`), so `bridge_unavailable_seen`
+   OUTER status not `frame.status_flags` (`collector/src/attach_log.rs::read_compact_characters_leaders_cabinet_live`), so `bridge_unavailable_seen`
    can read false while the country vector was actually empty (90/104 decoder-fail frames had
    0 country roots). `domain47_frame_parse_errors` counts MESSAGES not frames (104 frames × 15).
 
@@ -115,10 +116,12 @@ unproven deletion — the fold is full-replacement). The repair is to RECOVER:
    effectively one-shot, generation-awareness is inert and the rejection-triggered
    invalidation is the load-bearing half — verify before claiming the fix.
 2. **Full country topology, not politics delta** (defect 2): pass the complete validated
-   country-identity roots into d47 (`extractor/native/collector/src/lib.rs:15353`) and replace the delta walk
-   at :18507 with a full-root builder. Verify appointed-advisor derivation is truly disabled
+   country-identity roots into d47 (`collector/src/attach_log.rs::build_compact_extraction_gate_records`)
+   and replace the delta walk in `domain47_country_politics_roots` with a full-root
+   builder. Verify appointed-advisor derivation is truly disabled
    (adapter.rs:256/276) so active-idea deltas are unneeded.
-3. **Preserve failure evidence** (defect 3): on payload replacement (`extractor/native/collector/src/lib.rs:18379`)
+3. **Preserve failure evidence** (defect 3): on payload replacement (in
+   `collector/src/attach_log.rs::read_compact_characters_leaders_cabinet_live`)
    copy the original `read_time_us`, OR in `frame.status_flags`, and emit normalized
    parse-error-kind counts/hashes so ONE live frame identifies the exact 15-message family
    (do not guess the adapter/decoder relaxation before that evidence exists).
@@ -131,11 +134,11 @@ Regression tests to require: `domain47_stale_character_fails_one_frame_then_rebu
 
 **d43 market_trade_live — NOT chronic (premise refuted).** SOURCE_UNAVAILABLE on exactly
 1/3,471 frames: the elapsed-0 cold frame (heap sweep deliberately waits 250 ms before its first
-pass; lib.rs:52529-52544), where purchase-contract discovery was genuinely unavailable while the
+pass; `collector/src/attach_log.rs::heap_sweep_run`), where purchase-contract discovery was genuinely unavailable while the
 MTRF resource-flow trailer already carried 55 rows. Because status is a domain-wide bit and the
 session OR paints everything, one cold frame flagged the whole run. LATENT BUG found: the reader
 conflates cold `None` with warm known-complete-empty `Some([])` — both hit the unconditional
-`contract_ptrs.is_empty()` SOURCE flag (lib.rs:28264-28270). Fixes (small): (1) only `None` sets
+`contract_ptrs.is_empty()` SOURCE flag (`collector/src/attach_log.rs::read_compact_market_trade`). Fixes (small): (1) only `None` sets
 SOURCE; (2) production preflight: warm the d43 needle before the first latch frame (timeout =
 fail closed, never clear the bit); (3) per-segment disposition so MTRF folds while contracts
 stay explicitly failed on a cold frame.
@@ -144,7 +147,8 @@ stay explicitly failed on a cold frame.
 PARTIAL on 3,471/3,471 frames (8 groups on 3,418, 7 on 53); the fold rejects every partial d69
 frame and no clean baseline ever folds ⇒ **tech-sharing contributed nothing to that replay**
 despite 27.7k groups captured. Cause unattributable from the stream: seven distinct
-failure reasons collapse into ONE boolean (`torn_or_skipped_nonnull_slot`, lib.rs:36493-36584)
+failure reasons collapse into ONE boolean (`torn_or_skipped_nonnull_slot`, in
+`collector/src/attach_log.rs::read_compact_tech_sharing_groups`)
 with zero reason telemetry. Strong inference (not proven): the hardcoded NINE-slot topology
 (build_profile.rs:403-419, provenance = a single nine-group fixture) has a stale tail — a
 retained capture shows exactly 8 groups/frame with status 0 (live_validation_20260709_220224

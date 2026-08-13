@@ -38,7 +38,7 @@
 //!   is re-implemented here exactly as `bench_real_d63.rs` does. The DATA
 //!   payloads of every domain other than 52 pass UNVALIDATED beyond header
 //!   sanity, the stream validator and the hour-boundary rules — production
-//!   validates every domain's payload (`stream_fold.rs:593`). That unvalidated
+//!   validates every domain's payload (`recorder_host/src/stream_fold.rs:593`). That unvalidated
 //!   remainder is explicitly BOUNDED: every closed game hour must carry exactly
 //!   one d52 DATA record of any status (the `d52_records == closed_hours`
 //!   completeness check in [`scan_stream`]), so a d52 record relabelled to
@@ -57,7 +57,7 @@
 //!   `lanes/occupation_resistance_compliance_live/domain44_compact.rs`'s own
 //!   decoder. Any complaint there makes the record `malformed_payload_records`,
 //!   which `strict_stream_certification_verdict`
-//!   (`stream_fold.rs:507`-`:510`) refuses.
+//!   (`recorder_host/src/stream_fold.rs:507`-`:510`) refuses.
 //!
 //! # The three outcomes, named
 //!
@@ -693,7 +693,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d52 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d52's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d52's
     // grammar, so a d52 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture

@@ -32,7 +32,7 @@
 //! - the hour boundary rules of `recorder_host::stream_fold::BoundaryTracker`
 //!   (`recorder_host/src/stream_fold.rs:277`), its DOMAIN_PERF hour binding
 //!   (`:328`-`:365`), and the DATA arm's pending-PERF rule (`:378`-`:386`);
-//! - FRAME_END seal fields (`stream_fold.rs:46`-`:89`) and their distinct
+//! - FRAME_END seal fields (`recorder_host/src/stream_fold.rs:46`-`:89`) and their distinct
 //!   non-probe PERF-domain count cross-check (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
 //!   hour left open, at least one FRAME_END, and the final record is a FRAME_END;
@@ -41,7 +41,7 @@
 //!
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
-//! full authority. `validate_domain_data_payload_at` (`stream_fold.rs:594`)
+//! full authority. `validate_domain_data_payload_at` (`recorder_host/src/stream_fold.rs:594`)
 //! invokes its status-independent d13 decoder
 //! (`domain_data_authority.rs:2749`-`:3026`) adds predicates the fold boundary
 //! does not: both scale words, `changed_rows <= country_count`, nonzero and
@@ -56,7 +56,7 @@
 //!
 //! The seal, PERF binding, pending-PERF, payload-authority, and stated identity
 //! checks are the five-check sweep. Production receives identity mode from its
-//! caller (`stream_fold.rs:220`); the measured capture is legacy, which remains
+//! caller (`recorder_host/src/stream_fold.rs:220`); the measured capture is legacy, which remains
 //! `main`'s default.
 //!
 //! **The status decision, made explicitly.** `fold_tech` (`world_fold.rs:13301`)
@@ -95,7 +95,7 @@
 //!
 //! **Only d13 DATA payloads are validated.** Production runs
 //! `validate_domain_data_payload_at` on the DATA payload of EVERY domain
-//! (`stream_fold.rs:593`); this harness cannot, because validating another
+//! (`recorder_host/src/stream_fold.rs:593`); this harness cannot, because validating another
 //! domain's payload means owning that domain's authority, and `wire_format`
 //! must not depend on `recorder_host`. Every DATA record of any other domain
 //! therefore passes with its H4CR header, sequence continuity, hour-boundary,
@@ -652,7 +652,7 @@ fn scan_stream(
 
     // COMPLETENESS: every closed game hour must carry exactly one d13 DATA
     // record, of any status. Production validates the payload of EVERY domain's
-    // DATA record (`stream_fold.rs:593`); this harness cannot (module docs), so
+    // DATA record (`recorder_host/src/stream_fold.rs:593`); this harness cannot (module docs), so
     // a d13 record relabelled to another domain id — or lost outright — would
     // otherwise be silently ignored and the run would report a plausible
     // measurement over fewer hours. Per-hour uniqueness is already enforced

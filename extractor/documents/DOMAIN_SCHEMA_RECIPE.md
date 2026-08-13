@@ -804,18 +804,20 @@ the stream passes.** Rules the review rounds established:
   above rejects an *unassigned* bit; d51 is the converse hazard. Its three lane-local badges are
   bits 11, 12 and 13 (`compact_contract/src/status_flags_base.rs:69`–`:74`), which globally are
   `TRANSITION_BASELINE_RESET`, `CONTROL_INVALID` and `WAR_SEGMENT_ABSENT` — all *assigned*, and
-  `CONTROL_INVALID` sits inside `COMPACT_STATUS_FAILURE_MASK` (`lib.rs:155`–`:163`). Bit 11 rides
+  `CONTROL_INVALID` sits inside `compact_contract/src/lib.rs::COMPACT_STATUS_FAILURE_MASK`. Bit 11 rides
   **514 of 514** hours of d51's capture. Two ways to get it wrong, both silent: classify the raw
   word, and every hour with bit 12 set reads as a hard failure and is excluded, quietly measuring
   nothing; or strip the badges in the *failure* predicate but not in the *validity* one, which
   happens to work for d51 and is the accident that made d53's registration bug look like a
   validity failure. The correct composition is `compact_status_unknown_flags_v1` **over**
-  `compact_status_for_global_interpretation(domain, status)` (`lib.rs:148`–`:153`), with
+  `compact_contract/src/lib.rs::compact_status_for_global_interpretation`, with
   `compact_status_failure_flags_after_expected_partial_tolerance` for the classification, which
   strips internally. Assert the composed predicate equals your fold's own expression over the
   whole 32-bit space rather than reasoning about it —
   `bench_real_d51.rs::the_failure_predicate_matches_the_folds_own` is the form. Registered
-  domains today are 49, 51, 53 and 60 (`lib.rs:138`–`:146`), and the enforcement that keeps that
+  domains today are 49, 51, 53 and 60 (the match arms of
+  `compact_contract/src/lib.rs::lane_local_status_mask`, which the predicate above
+  calls), and the enforcement that keeps that
   registry from drifting behind the lanes' own declarations is
   `compact_contract/tests/lane_status_bit_sweep.rs` — the sweep exists because d53 declared and
   emitted seven badge bits the registry did not know, on 379 of 514 hours, which made every such
@@ -868,7 +870,7 @@ the stream passes.** Rules the review rounds established:
   27, 28, 54 and 86 only), **and check the branch's position.** `handle_compact_failure` applies
   the tolerance-adjusted failure mask, so for an UNLISTED domain
   `COMPACT_STATUS_PARTIAL_DATA` stays inside the mask it checks
-  (`COMPACT_STATUS_FAILURE_MASK`, `lib.rs:110`–`:118`) and the gate returns on exactly that
+  (`compact_contract/src/lib.rs::COMPACT_STATUS_FAILURE_MASK`) and the gate returns on exactly that
   status — a tolerance branch positioned after it is dead code. d65's fold carries exactly
   that: the tolerance call at `world_fold.rs:12299` sits behind the failure gate at
   `:12292` and its predicate is constantly false for a domain the table does not list, so

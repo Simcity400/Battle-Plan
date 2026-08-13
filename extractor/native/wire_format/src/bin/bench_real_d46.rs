@@ -49,7 +49,7 @@
 //! exactly as `bench_real_d63.rs` documents it: every record header through
 //! `compact_contract::parse_compact_record_header`; every record through
 //! `StatefulStreamValidator`; the hour-boundary and DOMAIN_PERF-hour-binding rules
-//! of `recorder_host::stream_fold::BoundaryTracker` (`stream_fold.rs:277`-`:365`);
+//! of `recorder_host::stream_fold::BoundaryTracker` (`recorder_host/src/stream_fold.rs:277`-`:365`);
 //! the FRAME_END seal fields (`:46`-`:89`) and their domain-count cross-check
 //! (`:411`-`:419`); and that tracker's EOF rules (`:459`). Those two live in
 //! `recorder_host`, which `wire_format` must not depend on, so this harness
@@ -403,7 +403,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // The identity protocol is an INPUT, never sniffed: an `IdentityV1` stream
     // whose mandatory CID1 record has been spliced off is byte-indistinguishable
     // from a legacy stream, so a sniffing harness measures a decapitated stream
-    // that production refuses (`stream_validator.rs:328`, `stream_fold.rs:220`).
+    // that production refuses (`stream_validator.rs:328`, `recorder_host/src/stream_fold.rs:220`).
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -438,7 +438,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
     // The DOMAIN_PERF hour-binding state, `BoundaryTracker`'s own
-    // (`stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
+    // (`recorder_host/src/stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
     let mut pending_perf_hour: Option<i32> = None;
     let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     // Hour of the last d46 DATA record of ANY status — the uniqueness rule.
@@ -521,7 +521,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 }
                 Some(_) => {}
                 None => {
-                    // `stream_fold.rs:378`-`:386`, and it comes BEFORE the
+                    // `recorder_host/src/stream_fold.rs:378`-`:386`, and it comes BEFORE the
                     // monotonicity check, as it does there.
                     if let Some(pending) = pending_perf_hour {
                         if pending != header.game_hour_raw {
@@ -601,7 +601,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
             //
             // DELIBERATELY STRICTER THAN PRODUCTION, and fail-closed. The production
             // boundary tracker permits several DOMAIN_DATA records while an hour is
-            // open (`stream_fold.rs:369`) and `WorldFold::ingest_record` would fold
+            // open (`recorder_host/src/stream_fold.rs:369`) and `WorldFold::ingest_record` would fold
             // each in turn, so a same-hour pair is a stream production certifies and
             // this harness refuses. That is the recipe's standing rule for every
             // measurement bin: a second record for one hour would otherwise become a

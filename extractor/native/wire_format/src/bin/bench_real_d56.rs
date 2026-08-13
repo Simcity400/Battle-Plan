@@ -23,7 +23,7 @@
 //! exactly as `bench_real_d63.rs` documents it: every record header through
 //! `compact_contract::parse_compact_record_header`; every record through
 //! `StatefulStreamValidator`; the hour-boundary and DOMAIN_PERF-hour-binding rules
-//! of `recorder_host::stream_fold::BoundaryTracker` (`stream_fold.rs:277`-`:365`);
+//! of `recorder_host::stream_fold::BoundaryTracker` (`recorder_host/src/stream_fold.rs:277`-`:365`);
 //! the FRAME_END seal fields (`:46`-`:89`) and their domain-count cross-check
 //! (`:411`-`:419`); and that tracker's EOF rules (`:459`). Those two live in
 //! `recorder_host`, which `wire_format` must not depend on, so this harness
@@ -363,7 +363,7 @@ fn scan_stream(
     // The identity protocol is an INPUT, never sniffed: an `IdentityV1` stream
     // whose mandatory CID1 record has been spliced off is byte-indistinguishable
     // from a legacy stream, so a sniffing harness measures a decapitated stream
-    // that production refuses (`stream_validator.rs:328`, `stream_fold.rs:220`).
+    // that production refuses (`stream_validator.rs:328`, `recorder_host/src/stream_fold.rs:220`).
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -387,7 +387,7 @@ fn scan_stream(
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
     // The DOMAIN_PERF hour-binding state, `BoundaryTracker`'s own
-    // (`stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
+    // (`recorder_host/src/stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
     let mut pending_perf_hour: Option<i32> = None;
     let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     // Hour of the last d56 DATA record of ANY status — the uniqueness rule.
@@ -470,7 +470,7 @@ fn scan_stream(
                 }
                 Some(_) => {}
                 None => {
-                    // `stream_fold.rs:378`-`:386`, and it comes BEFORE the
+                    // `recorder_host/src/stream_fold.rs:378`-`:386`, and it comes BEFORE the
                     // monotonicity check, as it does there.
                     if let Some(pending) = pending_perf_hour {
                         if pending != header.game_hour_raw {
@@ -672,7 +672,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d56 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d56's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d56's
     // grammar, so a d56 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture
@@ -1648,7 +1648,7 @@ mod tests {
     #[test]
     fn a_frame_end_that_does_not_seal_its_hour_refuses_the_stream() {
         // The seal predicate of `validate_frame_end_seal_fields`
-        // (`stream_fold.rs:46`-`:89`), swept over the whole predicate.
+        // (`recorder_host/src/stream_fold.rs:46`-`:89`), swept over the whole predicate.
         let mut ok = Vec::new();
         ok.extend(record(
             1,
@@ -1738,7 +1738,7 @@ mod tests {
     #[test]
     fn perf_hour_binding_is_enforced() {
         // The seal's domain-count cross-check against the observed non-probe PERF
-        // domains (`stream_fold.rs:411`-`:419`), and the binding rules at
+        // domains (`recorder_host/src/stream_fold.rs:411`-`:419`), and the binding rules at
         // `:328`-`:365`.
         let mut ok = Vec::new();
         ok.extend(perf(1, 100, D56));

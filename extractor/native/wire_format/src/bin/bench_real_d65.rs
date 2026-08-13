@@ -33,7 +33,7 @@
 //!   the open hour and only that hour, and closed hours strictly increase;
 //! - that tracker's DOMAIN_PERF hour binding (`:328`-`:365`), including the DATA
 //!   arm's pending-PERF rule (`:378`-`:386`);
-//! - FRAME_END seal validation (`stream_fold.rs:46`-`:89`) and the seal's count
+//! - FRAME_END seal validation (`recorder_host/src/stream_fold.rs:46`-`:89`) and the seal's count
 //!   cross-check against distinct non-probe PERF domains (`:411`-`:419`);
 //! - the EOF rules of that tracker's `eof_check` (`:459`): no residual bytes, no
 //!   hour left open, at least one FRAME_END, and the final record is a FRAME_END.
@@ -47,7 +47,7 @@
 //!
 //! 1. *Only d65 DATA payloads are validated.* Production runs
 //!    `validate_domain_data_payload_at` on the payload of **every** DATA record
-//!    (`stream_fold.rs:593`); doing that here would mean owning every domain's
+//!    (`recorder_host/src/stream_fold.rs:593`); doing that here would mean owning every domain's
 //!    payload authority, which is precisely the `recorder_host` dependency this
 //!    crate must not take. The concrete hazard is a d65 record relabelled to
 //!    another domain id, or dropped: it would be ignored and the run would
@@ -113,7 +113,7 @@
 //! (`compact_contract/src/lib.rs:136`-`:158`), so the predicate is constantly
 //! false for domain 65. It is also redundant with (1), because the status it
 //! would tolerate, `COMPACT_STATUS_PARTIAL_DATA`, is inside
-//! `COMPACT_STATUS_FAILURE_MASK` (`lib.rs:117`). This harness implements (1) and
+//! `COMPACT_STATUS_FAILURE_MASK` (`compact_contract/src/lib.rs:117`). This harness implements (1) and
 //! does not implement (2); the finding is reported to the orchestrator. Every
 //! other `Err` from the fold — a bad length, a zero identity, a duplicated
 //! pair — is a **stream rejection** here, because it says the payload is not
@@ -419,7 +419,7 @@ fn scan_stream(
     identity_mode: StreamIdentityMode,
 ) -> Result<StreamScan, String> {
     // Production receives the identity mode from its caller
-    // (`stream_fold.rs:220`); the first record cannot state it safely.
+    // (`recorder_host/src/stream_fold.rs:220`); the first record cannot state it safely.
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -1806,7 +1806,7 @@ mod tests {
     #[test]
     fn a_hour_that_loses_its_d65_record_refuses_the_stream() {
         // Production validates every domain's DATA payload
-        // (`stream_fold.rs:593`); this harness can only validate d65's, so a d65
+        // (`recorder_host/src/stream_fold.rs:593`); this harness can only validate d65's, so a d65
         // record relabelled to another domain — or dropped — would otherwise be
         // ignored and the run would report a plausible measurement over fewer
         // hours. The completeness check in `scan_stream` closes that hole.

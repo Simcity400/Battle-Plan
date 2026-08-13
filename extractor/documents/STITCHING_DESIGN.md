@@ -388,7 +388,9 @@ coverage: ordered visible Gap/CaptureFailed/Coalesced ranges
 ```
 
 It never lists superseded snapshots and never hides a main coverage gap. The
-current reader's `Index` is only a snapshot list (`extractor/native/snapshot/src/lib.rs:40-60`),
+current reader's `Index` is only a snapshot list
+(`portable_replay/native/snapshot/src/lib.rs::Index`; `extractor/native/snapshot`
+became a re-export facade over that crate in b0dbf0fe),
 which is why version-2 feature gating is required before this richer index is
 implemented.
 

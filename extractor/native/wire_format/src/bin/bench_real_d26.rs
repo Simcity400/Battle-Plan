@@ -122,7 +122,7 @@
 //!
 //! **Only d26 DATA payloads — plus the d20 subset below — are validated.**
 //! Production runs `validate_domain_data_payload_at` on the DATA payload of
-//! EVERY domain (`stream_fold.rs:593`); this harness cannot, because validating
+//! EVERY domain (`recorder_host/src/stream_fold.rs:593`); this harness cannot, because validating
 //! another domain's payload means owning that domain's authority, and
 //! `wire_format` must not depend on `recorder_host`. The one exception is d20,
 //! whose deletion rows the cross-domain prune guard must read:
@@ -955,7 +955,7 @@ fn scan_stream(
 
     // COMPLETENESS: every closed game hour must carry exactly one d26 DATA
     // record, of any status. Production validates the payload of EVERY domain's
-    // DATA record (`stream_fold.rs:593`); this harness cannot (module docs), so
+    // DATA record (`recorder_host/src/stream_fold.rs:593`); this harness cannot (module docs), so
     // a d26 record relabelled to another domain id — or lost outright — would
     // otherwise be silently ignored and the run would report a plausible
     // measurement over fewer hours. Per-hour uniqueness is already enforced

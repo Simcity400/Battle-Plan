@@ -65,7 +65,7 @@
 //!
 //! The DATA payloads of every domain other than 68 pass UNVALIDATED beyond
 //! header sanity, the stream validator and the hour-boundary rules —
-//! production validates every domain's payload (`stream_fold.rs:593`); this
+//! production validates every domain's payload (`recorder_host/src/stream_fold.rs:593`); this
 //! harness owns only d68's grammar. That unvalidated remainder is explicitly
 //! BOUNDED: every closed game hour must carry exactly one d68 DATA record of
 //! any status (the `d68_records == closed_hours` completeness check in
@@ -226,7 +226,7 @@ fn scan_stream(
     identity_mode: StreamIdentityMode,
 ) -> Result<StreamScan, String> {
     // The protocol is stated by the caller, never inferred from the first record
-    // (`stream_fold.rs:220`; `stream_validator.rs:328`).
+    // (`recorder_host/src/stream_fold.rs:220`; `stream_validator.rs:328`).
     let mut validator = match identity_mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -498,7 +498,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d68 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d68's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d68's
     // grammar, so a d68 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture

@@ -427,7 +427,7 @@ fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), St
 ///    (`domain_data_authority.rs:13102`-`:13150`). This one runs on EVERY
 ///    DOMAIN_DATA record whatever its status, and any error it reports makes the
 ///    record `malformed_payload_records`, which
-///    `strict_stream_certification_verdict` (`stream_fold.rs:507`-`:510`) refuses.
+///    `strict_stream_certification_verdict` (`recorder_host/src/stream_fold.rs:507`-`:510`) refuses.
 ///
 /// That authority is a bare `naval_history::decode_payload` call and nothing else
 /// — it does not check the frame binding, the sequence binding or the authority
@@ -632,7 +632,7 @@ fn scan_stream(
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
     // The DOMAIN_PERF hour-binding state, `BoundaryTracker`'s own
-    // (`stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
+    // (`recorder_host/src/stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
     let mut pending_perf_hour: Option<i32> = None;
     let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     // Hour of the last d70 DATA record of ANY status — the uniqueness rule.
@@ -721,7 +721,7 @@ fn scan_stream(
                 }
                 Some(_) => {}
                 None => {
-                    // `stream_fold.rs:378`-`:386`, and it comes BEFORE the
+                    // `recorder_host/src/stream_fold.rs:378`-`:386`, and it comes BEFORE the
                     // monotonicity check, as it does there.
                     if let Some(pending) = pending_perf_hour {
                         if pending != header.game_hour_raw {
@@ -746,7 +746,7 @@ fn scan_stream(
             },
             COMPACT_RECORD_TYPE_FRAME_END => {
                 // The seal fields come first, as they do in the production tracker
-                // (`stream_fold.rs:401`-`:409`).
+                // (`recorder_host/src/stream_fold.rs:401`-`:409`).
                 let (emitted_domains, scheduled_domains) = check_frame_end_seal(payload, pos)?;
                 // `:411`-`:419`.
                 let observed_perf_domains =
@@ -785,7 +785,7 @@ fn scan_stream(
                         ));
                     }
                 }
-                // `stream_fold.rs:449`-`:451`.
+                // `recorder_host/src/stream_fold.rs:449`-`:451`.
                 open_hour = None;
                 pending_perf_hour = None;
                 non_probe_perf_domains.clear();
@@ -937,7 +937,7 @@ fn scan_stream(
     // COMPLETENESS: every closed game hour must carry exactly one d70 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d70's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d70's
     // grammar, so a d70 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture
@@ -2205,7 +2205,7 @@ mod tests {
 
     #[test]
     fn a_data_record_must_open_the_hour_the_pending_perf_records_bound() {
-        // `stream_fold.rs:378`-`:386`. The PERF arm alone does not cover this,
+        // `recorder_host/src/stream_fold.rs:378`-`:386`. The PERF arm alone does not cover this,
         // because one pending PERF hour is legal until a DATA record disagrees.
         let data = |seq: u64, hour: i32| {
             record(

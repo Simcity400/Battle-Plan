@@ -29,7 +29,7 @@
 
     ---------------------------- METRIC MAP (section 10) ----------------------------
     Doc refs: AUTO_ATTACH_DESIGN.md:419-422 (the five metrics + fail conditions),
-    :420-421 (61 / 900 snapshot bounds); policy.rs:18-80 grounds the cadence
+    :420-421 (61 / 900 snapshot bounds); recorder_host/src/auto_attach/policy.rs:18-80 grounds the cadence
     (HEALTHY_RECONCILE_MS 30000 -> 61, DEGRADED_RECONCILE_MS 2000 -> 900).
 
       1. CPU time            -- DIRECTLY SAMPLED (TotalProcessorTime delta).

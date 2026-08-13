@@ -5,7 +5,7 @@
 //! `compact_contract::parse_compact_record_header`, every record goes through
 //! `StatefulStreamValidator`, and this bin enforces the documented
 //! `recorder_host::stream_fold::BoundaryTracker`/`eof_check` subset used by the
-//! recipe-conformant bins (`stream_fold.rs:277`-`:459`): DATA/PERF hour binding,
+//! recipe-conformant bins (`recorder_host/src/stream_fold.rs:277`-`:459`): DATA/PERF hour binding,
 //! unique PERF domains, FRAME_END seal and observed-domain counts, strictly
 //! increasing closed hours, a final FRAME_END, and no open hour at EOF.
 //!
@@ -18,7 +18,7 @@
 //!
 //! - **stream rejection:** H4CR/boundary failure or unassigned status;
 //! - **excluded hour (event part):** d64 payload-authority rejection (production
-//!   skips only that domain record at `stream_fold.rs:1058`-`:1093`), incomplete
+//!   skips only that domain record at `recorder_host/src/stream_fold.rs:1058`-`:1093`), incomplete
 //!   DEL2, epoch/sequence discontinuity, sticky production history poison, or a
 //!   missing drain whose table path failed and therefore retained queued events
 //!   (`world_fold.rs:9634`-`:9683`);
@@ -423,7 +423,7 @@ fn scan_stream(path: &str, identity_mode: StreamIdentityMode) -> Result<StreamSc
             }
 
             if d64::check_authority_payload(&payload).is_err() {
-                // `stream_fold.rs:1058`-`:1093` treats exact payload rejection as
+                // `recorder_host/src/stream_fold.rs:1058`-`:1093` treats exact payload rejection as
                 // domain-local: it records the malformed d64 leaf and continues
                 // without invoking the fold. No bytes from that payload are
                 // admitted to the event arm.

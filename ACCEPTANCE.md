@@ -77,10 +77,10 @@ Per terminal record, keyed by its owning `(combat_id, generation)`:
   (`world_fold.rs:6795`). Any other string is `Invalid`.
 * `(writer, result_selector_raw)` must be `("overrun", 0)` or `("normal", 1)`.
   This re-checks, at the replay boundary, the exact pair the producer's own
-  projection gate enforces (`a729_hook.rs:432-438`). Two authenticated
+  projection gate enforces (`extractor/native/lanes/land_combat_detail_events_live/src/a729_hook.rs:432-438`). Two authenticated
   validations drifting apart is the failure mode this project has been burned
   by; it is re-checked here for the same reason `admit_xui05_tooltip_route`
-  re-checks the tooltip root (`production_renderer.rs:596-608`).
+  re-checks the tooltip root (`replay_interface/native/game_ui/src/production_renderer.rs:596-608`).
 * **The owning-vector join is RE-VERIFIED replay-side.** The terminal record's
   own `location_province` must equal the owning row's `location_province`
   (the ended row's, or the active panel's). A mismatch is `Invalid`. This is
@@ -91,7 +91,7 @@ Per terminal record, keyed by its owning `(combat_id, generation)`:
   `defender_manpower_loss_raw`, `winner_side_raw`, `winter`, `layout_side_raw`
   must all be `Measured` or the record is `External` naming the field.
   `record_index` and `end_date_raw` negative is `Invalid` (both are unsigned
-  producer-side: `lib.rs:357`, `:363`).
+  producer-side: `extractor/native/lanes/land_combat_detail_events_live/src/lib.rs:357`, `:363`).
 * **No range is invented for `winner_side_raw` or `layout_side_raw`.** The RE
   dossier documents them as a "winner-side discriminator" and an
   "attacker/defender layout selector" (`d21_land_combats_live.md:43-45`) but
@@ -123,7 +123,7 @@ combat carrying no terminal record must NOT make `land_active` or
 
 **Route shape: CONDITIONAL, ADMISSION-ONLY. NOT an eighth `HudSurface`.**
 Combat detail is not one of the seven `HudSurfaceActivationKind` variants
-(`production_renderer.rs:265-276`) and has no producer-side `hud_role/v1`
+(`replay_interface/native/game_ui/src/production_renderer.rs:265-276`) and has no producer-side `hud_role/v1`
 consumer token or setup hook, so the always-on shape is unavailable and
 `PRODUCT_HUD_SURFACES` is NOT the blocker here (ROUTE4's finding does not
 transfer). No row may be added to `PRODUCT_HUD_SURFACES`,
@@ -131,7 +131,7 @@ transfer). No row may be added to `PRODUCT_HUD_SURFACES`,
 `hud_activation_kind_token`.
 
 The route is modelled on XUI05's, whose product reach is an ADMISSION and never
-a second compositor (`production_renderer.rs:64-95`,
+a second compositor (`replay_interface/native/game_ui/src/production_renderer.rs:64-95`,
 `ui_runtime.rs:2141-2202`). The authenticated selected-Present pass owns the
 combat panel's pixels.
 
@@ -167,7 +167,7 @@ For each combat-detail source the pass names, the route calls
 `content_admission.require_used_content(<path>)` and maps a failure to
 `ProductionUiRejection::Asset` — per-route, not unconditional, so a recording
 that never showed a combat panel is not refused for lacking the source
-(`production_renderer.rs:36-39`).
+(`replay_interface/native/game_ui/src/production_renderer.rs:36-39`).
 
 **J2-D. Invents nothing, and has a completeness gate (contract part 4).**
 The route DRAWS NOTHING. Its completeness gate is that everything it reports
@@ -302,11 +302,11 @@ Canceled route tests (historical only; not required after the owner ruling):
 > The pre-ruling promotion plan below is retained only as historical context.
 
 The packet tables are report-only; no production branch reads them
-(`production_renderer.rs:11-16`). A move must FOLLOW real work.
+(`replay_interface/native/game_ui/src/production_renderer.rs:11-16`). A move must FOLLOW real work.
 
-* `production_renderer.rs:731-733` — XUI20's reason string is rewritten. The
+* `replay_interface/native/game_ui/src/production_renderer.rs:731-733` — XUI20's reason string is rewritten. The
   "owning-vector join is not carried" clause is DELETED because it is false.
-* `production_renderer.rs:677` — the parenthetical "XUI20's terminal land
+* `replay_interface/native/game_ui/src/production_renderer.rs:677` — the parenthetical "XUI20's terminal land
   owning-vector join" in the `OMITTED_AUTHORITY_BLOCKED_PACKETS` doc comment
   must go with it.
 * `documents/SEAM_CONTRACTS.md:42` (row A33) — the false clause is deleted and
@@ -322,7 +322,7 @@ The packet tables are report-only; no production branch reads them
   XUI20 has and does not have — an admission route, no reconstructed
   compositor, the pass owns the pixels — so the report cannot overstate.
 * Both partition assertions move together:
-  `production_renderer.rs:1432-1484` (unit) and
+  `replay_interface/native/game_ui/src/production_renderer.rs:1432-1484` (unit) and
   `tests/production_renderer.rs:359-380` (integration), including the
   `OMITTED_AUTHORITY_BLOCKED_PACKETS.len()` count 17 -> 16 and the
   `PROMOTED_XUI_PACKETS` literal in three places.

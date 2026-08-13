@@ -735,7 +735,7 @@ fn scan_stream(
     identity_mode: StreamIdentityMode,
 ) -> Result<StreamScan, String> {
     // The identity protocol is an INPUT, never sniffed
-    // (`stream_fold.rs:220`, `stream_validator.rs:328`): an `IdentityV1` stream
+    // (`recorder_host/src/stream_fold.rs:220`, `stream_validator.rs:328`): an `IdentityV1` stream
     // whose mandatory CID1 record has been spliced off is byte-indistinguishable
     // from a legacy stream, so a harness that sniffs measures a decapitated
     // stream production refuses.
@@ -1113,7 +1113,7 @@ fn scan_stream(
     // one record per closed hour when scheduled, none at all when not. This
     // bounds what this harness canNOT validate: production runs
     // `validate_domain_data_payload_at` on EVERY domain's DATA payload
-    // (`stream_fold.rs:593`), while this harness owns only d67's and d18's
+    // (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d67's and d18's
     // grammars, so a record of either domain whose header was relabelled — or
     // lost outright — would otherwise be silently ignored: a lost d67 record
     // shrinks the run, and a d18 record lost in a failure-excluded d67 hour
@@ -2297,7 +2297,7 @@ mod tests {
 
         // The same rules apply to a FAILURE-status d18 record: production's
         // payload authority runs before the fold and is status-independent
-        // (`stream_fold.rs:593`), so validating only the records that refresh the
+        // (`recorder_host/src/stream_fold.rs:593`), so validating only the records that refresh the
         // roster would accept a stream the recorder refuses (round-2 review
         // finding, with the reviewer's own input).
         for status in [0u32, COMPACT_STATUS_PARTIAL_DATA] {

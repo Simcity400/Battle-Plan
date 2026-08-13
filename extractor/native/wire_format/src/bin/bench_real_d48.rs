@@ -41,7 +41,7 @@
 //!
 //! The DATA payloads of every domain other than 48 pass UNVALIDATED beyond
 //! header sanity, the stream validator and the hour-boundary rules —
-//! production validates every domain's payload (`stream_fold.rs:593`); this
+//! production validates every domain's payload (`recorder_host/src/stream_fold.rs:593`); this
 //! harness owns only d48's grammar. That unvalidated remainder is explicitly
 //! BOUNDED: every closed game hour must carry exactly one d48 DATA record of
 //! any status (the `d48_records == closed_hours` completeness check in
@@ -66,7 +66,7 @@
 //!    stand. But the **payload authority is stricter**, and the harness has to
 //!    satisfy both. A failed gate under a NON-failure status is a parse error
 //!    (`domain_data_authority.rs:7983`), and a non-empty `parse_errors` makes
-//!    the stream not decodable in production (`main.rs:16721`, `:17790`), so it
+//!    the stream not decodable in production (`recorder_host/src/main.rs:16721`, `:17790`), so it
 //!    is a **stream rejection** here. Under a failure status the authority
 //!    records nothing and the hour is simply excluded by (2). The fold's own
 //!    gate-exclusion branch is therefore unreachable on any stream this harness
@@ -167,7 +167,7 @@ fn assert_restated_constants_match_their_sources() {
         COMPACT_STATUS_DELTA_DATA,
         "gate_frame's DELTA_DATA bit"
     );
-    // The lane gate's two blocking bits (`lib.rs:21`-`:22`, `:1415`).
+    // The lane gate's two blocking bits (`compact_contract/src/lib.rs:21`-`:22`, `:1415`).
     assert_eq!(1u32 << 6, compact_contract::COMPACT_STATUS_WORKER_PANIC);
     assert_eq!(1u32 << 8, compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE);
     // Domain 48 has no expected-partial tolerance registered
@@ -427,7 +427,7 @@ struct StreamScan {
 ///
 /// **A parse error is a stream rejection, not an excluded hour.** In production
 /// a non-empty `parse_errors` makes the stream not decodable and not
-/// framing-intact (`main.rs:16721`, `:17790`-`:17792`), so measuring such a
+/// framing-intact (`recorder_host/src/main.rs:16721`, `:17790`-`:17792`), so measuring such a
 /// stream would report a plausible number for a capture the recorder itself
 /// would flag. That is why this refuses rather than skipping the hour, even
 /// though `fold_construction_buildings_state_damage` alone would only mark the
@@ -661,7 +661,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
             // "Callers handling untrusted status words must first reject a
             // non-zero `compact_status_unknown_flags_v1` result; otherwise an
             // unassigned bit has no defined classification." d48 registers no
-            // lane-local status mask (`lib.rs:95`-`:101` covers 49 and 51 only),
+            // lane-local status mask (`compact_contract/src/lib.rs:95`-`:101` covers 49 and 51 only),
             // so bits 15..=31 are unassigned here with no exceptions.
             //
             // The status word lives in the PAYLOAD, so it needs the header read
@@ -821,7 +821,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // COMPLETENESS: every closed game hour must carry exactly one d48 DATA
     // record, of any status. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d48's
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d48's
     // grammar, so a d48 record whose header was relabelled to another domain
     // id — or lost outright — would otherwise be silently ignored and the run
     // would report a plausible measurement over fewer hours. A per-capture

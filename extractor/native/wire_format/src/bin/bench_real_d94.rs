@@ -733,7 +733,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     let mut last_closed_hour: Option<i32> = None;
     let mut last_record_type: Option<u16> = None;
     // The DOMAIN_PERF hour-binding state, `BoundaryTracker`'s own
-    // (`stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
+    // (`recorder_host/src/stream_fold.rs:328`-`:365`, reset at `:449`-`:451`).
     let mut pending_perf_hour: Option<i32> = None;
     let mut non_probe_perf_domains: BTreeSet<u16> = BTreeSet::new();
     let mut last_measured_hour: Option<i32> = None;
@@ -880,7 +880,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 }
                 Some(_) => {}
                 None => {
-                    // `stream_fold.rs:378`-`:386`, and it comes BEFORE the
+                    // `recorder_host/src/stream_fold.rs:378`-`:386`, and it comes BEFORE the
                     // monotonicity check, as it does there.
                     if let Some(pending) = pending_perf_hour {
                         if pending != header.game_hour_raw {
@@ -1076,7 +1076,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // all-or-nothing — exactly one record per closed hour when scheduled, none
     // at all when not. This bounds what this harness canNOT validate:
     // production runs `validate_domain_data_payload_at` on EVERY domain's DATA
-    // payload (`stream_fold.rs:593`), while this harness owns only d94's and
+    // payload (`recorder_host/src/stream_fold.rs:593`), while this harness owns only d94's and
     // d18's grammars, so a record of either domain whose header was relabelled
     // — or lost outright — would otherwise be silently ignored: a lost d94
     // record silently drops its hour from the measurement, and a lost d18
@@ -2026,7 +2026,7 @@ mod tests {
     fn a_malformed_fow1_payload_refuses_the_stream_rather_than_excluding_the_hour() {
         // The second, status-independent authority runs the same decode on every
         // DOMAIN_DATA record and its complaint refuses the stream at seal time
-        // (`domain_data_authority.rs:16737`, `stream_fold.rs:593`). Skipping the
+        // (`domain_data_authority.rs:16737`, `recorder_host/src/stream_fold.rs:593`). Skipping the
         // hour instead would produce a plausible number for a stream the recorder
         // rejects. Every way the codec can refuse, one at a time.
         let good = fow(1, 368, &[1, 2, 3]);
@@ -2254,7 +2254,7 @@ mod tests {
         // nothing in the fold mirror catches this — but production's
         // status-independent payload authority does
         // (`domain_data_authority.rs:1029`-`:1033`) and its complaint refuses the
-        // stream at seal time (`stream_fold.rs:593`-`:611`). Before this check,
+        // stream at seal time (`recorder_host/src/stream_fold.rs:593`-`:611`). Before this check,
         // such a stream was measured here as a healthy hour: a measured-hour vs
         // stream-rejection misclassification.
         //
@@ -2519,7 +2519,7 @@ mod tests {
 
     #[test]
     fn a_frame_end_that_does_not_seal_its_hour_refuses_the_stream() {
-        // `validate_frame_end_seal_fields` (`stream_fold.rs:46`-`:89`), swept.
+        // `validate_frame_end_seal_fields` (`recorder_host/src/stream_fold.rs:46`-`:89`), swept.
         let prefix = |seal: Vec<u8>| {
             let mut s = Vec::new();
             s.extend(perf(1, 100, D18, 0));
@@ -2591,7 +2591,7 @@ mod tests {
 
     #[test]
     fn perf_hour_binding_is_enforced() {
-        // `stream_fold.rs:328`-`:365`, swept over the whole predicate.
+        // `recorder_host/src/stream_fold.rs:328`-`:365`, swept over the whole predicate.
         let data18 = |seq, hour| {
             record(
                 seq,
@@ -2657,7 +2657,7 @@ mod tests {
         assert!(scan_stream(&conflict, StreamIdentityMode::Legacy).is_err());
 
         // A DATA record must open the hour the pending PERF records bound
-        // (`stream_fold.rs:378`-`:386`), in both directions.
+        // (`recorder_host/src/stream_fold.rs:378`-`:386`), in both directions.
         for (perf_hour, data_hour) in [(100i32, 101i32), (101, 100), (100, 200), (200, 100)] {
             let mut s = Vec::new();
             s.extend(perf(1, perf_hour, D18, 0));
