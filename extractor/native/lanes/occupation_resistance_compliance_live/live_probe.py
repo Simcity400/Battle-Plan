@@ -108,8 +108,15 @@ DIVISION_TEMPLATE_OFF_ID = 0x0C
 
 HEAP_LO = 0x10000000000
 HEAP_HI = 0x7FF000000000
-MIN_USABLE_STATE_ROWS = 1000
-MIN_USABLE_PROVINCE_ROWS = 10000
+# The 1 000-state / 10 000-province floors that used to sit here are gone. They
+# asserted that a real game has a vanilla-sized map, which is `history/states`
+# and `map/definition.csv` CONTENT, so a total conversion with a smaller map
+# failed this certifying probe outright. Every row this walk counts has already
+# passed the CProvince vtable and `id == array index` check, and every state
+# root the CState vtable plus a valid, conflict-free SID, so the floors added no
+# discrimination over the authentication above them. The Rust lane's identical
+# floors were removed in the same wave (lane GK's residual R3, closed by lane
+# HJ) -- this file mirrors `collector_module.rs` and must not drift from it.
 MAX_PROVINCE_COUNT = 65536
 # A COUNT and an ID are two questions, and `MAX_TAG_DB_ID = 1024` used to answer
 # both here. 1024 is 2.3x the vanilla country count of 439, so this probe -- the
@@ -206,7 +213,9 @@ def resolve_state_roots(p):
     province_count = p.u32(game_state + CGAMESTATE_CPROVINCE_COUNT)
     if not is_heap_ptr(province_array):
         raise RuntimeError("CGameState CProvince array pointer is invalid")
-    if province_count <= MIN_USABLE_PROVINCE_ROWS or province_count > MAX_PROVINCE_COUNT:
+    # `< 2` stays refused, structurally: slot 0 is the vacant null province and
+    # the walk starts at 1, so counts of 0 and 1 both walk zero rows.
+    if province_count < 2 or province_count > MAX_PROVINCE_COUNT:
         raise RuntimeError("CProvince count is outside lane bounds: %d" % province_count)
 
     province_ptrs = p.read(province_array, province_count * 8)
@@ -257,10 +266,14 @@ def resolve_state_roots(p):
             raise RuntimeError("state_id %d resolved to conflicting CState roots" % state_id)
         state_roots[state_id] = state_ptr
 
-    if province_rows < MIN_USABLE_PROVINCE_ROWS:
-        raise RuntimeError("insufficient validated CProvince rows: %d" % province_rows)
-    if len(state_roots) < MIN_USABLE_STATE_ROWS:
-        raise RuntimeError("insufficient validated CState roots: %d" % len(state_roots))
+    # Coherence, not a content floor: an array that DECLARES province_count
+    # slots and authenticates none of them is incoherent, and returning an
+    # empty result for it would certify "this game has no provinces". Mirrors
+    # collector_module.rs, which must not drift from this file.
+    if province_rows == 0:
+        raise RuntimeError(
+            "CProvince array declares %d slots and authenticated none" % province_count
+        )
 
     return {
         "game_state": game_state,

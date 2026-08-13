@@ -1,9 +1,9 @@
 //! d95 `pov_spotted_units_live` — the current POV's map-spotted land units and
 //! task forces.
 //!
-//! Derived from `world_fold.rs:13246`-`:13314`
+//! Derived from `world_fold.rs:13256`-`:13324`
 //! (`fold_pov_spotted_units`, dispatched at `:4752`), its payload codec
-// @world-fold-authority domain=95 functions=fold_pov_spotted_units lines=13246-13314 sha256=22f810187fac25dbae53375a864cad075f8e9428c503ed00f198bb73bbd1b81e closure=2f3d14ea2ccaa31c01a44e88dc1c8fd97eace6f58b27d60e6de8bd542885266c
+// @world-fold-authority domain=95 functions=fold_pov_spotted_units lines=13256-13324 sha256=22f810187fac25dbae53375a864cad075f8e9428c503ed00f198bb73bbd1b81e closure=2f3d14ea2ccaa31c01a44e88dc1c8fd97eace6f58b27d60e6de8bd542885266c
 //! `extractor/native/compact_contract/src/spotted_units.rs` (authority #2 for
 //! offsets, per the recipe), the production dispatcher's d95 error arm
 //! (`world_fold.rs::apply_domain_data`), the hour-boundary reset (`world_fold.rs::reset_hour_state`) and
@@ -1077,19 +1077,6 @@ pub fn state_from_stored(
 /// Runs over the raw slice so a payload is refused whole, exactly as `decode` is
 /// all-or-nothing (`spotted_units.rs:114`-`:123`, `:160`-`:171`).
 fn check_rows(rows: &[u8], surface: Surface) -> core::result::Result<(), String> {
-    // KEPT DELIBERATELY, and this is the reason. `split_payload` is the only
-    // caller's only source of these slices, and it cuts both of them at exact
-    // `ROW_LEN` multiples, so on the happy path this length check cannot fire —
-    // it was once flagged as dead defensive code on exactly that argument.
-    //
-    // What settles it is that the check has since been SEEN firing, on the one
-    // defect it exists to catch. `bench_real_d95.rs` records the mutation
-    // "slice the task-force rows as `&payload[land_end..]`" failing with
-    // `taskforce row region 20 is not a multiple of 12`: the 8-byte producer-hour
-    // trailer landed inside the row region, which is precisely the mistake the
-    // trailer's introduction made available. The guard is the boundary that
-    // makes a mis-cut row region a refusal instead of a silent misread of every
-    // row after the cut, and `split_payload` is the invariant it is guarding.
     if rows.len() % ROW_LEN != 0 {
         return Err(format!(
             "pov_spotted_units {} row region {} is not a multiple of {ROW_LEN}",

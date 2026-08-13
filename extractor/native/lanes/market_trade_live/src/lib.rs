@@ -113,6 +113,17 @@ pub const MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION: u16 = 2;
 /// at zero and state no per-owner claim -- their producers withheld the whole
 /// trailer instead of publishing a short list.
 pub const MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION: u16 = 3;
+/// v4: the DEAL IDENTITY is carried at full width — `deal_exporter_tag_db_id`
+/// `u32` at `+0x20`, `deal_importer_tag_db_id` `u32` at `+0x24`, and a one-based
+/// `deal_ordinal` `u32` in the word v1-v3 hold at zero (`+0x5C`) — in place of
+/// v1-v3's single packed `u64` at `+0x20`.
+///
+/// v1-v3 gave each country id SIXTEEN BITS and the ordinal EIGHT, so the
+/// producer dropped any deal whose exporter or importer id exceeded `u16::MAX`,
+/// and any deal past the 254th in one export bucket. A country cap and a deal
+/// cap, both expressed as field widths rather than as constants. The header,
+/// witness block and incomplete block are v3's unchanged.
+pub const MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION: u16 = 4;
 pub const MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
 pub const MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT: u32 = 1;
@@ -335,6 +346,19 @@ pub struct ResourceViewRow {
     pub descriptor_db_index: u32,
 }
 
+/// One classic deal's identity, at the country id space's full structural
+/// width. Ordered so a `BTreeMap` keyed on it walks deals in a stable,
+/// content-derived order.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ClassicDealIdentity {
+    pub exporter_tag_db_id: u32,
+    pub importer_tag_db_id: u32,
+    pub resource_index: u32,
+    /// One-based on every version: v4 reads it directly, v1-v3's packed low
+    /// byte was already one-based.
+    pub ordinal: u32,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ClassicDealRow {
     pub owner_tag_db_id: u32,
@@ -348,7 +372,11 @@ pub struct ClassicDealRow {
     /// `None` so downstream code cannot mistake an absent observation for
     /// two measured false values.
     pub route_status_flags: Option<u32>,
-    pub deal_id: u64,
+    /// The deal's identity, normalised across wire versions: v4 reads three
+    /// full-width words, v1-v3 unpack it from their `u64`. Both halves of one
+    /// deal carry the same value, which is what makes it the join key —
+    /// `owner`/`counterpart` swap with `direction` and it does not.
+    pub identity: ClassicDealIdentity,
     pub requested_raw: i64,
     pub delivered_raw: i64,
     pub available_export_raw: i64,
@@ -2115,10 +2143,11 @@ fn decode_classic_deal_trailer(
     let country_count = read_u32_le(trailer, 16);
     let scale_raw = read_u32_le(trailer, 20);
     let witness_count = read_u32_le(trailer, 24);
-    let per_owner = version == MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION;
-    // v3's incomplete-owner count; v1/v2's reserved word, which must be zero.
-    // A v3 body labelled v2 therefore fails the shape check rather than
+    // v3 and v4's incomplete-owner count; v1/v2's reserved word, which must be
+    // zero. A v3 body labelled v2 therefore fails the shape check rather than
     // reading the completeness block as deal rows.
+    let per_owner = version == MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION
+        || version == MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION;
     let incomplete_count = read_u32_le(trailer, 28);
     summary.classic_deal_rows = row_count;
     summary.classic_deal_country_count = country_count;
@@ -2127,6 +2156,7 @@ fn decode_classic_deal_trailer(
         MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION,
         MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION,
         MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION,
+        MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION,
     ]
     .contains(&version)
         || header_len != MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN
@@ -2183,9 +2213,33 @@ fn decode_classic_deal_trailer(
         summary.classic_deal_incomplete_owners.push(tag_db_id);
     }
     let mut seen = BTreeSet::new();
-    let mut pair_halves = BTreeMap::<u64, Vec<ClassicDealRow>>::new();
+    let mut pair_halves = BTreeMap::<ClassicDealIdentity, Vec<ClassicDealRow>>::new();
     let mut per_owner_order = BTreeMap::<u32, BTreeSet<u32>>::new();
+    let wide_identity = version == MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION;
     for row_index in 0..row_count {
+        // The deal identity, read at whatever width this version spells it. The
+        // resource is taken from the row's own `resource_index` on both paths;
+        // v1-v3's packed resource BYTE is a repeat of it and is checked as such
+        // in `legacy_identity_matches` below.
+        let (identity_exporter, identity_importer, identity_ordinal) = if wide_identity {
+            (
+                read_u32_le(trailer, cursor + 32),
+                read_u32_le(trailer, cursor + 36),
+                read_u32_le(trailer, cursor + 92),
+            )
+        } else {
+            let packed = read_u64_le(trailer, cursor + 32);
+            (
+                ((packed >> 32) & 0xFFFF) as u32,
+                ((packed >> 16) & 0xFFFF) as u32,
+                (packed & 0xFF) as u32,
+            )
+        };
+        let legacy_identity_matches = wide_identity || {
+            let packed = read_u64_le(trailer, cursor + 32);
+            packed >> 48 == 0
+                && ((packed >> 8) & 0xFF) as u32 == read_u32_le(trailer, cursor + 8)
+        };
         let row = ClassicDealRow {
             owner_tag_db_id: read_u32_le(trailer, cursor),
             counterpart_tag_db_id: read_u32_le(trailer, cursor + 4),
@@ -2203,7 +2257,12 @@ fn decode_classic_deal_trailer(
             } else {
                 None
             },
-            deal_id: read_u64_le(trailer, cursor + 32),
+            identity: ClassicDealIdentity {
+                exporter_tag_db_id: identity_exporter,
+                importer_tag_db_id: identity_importer,
+                resource_index: read_u32_le(trailer, cursor + 8),
+                ordinal: identity_ordinal,
+            },
             requested_raw: read_i64_le(trailer, cursor + 40),
             delivered_raw: read_i64_le(trailer, cursor + 48),
             available_export_raw: read_i64_le(trailer, cursor + 56),
@@ -2214,9 +2273,39 @@ fn decode_classic_deal_trailer(
             convoys_required: read_i32_le(trailer, cursor + 88),
         };
         let status_or_reserved = read_u32_le(trailer, cursor + 28);
-        let reserved_row1 = read_i32_le(trailer, cursor + 92);
+        // v1-v3 hold `+0x5C` at zero; v4 spends it on the one-based ordinal,
+        // which `identity_shape_ok` below requires to be non-zero and within the
+        // export bucket's own transport budget. Whichever version this is,
+        // exactly one of the two rules applies and neither admits an arbitrary
+        // value.
+        let reserved_row1 = if wide_identity {
+            0
+        } else {
+            read_i32_le(trailer, cursor + 92)
+        };
+        // The identity's intra-row agreement, which is this row's tear
+        // detector: `exporter`/`importer` must be the row's own owner and
+        // counterpart under `direction`. The two country ids are not
+        // range-checked separately — that equality plus the witness rule above
+        // already bounds them.
+        let identity_shape_ok = legacy_identity_matches
+            && row.identity.ordinal != 0
+            && row.identity.ordinal
+                <= compact_contract::build_profile::MAX_MARKET_TRADE_CLASSIC_DEAL_ORDINAL
+            && match row.direction {
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT => {
+                    row.owner_tag_db_id == row.identity.exporter_tag_db_id
+                        && row.counterpart_tag_db_id == row.identity.importer_tag_db_id
+                }
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT => {
+                    row.owner_tag_db_id == row.identity.importer_tag_db_id
+                        && row.counterpart_tag_db_id == row.identity.exporter_tag_db_id
+                }
+                _ => false,
+            };
         cursor += row_len;
-        if !witnesses.contains(&row.owner_tag_db_id)
+        if !identity_shape_ok
+            || !witnesses.contains(&row.owner_tag_db_id)
             || !witnesses.contains(&row.counterpart_tag_db_id)
             || row.owner_tag_db_id == row.counterpart_tag_db_id
             || row.resource_index >= MAX_STRATEGIC_RESOURCE_COUNT
@@ -2253,10 +2342,17 @@ fn decode_classic_deal_trailer(
             .entry(row.owner_tag_db_id)
             .or_default()
             .insert(row.visible_order);
-        pair_halves.entry(row.deal_id).or_default().push(row);
+        pair_halves.entry(row.identity).or_default().push(row);
         summary.classic_deals.push(row);
     }
-    for (deal_id, halves) in pair_halves {
+    for (identity, halves) in pair_halves {
+        let deal_id = format!(
+            "{}->{} resource {} ordinal {}",
+            identity.exporter_tag_db_id,
+            identity.importer_tag_db_id,
+            identity.resource_index,
+            identity.ordinal
+        );
         if halves.len() != 2 {
             summary.parse_errors.push(format!(
                 "offset {offset}: MTRD deal_id {deal_id} has {} half/halves, expected 2",
@@ -4301,9 +4397,30 @@ mod tests {
     }
 
     fn append_test_mtrd(payload: &mut Vec<u8>, mismatch_second_half: bool) {
+        append_test_mtrd_versioned(
+            payload,
+            mismatch_second_half,
+            MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION,
+            (47, 51),
+        );
+    }
+
+    /// The same two-half deal under an explicit version word and an explicit
+    /// identity pair.
+    ///
+    /// Both are parameters rather than derived, so a fixture can drive the v4
+    /// identity words INDEPENDENTLY of the row's own owner/counterpart — which
+    /// is the only way to exercise the intra-row agreement rule that is this
+    /// row's tear detector.
+    fn append_test_mtrd_versioned(
+        payload: &mut Vec<u8>,
+        mismatch_second_half: bool,
+        version: u16,
+        identity: (u32, u32),
+    ) {
         let witnesses = [47u32, 51, 99];
         payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
-        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION.to_le_bytes());
+        payload.extend_from_slice(&version.to_le_bytes());
         payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN as u16).to_le_bytes());
         payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
         payload.extend_from_slice(&0u16.to_le_bytes());
@@ -4315,7 +4432,22 @@ mod tests {
         for witness in witnesses {
             payload.extend_from_slice(&witness.to_le_bytes());
         }
-        let deal_id = 0x0000_002f_0033_0401u64;
+        // v4 spells the identity as two full-width words at `+0x20`/`+0x24`
+        // plus a one-based ordinal in v1-v3's reserved word at `+0x5C`; v1-v3
+        // pack all four into one `u64` at `+0x20`, sixteen bits per country id.
+        let wide_identity = version == MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION;
+        let (identity_bytes, ordinal_word): ([u8; 8], u32) = if wide_identity {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&identity.0.to_le_bytes());
+            bytes[4..].copy_from_slice(&identity.1.to_le_bytes());
+            (bytes, 1)
+        } else {
+            let packed = (u64::from(identity.0) << 32)
+                | (u64::from(identity.1) << 16)
+                | (4u64 << 8)
+                | 1;
+            (packed.to_le_bytes(), 0)
+        };
         for (index, owner, counterpart, direction) in [
             (
                 0usize,
@@ -4346,7 +4478,7 @@ mod tests {
                     | MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_RESOURCES)
                     .to_le_bytes(),
             );
-            payload.extend_from_slice(&deal_id.to_le_bytes());
+            payload.extend_from_slice(&identity_bytes);
             payload.extend_from_slice(&3_200_000i64.to_le_bytes());
             payload.extend_from_slice(
                 &(if mismatch_second_half && index == 1 {
@@ -4362,7 +4494,7 @@ mod tests {
             payload.extend_from_slice(&8i32.to_le_bytes());
             payload.extend_from_slice(&14i32.to_le_bytes());
             payload.extend_from_slice(&18i32.to_le_bytes());
-            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&ordinal_word.to_le_bytes());
         }
     }
 
@@ -5547,6 +5679,74 @@ mod tests {
         assert_eq!(gate.summary.domain_data_records, 3);
         assert_eq!(gate.summary.unique_game_hours, 3);
         assert_eq!(gate.summary.partial_field_rows_total, 0);
+    }
+
+    /// The lane decoder reads BOTH `MTRD` identity spellings, and the v4 one is
+    /// what the collector actually emits.
+    ///
+    /// v1-v3 pack the deal identity into a `u64` with sixteen bits per country
+    /// id; v4 carries two full `u32`s plus a one-based ordinal in the word
+    /// v1-v3 hold at zero. This decoder is a SECOND consumer of that trailer,
+    /// independent of the fold's, and before this fixture its v4 branch was
+    /// never executed by any test — the whole suite drove version 2.
+    ///
+    /// kills: deleting the v4 arm of the identity read (the v4 payload's rows
+    /// then unpack the two `u32`s as one packed `u64` and fail the intra-row
+    /// agreement, so the deal count drops); deleting the `identity_shape_ok`
+    /// agreement check itself (the mismatched-identity payload below then
+    /// parses clean); and reading the ordinal from the wrong word on v4 (a zero
+    /// ordinal is refused, and `+0x5C` is the only word carrying it).
+    #[test]
+    fn x15_mtrd_reads_the_wide_identity_and_still_reads_the_packed_one() {
+        let deals = |version: u16, identity: (u32, u32)| {
+            let mut payload = complete_market_payload(1);
+            append_test_mtrr(&mut payload, &[47, 51, 99]);
+            append_test_mtrd_versioned(&mut payload, false, version, identity);
+            decode_payload(0, &payload)
+        };
+
+        for version in [
+            MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION,
+            MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION,
+            MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION,
+        ] {
+            let decoded = deals(version, (47, 51));
+            assert!(
+                decoded.parse_errors.is_empty(),
+                "MTRD v{version} must parse clean: {:?}",
+                decoded.parse_errors
+            );
+            assert_eq!(
+                decoded.classic_deals.len(),
+                2,
+                "MTRD v{version} carries a deal's two halves"
+            );
+            assert!(
+                decoded
+                    .classic_deals
+                    .iter()
+                    .all(|row| row.identity.exporter_tag_db_id == 47
+                        && row.identity.importer_tag_db_id == 51
+                        && row.identity.ordinal == 1),
+                "MTRD v{version} normalises to one identity: {:?}",
+                decoded.classic_deals
+            );
+        }
+
+        // The intra-row agreement, on v4, where the identity words are separate
+        // from the row's own owner/counterpart and so CAN disagree. 99 is a
+        // witness, so witness membership does not refuse this on its own.
+        let torn = deals(
+            MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION,
+            (47, 99),
+        );
+        assert!(
+            torn.parse_errors
+                .iter()
+                .any(|error| error.contains("invalid shape")),
+            "a v4 identity naming a country the row does not must be refused: {:?}",
+            torn.parse_errors
+        );
     }
 
     #[test]

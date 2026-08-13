@@ -12212,6 +12212,37 @@ fn append_d43_mtrd_classic_deal(payload: &mut Vec<u8>, exporter: u32, importer: 
     append_d43_mtrd_classic_deal_for_resource(payload, exporter, importer, 4);
 }
 
+/// One MTRD row's identity words, in the spelling the given version uses.
+///
+/// Returns the eight bytes at `+0x20` and the word at `+0x5C`, because those are
+/// the two places the identity lives and the versions disagree about both at
+/// once: v4 spends `+0x20` on two full `u32` ids and `+0x5C` on the ordinal;
+/// v1-v3 pack all four fields into `+0x20` and hold `+0x5C` at zero. Writing
+/// them from one function is what keeps a fixture from producing a row no
+/// version admits.
+fn mtrd_identity_words(
+    version: u16,
+    exporter: u32,
+    importer: u32,
+    resource_index: u32,
+    ordinal: u32,
+) -> ([u8; 8], u32) {
+    if version == MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION {
+        let mut identity = [0u8; 8];
+        identity[..4].copy_from_slice(&exporter.to_le_bytes());
+        identity[4..].copy_from_slice(&importer.to_le_bytes());
+        (identity, ordinal)
+    } else {
+        // v1-v3, high to low: reserved:u16, exporter:u16, importer:u16,
+        // resource:u8, one-based ordinal:u8.
+        let packed = (u64::from(exporter) << 32)
+            | (u64::from(importer) << 16)
+            | (u64::from(resource_index) << 8)
+            | u64::from(ordinal);
+        (packed.to_le_bytes(), 0)
+    }
+}
+
 /// The resource SLOT is a parameter: an MTRD row names a resource by slot and
 /// states no count of its own, so a fixture must be able to name a slot outside
 /// what the fold can name.
@@ -12221,8 +12252,29 @@ fn append_d43_mtrd_classic_deal_for_resource(
     importer: u32,
     resource_index: u32,
 ) {
+    // v4, the version the collector emits, so the default fixture folds the
+    // shipping row spelling rather than an archive one.
+    append_d43_mtrd_classic_deal_versioned(
+        payload,
+        exporter,
+        importer,
+        resource_index,
+        MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION,
+    );
+}
+
+/// The same one-deal trailer under an explicit version word, for the archive
+/// grammars. The identity words follow the version, so a legacy fixture is a
+/// legally spelled legacy row rather than a v4 row with its version overwritten.
+fn append_d43_mtrd_classic_deal_versioned(
+    payload: &mut Vec<u8>,
+    exporter: u32,
+    importer: u32,
+    resource_index: u32,
+    version: u16,
+) {
     payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
-    payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&version.to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
@@ -12233,14 +12285,10 @@ fn append_d43_mtrd_classic_deal_for_resource(
     payload.extend_from_slice(&0u32.to_le_bytes());
     payload.extend_from_slice(&exporter.to_le_bytes());
     payload.extend_from_slice(&importer.to_le_bytes());
-    // Frozen MTRD identity layout (high to low): reserved:u16,
-    // exporter:u16, importer:u16, resource:u8, one-based ordinal:u8.
-    // Build it from the fixture arguments so the reciprocal-row identity
-    // witness cannot silently drift away from the row fields.
-    let deal_id = (u64::from(exporter) << 32)
-        | (u64::from(importer) << 16)
-        | (u64::from(resource_index) << 8)
-        | 1;
+    // Built from the fixture arguments so the reciprocal-row identity witness
+    // cannot silently drift away from the row fields.
+    let (identity, ordinal_word) =
+        mtrd_identity_words(version, exporter, importer, resource_index, 1);
     for (owner, counterpart, direction) in [
         (
             exporter,
@@ -12263,7 +12311,7 @@ fn append_d43_mtrd_classic_deal_for_resource(
         payload.extend_from_slice(
             &MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_TRADE_INFLUENCE.to_le_bytes(),
         );
-        payload.extend_from_slice(&deal_id.to_le_bytes());
+        payload.extend_from_slice(&identity);
         payload.extend_from_slice(&800_000i64.to_le_bytes());
         payload.extend_from_slice(&720_000i64.to_le_bytes());
         payload.extend_from_slice(&1_600_000i64.to_le_bytes());
@@ -12272,7 +12320,7 @@ fn append_d43_mtrd_classic_deal_for_resource(
         payload.extend_from_slice(&8i32.to_le_bytes());
         payload.extend_from_slice(&3i32.to_le_bytes());
         payload.extend_from_slice(&5i32.to_le_bytes());
-        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&ordinal_word.to_le_bytes());
     }
 }
 
@@ -12290,7 +12338,7 @@ fn append_d43_mtrd_two_way_deals(payload: &mut Vec<u8>, a: u32, b: u32, orders: 
         a,
         b,
         orders,
-        MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION,
+        MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION,
         &[],
     );
 }
@@ -12312,10 +12360,7 @@ fn append_d43_mtrd_two_way_deals_versioned(
 ) {
     const RESOURCE_INDEX: u32 = 4;
     let deal_id = |exporter: u32, importer: u32| {
-        (u64::from(exporter) << 32)
-            | (u64::from(importer) << 16)
-            | (u64::from(RESOURCE_INDEX) << 8)
-            | 1
+        mtrd_identity_words(version, exporter, importer, RESOURCE_INDEX, 1)
     };
     payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
     payload.extend_from_slice(&version.to_le_bytes());
@@ -12370,7 +12415,7 @@ fn append_d43_mtrd_two_way_deals_versioned(
         payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA.to_le_bytes());
         payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
-        payload.extend_from_slice(&deal.to_le_bytes());
+        payload.extend_from_slice(&deal.0);
         payload.extend_from_slice(&800_000i64.to_le_bytes());
         payload.extend_from_slice(&720_000i64.to_le_bytes());
         payload.extend_from_slice(&1_600_000i64.to_le_bytes());
@@ -12379,7 +12424,7 @@ fn append_d43_mtrd_two_way_deals_versioned(
         payload.extend_from_slice(&8i32.to_le_bytes());
         payload.extend_from_slice(&3i32.to_le_bytes());
         payload.extend_from_slice(&5i32.to_le_bytes());
-        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&deal.1.to_le_bytes());
     }
 }
 
@@ -12470,6 +12515,223 @@ fn d43_mtrd_two_way_deals_fold_only_under_dense_per_owner_visible_order() {
             .is_none(),
         "an owner numbered 0 and 2 is not dense, and the trailer is rejected: {}",
         gapped["countries"]["ENG"]["economy"]["resource_trade"]
+    );
+}
+
+/// One MTRD v4 trailer with a caller-chosen identity, so a fixture can put a
+/// country id or an ordinal at a boundary the row's own fields do not reach.
+///
+/// `identity` is `(exporter, importer, ordinal)`; the resource is fixed at slot
+/// 4. `owners` names the two witnesses in ascending order. Deliberately NOT
+/// derived from `owners`, so a fixture can state a DISAGREEMENT between the
+/// identity words and the row's own owner/counterpart, which is the tear the
+/// intra-row check exists to catch.
+fn append_d43_mtrd_v4_with_identity(
+    payload: &mut Vec<u8>,
+    owners: (u32, u32),
+    identity: (u32, u32, u32),
+) {
+    const RESOURCE_INDEX: u32 = 4;
+    let (exporter, importer) = owners;
+    let (identity_exporter, identity_importer, ordinal) = identity;
+    payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
+    payload.extend_from_slice(
+        &MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION.to_le_bytes(),
+    );
+    payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&(FIXED_SCALE as u32).to_le_bytes());
+    payload.extend_from_slice(&2u32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    // The witness block is ascending, which the parser requires.
+    let (low, high) = if exporter <= importer {
+        (exporter, importer)
+    } else {
+        (importer, exporter)
+    };
+    payload.extend_from_slice(&low.to_le_bytes());
+    payload.extend_from_slice(&high.to_le_bytes());
+    for (owner, counterpart, direction) in [
+        (
+            exporter,
+            importer,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
+        ),
+        (
+            importer,
+            exporter,
+            MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
+        ),
+    ] {
+        payload.extend_from_slice(&owner.to_le_bytes());
+        payload.extend_from_slice(&counterpart.to_le_bytes());
+        payload.extend_from_slice(&RESOURCE_INDEX.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&direction.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&identity_exporter.to_le_bytes());
+        payload.extend_from_slice(&identity_importer.to_le_bytes());
+        payload.extend_from_slice(&800_000i64.to_le_bytes());
+        payload.extend_from_slice(&720_000i64.to_le_bytes());
+        payload.extend_from_slice(&1_600_000i64.to_le_bytes());
+        payload.extend_from_slice(&100_000i64.to_le_bytes());
+        payload.extend_from_slice(&90_000i64.to_le_bytes());
+        payload.extend_from_slice(&8i32.to_le_bytes());
+        payload.extend_from_slice(&3i32.to_le_bytes());
+        payload.extend_from_slice(&5i32.to_le_bytes());
+        payload.extend_from_slice(&ordinal.to_le_bytes());
+    }
+}
+
+/// The MTRD deal identity is the country id space's full structural width, and
+/// nothing about it is sixteen bits wide any more.
+///
+/// v1-v3 packed the identity as
+/// `exporter << 32 | importer << 16 | resource << 8 | ordinal`, so a deal
+/// between two countries whose ids exceed `u16::MAX` could not be expressed and
+/// the producer dropped it. The walk below is over the boundaries that cap
+/// separated: the first id PAST the retired sixteen-bit field, the widest id the
+/// engine's signed country-database subscript can address, the first ordinal
+/// past the retired eight-bit field, and the ordinal ceiling derived from the
+/// export bucket's own transport budget.
+///
+/// kills: re-narrowing either country id in the MTRD identity back to
+/// `u16::MAX`, or the ordinal back to `u8::MAX` — every admitted probe here sits
+/// above one of those two retired widths, so a restored field-width cap turns
+/// the deal list absent. And, on the refusal side, deleting the intra-row
+/// identity agreement (`deal_identity_matches`) or the ordinal's `!= 0` rule:
+/// the disagreeing-identity and zero-ordinal probes fold successfully without
+/// them. It does NOT claim to kill a change to the join id's numbering, which
+/// the separate publication assertion below covers.
+#[test]
+fn the_mtrd_deal_identity_is_the_structural_id_width_and_the_buckets_ordinal() {
+    let max_id = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
+    let max_ordinal = compact_contract::build_profile::MAX_MARKET_TRADE_CLASSIC_DEAL_ORDINAL;
+    let fold = |owners: (u32, u32), identity: (u32, u32, u32)| {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[owners.0.min(owners.1), owners.0.max(owners.1)]);
+        append_d43_mtrd_v4_with_identity(&mut payload, owners, identity);
+        chunk1_one_snapshot(vec![
+            (
+                18,
+                country_identity_payload(&[(owners.0, "SAF"), (owners.1, "ENG")]),
+            ),
+            (43, payload),
+        ])
+    };
+
+    // ADMITTED. Each pair puts at least one id above the retired sixteen-bit
+    // field; the last puts both at the structural ceiling's neighbourhood.
+    for (exporter, importer) in [
+        (34u32, u16::MAX as u32 + 1),
+        (u16::MAX as u32 + 1, u16::MAX as u32 + 2),
+        (max_id - 1, max_id),
+    ] {
+        let world = fold((exporter, importer), (exporter, importer, 1));
+        let deals = world["countries"]["ENG"]["economy"]["resource_trade"]["deals"]
+            .as_array()
+            .map(Vec::len);
+        assert_eq!(
+            deals,
+            Some(1),
+            "a deal between countries {exporter} and {importer} is ordinary: {}",
+            world["countries"]["ENG"]["economy"]["resource_trade"]
+        );
+    }
+
+    // ADMITTED: the ordinal past v1-v3's eight-bit field, and at the ceiling
+    // derived from the export bucket's transport budget.
+    for ordinal in [u8::MAX as u32 + 1, max_ordinal] {
+        let world = fold((34, 67), (34, 67, ordinal));
+        assert_eq!(
+            world["countries"]["ENG"]["economy"]["resource_trade"]["deals"]
+                .as_array()
+                .map(Vec::len),
+            Some(1),
+            "ordinal {ordinal} is inside the export bucket's own budget"
+        );
+    }
+
+    // REFUSED, and a refused MTRD takes the whole trailer with it rather than
+    // publishing a short list.
+    for (label, identity) in [
+        ("an ordinal past the bucket's transport budget", (34u32, 67u32, max_ordinal + 1)),
+        ("a zero ordinal, which is not one-based", (34, 67, 0)),
+        ("an identity naming a country the row does not", (34, 68, 1)),
+        ("an identity with its two parties swapped", (67, 34, 1)),
+    ] {
+        let world = fold((34, 67), identity);
+        assert!(
+            world["countries"]["ENG"]["economy"]["resource_trade"]
+                .get("deals")
+                .is_none(),
+            "{label} is a rejected trailer, not a short deal list: {}",
+            world["countries"]["ENG"]["economy"]["resource_trade"]
+        );
+    }
+}
+
+/// The published `deal_id` is a join key, not the wire identity, and it holds
+/// the three properties every consumer of it depends on.
+///
+/// The wire identity is two full `u32` country ids plus a resource and an
+/// ordinal, which does not fit the positive `i64` the projection publishes. So
+/// the fold assigns a dense one-based ordinal over the deals the trailer
+/// carries. What consumers require is exactly: positive, unique within one
+/// owner's list, and EQUAL across a deal's two halves.
+///
+/// kills: publishing the raw wire ordinal (the two deals below share ordinal 1,
+/// so ENG's list would carry the same id twice), publishing a zero-based
+/// counter (the first deal's id would be 0 and fail the positivity rule every
+/// consumer applies), and assigning the counter per ROW rather than per DEAL
+/// (the two halves of one deal would disagree, and the reciprocity join that
+/// depends on the equality would break).
+#[test]
+fn the_published_deal_id_is_a_positive_join_key_shared_by_both_halves() {
+    let world = {
+        let mut payload = d43_empty_payload();
+        append_d43_mtrr_resource_rows(&mut payload, &[34, 67]);
+        // ENG both exports to and imports from SAF: two deals, four rows, and
+        // both deals carry wire ordinal 1 because they sit in different
+        // exporters' buckets.
+        append_d43_mtrd_two_way_deals(&mut payload, 34, 67, [0, 1, 0, 1]);
+        chunk1_one_snapshot(vec![
+            (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+            (43, payload),
+        ])
+    };
+    let deal_ids = |tag: &str| {
+        world["countries"][tag]["economy"]["resource_trade"]["deals"]
+            .as_array()
+            .expect("both countries publish their deal list")
+            .iter()
+            .map(|deal| deal["deal_id"].as_i64().expect("deal_id is an integer"))
+            .collect::<Vec<_>>()
+    };
+    let eng = deal_ids("ENG");
+    let saf = deal_ids("SAF");
+    assert_eq!(eng.len(), 2, "ENG owns one half of each deal");
+    assert!(
+        eng.iter().all(|id| *id > 0),
+        "every published deal id is positive: {eng:?}"
+    );
+    assert_ne!(
+        eng[0], eng[1],
+        "the two deals get different ids even though both carry wire ordinal 1: {eng:?}"
+    );
+    let mut eng_sorted = eng.clone();
+    let mut saf_sorted = saf.clone();
+    eng_sorted.sort_unstable();
+    saf_sorted.sort_unstable();
+    assert_eq!(
+        eng_sorted, saf_sorted,
+        "a deal's two halves are published under the SAME id, which is what the \
+         reciprocity join uses: ENG {eng:?} vs SAF {saf:?}"
     );
 }
 
@@ -12665,6 +12927,13 @@ fn d43_mtrd_version_word_decides_the_grammar() {
         deals_present(&fold(MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION, &[])),
         "and so does the archived v2 shape, unchanged"
     );
+    assert!(
+        deals_present(&fold(
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION,
+            &[34]
+        )),
+        "and so does v4, the shipping shape, with v3's completeness block intact"
+    );
 
     // A v3 BODY under a v2 label. v2 requires `+0x1C` to be zero, so this is
     // refused rather than parsed with the incomplete block counted as row bytes.
@@ -12677,7 +12946,7 @@ fn d43_mtrd_version_word_decides_the_grammar() {
     // rows by a decoder that has never heard of it.
     assert!(
         !deals_present(&fold(
-            MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION + 1,
+            MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION + 1,
             &[]
         )),
         "an unknown MTRD version is refused, never guessed at"
@@ -13838,9 +14107,13 @@ fn d43_complete_mtrr_and_mtrd_promote_exact_resource_trade_view() {
 fn d43_legacy_mtrd_keeps_route_status_unavailable() {
     let mut payload = d43_empty_payload();
     let trailer = payload.len();
-    append_d43_mtrd_classic_deal(&mut payload, 34, 67);
-    payload[trailer + 4..trailer + 6]
-        .copy_from_slice(&MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION.to_le_bytes());
+    append_d43_mtrd_classic_deal_versioned(
+        &mut payload,
+        34,
+        67,
+        4,
+        MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION,
+    );
     let first_row = trailer + MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN + 2 * 4;
     for row in [first_row, first_row + MARKET_TRADE_CLASSIC_DEAL_ROW_LEN] {
         payload[row + 28..row + 32].copy_from_slice(&0u32.to_le_bytes());
@@ -18277,13 +18550,23 @@ fn chunk2_d64_del2_projects_all_exact_lifecycle_classes_without_touching_d75() {
 /// end, so any id up to `u32::MAX` folded through, and replay bounded nothing
 /// at all -- the fail-open half of the same drift.
 ///
-/// Pinned absolutely: `100_000` is admitted, `100_001` is not.
+/// Pinned absolutely: `2_147_483_646` — the country LINK space's structural
+/// width — is admitted, one past it is not.
+///
+/// The ceiling was `100_000`, a content-scale plausibility guess and the last
+/// one in the country-cap family (lane GV's R-GV-1, closed by lane HJ). The
+/// walk below therefore starts at the first identity the retired guess
+/// discarded, which is where a reintroduced content cap shows up.
+///
+/// kills: restoring any content-scale ceiling on the DEL2 identities — the
+/// `100_001` and structural-width probes are admitted here and a guess of any
+/// plausible size turns them null. And, on the refusal side, deleting the
+/// upper bound entirely: `MAX + 1` and `u32::MAX` must still be refused, so a
+/// fold that bounds only the zero end fails this.
 #[test]
 fn chunk2_d64_del2_identities_stop_at_the_shared_lifecycle_tag_ceiling() {
-    assert_eq!(
-        portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID,
-        100_000
-    );
+    let max = portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID;
+    assert_eq!(max, 2_147_483_646);
     let ledger = |owner: u32, originator: u32| {
         snapshot_for_domain_records(vec![(
             64,
@@ -18295,24 +18578,25 @@ fn chunk2_d64_del2_identities_stop_at_the_shared_lifecycle_tag_ceiling() {
         )])
     };
 
-    let at_ceiling = ledger(100_000, 100_000);
-    assert_eq!(
-        at_ceiling["_r2_delayed_event_lifecycle_live"]["events"][0]["owner_tag_db_id"],
-        json!(100_000)
-    );
+    // ADMITTED, including the first identity the retired `100_000` guess
+    // discarded.
+    for owner in [100_001, max] {
+        let admitted = ledger(owner, owner);
+        assert_eq!(
+            admitted["_r2_delayed_event_lifecycle_live"]["events"][0]["owner_tag_db_id"],
+            json!(owner),
+            "identity {owner} is inside the link space's structural width"
+        );
+    }
 
-    assert_eq!(
-        ledger(100_001, 2)["_r2_delayed_event_lifecycle_live"],
-        Value::Null
-    );
-    assert_eq!(
-        ledger(2, 100_001)["_r2_delayed_event_lifecycle_live"],
-        Value::Null
-    );
-    assert_eq!(
-        ledger(u32::MAX, 2)["_r2_delayed_event_lifecycle_live"],
-        Value::Null
-    );
+    // REFUSED.
+    for (owner, originator) in [(max + 1, 2), (2, max + 1), (u32::MAX, 2), (2, u32::MAX)] {
+        assert_eq!(
+            ledger(owner, originator)["_r2_delayed_event_lifecycle_live"],
+            Value::Null,
+            "owner {owner} / originator {originator} is outside the id space"
+        );
+    }
 }
 
 /// One hour's DEL2 ledger is one drain of the collector's reservable lifecycle

@@ -56,6 +56,16 @@ const CDELAYED_EVENT_DUE_OFF: usize = 0xC4;
 const CEVENT_COMBINED_ID_OFF: usize = 0x0C;
 /// Owner/originator ceiling for a lifecycle row. Shared with the replay
 /// consumer, which used to apply no upper bound at all.
+///
+/// Despite the name this is the country LINK index space, not the country
+/// database's: [`CCOUNTRY_TAG_OFF`] is `CCountry + 0x08`, which is a link
+/// index, and `snapshot_row` requires `CDelayedEvent+0x18` to equal it. The
+/// originator at `CDelayedEvent+0xC0` has no such binding and takes this as a
+/// loose representation envelope. Both readings are written out at the shared
+/// constant, which is also where the residual that would tighten either lives.
+///
+/// It was `100_000` — a content-scale plausibility guess, and the last one in
+/// the country-cap family (lane GV's residual R-GV-1).
 const MAX_COUNTRY_TAG_DB_ID: u32 = portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID;
 const MIN_COMBINED_EVENT_ID: u32 = 100_000;
 const MAX_COMBINED_EVENT_ID: u32 = 100_099_999;

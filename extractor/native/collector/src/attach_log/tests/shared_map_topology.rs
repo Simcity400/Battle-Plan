@@ -231,9 +231,15 @@ const MAP_STATES: usize = 0x18000;
 const MAP_PROVINCES: usize = 0xC0000;
 const MAP_STATE_STRIDE: usize = 0xD0;
 const MAP_PROVINCE_STRIDE: usize = 0x190;
-/// Above `MIN_USABLE_PROVINCE_ROWS` (10,000) and `MIN_USABLE_STATE_ROWS`
-/// (1,000): a smaller map is refused by the builder before the walk this lane
-/// is about ever runs.
+/// A vanilla-sized map, so the sharing tests below run over the row counts a
+/// real campaign produces.
+///
+/// It used to have to be: the builder refused anything under
+/// `MIN_USABLE_PROVINCE_ROWS` (10,000) and `MIN_USABLE_STATE_ROWS` (1,000)
+/// before the walk ever ran. Those content floors are gone (lane GK's residual
+/// R3, closed by lane HJ), so the size is now a deliberate choice about
+/// realism, and the small-map case is held by
+/// `a_small_map_builds_and_a_map_that_authenticates_nothing_is_refused`.
 const MAP_PROVINCE_COUNT: u32 = 10_001;
 const MAP_STATE_COUNT: u32 = 1_200;
 const MAP_HEAP_LEN: usize =
@@ -303,6 +309,131 @@ pub(super) fn staged_map_fixture() -> CollectorStateFixture {
         );
     }
     fixture
+}
+
+/// A map SMALLER than vanilla builds, and a map that authenticates nothing does
+/// not — which is the whole of lane GK's residual R3 stated as one test.
+///
+/// Eleven conditions in the collector refused a topology with fewer than 1 000
+/// states or 10 000 provinces. Those numbers are `history/states` and
+/// `map/definition.csv` CONTENT, so a total conversion with a smaller map lost
+/// domains 22, 23, 44 and 48 outright. They are gone. What replaces them is a
+/// COHERENCE rule that carries no number: an array that DECLARES slots and
+/// authenticates none of them is incoherent, not empty.
+///
+/// The two halves are the point. Deleting a fail-closed check is only safe if
+/// the thing it was covering is still covered, and what these floors were
+/// covering — accidentally, and only at the sites without their own
+/// authentication — is the SUCCESSFUL EMPTY: a build that returns "this game
+/// has no provinces" instead of "I could not read this".
+///
+/// kills: reintroducing a province row floor anywhere at or above 2, or a STATE
+/// row floor anywhere at or above 1 — the minimal topology below has exactly
+/// ONE province and ZERO states, so any floor on either count refuses it;
+/// deleting the `province_rows.is_empty()` coherence rule (the zeroed array
+/// then builds a successful empty topology); respelling
+/// `cprovince_array_snapshot`'s structural `province_count < 2` as `== 0`,
+/// which the count-1 case catches — `1..1` is an empty range, so a count-1
+/// array walks nothing and the row rule alone cannot see it; and reinstating a
+/// rule that requires a state or a controlled province to publish, which the
+/// minimal topology catches at the SHARED walk. It does NOT claim to kill a
+/// change to the per-row vtable or id-echo checks; those are what the
+/// surrounding file's other tests hold.
+///
+/// One scope limit, stated rather than left implied: the minimal topology
+/// exercises `build_compact_map_control_topology`, which is the walk d22, d23,
+/// d44 and d48 all inherit. It does NOT reach the two scheduled-JSON paths,
+/// which carry the same authenticated-versus-emitted rule — this fixture stages
+/// no country tag source, so `country_tag_source_for_state` refuses them before
+/// their walk begins. Staging one here is what would extend the coverage.
+///
+/// Neither off-by-one is hypothetical: lane HJ wrote `== 0` first, and guarded
+/// the publication gates on EMITTED rows rather than authenticated ones. Its
+/// reviewer found both.
+#[test]
+fn a_small_map_builds_and_a_map_that_authenticates_nothing_is_refused() {
+    // A 32-province, 4-state map: two orders of magnitude below the retired
+    // floors, and an ordinary total conversion.
+    let mut fixture = staged_map_fixture();
+    const SMALL_PROVINCES: u32 = 32;
+    fixture
+        .heap
+        .write_u32(MAP_GS + CGAMESTATE_CPROVINCE_COUNT, SMALL_PROVINCES);
+    let state = fixture.collector_state();
+    let (topology, _, _) =
+        build_compact_map_control_topology(&state).expect("a small map is an ordinary map");
+    assert_eq!(
+        topology.provinces.len(),
+        SMALL_PROVINCES as usize - 1,
+        "every province slot but the null one authenticates"
+    );
+    assert!(
+        !topology.states.is_empty(),
+        "and the states its provinces name come with it"
+    );
+
+    // The same declared array, zeroed. Every slot is null, so the walk skips
+    // every one and authenticates nothing. Under the retired floors this was a
+    // loud refusal by accident; the coherence rule makes it a refusal on
+    // purpose, and by name.
+    let mut zeroed = staged_map_fixture();
+    zeroed
+        .heap
+        .write_u32(MAP_GS + CGAMESTATE_CPROVINCE_COUNT, SMALL_PROVINCES);
+    for province_id in 1..SMALL_PROVINCES {
+        zeroed
+            .heap
+            .write_u64(MAP_PROVINCE_ARRAY + province_id as usize * 8, 0);
+    }
+    let zeroed_state = zeroed.collector_state();
+    assert_eq!(
+        build_compact_map_control_topology(&zeroed_state).err(),
+        Some("map_topology_authenticated_no_rows"),
+        "a declared array that authenticates nothing is incoherent, not empty"
+    );
+
+    // The MINIMAL legal topology: two declared slots, so exactly one real
+    // province, and that province links no state and controls nobody. Every
+    // count in sight is at its floor and the map is still legal -- this is what
+    // a rule guarding on EMITTED rows rather than on the AUTHENTICATION would
+    // refuse, and what a row floor of any size would refuse.
+    let mut minimal = staged_map_fixture();
+    minimal
+        .heap
+        .write_u32(MAP_GS + CGAMESTATE_CPROVINCE_COUNT, 2);
+    let province_offset = MAP_PROVINCES + MAP_PROVINCE_STRIDE;
+    minimal
+        .heap
+        .write_u64(province_offset + CPROVINCE_OFF_STATE, 0);
+    minimal
+        .heap
+        .write_u32(province_offset + CPROVINCE_OFF_CONTROLLER, 0);
+    let minimal_state = minimal.collector_state();
+    let (minimal_topology, minimal_state_rows, _) =
+        build_compact_map_control_topology(&minimal_state)
+            .expect("one authenticated province and no states is a legal map");
+    assert_eq!(minimal_topology.provinces.len(), 1);
+    assert!(
+        minimal_topology.states.is_empty() && minimal_state_rows.is_empty(),
+        "a province that links no state contributes none, and that is legal"
+    );
+
+    // A count of exactly ONE declares only the vacant slot 0, so every walk
+    // over the array runs zero iterations. The row-count coherence rule cannot
+    // see that -- it never gets to compare anything -- so the refusal has to
+    // come from the array snapshot's own structural `< 2`.
+    for degenerate in [0u32, 1] {
+        let mut small = staged_map_fixture();
+        small
+            .heap
+            .write_u32(MAP_GS + CGAMESTATE_CPROVINCE_COUNT, degenerate);
+        let small_state = small.collector_state();
+        assert_eq!(
+            build_compact_map_control_topology(&small_state).err(),
+            Some("province_array_unavailable"),
+            "a province count of {degenerate} declares no addressable province"
+        );
+    }
 }
 
 /// A lane tracker whose clock roots are the fixture's, so a bracket opened

@@ -499,8 +499,14 @@ fn the_shared_admission_bounds_hold_their_exact_documented_values() {
     assert_eq!(portable_admission::MAX_COUNTRY_TABLE_ROWS, 2_147_483_647);
     assert_eq!(portable_admission::SUPPLY_MAX_PROVINCE_ID, 65_535);
     assert_eq!(
+        portable_admission::MAX_STRUCTURAL_COUNTRY_LINK_INDEX,
+        2_147_483_646
+    );
+    // The LINK space's width, not the database's. The two read the same number
+    // and are separately derived; see the constants' docs.
+    assert_eq!(
         portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID,
-        100_000
+        2_147_483_646
     );
     assert_eq!(portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_EVENTS, 65_536);
     assert_eq!(portable_admission::MAX_FRD_DIRECT_TRANSITIONS, 1_000_000);

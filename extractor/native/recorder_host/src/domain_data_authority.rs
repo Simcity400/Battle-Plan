@@ -391,6 +391,13 @@ pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = 2;
 /// v3 spends the header's last word on the incomplete-owner count and carries
 /// that many census keys between the witness block and the rows.
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION: u16 = 3;
+/// v4 keeps v3's header exactly and respells the ROW's deal identity at full
+/// width: two `u32` country ids at `+0x20`/`+0x24` and a one-based `u32` ordinal
+/// at `+0x5C`, in place of v1-v3's single packed `u64`. This decoder is
+/// structural — it advances a cursor and counts units — so the only thing the
+/// bump changes here is which versions are admitted and which of them carry the
+/// incomplete block.
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION: u16 = 4;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
 pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] = b"MTRA";
@@ -833,8 +840,15 @@ pub const COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN: usize = 20;
 pub const COMPACT_MAP_DETAIL_ENTRY_ROW_LEN: usize = 12;
 pub const COMPACT_WEATHER_REGION_ROW_LEN: usize = 32;
 pub const COMPACT_WEATHER_PROVINCE_ROW_LEN: usize = 32;
-pub const COMPACT_MAP_MIN_STATE_ROWS: usize = 1_000;
-pub const COMPACT_MAP_MIN_PROVINCE_ROWS: usize = 10_000;
+// The wire-side twins of the collector's 1 000-state / 10 000-province map
+// floors are gone. This decoder is STRUCTURAL: the payload length is required
+// to equal `32 + state_count * ROW + province_count * ROW` exactly, and every
+// row is then checked for a valid, unique id, in-range tags, and flag/value
+// agreement. Nothing there needed a lower bound on how many rows a real map
+// has -- and asserting one made a total conversion with a smaller map an
+// EXCLUDED RECORD on every hour, which is the fail-closed refusal doing exactly
+// the wrong thing. Lane GK's residual R3, closed by lane HJ; the producer's
+// twelve floors were removed in the same wave.
 /// See `world_fold.rs`'s `WEATHER_MAX_REGION_ROWS`: representation envelopes on
 /// the two weather array lengths, NOT counts. These were `305` (the vanilla
 /// strategic-region count, applied as an equality) and `10_000` (a floor tuned
@@ -12286,15 +12300,17 @@ fn decode_compact_market_trade_classic_deal_trailer(
     let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
     let scale_raw = read_u32_le(payload, trailer_offset + 20);
     let witness_count = read_u32_le(payload, trailer_offset + 24) as usize;
-    // v3's incomplete-owner count. v1/v2 hold this word at zero, so a v3
-    // payload that lost its version word still fails here rather than reading
-    // its completeness block as deal rows.
-    let per_owner = version == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION;
+    // v3's and v4's incomplete-owner count. v1/v2 hold this word at zero, so a
+    // v3 or v4 payload that lost its version word still fails here rather than
+    // reading its completeness block as deal rows.
+    let per_owner = version == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION
+        || version == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION;
     let incomplete_count = read_u32_le(payload, trailer_offset + 28) as usize;
     if ![
         COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION,
         COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION,
         COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION,
     ]
     .contains(&version)
         || header_len != COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN
@@ -16439,14 +16455,17 @@ fn decode_compact_map_control_data_payload(
         ));
         return;
     }
-    if !delta_data && state_count < COMPACT_MAP_MIN_STATE_ROWS {
+    // A FULL baseline carrying no rows of EITHER kind carries no measurement,
+    // and the fold refuses it too -- before it clears its retained maps. It also
+    // cannot have come from this recorder, whose topology walk refuses an array
+    // that authenticates no province.
+    //
+    // Scoped twice: an empty DELTA is ordinary, and a STATE-ONLY snapshot is
+    // still a measurement. This is a consistency rule with the producer, not the
+    // 10 000-province content floor lane HJ removed from this decoder.
+    if !delta_data && state_count == 0 && province_count == 0 {
         summary.parse_errors.push(format!(
-            "offset {offset}: map control state_count {state_count} < {COMPACT_MAP_MIN_STATE_ROWS}"
-        ));
-    }
-    if !delta_data && province_count < COMPACT_MAP_MIN_PROVINCE_ROWS {
-        summary.parse_errors.push(format!(
-            "offset {offset}: map control province_count {province_count} < {COMPACT_MAP_MIN_PROVINCE_ROWS}"
+            "offset {offset}: map control full baseline carries no rows of either kind"
         ));
     }
     if changed_state_rows > state_count {
@@ -16653,16 +16672,6 @@ fn decode_compact_map_detail_data_payload(
     if reserved != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: map detail reserved field is {reserved}"
-        ));
-    }
-    if !delta_data && state_count < COMPACT_MAP_MIN_STATE_ROWS {
-        summary.parse_errors.push(format!(
-            "offset {offset}: map detail state_count {state_count} < {COMPACT_MAP_MIN_STATE_ROWS}"
-        ));
-    }
-    if province_count > 0 && !delta_data && province_count < COMPACT_MAP_MIN_PROVINCE_ROWS {
-        summary.parse_errors.push(format!(
-            "offset {offset}: map detail province_count {province_count} < {COMPACT_MAP_MIN_PROVINCE_ROWS}"
         ));
     }
     if state_count > observed_state_rows {
