@@ -1527,7 +1527,7 @@ fn the_rendezvous_brackets_the_eviction_total_around_the_park() {
         .find("\nfn rendezvous_with_hour_boundary(")
         .expect("the free rendezvous must still be named this");
     let end = PRODUCER[start..]
-        .find("\n}\n")
+        .find("\n}")
         .expect("the free rendezvous must close at column 0")
         + start;
     let body = &PRODUCER[start..end];
