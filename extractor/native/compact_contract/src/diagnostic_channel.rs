@@ -1768,6 +1768,12 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "d95_taskforce_frames_without_enumeration",
     "d95_taskforce_frames_producer_gate_closed",
     "d95_taskforce_frames_source_collection_empty",
+    // Lifetime totals of rows this lane admitted into a frame that was then
+    // replaced before any drain served it. Cumulative for the same reason as
+    // every sibling above: the lane keeps a running total and republishes its
+    // absolute value each frame.
+    "d95_land_admitted_rows_lost_to_replacement",
+    "d95_taskforce_admitted_rows_lost_to_replacement",
 ];
 
 /// Domain 61 publishes one unit per pinned engine channel, named

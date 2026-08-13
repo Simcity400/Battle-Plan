@@ -11,7 +11,8 @@ mod a729;
 pub use a729::{
     abort_partial_install_and_uninstall, census_units, drain_latest, install, installed,
     installed_hook_receipts, release_pending, site_entry_counts, take_released_hook_receipts,
-    uninstall, CENSUS_ABANDONED_PENDING, CENSUS_ADMITTED, CENSUS_CANDIDATES_SEEN,
+    uninstall, CENSUS_ABANDONED_PENDING, CENSUS_ADMITTED,
+    CENSUS_ADMITTED_ROWS_LOST_TO_REPLACEMENT, CENSUS_CANDIDATES_SEEN,
     CENSUS_FRAMES_PRODUCER_GATE_CLOSED, CENSUS_FRAMES_SOURCE_COLLECTION_EMPTY,
     CENSUS_FRAMES_WITHOUT_ENUMERATION,
     CENSUS_REJECTED_BELOW_INTEL_THRESHOLD, CENSUS_REJECTED_BY_ELIGIBILITY,
