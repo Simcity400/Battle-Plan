@@ -992,3 +992,309 @@ fn a_measured_sunk_ship_leaf_under_no_history_is_refused() {
         Xui20SurfaceState::Admitted { .. }
     ));
 }
+
+// ---------------------------------------------------------------------------
+// EIR-NE-011 — H-B5 war-threat residual admission on the XUI20 replay
+// admission census. EIR-NE-011 is a typed NON-SHIPPING row: this census is
+// reached from the evidence/oracle reconstruction runtime, never from the
+// shipping observer route.
+// ---------------------------------------------------------------------------
+
+/// The exact-a729 tuple the D60 producer publishes on every war row once its
+/// residual coverage badge is set. Values are transcribed from the producer's
+/// own registry table (`capitulation_war_state_live::compact::HostilityReason`
+/// and the CWarRelation serializer that table is read from), never from the
+/// admission under test.
+fn war_with_residuals() -> WarObjectRow {
+    WarObjectRow {
+        first: Leaf::Measured("GER".into()),
+        second: Leaf::Measured("ENG".into()),
+        first_tag_db_id: Leaf::Measured(47),
+        second_tag_db_id: Leaf::Measured(3),
+        threat_fixed5_raw: Leaf::Measured(1_795_990),
+        threat_fixed_scale: Leaf::Measured(100_000),
+        first_was_instigator: Leaf::Measured(true),
+        hostility_reason_instigator_raw: Leaf::Measured(0),
+        hostility_reason_instigator: Leaf::Measured("war".into()),
+        hostility_reason_defender_raw: Leaf::Measured(5),
+        hostility_reason_defender: Leaf::Measured("not_applicable".into()),
+        ..war()
+    }
+}
+
+fn second_war_with_residuals() -> WarObjectRow {
+    WarObjectRow {
+        key: "SOV|ITA".into(),
+        war_id: Leaf::Measured(2),
+        producer_ordinal: Leaf::Measured(1),
+        first: Leaf::Measured("SOV".into()),
+        second: Leaf::Measured("ITA".into()),
+        first_tag_db_id: Leaf::Measured(11),
+        second_tag_db_id: Leaf::Measured(12),
+        threat_fixed5_raw: Leaf::Measured(-42),
+        first_was_instigator: Leaf::Measured(false),
+        hostility_reason_instigator_raw: Leaf::Measured(4),
+        hostility_reason_instigator: Leaf::Measured("guarantee".into()),
+        hostility_reason_defender_raw: Leaf::Measured(2),
+        hostility_reason_defender: Leaf::Measured("ally".into()),
+        ..war_with_residuals()
+    }
+}
+
+/// A well-formed D60 pair carrying NO H-B5 leaf at all — a pre-v2 recording.
+/// The pair must be measured because the residual surface gates on pair
+/// identity first, and this fixture is here to exercise the residual gap, not
+/// the pair gap.
+fn war_pair_only() -> WarObjectRow {
+    WarObjectRow {
+        first: Leaf::Measured("GER".into()),
+        second: Leaf::Measured("ENG".into()),
+        first_tag_db_id: Leaf::Measured(47),
+        second_tag_db_id: Leaf::Measured(3),
+        ..war()
+    }
+}
+
+fn residuals_of(binding: &Xui20CombatDetailLosses) -> Xui20SurfaceState {
+    admit_xui20_replay(binding, &frame_hour()).war_threat_residuals_exact
+}
+
+fn binding_with_wars(wars: Vec<WarObjectRow>) -> Xui20CombatDetailLosses {
+    let mut binding = exact_binding();
+    binding.wars = Leaf::Measured(wars);
+    binding
+}
+
+/// kills: dropping the H-B5 tuple from the XUI20 replay admission, or admitting
+/// it without the exact-a729 registry cross-check. The complete tuple admits one
+/// row per D60 war object, and a war set carrying no tuple at all reports a named
+/// external-producer gap instead of a measured zero threat.
+#[test]
+fn xui20_admits_the_complete_h_b5_residual_tuple_and_names_the_producer_gap() {
+    assert_eq!(
+        residuals_of(&binding_with_wars(vec![
+            war_with_residuals(),
+            second_war_with_residuals(),
+        ])),
+        Xui20SurfaceState::Admitted { row_count: 2 }
+    );
+
+    // A well-formed pair carrying no H-B5 leaf at all: a pre-v2 recording.
+    match residuals_of(&binding_with_wars(vec![war_pair_only()])) {
+        Xui20SurfaceState::ExternalInputRequired { reason } => assert!(
+            reason.contains("threat_fixed5_raw"),
+            "the gap must name the producer field, got {reason:?}"
+        ),
+        other => panic!("a pre-v2 war set must be an external gap, got {other:?}"),
+    }
+
+    // No wars this hour is measured empty, and stays distinct from the gap.
+    assert_eq!(
+        residuals_of(&binding_with_wars(Vec::new())),
+        Xui20SurfaceState::Admitted { row_count: 0 }
+    );
+
+    // An unavailable war feed is the feed's own gap, not a residual rejection.
+    let mut binding = exact_binding();
+    binding.wars = Leaf::Unobtained;
+    assert!(matches!(
+        residuals_of(&binding),
+        Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
+}
+
+/// kills: admitting partial H-B5 coverage, a missing leaf, an off-registry
+/// discriminator, a rescaled threat, or a raw/spelling disagreement. Each is a
+/// distinct producer contract break, and the surface must keep "the producer
+/// did not supply it" apart from "the producer supplied something the
+/// exact-a729 law rejects".
+#[test]
+fn xui20_refuses_partial_incomplete_and_contradictory_h_b5_residuals() {
+    // Partial coverage across the war set: the producer badges residuals only
+    // when EVERY row carries them, so a mixed set is a contract break.
+    let uncovered = WarObjectRow {
+        key: "SOV|ITA".into(),
+        war_id: Leaf::Measured(2),
+        producer_ordinal: Leaf::Measured(1),
+        first: Leaf::Measured("SOV".into()),
+        second: Leaf::Measured("ITA".into()),
+        ..war()
+    };
+    match residuals_of(&binding_with_wars(vec![
+        war_with_residuals(),
+        uncovered.clone(),
+    ])) {
+        Xui20SurfaceState::Rejected { reason } => assert!(
+            reason.contains("partial"),
+            "partial coverage must say so, got {reason:?}"
+        ),
+        other => panic!("partial coverage must be rejected, got {other:?}"),
+    }
+
+    // Mixed coverage outranks whatever is wrong inside the carried rows: a set
+    // holding an uncovered row AND a row with one missing leaf is still the
+    // producer contract break, not that leaf's external gap. This is why every
+    // row is classified before the disposition is chosen.
+    match residuals_of(&binding_with_wars(vec![
+        WarObjectRow {
+            first_was_instigator: Leaf::Unobtained,
+            ..war_with_residuals()
+        },
+        uncovered,
+    ])) {
+        Xui20SurfaceState::Rejected { reason } => assert!(
+            reason.contains("partial"),
+            "mixed coverage must outrank the missing leaf, got {reason:?}"
+        ),
+        other => panic!("mixed coverage must be rejected, got {other:?}"),
+    }
+
+    // One missing leaf inside an otherwise carried tuple is an external gap
+    // naming that leaf — never a defaulted instigator flag.
+    match residuals_of(&binding_with_wars(vec![WarObjectRow {
+        first_was_instigator: Leaf::Unobtained,
+        ..war_with_residuals()
+    }])) {
+        Xui20SurfaceState::ExternalInputRequired { reason } => assert!(
+            reason.contains("first_was_instigator"),
+            "the gap must name the missing leaf, got {reason:?}"
+        ),
+        other => panic!("a missing leaf must be an external gap, got {other:?}"),
+    }
+
+    // Off-registry discriminator: the engine's own switch has no arm for 6.
+    match residuals_of(&binding_with_wars(vec![WarObjectRow {
+        hostility_reason_instigator_raw: Leaf::Measured(6),
+        ..war_with_residuals()
+    }])) {
+        Xui20SurfaceState::Rejected { reason } => assert!(
+            reason.contains("exact-a729 registry"),
+            "an unknown discriminator must be rejected by name, got {reason:?}"
+        ),
+        other => panic!("an unknown discriminator must be rejected, got {other:?}"),
+    }
+
+    // A rescaled threat is refused rather than converted.
+    match residuals_of(&binding_with_wars(vec![WarObjectRow {
+        threat_fixed_scale: Leaf::Measured(1_000),
+        ..war_with_residuals()
+    }])) {
+        Xui20SurfaceState::Rejected { reason } => assert!(
+            reason.contains("threat_fixed_scale"),
+            "a wrong scale must be rejected by name, got {reason:?}"
+        ),
+        other => panic!("a wrong scale must be rejected, got {other:?}"),
+    }
+
+    // A spelling that disagrees with the raw it claims to be is refused: the
+    // producer and the replay registry must resolve the same token.
+    match residuals_of(&binding_with_wars(vec![WarObjectRow {
+        hostility_reason_defender: Leaf::Measured("guarantee".into()),
+        ..war_with_residuals()
+    }])) {
+        Xui20SurfaceState::Rejected { reason } => assert!(
+            reason.contains("disagrees"),
+            "a raw/spelling disagreement must be rejected by name, got {reason:?}"
+        ),
+        other => panic!("a raw/spelling disagreement must be rejected, got {other:?}"),
+    }
+}
+
+/// kills: letting the H-B5 refusal take the war-overview surface down with it,
+/// or letting a war-overview refusal suppress an admitted residual set. The two
+/// surfaces are gated independently, so a pre-v2 recording keeps its war
+/// overview and loses only the residual surface.
+#[test]
+fn h_b5_and_war_overview_surfaces_refuse_independently() {
+    let admission = admit_xui20_replay(&binding_with_wars(vec![war_pair_only()]), &frame_hour());
+    assert_eq!(
+        admission.war_overview_exact,
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
+    assert!(matches!(
+        admission.war_threat_residuals_exact,
+        Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
+
+    // The mirror: a war-overview field the residual law does not read must not
+    // pull the residual surface down.
+    let admission = admit_xui20_replay(
+        &binding_with_wars(vec![WarObjectRow {
+            war_name: Leaf::Unobtained,
+            ..war_with_residuals()
+        }]),
+        &frame_hour(),
+    );
+    assert!(matches!(
+        admission.war_overview_exact,
+        Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
+    assert_eq!(
+        admission.war_threat_residuals_exact,
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
+}
+
+/// kills: admitting a D60 war pair that names the same country twice, carries
+/// an empty tag, or repeats a pair another row already claimed. `first`/
+/// `second` orient the instigator/defender tuple the H-B5 surface admits, so a
+/// self-war or a duplicated pair would attribute a threat to a relationship the
+/// producer never measured.
+#[test]
+fn war_pair_identity_rejects_self_pairs_empty_tags_and_duplicates() {
+    let self_pair = vec![WarObjectRow {
+        second: Leaf::Measured("GER".into()),
+        second_tag_db_id: Leaf::Measured(47),
+        ..war_with_residuals()
+    }];
+    let empty_tag = vec![WarObjectRow {
+        second: Leaf::Measured("  ".into()),
+        ..war_with_residuals()
+    }];
+    let duplicate = vec![
+        war_with_residuals(),
+        WarObjectRow {
+            key: "GER|ENG#2".into(),
+            war_id: Leaf::Measured(2),
+            producer_ordinal: Leaf::Measured(1),
+            ..war_with_residuals()
+        },
+    ];
+
+    for (label, rows) in [
+        ("self pair", self_pair),
+        ("blank party", empty_tag),
+        ("duplicate pair", duplicate),
+    ] {
+        let admission = admit_xui20_replay(&binding_with_wars(rows), &frame_hour());
+        assert!(
+            matches!(admission.war_pair_history, Xui20SurfaceState::Rejected { .. }),
+            "{label}: pair identity must be rejected, got {:?}",
+            admission.war_pair_history
+        );
+        // The H-B5 tuple is ORIENTED by that pair, so a complete tuple on an
+        // unusable pair must not be admitted either.
+        assert!(
+            matches!(
+                admission.war_threat_residuals_exact,
+                Xui20SurfaceState::Rejected { .. }
+            ),
+            "{label}: a complete tuple on an unusable pair must not be admitted, got {:?}",
+            admission.war_threat_residuals_exact
+        );
+    }
+
+    // The control: the same rows with distinct, well-formed pairs admit both.
+    let admission = admit_xui20_replay(
+        &binding_with_wars(vec![war_with_residuals(), second_war_with_residuals()]),
+        &frame_hour(),
+    );
+    assert_eq!(
+        admission.war_pair_history,
+        Xui20SurfaceState::Admitted { row_count: 2 }
+    );
+    assert_eq!(
+        admission.war_threat_residuals_exact,
+        Xui20SurfaceState::Admitted { row_count: 2 }
+    );
+}

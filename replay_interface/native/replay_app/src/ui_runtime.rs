@@ -8609,6 +8609,16 @@ impl LegacySelectedPresentReconstructionRuntime {
                 &combat.global_cross_family_order,
                 &combat.war_pair_history,
                 &combat.war_overview_exact,
+                // EIR-NE-011: the H-B5 war-threat residual surface joins this
+                // census so an absent producer shows as one named unavailable
+                // surface rather than disappearing. NOTE the census it joins:
+                // this runtime is the retained evidence/oracle reconstruction
+                // adapter, which shipping playback never constructs
+                // (`app.rs` asserts the absence of its constructor). That is
+                // exactly why EIR-NE-011 is still a typed non-shipping row — the
+                // D60 war rows have no shipping consumer, and this reference must
+                // never be cited as one.
+                &combat.war_threat_residuals_exact,
             ];
             let admitted = surfaces.iter().filter_map(|surface| match surface {
                 Xui20SurfaceState::Admitted { row_count } => Some(*row_count),

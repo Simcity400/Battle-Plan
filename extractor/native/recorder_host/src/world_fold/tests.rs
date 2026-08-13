@@ -21095,6 +21095,121 @@ fn h_b5_exact_war_residuals_fold_without_loss_or_inference() {
     assert_eq!(war["hostility_reason_defender"], json!("not_applicable"));
 }
 
+/// kills: emitting any war-threat scale value other than the 100_000 the replay
+/// consumer requires, dropping D60's own scale constant, or clamping/absolutising
+/// a negative threat on the way out.
+///
+/// The value assertion alone could NOT kill the specific regression this test
+/// was written against — `build_war_state_wars` publishing the LEGITIMACY scale
+/// (`capwar60::compact::FIXED_SCALE_RAW`) under `threat_fixed_scale` — because
+/// the two constants are numerically equal today. That is exactly why the wrong
+/// one went unnoticed, so provenance is asserted at the source instead of hoped
+/// for at the value. The replay side refuses any war row whose
+/// `threat_fixed_scale` is not exactly 100_000
+/// (`game_ui/src/waroverview_binding.rs`, EIR-NE-011).
+#[test]
+fn h_b5_threat_scale_on_the_wire_is_the_scale_the_replay_consumer_requires() {
+    let raw = raw_for(16_959_360);
+    let mut snapshot = capwar_sample_snapshot();
+    snapshot.status_flags |= capwar60::compact::STATUS_WAR_RESIDUALS_EXACT;
+    snapshot.wars[0].residuals = Some(capwar60::compact::WarResiduals {
+        threat_fixed5_raw: -987_654,
+        first_was_instigator: false,
+        hostility_reason_instigator: capwar60::compact::HostilityReason::Guarantee,
+        hostility_reason_defender: capwar60::compact::HostilityReason::Ally,
+    });
+    let stream = capwar_stream(
+        vec![
+            (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+            (60, capwar_payload(&snapshot)),
+        ],
+        raw,
+    );
+    let mut fold = WorldFold::new("h-b5-scale");
+    fold.ingest_stream(&stream);
+    let value = parse(&fold.finish()[0].2);
+    let war = &value["diplomacy_world"]["wars"]["GER|FRA"];
+    assert_eq!(
+        war["threat_fixed_scale"],
+        json!(100_000),
+        "the replay consumer refuses any war row whose threat_fixed_scale is not 100_000"
+    );
+    assert_eq!(
+        compact_contract::build_profile::DOMAIN60_WAR_THREAT_FIXED_SCALE,
+        100_000,
+        "D60's own war-threat scale constant is the one the fold must publish"
+    );
+    // Provenance, asserted at the source because the value cannot carry it: the
+    // emission must cite D60's war-threat constant, not the numerically equal
+    // legitimacy scale it used to borrow.
+    let source = include_str!("../world_fold.rs").replace("\r\n", "\n");
+    let emission = source
+        .split_once("\"threat_fixed_scale\":")
+        .expect("the fold emits threat_fixed_scale")
+        .1
+        .split_once(",\n")
+        .expect("the threat_fixed_scale emission ends")
+        .0;
+    assert!(
+        emission.contains("DOMAIN60_WAR_THREAT_FIXED_SCALE"),
+        "threat_fixed_scale must be published from D60's own constant, got {emission:?}"
+    );
+    assert!(
+        !emission.contains("FIXED_SCALE_RAW"),
+        "threat_fixed_scale must not borrow the legitimacy scale, got {emission:?}"
+    );
+    // A negative threat is a real engine value and must survive as-is.
+    assert_eq!(war["threat_fixed5_raw"], json!(-987_654));
+}
+
+/// kills: renaming a `HostilityReason` spelling or reordering the enum in the
+/// producer. The replay consumer resolves the raw discriminator against its own
+/// copy of the exact-a729 registry table and refuses the whole tuple when the
+/// carried spelling disagrees with the spelling that raw resolves to
+/// (`resolve_hostility_reason_token` / `resolve_war_residuals`), so a producer
+/// that drifts either half silently loses every war row instead of failing here.
+#[test]
+fn h_b5_every_hostility_discriminant_folds_to_its_exact_registry_pair() {
+    use capwar60::compact::HostilityReason;
+    const EXPECTED: [(HostilityReason, u32, &str); 6] = [
+        (HostilityReason::War, 0, "war"),
+        (HostilityReason::Puppet, 1, "puppet"),
+        (HostilityReason::Ally, 2, "ally"),
+        (HostilityReason::AskedToJoin, 3, "asked_to_join"),
+        (HostilityReason::Guarantee, 4, "guarantee"),
+        (HostilityReason::NotApplicable, 5, "not_applicable"),
+    ];
+    for (index, (reason, raw_value, spelling)) in EXPECTED.iter().enumerate() {
+        // Pair each discriminant with a different partner so instigator and
+        // defender are never read from the same field by accident.
+        let defender = EXPECTED[(index + 1) % EXPECTED.len()];
+        let raw = raw_for(16_959_360);
+        let mut snapshot = capwar_sample_snapshot();
+        snapshot.status_flags |= capwar60::compact::STATUS_WAR_RESIDUALS_EXACT;
+        snapshot.wars[0].residuals = Some(capwar60::compact::WarResiduals {
+            threat_fixed5_raw: 1,
+            first_was_instigator: true,
+            hostility_reason_instigator: *reason,
+            hostility_reason_defender: defender.0,
+        });
+        let stream = capwar_stream(
+            vec![
+                (18, country_identity_payload(&[(47, "GER"), (3, "FRA")])),
+                (60, capwar_payload(&snapshot)),
+            ],
+            raw,
+        );
+        let mut fold = WorldFold::new("h-b5-registry");
+        fold.ingest_stream(&stream);
+        let value = parse(&fold.finish()[0].2);
+        let war = &value["diplomacy_world"]["wars"]["GER|FRA"];
+        assert_eq!(war["hostility_reason_instigator_raw"], json!(raw_value));
+        assert_eq!(war["hostility_reason_instigator"], json!(spelling));
+        assert_eq!(war["hostility_reason_defender_raw"], json!(defender.1));
+        assert_eq!(war["hostility_reason_defender"], json!(defender.2));
+    }
+}
+
 #[test]
 fn capitulation_persists_across_hours_but_wars_go_unknown() {
     let raw1 = raw_for(16_959_360);

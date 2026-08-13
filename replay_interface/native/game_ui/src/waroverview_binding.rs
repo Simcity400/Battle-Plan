@@ -75,6 +75,168 @@ pub struct WarResidualSummary {
     pub hostility_reason_defender: HostilityReasonToken,
 }
 
+/// The only fixed-point scale the exact-a729 threat value is admitted at. The
+/// producer publishes D60's own `DOMAIN60_WAR_THREAT_FIXED_SCALE`; a row that
+/// carries anything else is a producer contract break, not a value to rescale.
+pub const WAR_THREAT_FIXED_SCALE: i64 = 100_000;
+
+/// Why an H-B5 residual tuple was not admitted, in the two terms an admitting
+/// surface has to keep apart: a leaf the external producer did not supply is an
+/// EXTERNAL gap, while a fully-supplied tuple that contradicts the exact-a729
+/// law is a REJECTED row. [`resolve_war_residuals`] collapses both into
+/// `Leaf::Unobtained`, which is right for a typed binding and wrong for an
+/// admission that has to name which of the two it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WarResidualAdmission {
+    /// No H-B5 leaf is carried at all — a pre-v2 D60 recording.
+    Absent,
+    /// At least one leaf is carried and at least one required leaf is not
+    /// measured. `field` names the first such leaf in wire order.
+    Incomplete { field: &'static str },
+    /// Every leaf is measured but the tuple contradicts the exact-a729 law.
+    Inconsistent { reason: String },
+    /// The complete, mechanically resolved tuple.
+    Measured(WarResidualSummary),
+}
+
+/// Admit one exact war object's H-B5 tuple. This is the row-level entry point:
+/// it applies exactly the law [`resolve_war_residuals`] applies and additionally
+/// reports which half of it failed. EIR-NE-011 is a typed non-shipping row, so
+/// its only current callers are this module and the XUI20 replay admission,
+/// which is reached from the evidence/oracle reconstruction runtime.
+pub fn admit_war_object_residuals(row: &WarObjectRow) -> WarResidualAdmission {
+    admit_war_residuals(
+        &row.threat_fixed5_raw,
+        &row.threat_fixed_scale,
+        &row.first_was_instigator,
+        &row.hostility_reason_instigator_raw,
+        &row.hostility_reason_instigator,
+        &row.hostility_reason_defender_raw,
+        &row.hostility_reason_defender,
+    )
+}
+
+fn admit_war_residuals(
+    threat_fixed5_raw: &Leaf<i64>,
+    threat_fixed_scale: &Leaf<i64>,
+    first_was_instigator: &Leaf<bool>,
+    hostility_reason_instigator_raw: &Leaf<i64>,
+    hostility_reason_instigator: &Leaf<String>,
+    hostility_reason_defender_raw: &Leaf<i64>,
+    hostility_reason_defender: &Leaf<String>,
+) -> WarResidualAdmission {
+    if matches!(threat_fixed5_raw, Leaf::Absent)
+        && matches!(threat_fixed_scale, Leaf::Absent)
+        && matches!(first_was_instigator, Leaf::Absent)
+        && matches!(hostility_reason_instigator_raw, Leaf::Absent)
+        && matches!(hostility_reason_instigator, Leaf::Absent)
+        && matches!(hostility_reason_defender_raw, Leaf::Absent)
+        && matches!(hostility_reason_defender, Leaf::Absent)
+    {
+        return WarResidualAdmission::Absent;
+    }
+
+    // Wire order. The first non-measured leaf names the gap so a refusal points
+    // at one producer field instead of the whole tuple.
+    //
+    // Written out rather than folded into a local macro on purpose: this crate's
+    // `no_silent_skip` guard refuses a macro whose expansion contains `return`,
+    // because libtest reports an early return as a PASS and no scan of a test
+    // body can see a `return` hidden inside a macro expansion. Seven explicit
+    // `let ... else` arms keep every exit visible where it happens.
+    let Some(&threat_fixed5_raw) = threat_fixed5_raw.measured() else {
+        return WarResidualAdmission::Incomplete { field: "threat_fixed5_raw" };
+    };
+    let Some(&threat_fixed_scale) = threat_fixed_scale.measured() else {
+        return WarResidualAdmission::Incomplete { field: "threat_fixed_scale" };
+    };
+    let Some(&first_was_instigator) = first_was_instigator.measured() else {
+        return WarResidualAdmission::Incomplete { field: "first_was_instigator" };
+    };
+    let Some(&instigator_raw) = hostility_reason_instigator_raw.measured() else {
+        return WarResidualAdmission::Incomplete {
+            field: "hostility_reason_instigator_raw",
+        };
+    };
+    let Some(instigator_spelling) = hostility_reason_instigator.measured() else {
+        return WarResidualAdmission::Incomplete {
+            field: "hostility_reason_instigator",
+        };
+    };
+    let Some(&defender_raw) = hostility_reason_defender_raw.measured() else {
+        return WarResidualAdmission::Incomplete {
+            field: "hostility_reason_defender_raw",
+        };
+    };
+    let Some(defender_spelling) = hostility_reason_defender.measured() else {
+        return WarResidualAdmission::Incomplete {
+            field: "hostility_reason_defender",
+        };
+    };
+
+    let Some(hostility_reason_instigator) = resolve_hostility_reason_token(instigator_raw) else {
+        return WarResidualAdmission::Inconsistent {
+            reason: format!(
+                "instigator hostility-reason discriminator {instigator_raw} is outside the \
+                 exact-a729 registry"
+            ),
+        };
+    };
+    let Some(hostility_reason_defender) = resolve_hostility_reason_token(defender_raw) else {
+        return WarResidualAdmission::Inconsistent {
+            reason: format!(
+                "defender hostility-reason discriminator {defender_raw} is outside the \
+                 exact-a729 registry"
+            ),
+        };
+    };
+    if threat_fixed_scale != WAR_THREAT_FIXED_SCALE {
+        return WarResidualAdmission::Inconsistent {
+            reason: format!(
+                "threat_fixed_scale {threat_fixed_scale} is not the exact-a729 scale \
+                 {WAR_THREAT_FIXED_SCALE}"
+            ),
+        };
+    }
+    if instigator_spelling.as_str() != hostility_reason_instigator.spelling {
+        return WarResidualAdmission::Inconsistent {
+            reason: format!(
+                "instigator spelling {instigator_spelling:?} disagrees with the spelling raw \
+                 {instigator_raw} resolves to"
+            ),
+        };
+    }
+    if defender_spelling.as_str() != hostility_reason_defender.spelling {
+        return WarResidualAdmission::Inconsistent {
+            reason: format!(
+                "defender spelling {defender_spelling:?} disagrees with the spelling raw \
+                 {defender_raw} resolves to"
+            ),
+        };
+    }
+
+    WarResidualAdmission::Measured(WarResidualSummary {
+        threat_fixed5_raw,
+        threat_fixed_scale,
+        first_was_instigator,
+        hostility_reason_instigator,
+        hostility_reason_defender,
+    })
+}
+
+/// Project an admission onto the typed leaf. A typed binding has exactly two
+/// non-measured states, so both refusal kinds land on `Unobtained`; only a
+/// surface that must report WHICH kind it was needs the admission itself.
+fn leaf_from_admission(admission: WarResidualAdmission) -> Leaf<WarResidualSummary> {
+    match admission {
+        WarResidualAdmission::Absent => Leaf::Absent,
+        WarResidualAdmission::Incomplete { .. } | WarResidualAdmission::Inconsistent { .. } => {
+            Leaf::Unobtained
+        }
+        WarResidualAdmission::Measured(summary) => Leaf::Measured(summary),
+    }
+}
+
 fn resolve_war_residuals(
     threat_fixed5_raw: &Leaf<i64>,
     threat_fixed_scale: &Leaf<i64>,
@@ -84,58 +246,15 @@ fn resolve_war_residuals(
     hostility_reason_defender_raw: &Leaf<i64>,
     hostility_reason_defender: &Leaf<String>,
 ) -> Leaf<WarResidualSummary> {
-    if matches!(threat_fixed5_raw, Leaf::Absent)
-        && matches!(threat_fixed_scale, Leaf::Absent)
-        && matches!(first_was_instigator, Leaf::Absent)
-        && matches!(hostility_reason_instigator_raw, Leaf::Absent)
-        && matches!(hostility_reason_instigator, Leaf::Absent)
-        && matches!(hostility_reason_defender_raw, Leaf::Absent)
-        && matches!(hostility_reason_defender, Leaf::Absent)
-    {
-        return Leaf::Absent;
-    }
-
-    let (
-        Some(&threat_fixed5_raw),
-        Some(&threat_fixed_scale),
-        Some(&first_was_instigator),
-        Some(&instigator_raw),
-        Some(instigator_spelling),
-        Some(&defender_raw),
-        Some(defender_spelling),
-    ) = (
-        threat_fixed5_raw.measured(),
-        threat_fixed_scale.measured(),
-        first_was_instigator.measured(),
-        hostility_reason_instigator_raw.measured(),
-        hostility_reason_instigator.measured(),
-        hostility_reason_defender_raw.measured(),
-        hostility_reason_defender.measured(),
-    )
-    else {
-        return Leaf::Unobtained;
-    };
-
-    let Some(hostility_reason_instigator) = resolve_hostility_reason_token(instigator_raw) else {
-        return Leaf::Unobtained;
-    };
-    let Some(hostility_reason_defender) = resolve_hostility_reason_token(defender_raw) else {
-        return Leaf::Unobtained;
-    };
-    if threat_fixed_scale != 100_000
-        || instigator_spelling.as_str() != hostility_reason_instigator.spelling
-        || defender_spelling.as_str() != hostility_reason_defender.spelling
-    {
-        return Leaf::Unobtained;
-    }
-
-    Leaf::Measured(WarResidualSummary {
+    leaf_from_admission(admit_war_residuals(
         threat_fixed5_raw,
         threat_fixed_scale,
         first_was_instigator,
+        hostility_reason_instigator_raw,
         hostility_reason_instigator,
+        hostility_reason_defender_raw,
         hostility_reason_defender,
-    })
+    ))
 }
 
 /// One live belligerent-pair casualty row from `DiplomacyView::war_relations`.
@@ -147,8 +266,8 @@ pub struct WarRelationSummary {
     pub second: String,
     pub first_casualties: Option<i64>,
     pub second_casualties: Option<i64>,
-    /// Exact H-B5 tuple, absent for pre-v2 streams and unobtained while the
-    /// same-tick live activation gate remains closed or input is inconsistent.
+    /// Exact H-B5 tuple, absent for pre-v2 streams and unobtained when a leaf
+    /// is missing or the carried tuple is internally inconsistent.
     pub residuals: Leaf<WarResidualSummary>,
 }
 
@@ -244,15 +363,10 @@ fn war_object(row: &WarObjectRow) -> WarObjectSummary {
         start_date: row.start_date.clone(),
         first_casualties: row.first_casualties.clone(),
         second_casualties: row.second_casualties.clone(),
-        residuals: resolve_war_residuals(
-            &row.threat_fixed5_raw,
-            &row.threat_fixed_scale,
-            &row.first_was_instigator,
-            &row.hostility_reason_instigator_raw,
-            &row.hostility_reason_instigator,
-            &row.hostility_reason_defender_raw,
-            &row.hostility_reason_defender,
-        ),
+        // The same row-level entry the XUI20 replay admission calls, so the
+        // typed binding and that admission cannot list the seven leaves
+        // differently and reach opposite verdicts on one row.
+        residuals: leaf_from_admission(admit_war_object_residuals(row)),
     }
 }
 

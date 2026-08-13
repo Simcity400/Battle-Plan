@@ -1099,7 +1099,6 @@
       "attach_log.rs:58783": 1,
       "attach_log.rs:89496": 1,
       "capitulation_war_state_live/src/lib.rs:12-15": 1,
-      "capitulation_war_state_live/src/lib.rs:3": 2,
       "character_presentation_g8.rs:182-183": 1,
       "character_presentation_g8.rs:225": 1,
       "character_presentation_live/src/lib.rs:16": 1,
@@ -1125,7 +1124,6 @@
       "game_ui/src/production_renderer.rs:7711": 1,
       "game_ui/src/production_renderer.rs:7756": 1,
       "game_ui/src/trade_compositor.rs:32": 1,
-      "game_ui/src/waroverview_binding.rs:587": 1,
       "lanes/focus_research_decisions_depth_live/src/lib.rs:31-33": 1,
       "lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs:14": 2,
       "lanes/production_render_submit_live/src/lib.rs:1446": 1,
@@ -1149,6 +1147,7 @@
       "production_lines.rs:915-917": 1,
       "recorder_host/src/campaign_identity.rs:626": 2,
       "replay_app/src/app.rs:10460": 1,
+      "replay_app/src/app.rs:13312": 1,
       "replay_app/src/gui_definition_admission.rs:3251": 1,
       "replay_app/src/ui_runtime.rs:10275": 1,
       "replay_app/src/ui_runtime.rs:10911": 1,
@@ -1186,7 +1185,6 @@
       "wire_format/src/d22.rs:1": 1,
       "wire_format/src/d22.rs:26-30": 1,
       "wire_format/src/d56.rs:178-180": 1,
-      "world.rs:1203": 1,
       "world.rs:12175": 2,
       "world.rs:19936": 1,
       "world.rs:21320": 1,
@@ -2694,7 +2692,7 @@
       "world_fold.rs:22247-22252": 1,
       "world_fold.rs:22266": 1,
       "world_fold.rs:22271": 1,
-      "world_fold.rs:27049-27170": 1,
+      "world_fold.rs:27055-27176": 1,
       "world_fold.rs:386-387": 1,
       "world_fold.rs:5350": 1
     },
@@ -2711,7 +2709,7 @@
       "attach_log.rs:71816": 1,
       "extractor/native/collector/src/attach_log.rs:58628-58717": 1,
       "world_fold.rs:22451": 1,
-      "world_fold.rs:27173-27396": 1,
+      "world_fold.rs:27179-27402": 1,
       "world_fold.rs:29946": 1,
       "world_fold.rs:400-403": 1
     },
@@ -3349,7 +3347,7 @@
       "world_fold.rs:23877-23883": 3,
       "world_fold.rs:25702": 1,
       "world_fold.rs:25850": 1,
-      "world_fold.rs:26225-26326": 1,
+      "world_fold.rs:26231-26332": 1,
       "world_fold.rs:8286-8318": 1
     },
     "extractor/native/wire_format/src/d56.rs": {
@@ -3412,7 +3410,7 @@
       "world_fold.rs:1718": 1,
       "world_fold.rs:22123-22129": 1,
       "world_fold.rs:22143": 1,
-      "world_fold.rs:26939-27046": 1,
+      "world_fold.rs:26945-27052": 1,
       "world_fold.rs:2872-2874": 1
     },
     "extractor/native/wire_format/src/d61.rs": {

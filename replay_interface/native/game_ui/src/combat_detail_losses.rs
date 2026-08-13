@@ -15,6 +15,7 @@ use replay_core::{
     ViewStatus, WarObjectRow,
     WarRelationRow, WorldFrame,
 };
+use crate::waroverview_binding::WarResidualAdmission;
 // `LandCombatTerminalRecord` is public through `replay_core::world` but is not
 // in the crate-root re-export list, so use its canonical module path.
 use replay_core::world::LandCombatTerminalRecord;
@@ -171,6 +172,11 @@ pub struct Xui20ReplayAdmission {
     pub global_cross_family_order: Xui20SurfaceState,
     pub war_pair_history: Xui20SurfaceState,
     pub war_overview_exact: Xui20SurfaceState,
+    /// EIR-NE-011. The exact-a729 H-B5 war-threat/instigator/hostility tuple
+    /// carried on the same D60 war rows this packet already admits, gated
+    /// independently of [`Self::war_overview_exact`] so a pre-v2 recording
+    /// keeps its war overview and loses only the residual surface.
+    pub war_threat_residuals_exact: Xui20SurfaceState,
 }
 
 enum GateFailure {
@@ -1559,14 +1565,42 @@ fn validate_convoy_terminal(
     Ok(rows.len())
 }
 
+/// The D60 belligerent-pair identity. `first`/`second` are what orients every
+/// pair-scoped value on the row — including the H-B5 instigator/defender tuple
+/// admitted by [`validate_war_threat_residuals`] — so a pair that names one
+/// country twice, carries a blank tag, or repeats another row's pair would
+/// attribute measured values to a relationship the producer never measured.
+/// Requiring the two tags to be *measured* was never enough for that.
 fn validate_war_pairs(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFailure> {
     let rows = required(rows, "wars")?;
+    let mut pairs = BTreeSet::new();
     for (index, row) in rows.iter().enumerate() {
         if row.key.trim().is_empty() {
             return Err(invalid(format!("wars[{index}].key is empty")));
         }
-        required(&row.first, &format!("wars[{index}].first"))?;
-        required(&row.second, &format!("wars[{index}].second"))?;
+        let first = required(&row.first, &format!("wars[{index}].first"))?;
+        let second = required(&row.second, &format!("wars[{index}].second"))?;
+        if first.trim().is_empty() || second.trim().is_empty() {
+            return Err(invalid(format!("wars[{index}] pair has a blank party")));
+        }
+        if first == second {
+            return Err(invalid(format!(
+                "wars[{index}] names {first} as both parties"
+            )));
+        }
+        // Order-insensitive: the producer emits one row per relationship, and
+        // which side is `first` is the engine's orientation, not a licence to
+        // carry the same pair twice.
+        let pair = if first <= second {
+            (first.clone(), second.clone())
+        } else {
+            (second.clone(), first.clone())
+        };
+        if !pairs.insert(pair) {
+            return Err(invalid(format!(
+                "wars[{index}] repeats the belligerent pair {first}/{second}"
+            )));
+        }
     }
     Ok(rows.len())
 }
@@ -1771,6 +1805,82 @@ fn validate_war_overview(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFa
     Ok(rows.len())
 }
 
+/// EIR-NE-011: admit the exact-a729 H-B5 residual tuple across the complete
+/// current D60 war set.
+///
+/// The disposition is derived from the frame's own measured leaves — nothing
+/// here is hard-coded to a build, a schema version or a producer flag. The
+/// consequences of that:
+///
+/// * every war row is admitted through the SAME typed law the war-overview
+///   binding applies ([`crate::waroverview_binding::admit_war_object_residuals`]),
+///   so this admission and the typed consumer can never reach opposite
+///   verdicts on one row;
+/// * the pair gate runs first: the tuple is oriented by `first`/`second`, so a
+///   blank, self, or repeated pair makes the residual unattributable;
+/// * coverage is all-or-none across the war set. A set where some rows carry
+///   the tuple (wholly or partly) and others carry nothing at all is a producer
+///   contract break, not a partially populated panel, because the D60 producer
+///   sets its residual badge only when every row carries it. Every row is
+///   classified before the disposition is chosen, so this outranks whatever
+///   else is wrong inside the carried rows;
+/// * inside a fully-carrying set, a contradictory tuple is a REJECTION and a
+///   missing leaf is an EXTERNAL gap naming that leaf — the producer supplying
+///   something wrong and the producer supplying nothing are different facts;
+/// * a war set where NO row carries the tuple is an external gap (a pre-v2
+///   recording), never a measured zero threat;
+/// * a measured-empty war set (no wars this hour) admits with `row_count` 0 and
+///   stays distinct from all of the above.
+fn validate_war_threat_residuals(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFailure> {
+    // The tuple is oriented by the pair identity, so an unusable pair makes the
+    // residual meaningless even when all seven leaves are present. Reusing the
+    // pair gate rather than repeating it keeps the two from drifting apart.
+    validate_war_pairs(rows)?;
+    let rows = required(rows, "wars")?;
+    // Classify EVERY row before choosing the aggregate disposition. Returning on
+    // the first non-measured row would report an incomplete tuple as a plain
+    // external gap even when the rest of the set proves the coverage is mixed,
+    // which is the producer contract break and outranks it.
+    let mut measured = 0usize;
+    let mut absent = 0usize;
+    let mut first_incomplete: Option<String> = None;
+    let mut first_inconsistent: Option<String> = None;
+    for (index, row) in rows.iter().enumerate() {
+        match crate::waroverview_binding::admit_war_object_residuals(row) {
+            WarResidualAdmission::Measured(_) => measured += 1,
+            WarResidualAdmission::Absent => absent += 1,
+            WarResidualAdmission::Incomplete { field } => {
+                first_incomplete.get_or_insert_with(|| format!("wars[{index}].{field}"));
+            }
+            WarResidualAdmission::Inconsistent { reason } => {
+                first_inconsistent
+                    .get_or_insert_with(|| format!("wars[{index}] H-B5 residual: {reason}"));
+            }
+        }
+    }
+    let carried = measured + first_incomplete.iter().count() + first_inconsistent.iter().count();
+    // Mixed coverage first: a set where some rows carry the tuple and others do
+    // not contradicts the producer's own all-or-none badge, whatever else is
+    // wrong inside the carried rows.
+    if carried > 0 && absent > 0 {
+        return Err(invalid(format!(
+            "H-B5 residual coverage is partial: {} of {} war rows carry the tuple",
+            rows.len() - absent,
+            rows.len()
+        )));
+    }
+    if let Some(reason) = first_inconsistent {
+        return Err(invalid(reason));
+    }
+    if let Some(field) = first_incomplete {
+        return Err(external(field));
+    }
+    if absent > 0 {
+        return Err(external("wars[*].threat_fixed5_raw"));
+    }
+    Ok(measured)
+}
+
 /// Exact replay admission. Each producer family is gated independently and
 /// no cross-family ordering key is constructed.
 ///
@@ -1794,6 +1904,7 @@ pub fn admit_xui20_replay(
     );
     let war_pairs = validate_war_pairs(&binding.wars);
     let war_overview = validate_war_overview(&binding.wars);
+    let war_threat_residuals = validate_war_threat_residuals(&binding.wars);
     let family_rows = binding.land.len()
         + binding.ended_land.len()
         + binding.naval.len()
@@ -1884,6 +1995,10 @@ pub fn admit_xui20_replay(
         war_overview_exact: state(
             war_overview.as_ref().map_or(0, |count| *count),
             war_overview.map(|_| ()),
+        ),
+        war_threat_residuals_exact: state(
+            war_threat_residuals.as_ref().map_or(0, |count| *count),
+            war_threat_residuals.map(|_| ()),
         ),
     }
 }

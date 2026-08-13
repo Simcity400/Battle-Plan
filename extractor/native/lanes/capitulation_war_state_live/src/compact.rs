@@ -92,8 +92,23 @@ pub const KNOWN_COUNTRY_FLAGS: u32 = COUNTRY_FLAG_CAPITULATED;
 pub const CGAMEDATE_NULL_RAW: i32 = 43_808_760;
 
 pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
-/// Same guard the domain 53 war reader uses.
-pub const MAX_CASUALTIES: i64 = 50_000_000;
+/// The casualty tallies are engine `i32` fields (`read_i32_at` at
+/// `DOMAIN53_WAR_FIRST_CASUALTIES`/`_SECOND_CASUALTIES`, widened to `i64` here
+/// and carried as `i64` on the wire), so the field's own representation is the
+/// honest ceiling. On the read path that leaves only a negative tally refused —
+/// a count that cannot be one. On the decode path it additionally refuses a wire
+/// value outside the range the producer can possibly have written, which is a
+/// malformed record rather than a big war.
+///
+/// It used to be `50_000_000`, copied from the domain 53 reader. That number is
+/// a plausibility guess about how many casualties a war "could" have, i.e. a cap
+/// on game content, and AGENTS.md's mod-agnostic law admits only engine-structural
+/// or attach-discovered caps. A long or modded game that crossed it lost the
+/// WHOLE D60 read (`capwar_war_casualties_invalid` rejects the row, and a
+/// rejected row fails the discovery), so the guess could destroy a capture's war
+/// state rather than bound it. The same guessed constant is still live in three
+/// sibling producers outside this row's scope — see the lane report.
+pub const MAX_CASUALTIES: i64 = i32::MAX as i64;
 /// Legitimacy is a 0..=100.0 percentage x 1e5 on the observed save; guard with
 /// headroom for modded values without admitting garbage.
 pub const MAX_LEGITIMACY_RAW: i32 = 1_000_000_000;
@@ -115,7 +130,19 @@ pub const MAX_EXILE_ARMY_LEADERS: i32 = 100_000;
 /// equal the payload length EXACTLY before it allocates, so the payload is the
 /// real bound on both counts.
 pub const MAX_COUNTRY_ROWS: u32 = i32::MAX as u32;
-pub const MAX_WAR_ROWS: u32 = 8_192;
+/// The war count is content for exactly the same reason the country count is:
+/// how many wars exist at once is a function of the roster and the scenario, not
+/// of any engine structure this tree has proved. The `8_192` this used to be was
+/// the country-row cap's twin and outlived it.
+///
+/// This is a STRUCTURAL bound, not a guess and not the field's representation
+/// range: a framed record's payload cannot exceed `COMPACT_MAX_PAYLOAD_LEN`, and
+/// every war row costs at least `ROW_WAR_LEN_V1` bytes, so no admissible payload
+/// can carry more rows than that quotient. The exact payload-length equality
+/// below then does the real work — it is checked before any allocation, so this
+/// constant only keeps a header count from being multiplied out before it.
+pub const MAX_WAR_ROWS: u32 =
+    compact_contract::COMPACT_MAX_PAYLOAD_LEN / ROW_WAR_LEN_V1 as u32;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryCapitulationRow {
@@ -190,8 +217,8 @@ pub struct WarRow {
     /// Live running accumulators (see the mandatory status badge).
     pub first_casualties: i64,
     pub second_casualties: i64,
-    /// `None` while the exact source gate is deliberately disabled and for
-    /// legacy v1 recordings. Never synthesize zero-valued residuals.
+    /// `None` for legacy v1 recordings, and for any build where the exact
+    /// source constant is off. Never synthesize zero-valued residuals.
     pub residuals: Option<WarResiduals>,
 }
 
