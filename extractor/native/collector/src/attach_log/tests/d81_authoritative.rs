@@ -686,11 +686,9 @@ fn copied_walk(
     let memory = CountingSnapshotMemory::new(&world.memory);
     let closed = d81_observe_copy_plan_with(&memory, roots, WORLD_HOUR, &mut counters)
         .expect("custody must admit a fixture this size");
-    let view = closed
-        .snapshot
-        .view_for(D81_CONSUMER, WORLD_HOUR)
+    let source = closed
+        .source_for(WORLD_HOUR)
         .expect("the plan captured, so its consumer has a view");
-    let source = D81ReadSource::snapshot(view);
     let phases = D81PhaseAccum::default();
     let rows = walk_with(world, &source, &phases);
     counters.misses = source.misses();
@@ -934,20 +932,24 @@ fn copied_walk_with_mutation(
     copied_walk_with_mutation_at(world, edits, trigger)
 }
 
-/// The transaction ordinal of the FINAL closing wave's first copy, given the
-/// total the memory counted and the observation that closed.
+/// The transaction ordinal of the FINAL closing stages' first copy — the
+/// vector pipeline's slot and active closings — given the total the memory
+/// counted and the observation that produced it.
 ///
-/// One function so the three sites that need the boundary state it once: the
-/// default mutation trigger above, the shipped plan's final-wave trigger, and
-/// the mid-walk assertion in
-/// `the_rail_header_closes_against_its_own_closing_image`. Ordinals are
-/// 1-based, matching `CountingSnapshotMemory::calls()` and `MutatingMemory`'s
-/// trigger.
-fn final_wave_start(
-    total_copies: u64,
-    closed: &crate::snapshot_recipes::witness::ClosedSnapshot,
-) -> u64 {
-    total_copies.saturating_sub(closed.final_wave_copies) + 1
+/// One function so the sites that need the boundary state it once. Ordinals
+/// are 1-based, matching `CountingSnapshotMemory::calls()` and
+/// `MutatingMemory`'s trigger. The bulk recipe's copies all precede the
+/// pipeline's, so the global ordinal is the bulk total plus the pipeline's
+/// own recorded boundary.
+fn final_wave_start(total_copies: u64, observation: &crate::attach_log::D81PlanObservation) -> u64 {
+    let vector = observation
+        .vector
+        .as_ref()
+        .expect("the plan captured, so the vector pipeline ran");
+    total_copies
+        .saturating_sub(vector.copies.get())
+        .saturating_add(vector.closing_tail_start)
+        + 1
 }
 
 /// [`copied_walk_with_mutation`] with the trigger chosen by the caller, so a
@@ -977,10 +979,10 @@ fn copied_walk_with_mutation_at(
     let closed = d81_observe_copy_plan_with(&counting, &roots, WORLD_HOUR, &mut counters)
         .expect("custody must admit a fixture this size");
     let applied = mutating.mutation_applied();
-    let Ok(view) = closed.snapshot.view_for(D81_CONSUMER, WORLD_HOUR) else {
-        // NO VIEW AT ALL is the outcome `CloseAction::Record` exists to prevent,
-        // so it is reported rather than panicked on: the caller asserts against
-        // it.
+    let Ok(source) = closed.source_for(WORLD_HOUR) else {
+        // NO VIEW AT ALL is the outcome `DisagreeAction::Record` exists to
+        // prevent, so it is reported rather than panicked on: the caller
+        // asserts against it.
         counters.consumer_gapped = true;
         return (
             Err(D81FirstFailure::new(
@@ -991,7 +993,6 @@ fn copied_walk_with_mutation_at(
             applied,
         );
     };
-    let source = D81ReadSource::snapshot(view);
     let phases = D81PhaseAccum::default();
     let world = StagedWorld {
         memory: crate::snapshot_recipes::synthetic::SyntheticMemory::new(),
@@ -1353,9 +1354,10 @@ fn a_view_of_the_copy_cannot_be_taken_at_another_hour() {
     let memory = CountingSnapshotMemory::new(&world.memory);
     let closed = d81_observe_copy_plan_with(&memory, &world.roots, WORLD_HOUR, &mut counters)
         .expect("custody must admit a fixture this size");
-    assert!(closed.snapshot.view_for(D81_CONSUMER, WORLD_HOUR).is_ok());
+    assert!(closed.closed.snapshot.view_for(D81_CONSUMER, WORLD_HOUR).is_ok());
     assert!(
         closed
+            .closed
             .snapshot
             .view_for(D81_CONSUMER, HourStamp(WORLD_HOUR.0 + 1))
             .is_err(),
@@ -1783,8 +1785,7 @@ fn a_table_the_engine_replaced_refuses_as_a_closure_change_and_not_a_plan_defect
     let memory = CountingSnapshotMemory::new(&world.memory);
     let closed = d81_observe_copy_plan_with(&memory, &world.roots, WORLD_HOUR, &mut counters)
         .expect("custody");
-    let view = closed.snapshot.view_for(D81_CONSUMER, WORLD_HOUR).expect("a view");
-    let source = D81ReadSource::snapshot(view);
+    let source = closed.source_for(WORLD_HOUR).expect("a view");
 
     // The copy followed the world's real rail table, so agreement holds.
     d81_copied_roots_agree(
@@ -1919,18 +1920,36 @@ fn the_closing_sequence_matches_the_opening_one_and_the_mapping_knows_it() {
         "two opening observations and two closing ones, for an interval whose \
          reader compares a stable pair at both",
     );
-    // AND THE ACTIVE TABLE TAKES ITS OWN LONGER SEQUENCE at both instants,
-    // because its reader takes three observations rather than two. The constant
-    // above governs a stable pair; this is the other half of the claim, and
-    // without it the mapping could be right for pairs and short for the loop.
-    let window = crate::snapshot_recipes::Span::new(
+    // AND THE ACTIVE TABLE TAKES ITS OWN LONGER SEQUENCE at both instants
+    // FOR A RAILED PROVINCE, because its reader takes three observations
+    // rather than two: three from the whole-table opening triple and three
+    // from the vector pipeline's per-entry closing family. Province 1 is
+    // railed at every layout (province 0 and the top triple are the railless
+    // ones).
+    let railed_window = crate::snapshot_recipes::Span::new(
+        ACTIVE_TABLE
+            + crate::attach_log::D81_ACTIVE_ENTRY_STRIDE as u64
+            + crate::attach_log::D81_ACTIVE_WINDOW_OFFSET as u64,
+        crate::attach_log::D81_ACTIVE_WINDOW_LEN as u64,
+    );
+    assert_eq!(
+        recorder.ordinals_covering(railed_window).len(),
+        2 * crate::attach_log::D81_ACTIVE_COHERENCE_READS,
+        "the coherence loop needs as many closing observations as it takes reads",
+    );
+    // A RAILLESS province's entry takes the opening triple ONLY: the live
+    // walk never closes over an entry it never visited, so the demand-driven
+    // pipeline observes no closing images of it. The old recipe's three
+    // whole-table closing copies covered it anyway — dead observations, and
+    // this asserts they are gone rather than merely unclaimed.
+    let railless_window = crate::snapshot_recipes::Span::new(
         ACTIVE_TABLE + crate::attach_log::D81_ACTIVE_WINDOW_OFFSET as u64,
         crate::attach_log::D81_ACTIVE_WINDOW_LEN as u64,
     );
     assert_eq!(
-        recorder.ordinals_covering(window).len(),
-        2 * crate::attach_log::D81_ACTIVE_COHERENCE_READS,
-        "the coherence loop needs as many closing observations as it takes reads",
+        recorder.ordinals_covering(railless_window).len(),
+        crate::attach_log::D81_ACTIVE_COHERENCE_READS,
+        "a railless entry is observed at the opening only",
     );
 }
 
@@ -2084,19 +2103,26 @@ fn the_rail_header_closes_against_its_own_closing_image() {
     // `CloseWhen::AfterWave` exists to distinguish from a mid-walk one. The
     // measured boundary is what makes this a mid-walk claim.
     let final_wave_starts = final_wave_start(counting.calls(), &closed);
-    // AND THE OLD EXPRESSION IS MEASURABLY NOT THIS BOUNDARY, which is what made
-    // the assertion below vacuous rather than merely imprecise: the final wave
-    // issues MORE than one copy per interval, so `total - intervals_closed + 1`
-    // names a transaction well inside it. At this fixture the two differ by
-    // about 1,500 transactions.
-    assert!(
-        closed.final_wave_copies > u64::from(probe.intervals_closed),
-        "the final closing wave takes more than one copy per interval \
-         ({} copies against {} intervals), or `D81_CLOSING_IMAGES_HELD` has \
-         gone back to 1 and this arm is testing the pre-ruling shape",
-        closed.final_wave_copies,
-        probe.intervals_closed,
-    );
+    // AND THE CLOSING TAIL GENUINELY TAKES ITS PAIRS: the slot closings are
+    // adjacent pairs and the active closings coherence triples, so the tail
+    // is strictly longer than one copy per closing window. A tail that
+    // shrank to one image per window is the pre-ruling shape this arm must
+    // not silently test.
+    {
+        use crate::attach_log::d81_vector_store::D81Family;
+        let vector = closed.vector.as_ref().expect("the pipeline ran");
+        let tail = vector.copies.get().saturating_sub(vector.closing_tail_start);
+        let slot_windows = (vector.family_window_count(D81Family::SourceSlotClose)
+            + vector.family_window_count(D81Family::MapSlotClose))
+            as u64;
+        let active_windows = vector.family_window_count(D81Family::ActiveClose) as u64;
+        assert!(
+            tail >= 2 * slot_windows + active_windows,
+            "the closing tail issued {tail} copies against {slot_windows} slot \
+             windows and {active_windows} active windows: a closing pair has \
+             gone back to a single image",
+        );
+    }
     drop(closed);
     let ordinals = recorder.ordinals_covering(header);
     assert_eq!(
@@ -2241,11 +2267,9 @@ fn a_second_closing_read_the_engine_refuses_is_unreadable_and_not_a_plan_defect(
     let closed = d81_observe_copy_plan_with(&counting, &world.roots, WORLD_HOUR, &mut counters)
         .expect("custody");
     assert!(refusing.refused(), "the fixture must actually have refused a copy");
-    let view = closed
-        .snapshot
-        .view_for(D81_CONSUMER, WORLD_HOUR)
+    let source = closed
+        .source_for(WORLD_HOUR)
         .expect("one declined closing observation must not gap the consumer");
-    let source = D81ReadSource::snapshot(view);
     let phases = D81PhaseAccum::default();
     let rows = walk_with(&world, &source, &phases);
     counters.misses = source.misses();
@@ -2403,11 +2427,9 @@ fn the_third_closing_observation_is_its_own_image_and_not_a_repeat() {
     let closed = d81_observe_copy_plan_with(&counting, &roots, WORLD_HOUR, &mut counters)
         .expect("custody");
     assert_eq!(scripted.applied(), 2, "both writes must land");
-    let view = closed
-        .snapshot
-        .view_for(D81_CONSUMER, WORLD_HOUR)
+    let source = closed
+        .source_for(WORLD_HOUR)
         .expect("a view");
-    let source = D81ReadSource::snapshot(view);
     let phases = D81PhaseAccum::default();
     let world = StagedWorld {
         memory: SyntheticMemory::new(),
@@ -2542,11 +2564,9 @@ fn a_rail_header_missing_its_second_closing_observation_refuses_from_the_window_
     let closed = d81_observe_copy_plan_with(&counting, &world.roots, WORLD_HOUR, &mut counters)
         .expect("custody");
     assert!(refusing.refused(), "the fixture must actually decline a copy");
-    let view = closed
-        .snapshot
-        .view_for(D81_CONSUMER, WORLD_HOUR)
+    let source = closed
+        .source_for(WORLD_HOUR)
         .expect("one declined observation must not gap the consumer");
-    let source = D81ReadSource::snapshot(view);
     let phases = D81PhaseAccum::default();
     let failure = walk_with(&world, &source, &phases)
         .expect_err("a header whose pair cannot be rendered refuses the hour");
@@ -2648,11 +2668,9 @@ fn the_anchor_window_refuses_from_the_window_read_where_the_live_arm_recovers() 
     let closed = d81_observe_copy_plan_with(&counting, &world.roots, WORLD_HOUR, &mut counters)
         .expect("custody");
     assert!(refusing.refused());
-    let view = closed
-        .snapshot
-        .view_for(D81_CONSUMER, WORLD_HOUR)
+    let source = closed
+        .source_for(WORLD_HOUR)
         .expect("one declined observation must not gap the consumer");
-    let source = D81ReadSource::snapshot(view);
     let phases = D81PhaseAccum::default();
     let failure = walk_with(&world, &source, &phases)
         .expect_err("the copy cannot render the anchor pass and refuses");

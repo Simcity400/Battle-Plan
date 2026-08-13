@@ -34,12 +34,13 @@
 use super::*;
 
 use crate::attach_log::d81_copy_bracket::{
-    domain81_copy_plan, Domain81PlanRoots, D81_CONSUMER, D81_RECIPE, STAGE_SELECTOR,
-    STAGE_SOURCE,
+    domain81_copy_plan, CountingSnapshotMemory, D81PlanCounters, Domain81PlanRoots, D81_CONSUMER,
 };
-use crate::snapshot_recipes::executor::{observe, validate, ObservationConfig, RecipeOutcome};
+use crate::attach_log::d81_vector_store::{D81Family, VectorAnswer, VectorImage};
+use crate::attach_log::{d81_observe_copy_plan_with, D81PlanObservation};
+use crate::snapshot_recipes::executor::validate;
 use crate::snapshot_recipes::synthetic::SyntheticMemory;
-use crate::snapshot_recipes::view::{SnapshotView, ViewRefusal};
+use crate::snapshot_recipes::view::ViewRefusal;
 use crate::snapshot_recipes::{HourStamp, Span};
 
 // ---------------------------------------------------------------------------
@@ -409,11 +410,31 @@ fn reference_walk(memory: &SyntheticMemory) -> Vec<RowOutcome> {
     walk("live", &mut |addr, len| read(addr, len))
 }
 
-/// The same walk over a [`SnapshotView`], which can see NOTHING the plan did
+/// The same walk over the plan's COPY — the vector families first, the bulk
+/// view for everything they do not cover — which can see NOTHING the plan did
 /// not copy. A plan that under-copies does not produce a wrong number here —
-/// it produces a `ViewRefusal`, and the row differs.
-fn replay_walk(view: &SnapshotView<'_>) -> Vec<RowOutcome> {
-    walk("view", &mut |addr, len| {
+/// it produces a refusal, and the row differs.
+fn replay_walk(observation: &D81PlanObservation, hour: HourStamp) -> Vec<RowOutcome> {
+    let view = observation
+        .closed
+        .snapshot
+        .view_for(D81_CONSUMER, hour)
+        .expect("the plan captured, so its consumer has a view");
+    let vector = observation
+        .vector
+        .as_ref()
+        .expect("the plan captured, so the vector pipeline ran");
+    walk("copy", &mut |addr, len| {
+        match vector.read(addr, len as u32, VectorImage::Opening) {
+            VectorAnswer::Served(bytes) => return Some(bytes.to_vec()),
+            VectorAnswer::NotCovered => {}
+            VectorAnswer::Unreadable | VectorAnswer::SampleAbsent | VectorAnswer::Aliased => {
+                return None
+            }
+            VectorAnswer::NeverObserved => {
+                panic!("an opening read of a captured span must never be NeverObserved")
+            }
+        }
         let mut out = vec![0u8; len];
         match view.read_into(addr, &mut out) {
             Ok(()) => Some(out),
@@ -582,41 +603,25 @@ fn the_shipped_d81_plan_produces_the_same_rows_as_a_direct_read_walk() {
     validate(&recipe).expect("the shipped plan must be well formed");
 
     let hour = HourStamp(19390901);
-    let build = observe(&[recipe], &memory, ObservationConfig::new(hour)).expect("custody");
-    let report = build.report_for(D81_RECIPE).expect("reported");
+    let counting = CountingSnapshotMemory::new(&memory);
+    let mut counters = D81PlanCounters::default();
+    let observation = d81_observe_copy_plan_with(&counting, &plan_roots(), hour, &mut counters)
+        .expect("custody");
     assert!(
-        matches!(report.outcome, RecipeOutcome::Captured),
-        "the shipped plan must capture, not refuse: {:?}",
-        report.outcome,
+        !counters.refused && !counters.consumer_gapped,
+        "the shipped plan must capture, not refuse: {counters:?}",
     );
     // RULING A: the unreadable page is a named void and the frame still
     // publishes.
     assert!(
-        report.scoped_voids >= 1,
+        counters.scoped_voids >= 1,
         "the fixture stages an unreadable page inside a speculative copy",
     );
-    // M3: exactly one rail pointer was rejected, on the reader's own predicate.
-    assert_eq!(report.pointers_rejected, 1);
-    let rejected: Vec<u64> = build
-        .snapshot
-        .rejections_for(D81_CONSUMER)
-        .map(|rejection| rejection.addr)
-        .collect();
-    assert_eq!(rejected, vec![0x1000]);
+    // M3: exactly one rail pointer was rejected, on the reader's own
+    // predicate — by the VECTOR pipeline now, and counted on the same wire
+    // counter the recipe's rejections reach.
+    assert_eq!(counters.pointers_rejected, 1);
 
-    // RULING B: the selector's route to the gamestate province slot and the
-    // walk's own route land in ONE interval — the array is copied whole — so
-    // the earlier close is elided into the later one exactly once, and the
-    // elided stage keeps its attribution.
-    assert_eq!(
-        build.elisions.len(),
-        1,
-        "the two routes to the province array elide into one close",
-    );
-    assert_eq!(
-        (build.elisions[0].elided, build.elisions[0].into),
-        (STAGE_SELECTOR, STAGE_SOURCE),
-    );
     // M1: the selector extent spans `mask + max_distance + 2` slots, which is
     // the tail a copy sized at the masked table alone would miss.
     let selector = Span::new(
@@ -624,7 +629,8 @@ fn the_shipped_d81_plan_produces_the_same_rows_as_a_direct_read_walk() {
         u64::from(SELECTOR_SLOTS) * crate::attach_log::D81_SELECTOR_ENTRY_STRIDE as u64,
     );
     assert!(
-        build
+        observation
+            .closed
             .snapshot
             .intervals()
             .iter()
@@ -632,12 +638,7 @@ fn the_shipped_d81_plan_produces_the_same_rows_as_a_direct_read_walk() {
         "the selector extent must span mask + max_distance + 2 slots",
     );
 
-    let closed = build.close_witnesses();
-    let view = closed
-        .snapshot
-        .view_for(D81_CONSUMER, hour)
-        .expect("the consumer keeps its hour");
-    let produced = replay_walk(&view);
+    let produced = replay_walk(&observation, hour);
 
     assert_eq!(produced.len(), expected.len());
     for (left, right) in produced.iter().zip(expected.iter()) {
@@ -680,107 +681,124 @@ fn the_shipped_d81_plan_produces_the_same_rows_as_a_direct_read_walk() {
     );
 }
 
-/// The claim the whole conversion rests on, as a property of the SHIPPED plan:
-/// the four province-indexed tables are ONE copy transaction each, and the
-/// total does not scale with the width of a table.
+/// THE EXECUTABLE DEMAND TABLE (lane HS): the vector families' window counts,
+/// pinned against the fixture's own arithmetic, and the whole-table claim the
+/// conversion has always rested on.
 ///
-/// # THE OVER-READ, MEASURED RATHER THAN ASSUMED
-///
-/// The ceiling below is per PROVINCE and not per RAILED province, and that is
-/// the finding rather than a slack budget. The live reader takes the map slot,
-/// the map province's windows and the record's key only for provinces whose
-/// rail slot was non-null — but "is this province railed" is a decision, and a
-/// bracket cannot decide. The plan therefore copies those three families for
-/// every province the container declares. At this fixture's 512 provinces and
-/// 171 railed, that is 3x the scattered transactions the live reader issues,
-/// and it is inherent to a copy-only bracket rather than to this plan.
+/// The old transaction model — `copies == 4 * intervals + 4`, four images for
+/// every interval whether the walk consumed them or not — is retired with the
+/// per-province recipe branch. What replaces it is DEMAND: each family holds
+/// exactly the windows the walk reads, at exactly the image count the walk
+/// consumes, and this test pins the window counts family by family so a
+/// family silently dropped (or silently widened to every province) fails
+/// here by name rather than inside a total.
 ///
 /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: a whole-table root becoming a
-/// per-element copy, which is exactly the regression a copy plan exists to
-/// prevent and which no row-equality check would notice. A per-province rail
-/// table read adds one copy per province and puts the total past the ceiling.
+/// per-element copy (the interval count moves); a vector family dropped or
+/// re-keyed off the arrays instead of the rail branch (its window count moves
+/// to 0 or to the province count); the demand-driven image counts growing
+/// back toward uniform four (the copies ceiling moves).
 #[test]
 fn the_shipped_plans_province_tables_are_a_fixed_number_of_transactions() {
     let memory = stage_world();
     let hour = HourStamp(19390901);
     memory.reset_counters();
-    let build = observe(
-        &[domain81_copy_plan(&plan_roots())],
-        &memory,
-        ObservationConfig::new(hour),
-    )
-    .expect("custody");
+    let counting = CountingSnapshotMemory::new(&memory);
+    let mut counters = D81PlanCounters::default();
+    let observation = d81_observe_copy_plan_with(&counting, &plan_roots(), hour, &mut counters)
+        .expect("custody");
+    let vector = observation
+        .vector
+        .as_ref()
+        .expect("the plan captured, so the vector pipeline ran");
 
-    let copies = memory.copies();
-    let intervals = build.snapshot.interval_count() as u64;
-    let railed_count = (0..PROVINCES).filter(|p| railed(*p)).count() as u64;
-    // The budget: the fixed prologue (the gamestate chain, the container
-    // chain, the five whole-table copies, the active table bisecting around
-    // its unreadable page), plus at most EIGHT scattered copies per RAILED
-    // province — the rail header and its adjacent sample, the pair blob, the
-    // two map windows, the record window and the source  window —
-    // plus the SAMPLE wave and the CLOSING wave, each of which is one copy per
-    // interval per observation the reader takes.
-    //
-    // BOTH WAVES ARE PER INTERVAL, not per province. A typical copy op takes two
-    // back-to-back images at the opening AND two at the closing — the ACTIVE
-    // TABLE takes three at each end, since `D81_ACTIVE_COHERENCE_READS` is what
-    // its reader takes, which is where the small constant in the assertion below
-    // comes from — because the
-    // converted reader renders its own torn verdict from them instead of taking
-    // the substrate's -- see `domain81_copy_plan`'s `CloseAction::Record` block
-    // for why, t46's 78-of-80 gapped frames for the measurement that forced the
-    // first half, and the owner ruling of 2026-08-11 for the second. That is
-    // three more transactions per interval and none of them scales with the
-    // province count.
-    //
-    // PER RAILED PROVINCE, and that is the assertion. At this fixture 171 of
-    // 512 provinces are railed; a plan that reached the map, record or source
-    // families off the ARRAYS instead of off the rail branch would do three
-    // times the work, publish the same rows, and pass every other check in
-    // this file.
-    let ceiling = 64 + 8 * railed_count + 4 * intervals;
-    assert!(
-        copies < ceiling,
-        "the plan issued {copies} copies against a ceiling of {ceiling}; a whole-table \
-         copy that has become per-province is the defect this bounds",
-    );
-    assert!(
-        copies > intervals,
-        "sanity: the counter is live and a closing wave ran",
-    );
-    // THE COUNT UNDER THE CEILING, PINNED RATHER THAN LEFT AS SLACK. The ceiling
-    // above bounds the SHAPE; this bounds the COUNT, and the count is worth
-    // bounding because it is the one term of the phase's 67.0 ms that anybody
-    // has measured (lane GJ: 84,256 transactions per observation at t49's 3,511
-    // railed provinces, against a phase total of 67.0 ms — a total, never an
-    // attribution; see `runs/gj_crit_doubling/FINDINGS.txt` section 5).
-    //
-    // Four images is the model for a TYPICAL interval and not for every one:
-    // 4 x 1,035 is 4,140 of the 4,144 here, and 4 x 21,063 is 84,252 of t49's
-    // 84,256, with the remainder the active table's extra coherence images at
-    // each end. Composed with
-    // `intervals = 9 + 6 * railed` it gives the SIZING APPROXIMATION
-    // `40 + 24 * railed` — exact on this fixture, and 0.06% high at t49, where
-    // the interval formula itself runs 12 short. Approximation, not law: the
-    // law is the assertion below.
-    //
-    // WHAT PRODUCTION CHANGE MAKES THIS FAIL: a fifth image per interval, or an
-    // opening or closing wave that stops taking its pair. Either moves the
-    // TRANSACTION COUNT by ~25% — what that does to the phase's wall is not
-    // known here — and neither changes a single published row, so no equality
-    // check in this file would notice.
+    // The fixture's own arithmetic, computed from the same helpers that
+    // staged the world.
+    let railed_admitted: Vec<u32> = (0..PROVINCES)
+        .filter(|p| railed(*p) && *p != REJECTED_PROVINCE)
+        .collect();
+    let expected_scattered = railed_admitted.len();
+    // The CProvince family covers the union of the railed provinces' own
+    // objects and the objects behind their selector keys, deduplicated by
+    // address.
+    let mut cprovinces: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    let mut source_slots: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for &province in &railed_admitted {
+        cprovinces.insert(source_province_of(province));
+        source_slots.insert(province);
+        let key = selector_key_of(province);
+        if key < PROVINCES {
+            cprovinces.insert(source_province_of(key));
+            source_slots.insert(key);
+        }
+    }
+
+    for (family, expected) in [
+        (D81Family::RailHeader, expected_scattered),
+        (D81Family::PairBlob, expected_scattered),
+        (D81Family::MapRecordPtr, expected_scattered),
+        (D81Family::MapAnchors, expected_scattered),
+        (D81Family::RecordKey, expected_scattered),
+        (D81Family::SourceProvince, cprovinces.len()),
+        (D81Family::SourceSlotClose, source_slots.len()),
+        (D81Family::MapSlotClose, expected_scattered),
+        (D81Family::ActiveClose, expected_scattered),
+    ] {
+        assert_eq!(
+            vector.family_window_count(family),
+            expected,
+            "family {family:?} must hold exactly the windows the walk reads",
+        );
+    }
     assert_eq!(
-        copies,
-        4 * intervals + 4,
-        "the observation is four images for a typical interval, plus the extra \
-         the active table's coherence sequence takes at each end; \
-         {copies} against {intervals} intervals is a different transaction model",
+        vector.closing_window_counts(),
+        (expected_scattered, expected_scattered),
+        "the header and record-pointer closing sides cover their opening windows",
+    );
+
+    // The DEMANDED image counts, as a ceiling on the whole observation: every
+    // window at its family's image count, plus the bulk recipe's intervals at
+    // an opening pair (the active table's third sample and the voided page's
+    // bisect retries are the slack term). A plan that grew back toward four
+    // uniform images per window moves ~40% past this and fails.
+    let window_images = 4 * expected_scattered // rail headers
+        + 2 * expected_scattered               // pair blobs
+        + 4 * expected_scattered               // record pointers
+        + 2 * expected_scattered               // anchors
+        + 2 * expected_scattered               // record keys
+        + 2 * cprovinces.len()                 // CProvince heads
+        + 2 * source_slots.len()               // source slot closes
+        + 2 * expected_scattered               // map slot closes
+        + 3 * expected_scattered; // active closes
+    let bulk_intervals = observation.closed.snapshot.interval_count();
+    let copies = counting.calls() as usize;
+    let ceiling = window_images + 3 * bulk_intervals + 64;
+    assert!(
+        copies <= ceiling,
+        "the plan issued {copies} copies against a demand ceiling of {ceiling} \
+         ({window_images} demanded window images, {bulk_intervals} bulk intervals): \
+         a family has grown images nobody consumes",
+    );
+    // A window whose FIRST observation faults ends its side — the later
+    // images are deliberately never attempted — and the fixture stages
+    // exactly one such population: the railed provinces whose active entry
+    // sits in the voided page, each of which attempts one closing
+    // observation instead of three.
+    let voided_railed = railed_admitted
+        .iter()
+        .filter(|province| voided(**province))
+        .count();
+    assert!(
+        copies >= window_images - 2 * voided_railed,
+        "sanity: the counter is live and every demanded image was attempted \
+         ({copies} against {window_images} demanded minus the voided active \
+         entries' {voided_railed} curtailed windows)",
     );
 
     let spans_whole = |base: u64, bytes: u64| {
         let want = Span::new(base, bytes);
-        build
+        observation
+            .closed
             .snapshot
             .intervals()
             .iter()
@@ -799,67 +817,133 @@ fn the_shipped_plans_province_tables_are_a_fixed_number_of_transactions() {
     );
 }
 
-/// MID-WALK CLOSURE, on the shipped program: the rail header's stage closes
-/// before the observation ends, and a write to a province the walk has already
-/// passed is therefore not a torn read of it.
+/// MID-WALK CLOSURE, on the shipped pipeline: the rail header's closing pair
+/// is observed BEFORE the pair blobs are copied — the executor's
+/// `AfterWave(3)` instant, reproduced by `d81_vector_observe`'s stage order —
+/// so a write to a header after its close is not a torn read of it.
 ///
-/// This is the one thing lane GC's executor topology change exists for, checked
-/// against the plan that would ship rather than against a vocabulary fixture.
+/// The proof is the closing image's CONTENT: a write triggered at the FIRST
+/// pair-blob copy lands after the header closing pair, so the header's
+/// closing image still equals its opening image and the walk's closure check
+/// publishes. A pipeline that deferred the header close to its end would take
+/// the closing image after the write, the two images would differ, and this
+/// test fails.
 ///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: `closing_program`'s rail-header
-/// stage going back to `CloseWhen::Final`.
+/// kills: moving `d81_vector_observe`'s header-closing stage after the
+/// pair-blob stage (or folding it into the final closing stages).
 #[test]
 fn the_shipped_plan_closes_its_rail_headers_before_the_observation_ends() {
     use crate::snapshot_recipes::synthetic::MutatingMemory;
+    use crate::snapshot_recipes::SnapshotMemory as _;
 
     let hour = HourStamp(19390901);
-    // Where the rail headers' closes are, measured rather than guessed: run
-    // the plan once and count.
+    // Where the first pair-blob copy is, measured rather than guessed: run
+    // the plan once against a recording wrapper and find the ordinal of the
+    // first copy whose address is a staged blob's.
+    struct Recorder<'a> {
+        inner: &'a SyntheticMemory,
+        log: std::cell::RefCell<Vec<u64>>,
+    }
+    impl crate::snapshot_recipes::SnapshotMemory for Recorder<'_> {
+        fn copy_into(
+            &self,
+            addr: u64,
+            out: &mut [u8],
+        ) -> Result<(), crate::snapshot_recipes::MemoryRefusal> {
+            self.log.borrow_mut().push(addr);
+            self.inner.copy_into(addr, out)
+        }
+    }
     let plain = stage_world();
-    plain.reset_counters();
-    let build = observe(
-        &[domain81_copy_plan(&plan_roots())],
-        &plain,
-        ObservationConfig::new(hour),
-    )
-    .expect("custody");
-    let total = plain.copies();
-    // WHERE THE FINAL WAVE BEGINS, asked of the observation rather than computed
-    // from the interval count. It used to be `total - intervals + 1`, which was
-    // true only while every interval took ONE closing copy; since the owner
-    // ruling of 2026-08-11 a paired site takes `D81_CLOSING_IMAGES_HELD` of
-    // them, so that expression lands inside the final wave instead of at its
-    // head — after some intervals had already closed — and the write it places
-    // no longer proves anything about the rail header's close in particular.
-    //
-    // `final_wave_copies` EXCLUDES THE MID-WALK CLOSES, which is what this site
-    // needs and what `closing_copies` cannot give: the rail-header stage closes
-    // during the forward waves, and a trigger placed before those closes would
-    // gap the header and turn this test's control into its subject.
-    let final_wave_start = total - build.final_wave_copies + 1;
+    let recorder = Recorder {
+        inner: &plain,
+        log: std::cell::RefCell::new(Vec::new()),
+    };
+    let counting = CountingSnapshotMemory::new(&recorder);
+    let mut counters = D81PlanCounters::default();
+    d81_observe_copy_plan_with(&counting, &plan_roots(), hour, &mut counters).expect("custody");
+    let blob_lo = PAIR_BLOB;
+    let blob_hi = PAIR_BLOB + u64::from(PROVINCES) * SCATTER_STRIDE;
+    let first_blob_ordinal = recorder
+        .log
+        .borrow()
+        .iter()
+        .position(|addr| (blob_lo..blob_hi).contains(addr))
+        .expect("the pipeline copies at least one pair blob") as u64
+        + 1;
 
+    // AND THE RECORD POINTER'S CLOSING PAIR IS OBSERVED AFTER THE KEY COPIES
+    // (Codex review round 1, finding 5): the check's purpose is that the key
+    // the walk consumed came from the record the closing observation vouches
+    // for, so a pipeline that closed the record pointer before copying the
+    // keys would leave a record replacement during the key copy invisible.
+    // The record pointer's four copies are O, S1, C, CS1 in log order, so its
+    // THIRD occurrence is the first closing observation.
+    // kills: moving `d81_vector_observe`'s stage 9 (record-pointer closing)
+    // ahead of stage 8 (record keys).
+    {
+        let log = recorder.log.borrow();
+        let record_ptr_addr = map_province_of(0) + crate::attach_log::D81_MAP_PROVINCE_RECORD_OFF as u64;
+        let key_lo = RECORD;
+        let key_hi = RECORD + u64::from(PROVINCES) * SCATTER_STRIDE;
+        let record_close_ordinal = log
+            .iter()
+            .enumerate()
+            .filter(|(_, addr)| **addr == record_ptr_addr)
+            .map(|(ordinal, _)| ordinal)
+            .nth(2)
+            .expect("the record pointer takes four observations");
+        let last_key_ordinal = log
+            .iter()
+            .enumerate()
+            .filter(|(_, addr)| (key_lo..key_hi).contains(*addr))
+            .map(|(ordinal, _)| ordinal)
+            .last()
+            .expect("the pipeline copies at least one record key");
+        assert!(
+            last_key_ordinal < record_close_ordinal,
+            "the record-pointer closing pair (ordinal {record_close_ordinal}) \
+             must be observed after every key copy (last at {last_key_ordinal})",
+        );
+    }
+
+    // The write: the pair COUNT of province 0's header, a consumed field,
+    // triggered at the first blob copy — after the header closing pair if and
+    // only if the pipeline closes headers where it says it does.
     let victim = rail_info_of(0) + crate::attach_log::RAIL_INFO_PAIRS_PTR_OFF as u64;
+    let count_field = victim + crate::attach_log::RAIL_HEADER_COUNT_IN_WINDOW as u64;
     let dirty = MutatingMemory::new(
         stage_world(),
-        final_wave_start,
-        // The pair COUNT, which is a consumed field: under a final-wave close
-        // this is a `ClosureChanged`.
-        vec![(
-            victim + crate::attach_log::RAIL_HEADER_COUNT_IN_WINDOW as u64,
-            7u32.to_le_bytes().to_vec(),
-        )],
+        first_blob_ordinal,
+        vec![(count_field, 7u32.to_le_bytes().to_vec())],
     );
-    let closed = observe(
-        &[domain81_copy_plan(&plan_roots())],
-        &dirty,
-        ObservationConfig::new(hour),
-    )
-    .expect("custody")
-    .close_witnesses();
+    let counting = CountingSnapshotMemory::new(&dirty);
+    let mut counters = D81PlanCounters::default();
+    let observation = d81_observe_copy_plan_with(&counting, &plan_roots(), hour, &mut counters)
+        .expect("custody");
     assert!(dirty.mutation_applied(), "the fixture must actually write");
-    assert!(
-        closed.snapshot.gap_reason(D81_CONSUMER).is_none(),
-        "the rail header closed mid-walk, so a write after it is not a torn read: {:?}",
-        closed.snapshot.gap_reason(D81_CONSUMER),
+    let vector = observation.vector.as_ref().expect("the pipeline ran");
+
+    let window_len = crate::attach_log::RAIL_HEADER_WINDOW_LEN as u32;
+    let opening = match vector.read(victim, window_len, VectorImage::Opening) {
+        VectorAnswer::Served(bytes) => bytes.to_vec(),
+        other => panic!("the opening header image must serve: {other:?}"),
+    };
+    let closing = match vector.read(victim, window_len, VectorImage::Closing) {
+        VectorAnswer::Served(bytes) => bytes.to_vec(),
+        other => panic!("the closing header image must serve: {other:?}"),
+    };
+    assert_eq!(
+        opening, closing,
+        "the header's closing pair was observed before the blob wave, so a \
+         write triggered at the first blob copy must not reach it",
     );
+    // And the write DID land inside the observation: the live memory holds
+    // the new count, so the equality above is a statement about WHEN the
+    // closing image was taken and not about the write being lost.
+    let mut live = [0u8; 4];
+    dirty
+        .copy_into(count_field, &mut live)
+        .expect("the count field is readable");
+    assert_eq!(u32::from_le_bytes(live), 7, "the write must be visible live");
 }

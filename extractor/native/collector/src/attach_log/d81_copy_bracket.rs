@@ -46,68 +46,38 @@
 //! by each op's `max_count` and `max_bytes`, so a caller cannot widen a copy
 //! past the recipe's `Limits`.
 //!
-//! # The scattered half is SELECTIVE, and that is where the win is
+//! # The scattered half is SELECTIVE, and it is the VECTOR PIPELINE's now
 //!
 //! The live reader touches a map province, a record, a source `CProvince` and a
 //! rail-info object only for provinces whose rail slot was non-null — at t26,
-//! 3,510 of 13,413. A plan that hung those families off the ARRAYS' own
-//! elements would do all four for every province, which is more transactions
-//! than the live reader issues rather than fewer, and would still publish
-//! identical rows.
+//! 3,510 of 13,413. This recipe used to reach them through a per-province
+//! branch: six intervals and four images each, 83,000 of the plan phase's
+//! 84,305 guarded transactions at t50, each paying the substrate's
+//! per-interval bookkeeping. Lane HS (2026-08-13, owner mandate) moved those
+//! observations into [`super::d81_vector_store`]: flat per-family descriptor
+//! lists, copied by an interleaved-pair loop through the same guarded
+//! primitive, with demand-driven images (the walk's own consumption table, in
+//! `runs/hs_d81_cheap/COST_MODEL.txt`) and per-family bookkeeping. The walk
+//! is unchanged — [`D81ReadSource`] serves family windows from the vector
+//! capture and everything else from this recipe's view.
 //!
-//! So the two arrays that carry pointers are REGISTERED
-//! ([`TABLE_SOURCE`], [`TABLE_MAP`]) and reached by `JoinBounded` from inside
-//! the rail branch, on the province id the rail table's element index carries.
-//! Only railed provinces enter that branch. The joined slot copies are
-//! deduplicated into the array's own interval, so they cost no bytes and buy
-//! the stage tag and the dependency edge.
+//! What remains HERE is the bulk half: the fixed objects and the five engine
+//! tables, copied whole with the adjacent images the walk's `_stable` pairs
+//! consume. The vector pipeline decodes its descriptors out of these bulk
+//! OPENING images, so a scattered address is derived from the same bytes the
+//! walk reads and never from a second live read.
 //!
-//! Measured at the gate's own shape (512 provinces, 171 railed): 1,035
-//! intervals and 4,144 guarded copies. The intervals are nine fixed plus SIX
-//! per railed province and nothing per unrailed one; the copies are FOUR IMAGES
-//! FOR A TYPICAL INTERVAL — two back-to-back at the opening and two at the
-//! closing, the first half forced by t46's 78-of-80 gapped frames and the second
-//! by the owner ruling of 2026-08-11 — and MORE for the active table, whose
-//! coherence sequence takes `D81_ACTIVE_COHERENCE_READS` at each end. That is
-//! where the `+4` in the assertion comes from, and it is why the tested property
-//! is `copies == 4 * intervals + 4` rather than a clean four per interval. Both
-//! are pinned by
-//! `the_shipped_plans_province_tables_are_a_fixed_number_of_transactions`,
-//! whose ceiling is per RAILED province and says why.
-//!
-//! SO THE PHASE SIZES ROUGHLY AS `40 + 24 * railed` — a rule DERIVED from the
-//! tested four-image property above composed with `intervals = 9 + 6 * railed`,
-//! not a tested property itself. It is exact on the fixture and 0.06% high at
-//! t49's 3,511 railed provinces (84,304 against 84,256 measured), because the
-//! interval formula itself runs 12 short there.
-//!
-//! The phase that issues those 84,256 transactions took 67.0 ms per observation
-//! — a phase total and NOT a price for the transactions, since its decode,
-//! linking and allocation work is inside the same window. That 67.0 ms is 98% of
-//! d81's cost growth on the frames that PRESERVED a phase split — and d81 in
-//! turn overtook d47 as the fan-out's longest chain, alongside a 52.1 -> 100.9
-//! ms critical-path doubling between t47 and t49 (lane GJ,
-//! `runs/gj_crit_doubling/FINDINGS.txt`). Two cautions travel with those
-//! numbers. All 334 of t49's frames publish a phase block, but only 17 kept a
-//! measurement in it — the rest had theirs replaced by defaults when their
-//! bracket was rejected — so the step from "98% of d81's growth" to "the cause
-//! of the doubling" is an inference (that document's R3 is the missing
-//! measurement). And HOW the 67.0 ms are spent is NOT attributed at all — see
-//! its R4 before assuming the copies are where they go.
-//!
-//! An earlier revision of this line said 2,240 copies, from a two-image model
-//! that predates the ruling; it was 1.85x low, and it is the number a reader
-//! prices the conversion from.
-//!
-//! # The closing program, and why it needs mid-walk closure
+//! # Where the closing discipline lives
 //!
 //! d81 closes its rail header INSIDE the province's own iteration: the window
-//! between the two images is that province's handful of reads. A program that
-//! closed at the end of the observation would compare the header against a
-//! version 13,412 provinces later and report `ClosureChanged` for every write
-//! the engine made to a province the walk had already passed. That is
-//! [`CloseWhen::AfterWave`], lane GC's executor topology change, and it is the
-//! reason the conversion needed one.
+//! between the two images is that province's handful of reads. The vector
+//! pipeline preserves that instant — the header closing pair is taken after
+//! the pair-blob descriptors are decoded and before the blobs are copied,
+//! which is where the executor's `AfterWave(3)` put it — and takes the slot
+//! and active closings LAST, after every family reached through them, so
+//! every closing observation lands after the reads it vouches for. The
+//! substrate's closing wave no longer runs for this recipe at all; see
+//! [`domain81_copy_plan`].
 //!
 //! # What is NOT here, stated so it is a boundary and not an omission
 //!
@@ -134,21 +104,18 @@
 //!    silence.
 
 use crate::snapshot_recipes::executor::{
-    Admissibility, CarrySource, CloseAction, CloseStage, CloseWhen, ClosingProgram, CompareMask,
-    CountExpr, CountTerm,
-    DisagreeAction, OpMod, RejectAction, RelWindow, Recipe, RecipeOp, Root, SampleSpec, Tolerance,
+    Admissibility, CountExpr, CountTerm, DisagreeAction, OpMod, RejectAction, Recipe, RecipeOp,
+    Root, SampleSpec, Tolerance,
 };
 use crate::snapshot_recipes::{ConsumerId, Limits, MemoryRefusal, RecipeId, SnapshotMemory, Span};
 
 use super::{
-    D81_ACTIVE_ENTRY_STRIDE, D81_ACTIVE_ROOT_TABLE_OFF, D81_ACTIVE_WINDOW_LEN,
-    D81_ACTIVE_WINDOW_OFFSET, D81_ANCHOR_PRIMARY_OFF, D81_ANCHOR_SECONDARY_OFF,
-    D81_CONTAINER_PROVINCE_ARRAY_OFF, D81_CONTAINER_PROVINCE_COUNT_OFF,
-    D81_GS_ACTIVE_PROVINCE_ROOT_OFF, D81_GS_ANCHOR_SELECTOR_MAP_OFF, D81_GS_RAIL_MANAGER_OFF,
-    D81_IDLER_OWNER_OFF, D81_MAP_PROVINCE_RECORD_OFF, D81_OWNER_CONTAINER_OFF,
-    D81_RAIL_MANAGER_TABLE_OFF, D81_RECORD_SELECTOR_KEY_OFF, D81_SELECTOR_ENTRY_STRIDE,
-    D81_SELECTOR_MAP_MASK_OFF, D81_SELECTOR_MAP_MAX_DISTANCE_OFF, D81_SELECTOR_MAP_TABLE_OFF,
-    RAIL_HEADER_WINDOW_LEN, RAIL_INFO_PAIRS_PTR_OFF,
+    D81_ACTIVE_ENTRY_STRIDE, D81_ACTIVE_ROOT_TABLE_OFF, D81_CONTAINER_PROVINCE_ARRAY_OFF,
+    D81_CONTAINER_PROVINCE_COUNT_OFF, D81_GS_ACTIVE_PROVINCE_ROOT_OFF,
+    D81_GS_ANCHOR_SELECTOR_MAP_OFF, D81_GS_RAIL_MANAGER_OFF, D81_IDLER_OWNER_OFF,
+    D81_MAP_PROVINCE_RECORD_OFF, D81_OWNER_CONTAINER_OFF, D81_RAIL_MANAGER_TABLE_OFF,
+    D81_SELECTOR_ENTRY_STRIDE, D81_SELECTOR_MAP_MASK_OFF, D81_SELECTOR_MAP_MAX_DISTANCE_OFF,
+    D81_SELECTOR_MAP_TABLE_OFF, RAIL_HEADER_WINDOW_LEN, RAIL_INFO_PAIRS_PTR_OFF,
 };
 
 /// THE CONVERSION SWITCH, and it is ON (lane GI, 2026-08-10, owner-funded on
@@ -194,27 +161,29 @@ const D81_MAX_PROVINCES: u32 = super::MAX_MAP_CONTROL_PROVINCE_COUNT;
 /// cannot disagree about what is too wide.
 const D81_MAX_SINGLE_RANGE_BYTES: u64 = super::D81_BATCH_MAX_EXTENT_BYTES as u64;
 
-/// Stage tags. The order here IS the closing order; see [`closing_program`].
-pub const STAGE_RAIL_HEADER: u16 = 1;
-pub const STAGE_SELECTOR: u16 = 2;
-pub const STAGE_SOURCE: u16 = 3;
-pub const STAGE_MAP: u16 = 4;
-
-/// The wave the rail header's stage closes at.
-///
-/// COUNTED DOWN THE BRANCH, not chosen: the gamestate root is wave 0, the rail
-/// manager lands at wave 1, the rail-table extent at wave 2, and each rail
-/// header at wave 3. The pair blob is an extent off the header and copies the
-/// BLOB, not the header, so wave 3 is the last wave that writes into the
-/// header's interval.
-///
-/// A wave too early is not a wrong witness, it is a
-/// `Refusal::ClosedIntervalReopened` — see [`CloseWhen`] — so this number is
-/// checked by the substrate rather than trusted.
-const RAIL_HEADER_CLOSE_WAVE: u32 = 3;
-
 /// Op indices, named. A recipe is a flat list whose branch targets are indices
 /// into it, so every index is written once here and nowhere else.
+///
+/// # The per-province branch is GONE (lane HS, 2026-08-13)
+///
+/// This recipe used to grow a branch per railed province — rail header, pair
+/// blob, three joins, the map-province windows, the record window, the
+/// `CProvince` window — six intervals and twenty-four guarded transactions
+/// per province, 83,000 of the plan phase's 84,305 at t50. Those observations
+/// now run as vector families in [`super::d81_vector_store`], which copies
+/// the same windows through the same guarded primitive with per-family
+/// bookkeeping instead of per-interval bookkeeping. What remains here is the
+/// BULK half: the fixed objects and the five engine tables, copied whole,
+/// which the vector pipeline and the walk both read their scattered
+/// addresses out of.
+///
+/// The closing program went with the branch: every closing image this recipe
+/// used to take was either consumed by the walk through windows the vector
+/// store now observes at its own (identically ordered) closing points, or
+/// consumed by nobody — the demand table in
+/// `runs/hs_d81_cheap/COST_MODEL.txt`, confirmed by the Codex architecture
+/// consult (thread 019ff96e-dd04). The substrate's closing wave and its
+/// blanket comparison therefore no longer run for d81 at all.
 mod op {
     pub const GAMESTATE: u16 = 0;
     pub const RAIL_MANAGER_PTR: u16 = 1;
@@ -225,83 +194,25 @@ mod op {
     pub const SELECTOR_MAP: u16 = 6;
     pub const SELECTOR_TABLE: u16 = 7;
     pub const RAIL_TABLE: u16 = 8;
-    pub const RAIL_SLOT_PTR: u16 = 9;
-    pub const RAIL_HEADER: u16 = 10;
-    /// Unused: the pair blob is an extent off the header, not a followed
-    /// pointer. Held so the indices below do not shift.
-    pub const _RESERVED_PAIR_PTR: u16 = 11;
-    pub const PAIR_BLOB: u16 = 12;
-    pub const ACTIVE_TABLE: u16 = 13;
-    pub const ACTIVE_ENTRY: u16 = 14;
-    pub const SOURCE_ARRAY: u16 = 15;
-    pub const SOURCE_SLOT: u16 = 16;
-    pub const MAP_ARRAY: u16 = 17;
-    pub const MAP_SLOT: u16 = 18;
-    pub const MAP_PROVINCE_PTR: u16 = 19;
-    pub const MAP_WINDOWS: u16 = 20;
-    pub const RECORD_PTR: u16 = 21;
-    pub const RECORD_WINDOW: u16 = 22;
-    pub const IDLER_SLOT: u16 = 23;
-    pub const IDLER_PTR: u16 = 24;
-    pub const IDLER: u16 = 25;
-    pub const OWNER_PTR: u16 = 26;
-    pub const OWNER: u16 = 27;
-    pub const CONTAINER_PTR: u16 = 28;
-    pub const CONTAINER: u16 = 29;
-    pub const WITNESS: u16 = 30;
-    pub const FREEZE: u16 = 31;
-    /// THE SECOND ROUTE TO THE GAMESTATE PROVINCE ARRAY.
-    ///
-    /// d81's anchor-selector resolver serves the province slot out of the
-    /// walk's own opening read whenever the engine's selector key is the
-    /// province's own id: two logical reads at one address. Deduplication gives
-    /// them ONE interval carrying both stages, which is exactly the shape
-    /// ruling B's elision exists for — and it is why this op exists as a
-    /// separate index rather than as a second `stage` on `SOURCE_ARRAY`, which
-    /// could carry only one.
-    pub const SELECTOR_ROUTE: u16 = 32;
-    /// The join that makes the scattered half SELECTIVE.
-    ///
-    /// `container[id] -> map province -> record` is work the live reader does
-    /// only for provinces whose rail slot was non-null. Hanging it off the map
-    /// array's own elements would do it for every province the container
-    /// declares — at t26 that is 13,413 instead of 3,510, and it is more
-    /// transactions than the live reader issues rather than fewer. So the map
-    /// slot is reached by JOINING into the registered array on the province id
-    /// the rail table's element index carries, from inside the rail branch,
-    /// which only railed provinces enter.
-    pub const JOIN_MAP: u16 = 33;
-    pub const MAP_SLOT_PTR: u16 = 34;
+    pub const ACTIVE_TABLE: u16 = 9;
+    pub const ACTIVE_ENTRY: u16 = 10;
+    pub const SOURCE_ARRAY: u16 = 11;
+    pub const MAP_ARRAY: u16 = 12;
+    pub const IDLER_SLOT: u16 = 13;
+    pub const IDLER_PTR: u16 = 14;
+    pub const IDLER: u16 = 15;
+    pub const OWNER_PTR: u16 = 16;
+    pub const OWNER: u16 = 17;
+    pub const CONTAINER_PTR: u16 = 18;
+    pub const CONTAINER: u16 = 19;
     /// The SECOND clock singleton slot. `map_container` reads both and refuses
     /// the frame unless they hold the same pointer, so a plan that copied only
     /// one would leave the reader's own equality check reading a byte nothing
     /// captured.
-    pub const IDLER_SLOT_B: u16 = 35;
-    /// The gamestate `CProvince` behind a province-array slot.
-    ///
-    /// `d81_resolve_anchor_selector_key` reads its vtable at `+0` and its id at
-    /// `CPROVINCE_OFF_ID`, and both are inside the window this op copies.
-    pub const SOURCE_PROVINCE_PTR: u16 = 36;
-    pub const SOURCE_PROVINCE_WINDOW: u16 = 37;
-    /// The join that reaches the gamestate province slot, from the rail branch,
-    /// on the province id the rail table's element index carries.
-    pub const JOIN_SOURCE: u16 = 38;
-    pub const SOURCE_SLOT_PTR: u16 = 39;
-    /// The selector resolver's SECOND join into the same array. Two logical
-    /// reads at one address; deduplication gives them one interval carrying
-    /// both stages, which is the shape ruling B's elision exists for.
-    pub const JOIN_SELECTOR: u16 = 40;
-    pub const COUNT: usize = 41;
+    pub const IDLER_SLOT_B: u16 = 20;
+    pub const FREEZE: u16 = 21;
+    pub const COUNT: usize = 22;
 }
-
-/// The registered join table. Only one is needed: the gamestate province array
-/// and the active table are read by ADDRESS post-bracket (they are whole
-/// copies and their elements start no branch), and only the map array's
-/// elements are pointers the plan has to follow.
-const TABLE_MAP: crate::snapshot_recipes::TableId = crate::snapshot_recipes::TableId(1);
-/// The gamestate province array, registered so the rail branch can join into
-/// it on the carried province id.
-const TABLE_SOURCE: crate::snapshot_recipes::TableId = crate::snapshot_recipes::TableId(2);
 
 /// Where the plan starts.
 ///
@@ -357,44 +268,24 @@ fn heap_window(on_reject: RejectAction) -> Admissibility {
     }
 }
 
-/// RULING B. d81's closing sequence, with the rail header closing MID-WALK.
+/// Build d81's copy plan — the BULK half only; see the `op` module header for
+/// where the per-province branch went.
 ///
-/// The order is the reader's own: the rail header first (it is closed inside
-/// the province's iteration), then the selector's route to the gamestate slot
-/// ELIDED into the source-position read that covers it — d81's own
-/// coincident-slot elision, kept because it is what carries the selector
-/// stage's attribution — then the source position, then the map binding.
+/// # Where ruling B's closing sequence lives now
 ///
-/// The `when`s are non-decreasing down the list, which `validate` requires: the
-/// listed sequence and the wave numbers have to be one claim.
-pub fn closing_program() -> ClosingProgram {
-    ClosingProgram {
-        stages: vec![
-            CloseStage {
-                stage: STAGE_RAIL_HEADER,
-                elide_into: None,
-                when: CloseWhen::AfterWave(RAIL_HEADER_CLOSE_WAVE),
-            },
-            CloseStage {
-                stage: STAGE_SELECTOR,
-                elide_into: Some(STAGE_SOURCE),
-                when: CloseWhen::Final,
-            },
-            CloseStage {
-                stage: STAGE_SOURCE,
-                elide_into: None,
-                when: CloseWhen::Final,
-            },
-            CloseStage {
-                stage: STAGE_MAP,
-                elide_into: None,
-                when: CloseWhen::Final,
-            },
-        ],
-    }
-}
-
-/// Build d81's copy plan.
+/// The 2026-08-11 closing-sequence ruling's structure — the rail header
+/// closing mid-walk, the selector close elided into the source close, the
+/// source and map closes at the end — is preserved at its points of MEANING
+/// by the vector pipeline (`d81_vector_observe`): the header closing pair is
+/// taken after the pair-blob descriptors are decoded and before the blobs
+/// are copied (the executor's `AfterWave(3)` instant); the record-pointer
+/// closing pair after the key windows it vouches for; the slot closings and
+/// the active closing triples last, after every family reached through them.
+/// The owner's 2026-08-13 mandate explicitly authorized re-architecting the
+/// closing-image program; what was kept is the discipline (every closing
+/// observation lands AFTER the reads it vouches for), and what was dropped
+/// is the substrate's stage/elision machinery, whose consumers went with the
+/// branch ops.
 pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
     let mut ops = vec![RecipeOp::Freeze; op::COUNT];
 
@@ -408,7 +299,6 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
             op::ACTIVE_ROOT_PTR,
             op::SELECTOR_MAP_PTR,
             op::SOURCE_ARRAY,
-            op::WITNESS,
         ],
     };
     ops[op::RAIL_MANAGER_PTR as usize] = RecipeOp::DecodePointer {
@@ -486,7 +376,9 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         trailer_elements: 0,
         guard: None,
         register: None,
-        element: vec![op::RAIL_SLOT_PTR],
+        // The elements start NO branch: the vector pipeline decodes the rail
+        // slots out of this table's OPENING image and follows them itself.
+        element: vec![op::FREEZE],
     };
     ops[op::ACTIVE_TABLE as usize] = RecipeOp::DecodeExtent {
         count_offset: D81_ACTIVE_ROOT_TABLE_OFF as u32,
@@ -515,46 +407,9 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         max_bytes: D81_MAX_SINGLE_RANGE_BYTES,
         trailer_elements: 0,
         guard: None,
-        register: Some(TABLE_SOURCE),
+        register: None,
         element: vec![op::FREEZE],
     };
-    ops[op::JOIN_SOURCE as usize] = RecipeOp::JoinBounded {
-        table: TABLE_SOURCE,
-        key_offset: 0,
-        key_width: 4,
-        next: op::SOURCE_SLOT,
-    };
-    ops[op::SOURCE_SLOT as usize] = RecipeOp::CopyHeader {
-        size: 8,
-        next: vec![op::SOURCE_SLOT_PTR],
-    };
-    ops[op::SOURCE_SLOT_PTR as usize] = RecipeOp::DecodePointer {
-        offset: 0,
-        guard: None,
-        next: op::SOURCE_PROVINCE_PTR,
-    };
-    // The selector resolver's route to the SAME slot, as its own join, so the
-    // interval carries both stages and the elision has something to elide.
-    ops[op::JOIN_SELECTOR as usize] = RecipeOp::JoinBounded {
-        table: TABLE_SOURCE,
-        key_offset: 0,
-        key_width: 4,
-        next: op::SELECTOR_ROUTE,
-    };
-    ops[op::SELECTOR_ROUTE as usize] = RecipeOp::CopyHeader {
-        size: 8,
-        next: vec![op::FREEZE],
-    };
-    // The slot's `CProvince`, whose vtable and id
-    // `d81_resolve_anchor_selector_key` reads and compares.
-    ops[op::SOURCE_PROVINCE_PTR as usize] = RecipeOp::CopyRanges {
-        // ONE window covering both fields. They are 164 bytes apart in the same
-        // object, and a guarded copy costs ~85 ns almost independently of
-        // width, so two windows would be two transactions for nothing.
-        windows: vec![RelWindow::new(0, super::CPROVINCE_OFF_ID as u32 + 4)],
-        next: vec![op::SOURCE_PROVINCE_WINDOW],
-    };
-    ops[op::SOURCE_PROVINCE_WINDOW as usize] = RecipeOp::Freeze;
     // THE ENGINE'S OWN COUNT. `u32[container + 0x74]` is the bound the live
     // reader refuses every `container[id]` against and it sits in the same
     // object as the array pointer at `+0x68`, so this is the one table whose
@@ -568,109 +423,8 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         max_bytes: D81_MAX_SINGLE_RANGE_BYTES,
         trailer_elements: 0,
         guard: None,
-        // REGISTERED, and its elements start NO branch. The array lands as one
-        // copy; which of its slots is followed is decided by the join below,
-        // from inside the rail branch. See `op::JOIN_MAP`.
-        register: Some(TABLE_MAP),
-        element: vec![op::FREEZE],
-    };
-    ops[op::JOIN_MAP as usize] = RecipeOp::JoinBounded {
-        table: TABLE_MAP,
-        key_offset: 0,
-        key_width: 4,
-        next: op::MAP_SLOT,
-    };
-    // Deduplicated into the array's own interval: zero extra bytes, and the
-    // stage tag and dependency edge the join needs.
-    ops[op::MAP_SLOT as usize] = RecipeOp::CopyHeader {
-        size: 8,
-        next: vec![op::MAP_SLOT_PTR],
-    };
-    ops[op::MAP_SLOT_PTR as usize] = RecipeOp::DecodePointer {
-        offset: 0,
-        guard: None,
-        next: op::MAP_PROVINCE_PTR,
-    };
-
-    // ---- per railed province: the scattered half ---------------------------
-    ops[op::RAIL_SLOT_PTR as usize] = RecipeOp::DecodePointer {
-        offset: 0,
-        guard: None,
-        next: op::RAIL_HEADER,
-    };
-    // The rail header window, `[+0x38, +0x48)`, taken as an ADJACENT PAIR and
-    // compared over the two consumed fields only. The four bytes between them
-    // are DEAD and a write to them must not gap the reader — which is exactly
-    // what `d81_decode_rail_header_window` exists to state, and what a
-    // whole-interval comparison would get wrong.
-    // FROM `+0`, THROUGH THE END OF THE COUNT FIELD, and the first 0x38 bytes
-    // are an over-read this op takes on purpose.
-    //
-    // The reader consumes only `[+0x38, +0x48)`. A `CopyRanges` of exactly
-    // that window would copy 56 fewer bytes per railed province — which is
-    // nothing, because a guarded copy costs ~85 ns almost independently of
-    // width — and would leave the object's BASE unowned. `JoinBounded` anchors
-    // its dependency edge on the interval containing the SITE's base
-    // (`executor.rs`, the `key_from_carry` arm), so a branch rooted on an
-    // object whose base is not owned cannot join at all: it refuses
-    // `FieldNotCaptured` at the base. Taking the object from `+0` is the
-    // cheaper half of that trade by a wide margin.
-    ops[op::RAIL_HEADER as usize] = RecipeOp::CopyHeader {
-        size: (super::RAIL_INFO_PAIR_COUNT_OFF + 4) as u32,
-        next: vec![
-            op::PAIR_BLOB,
-            op::JOIN_MAP,
-            op::JOIN_SOURCE,
-            op::JOIN_SELECTOR,
-        ],
-    };
-    // `pair_count * 8` bytes behind the header's pointer.
-    //
-    // AN EXTENT OFF THE HEADER, NOT A POINTER FOLLOWED BY A FIXED COPY, and
-    // the difference is the over-read. The count is variable — 0 to
-    // `MAX_NEIGHBORS_PER_PROVINCE` — so a fixed copy would have to take the
-    // ceiling, 512 bytes, off allocations that are frequently smaller than
-    // that; an all-or-nothing guarded read of 512 bytes past the end of a
-    // 32-byte blob fails, and the neighbours are then lost for a province
-    // whose bytes were all there. The extent reads BOTH the pointer at window
-    // offset 0 and the count at offset 12 out of the header the previous op
-    // already copied, so it asks for exactly what the engine says is there and
-    // the engine's own ceiling bounds it.
-    ops[op::PAIR_BLOB as usize] = RecipeOp::DecodeExtent {
-        count_offset: super::RAIL_INFO_PAIR_COUNT_OFF as u32,
-        count_width: 4,
-        ptr_offset: RAIL_INFO_PAIRS_PTR_OFF as u32,
-        stride: 8,
-        max_count: compact_contract::rail_replay::MAX_NEIGHBORS_PER_PROVINCE as u32,
-        max_bytes: (compact_contract::rail_replay::MAX_NEIGHBORS_PER_PROVINCE * 8) as u64,
-        trailer_elements: 0,
-        guard: None,
         register: None,
         element: vec![op::FREEZE],
-    };
-
-    // ---- the map province, reached through the container's array -----------
-    //
-    // The map province is over 5 KiB and the reader consumes 32 bytes of it,
-    // in three places: the two anchor triplets and the record pointer. Three
-    // windows, not one object — the whole-object copy would be 160x the bytes
-    // for no call saving at all.
-    ops[op::MAP_PROVINCE_PTR as usize] = RecipeOp::CopyRanges {
-        windows: vec![
-            RelWindow::new(D81_ANCHOR_PRIMARY_OFF as i64, 12),
-            RelWindow::new(D81_ANCHOR_SECONDARY_OFF as i64, 12),
-            RelWindow::new(D81_MAP_PROVINCE_RECORD_OFF as i64, 8),
-        ],
-        next: vec![op::RECORD_PTR],
-    };
-    ops[op::RECORD_PTR as usize] = RecipeOp::DecodePointer {
-        offset: D81_MAP_PROVINCE_RECORD_OFF as u32,
-        guard: None,
-        next: op::RECORD_WINDOW,
-    };
-    ops[op::RECORD_WINDOW as usize] = RecipeOp::CopyRanges {
-        windows: vec![RelWindow::new(D81_RECORD_SELECTOR_KEY_OFF as i64, 4)],
-        next: vec![op::FREEZE],
     };
 
     // ---- the map container chain, off the static idler slot ----------------
@@ -718,10 +472,6 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         next: vec![op::FREEZE],
     };
 
-    ops[op::WITNESS as usize] = RecipeOp::WitnessClose {
-        next: vec![op::FREEZE],
-    };
-
     // ---- the qualifications ------------------------------------------------
     let mut mods = vec![OpMod::default(); op::COUNT];
 
@@ -740,60 +490,24 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         constant: 2,
     });
 
-    // RULING A. Anything derived from an ENGINE TABLE the plan copies
-    // wholesale is `Scoped`; anything reached through a pointer the plan
-    // proved admissible is `Required`, because a copy plan that cannot read an
-    // object it was handed the address of has found a real defect and must say
-    // so. The four tables and the entries taken out of them are the first set.
+    // RULING A. An ENGINE TABLE the plan copies wholesale is `Scoped`: the
+    // reader only ever touches the entries it walks, so an unreadable page in
+    // the part nobody reads must cost nothing.
     for scoped in [
         op::RAIL_TABLE,
         op::ACTIVE_TABLE,
         op::SOURCE_ARRAY,
-        op::SOURCE_SLOT,
-        op::SELECTOR_ROUTE,
         op::MAP_ARRAY,
-        op::MAP_SLOT,
         op::SELECTOR_TABLE,
-        // AND THE SCATTERED HALF, for a reason the wholesale tables do not
-        // have (Codex 019fe963, finding C1). The topology walk SKIPS provinces
-        // whose gamestate slot is null, and the reader iterates only the roots
-        // that survived it — but a skipped index can still carry a non-null
-        // rail slot, and the plan cannot tell the two apart because that is a
-        // decision. So the plan follows objects the reader never visits, and
-        // under  one unreadable byte in any of them would refuse the
-        // whole frame for a province nobody reads.
-        //
-        // Scoped is not weaker for the provinces that ARE visited: the void
-        // makes the post-bracket read refuse, and the reader turns that into
-        // the same typed failure an unreadable live read produces. It is only
-        // weaker for the ones that are not, which is the point.
-        op::RAIL_HEADER,
-        op::PAIR_BLOB,
-        op::MAP_PROVINCE_PTR,
-        op::RECORD_WINDOW,
-        op::SOURCE_PROVINCE_PTR,
     ] {
         mods[scoped as usize].tolerance = Tolerance::Scoped;
     }
 
-    // M3: every pointer the live reader gates with
-    // `is_map_control_heap_pointer` is admitted on the same predicate here,
-    // and a rejection STOPS THE BRANCH rather than refusing the recipe — the
-    // reader turns the recorded rejection into its own typed `InvalidPointer`
-    // for that province and keeps the frame.
-    for admitted in [
-        op::RAIL_SLOT_PTR,
-        op::PAIR_BLOB,
-        op::MAP_SLOT_PTR,
-        op::SOURCE_SLOT_PTR,
-        op::RECORD_PTR,
-    ] {
-        mods[admitted as usize].admit = Some(heap_window(RejectAction::StopBranch));
-    }
-    // The four ROOT pointers are the other direction: the live reader refuses
-    // the whole snapshot at `RailRoots` when one of them fails the same
-    // predicate, so a rejection here is fatal to the recipe and carries the
-    // window it failed.
+    // The ROOT pointers: the live reader refuses the whole snapshot at
+    // `RailRoots` when one of them fails `is_map_control_heap_pointer`, so a
+    // rejection here is fatal to the recipe and carries the window it failed.
+    // (The per-province `StopBranch` admissions moved to the vector pipeline,
+    // which applies the same predicate to the same pointers.)
     for fatal in [
         op::RAIL_MANAGER_PTR,
         op::ACTIVE_ROOT_PTR,
@@ -806,32 +520,15 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
     }
 
     // THE COPIER TAKES THE IMAGES; THE READER RENDERS THE VERDICT (lane GI,
-    // 2026-08-10, after t46 measured 78 of 80 frames gapped).
-    //
-    // The substrate's own defaults gap this consumer whenever back-to-back
-    // images disagree or a closing image differs over the consumed bytes. That
-    // is right for a reader that takes the substrate's verdict and WRONG for a
-    // converted one that renders its own: `d81_walk_provinces` closes exactly
-    // the fields its live form closed — a rail header, a province-array slot, a
-    // map slot, an active entry, a record pointer — and closes nothing else. A
-    // rail slot for a province it never visited, a byte of the 384 KB selector
-    // table, or an anchor triplet it read once and never re-read moving under it
-    // was never a refusal, and under the defaults every one of them is.
-    //
-    // t46 is the measurement, not the fear: `d81_shadow_consumer_gapped` was 78
-    // of 80 frames, so the plan under the defaults would have refused 97.5% of
-    // the hours the live walk delivered.
-    //
-    // SO EVERY COPY OP TAKES TWO ADJACENT IMAGES AND DECLARES `Record` ON BOTH
-    // POLICIES. The images are all still taken and all still available through
-    // the view; what changes is who judges them. The walk's own `_stable` pairs
-    // and its closing comparisons then mean exactly what they meant live, and
-    // its refusals keep their stage, subject, index and witness.
-    //
-    // WHAT IT COSTS: one extra adjacent copy per interval. At t26's shape that
-    // is 21,069 more transactions on top of 21,069 opening and 21,069 closing —
-    // about 2.3 ms at lane GA's measured 110 ns for an A/B copy, against the
-    // ~33 ms of live walk it replaces.
+    // 2026-08-10, after t46 measured 78 of 80 frames gapped; unchanged by the
+    // vector conversion). Every bulk copy op takes the adjacent images the
+    // walk's `_stable` pairs consume and declares `Record`, so the substrate
+    // judges nothing and the walk's refusals keep their stage, subject, index
+    // and witness. What is GONE is the closing side: no bulk closing image is
+    // consumed by the walk (the demand table in
+    // `runs/hs_d81_cheap/COST_MODEL.txt`) — the slot and active closings the
+    // walk DOES consume are the vector pipeline's closing-only families,
+    // observed after every family that was reached through them.
     for op in [
         op::GAMESTATE,
         op::RAIL_MANAGER,
@@ -841,15 +538,7 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         op::RAIL_TABLE,
         op::ACTIVE_TABLE,
         op::SOURCE_ARRAY,
-        op::SOURCE_SLOT,
-        op::SELECTOR_ROUTE,
-        op::SOURCE_PROVINCE_PTR,
         op::MAP_ARRAY,
-        op::MAP_SLOT,
-        op::MAP_PROVINCE_PTR,
-        op::RECORD_WINDOW,
-        op::RAIL_HEADER,
-        op::PAIR_BLOB,
         op::IDLER_SLOT,
         op::IDLER_SLOT_B,
         op::IDLER,
@@ -860,7 +549,6 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
             count: D81_CLOSING_IMAGES_HELD as u8,
             on_disagree: DisagreeAction::Record,
         };
-        mods[op as usize].on_close = CloseAction::Record;
     }
     // THE ACTIVE TABLE TAKES THREE, because its reader takes three (Codex
     // 019feb7d, finding 3). `d81_read_coherent_active_entry` observes the
@@ -872,39 +560,6 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         count: super::D81_ACTIVE_COHERENCE_READS as u8,
         on_disagree: DisagreeAction::Record,
     };
-
-    // M4 + RULING B: the rail header is compared ONLY over the two fields the
-    // reader consumes. The mask still matters under `Record`: it is what
-    // `changed` is computed from, and the four dead bytes inside the window must
-    // stay outside that judgement whoever renders it.
-    mods[op::RAIL_HEADER as usize].compare = CompareMask {
-        windows: vec![
-            RelWindow::new(RAIL_INFO_PAIRS_PTR_OFF as i64, 8),
-            RelWindow::new(super::RAIL_INFO_PAIR_COUNT_OFF as i64, 4),
-        ],
-    };
-
-    // The active entry's coherence gate consumes seven bytes at +0x12 of the
-    // entry and nothing else; a write anywhere else in the 0x20-byte entry is
-    // not a torn read of it. Per ELEMENT, which is what makes the mask one
-    // entry rather than one per province.
-    mods[op::ACTIVE_TABLE as usize].compare = CompareMask {
-        windows: vec![RelWindow::new(D81_ACTIVE_WINDOW_OFFSET as i64, D81_ACTIVE_WINDOW_LEN as u32)],
-    };
-
-    // RULING B's stages, and every one of them sits on an op that COPIES —
-    // a stage tag on a  or a  names no interval and
-    // would silently order nothing.
-    mods[op::RAIL_HEADER as usize].stage = STAGE_RAIL_HEADER;
-    mods[op::SOURCE_SLOT as usize].stage = STAGE_SOURCE;
-    mods[op::SELECTOR_ROUTE as usize].stage = STAGE_SELECTOR;
-    mods[op::MAP_PROVINCE_PTR as usize].stage = STAGE_MAP;
-    // M2: the province id is the rail table element index, carried into the
-    // join that reaches this province and only this province.
-    mods[op::RAIL_SLOT_PTR as usize].carry = Some(CarrySource::ElementIndex);
-    mods[op::JOIN_MAP as usize].key_from_carry = true;
-    mods[op::JOIN_SOURCE as usize].key_from_carry = true;
-    mods[op::JOIN_SELECTOR as usize].key_from_carry = true;
 
     // THE TWO COUNTS THE ENGINE DOES NOT KEEP. The rail and active tables have
     // a base and no count beside it, so the caller's own in-bracket
@@ -945,19 +600,13 @@ pub fn domain81_copy_plan(roots: &Domain81PlanRoots) -> Recipe {
         max_single_range_bytes: D81_MAX_SINGLE_RANGE_BYTES,
         ..Limits::default()
     };
-    let recipe = recipe.with_mods(mods);
-    recipe.with_closing(closing_program())
+    // NO CLOSING PROGRAM AND NO WITNESS WAVE: every closing image the walk
+    // consumes is the vector pipeline's, taken at the points the function
+    // header names. The substrate's closing wave would re-copy megabytes of
+    // table nobody compares (all of d81's asks declare `Record`, so its
+    // blanket comparison gapped nothing even when it ran).
+    recipe.with_mods(mods)
 }
-
-/// A span's width as an op size, saturated at the plan's own single-range cap
-/// so a caller cannot smuggle a wider request past `Limits`.
-fn span_width(span: Span) -> u32 {
-    span.len.min(D81_MAX_SINGLE_RANGE_BYTES).min(u32::MAX as u64) as u32
-}
-
-/// Offset of the pair COUNT inside the rail-header window. Derived from the two
-/// production field offsets, exactly as `RAIL_HEADER_WINDOW_LEN` is.
-const RAIL_INFO_PAIR_COUNT_IN_WINDOW: usize = super::RAIL_HEADER_COUNT_IN_WINDOW;
 
 /// The largest selector table the derived count may ask for, in slots. The
 /// engine's mask is a power of two minus one and the probe tail adds
@@ -1212,16 +861,28 @@ pub enum D81ReadSource<'a> {
     Staged(&'a dyn crate::snapshot_recipes::SnapshotMemory),
 }
 
-/// The snapshot arm's state: the view and what it could not answer.
+/// The snapshot arm's state: the vector capture, the bulk view, and what the
+/// two could not answer.
 pub struct D81SnapshotSource<'a> {
     view: crate::snapshot_recipes::view::SnapshotView<'a>,
+    /// The scattered families (lane HS). Consulted FIRST: an address inside a
+    /// family window is that family's to answer, and only addresses no family
+    /// covers fall through to the bulk view. `None` only when the observation
+    /// refused before the pipeline ran, and then the walk refuses at its first
+    /// scattered read exactly as it refused when the recipe's branch was
+    /// gapped.
+    vector: Option<&'a super::d81_vector_store::D81VectorCapture>,
     misses: std::cell::Cell<D81ViewMisses>,
 }
 
 impl<'a> D81ReadSource<'a> {
-    pub fn snapshot(view: crate::snapshot_recipes::view::SnapshotView<'a>) -> Self {
+    pub fn snapshot(
+        view: crate::snapshot_recipes::view::SnapshotView<'a>,
+        vector: Option<&'a super::d81_vector_store::D81VectorCapture>,
+    ) -> Self {
         D81ReadSource::Snapshot(D81SnapshotSource {
             view,
+            vector,
             misses: std::cell::Cell::new(D81ViewMisses::default()),
         })
     }
@@ -1409,6 +1070,70 @@ impl D81SnapshotSource<'_> {
 
     fn read_into(&self, addr: usize, out: &mut [u8], image: D81Image) -> bool {
         let span = crate::snapshot_recipes::Span::new(addr as u64, out.len() as u64);
+        // THE VECTOR FAMILIES ANSWER FIRST (lane HS). Their windows are the
+        // scattered objects the recipe's branch used to copy; the bulk view
+        // has never owned those bytes on this tip, so serving them here is a
+        // routing fact and not a preference. `NotCovered` — the only answer
+        // that falls through — means no family window contains the span, and
+        // then the view's own verdict stands for the bulk tables it copies.
+        if let Some(vector) = self.vector {
+            use super::d81_vector_store::{VectorAnswer, VectorImage};
+            let asked = match image {
+                D81Image::Opening => VectorImage::Opening,
+                D81Image::Sample(index) => VectorImage::Sample(index),
+                D81Image::Closing => VectorImage::Closing,
+                D81Image::ClosingSample(index) => VectorImage::ClosingSample(index),
+            };
+            match vector.read(addr as u64, out.len() as u32, asked) {
+                VectorAnswer::Served(bytes) => {
+                    out.copy_from_slice(bytes);
+                    return true;
+                }
+                VectorAnswer::NotCovered => {}
+                VectorAnswer::Unreadable => {
+                    self.note(D81_MISS_UNREADABLE, span);
+                    return false;
+                }
+                VectorAnswer::SampleAbsent => {
+                    // An OPENING adjacent sample the engine refused keeps its
+                    // own class, exactly as `sample_bytes` gave it. A refused
+                    // CLOSING observation was `Unreadable` under
+                    // `closing_sample_bytes` — the engine declined an
+                    // observation the plan asked for — and it keeps that
+                    // class here so the wire counters do not move.
+                    match image {
+                        D81Image::Closing | D81Image::ClosingSample(_) => {
+                            self.note(D81_MISS_UNREADABLE, span);
+                        }
+                        _ => self.note_absent_sample(),
+                    }
+                    return false;
+                }
+                VectorAnswer::Aliased => {
+                    // Two scattered families' windows contain the span: a
+                    // malformed engine pointer aliased two objects, and no
+                    // byte is served from it. A PLAN-coverage refusal, so it
+                    // publishes in the defect class and the frame refuses
+                    // fail-closed.
+                    self.note(D81_MISS_NOT_CAPTURED, span);
+                    return false;
+                }
+                VectorAnswer::NeverObserved => {
+                    // The plan never asked for this image of these bytes: a
+                    // PLAN DEFECT, in the class that names it — the closing
+                    // class for a closing image, the coverage class otherwise
+                    // — never a silent substitution.
+                    let class = match image {
+                        D81Image::Closing | D81Image::ClosingSample(_) => {
+                            D81_MISS_NO_CLOSING_IMAGE
+                        }
+                        _ => D81_MISS_NOT_CAPTURED,
+                    };
+                    self.note(class, span);
+                    return false;
+                }
+            }
+        }
         match image {
             D81Image::Opening => match self.view.read_into(addr as u64, out) {
                 Ok(()) => true,

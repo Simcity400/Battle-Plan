@@ -324,77 +324,137 @@ fn d81_live_read_census() -> Vec<ReadFamily> {
     ]
 }
 
-/// The copy plan for the same observation set.
+/// The VECTOR copy plan for the same observation set (lane HS, 2026-08-13).
 ///
-/// The rule that produces it, and the whole finding of this file: a family
-/// whose addresses are indexed into ONE contiguous engine table becomes one
-/// copy of that table, taken as an A/B pair at the opening and again at
-/// closure so the sampling shape matches the `_stable` reads it replaces. A
-/// family whose addresses are scattered heap objects is carried across with
-/// its calls and widths unchanged, because no address arithmetic makes
-/// separate allocations adjacent — with ONE exception, applied at the bottom
-/// of this function: the CProvince vtable and its id at +0xA4 are in the SAME
-/// object, so the plan merges them into a single 168-byte window pair, halving
-/// that row's calls and widening its bytes.
+/// The rule that produces it: a family whose addresses are indexed into ONE
+/// contiguous engine table becomes one copy of that table, taken as an A/B
+/// pair at the opening ONLY — no bulk closing image is consumed by the walk,
+/// so none is taken. A family whose addresses are scattered heap objects is
+/// carried across at its DEMANDED image count (the consumption table in
+/// `runs/hs_d81_cheap/COST_MODEL.txt`): the header and record-pointer windows
+/// keep all four images, the pair blob, anchors, record key and `CProvince`
+/// windows keep the opening pair only, and the slot and active closings the
+/// walk consumes become closing-only vector families over the array entries
+/// the walk actually closes.
 fn d81_copy_plan_census() -> Vec<ReadFamily> {
     use shape::*;
     let railed = RAILED;
     let mut plan: Vec<ReadFamily> = Vec::new();
 
-    // The four contiguous tables, each copied whole. Four calls apiece: an
-    // opening A/B pair and a closing A/B pair. Sized by [`TABLE_SLOTS`], the
-    // stand-in for the ENGINE's declared count, never by how many provinces
-    // the walk visited -- see that constant for why the difference is a
-    // correctness one and not a rounding one.
+    // The five contiguous tables, each copied whole as an opening A/B pair
+    // and nothing else. Sized by [`TABLE_SLOTS`], the stand-in for the
+    // ENGINE's declared count, never by how many provinces the walk visited
+    // -- see that constant for why the difference is a correctness one and
+    // not a rounding one.
+    //
+    // THE SELECTOR SLACK IS NOT PADDING. `select_secondary` starts at the
+    // MASKED slot and then advances by one stride at a time WITHOUT wrapping,
+    // up to `selector_max_distance + 1` steps, and reads the terminating
+    // marker one slot beyond that, so the real plan sizes that extent
+    // `mask + max_distance + 2`; [`PROBE_SLACK_ENTRIES`] stands in for the
+    // tail offline.
     for (site, bytes) in [
         ("rail table (whole)", TABLE_SLOTS * RAIL_SLOT),
         ("active table (whole)", TABLE_SLOTS * ACTIVE_STRIDE),
         ("gamestate province array (whole)", TABLE_SLOTS * POINTER),
         ("map container province array (whole)", TABLE_SLOTS * POINTER),
+        (
+            "anchor-selector table (whole)",
+            (SELECTOR_ENTRIES + PROBE_SLACK_ENTRIES) * SELECTOR_STRIDE,
+        ),
     ] {
         plan.push(ReadFamily {
             site,
             contiguous: true,
-            calls: 4,
-            bytes: 4 * bytes,
+            calls: 2,
+            bytes: 2 * bytes,
         });
     }
-    // The anchor-selector table, copied whole as an opening A/B pair. It has
-    // no per-entry closing read today — the closing gate re-reads the HEADER
-    // only — so the plan takes no closing copy of it either.
-    //
-    // THE SLACK IS NOT PADDING. `select_secondary` starts at the MASKED slot
-    // and then advances by one stride at a time WITHOUT wrapping, up to
-    // `selector_max_distance + 1` steps, and reads the terminating marker one
-    // slot beyond that. A copy of exactly `mask + 1` entries therefore does
-    // not cover a probe that starts near the top of the table. The real plan
-    // must size this extent `mask + max_distance + 2`, which is precisely the
-    // formula d81's own `d81_hash_table_rows` already uses for the hub's hash
-    // tables; [`PROBE_SLACK_ENTRIES`] stands in for that tail offline.
+
+    // The scattered families, at their demanded image counts.
     plan.push(ReadFamily {
-        site: "anchor-selector table (whole)",
-        contiguous: true,
-        calls: 2,
-        bytes: 2 * (SELECTOR_ENTRIES + PROBE_SLACK_ENTRIES) * SELECTOR_STRIDE,
+        // O, S1, C, CS1 of the 16-byte header window: the walk consumes both
+        // pairs (`header(Opening)` and `header(Closing)`).
+        site: "rail-info header window (opening + closing)",
+        contiguous: false,
+        calls: 4 * railed,
+        bytes: 4 * railed * 16,
+    });
+    plan.push(ReadFamily {
+        // Opening pair only: the walk never reads a blob closing image.
+        site: "rail pair blob",
+        contiguous: false,
+        calls: 2 * railed,
+        bytes: 2 * railed * NEIGHBORS_PER_RAILED * 8,
+    });
+    plan.push(ReadFamily {
+        // O, S1, C, CS1 of the 8-byte record pointer: the closing pair is
+        // consumed by the reciprocity gate after the key.
+        site: "map province +0x11B8 record pointer (opening + closing)",
+        contiguous: false,
+        calls: 4 * railed,
+        bytes: 4 * railed * POINTER,
+    });
+    plan.push(ReadFamily {
+        // Opening pair of ONE 24-byte window covering BOTH adjacent triplets
+        // (0x14E4 and 0x14F0), where the live reader took two 12-byte reads.
+        site: "anchor triplet window",
+        contiguous: false,
+        calls: 2 * railed,
+        bytes: 2 * railed * 24,
+    });
+    plan.push(ReadFamily {
+        // Opening pair only.
+        site: "selector-key record +0xC4",
+        contiguous: false,
+        calls: 2 * railed,
+        bytes: 2 * railed * 4,
+    });
+    plan.push(ReadFamily {
+        // Opening pair of the merged 168-byte head window (vtable through
+        // id), where the live reader took two `_stable` scalars.
+        site: "CProvince vtable + id",
+        contiguous: false,
+        calls: 2 * railed,
+        bytes: 2 * railed * 168,
     });
 
-    // Everything scattered, carried across unchanged from the live census.
+    // The closing-only vector families: the slot and active closings the walk
+    // consumes, observed per RAILED entry AFTER every family reached through
+    // them. Their opening pairs are the bulk arrays' — these rows are the
+    // closing side only.
+    plan.push(ReadFamily {
+        site: "gamestate province-array slot closes (vector)",
+        contiguous: true,
+        calls: 2 * railed,
+        bytes: 2 * railed * POINTER,
+    });
+    plan.push(ReadFamily {
+        site: "map container province-array slot closes (vector)",
+        contiguous: true,
+        calls: 2 * railed,
+        bytes: 2 * railed * POINTER,
+    });
+    plan.push(ReadFamily {
+        // Three interleaved closing observations of the 7-byte window, the
+        // coherence loop's own count.
+        site: "active-table entry window closes (vector)",
+        contiguous: true,
+        calls: 3 * railed,
+        bytes: 3 * railed * 7,
+    });
+
+    // The prologue and the four whole-snapshot closing gates are LIVE reads
+    // in both architectures — the plan is rooted on what they resolve — so
+    // they carry across from the live census verbatim.
     for family in d81_live_read_census() {
-        if !family.contiguous {
+        if family.site == "prologue roots/selector header/map container"
+            || family.site == "whole-snapshot closing gates"
+        {
             plan.push(family);
         }
     }
-    // One exception, and it is a genuine plan-side saving rather than a
-    // batching one: the CProvince vtable and its id at +0xA4 are 168 bytes
-    // apart IN THE SAME OBJECT, so one 168-byte window pair replaces two
-    // `_stable` scalars. `d81_guarded_read_cost_model` measures a 168-byte
-    // `read_into` at essentially the price of a 4-byte one.
-    for family in plan.iter_mut() {
-        if family.site == "CProvince vtable + id" {
-            family.calls = 2 * railed;
-            family.bytes = 2 * railed * 168;
-        }
-    }
+
     plan
 }
 
@@ -502,12 +562,11 @@ fn the_copy_plan_covers_every_range_the_live_reader_reads() {
             .find(|entry| entry.site == plan_site)
             .unwrap_or_else(|| panic!("the plan has no {plan_site} copy"));
         // The census records the whole family's bytes (all passes), so the
-        // single-pass span is what has to cover the table.
-        let passes = if plan_site == "anchor-selector table (whole)" {
-            2
-        } else {
-            4
-        };
+        // single-pass span is what has to cover the table. Every bulk table
+        // is an opening pair and nothing else: no bulk closing image is
+        // consumed by the walk (the vector families own the closings it does
+        // consume, asserted below).
+        let passes = 2;
         let span = copy.bytes / passes;
         assert!(
             span >= extent,
@@ -521,6 +580,34 @@ fn the_copy_plan_covers_every_range_the_live_reader_reads() {
         );
     }
 
+    // The closing side the walk consumes exists as vector families, at the
+    // walk's own observation counts: an adjacent pair for the two slot
+    // families and the coherence loop's three for the active window. These
+    // rows are the demand table's closing half made executable.
+    //
+    // kills: dropping a slot-close or active-close family from
+    // `d81_copy_plan_census` (or changing its per-entry observation count)
+    // without this model noticing — which is the drift that would let the
+    // real pipeline lose a closing family while the census still claimed
+    // coverage.
+    for (site, calls) in [
+        ("gamestate province-array slot closes (vector)", 2 * shape::RAILED),
+        (
+            "map container province-array slot closes (vector)",
+            2 * shape::RAILED,
+        ),
+        ("active-table entry window closes (vector)", 3 * shape::RAILED),
+    ] {
+        let close = plan
+            .iter()
+            .find(|entry| entry.site == site)
+            .unwrap_or_else(|| panic!("the plan has no {site} family"));
+        assert_eq!(
+            close.calls, calls,
+            "{site} must observe at the walk's own closing count"
+        );
+    }
+
     // And the plan must be a strict call reduction, or there is no S4 case for
     // d81 at all.
     let (live_calls, _) = totals(&live);
@@ -529,50 +616,6 @@ fn the_copy_plan_covers_every_range_the_live_reader_reads() {
         plan_calls < live_calls,
         "the copy plan issues {plan_calls} guarded calls against the live \
          reader's {live_calls}: it is not a reduction"
-    );
-}
-
-/// The plan's reach is bounded by how much of d81's cost is table-indexed, and
-/// that ceiling is worth pinning: whatever the wall turns out to be, a copy
-/// plan can only ever remove the batchable share, and this test says how large
-/// that share is not.
-///
-/// MUTATION RUN, and the first candidate FAILED to fail, which is why the one
-/// recorded here is a different mutation. Flipping the "CProvince vtable + id"
-/// row to `contiguous: true` was tried first: both tests still passed, because
-/// the flip only moves 14,040 calls across the split and leaves the share
-/// inside the band, and the coverage test's table loop names five specific
-/// tables that do not include it. So the mutation that reaches this test is
-/// flipping the largest row instead — "rail-table slot" to `contiguous: false`
-/// — which moves 26,826 calls the other way. Observed in `--release`:
-///
-/// ```text
-/// thread '...::the_copy_plan_cannot_batch_the_scattered_half_of_d81'
-///   panicked at collector\src\attach_log\tests\d81_copy_bracket.rs:569:5:
-/// between a quarter and a half of d81's guarded calls are into scattered
-///   heap objects and no plan can batch them; measured 53.8%
-/// ```
-///
-/// Restored. Both transcripts are in
-/// `extractor/native/runs/fx_d81_copy_bracket/`.
-#[test]
-fn the_copy_plan_cannot_batch_the_scattered_half_of_d81() {
-    let live = d81_live_read_census();
-    let (live_calls, _) = totals(&live);
-    let scattered_calls: usize = live
-        .iter()
-        .filter(|family| !family.contiguous)
-        .map(|family| family.calls)
-        .sum();
-
-    // Rounded, so this is a claim about the shape and not a checksum of the
-    // arithmetic above.
-    let share = scattered_calls as f64 / live_calls as f64;
-    assert!(
-        (0.25..0.45).contains(&share),
-        "between a quarter and a half of d81's guarded calls are into \
-         scattered heap objects and no plan can batch them; measured {:.1}%",
-        share * 100.0
     );
 }
 
@@ -825,12 +868,12 @@ fn d81_copy_bracket_cost_model() {
             }),
         ),
         (
-            "PLAN (copy-only bracket)",
+            "PLAN (vector families, demand-driven images)",
             Box::new(move || {
                 let mut acc = 0u64;
-                // The five whole-table copies. Four passes apiece (an opening
-                // A/B pair and a closing A/B pair); the selector table has no
-                // per-entry closing read today, so it takes two.
+                // The five whole-table copies: an opening A/B pair apiece and
+                // no closing copy — no bulk closing image is consumed by the
+                // walk.
                 let mut rail = vec![0u8; shape::TABLE_SLOTS * shape::RAIL_SLOT];
                 let mut active = vec![0u8; shape::TABLE_SLOTS * shape::ACTIVE_STRIDE];
                 let mut gs = vec![0u8; shape::TABLE_SLOTS * shape::POINTER];
@@ -840,31 +883,97 @@ fn d81_copy_bracket_cost_model() {
                     (shape::SELECTOR_ENTRIES + shape::PROBE_SLACK_ENTRIES)
                         * shape::SELECTOR_STRIDE
                 ];
-                for _ in 0..4 {
+                for _ in 0..2 {
                     acc = acc.wrapping_add(u64::from(read_into(rail_table, &mut rail)));
                     acc = acc.wrapping_add(u64::from(read_into(active_table, &mut active)));
                     acc = acc.wrapping_add(u64::from(read_into(gs_array, &mut gs)));
                     acc = acc.wrapping_add(u64::from(read_into(container_array, &mut container)));
-                }
-                for _ in 0..2 {
                     acc = acc.wrapping_add(u64::from(read_into(selector_table, &mut selector)));
                 }
-                // The one in-object merge a plan can make: the CProvince head
-                // covers both the vtable and the id at +0xA4.
+                // The scattered families at their DEMANDED image counts, one
+                // family at a time in pipeline order, each window's images
+                // interleaved back to back — the vector pipeline's own shape.
+                let mut window = [0u8; 16];
+                let mut blob = vec![0u8; pair_bytes];
+                let mut anchors = [0u8; 24];
+                let mut slot = [0u8; 8];
+                let mut key = [0u8; 4];
                 let mut head = [0u8; 168];
-                for index in 0..shape::RAILED {
+                let mut active_window = [0u8; 7];
+                // rail headers: opening pair, then (after decode) closing pair
+                for pass in 0..2 {
+                    for &rail_info in rail_infos.iter() {
+                        for _ in 0..2 {
+                            acc = acc.wrapping_add(u64::from(read_into(rail_info, &mut window)));
+                        }
+                    }
+                    let _ = pass;
+                }
+                // pair blobs: opening pair only
+                for &pair_blob in pair_blobs.iter() {
                     for _ in 0..2 {
-                        acc = acc.wrapping_add(u64::from(read_into(cprovinces[index], &mut head)));
+                        acc = acc.wrapping_add(u64::from(read_into(pair_blob, &mut blob)));
                     }
                 }
-                acc = acc.wrapping_add(prologue_and_closing_gates(&roots));
-                acc.wrapping_add(scattered_half(
-                    &rail_infos,
-                    &pair_blobs,
-                    &map_provinces,
-                    &records,
-                    pair_bytes,
-                ))
+                // record pointers: opening pair, then (after the keys) the
+                // closing pair
+                for _ in 0..2 {
+                    for &map_province in map_provinces.iter() {
+                        for _ in 0..2 {
+                            acc = acc.wrapping_add(u64::from(read_into(map_province, &mut slot)));
+                        }
+                    }
+                }
+                // anchors: one 24-byte window, opening pair only
+                for &map_province in map_provinces.iter() {
+                    for _ in 0..2 {
+                        acc = acc
+                            .wrapping_add(u64::from(read_into(map_province + 0x400, &mut anchors)));
+                    }
+                }
+                // record keys: opening pair only
+                for &record in records.iter() {
+                    for _ in 0..2 {
+                        acc = acc.wrapping_add(u64::from(read_into(record, &mut key)));
+                    }
+                }
+                // CProvince heads: opening pair only
+                for &cprovince in cprovinces.iter() {
+                    for _ in 0..2 {
+                        acc = acc.wrapping_add(u64::from(read_into(cprovince, &mut head)));
+                    }
+                }
+                // the closing-only families, last: both slot sets and the
+                // active window's coherence triple
+                let stride = shape::PROVINCES / shape::RAILED;
+                for index in 0..shape::RAILED {
+                    let id = index * stride;
+                    for _ in 0..2 {
+                        acc = acc.wrapping_add(u64::from(read_into(
+                            gs_array + id * shape::POINTER,
+                            &mut slot,
+                        )));
+                    }
+                }
+                for index in 0..shape::RAILED {
+                    let id = index * stride;
+                    for _ in 0..2 {
+                        acc = acc.wrapping_add(u64::from(read_into(
+                            container_array + id * shape::POINTER,
+                            &mut slot,
+                        )));
+                    }
+                }
+                for index in 0..shape::RAILED {
+                    let id = index * stride;
+                    for _ in 0..3 {
+                        acc = acc.wrapping_add(u64::from(read_into(
+                            active_table + id * shape::ACTIVE_STRIDE + 0x12,
+                            &mut active_window,
+                        )));
+                    }
+                }
+                acc.wrapping_add(prologue_and_closing_gates(&roots))
             }),
         ),
     ];
