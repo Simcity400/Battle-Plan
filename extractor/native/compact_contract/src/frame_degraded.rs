@@ -715,14 +715,26 @@ mod tests {
     #[test]
     fn a_refusal_payload_is_not_a_degraded_notice_and_the_reverse() {
         let degraded = sample().encode().unwrap();
-        let refusal = crate::frame_refusal::FrameRefusalRecordV1 {
+        let refusal = crate::frame_refusal::FrameRefusalRecordV2 {
             refused_hour: 60831436,
-            offenders: vec![crate::frame_refusal::FrameRefusalOffender {
+            offenders: vec![crate::frame_refusal::FrameRefusalOffenderV2 {
                 domain_id: 47,
                 status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
                 non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                predicate: crate::diagnostic_channel::Predicate::new(
+                    4701,
+                    "domain47_manager_is_readable",
+                )
+                .unwrap(),
+                authority: crate::diagnostic_channel::Authority::SelfDomain,
+                locator: Vec::new(),
+                units: Vec::new(),
+                truncation: crate::diagnostic_channel::TruncationAccount::complete(0),
+                off_frame: None,
                 reason: "domain47_manager_failure_kind=7".to_string(),
+                reason_units_named: 0,
             }],
+            frame_findings: Vec::new(),
         }
         .encode()
         .unwrap();

@@ -483,8 +483,8 @@ fn process_record(
     let semantics_ok = semantics.is_ok();
 
     // A refused frame published no sweep, so its partial accumulation describes
-    // nothing and is dropped rather than folded into the distributions. Both
-    // H4FR versions are legal on the wire and the validator above is what says
+    // nothing and is dropped rather than folded into the distributions. Exactly
+    // one H4FR version is legal on the wire and the validator above is what says
     // so; a refusal this build cannot read still DROPS the frame -- the record
     // type is the frame boundary and that much is legible from the header --
     // but it no longer does so silently.

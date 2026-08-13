@@ -1065,26 +1065,6 @@ fn admit_complete_record(
         .map_err(|error| error.to_string())
 }
 
-fn validate_complete_stream_prefix(
-    validator: &mut StatefulStreamValidator,
-    bytes: &[u8],
-) -> Result<Option<u64>, String> {
-    let mut offset = 0usize;
-    let mut last = None;
-    while offset < bytes.len() {
-        let header = parse_compact_record_header(&bytes[offset..])
-            .map_err(|error| format!("recovered stream framing at {offset}: {error}"))?;
-        let end = offset.checked_add(header.record_len()).ok_or("recovered stream length overflow")?;
-        if end > bytes.len() {
-            return Err("recovered stream has a partial terminal record".to_string());
-        }
-        admit_complete_record(validator, &bytes[offset..end])?;
-        last = Some(header.sequence);
-        offset = end;
-    }
-    Ok(last)
-}
-
 /// Re-admit a sealed H4CR stream with memory bounded to one record. Recovery
 /// runs on production-sized captures, so it must never materialize the whole
 /// logical stream merely to reproduce the durable receipt.

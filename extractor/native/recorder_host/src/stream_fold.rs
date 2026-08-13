@@ -1357,11 +1357,7 @@ impl BoundaryTracker {
                 // WHICH hour was refused; the envelope hour is what this fold
                 // accounts. Nothing else compares them, so a record disagreeing
                 // with itself would account for one hour and report another.
-                // Either refusal version: version 2 is what the current
-                // collector writes, version 1 is what retained streams hold.
-                // Decoding only one would report every record of the other
-                // version as a violation and abandon the fold.
-                match compact_contract::frame_refusal::decode_frame_refusal_any_version(payload) {
+                match compact_contract::frame_refusal::FrameRefusalRecordV2::decode(payload) {
                     Ok(record) if record.refused_hour == header.game_hour_raw => {}
                     Ok(record) => {
                         self.violation = Some(format!(
@@ -2846,14 +2842,26 @@ mod tests {
             .expect("canonical gap fixture")
         };
         let refusal_for = |hour: i32| {
-            compact_contract::frame_refusal::FrameRefusalRecordV1 {
+            compact_contract::frame_refusal::FrameRefusalRecordV2 {
                 refused_hour: hour,
-                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffenderV2 {
                     domain_id: 64,
                     status_flags: 0x0000_0100,
                     non_tolerated_flags: 0x0000_0100,
+                    predicate: compact_contract::diagnostic_channel::Predicate::new(
+                        1,
+                        "synthetic_domain_read_is_bound",
+                    )
+                    .unwrap(),
+                    authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
+                    locator: Vec::new(),
+                    units: Vec::new(),
+                    truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                    off_frame: None,
                     reason: "d64_rejected_timed_effect_frames=1".to_string(),
+                    reason_units_named: 0,
                 }],
+                frame_findings: Vec::new(),
             }
             .encode()
             .expect("canonical refusal fixture")
@@ -2984,14 +2992,26 @@ mod tests {
         // exact case the interval arm rejects, which is what makes the two
         // records different rather than duplicates.
         let refusal_hour = base + 300;
-        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV2 {
             refused_hour: refusal_hour,
-            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffenderV2 {
                 domain_id: 64,
                 status_flags: 0x0000_0100,
                 non_tolerated_flags: 0x0000_0100,
+                predicate: compact_contract::diagnostic_channel::Predicate::new(
+                    1,
+                    "synthetic_domain_read_is_bound",
+                )
+                .unwrap(),
+                authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
+                locator: Vec::new(),
+                units: Vec::new(),
+                truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                off_frame: None,
                 reason: "d64".to_string(),
+                reason_units_named: 0,
             }],
+            frame_findings: Vec::new(),
         }
         .encode()
         .expect("canonical refusal fixture");
@@ -3163,14 +3183,26 @@ mod tests {
         // A FRAME_REFUSED for an hour INSIDE the declared range is a violation,
         // even though that hour is past the last closed one.
         let refusal_hour = base + 3;
-        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV2 {
             refused_hour: refusal_hour,
-            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffenderV2 {
                 domain_id: 64,
                 status_flags: 0x0000_0100,
                 non_tolerated_flags: 0x0000_0100,
+                predicate: compact_contract::diagnostic_channel::Predicate::new(
+                    1,
+                    "synthetic_domain_read_is_bound",
+                )
+                .unwrap(),
+                authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
+                locator: Vec::new(),
+                units: Vec::new(),
+                truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                off_frame: None,
                 reason: "d64".to_string(),
+                reason_units_named: 0,
             }],
+            frame_findings: Vec::new(),
         }
         .encode()
         .expect("canonical refusal fixture");
@@ -3346,14 +3378,26 @@ mod tests {
     #[test]
     fn a_refusal_closes_the_open_hour_and_refuses_the_hour_it_is_framed_for() {
         let refusal_for = |hour: i32| {
-            compact_contract::frame_refusal::FrameRefusalRecordV1 {
+            compact_contract::frame_refusal::FrameRefusalRecordV2 {
                 refused_hour: hour,
-                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffenderV2 {
                     domain_id: 64,
                     status_flags: 0x0000_0100,
                     non_tolerated_flags: 0x0000_0100,
+                    predicate: compact_contract::diagnostic_channel::Predicate::new(
+                        1,
+                        "synthetic_domain_read_is_bound",
+                    )
+                    .unwrap(),
+                    authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
+                    locator: Vec::new(),
+                    units: Vec::new(),
+                    truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                    off_frame: None,
                     reason: "d64_rejected_timed_effect_frames=1".to_string(),
+                    reason_units_named: 0,
                 }],
+                frame_findings: Vec::new(),
             }
             .encode()
             .expect("canonical refusal fixture")
@@ -3890,14 +3934,26 @@ mod tests {
     /// the loss is unnamed again.
     #[test]
     fn a_refused_hour_is_excluded_by_name_rather_than_silently_absent() {
-        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+        let refusal = compact_contract::frame_refusal::FrameRefusalRecordV2 {
             refused_hour: raw_for(HOUR_B),
-            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+            offenders: vec![compact_contract::frame_refusal::FrameRefusalOffenderV2 {
                 domain_id: 64,
                 status_flags: 0x0000_0100,
                 non_tolerated_flags: 0x0000_0100,
+                predicate: compact_contract::diagnostic_channel::Predicate::new(
+                    1,
+                    "synthetic_domain_read_is_bound",
+                )
+                .unwrap(),
+                authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
+                locator: Vec::new(),
+                units: Vec::new(),
+                truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                off_frame: None,
                 reason: "d64_rejected_timed_effect_frames=1".to_string(),
+                reason_units_named: 0,
             }],
+            frame_findings: Vec::new(),
         }
         .encode()
         .expect("canonical refusal fixture");

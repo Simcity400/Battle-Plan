@@ -306,24 +306,9 @@ fn worker_panic_gap_payload(hour_index: i64, outcome_ordinal: u64) -> Vec<u8> {
     .expect("closed WorkerPanic gap witnesses")
 }
 
-/// A `FRAME_REFUSED` (`H4FR`) payload naming one offending domain.
+/// A `FRAME_REFUSED` (`H4FR`) payload naming one offending domain, carrying
+/// the typed diagnosis the record exists to deliver.
 fn refusal_payload(hour_index: i64, domain_id: u16) -> Vec<u8> {
-    compact_contract::frame_refusal::FrameRefusalRecordV1 {
-        refused_hour: raw_for(hour_index),
-        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
-            domain_id,
-            status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
-            non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
-            reason: "synthetic_offender=1".to_string(),
-        }],
-    }
-    .encode()
-    .expect("refusal names an offender")
-}
-
-/// The same refusal in the shape the CURRENT producer writes: `H4FR` version 2,
-/// carrying the typed diagnosis version 1 had nowhere to put.
-fn refusal_payload_v2(hour_index: i64, domain_id: u16) -> Vec<u8> {
     use compact_contract::diagnostic_channel::{
         Authority, DiagUnit, LocatorLevel, Predicate, TruncationAccount,
     };
@@ -353,7 +338,7 @@ fn refusal_payload_v2(hour_index: i64, domain_id: u16) -> Vec<u8> {
 
 /// A version 2 refusal that names NO offending domain and substantiates itself
 /// entirely from a frame-level finding. Version 1 could not express this shape.
-fn frame_only_refusal_payload_v2(hour_index: i64) -> Vec<u8> {
+fn frame_only_refusal_payload(hour_index: i64) -> Vec<u8> {
     use compact_contract::diagnostic_channel::{Authority, Predicate};
     compact_contract::frame_refusal::FrameRefusalRecordV2 {
         refused_hour: raw_for(hour_index),
@@ -373,7 +358,7 @@ fn frame_only_refusal_payload_v2(hour_index: i64) -> Vec<u8> {
 /// was never taught. This is the byte pattern a stream from a FUTURE producer
 /// presents, and the only honest way to make one today.
 fn refusal_payload_at_version(hour_index: i64, domain_id: u16, version: u16) -> Vec<u8> {
-    let mut wire = refusal_payload_v2(hour_index, domain_id);
+    let mut wire = refusal_payload(hour_index, domain_id);
     wire[4..6].copy_from_slice(&version.to_le_bytes());
     wire
 }
@@ -1266,28 +1251,28 @@ fn a_refused_frame_closes_its_hour_without_publishing_a_snapshot() {
     );
     assert!(
         refusal.frame_findings.is_empty(),
-        "a version 1 refusal carries no frame-level finding, and the lift must not invent one"
+        "this fixture attributes its whole cause to a domain, so the report must \
+         not invent a frame-level finding beside it"
     );
-    // The decoder lifts version 1 into the version 2 shape, and the lift has to
-    // fill `authority` and `truncation` with SOMETHING -- values that render as
-    // `authority=self` and `units=0/0 complete`. A version 1 producer asserted
-    // neither. The report must therefore say the record was version 1 and NOT
-    // show the lifted rendering as if the producer had declared it.
+    // The version the record DECLARED reaches the report, rather than being
+    // assumed by the reader.
     //
-    // PRODUCTION CHANGE THAT MAKES THIS FAIL: rendering the offender
-    // unconditionally instead of only when the wire version carries a typed
-    // diagnosis, or dropping `wire_version` so a reader cannot tell which
-    // version the report was built from.
-    assert_eq!(refusal.wire_version, 1);
+    // PRODUCTION CHANGE THAT MAKES THIS FAIL: dropping `wire_version` so a
+    // reader cannot tell which version the report was built from.
+    assert_eq!(refusal.wire_version, 2);
+    // The RAW status word the producer read, carried through unchanged. It is
+    // asserted here because it is the only offender field the surviving
+    // refusal tests would otherwise leave free -- zeroing the mapping in
+    // `main.rs` would keep every other assertion green.
     assert_eq!(
-        refusal.offenders[0].detail, None,
-        "a version 1 record carried no typed diagnosis, and the report must not invent one"
+        refusal.offenders[0].status_flags,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE
     );
     assert_eq!(refusal.offenders[0].reason, "synthetic_offender=1");
 }
 
-/// One published hour and one refused hour, with the refusal written in the
-/// version named by `refusal`. Both refusal versions are legal on the wire.
+/// One published hour and one refused hour, closed by the given `refusal`
+/// payload.
 fn stream_publishing_a_then_refusing_b(refusal: &[u8]) -> Vec<u8> {
     let mut stream = Vec::new();
     let mut sequence = 1u64;
@@ -1328,18 +1313,19 @@ fn stream_publishing_a_then_refusing_b(refusal: &[u8]) -> Vec<u8> {
     stream
 }
 
-/// The defect this closes: the producer moved `H4FR` to version 2 and this
-/// certifier still required version 1, so it abandoned the fold on the first
-/// refusal in every capture taken since -- t32 died at byte 182,933,589 with
-/// `frame refusal version 2 is not 1` and certified nothing after it.
+/// The typed diagnosis the record exists to carry -- which check refused, and
+/// on whose authority -- reaches the report rather than being decoded and
+/// dropped. The defect behind it: a certifier pinned to a superseded `H4FR`
+/// version abandoned the fold on the first refusal in every capture taken since
+/// the producer moved, which is how t32 died at byte 182,933,589 and certified
+/// nothing after it.
 ///
-/// PRODUCTION CHANGE THAT MAKES THIS FAIL: reverting the decode site in
-/// `main.rs` to `FrameRefusalRecordV1::decode` (the whole stream then fails to
-/// certify), or dropping the version-2 arm from
-/// `decode_frame_refusal_any_version`.
+/// PRODUCTION CHANGE THAT MAKES THIS FAIL: pinning the decode site in `main.rs`
+/// to a version the producer no longer writes (the whole stream then fails to
+/// certify), or dropping `detail` from `RefusalOffender`.
 #[test]
-fn a_version_2_refusal_is_decoded_and_its_typed_diagnosis_reaches_the_report() {
-    let stream = stream_publishing_a_then_refusing_b(&refusal_payload_v2(HOUR_B, 18));
+fn a_refusals_typed_diagnosis_is_decoded_and_reaches_the_report() {
+    let stream = stream_publishing_a_then_refusing_b(&refusal_payload(HOUR_B, 18));
     let run = collect_certified_run(
         Cursor::new(stream.clone()),
         stream.len() as u64,
@@ -1394,86 +1380,34 @@ fn a_version_2_refusal_is_decoded_and_its_typed_diagnosis_reaches_the_report() {
     );
 }
 
-/// Version 1 and version 2 must BOTH decode. Retained streams and sealed
-/// containers hold version 1 records and stay loadable.
+/// The refusal reaches the JSON boundary intact, which is what a caller
+/// actually reads. Asserting only the in-memory `HourRefusal` would leave
+/// `wire_version` and `detail` free to be dropped from serialization with
+/// every test still green.
 ///
-/// PRODUCTION CHANGE THAT MAKES THIS FAIL: making the decode site call
-/// `FrameRefusalRecordV2::decode` directly instead of the version-dispatching
-/// entry point -- version 1 then fails with `version 1 is not 2` and every
-/// retained capture stops certifying.
+/// PRODUCTION CHANGE THAT MAKES THIS FAIL: removing "wire_version" or
+/// "detail" from `refusals_json`, or filling `detail` from the offender's
+/// bare `reason` instead of its `render()`.
 #[test]
-fn both_refusal_versions_decode_and_account_the_same_hour() {
-    let mut accounted = Vec::new();
-    let mut versions = Vec::new();
-    for refusal in [
-        refusal_payload(HOUR_B, 18),
-        refusal_payload_v2(HOUR_B, 18),
-    ] {
-        let stream = stream_publishing_a_then_refusing_b(&refusal);
-        let run = collect_certified_run(
-            Cursor::new(stream.clone()),
-            stream.len() as u64,
-            &one_domain_roster(),
-        )
-        .expect("both refusal versions are legal on the wire");
-        let refused = run
-            .refusals
-            .get(&HOUR_B)
-            .expect("the refused hour is accounted in either version");
-        accounted.push((
-            run.hours.len(),
-            refused.offenders[0].domain_id,
-            refused.offenders[0].status_flags,
-            refused.offenders[0].non_tolerated_flags,
-            refused.offenders[0].reason.clone(),
-        ));
-        versions.push(refused.wire_version);
-    }
-    assert_eq!(
-        accounted[0], accounted[1],
-        "the facts both versions carry must be accounted identically"
+fn the_refusals_typed_diagnosis_survives_the_json_boundary() {
+    let stream = stream_publishing_a_then_refusing_b(&refusal_payload(HOUR_B, 18));
+    let run = collect_certified_run(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        &one_domain_roster(),
+    )
+    .expect("a refusal is a legal record on the wire");
+    let rendered = refusals_json(&run.refusals);
+    let hour = &rendered["hours"][0];
+    assert_eq!(hour["wire_version"], json!(2u64), "{rendered}");
+    let detail = &hour["offenders"][0]["detail"];
+    assert!(
+        detail
+            .as_str()
+            .expect("an offender carries a typed diagnosis")
+            .contains("predicate=synthetic_source_slot_is_bound"),
+        "{rendered}"
     );
-    // And the report still distinguishes them, because only one of the two
-    // records actually declared an authority and a truncation account.
-    assert_eq!(versions, vec![1, 2]);
-
-    // At the JSON boundary, which is what a caller reads. Asserting only the
-    // in-memory `HourRefusal` would leave `wire_version` and `detail` free to
-    // be dropped from serialization with every test still green -- and the
-    // whole point of the version 1 rule is what the REPORT says.
-    //
-    // PRODUCTION CHANGE THAT MAKES THIS FAIL: removing "wire_version" or
-    // "detail" from `refusals_json`, or rendering a version 1 offender's lift
-    // into `detail` (the v1 entry then carries `authority=self` and
-    // `units=0/0 complete`, neither of which the producer declared).
-    for (version, refusal) in [(1u64, refusal_payload(HOUR_B, 18)), (2, refusal_payload_v2(HOUR_B, 18))] {
-        let stream = stream_publishing_a_then_refusing_b(&refusal);
-        let run = collect_certified_run(
-            Cursor::new(stream.clone()),
-            stream.len() as u64,
-            &one_domain_roster(),
-        )
-        .expect("both refusal versions are legal on the wire");
-        let rendered = refusals_json(&run.refusals);
-        let hour = &rendered["hours"][0];
-        assert_eq!(hour["wire_version"], json!(version), "{rendered}");
-        let detail = &hour["offenders"][0]["detail"];
-        if version == 1 {
-            assert_eq!(
-                detail,
-                &Value::Null,
-                "a version 1 record declared no typed diagnosis: {rendered}"
-            );
-        } else {
-            assert!(
-                detail
-                    .as_str()
-                    .expect("a version 2 offender carries a typed diagnosis")
-                    .contains("predicate=synthetic_source_slot_is_bound"),
-                "{rendered}"
-            );
-        }
-    }
 }
 
 /// A version 2 refusal may legally name NO offending domain and carry its whole
@@ -1496,7 +1430,7 @@ fn a_version_2_refusal_that_names_no_domain_still_says_why() {
             raw_for(hour),
             DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_REFUSED,
-            &frame_only_refusal_payload_v2(hour),
+            &frame_only_refusal_payload(hour),
         );
         sequence += 1;
     }
@@ -1521,14 +1455,14 @@ fn a_version_2_refusal_that_names_no_domain_still_says_why() {
 }
 
 /// A refusal version this build was never taught is REFUSED, loudly and by
-/// name. It is never skipped, never lifted to a v1 default, and never counted
-/// as a decoded refusal -- an unassigned shape rejects at the decoder.
+/// name. It is never skipped, never lifted to a default, and never counted as
+/// a decoded refusal -- an unassigned shape rejects at the decoder.
 ///
 /// PRODUCTION CHANGE THAT MAKES THIS FAIL: making
-/// `validate_frame_refusal_payload_any_version` fall through to the v1
-/// validator for an unrecognised version (the message reverts to "version 3 is
-/// not 1"), returning `Ok` for one, or teaching the record-semantics dispatch
-/// to skip a FRAME_REFUSED payload it cannot validate.
+/// `validate_frame_refusal_payload` report an unrecognised version as plain
+/// corruption ("version 3 is not 2"), returning `Ok` for one, or teaching the
+/// record-semantics dispatch to skip a FRAME_REFUSED payload it cannot
+/// validate.
 #[test]
 fn a_refusal_version_this_build_does_not_decode_is_refused_by_name() {
     let stream = stream_publishing_a_then_refusing_b(&refusal_payload_at_version(HOUR_B, 18, 3));
@@ -1542,9 +1476,9 @@ fn a_refusal_version_this_build_does_not_decode_is_refused_by_name() {
     // Measured, not assumed: the record is stopped by the record-semantics
     // validator, which runs before the completeness audit reaches its
     // FRAME_REFUSED arm, so it is the shared dispatcher that refuses. Both go
-    // through `validate_frame_refusal_payload_any_version` /
-    // `decode_frame_refusal_any_version`, and this asserts the refusal a stream
-    // ACTUALLY gets -- the outer layer refuses first, and it refuses by name.
+    // through `validate_frame_refusal_payload` / `FrameRefusalRecordV2::decode`,
+    // and this asserts the refusal a stream ACTUALLY gets -- the outer layer
+    // refuses first, and it refuses by name.
     assert!(
         err.contains("stream validation at byte"),
         "the refusal is the record-semantics validator's, and must say where: {err}"
@@ -1557,11 +1491,12 @@ fn a_refusal_version_this_build_does_not_decode_is_refused_by_name() {
         err.contains("not a version this build decodes"),
         "the refusal must say the reader is behind the producer, not that the record is corrupt: {err}"
     );
-    // The exact known-version list, not just the digits: an offset or a byte
-    // count elsewhere in the message could supply a stray '1' and '2'.
+    // The exact known-version list in its parenthesised form, not just the
+    // digit: an offset or a byte count elsewhere in the message could supply a
+    // stray '2'.
     assert!(
-        err.contains("(1 or 2)"),
-        "the refusal must name the versions this build does decode: {err}"
+        err.contains("(2)"),
+        "the refusal must name the version this build does decode: {err}"
     );
 }
 

@@ -224,11 +224,7 @@ pub fn validate_compact_record_semantics(
                     "FRAME_REFUSED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
                 ));
             }
-            // Both refusal versions are legal on the wire: version 2 is what
-            // the current producer writes, version 1 is what retained
-            // telemetry from earlier recorder builds holds. Validating only
-            // one would report every record of the other version as corrupt.
-            crate::frame_refusal::validate_frame_refusal_payload_any_version(payload)
+            crate::frame_refusal::validate_frame_refusal_payload(payload)
         }
         COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
             if domain_id != COMPACT_DOMAIN_FRAME {

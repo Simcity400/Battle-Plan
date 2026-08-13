@@ -567,9 +567,7 @@ def load_wire_authority(root: Path | None = None) -> WireAuthority:
             }
         ),
         frame_refusal_magic=refusal.byte_string("FRAME_REFUSAL_MAGIC"),
-        frame_refusal_versions=frozenset(
-            {refusal.integer("FRAME_REFUSAL_VERSION"), refusal.integer("FRAME_REFUSAL_VERSION_V2")}
-        ),
+        frame_refusal_versions=frozenset({refusal.integer("FRAME_REFUSAL_VERSION")}),
         frame_refusal_header_len=refusal.integer("FRAME_REFUSAL_HEADER_LEN"),
         frame_degraded_magic=degraded.byte_string("FRAME_DEGRADED_MAGIC"),
         frame_degraded_versions=frozenset({degraded.integer("FRAME_DEGRADED_VERSION")}),

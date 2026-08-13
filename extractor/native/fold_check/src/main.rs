@@ -37,7 +37,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
-use compact_contract::frame_refusal::decode_frame_refusal_any_version;
+use compact_contract::frame_refusal::FrameRefusalRecordV2;
 use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance,
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
@@ -356,22 +356,16 @@ struct RefusalOffender {
     reason: String,
     /// The offender rendered with everything the record carries: predicate,
     /// authority, locator path, typed units, truncation accounting, off-frame
-    /// outcome. `None` for a version 1 record.
+    /// outcome.
     ///
-    /// Version 2 moved the deciding facts OUT of the reason string and into
-    /// typed fields, so a certifier that reports only `reason` for a v2 record
-    /// reports strictly less than the producer said.
+    /// The record moved the deciding facts OUT of the reason string and into
+    /// typed fields, so a certifier that reports only `reason` reports strictly
+    /// less than the producer said.
     ///
-    /// It is `None` rather than a rendering for version 1 because the decoder
-    /// lifts v1 into the v2 shape and the lift has to put SOMETHING in the
-    /// fields v1 had no room for -- `Authority::SelfDomain` and
-    /// `TruncationAccount::complete(0)`, which render as `authority=self` and
-    /// `units=0/0 complete`. Those read as assertions the producer made. It
-    /// made neither: v1 could not say who the authority was, and its reason
-    /// string could itself have been silently truncated. Rendering the lift
-    /// would put invented declarations in a certification report, so a version
-    /// 1 offender reports the reason string that WAS its whole diagnosis, and
-    /// `wire_version` beside it says why there is no more.
+    /// Kept as an `Option` because the JSON boundary distinguishes "no typed
+    /// diagnosis" from an empty one, and a future version that carries no
+    /// rendering must be able to say so rather than emit a rendering of
+    /// nothing.
     detail: Option<String>,
 }
 
@@ -402,20 +396,17 @@ struct FrameFinding {
 /// why it did not publish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HourRefusal {
-    /// The `H4FR` version the record was written at, kept because the decoder
-    /// lifts version 1 into the version 2 shape and a report that does not say
-    /// which it read cannot be checked against the bytes.
+    /// The `H4FR` version the record DECLARED, kept because a report that does
+    /// not say which shape it read cannot be checked against the bytes.
     wire_version: u16,
     offenders: Vec<RefusalOffender>,
     /// Reasons the refusal attributed to the FRAME rather than to any domain --
     /// its own clock, its identity, a framing fault found while assembling it.
     ///
-    /// Version 1 could not carry these and its producer therefore published
-    /// nothing at all for such an hour. A version 2 refusal may legally name
-    /// ZERO offenders and substantiate itself entirely from here, so a
-    /// certifier that read only `offenders` would record that hour as refused
-    /// and be unable to say why -- exactly the unaccounted-cause failure this
-    /// record exists to prevent. Always empty for a version 1 record.
+    /// A refusal may legally name ZERO offenders and substantiate itself
+    /// entirely from here, so a certifier that read only `offenders` would
+    /// record that hour as refused and be unable to say why -- exactly the
+    /// unaccounted-cause failure this record exists to prevent.
     frame_findings: Vec<FrameFinding>,
     /// Domains that had already produced a terminal outcome in the hour the
     /// refusal terminated. A refusal that discards accumulated outcomes is
@@ -990,24 +981,16 @@ impl CompletenessAudit {
                 // the single authority for them and the certification verdict
                 // reports what it found. Restating them is how the last
                 // duplicate of a boundary rule drifted from its original.
-                // EITHER refusal version. Version 2 is what the current
-                // collector writes and version 1 is what retained streams hold;
-                // decoding only v1 made this certifier abandon every capture
-                // taken since the producer moved, which is how t32 failed at
-                // byte 182,933,589. A version this build does not know still
-                // fails loudly here -- the dispatcher names it rather than
-                // lifting it to a default.
-                let record = decode_frame_refusal_any_version(payload)
+                // A version this build does not know still fails loudly here --
+                // the decoder names it rather than lifting it to a default.
+                let record = FrameRefusalRecordV2::decode(payload)
                     .map_err(|error| format!("FRAME_REFUSED payload: {error}"))?;
                 // The decode above succeeded, so the payload bore the magic and
-                // declared a version this build knows; the fallback cannot be
-                // reached from here and is the legacy version because that is
-                // the arm a magic-bearing payload takes when it is not v2.
+                // declared the one version this build knows; the fallback
+                // cannot be reached from here.
                 let wire_version = compact_contract::frame_refusal::
                     declared_frame_refusal_version(payload)
                     .unwrap_or(compact_contract::frame_refusal::FRAME_REFUSAL_VERSION);
-                let carries_typed_diagnosis =
-                    wire_version == compact_contract::frame_refusal::FRAME_REFUSAL_VERSION_V2;
                 let hour_index = compact_contract::calendar::hour_index_from_raw(game_hour_raw)
                     .ok_or_else(|| format!("FRAME_REFUSED game hour {game_hour_raw} is invalid"))?;
                 // The open hour's `H4FD` declaration dies with the hour, and it
@@ -1046,7 +1029,7 @@ impl CompletenessAudit {
                             status_flags: offender.status_flags,
                             non_tolerated_flags: offender.non_tolerated_flags,
                             reason: offender.reason.clone(),
-                            detail: carries_typed_diagnosis.then(|| offender.render()),
+                            detail: Some(offender.render()),
                         })
                         .collect(),
                     frame_findings: record

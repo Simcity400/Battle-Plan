@@ -33991,14 +33991,26 @@ fn a_refused_hour_does_not_stamp_its_gap_complaint_onto_the_next_hour() {
         &gq_domain_gap_payload(hour0),
     );
     seq += 1;
-    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+    let refusal = compact_contract::frame_refusal::FrameRefusalRecordV2 {
         refused_hour: hour0,
-        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+        offenders: vec![compact_contract::frame_refusal::FrameRefusalOffenderV2 {
             domain_id: 13,
             status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
             non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            predicate: compact_contract::diagnostic_channel::Predicate::new(
+                1,
+                "synthetic_domain_read_is_bound",
+            )
+            .unwrap(),
+            authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
+            locator: Vec::new(),
+            units: Vec::new(),
+            truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+            off_frame: None,
             reason: "d13_source_unavailable=1".to_string(),
+            reason_units_named: 0,
         }],
+        frame_findings: Vec::new(),
     }
     .encode()
     .expect("canonical refusal fixture");
@@ -34108,14 +34120,26 @@ fn gq_snapshots_with_refused_hour(
             seq += 1;
         }
         if hour_offset == refused_hour {
-            let refusal = compact_contract::frame_refusal::FrameRefusalRecordV1 {
+            let refusal = compact_contract::frame_refusal::FrameRefusalRecordV2 {
                 refused_hour: raw,
-                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffender {
+                offenders: vec![compact_contract::frame_refusal::FrameRefusalOffenderV2 {
                     domain_id: 64,
                     status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
                     non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    predicate: compact_contract::diagnostic_channel::Predicate::new(
+                        1,
+                        "synthetic_domain_read_is_bound",
+                    )
+                    .unwrap(),
+                    authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
+                    locator: Vec::new(),
+                    units: Vec::new(),
+                    truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                    off_frame: None,
                     reason: "d64_source_unavailable=1".to_string(),
+                    reason_units_named: 0,
                 }],
+                frame_findings: Vec::new(),
             }
             .encode()
             .expect("canonical refusal fixture");

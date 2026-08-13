@@ -21,38 +21,19 @@
 //!   domain, the raw status bits, the non-tolerated subset, and the reader's own
 //!   typed reason -- rather than a count.
 //!
-//! Layout, all little-endian. Header is fixed; entries follow contiguously.
+//! # Why the reason is STRUCTURED rather than one string
 //!
-//! ```text
-//! magic          [4]  b"H4FR"
-//! version        u16  = FRAME_REFUSAL_VERSION
-//! header_len     u16  = FRAME_REFUSAL_HEADER_LEN
-//! refused_hour   i32
-//! offender_count u16
-//! reserved       u16
-//! -- 16 byte header --
-//! per offender:
-//!   domain_id       u16
-//!   reserved        u16
-//!   status_flags    u32   raw PERF status for that domain
-//!   non_tolerated   u32   the subset that actually forced the refusal
-//!   reason_len      u16
-//!   reserved        u16
-//!   reason          [reason_len]  UTF-8, the reader's typed diagnostic units
-//! ```
+//! An earlier shape of this record carried the reason as one comma-joined
+//! string, and the producer that built it kept six units and appended a literal
+//! `...`. Measured on `runs/postmerge_recovery_20260731/deflist-0{1,2}`, that
+//! truncation fired on every single frame for six domains, and the units it
+//! dropped were the ones that would have named the failure -- D44's deciding
+//! units did not reach the wire in either capture. A frame refusal whose whole
+//! job is to say WHY was deleting the why.
 //!
-//! # Version 2: the reason that a v1 record could not carry
-//!
-//! Version 1's `reason` is one comma-joined string, and the producer that
-//! built it kept six units and appended a literal `...`. Measured on
-//! `runs/postmerge_recovery_20260731/deflist-0{1,2}`, that truncation fired on
-//! every single frame for six domains, and the units it dropped were the ones
-//! that would have named the failure -- D44's deciding units did not reach the
-//! wire in either capture. A frame refusal whose whole job is to say WHY was
-//! deleting the why.
-//!
-//! Version 2 keeps the free-form reason -- it is the producer's own text and it
-//! is usually already computed -- and adds the structure a diagnosis needs:
+//! So the free-form reason stays -- it is the producer's own text and it is
+//! usually already computed -- and it is carried alongside the structure a
+//! diagnosis needs:
 //!
 //! * a **predicate**, non-zero code plus name, so a refusal names WHICH check
 //!   failed rather than a walk stage that conflates three to seven of them;
@@ -67,24 +48,32 @@
 //! * an optional **off-frame outcome**, so a derivation that is still running
 //!   reports how long it has been running and against what deadline.
 //!
-//! ## Version 2 also accounts a refusal that belongs to no domain
+//! # A refusal that belongs to no domain is still accounted
 //!
-//! Version 1's header reserved a `u16` and required at least one offender, and
-//! the producer guarded its whole publication on `!offenders.is_empty()`. A
-//! frame refused for a reason that is not attributable to any single domain --
-//! its own clock, its identity, a framing fault in assembly -- therefore
-//! published NOTHING, and the hour went entirely unaccounted: nothing in the
-//! stream recorded that it had happened or why. That is the same defect this
-//! record was created to fix, one level up.
+//! A header that only counts offenders, plus a producer guarded on
+//! `!offenders.is_empty()`, means a frame refused for a reason that is not
+//! attributable to any single domain -- its own clock, its identity, a framing
+//! fault in assembly -- publishes NOTHING, and the hour goes entirely
+//! unaccounted: nothing in the stream records that it happened or why. That is
+//! the same defect this record exists to fix, one level up.
 //!
-//! Version 2 spends the reserved `u16` on `frame_finding_count` and carries
-//! frame-level findings after the offenders. A refusal must still substantiate
+//! So the header spends its second `u16` on `frame_finding_count` and
+//! frame-level findings follow the offenders. A refusal must still substantiate
 //! itself -- it must name at least one offender OR at least one frame finding
-//! -- so nothing is weakened; what changes is that "the frame's own clock was
-//! unreadable" is now sayable instead of unsayable.
+//! -- so nothing is weakened; what it buys is that "the frame's own clock was
+//! unreadable" is sayable.
+//!
+//! Layout, all little-endian. Header is fixed; entries follow contiguously.
 //!
 //! ```text
-//! per offender (version 2):
+//! magic                [4]  b"H4FR"
+//! version              u16  = FRAME_REFUSAL_VERSION
+//! header_len           u16  = FRAME_REFUSAL_HEADER_LEN
+//! refused_hour         i32
+//! offender_count       u16
+//! frame_finding_count  u16
+//! -- 16 byte header --
+//! per offender:
 //!   domain_id            u16
 //!   reserved             u16   MUST BE ZERO, so a later version can spend it
 //!   status_flags         u32
@@ -110,7 +99,7 @@
 //!   off_frame            [28] when entry_flags bit0
 //!   reason               [reason_len]
 //!
-//! per frame finding (version 2), after all offenders:
+//! per frame finding, after all offenders:
 //!   predicate_code       u32   NON-ZERO
 //!   authority            [12]
 //!   predicate_name_len   u16
@@ -129,13 +118,13 @@ use crate::diagnostic_channel::{
 };
 
 pub const FRAME_REFUSAL_MAGIC: &[u8; 4] = b"H4FR";
-pub const FRAME_REFUSAL_VERSION: u16 = 1;
-/// Version written by the current producer. Version 1 stays decodable so
-/// retained telemetry from earlier recorder builds remains readable.
-pub const FRAME_REFUSAL_VERSION_V2: u16 = 2;
+/// The one version this build writes and reads. Version 1 -- a single
+/// comma-joined reason with no predicate, authority, locator, typed units or
+/// truncation accounting -- was deleted with its encoder, its validator and its
+/// lift; pre-production captures are disposable, so nothing decodes it.
+pub const FRAME_REFUSAL_VERSION: u16 = 2;
 pub const FRAME_REFUSAL_HEADER_LEN: usize = 16;
-pub const FRAME_REFUSAL_ENTRY_FIXED_LEN: usize = 16;
-pub const FRAME_REFUSAL_V2_ENTRY_FIXED_LEN: usize = 52;
+pub const FRAME_REFUSAL_ENTRY_FIXED_LEN: usize = 52;
 /// Bound on one locator blob.
 pub const FRAME_REFUSAL_MAX_LOCATOR_LEN: usize = 1024;
 /// Bound on one units blob. Sized so the per-offender floor
@@ -165,122 +154,6 @@ pub const FRAME_REFUSAL_REASON_SUFFIX_SEPARATOR: &str = " | reason=";
 /// Bound on offenders. The scheduled roster is 73; this leaves headroom without
 /// admitting an absurd record.
 pub const FRAME_REFUSAL_MAX_OFFENDERS: usize = 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FrameRefusalOffender {
-    pub domain_id: u16,
-    pub status_flags: u32,
-    pub non_tolerated_flags: u32,
-    pub reason: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FrameRefusalRecordV1 {
-    pub refused_hour: i32,
-    pub offenders: Vec<FrameRefusalOffender>,
-}
-
-impl FrameRefusalRecordV1 {
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
-        if self.offenders.is_empty() {
-            // A refusal with no offenders is incoherent: something refused the
-            // frame and this record would not say what. Fail closed rather than
-            // emit a record that asserts a refusal it cannot substantiate.
-            return Err("frame refusal names no offending domain".to_string());
-        }
-        if self.offenders.len() > FRAME_REFUSAL_MAX_OFFENDERS {
-            return Err(format!(
-                "frame refusal names {} offenders, above the {FRAME_REFUSAL_MAX_OFFENDERS} bound",
-                self.offenders.len()
-            ));
-        }
-        let mut out = Vec::with_capacity(FRAME_REFUSAL_HEADER_LEN + self.offenders.len() * 64);
-        out.extend_from_slice(FRAME_REFUSAL_MAGIC);
-        out.extend_from_slice(&FRAME_REFUSAL_VERSION.to_le_bytes());
-        out.extend_from_slice(&(FRAME_REFUSAL_HEADER_LEN as u16).to_le_bytes());
-        out.extend_from_slice(&self.refused_hour.to_le_bytes());
-        out.extend_from_slice(&(self.offenders.len() as u16).to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        for offender in &self.offenders {
-            if offender.non_tolerated_flags == 0 {
-                // An offender with nothing non-tolerated did not force the
-                // refusal, so listing it would misattribute the cause.
-                return Err(format!(
-                    "frame refusal lists domain {} with no non-tolerated bits",
-                    offender.domain_id
-                ));
-            }
-            let reason = offender.reason.as_bytes();
-            if reason.is_empty() {
-                return Err(format!(
-                    "frame refusal gives domain {} no reason",
-                    offender.domain_id
-                ));
-            }
-            if reason.len() > FRAME_REFUSAL_MAX_REASON_LEN {
-                return Err(format!(
-                    "frame refusal reason for domain {} is {} bytes, above the \
-                     {FRAME_REFUSAL_MAX_REASON_LEN} bound",
-                    offender.domain_id,
-                    reason.len()
-                ));
-            }
-            out.extend_from_slice(&offender.domain_id.to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
-            out.extend_from_slice(&offender.status_flags.to_le_bytes());
-            out.extend_from_slice(&offender.non_tolerated_flags.to_le_bytes());
-            out.extend_from_slice(&(reason.len() as u16).to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
-            out.extend_from_slice(reason);
-        }
-        Ok(out)
-    }
-
-    pub fn decode(payload: &[u8]) -> Result<Self, String> {
-        validate_frame_refusal_payload(payload)?;
-        let refused_hour = i32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
-        let offender_count = u16::from_le_bytes([payload[12], payload[13]]) as usize;
-        let mut offenders = Vec::with_capacity(offender_count);
-        let mut offset = FRAME_REFUSAL_HEADER_LEN;
-        for _ in 0..offender_count {
-            let domain_id = u16::from_le_bytes([payload[offset], payload[offset + 1]]);
-            let status_flags = u32::from_le_bytes([
-                payload[offset + 4],
-                payload[offset + 5],
-                payload[offset + 6],
-                payload[offset + 7],
-            ]);
-            let non_tolerated_flags = u32::from_le_bytes([
-                payload[offset + 8],
-                payload[offset + 9],
-                payload[offset + 10],
-                payload[offset + 11],
-            ]);
-            let reason_len =
-                u16::from_le_bytes([payload[offset + 12], payload[offset + 13]]) as usize;
-            let start = offset + FRAME_REFUSAL_ENTRY_FIXED_LEN;
-            let end = start + reason_len;
-            let reason = core::str::from_utf8(&payload[start..end])
-                .map_err(|error| format!("frame refusal reason is not UTF-8: {error}"))?
-                .to_string();
-            offenders.push(FrameRefusalOffender {
-                domain_id,
-                status_flags,
-                non_tolerated_flags,
-                reason,
-            });
-            offset = end;
-        }
-        Ok(Self {
-            refused_hour,
-            offenders,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Version 2
-// ---------------------------------------------------------------------------
 
 /// One offender, with the structure a diagnosis actually needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -372,8 +245,8 @@ impl FrameRefusalOffenderV2 {
 /// A reason a frame was refused that belongs to no single domain.
 ///
 /// The frame's own clock, its identity, a framing fault discovered while
-/// assembling it. Version 1 could not carry these, and the producer therefore
-/// published nothing at all for such an hour.
+/// assembling it. Without this channel the producer published nothing at all
+/// for such an hour and it went entirely unaccounted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameRefusalFinding {
     pub predicate: Predicate,
@@ -450,7 +323,7 @@ impl FrameRefusalRecordV2 {
         }
         let mut out = Vec::with_capacity(FRAME_REFUSAL_HEADER_LEN + self.offenders.len() * 192);
         out.extend_from_slice(FRAME_REFUSAL_MAGIC);
-        out.extend_from_slice(&FRAME_REFUSAL_VERSION_V2.to_le_bytes());
+        out.extend_from_slice(&FRAME_REFUSAL_VERSION.to_le_bytes());
         out.extend_from_slice(&(FRAME_REFUSAL_HEADER_LEN as u16).to_le_bytes());
         out.extend_from_slice(&self.refused_hour.to_le_bytes());
         out.extend_from_slice(&(self.offenders.len() as u16).to_le_bytes());
@@ -462,15 +335,16 @@ impl FrameRefusalRecordV2 {
                     offender.domain_id
                 ));
             }
-            // A lifted v1 record is a read-side view, not a v2 record: encoding
-            // it would stamp declarations (an authority, a truncation account)
-            // that the original producer never made.
+            // Fail closed rather than stamp declarations the producer never
+            // made: an undeclared authority or truncation account is an
+            // in-memory-only state whose wire code is 0, and encoding it would
+            // turn "nobody said" into a positive claim.
             if offender.authority == Authority::Undeclared
                 || offender.truncation.kind == TruncationKind::Undeclared
             {
                 return Err(format!(
                     "frame refusal for domain {} carries an undeclared authority or truncation \
-                     account; a record lifted from version 1 cannot be re-encoded as version 2",
+                     account, which has no wire encoding",
                     offender.domain_id
                 ));
             }
@@ -658,7 +532,7 @@ impl FrameRefusalRecordV2 {
     }
 
     pub fn decode(payload: &[u8]) -> Result<Self, String> {
-        validate_frame_refusal_v2_payload(payload)?;
+        validate_frame_refusal_payload(payload)?;
         let refused_hour = i32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
         let offender_count = u16::from_le_bytes([payload[12], payload[13]]) as usize;
         let finding_count = u16::from_le_bytes([payload[14], payload[15]]) as usize;
@@ -687,7 +561,7 @@ fn decode_v2_finding(
     payload: &[u8],
     offset: usize,
 ) -> Result<(FrameRefusalFinding, usize), String> {
-    // Bounds already proved by `validate_frame_refusal_v2_payload`.
+    // Bounds already proved by `validate_frame_refusal_payload`.
     let predicate_code = read_u32(payload, offset);
     let authority = Authority::decode(&payload[offset + 4..offset + 16])?;
     let predicate_name_len = read_u16(payload, offset + 16) as usize;
@@ -816,7 +690,7 @@ fn decode_v2_entry(
     payload: &[u8],
     offset: usize,
 ) -> Result<(FrameRefusalOffenderV2, usize), String> {
-    // `validate_frame_refusal_v2_payload` has already proved every bound this
+    // `validate_frame_refusal_payload` has already proved every bound this
     // walk relies on, so the indexing below cannot panic on a payload that
     // reached here. Both entry points call it first.
     let domain_id = read_u16(payload, offset);
@@ -839,7 +713,7 @@ fn decode_v2_entry(
     let locator_len = read_u16(payload, offset + 48) as usize;
     let units_len = read_u16(payload, offset + 50) as usize;
 
-    let mut cursor = offset + FRAME_REFUSAL_V2_ENTRY_FIXED_LEN;
+    let mut cursor = offset + FRAME_REFUSAL_ENTRY_FIXED_LEN;
     let predicate_name = core::str::from_utf8(&payload[cursor..cursor + predicate_name_len])
         .map_err(|error| format!("frame refusal predicate name is not UTF-8: {error}"))?
         .to_string();
@@ -898,7 +772,7 @@ fn decode_v2_entry(
 
 /// Complete grammar check for version 2. Total over arbitrary bytes; never
 /// panics.
-pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
+pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
     if payload.len() < FRAME_REFUSAL_HEADER_LEN {
         return Err(format!(
             "frame refusal payload {} byte(s), below the {FRAME_REFUSAL_HEADER_LEN}-byte header",
@@ -909,10 +783,11 @@ pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
         return Err("frame refusal magic is not H4FR".to_string());
     }
     let version = read_u16(payload, 4);
-    if version != FRAME_REFUSAL_VERSION_V2 {
-        return Err(format!(
-            "frame refusal version {version} is not {FRAME_REFUSAL_VERSION_V2}"
-        ));
+    if version != FRAME_REFUSAL_VERSION {
+        // The magic already matched, so these ARE refusal-record bytes and the
+        // only remaining explanation is a producer this build has not been
+        // taught. Saying "version 3 is not 2" would read as corruption.
+        return Err(unknown_frame_refusal_version(version));
     }
     let header_len = read_u16(payload, 6) as usize;
     if header_len != FRAME_REFUSAL_HEADER_LEN {
@@ -942,7 +817,7 @@ pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
     let mut offset = FRAME_REFUSAL_HEADER_LEN;
     for index in 0..offender_count {
         if offset
-            .checked_add(FRAME_REFUSAL_V2_ENTRY_FIXED_LEN)
+            .checked_add(FRAME_REFUSAL_ENTRY_FIXED_LEN)
             .is_none_or(|end| end > payload.len())
         {
             return Err(format!(
@@ -1050,7 +925,7 @@ pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
             0
         };
         let Some(end) = offset
-            .checked_add(FRAME_REFUSAL_V2_ENTRY_FIXED_LEN)
+            .checked_add(FRAME_REFUSAL_ENTRY_FIXED_LEN)
             .and_then(|value| value.checked_add(predicate_name_len))
             .and_then(|value| value.checked_add(locator_len))
             .and_then(|value| value.checked_add(units_len))
@@ -1064,7 +939,7 @@ pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
         }
         // Every variable-length section must decode against its declared
         // length before the entry decoder indexes into it.
-        let mut cursor = offset + FRAME_REFUSAL_V2_ENTRY_FIXED_LEN;
+        let mut cursor = offset + FRAME_REFUSAL_ENTRY_FIXED_LEN;
         if core::str::from_utf8(&payload[cursor..cursor + predicate_name_len]).is_err() {
             return Err(format!(
                 "frame refusal entry {index} predicate name is not UTF-8"
@@ -1207,16 +1082,14 @@ pub fn validate_frame_refusal_v2_payload(payload: &[u8]) -> Result<(), String> {
 /// The version a well-formed-enough payload DECLARES, before any grammar check.
 ///
 /// `None` means the bytes are not a refusal record at all -- too short to hold
-/// a version, or not bearing the magic -- and the caller hands them to the v1
-/// validator, whose magic/length errors are the right diagnosis for that.
+/// a version, or not bearing the magic -- and that is a different diagnosis
+/// from "a version this build does not decode": the version word of a
+/// non-record is meaningless, so the magic check has to fire first.
 ///
-/// Public because [`decode_frame_refusal_any_version`] deliberately erases the
-/// distinction -- it lifts v1 into the v2 shape -- and a consumer that REPORTS
-/// what it decoded needs it back. The lift fills `authority` and `truncation`
-/// with `SelfDomain` and `complete(0)`, which render as the positive assertions
-/// `authority=self` and `units=0/0 complete`; a version 1 record asserted
-/// neither, so a report that shows that rendering without saying the record was
-/// version 1 is attributing declarations to a producer that made none.
+/// Public because a consumer that REPORTS what it decoded needs the declared
+/// version back out. There is exactly one decodable version, so this is now a
+/// statement about the wire rather than a dispatch key -- and it is still the
+/// only honest way to say "these bytes are not one of ours" without guessing.
 pub fn declared_frame_refusal_version(payload: &[u8]) -> Option<u16> {
     if payload.len() >= 6 && &payload[0..4] == FRAME_REFUSAL_MAGIC {
         Some(read_u16(payload, 4))
@@ -1227,320 +1100,23 @@ pub fn declared_frame_refusal_version(payload: &[u8]) -> Option<u16> {
 
 /// The refusal a reader owes a version it was never taught.
 ///
-/// A future version 3 is NOT a v1 record, so reporting it as "version 3 is not
-/// 1" blames the wrong fact: it reads as corruption when what happened is that
-/// the producer is newer than the reader. Naming every version this build
+/// A future version 3 is not a corrupt record, so reporting it as "version 3 is
+/// not 2" blames the wrong fact: it reads as corruption when what happened is
+/// that the producer is newer than the reader. Naming every version this build
 /// decodes turns that into an actionable statement, and it stays an `Err` --
 /// an unknown shape is never skipped, never lifted to a default, and never
 /// counted as a decoded refusal.
 fn unknown_frame_refusal_version(version: u16) -> String {
     format!(
         "frame refusal version {version} is not a version this build decodes \
-         ({FRAME_REFUSAL_VERSION} or {FRAME_REFUSAL_VERSION_V2}); the record was written by a \
+         ({FRAME_REFUSAL_VERSION}); the record was written by a \
          newer producer and cannot be read here"
     )
-}
-
-/// Version-dispatching grammar check.
-///
-/// A consumer that only ever called the v1 validator would report a v2 record
-/// as corrupt; a consumer that only called v2 would report every retained v1
-/// record as corrupt. Both versions are legal on the wire, and this is the one
-/// entry point that says so.
-pub fn validate_frame_refusal_payload_any_version(payload: &[u8]) -> Result<(), String> {
-    match declared_frame_refusal_version(payload) {
-        Some(version) if version == FRAME_REFUSAL_VERSION_V2 => {
-            validate_frame_refusal_v2_payload(payload)
-        }
-        Some(version) if version != FRAME_REFUSAL_VERSION => {
-            Err(unknown_frame_refusal_version(version))
-        }
-        _ => validate_frame_refusal_payload(payload),
-    }
-}
-
-/// Either version, decoded into the v2 shape.
-///
-/// A v1 record has no predicate, no authority, no locator, no typed units and
-/// no truncation accounting, so it lifts to `PREDICATE_UNDECLARED` /
-/// [`Authority::Undeclared`] / empty / [`TruncationAccount::undeclared`] with
-/// its whole reason string preserved. That is an honest lift: every absent
-/// fact is stated as absent — [`FrameRefusalOffenderV2::render`] on a lifted
-/// offender says `authority=undeclared` and `units=undeclared`, never a
-/// default that looks like a declaration. A lifted record is a read-side view
-/// only; [`FrameRefusalRecordV2::encode`] refuses it rather than manufacture
-/// v2 declarations for facts v1 never carried.
-pub fn decode_frame_refusal_any_version(payload: &[u8]) -> Result<FrameRefusalRecordV2, String> {
-    match declared_frame_refusal_version(payload) {
-        Some(version) if version == FRAME_REFUSAL_VERSION_V2 => {
-            return FrameRefusalRecordV2::decode(payload)
-        }
-        Some(version) if version != FRAME_REFUSAL_VERSION => {
-            return Err(unknown_frame_refusal_version(version))
-        }
-        _ => {}
-    }
-    let legacy = FrameRefusalRecordV1::decode(payload)?;
-    Ok(FrameRefusalRecordV2 {
-        refused_hour: legacy.refused_hour,
-        offenders: legacy
-            .offenders
-            .into_iter()
-            .map(|offender| FrameRefusalOffenderV2 {
-                domain_id: offender.domain_id,
-                status_flags: offender.status_flags,
-                non_tolerated_flags: offender.non_tolerated_flags,
-                predicate: Predicate::undeclared(),
-                authority: Authority::Undeclared,
-                locator: Vec::new(),
-                units: Vec::new(),
-                truncation: TruncationAccount::undeclared(),
-                off_frame: None,
-                reason: offender.reason,
-                // A version 1 entry carried no units, so its reason names
-                // none. That is a true statement about retained telemetry,
-                // not a gap: the upgrade must not invent a count.
-                reason_units_named: 0,
-            })
-            .collect(),
-        frame_findings: Vec::new(),
-    })
-}
-
-/// Complete grammar check. Total over arbitrary bytes; never panics.
-pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
-    if payload.len() < FRAME_REFUSAL_HEADER_LEN {
-        return Err(format!(
-            "frame refusal payload {} byte(s), below the {FRAME_REFUSAL_HEADER_LEN}-byte header",
-            payload.len()
-        ));
-    }
-    if &payload[0..4] != FRAME_REFUSAL_MAGIC {
-        return Err("frame refusal magic is not H4FR".to_string());
-    }
-    let version = u16::from_le_bytes([payload[4], payload[5]]);
-    if version != FRAME_REFUSAL_VERSION {
-        return Err(format!(
-            "frame refusal version {version} is not {FRAME_REFUSAL_VERSION}"
-        ));
-    }
-    let header_len = u16::from_le_bytes([payload[6], payload[7]]) as usize;
-    if header_len != FRAME_REFUSAL_HEADER_LEN {
-        return Err(format!(
-            "frame refusal header length {header_len} is not {FRAME_REFUSAL_HEADER_LEN}"
-        ));
-    }
-    let offender_count = u16::from_le_bytes([payload[12], payload[13]]) as usize;
-    if offender_count == 0 {
-        return Err("frame refusal names no offending domain".to_string());
-    }
-    if offender_count > FRAME_REFUSAL_MAX_OFFENDERS {
-        return Err(format!(
-            "frame refusal names {offender_count} offenders, above the \
-             {FRAME_REFUSAL_MAX_OFFENDERS} bound"
-        ));
-    }
-    let mut offset = FRAME_REFUSAL_HEADER_LEN;
-    for index in 0..offender_count {
-        if offset
-            .checked_add(FRAME_REFUSAL_ENTRY_FIXED_LEN)
-            .is_none_or(|end| end > payload.len())
-        {
-            return Err(format!(
-                "frame refusal entry {index} is truncated at offset {offset}"
-            ));
-        }
-        let non_tolerated = u32::from_le_bytes([
-            payload[offset + 8],
-            payload[offset + 9],
-            payload[offset + 10],
-            payload[offset + 11],
-        ]);
-        if non_tolerated == 0 {
-            let domain_id = u16::from_le_bytes([payload[offset], payload[offset + 1]]);
-            return Err(format!(
-                "frame refusal entry {index} (domain {domain_id}) has no non-tolerated bits"
-            ));
-        }
-        let reason_len = u16::from_le_bytes([payload[offset + 12], payload[offset + 13]]) as usize;
-        if reason_len == 0 {
-            return Err(format!("frame refusal entry {index} gives no reason"));
-        }
-        if reason_len > FRAME_REFUSAL_MAX_REASON_LEN {
-            return Err(format!(
-                "frame refusal entry {index} reason is {reason_len} bytes, above the \
-                 {FRAME_REFUSAL_MAX_REASON_LEN} bound"
-            ));
-        }
-        let start = offset + FRAME_REFUSAL_ENTRY_FIXED_LEN;
-        let Some(end) = start.checked_add(reason_len) else {
-            return Err(format!(
-                "frame refusal entry {index} reason length overflows"
-            ));
-        };
-        if end > payload.len() {
-            return Err(format!(
-                "frame refusal entry {index} reason runs past the payload"
-            ));
-        }
-        if core::str::from_utf8(&payload[start..end]).is_err() {
-            return Err(format!("frame refusal entry {index} reason is not UTF-8"));
-        }
-        offset = end;
-    }
-    if offset != payload.len() {
-        return Err(format!(
-            "frame refusal payload has {} trailing byte(s) after {offender_count} entries",
-            payload.len() - offset
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample() -> FrameRefusalRecordV1 {
-        FrameRefusalRecordV1 {
-            refused_hour: 60831436,
-            offenders: vec![
-                FrameRefusalOffender {
-                    domain_id: 47,
-                    status_flags: 0x0000_0300,
-                    non_tolerated_flags: 0x0000_0300,
-                    reason: "domain47_manager_failure_kind=7".to_string(),
-                },
-                FrameRefusalOffender {
-                    domain_id: 91,
-                    status_flags: 0x0000_0100,
-                    non_tolerated_flags: 0x0000_0100,
-                    reason: "d91_exact_read_failure_code=22".to_string(),
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn round_trips_with_every_offender_field_preserved() {
-        let value = sample();
-        let wire = value.encode().unwrap();
-        validate_frame_refusal_payload(&wire).unwrap();
-        assert_eq!(FrameRefusalRecordV1::decode(&wire).unwrap(), value);
-    }
-
-    #[test]
-    fn a_refusal_that_names_nobody_is_refused() {
-        let empty = FrameRefusalRecordV1 {
-            refused_hour: 1,
-            offenders: Vec::new(),
-        };
-        assert!(empty.encode().is_err());
-        // And on the wire: a header claiming zero offenders is rejected rather
-        // than decoded as "refused for no reason".
-        let mut wire = sample().encode().unwrap();
-        wire[12] = 0;
-        wire[13] = 0;
-        assert!(validate_frame_refusal_payload(&wire).is_err());
-    }
-
-    #[test]
-    fn an_offender_with_no_non_tolerated_bits_is_refused() {
-        let mut value = sample();
-        value.offenders[0].non_tolerated_flags = 0;
-        assert!(value.encode().is_err());
-    }
-
-    #[test]
-    fn an_offender_with_no_reason_is_refused() {
-        let mut value = sample();
-        value.offenders[0].reason = String::new();
-        assert!(value.encode().is_err());
-    }
-
-    /// A consumer that has not been taught this record type must FAIL, not skip.
-    ///
-    /// The canonical validator's catch-all returns "unknown compact record type",
-    /// which is the loud failure a new type needs. This asserts both halves: the
-    /// new type is accepted through the real dispatch (so the contract is
-    /// actually wired, not just defined), and a type nobody has defined is still
-    /// rejected (so the loud failure has not been softened into a skip).
-    ///
-    /// Two out-of-tree roster parsers were silently stale for weeks on this
-    /// project. A record type that a reader quietly ignores is the same failure
-    /// with a different shape.
-    #[test]
-    fn an_untaught_consumer_fails_loudly_on_an_unknown_record_type() {
-        use crate::record_semantics::{
-            validate_compact_record_semantics, COMPACT_DOMAIN_FRAME,
-            COMPACT_RECORD_TYPE_FRAME_REFUSED,
-        };
-        let wire = sample().encode().unwrap();
-
-        validate_compact_record_semantics(
-            COMPACT_DOMAIN_FRAME,
-            COMPACT_RECORD_TYPE_FRAME_REFUSED,
-            0,
-            &wire,
-        )
-        .expect("the new type must be wired into the canonical dispatch");
-
-        // Wrong envelope domain is refused: this is a FRAME-level record.
-        assert!(
-            validate_compact_record_semantics(47, COMPACT_RECORD_TYPE_FRAME_REFUSED, 0, &wire)
-                .is_err(),
-            "a frame-level record carried on a domain envelope must be refused"
-        );
-
-        // And an undefined type still fails loudly rather than being skipped.
-        //
-        // This probe used to be type 7, which is now FRAME_DEGRADED. The test's
-        // meaning is "a type nobody has defined must fail loudly", not "type 7
-        // must fail", so the probe moves to a value the contract does not
-        // assign rather than the assertion being softened. If a future type
-        // claims this value, this probe moves again -- it must never be the
-        // assertion that gives way.
-        let unassigned_record_type = u16::MAX;
-        let unknown = validate_compact_record_semantics(
-            COMPACT_DOMAIN_FRAME,
-            unassigned_record_type,
-            0,
-            &wire,
-        );
-        assert!(
-            unknown
-                .as_ref()
-                .err()
-                .is_some_and(|error| error.contains("unknown compact record type")),
-            "an undefined record type must fail loudly, got {unknown:?}"
-        );
-    }
-
-    #[test]
-    fn every_truncation_and_corruption_fails_closed() {
-        let wire = sample().encode().unwrap();
-        for len in 0..wire.len() {
-            assert!(
-                validate_frame_refusal_payload(&wire[..len]).is_err(),
-                "prefix of {len} byte(s) must not validate"
-            );
-        }
-        let mut trailing = wire.clone();
-        trailing.push(0);
-        assert!(validate_frame_refusal_payload(&trailing).is_err());
-        for (index, label) in [(0usize, "magic"), (4, "version"), (6, "header_len")] {
-            let mut bad = wire.clone();
-            bad[index] ^= 0xFF;
-            assert!(
-                validate_frame_refusal_payload(&bad).is_err(),
-                "corrupt {label} must fail"
-            );
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Version 2
-    // -----------------------------------------------------------------------
 
     use crate::diagnostic_channel::{
         allocate_unit_budget, render_units_bounded, BudgetRequest, DiagUnit, OffFrameTerminal,
@@ -1638,12 +1214,8 @@ mod tests {
     fn v2_round_trips_with_predicate_authority_locator_units_and_truncation_preserved() {
         let value = sample_v2();
         let wire = value.encode().unwrap();
-        validate_frame_refusal_v2_payload(&wire).unwrap();
+        validate_frame_refusal_payload(&wire).unwrap();
         assert_eq!(FrameRefusalRecordV2::decode(&wire).unwrap(), value);
-        // And through the version-dispatching entry points, which is what a
-        // consumer actually calls.
-        validate_frame_refusal_payload_any_version(&wire).unwrap();
-        assert_eq!(decode_frame_refusal_any_version(&wire).unwrap(), value);
     }
 
     /// The zero-valued deciding units and the reset sentinel all survive the
@@ -1722,7 +1294,7 @@ mod tests {
         for byte in 0..4 {
             bad[FRAME_REFUSAL_HEADER_LEN + 12 + byte] = 0;
         }
-        let error = validate_frame_refusal_v2_payload(&bad).unwrap_err();
+        let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("declares no predicate"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
         // And the reserved "undeclared" code IS accepted, because saying "this
@@ -1764,7 +1336,7 @@ mod tests {
         let wire = sample_v2().encode().unwrap();
         let mut bad = wire.clone();
         bad[FRAME_REFUSAL_HEADER_LEN + 24] = 1;
-        assert!(validate_frame_refusal_v2_payload(&bad).is_err());
+        assert!(validate_frame_refusal_payload(&bad).is_err());
     }
 
     /// The reason is the field consumers log. A record that carries units and
@@ -1811,7 +1383,7 @@ mod tests {
     /// cannot hand a consumer a reason it has no way to tell is incomplete.
     ///
     /// Production change that makes this fail: removing the `reason_units_named`
-    /// arms from `validate_frame_refusal_v2_payload`.
+    /// arms from `validate_frame_refusal_payload`.
     #[test]
     fn a_forged_reason_unit_count_is_refused_on_the_way_in() {
         let wire = sample_v2().encode().unwrap();
@@ -1822,13 +1394,13 @@ mod tests {
 
         let mut bad = wire.clone();
         bad[AT] = 3; // above units_emitted
-        let error = validate_frame_refusal_v2_payload(&bad).unwrap_err();
+        let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("but carries 2"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
 
         let mut bad = wire.clone();
         bad[AT] = 0; // carries units, names none
-        let error = validate_frame_refusal_v2_payload(&bad).unwrap_err();
+        let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("names none of them"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
 
@@ -1845,7 +1417,7 @@ mod tests {
     ///
     /// Production change that makes this fail: dropping the
     /// `check_reason_names_its_units` call from
-    /// `validate_frame_refusal_v2_payload`.
+    /// `validate_frame_refusal_payload`.
     #[test]
     fn a_payload_whose_reason_names_units_it_does_not_contain_is_refused_on_the_way_in() {
         // Build a legal record, then overwrite the reason bytes in place with a
@@ -1862,7 +1434,7 @@ mod tests {
         let filler = "x".repeat(original.len());
         bad[at..at + original.len()].copy_from_slice(filler.as_bytes());
 
-        let error = validate_frame_refusal_v2_payload(&bad).unwrap_err();
+        let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("does not contain unit 0"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
     }
@@ -1956,14 +1528,14 @@ mod tests {
     /// have accumulated arbitrary values there.
     ///
     /// Production change that makes this fail: dropping the `offset + 2` check
-    /// from `validate_frame_refusal_v2_payload`.
+    /// from `validate_frame_refusal_payload`.
     #[test]
     fn a_nonzero_reserved_field_in_an_offender_entry_is_refused() {
         let wire = sample_v2().encode().unwrap();
-        validate_frame_refusal_v2_payload(&wire).unwrap();
+        validate_frame_refusal_payload(&wire).unwrap();
         let mut bad = wire.clone();
         bad[FRAME_REFUSAL_HEADER_LEN + 2] = 1;
-        let error = validate_frame_refusal_v2_payload(&bad).unwrap_err();
+        let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("nonzero reserved field"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
     }
@@ -2052,114 +1624,57 @@ mod tests {
         )));
     }
 
-    /// PRODUCTION CHANGE THAT MAKES THIS FAIL: reverting the lift to stamp
-    /// `Authority::SelfDomain` or `TruncationAccount::complete(0)` (each is an
-    /// assertion no v1 producer made), rendering either as anything but an
-    /// explicit `undeclared`, or letting `encode()` serialize a lifted record.
-    #[test]
-    fn a_v1_record_lifts_to_v2_as_explicitly_undeclared_rather_than_as_a_default() {
-        let legacy = sample().encode().unwrap();
-        validate_frame_refusal_payload_any_version(&legacy).unwrap();
-        let lifted = decode_frame_refusal_any_version(&legacy).unwrap();
-        assert_eq!(lifted.refused_hour, sample().refused_hour);
-        for (index, offender) in lifted.offenders.iter().enumerate() {
-            assert!(
-                offender.predicate.is_undeclared(),
-                "a v1 record carried no predicate and must say so, not invent one"
-            );
-            assert_eq!(
-                offender.authority,
-                Authority::Undeclared,
-                "a v1 record carried no authority and must say so, not claim self"
-            );
-            assert!(offender.locator.is_empty());
-            assert!(offender.units.is_empty());
-            assert_eq!(
-                offender.truncation.kind,
-                TruncationKind::Undeclared,
-                "a v1 record carried no truncation accounting and must say so, not claim complete"
-            );
-            assert_eq!(offender.reason, sample().offenders[index].reason);
-
-            // The render a log line or a consumer sees states each absence and
-            // asserts nothing a v1 producer never said.
-            let rendered = offender.render();
-            assert!(rendered.contains("authority=undeclared"), "{rendered}");
-            assert!(rendered.contains("units=undeclared"), "{rendered}");
-            assert!(!rendered.contains("authority=self"), "{rendered}");
-            assert!(!rendered.contains("complete"), "{rendered}");
-        }
-
-        // A lifted record is a read-side view. Re-encoding it as v2 would
-        // manufacture declarations, so the encoder refuses it by name.
-        let error = lifted.encode().unwrap_err();
-        assert!(
-            error.contains("cannot be re-encoded as version 2"),
-            "{error}"
-        );
-    }
-
     /// A version this build was never taught is REFUSED, and the refusal says
     /// which fact it is refusing on.
     ///
-    /// The dispatcher used to fall through to the v1 validator for anything
-    /// that was not v2, so a version 3 record was reported as `version 3 is
-    /// not 1` -- which blames the record for being corrupt when what actually
-    /// happened is that the producer is newer than the reader, and which does
-    /// not say that version 2 is also decodable here.
+    /// The failure this guards is a reader reporting `version 3 is not 2`,
+    /// which blames the record for being corrupt when what actually happened is
+    /// that the producer is newer than the reader. Version 1 was deleted rather
+    /// than kept decodable, so version 1 is now one of the unknown versions and
+    /// is probed here as one: an old record must be refused by name, never
+    /// silently lifted to a shape it never carried.
     ///
     /// PRODUCTION CHANGE THAT MAKES THIS FAIL: adding a silent fall-through
-    /// (accepting an unknown version as v1, or returning `Ok`) to either
-    /// version-dispatching entry point, or dropping the known-version list
-    /// from the message.
+    /// (accepting an unknown version, or returning `Ok`) to either entry point,
+    /// or dropping the known-version list from the message.
     #[test]
-    fn a_version_neither_entry_point_knows_is_refused_and_names_the_versions_it_does_know() {
-        for known in [sample().encode().unwrap(), sample_v2().encode().unwrap()] {
-            for version in [0u16, 3, 4, u16::MAX] {
-                let mut future = known.clone();
-                future[4..6].copy_from_slice(&version.to_le_bytes());
+    fn a_version_this_build_does_not_know_is_refused_and_names_the_version_it_does() {
+        let known = sample_v2().encode().unwrap();
+        for version in [0u16, 1, 3, 4, u16::MAX] {
+            let mut future = known.clone();
+            future[4..6].copy_from_slice(&version.to_le_bytes());
 
-                let error = validate_frame_refusal_payload_any_version(&future).unwrap_err();
-                assert!(
-                    error.contains(&format!("frame refusal version {version}")),
-                    "the refusal must name the version it could not read: {error}"
-                );
-                assert!(
-                    error.contains("not a version this build decodes"),
-                    "{error}"
-                );
-                assert!(
-                    error.contains(&format!(
-                        "({FRAME_REFUSAL_VERSION} or {FRAME_REFUSAL_VERSION_V2})"
-                    )),
-                    "the refusal must name every version this build does decode: {error}"
-                );
+            let error = validate_frame_refusal_payload(&future).unwrap_err();
+            assert!(
+                error.contains(&format!("frame refusal version {version}")),
+                "the refusal must name the version it could not read: {error}"
+            );
+            assert!(
+                error.contains("not a version this build decodes"),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!("({FRAME_REFUSAL_VERSION})")),
+                "the refusal must name every version this build does decode: {error}"
+            );
 
-                let decode_error = decode_frame_refusal_any_version(&future).unwrap_err();
-                assert_eq!(
-                    decode_error, error,
-                    "the validator and the decoder must refuse an unknown version identically"
-                );
-            }
+            let decode_error = FrameRefusalRecordV2::decode(&future).unwrap_err();
+            assert_eq!(
+                decode_error, error,
+                "the validator and the decoder must refuse an unknown version identically"
+            );
         }
     }
 
-    /// The versions this build DOES know stay accepted by the same dispatcher
-    /// that refuses the ones it does not. Without this, "refuse everything"
+    /// The version this build DOES know stays accepted by the same entry points
+    /// that refuse the ones it does not. Without this, "refuse everything"
     /// would pass the test above.
     #[test]
-    fn both_known_versions_pass_the_dispatcher_that_refuses_unknown_ones() {
-        validate_frame_refusal_payload_any_version(&sample().encode().unwrap()).unwrap();
-        validate_frame_refusal_payload_any_version(&sample_v2().encode().unwrap()).unwrap();
+    fn the_known_version_passes_the_entry_points_that_refuse_unknown_ones() {
+        validate_frame_refusal_payload(&sample_v2().encode().unwrap()).unwrap();
         assert_eq!(
-            decode_frame_refusal_any_version(&sample_v2().encode().unwrap()).unwrap(),
+            FrameRefusalRecordV2::decode(&sample_v2().encode().unwrap()).unwrap(),
             sample_v2()
-        );
-        assert_eq!(
-            decode_frame_refusal_any_version(&sample().encode().unwrap())
-                .unwrap()
-                .refused_hour,
-            sample().refused_hour
         );
     }
 
@@ -2171,12 +1686,12 @@ mod tests {
     /// checking the magic in `declared_frame_refusal_version`.
     ///
     /// The fixture carries an UNKNOWN version under the broken magic, and that
-    /// is load-bearing. With version 2 stamped, a reader that skipped the magic
-    /// check would dispatch to the v2 validator, which checks the magic itself
-    /// and produces the identical "magic is not H4FR" -- the test would pass
-    /// under its own mutation. Version 3 makes the two paths say different
-    /// things: magic-first says the bytes are not a record, version-first says
-    /// the build is too old.
+    /// is load-bearing. With the known version stamped, a reader that checked
+    /// the version word first would still reach the magic check and produce the
+    /// identical "magic is not H4FR" -- the test would pass under its own
+    /// mutation. Version 3 makes the two orderings say different things:
+    /// magic-first says the bytes are not a record, version-first says the
+    /// build is too old.
     #[test]
     fn bytes_that_are_not_a_refusal_are_diagnosed_by_magic_not_by_version() {
         let mut not_a_record = sample_v2().encode().unwrap();
@@ -2187,28 +1702,38 @@ mod tests {
             None,
             "a payload without the magic declares no version, whatever is in its version word"
         );
-        let error = validate_frame_refusal_payload_any_version(&not_a_record).unwrap_err();
+        let error = validate_frame_refusal_payload(&not_a_record).unwrap_err();
         assert!(error.contains("magic is not H4FR"), "{error}");
-        let error = decode_frame_refusal_any_version(&not_a_record).unwrap_err();
+        let error = FrameRefusalRecordV2::decode(&not_a_record).unwrap_err();
         assert!(error.contains("magic is not H4FR"), "{error}");
         // And a payload too short to hold a version reports its length rather
         // than reading one -- through BOTH entry points, and at every length
         // below the header, so no index can be taken that is not there.
         for len in 0..FRAME_REFUSAL_HEADER_LEN {
             let short = &not_a_record[..len.min(not_a_record.len())];
-            let error = validate_frame_refusal_payload_any_version(short).unwrap_err();
+            let error = validate_frame_refusal_payload(short).unwrap_err();
             assert!(!error.contains("this build decodes"), "{len}: {error}");
-            let error = decode_frame_refusal_any_version(short).unwrap_err();
+            let error = FrameRefusalRecordV2::decode(short).unwrap_err();
             assert!(!error.contains("this build decodes"), "{len}: {error}");
         }
-        let error = validate_frame_refusal_payload_any_version(&[]).unwrap_err();
+        let error = validate_frame_refusal_payload(&[]).unwrap_err();
         assert!(error.contains("below the"), "{error}");
-        let error = decode_frame_refusal_any_version(&[]).unwrap_err();
+        let error = FrameRefusalRecordV2::decode(&[]).unwrap_err();
         assert!(error.contains("below the"), "{error}");
     }
 
+    /// The record is wired into the canonical dispatch, and the three ways that
+    /// wiring can be wrong all still fail loudly.
+    ///
+    /// The last two halves were carried by a version-1 test that is gone with
+    /// version 1; they are contracts about the DISPATCH, not about the record
+    /// version, so they move here rather than dying with their old fixture.
+    ///
+    /// Two out-of-tree roster parsers were silently stale for weeks on this
+    /// project. A record type that a reader quietly ignores is the same failure
+    /// with a different shape.
     #[test]
-    fn v2_is_wired_into_the_canonical_record_dispatch() {
+    fn the_record_is_wired_into_the_canonical_dispatch_and_misuse_fails_loudly() {
         use crate::record_semantics::{
             validate_compact_record_semantics, COMPACT_DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_REFUSED,
@@ -2220,16 +1745,9 @@ mod tests {
             0,
             &wire,
         )
-        .expect("version 2 must be accepted through the canonical dispatch");
-        // The legacy version still is.
-        validate_compact_record_semantics(
-            COMPACT_DOMAIN_FRAME,
-            COMPACT_RECORD_TYPE_FRAME_REFUSED,
-            0,
-            &sample().encode().unwrap(),
-        )
-        .expect("version 1 must stay readable");
-        // A version nobody has defined is still refused.
+        .expect("the record must be accepted through the canonical dispatch");
+
+        // A version nobody has defined is refused.
         let mut future = wire.clone();
         future[4] = 9;
         assert!(validate_compact_record_semantics(
@@ -2239,6 +1757,32 @@ mod tests {
             &future
         )
         .is_err());
+
+        // Wrong envelope domain is refused: this is a FRAME-level record.
+        assert!(
+            validate_compact_record_semantics(47, COMPACT_RECORD_TYPE_FRAME_REFUSED, 0, &wire)
+                .is_err(),
+            "a frame-level record carried on a domain envelope must be refused"
+        );
+
+        // And an undefined record type still fails loudly rather than being
+        // skipped. The probe is a value the contract does not assign; if a
+        // future type claims it, the probe moves again -- it must never be the
+        // assertion that gives way.
+        let unassigned_record_type = u16::MAX;
+        let unknown = validate_compact_record_semantics(
+            COMPACT_DOMAIN_FRAME,
+            unassigned_record_type,
+            0,
+            &wire,
+        );
+        assert!(
+            unknown
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.contains("unknown compact record type")),
+            "an undefined record type must fail loudly, got {unknown:?}"
+        );
     }
 
     /// The gap this closes: an hour refused for a reason that belongs to NO
@@ -2260,7 +1804,7 @@ mod tests {
         let wire = frame_only
             .encode()
             .expect("a frame-level-only refusal must be encodable");
-        validate_frame_refusal_v2_payload(&wire).unwrap();
+        validate_frame_refusal_payload(&wire).unwrap();
         let back = FrameRefusalRecordV2::decode(&wire).unwrap();
         assert_eq!(back, frame_only);
         assert!(back.offenders.is_empty());
@@ -2283,6 +1827,45 @@ mod tests {
         .expect("a frame-level-only refusal must pass the canonical dispatch");
     }
 
+    /// An offender that did not force the refusal, or that gives no reason at
+    /// all, does not encode.
+    ///
+    /// The wire side of both rules is separately covered: the validator rejects
+    /// a zero `non_tolerated` at `validate_frame_refusal_payload` and a zero
+    /// `reason_len` a few checks later. What is covered ONLY here is the
+    /// ENCODER refusing to build such a record in the first place, which is the
+    /// half a producer hits. Without it a collector could emit a refusal that
+    /// its own consumer then rejects as corrupt, turning a producer bug into an
+    /// unreadable stream. Two version-1 tests carried this and it is ported
+    /// here rather than deleted with that version.
+    ///
+    /// PRODUCTION CHANGE THAT MAKES EACH FAIL: dropping the
+    /// `non_tolerated_flags == 0` guard (a refusal then lists a domain that
+    /// tolerated everything, misattributing the cause), or dropping the
+    /// `reason.is_empty()` guard (a refusal then names a domain and says
+    /// nothing about it).
+    #[test]
+    fn an_offender_that_forced_nothing_or_says_nothing_does_not_encode() {
+        let mut no_bits = sample_v2();
+        no_bits.offenders[0].non_tolerated_flags = 0;
+        let error = no_bits.encode().unwrap_err();
+        assert!(
+            error.contains("no non-tolerated bits"),
+            "an offender that tolerated everything did not force the refusal: {error}"
+        );
+
+        let mut no_reason = sample_v2();
+        no_reason.offenders[0].reason = String::new();
+        // The reason names this fixture's units, so emptying it must be
+        // accounted for or a different guard fires first and the test would
+        // pass for the wrong reason.
+        no_reason.offenders[0].units = Vec::new();
+        no_reason.offenders[0].truncation = TruncationAccount::complete(0);
+        no_reason.offenders[0].reason_units_named = 0;
+        let error = no_reason.encode().unwrap_err();
+        assert!(error.contains("no reason"), "{error}");
+    }
+
     /// A refusal must still substantiate itself. Widening what counts as
     /// substantiation must not become "anything goes".
     #[test]
@@ -2301,7 +1884,7 @@ mod tests {
         wire[13] = 0;
         wire[14] = 0;
         wire[15] = 0;
-        assert!(validate_frame_refusal_v2_payload(&wire).is_err());
+        assert!(validate_frame_refusal_payload(&wire).is_err());
 
         // A finding with a zero predicate code is refused, exactly as an
         // offender with one is.
@@ -2320,7 +1903,7 @@ mod tests {
         for byte in 0..4 {
             wire[FRAME_REFUSAL_HEADER_LEN + byte] = 0;
         }
-        let error = validate_frame_refusal_v2_payload(&wire).unwrap_err();
+        let error = validate_frame_refusal_payload(&wire).unwrap_err();
         assert!(error.contains("declares no predicate"), "{error}");
     }
 
@@ -2329,18 +1912,18 @@ mod tests {
         let wire = sample_v2().encode().unwrap();
         for len in 0..wire.len() {
             assert!(
-                validate_frame_refusal_v2_payload(&wire[..len]).is_err(),
+                validate_frame_refusal_payload(&wire[..len]).is_err(),
                 "prefix of {len} byte(s) must not validate"
             );
         }
         let mut trailing = wire.clone();
         trailing.push(0);
-        assert!(validate_frame_refusal_v2_payload(&trailing).is_err());
+        assert!(validate_frame_refusal_payload(&trailing).is_err());
         for (index, label) in [(0usize, "magic"), (4, "version"), (6, "header_len")] {
             let mut bad = wire.clone();
             bad[index] ^= 0xFF;
             assert!(
-                validate_frame_refusal_v2_payload(&bad).is_err(),
+                validate_frame_refusal_payload(&bad).is_err(),
                 "corrupt {label} must fail"
             );
         }
@@ -2349,7 +1932,7 @@ mod tests {
         for index in FRAME_REFUSAL_HEADER_LEN..wire.len() {
             let mut bad = wire.clone();
             bad[index] ^= 0xFF;
-            let _ = validate_frame_refusal_v2_payload(&bad);
+            let _ = validate_frame_refusal_payload(&bad);
             let _ = FrameRefusalRecordV2::decode(&bad);
         }
     }

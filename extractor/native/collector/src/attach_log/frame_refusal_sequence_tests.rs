@@ -177,12 +177,10 @@ fn published_at(cursor_after_committed_prefix: u64) -> PublishedSequence {
     cursor
 }
 
-/// Ported from `FrameRefusalOffender` (V1) when the record became V2.
-///
 /// Every test in this module is about CURSOR DISCIPLINE -- which sequence a
 /// published refusal is numbered from -- so the offender is payload whose only
 /// relevant property is that it substantiates the record and that its size
-/// varies with `count`. The fields V2 added are therefore filled with the
+/// varies with `count`. The diagnosis fields are therefore filled with the
 /// declared-nothing values a producer that has not migrated would emit:
 /// `Predicate::undeclared()`, `Authority::SelfDomain`, no locator, no units.
 /// That keeps these tests measuring the cursor and nothing else, and it is a

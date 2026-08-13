@@ -610,11 +610,17 @@ pub enum Authority {
     Host,
     /// An off-frame worker owned the answer and did not deliver it.
     OffFrameWorker,
-    /// The record never said. Only a lifted version 1 record produces this:
-    /// v1 carried no authority, and the lift must state that absence rather
-    /// than hand a reader a default that looks like a declaration. Its kind
-    /// code is 0 — the value an uninitialised slot holds — and the decoder
-    /// keeps rejecting 0, so this can exist in memory but never on the wire.
+    /// The record never said. Its kind code is 0 — the value an uninitialised
+    /// slot holds — and the decoder keeps rejecting 0, so this can exist in
+    /// memory but never on the wire; `FrameRefusalRecordV2::encode` refuses a
+    /// record carrying it rather than stamp a default that looks like a
+    /// declaration.
+    ///
+    /// Its one producer was the version-1 lift, which is deleted, so nothing
+    /// in this tree constructs it today. It is kept as the fail-closed answer
+    /// for a producer that declares no authority. Sizing its removal, together
+    /// with `TruncationKind::Undeclared` and the encode guard that pairs them,
+    /// is residual R-HG-6.
     Undeclared,
 }
 
@@ -868,11 +874,13 @@ pub enum TruncationKind {
     UnitTooLarge = 3,
     /// The producer offered more units than the wire can count.
     ProducerOverflow = 4,
-    /// The record never accounted. Only a lifted version 1 record produces
-    /// this: v1 had no truncation accounting, and claiming `complete` would
-    /// assert a fact no v1 producer stated. Code 0 — the uninitialised-slot
-    /// value — and `from_code` keeps rejecting it, so it cannot reach the
-    /// wire.
+    /// The record never accounted, and claiming `complete` would assert a fact
+    /// its producer never stated. Code 0 — the uninitialised-slot value — and
+    /// `from_code` keeps rejecting it, so it cannot reach the wire.
+    ///
+    /// Its one producer was the version-1 lift, which is deleted, so nothing in
+    /// this tree constructs it today; see `Authority::Undeclared` and residual
+    /// R-HG-6.
     Undeclared = 0,
 }
 
@@ -921,17 +929,6 @@ impl TruncationAccount {
             kind: TruncationKind::None,
             units_offered: units,
             units_emitted: units,
-            bytes_dropped: 0,
-        }
-    }
-
-    /// The account a lifted version 1 record carries: v1 never accounted, and
-    /// this says so instead of claiming completeness.
-    pub const fn undeclared() -> Self {
-        Self {
-            kind: TruncationKind::Undeclared,
-            units_offered: 0,
-            units_emitted: 0,
             bytes_dropped: 0,
         }
     }
