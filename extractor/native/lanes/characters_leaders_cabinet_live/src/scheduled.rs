@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::adapter::{
     build_lane_frame_from_adapter_input_ref, AdapterBuildStats, AdapterInput, AdapterInputRef,
@@ -173,13 +173,161 @@ pub struct NativeScheduledRead {
     pub parse_errors: Vec<String>,
 }
 
+/// What d47's clock bracket has to hold, and nothing else (lane HC, task #119).
+///
+/// # Why this type exists
+///
+/// The copy-only-bracket rule says a clock bracket may hold engine OBSERVATIONS
+/// and nothing else: work that only touches bytes this process already owns
+/// belongs after the bracket closes. [`read_native_scheduled_frame`] ran three
+/// phases back to back inside the ONE bracket `spawn_gated` opened around the
+/// whole worker, and only the FIRST of them names an engine address:
+///
+///  1. [`build_lane_frame_from_adapter_input_ref`] — the only phase that reads
+///     the game's memory.
+///  2. [`encode_frame_payload`] — serialises the frame phase 1 just built.
+///  3. [`compact::decode_payload`] — re-parses those same bytes to derive the
+///     record's row and unit counts, its status/schema flags and its parse
+///     errors.
+///
+/// Phases 2 and 3 cannot observe a torn read, cannot straddle an hour and
+/// cannot be misattributed, because they never touch the engine. Every
+/// microsecond they cost was a microsecond the bracket was held open for no
+/// observation. Lane DB named that quantity in 2026-08-06 and its instrument
+/// `d47_cost_read_bracket_observation_vs_compute` measured it at **71.5-74.3 %
+/// of the bracket** on the committed fixture — two runs on one tip, both
+/// published in `runs/hc_d47_copy_only/` (`instruments_currenttip.txt` and
+/// `instruments_relabelled.txt`), per invocation. That band is an UPPER bound
+/// on the live share for the three reasons the instrument's own doc comment
+/// gives, and it is a debug-profile figure.
+///
+/// This type is what phase 1 hands across the bracket close: an OWNED frame and
+/// the stats that describe it. It holds no engine address, no `LaneMemory` and
+/// no borrow of the root cache, which is what lets the worker drop its clock
+/// guard before [`finish_native_scheduled_read`] runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeScheduledObservation {
+    /// What phase 1 built, or the fail-closed rowless frame one of the three
+    /// gates decided on. Either way it is complete: nothing after the bracket
+    /// may change which rows this frame carries.
+    frame: LaneFrame,
+    stats: AdapterBuildStats,
+    /// What the OBSERVE half spent, already elapsed.
+    ///
+    /// A DURATION AND NOT THE OPENING `Instant`, and the difference is the
+    /// whole point (Codex 019ff886, finding 2). Carrying the opening instant
+    /// and sampling it at the end of the compute would silently widen
+    /// `read_time_us`: in production the two halves are no longer adjacent —
+    /// `spawn_gated_split` drops the `ReaderClockBracketGuard` between them,
+    /// and that drop takes the closing clock read, renders the bracket verdict,
+    /// records the bracket, and under the `range-tracer` feature flushes the
+    /// trace. None of that was inside the old timer.
+    ///
+    /// A `Duration`, NOT a microsecond count, so the two halves are added at
+    /// full resolution and truncated once (Codex 019ff897, finding 4).
+    /// Truncating each half first can lose up to a microsecond per half.
+    ///
+    /// WHAT `read_time_us` NOW IS, stated exactly: the sum of two timed phase
+    /// bodies. It is NOT the former single continuous span, and the residue is
+    /// the call/return/destructure seam between them, which no longer belongs
+    /// to either half. On the split path that is the honest quantity — the
+    /// alternative sweeps in the bracket close — and on the composed path the
+    /// seam is a function call.
+    observe: Duration,
+}
+
+/// PHASE 1 — the only half that reads the engine.
+///
+/// Split out of [`read_native_scheduled_frame`] by lane HC so the worker can
+/// close its clock bracket here. Its body is that function's first half,
+/// unchanged: the same three gates, the same walk, the same family-mask and
+/// rejection decisions, in the same order.
+pub fn observe_native_scheduled_frame<M: LaneMemory>(
+    mem: &M,
+    cache: &NativeRootCache,
+    frame_input: NativeFrameInput,
+) -> NativeScheduledObservation {
+    let started = Instant::now();
+    let (frame, stats) = observe_native_scheduled_parts(mem, cache, frame_input);
+    NativeScheduledObservation {
+        frame,
+        stats,
+        observe: started.elapsed(),
+    }
+}
+
+/// A whole span as the `u64` microseconds the wire carries. Converted ONCE, at
+/// the end, over the summed halves — see
+/// [`NativeScheduledObservation::observe`].
+fn duration_us(span: Duration) -> u64 {
+    span.as_micros().min(u64::MAX as u128) as u64
+}
+
+/// PHASE 2 + 3 — engine-free, and therefore run AFTER the bracket has closed.
+///
+/// Takes the owned observation and does exactly what the tail of
+/// [`read_native_scheduled_frame`] did: encode the frame, self-decode the
+/// payload for the gate's counts and flags, and assemble the read. There is no
+/// path from here to the game's memory: the argument holds none.
+pub fn finish_native_scheduled_read(
+    observation: NativeScheduledObservation,
+) -> NativeScheduledRead {
+    let NativeScheduledObservation {
+        frame,
+        stats,
+        observe,
+    } = observation;
+    let compute_started = Instant::now();
+    let payload = encode_frame_payload(&frame);
+    let gate = compact::decode_payload(0, &payload);
+    // THE SUM OF TWO MEASURED HALVES, not one span across the bracket close.
+    // See [`NativeScheduledObservation::observe`] for what a single span would
+    // have swept up that the unsplit function never charged here, and for what
+    // this quantity is and is not. Summed as `Duration`s and converted once, so
+    // neither half is truncated before the addition; saturating, so a
+    // pathological clock cannot wrap the published figure.
+    let read_time_us = duration_us(observe.saturating_add(compute_started.elapsed()));
+    NativeScheduledRead {
+        domain_id: DOMAIN_ID,
+        domain_name: DOMAIN_NAME,
+        payload,
+        read_time_us,
+        row_count: gate.row_count_total.min(u32::MAX as u64) as u32,
+        data_units_total: gate
+            .data_units_total
+            .values()
+            .copied()
+            .sum::<u64>()
+            .min(u32::MAX as u64) as u32,
+        status_flags: gate.status_flags_or | frame.status_flags,
+        schema_flags: gate.schema_flags_or,
+        adapter_stats: stats,
+        parse_errors: gate.parse_errors,
+    }
+}
+
+/// The two halves, run back to back on one thread.
+///
+/// KEPT, and it is not dead code: the fixture and benchmark entry points, the
+/// lane's own tests and every caller that is not inside a clock bracket use
+/// this. Production's d47 worker does NOT — it calls the two halves either side
+/// of its bracket close (see `spawn_gated_split` at the d47 call site in the
+/// collector). Composing them here rather than duplicating the body is what
+/// stops the bracketed and unbracketed paths from drifting.
 pub fn read_native_scheduled_frame<M: LaneMemory>(
     mem: &M,
     cache: &NativeRootCache,
     frame_input: NativeFrameInput,
 ) -> NativeScheduledRead {
-    let started = Instant::now();
-    let (frame, stats) = if cache.has_stable_roots()
+    finish_native_scheduled_read(observe_native_scheduled_frame(mem, cache, frame_input))
+}
+
+fn observe_native_scheduled_parts<M: LaneMemory>(
+    mem: &M,
+    cache: &NativeRootCache,
+    frame_input: NativeFrameInput,
+) -> (LaneFrame, AdapterBuildStats) {
+    if cache.has_stable_roots()
         && rowless_outcome_is_already_decided(cache, &frame_input)
     {
         // NOT WALKING IS THE POINT. The gate below would replace whatever this
@@ -275,27 +423,6 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
             rowless_partial_frame(frame_input.elapsed_wall_ms, frame_input.status_flags),
             AdapterBuildStats::default(),
         )
-    };
-
-    let payload = encode_frame_payload(&frame);
-    let gate = compact::decode_payload(0, &payload);
-    let read_time_us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
-    NativeScheduledRead {
-        domain_id: DOMAIN_ID,
-        domain_name: DOMAIN_NAME,
-        payload,
-        read_time_us,
-        row_count: gate.row_count_total.min(u32::MAX as u64) as u32,
-        data_units_total: gate
-            .data_units_total
-            .values()
-            .copied()
-            .sum::<u64>()
-            .min(u32::MAX as u64) as u32,
-        status_flags: gate.status_flags_or | frame.status_flags,
-        schema_flags: gate.schema_flags_or,
-        adapter_stats: stats,
-        parse_errors: gate.parse_errors,
     }
 }
 
