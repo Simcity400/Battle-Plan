@@ -1558,6 +1558,127 @@ fn lane_of(outcome: &DomainOutcome) -> LaneKey {
     (outcome.0, outcome.1.part)
 }
 
+// ---------------------------------------------------------------------------
+// The outcome source (task #179-1)
+// ---------------------------------------------------------------------------
+
+/// A RANDOM-ACCESS source of H4DG outcomes.
+///
+/// # Why not an iterator any more
+///
+/// Lane GE made this an `IntoIterator + Clone` so the caller need not
+/// materialize a second copy of a session-length list -- 104 MiB at 68,300 game
+/// hours -- and that property is preserved here. What an iterator cannot do is
+/// be VISITED IN A DIFFERENT ORDER, and hour order is what lets the encoder stop
+/// holding per-outcome state: `summary.domain_gaps` is ordered by the frame that
+/// published each observation, not by the hour it describes, so an H4DG range
+/// may begin before the frame that reported it.
+///
+/// A source that can be indexed can be walked through a SORTED INDEX instead,
+/// which is one row index -- one `usize` -- per row rather than the three
+/// O(rows) maps the old encoder built. Implementors project rather than copy:
+/// the production one reads `summary.domain_gaps[i]` in place.
+pub trait DomainOutcomeSource {
+    fn outcome_count(&self) -> usize;
+    fn outcome_at(&self, index: usize) -> DomainOutcome;
+
+    /// Just the target hour of one row, for the sort that builds the visiting
+    /// order.
+    ///
+    /// THE DEFAULT IS THE DEFINITION, and an override is only ever an
+    /// optimisation of it. `hour_at` decides which rows are grouped together
+    /// and which hour a class records; `outcome_at` supplies the ordinal that
+    /// goes under it. An implementor whose two readers DISAGREED would emit
+    /// ordinals under the wrong hours and nothing downstream could tell -- so
+    /// this may be overridden only where the override reads the SAME FIELD OF
+    /// THE SAME ROW, which is checkable by inspection at the override, not by
+    /// trusting a caller (Codex round 7).
+    fn hour_at(&self, index: usize) -> i32 {
+        self.outcome_at(index).1.target_hour_raw
+    }
+}
+
+/// The slice itself, unsized, so `&outcomes[..]` is a source without a wrapper.
+impl DomainOutcomeSource for [DomainOutcome] {
+    fn outcome_count(&self) -> usize {
+        self.len()
+    }
+    fn outcome_at(&self, index: usize) -> DomainOutcome {
+        self[index]
+    }
+    /// The same field of the same row the default would have read, without
+    /// copying the record around it. Inspectable in one line, which is the only
+    /// basis on which this override is allowed.
+    fn hour_at(&self, index: usize) -> i32 {
+        self[index].1.target_hour_raw
+    }
+}
+
+/// A source backed by a projection closure, for a caller whose rows are not
+/// `DomainOutcome` values but can produce one on demand.
+///
+/// This is how production passes `summary.domain_gaps` without copying it.
+pub struct ProjectedOutcomes<F> {
+    len: usize,
+    project: F,
+}
+
+impl<F: Fn(usize) -> DomainOutcome> ProjectedOutcomes<F> {
+    /// ONE closure, deliberately.
+    ///
+    /// A draft took a second one that read only the target hour, so the sort
+    /// would not copy a 64-byte record per comparison. Nothing could make the
+    /// two agree: a caller whose hour closure returned a different row's hour
+    /// would have had its ordinals emitted under the wrong hours, silently and
+    /// with no downstream check able to see it (Codex round 7). The exact input
+    /// was two same-lane rows at hours 10 and 20 with the hour closure returning
+    /// 20 and 10.
+    ///
+    /// So the hour comes from the record. `sort_unstable_by_key` is the
+    /// NON-CACHING key sort and obtains a key for both compared rows, so the
+    /// cost is by-value projections for both -- O(rows log rows) key
+    /// projections, once per finalize. (Projections rather than copies is the
+    /// defensible unit: the compiler may elide the copy inside one, and
+    /// counting comparisons rather than projections understated it by half --
+    /// Codex round 8.) That is the price of removing a silent-corruption class
+    /// no test downstream of it can catch. If a future lane measures the sort as
+    /// hot, the fix is a source whose rows expose their hour without building a
+    /// record -- not two closures a caller can desync.
+    pub fn new(len: usize, project: F) -> Self {
+        Self { len, project }
+    }
+}
+
+impl<F: Fn(usize) -> DomainOutcome> DomainOutcomeSource for ProjectedOutcomes<F> {
+    fn outcome_count(&self) -> usize {
+        self.len
+    }
+    fn outcome_at(&self, index: usize) -> DomainOutcome {
+        (self.project)(index)
+    }
+    // `hour_at` is deliberately NOT overridden: see `new`.
+}
+
+/// The hour-ordered visiting order, and the ONLY per-row structure this encoder
+/// builds.
+///
+/// Row indices, sorted by target hour: one `usize` a row, eight bytes on a
+/// 64-bit target against the forty or so the old encoder's three maps held, and
+/// it dies before the JSON is built.
+///
+/// NO SIZE BOUND. A first draft packed `(i32, u32)` to keep the hour beside the
+/// index, which imposed a `u32::MAX`-row ceiling the iterator API never had and
+/// enforced it with a panic -- a production abort as the failure mode for an
+/// input-size limitation, on an input a virtual source could present without
+/// holding 275 GB (Codex round 6). Indices alone carry no ceiling, and the sort
+/// key comes from [`DomainOutcomeSource::hour_at`], which is the record's own
+/// `target_hour_raw` unless an implementor reads that same field more cheaply.
+fn hour_ordered_index<S: DomainOutcomeSource + ?Sized>(outcomes: &S) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..outcomes.outcome_count()).collect();
+    order.sort_unstable_by_key(|index| outcomes.hour_at(*index));
+    order
+}
+
 /// Whether every lane's ordinals can be recovered from hour order alone.
 ///
 /// Two conditions, both checked against the real rows rather than assumed:
@@ -1565,7 +1686,242 @@ fn lane_of(outcome: &DomainOutcome) -> LaneKey {
 /// not determine which row gets which ordinal, and the decoder would be
 /// guessing), and sorting a lane by hour yields its ordinals contiguously from
 /// the lane's own first. When either fails the encoder writes the ordinals out.
-fn lane_ordinal_firsts(
+///
+/// STREAMED over `order`, so the state is O(lanes) rather than one
+/// `(hour, ordinal)` pair per row. Walking in hour order is what makes that
+/// possible: each lane's hours arrive non-decreasing, so "distinct" is a
+/// comparison against the lane's previous hour and "contiguous from first" is a
+/// comparison against `first + count`. The old walk collected every lane's rows
+/// and sorted them, which is the same test with the whole list held.
+fn lane_ordinal_firsts<S: DomainOutcomeSource + ?Sized>(
+    outcomes: &S,
+    order: &[usize],
+) -> Option<BTreeMap<LaneKey, u64>> {
+    struct LaneState {
+        first: u64,
+        count: u64,
+        last_hour: i32,
+    }
+    let mut lanes: BTreeMap<LaneKey, LaneState> = BTreeMap::new();
+    for index in order {
+        let outcome = outcomes.outcome_at(*index);
+        let hour = &outcome.1.target_hour_raw;
+        let ordinal = outcome.1.outcome_ordinal;
+        match lanes.entry(lane_of(&outcome)) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(LaneState {
+                    first: ordinal,
+                    count: 1,
+                    last_hour: *hour,
+                });
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let state = slot.get_mut();
+                // Two rows of one lane at the same hour: hour order cannot say
+                // which gets which ordinal.
+                if state.last_hour == *hour {
+                    return None;
+                }
+                if ordinal != state.first.checked_add(state.count)? {
+                    return None;
+                }
+                state.count += 1;
+                state.last_hour = *hour;
+            }
+        }
+    }
+    Some(
+        lanes
+            .into_iter()
+            .map(|(lane, state)| (lane, state.first))
+            .collect(),
+    )
+}
+
+/// What one class has accumulated so far: run-encoded hours, and the ordinals
+/// only when they have to be written out.
+struct ClassAccumulator {
+    /// `run_encode`'s output, built as the hours arrive rather than from a held
+    /// list of them. Hours reach a class strictly ascending, so this is the same
+    /// arithmetic `run_encode` does over a sorted vector.
+    runs: Vec<(i32, u32)>,
+    /// Only populated under `explicit` encoding, where the ordinals ARE the
+    /// output and O(rows) is therefore irreducible. Empty under
+    /// `lane_sequential`, which is what the old encoder held and then discarded.
+    ordinals: Vec<u64>,
+    row_count: usize,
+}
+
+impl ClassAccumulator {
+    fn push_hour(&mut self, hour: i32, rows: usize) {
+        if let Some((first, count)) = self.runs.last_mut() {
+            if i64::from(*first) + i64::from(*count) == i64::from(hour) {
+                *count += 1;
+                self.row_count += rows;
+                return;
+            }
+        }
+        self.runs.push((hour, 1));
+        self.row_count += rows;
+    }
+}
+
+/// Compact `outcomes` into the ledger's `domain_gap_outcomes` table.
+///
+/// # What this used to hold, and why it stopped (task #179-1)
+///
+/// Lane GE removed the derived gap ROWS and named this encoder as the largest
+/// remaining term in the finalize gap phase (`runs/ge_gap_stream/RESULTS.md`
+/// residual 2). It built three structures, each O(outcome rows), and none of
+/// them survived into the output under the encoding a real capture uses:
+///
+///   * `lane_ordinal_firsts` collected every lane's `(hour, ordinal)` pairs and
+///     sorted them, to answer a question about ordering;
+///   * a `per_hour` map held one `(domain, ordinal)` per row, to group them;
+///   * the class map held one `u64` ordinal per row, which `lane_sequential`
+///     encoding then DISCARDED.
+///
+/// The output is O(classes + hour runs). Everything above was transient state,
+/// and the only reason it existed is that the input arrives in publication
+/// order rather than in hour order.
+///
+/// So the input is visited in hour order, through a sorted index that is one
+/// row index -- one `usize` -- per row (see [`hour_ordered_index`]). With the
+/// rows arriving
+/// hour-ascending, the lane check needs O(lanes), the per-hour grouping needs
+/// only the hour it is on, and a class keeps its run-encoder state instead of
+/// its rows. The ordinals survive only under `explicit` encoding, where they are
+/// the output and holding them is not a choice.
+///
+/// The emitted JSON is byte-identical to what the previous encoder emitted;
+/// `reference_encode_domain_gap_outcomes` is that encoder, kept verbatim, and
+/// the tests hold the two to each other.
+pub fn encode_domain_gap_outcomes<S: DomainOutcomeSource + ?Sized>(outcomes: &S) -> Value {
+    let order = hour_ordered_index(outcomes);
+    let firsts = lane_ordinal_firsts(outcomes, &order);
+    let explicit = firsts.is_none();
+
+    let mut classes: BTreeMap<(OutcomeClassKey, Vec<CompactDomainId>), ClassAccumulator> =
+        BTreeMap::new();
+    // RECONSTRUCTED each hour, with its live state bounded to one hour. The
+    // binding is reused; its STORAGE is not -- `clear()` drops every map node
+    // and every row `Vec` with its capacity, and the next hour reallocates them
+    // (Codex round 6). What matters for this change is the bound, not the
+    // allocation traffic: a pool would cut the traffic and is not what #179-1
+    // was about.
+    let mut hour_rows: BTreeMap<OutcomeClassKey, Vec<(CompactDomainId, u64)>> = BTreeMap::new();
+
+    let mut at = 0usize;
+    while at < order.len() {
+        let hour = outcomes.hour_at(order[at]);
+        hour_rows.clear();
+        while at < order.len() && outcomes.hour_at(order[at]) == hour {
+            let (domain_id, record) = outcomes.outcome_at(order[at]);
+            let key = OutcomeClassKey {
+                reason: record.reason,
+                part: record.part,
+                queue_capacity: record.queue_capacity,
+                queue_depth: record.queue_depth,
+                queue_dropped: record.queue_dropped,
+                range_start_rel: i64::from(record.range_start_hour_raw)
+                    - i64::from(record.target_hour_raw),
+                range_end_rel: i64::from(record.range_end_hour_raw)
+                    - i64::from(record.target_hour_raw),
+                tick_before: Anchored::from_tick(record.tick_before, record.target_hour_raw),
+                tick_after: Anchored::from_tick(record.tick_after, record.target_hour_raw),
+            };
+            hour_rows
+                .entry(key)
+                .or_default()
+                .push((domain_id, record.outcome_ordinal));
+            at += 1;
+        }
+        // Grouped exactly as `gaps` is: the domain list is formed per hour and
+        // two hours join a run only when their lists are identical.
+        for (key, rows) in hour_rows.iter_mut() {
+            rows.sort_unstable();
+            let domains: Vec<CompactDomainId> = rows.iter().map(|(domain, _)| *domain).collect();
+            let accumulator = classes
+                .entry((key.clone(), domains))
+                .or_insert_with(|| ClassAccumulator {
+                    runs: Vec::new(),
+                    ordinals: Vec::new(),
+                    row_count: 0,
+                });
+            accumulator.push_hour(hour, rows.len());
+            if explicit {
+                // Aligned with this class's expansion order: hours ascending,
+                // and within an hour the class's `domains` order -- which is the
+                // order `rows` is now in.
+                accumulator
+                    .ordinals
+                    .extend(rows.iter().map(|(_, ordinal)| *ordinal));
+            }
+        }
+    }
+
+    let row_count: usize = classes.values().map(|class| class.row_count).sum();
+    let mut table = Vec::with_capacity(classes.len());
+    for ((key, domains), accumulator) in classes {
+        let mut class = Map::new();
+        class.insert("reason".into(), json!(key.reason.wire_name()));
+        class.insert("part".into(), json!(key.part.wire_name()));
+        class.insert("domains".into(), domains_json(&domains));
+        class.insert("queue_capacity".into(), json!(key.queue_capacity));
+        class.insert("queue_depth".into(), json!(key.queue_depth));
+        class.insert("queue_dropped".into(), json!(key.queue_dropped));
+        class.insert("range_start_rel".into(), json!(key.range_start_rel));
+        class.insert("range_end_rel".into(), json!(key.range_end_rel));
+        class.insert("tick_before".into(), key.tick_before.to_json());
+        class.insert("tick_after".into(), key.tick_after.to_json());
+        class.insert("hour_runs".into(), runs_json(&accumulator.runs));
+        if explicit {
+            class.insert("ordinals".into(), json!(accumulator.ordinals));
+        }
+        table.push(Value::Object(class));
+    }
+
+    let mut ledger = Map::new();
+    ledger.insert("row_count".into(), json!(row_count));
+    ledger.insert("class_count".into(), json!(table.len()));
+    match &firsts {
+        Some(firsts) => {
+            ledger.insert("ordinal_encoding".into(), json!("lane_sequential"));
+            ledger.insert(
+                "lane_ordinal_first".into(),
+                Value::Array(
+                    firsts
+                        .iter()
+                        .map(|((domain_id, part), first)| {
+                            json!({
+                                "domain_id": domain_id,
+                                "part": part.wire_name(),
+                                "first": first,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        None => {
+            ledger.insert("ordinal_encoding".into(), json!("explicit"));
+        }
+    }
+    ledger.insert("classes".into(), Value::Array(table));
+    Value::Object(ledger)
+}
+
+
+/// Whether every lane's ordinals can be recovered from hour order alone.
+///
+/// The PRE-CHANGE walk, kept verbatim (task #179-1).
+///
+/// Two conditions, both checked against the real rows rather than assumed:
+/// every lane's `target_hour_raw` values are distinct (otherwise hour order does
+/// not determine which row gets which ordinal, and the decoder would be
+/// guessing), and sorting a lane by hour yields its ordinals contiguously from
+/// the lane's own first. When either fails the encoder writes the ordinals out.
+fn reference_lane_ordinal_firsts(
     outcomes: impl IntoIterator<Item = DomainOutcome>,
 ) -> Option<BTreeMap<LaneKey, u64>> {
     let mut lanes: BTreeMap<LaneKey, Vec<(i32, u64)>> = BTreeMap::new();
@@ -1593,6 +1949,13 @@ fn lane_ordinal_firsts(
     Some(firsts)
 }
 
+/// The PRE-CHANGE encoder, kept VERBATIM as the reference the streaming one
+/// is held byte-identical to (task #179-1).
+///
+/// Not reachable from production: nothing outside this module's tests and the
+/// profile arm calls it. It exists so "the new encoder emits what the old one
+/// emitted" is a checked property rather than a claim.
+///
 /// Compact `outcomes` into the ledger's `domain_gap_outcomes` table.
 ///
 /// Takes an ITERATOR, not a slice, and walks it twice (the `Clone` bound is the
@@ -1601,11 +1964,11 @@ fn lane_ordinal_firsts(
 /// of a session-length structure -- 104 MiB at 68,300 game hours, more than the
 /// entire rest of this component. The compaction's own state is
 /// O(classes + runs); nothing here retains the rows.
-pub fn encode_domain_gap_outcomes<I>(outcomes: I) -> Value
+pub fn reference_encode_domain_gap_outcomes<I>(outcomes: I) -> Value
 where
     I: IntoIterator<Item = DomainOutcome> + Clone,
 {
-    let firsts = lane_ordinal_firsts(outcomes.clone());
+    let firsts = reference_lane_ordinal_firsts(outcomes.clone());
 
     let mut per_hour: BTreeMap<(OutcomeClassKey, i32), Vec<(CompactDomainId, u64)>> =
         BTreeMap::new();
@@ -2006,12 +2369,14 @@ fn expand_domain_gap_outcomes(table: &Value) -> Result<Vec<DomainOutcome>, GapLe
 
 /// Build the whole `compact_stream.gap_ledger` object.
 ///
-/// `outcomes` is an iterator so the caller need not materialize a second copy of
-/// a session-length list; see [`encode_domain_gap_outcomes`].
-pub fn encode_gap_ledger<I>(gaps: &[GapRecord], outcomes: I) -> Value
-where
-    I: IntoIterator<Item = DomainOutcome> + Clone,
-{
+/// `outcomes` is a random-access SOURCE, not a list: the caller need not
+/// materialize a second copy of a session-length list, and the encoder needs to
+/// visit it in hour order. See [`DomainOutcomeSource`] and
+/// [`encode_domain_gap_outcomes`].
+pub fn encode_gap_ledger<S: DomainOutcomeSource + ?Sized>(
+    gaps: &[GapRecord],
+    outcomes: &S,
+) -> Value {
     encode_gap_ledger_from_table(&GapClassTable::from_records(gaps), outcomes)
 }
 
@@ -2020,10 +2385,10 @@ where
 ///
 /// The production entry point. The flat row list never exists on this path: the
 /// derivation streams into the table and the table becomes the JSON.
-pub fn encode_gap_ledger_from_table<I>(gaps: &GapClassTable, outcomes: I) -> Value
-where
-    I: IntoIterator<Item = DomainOutcome> + Clone,
-{
+pub fn encode_gap_ledger_from_table<S: DomainOutcomeSource + ?Sized>(
+    gaps: &GapClassTable,
+    outcomes: &S,
+) -> Value {
     json!({
         "schema": GAP_LEDGER_SCHEMA,
         "version": GAP_LEDGER_VERSION,

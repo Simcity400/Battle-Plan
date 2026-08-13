@@ -534,6 +534,17 @@ impl ReadOnlyScheduler {
         telemetry
     }
 
+    /// Just the eviction total, for a caller that wants to BRACKET it.
+    ///
+    /// [`Self::telemetry`] clones the whole struct and recomputes the custody
+    /// shadow's summary; the phase-lock rendezvous reads this one number twice
+    /// per held iteration and needs neither. The value is the running total the
+    /// scheduler maintains — a caller that wants "how many during my window"
+    /// subtracts two readings and must never sum the readings themselves.
+    pub fn evicted_pending_hours(&self) -> u64 {
+        self.telemetry.evicted_pending_hours
+    }
+
     /// The shadow's own view, for tests and for a host that wants the detail
     /// behind the `rs_shadow_*` counters. Read-only; there is no accessor that
     /// lets a caller step the shadow.

@@ -201,7 +201,7 @@ fn expand(ledger: &Value) -> (Vec<GapRecord>, Vec<DomainOutcome>) {
 fn compacted_ledger_round_trips_every_row() {
     let gaps = mixed_session();
     let outcomes = mixed_outcomes();
-    let ledger = encode_gap_ledger(&gaps, outcomes.iter().copied());
+    let ledger = encode_gap_ledger(&gaps, &outcomes[..]);
     let (back_gaps, back_outcomes) = expand(&ledger);
     assert_eq!(sorted(back_gaps), sorted(gaps));
     assert_eq!(back_outcomes.len(), outcomes.len());
@@ -245,7 +245,7 @@ fn a_manifest_carrying_only_the_old_flat_arrays_is_refused() {
 #[test]
 fn every_hour_and_domain_fact_survives_compaction() {
     let gaps = mixed_session();
-    let ledger = encode_gap_ledger(&gaps, []);
+    let ledger = encode_gap_ledger(&gaps, &[][..]);
     let (back, _) = expand(&ledger);
     assert_eq!(fact_set(&back), fact_set(&gaps));
 }
@@ -264,7 +264,7 @@ fn every_hour_and_domain_fact_survives_compaction() {
 #[test]
 fn a_domain_set_that_changes_hour_to_hour_is_not_a_cartesian_product() {
     let gaps = vec![coverage_row(5, 10, 0), coverage_row(6, 11, 0)];
-    let ledger = encode_gap_ledger(&gaps, []);
+    let ledger = encode_gap_ledger(&gaps, &[][..]);
     let (back, _) = expand(&ledger);
     assert_eq!(back.len(), 2, "expansion invented rows: {back:?}");
     assert_eq!(sorted(back), sorted(gaps));
@@ -277,7 +277,7 @@ fn a_domain_set_that_changes_hour_to_hour_is_not_a_cartesian_product() {
 #[test]
 fn duplicate_rows_at_one_hour_survive_the_run_encoding() {
     let gaps = vec![coverage_row(5, 10, 0), coverage_row(5, 10, 0)];
-    let ledger = encode_gap_ledger(&gaps, []);
+    let ledger = encode_gap_ledger(&gaps, &[][..]);
     let (back, _) = expand(&ledger);
     assert_eq!(back.len(), 2);
     assert_eq!(sorted(back), sorted(gaps));
@@ -304,8 +304,8 @@ fn shared_and_per_domain_rows_do_not_collapse_into_each_other() {
         },
     }];
     let separate = vec![coverage_row(5, 10, 0), coverage_row(5, 11, 0)];
-    let shared_ledger = encode_gap_ledger(&shared, []);
-    let separate_ledger = encode_gap_ledger(&separate, []);
+    let shared_ledger = encode_gap_ledger(&shared, &[][..]);
+    let separate_ledger = encode_gap_ledger(&separate, &[][..]);
     assert_ne!(shared_ledger, separate_ledger);
     assert_eq!(sorted(expand(&shared_ledger).0), sorted(shared));
     assert_eq!(sorted(expand(&separate_ledger).0), sorted(separate));
@@ -328,7 +328,7 @@ fn repeated_shared_rows_keep_their_multiplicity() {
         },
     };
     let gaps = vec![row.clone(), row.clone(), row];
-    let ledger = encode_gap_ledger(&gaps, []);
+    let ledger = encode_gap_ledger(&gaps, &[][..]);
     let (back, _) = expand(&ledger);
     assert_eq!(back.len(), 3);
     assert_eq!(sorted(back), sorted(gaps));
@@ -371,7 +371,7 @@ fn a_tick_offset_too_wide_for_i64_is_stated_absolutely() {
             outcome_ordinal: 0,
         },
     )];
-    let ledger = encode_gap_ledger(&gaps, outcomes.iter().copied());
+    let ledger = encode_gap_ledger(&gaps, &outcomes[..]);
     let text = serde_json::to_string(&ledger).expect("the ledger serializes");
     assert!(text.contains("\"abs\""), "no absolute spelling in {text}");
     let (back_gaps, back_outcomes) = expand(&ledger);
@@ -396,7 +396,7 @@ fn a_record_spanning_the_whole_hour_space_round_trips() {
             next_hour: i32::MAX,
         },
     }];
-    let ledger = encode_gap_ledger(&gaps, []);
+    let ledger = encode_gap_ledger(&gaps, &[][..]);
     let (back, _) = expand(&ledger);
     assert_eq!(sorted(back), sorted(gaps));
 }
@@ -411,14 +411,14 @@ fn a_record_spanning_the_whole_hour_space_round_trips() {
 /// with a `classes` array regardless of what it says it is.
 #[test]
 fn an_unknown_schema_or_version_is_refused_rather_than_guessed() {
-    let mut ledger = encode_gap_ledger(&mixed_session(), []);
+    let mut ledger = encode_gap_ledger(&mixed_session(), &[][..]);
     ledger["version"] = json!(GAP_LEDGER_VERSION + 1);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })),
         Err(GapLedgerError::UnknownVersion { .. })
     ));
 
-    let mut renamed = encode_gap_ledger(&mixed_session(), []);
+    let mut renamed = encode_gap_ledger(&mixed_session(), &[][..]);
     renamed["schema"] = json!("some-other-ledger");
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": renamed })),
@@ -446,7 +446,7 @@ fn a_manifest_with_no_ledger_at_all_is_an_error() {
 #[test]
 fn the_declared_row_count_is_checked_against_the_expansion() {
     let gaps = mixed_session();
-    let mut ledger = encode_gap_ledger(&gaps, []);
+    let mut ledger = encode_gap_ledger(&gaps, &[][..]);
     let classes = ledger["gaps"]["classes"].as_array_mut().expect("classes");
     classes.pop();
     let remaining = classes.len();
@@ -467,7 +467,7 @@ fn the_declared_row_count_is_checked_against_the_expansion() {
 /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: dropping the zero-count check.
 #[test]
 fn a_zero_length_hour_run_is_refused() {
-    let mut ledger = encode_gap_ledger(&mixed_session(), []);
+    let mut ledger = encode_gap_ledger(&mixed_session(), &[][..]);
     ledger["gaps"]["classes"][0]["hour_runs"] = json!([[100, 0]]);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })),
@@ -483,14 +483,14 @@ fn a_zero_length_hour_run_is_refused() {
 /// non-empty and not that the run LIST is.
 #[test]
 fn a_class_with_no_hour_runs_at_all_is_refused() {
-    let mut ledger = encode_gap_ledger(&mixed_session(), mixed_outcomes());
+    let mut ledger = encode_gap_ledger(&mixed_session(), &mixed_outcomes()[..]);
     ledger["gaps"]["classes"][0]["hour_runs"] = json!([]);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })),
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut outcomes_ledger = encode_gap_ledger(&[], mixed_outcomes());
+    let mut outcomes_ledger = encode_gap_ledger(&[], &mixed_outcomes()[..]);
     outcomes_ledger["domain_gap_outcomes"]["classes"][0]["hour_runs"] = json!([]);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": outcomes_ledger })),
@@ -509,7 +509,7 @@ fn a_class_with_no_hour_runs_at_all_is_refused() {
 /// the refusal to `shared`, which would refuse every whole-clock skipped hour.
 #[test]
 fn a_class_that_names_no_domain_is_refused_except_where_empty_means_all() {
-    let mut gaps = encode_gap_ledger(&mixed_session(), []);
+    let mut gaps = encode_gap_ledger(&mixed_session(), &[][..]);
     let per_domain = gaps["gaps"]["classes"]
         .as_array()
         .expect("classes")
@@ -522,7 +522,7 @@ fn a_class_that_names_no_domain_is_refused_except_where_empty_means_all() {
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut outcomes = encode_gap_ledger(&[], mixed_outcomes());
+    let mut outcomes = encode_gap_ledger(&[], &mixed_outcomes()[..]);
     outcomes["domain_gap_outcomes"]["classes"][0]["domains"] = json!([]);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": outcomes })),
@@ -531,7 +531,7 @@ fn a_class_that_names_no_domain_is_refused_except_where_empty_means_all() {
 
     // And the exception still reads: `mixed_session` carries a whole-clock
     // skipped hour, which is a `shared` class with an empty domain list.
-    let clean = encode_gap_ledger(&mixed_session(), []);
+    let clean = encode_gap_ledger(&mixed_session(), &[][..]);
     assert!(clean["gaps"]["classes"]
         .as_array()
         .expect("classes")
@@ -552,7 +552,7 @@ fn a_class_that_names_no_domain_is_refused_except_where_empty_means_all() {
 /// them ascending and maximal, or ignoring `class_count`.
 #[test]
 fn a_non_canonical_run_list_or_class_count_is_refused() {
-    let mut split = encode_gap_ledger(&mixed_session(), []);
+    let mut split = encode_gap_ledger(&mixed_session(), &[][..]);
     {
         let classes = split["gaps"]["classes"].as_array_mut().expect("classes");
         let mut done = false;
@@ -579,7 +579,7 @@ fn a_non_canonical_run_list_or_class_count_is_refused() {
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut miscounted = encode_gap_ledger(&mixed_session(), []);
+    let mut miscounted = encode_gap_ledger(&mixed_session(), &[][..]);
     miscounted["gaps"]["class_count"] = json!(999);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": miscounted })),
@@ -603,35 +603,35 @@ fn a_field_this_format_does_not_define_is_refused_everywhere() {
     let gaps = mixed_session();
     let outcomes = mixed_outcomes();
 
-    let mut extra_gap_field = encode_gap_ledger(&gaps, []);
+    let mut extra_gap_field = encode_gap_ledger(&gaps, &[][..]);
     extra_gap_field["gaps"]["classes"][0]["novel_field"] = json!(1);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": extra_gap_field })),
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut extra_witness_field = encode_gap_ledger(&gaps, []);
+    let mut extra_witness_field = encode_gap_ledger(&gaps, &[][..]);
     extra_witness_field["gaps"]["classes"][0]["witness"]["novel"] = json!(1);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": extra_witness_field })),
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut extra_outcome_field = encode_gap_ledger(&[], outcomes.iter().copied());
+    let mut extra_outcome_field = encode_gap_ledger(&[], &outcomes[..]);
     extra_outcome_field["domain_gap_outcomes"]["classes"][0]["repeat"] = json!(1);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": extra_outcome_field })),
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut extra_tick_field = encode_gap_ledger(&[], outcomes.iter().copied());
+    let mut extra_tick_field = encode_gap_ledger(&[], &outcomes[..]);
     extra_tick_field["domain_gap_outcomes"]["classes"][0]["tick_before"]["novel"] = json!(1);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": extra_tick_field })),
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut extra_lane_field = encode_gap_ledger(&[], outcomes.iter().copied());
+    let mut extra_lane_field = encode_gap_ledger(&[], &outcomes[..]);
     extra_lane_field["domain_gap_outcomes"]["lane_ordinal_first"][0]["novel"] = json!(1);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": extra_lane_field })),
@@ -648,7 +648,7 @@ fn a_field_this_format_does_not_define_is_refused_everywhere() {
 #[test]
 fn a_table_field_this_format_does_not_define_is_refused() {
     for table in ["gaps", "domain_gap_outcomes"] {
-        let mut ledger = encode_gap_ledger(&mixed_session(), mixed_outcomes().iter().copied());
+        let mut ledger = encode_gap_ledger(&mixed_session(), &mixed_outcomes()[..]);
         ledger[table]["novel_table_field"] = json!(1);
         assert!(
             matches!(
@@ -660,7 +660,7 @@ fn a_table_field_this_format_does_not_define_is_refused() {
     }
 
     // AND THE LEDGER ITSELF, the last container.
-    let mut ledger = encode_gap_ledger(&mixed_session(), mixed_outcomes().iter().copied());
+    let mut ledger = encode_gap_ledger(&mixed_session(), &mixed_outcomes()[..]);
     ledger["novel_ledger_field"] = json!(1);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })),
@@ -678,7 +678,7 @@ fn a_table_field_this_format_does_not_define_is_refused() {
 #[test]
 fn the_ledger_note_must_be_a_string() {
     for bad in [json!({ "novel_nested_field": 1 }), json!([1, 2]), json!(7)] {
-        let mut ledger = encode_gap_ledger(&mixed_session(), mixed_outcomes().iter().copied());
+        let mut ledger = encode_gap_ledger(&mixed_session(), &mixed_outcomes()[..]);
         ledger["note"] = bad;
         assert!(matches!(
             read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })),
@@ -686,7 +686,7 @@ fn the_ledger_note_must_be_a_string() {
         ));
     }
     // A DIFFERENT string is still fine: the prose is not load-bearing.
-    let mut ledger = encode_gap_ledger(&mixed_session(), mixed_outcomes().iter().copied());
+    let mut ledger = encode_gap_ledger(&mixed_session(), &mixed_outcomes()[..]);
     ledger["note"] = json!("anything at all");
     assert!(read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })).is_ok());
 }
@@ -701,7 +701,7 @@ fn the_ledger_note_must_be_a_string() {
 /// list, or bounding hours instead of rows.
 #[test]
 fn a_singleton_shared_class_and_an_unbounded_repeat_are_both_refused() {
-    let mut singleton = encode_gap_ledger(&mixed_session(), []);
+    let mut singleton = encode_gap_ledger(&mixed_session(), &[][..]);
     let shared = singleton["gaps"]["classes"]
         .as_array()
         .expect("classes")
@@ -738,7 +738,7 @@ fn a_singleton_shared_class_and_an_unbounded_repeat_are_both_refused() {
 /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: expanding a run with `as i32`.
 #[test]
 fn a_run_that_walks_past_the_last_hour_is_refused() {
-    let mut ledger = encode_gap_ledger(&mixed_session(), []);
+    let mut ledger = encode_gap_ledger(&mixed_session(), &[][..]);
     ledger["gaps"]["classes"][0]["hour_runs"] = json!([[i32::MAX, 4u32]]);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })),
@@ -759,7 +759,7 @@ fn a_run_that_walks_past_the_last_hour_is_refused() {
 /// instead of `i128`.
 #[test]
 fn extreme_decoded_offsets_are_refused_rather_than_wrapped() {
-    let mut ledger = encode_gap_ledger(&mixed_session(), []);
+    let mut ledger = encode_gap_ledger(&mixed_session(), &[][..]);
     ledger["gaps"]["classes"][0]["span_hours"] = json!(i64::MAX);
     ledger["gaps"]["classes"][0]["hour_runs"] = json!([[i32::MAX, 1]]);
     assert!(matches!(
@@ -777,7 +777,7 @@ fn extreme_decoded_offsets_are_refused_rather_than_wrapped() {
             next_hour: 6,
         },
     }];
-    let mut witness_ledger = encode_gap_ledger(&gaps, []);
+    let mut witness_ledger = encode_gap_ledger(&gaps, &[][..]);
     witness_ledger["gaps"]["classes"][0]["witness"]["next_hour_rel"] = json!(i64::MAX);
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": witness_ledger })),
@@ -801,7 +801,7 @@ fn an_anchored_field_with_both_spellings_is_refused() {
             tick_end: 6,
         },
     }];
-    let mut ledger = encode_gap_ledger(&gaps, []);
+    let mut ledger = encode_gap_ledger(&gaps, &[][..]);
     ledger["gaps"]["classes"][0]["witness"]["tick_start"] = json!({ "rel": 0, "abs": 5 });
     assert!(matches!(
         read_compact_stream_gap_ledger(&json!({ "gap_ledger": ledger })),
@@ -820,7 +820,7 @@ fn an_anchored_field_with_both_spellings_is_refused() {
 #[test]
 fn lane_sequential_ordinals_are_derived_and_correct() {
     let outcomes = mixed_outcomes();
-    let ledger = encode_gap_ledger(&[], outcomes.iter().copied());
+    let ledger = encode_gap_ledger(&[], &outcomes[..]);
     assert_eq!(
         ledger["domain_gap_outcomes"]["ordinal_encoding"],
         json!("lane_sequential")
@@ -847,7 +847,7 @@ fn ordinals_that_hour_order_cannot_explain_are_written_out() {
         outcome(10, 101, 3, DomainGapReason::Backpressure),
         outcome(10, 102, 91, DomainGapReason::Backpressure),
     ];
-    let ledger = encode_gap_ledger(&[], outcomes.iter().copied());
+    let ledger = encode_gap_ledger(&[], &outcomes[..]);
     assert_eq!(
         ledger["domain_gap_outcomes"]["ordinal_encoding"],
         json!("explicit")
@@ -869,7 +869,7 @@ fn two_outcomes_in_one_lane_at_one_hour_force_explicit_ordinals() {
         outcome(10, 100, 0, DomainGapReason::Backpressure),
         outcome(10, 100, 1, DomainGapReason::Torn),
     ];
-    let ledger = encode_gap_ledger(&[], outcomes.iter().copied());
+    let ledger = encode_gap_ledger(&[], &outcomes[..]);
     assert_eq!(
         ledger["domain_gap_outcomes"]["ordinal_encoding"],
         json!("explicit")
@@ -890,7 +890,7 @@ fn two_outcomes_in_one_lane_at_one_hour_force_explicit_ordinals() {
 fn an_unused_or_duplicated_lane_entry_is_refused() {
     let outcomes = mixed_outcomes();
 
-    let mut unused = encode_gap_ledger(&[], outcomes.iter().copied());
+    let mut unused = encode_gap_ledger(&[], &outcomes[..]);
     unused["domain_gap_outcomes"]["lane_ordinal_first"]
         .as_array_mut()
         .expect("lane table")
@@ -900,7 +900,7 @@ fn an_unused_or_duplicated_lane_entry_is_refused() {
         Err(GapLedgerError::Malformed(_))
     ));
 
-    let mut duplicated = encode_gap_ledger(&[], outcomes.iter().copied());
+    let mut duplicated = encode_gap_ledger(&[], &outcomes[..]);
     let first = duplicated["domain_gap_outcomes"]["lane_ordinal_first"][0].clone();
     duplicated["domain_gap_outcomes"]["lane_ordinal_first"]
         .as_array_mut()
@@ -923,7 +923,7 @@ fn an_unused_or_duplicated_lane_entry_is_refused() {
 fn the_two_ordinal_encodings_do_not_carry_each_others_fields() {
     let outcomes = mixed_outcomes();
 
-    let mut sequential = encode_gap_ledger(&[], outcomes.iter().copied());
+    let mut sequential = encode_gap_ledger(&[], &outcomes[..]);
     assert_eq!(
         sequential["domain_gap_outcomes"]["ordinal_encoding"],
         json!("lane_sequential")
@@ -940,7 +940,7 @@ fn the_two_ordinal_encodings_do_not_carry_each_others_fields() {
         outcome(10, 100, 0, DomainGapReason::Backpressure),
         outcome(10, 100, 1, DomainGapReason::Torn),
     ];
-    let mut explicit = encode_gap_ledger(&[], ambiguous.iter().copied());
+    let mut explicit = encode_gap_ledger(&[], &ambiguous[..]);
     assert_eq!(
         explicit["domain_gap_outcomes"]["ordinal_encoding"],
         json!("explicit")
@@ -969,7 +969,7 @@ fn a_lane_sequential_ledger_over_ambiguous_rows_is_refused() {
         outcome(10, 100, 0, DomainGapReason::Backpressure),
         outcome(10, 100, 1, DomainGapReason::Torn),
     ];
-    let mut ledger = encode_gap_ledger(&[], outcomes.iter().copied());
+    let mut ledger = encode_gap_ledger(&[], &outcomes[..]);
     let table = ledger["domain_gap_outcomes"]
         .as_object_mut()
         .expect("outcome table");
@@ -1021,7 +1021,7 @@ fn the_compact_shape_is_far_smaller_than_the_flat_one_on_a_repetitive_session() 
     }))
     .expect("flat serializes")
     .len();
-    let compact = serde_json::to_vec(&encode_gap_ledger(&gaps, outcomes.iter().copied()))
+    let compact = serde_json::to_vec(&encode_gap_ledger(&gaps, &outcomes[..]))
         .expect("compact serializes")
         .len();
     assert!(
@@ -1030,7 +1030,7 @@ fn the_compact_shape_is_far_smaller_than_the_flat_one_on_a_repetitive_session() 
     );
     // And it still says everything the flat shape did.
     let (back_gaps, back_outcomes) =
-        read_compact_stream_gap_ledger(&json!({ "gap_ledger": encode_gap_ledger(&gaps, outcomes.iter().copied()) }))
+        read_compact_stream_gap_ledger(&json!({ "gap_ledger": encode_gap_ledger(&gaps, &outcomes[..]) }))
             .expect("expands");
     assert_eq!(fact_set(&back_gaps), fact_set(&gaps));
     assert_eq!(back_outcomes.len(), outcomes.len());
@@ -1095,7 +1095,7 @@ fn the_cross_language_conformance_vector_matches_this_encoder() {
                  scripts/test_gap_ledger.py, so the Rust and Python expanders cannot \
                  drift apart. Rows are sorted by their own serialization; `h4gp_hex` is \
                  absent because the ledger does not carry it.",
-        "gap_ledger": encode_gap_ledger(&gaps, outcomes.iter().copied()),
+        "gap_ledger": encode_gap_ledger(&gaps, &outcomes[..]),
         "expected_gaps": expected_gaps,
         "expected_domain_gap_outcomes": expected_outcomes,
     });
@@ -1145,7 +1145,7 @@ fn no_ledger_key_contains_a_dot() {
         }
     }
     walk(
-        &encode_gap_ledger(&mixed_session(), mixed_outcomes()),
+        &encode_gap_ledger(&mixed_session(), &mixed_outcomes()[..]),
         "gap_ledger",
     );
 }
@@ -1339,5 +1339,206 @@ fn the_class_table_is_smaller_than_its_rows_and_the_saving_grows() {
         previous > 100.0,
         "10,000 hours of one stable domain set should compact by far more than 100x, \
          got {previous:.1}x"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task #179-1: the streaming encoder emits what the old one emitted
+// ---------------------------------------------------------------------------
+
+/// Outcomes in PUBLICATION order rather than hour order, which is the shape a
+/// real `summary.domain_gaps` has: an H4DG range may begin before the frame that
+/// reported it, so the list is ordered by the frame, not by the hour it
+/// describes (`main.rs`: "so `summary.domain_gaps` is not ordered by [hour]").
+///
+/// The generator interleaves three lanes at different rates and then rotates the
+/// list, so nothing about the input's order can be assumed by either encoder.
+fn out_of_order_outcomes(hours: i32) -> Vec<DomainOutcome> {
+    let mut outcomes = Vec::new();
+    let mut next: BTreeMap<CompactDomainId, u64> = BTreeMap::new();
+    for step in 0..hours {
+        let hour = 60_832_235 + step;
+        for domain in [21u16, 33, 47] {
+            if domain == 33 && step % 2 == 1 {
+                continue;
+            }
+            if domain == 47 && step % 5 != 0 {
+                continue;
+            }
+            let ordinal = next.entry(domain).or_default();
+            outcomes.push((
+                domain,
+                DomainGapRecordV1 {
+                    reason: if step % 7 == 3 {
+                        DomainGapReason::Backpressure
+                    } else {
+                        DomainGapReason::Overrun
+                    },
+                    part: if domain == 47 { DomainGapPart::Event } else { DomainGapPart::State },
+                    target_hour_raw: hour,
+                    range_start_hour_raw: hour,
+                    range_end_hour_raw: hour,
+                    outcome_ordinal: *ordinal,
+                    queue_capacity: 64,
+                    queue_depth: 1,
+                    queue_dropped: 0,
+                    tick_before: 0,
+                    tick_after: 0,
+                },
+            ));
+            *ordinal += 1;
+        }
+    }
+    // The rotation is what makes this an ORDER test rather than a content test:
+    // the rows are identical, only their arrival order moves.
+    let split = outcomes.len() / 3;
+    outcomes.rotate_left(split);
+    outcomes
+}
+
+/// THE STREAMING ENCODER EMITS EXACTLY WHAT THE OLD ONE EMITTED.
+///
+/// `reference_encode_domain_gap_outcomes` is the pre-#179-1 encoder, kept
+/// verbatim. It builds three O(rows) structures; the shipping one walks a sorted
+/// index instead. A size win that changed the document would be worthless, so
+/// the two are held to the SERIALIZED BYTES, not to a structural comparison that
+/// could accept a reordered map.
+///
+/// Both encodings are covered: `lane_sequential`, which is what a real capture
+/// produces and where the old encoder's ordinals were built and then discarded,
+/// and `explicit`, where the ordinals are the output and holding them is not a
+/// choice. The second fixture makes two rows of one lane share an hour, which is
+/// the condition that forces `explicit`.
+///
+/// kills: any change to the streaming encoder's grouping, class key, run
+/// encoding, ordinal placement or field order. Specifically -- sort the index by
+/// something other than `target_hour_raw`; drop the per-hour `rows.sort_unstable`
+/// (the domain list and the ordinals then disagree with the reference); or
+/// accumulate `row_count` from the runs rather than from the rows.
+#[test]
+fn the_streaming_encoder_is_byte_identical_to_the_walk_it_replaced() {
+    for hours in [1i32, 2, 7, 60, 400] {
+        let outcomes = out_of_order_outcomes(hours);
+        let streamed = serde_json::to_vec(&encode_domain_gap_outcomes(&outcomes[..])).unwrap();
+        let reference =
+            serde_json::to_vec(&reference_encode_domain_gap_outcomes(outcomes.iter().copied()))
+                .unwrap();
+        assert_eq!(
+            streamed,
+            reference,
+            "the two encoders disagree at {hours} hours:\n  streamed  {}\n  reference {}",
+            String::from_utf8_lossy(&streamed),
+            String::from_utf8_lossy(&reference),
+        );
+        // And it must still be the encoding a real capture produces, or this
+        // would be an equality proof over the branch nobody runs.
+        let ledger = encode_domain_gap_outcomes(&outcomes[..]);
+        assert_eq!(ledger["ordinal_encoding"], "lane_sequential");
+        assert_eq!(
+            ledger["row_count"].as_u64(),
+            Some(outcomes.len() as u64),
+            "every row must be accounted for at {hours} hours"
+        );
+    }
+
+    // The `explicit` arm: two rows of one lane at the same hour, which hour
+    // order cannot disambiguate.
+    let mut ambiguous = out_of_order_outcomes(40);
+    let mut twin = ambiguous[0];
+    twin.1.outcome_ordinal = u64::MAX / 2;
+    ambiguous.push(twin);
+    let streamed = serde_json::to_vec(&encode_domain_gap_outcomes(&ambiguous[..])).unwrap();
+    let reference =
+        serde_json::to_vec(&reference_encode_domain_gap_outcomes(ambiguous.iter().copied()))
+            .unwrap();
+    assert_eq!(streamed, reference, "the two encoders disagree on the explicit arm");
+    assert_eq!(
+        encode_domain_gap_outcomes(&ambiguous[..])["ordinal_encoding"],
+        "explicit",
+        "this fixture must exercise the arm it was built for"
+    );
+}
+
+/// AND IT GIVES EVERY ROW BACK. A smaller encoder that lost a row would pass a
+/// byte-identity test against an encoder that lost the same row.
+///
+/// kills: any change that drops or duplicates a row on the way through the
+/// hour-ordered walk -- for instance advancing the per-hour cursor past a row,
+/// or reusing `hour_rows` without clearing it.
+#[test]
+fn the_streaming_encoder_expands_back_to_its_own_input() {
+    for hours in [1i32, 7, 400] {
+        let outcomes = out_of_order_outcomes(hours);
+        let ledger = encode_gap_ledger(&[], &outcomes[..]);
+        let (_, back) =
+            read_compact_stream_gap_ledger(&serde_json::json!({ "gap_ledger": ledger }))
+                .expect("the ledger must expand");
+        let mut expected = outcomes.clone();
+        expected.sort_by_key(|(domain, record)| (record.target_hour_raw, *domain));
+        let mut observed = back;
+        observed.sort_by_key(|(domain, record)| (record.target_hour_raw, *domain));
+        assert_eq!(observed, expected, "a row was lost or invented at {hours} hours");
+    }
+}
+
+/// UNDER `lane_sequential` NO CLASS CARRIES ORDINALS, WHICH IS THE TERM THAT
+/// WENT AWAY.
+///
+/// The equality proof above says the OUTPUT did not change. This says the point
+/// of the change happened. The old encoder built one `u64` ordinal per row into
+/// its class map and then, under `lane_sequential`, threw them away when it
+/// emitted -- pure transient state, proportional to the session. The streaming
+/// encoder accumulates ordinals only when the encoding is `explicit`, where they
+/// ARE the output and holding them is not a choice.
+///
+/// This is a property of the encoder rather than of a fixture, which the first
+/// draft of this test was not: it asserted a stable class COUNT across session
+/// lengths, and the class key is anchored per hour, so it was measuring the
+/// fixture's tick values.
+///
+/// The sorted index is O(rows) by construction and is NOT claimed away: eight
+/// bytes a row against the ~40 the three maps held, named as the residual it is
+/// in `runs/hn_ruled_closures/RESULTS.txt`. The bytes are measured by the
+/// profile arm, not asserted here.
+///
+/// WHAT IT DOES NOT SEE, because it reads the JSON and nothing else: filling
+/// `ClassAccumulator::ordinals` unconditionally while still EMITTING them
+/// conditionally would pass here (Codex round 6). That is the memory half, and
+/// it is measured rather than asserted -- `hn_outcome_encoder_profile` bounds
+/// the streaming arm's transient bytes per outcome row, and one retained `u64`
+/// a row breaks that bound.
+///
+/// kills: emit an `ordinals` field under `lane_sequential`, or stop emitting one
+/// under `explicit`.
+#[test]
+fn the_streaming_encoder_keeps_no_ordinals_under_lane_sequential() {
+    let outcomes = out_of_order_outcomes(500);
+    let ledger = encode_domain_gap_outcomes(&outcomes[..]);
+    assert_eq!(ledger["ordinal_encoding"], "lane_sequential");
+    assert_eq!(ledger["row_count"].as_u64(), Some(outcomes.len() as u64));
+    let classes = ledger["classes"].as_array().expect("classes");
+    assert!(!classes.is_empty());
+    for class in classes {
+        assert!(
+            class.get("ordinals").is_none(),
+            "a lane_sequential class carries no ordinals: {class}"
+        );
+    }
+
+    // And the explicit arm still writes them, so the absence above is a
+    // decision the encoder makes rather than a field it forgot how to emit.
+    let mut ambiguous = outcomes;
+    let mut twin = ambiguous[0];
+    twin.1.outcome_ordinal = u64::MAX / 2;
+    ambiguous.push(twin);
+    let explicit = encode_domain_gap_outcomes(&ambiguous[..]);
+    assert_eq!(explicit["ordinal_encoding"], "explicit");
+    assert!(
+        explicit["classes"]
+            .as_array()
+            .expect("classes")
+            .iter()
+            .any(|class| class.get("ordinals").is_some()),
+        "the explicit arm must write the ordinals out"
     );
 }

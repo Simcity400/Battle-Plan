@@ -161,7 +161,7 @@ fn main() {
             // compact arm holds is the classes, not the rows.
             let table = gap_ledger::GapClassTable::from_records(&gaps);
             let ledger =
-                gap_ledger::encode_gap_ledger_from_table(&table, outcomes.iter().copied());
+                gap_ledger::encode_gap_ledger_from_table(&table, &outcomes[..]);
             // The rows are charged too: THIS BIN still holds them (they are the
             // synthetic session it generated), even though production no longer
             // does. Charging only the table would publish a compact arm that is

@@ -977,7 +977,7 @@ fn the_guard_publishes_the_pair_it_compared_and_the_arm_that_pair_selects() {
     );
 
     // The production path, not the pure rule: this is what a capture runs.
-    let outcome = rendezvous_with_hour_boundary(&shape, Instant::now() + Duration::from_secs(30));
+    let outcome = rendezvous_with_hour_boundary(&shape, Instant::now() + Duration::from_secs(30), || 0);
     assert_eq!(
         outcome,
         PhaseLockOutcome::Started(PhaseLockStart::SweepExceedsHour),
@@ -1036,7 +1036,7 @@ fn a_sweep_that_fits_the_hour_publishes_an_armed_guard() {
     let half_yield_us = shape.half_yield_us().expect("five builds is the estimate");
     assert!(half_yield_us < PERIOD_US, "fixture check");
 
-    let outcome = rendezvous_with_hour_boundary(&shape, Instant::now() + Duration::from_secs(30));
+    let outcome = rendezvous_with_hour_boundary(&shape, Instant::now() + Duration::from_secs(30), || 0);
     assert!(
         !matches!(
             outcome,
@@ -1075,6 +1075,7 @@ fn an_unestimated_decision_publishes_no_pair_and_the_drain_does_not_repeat() {
     let outcome = rendezvous_with_hour_boundary(
         &SweepShapeEstimator::new(),
         Instant::now() + Duration::from_secs(30),
+        || 0,
     );
     assert_eq!(
         outcome,
@@ -1119,6 +1120,7 @@ fn a_rendezvous_past_the_deadline_publishes_no_guard_inputs() {
     let outcome = rendezvous_with_hour_boundary(
         &sweep_shape_at(20_000, 20_000),
         Instant::now() - Duration::from_secs(1),
+        || 0,
     );
     assert_eq!(outcome, PhaseLockOutcome::NotEvaluated);
     assert_eq!(
@@ -1382,3 +1384,285 @@ fn a_skip_across_a_clock_outage_is_charged_the_whole_unobserved_window() {
     );
 }
 
+
+// ---------------------------------------------------------------------------
+// What the hold gave up (#181-3)
+// ---------------------------------------------------------------------------
+
+/// A runtime around a real `ReadOnlyScheduler`, with an observer thread that
+/// does nothing: in these tests the TEST is the observer.
+fn rendezvous_runtime(scheduler: ReadOnlyScheduler) -> ReadOnlySchedulerRuntime {
+    ReadOnlySchedulerRuntime {
+        shared: Arc::new((Mutex::new(scheduler), Condvar::new())),
+        shutdown: Arc::new(AtomicBool::new(false)),
+        unexpected_exit: Arc::new(AtomicBool::new(false)),
+        handle: Some(thread::spawn(|| {})),
+        date_addr: 0,
+        module_base: 0,
+    }
+}
+
+/// Seed the process phase state so the rule's remaining-time arm fires: enough
+/// intervals of `period_us` to fill the median window, with the newest boundary
+/// `lateness_us` ago.
+///
+/// Waits first if the process is younger than the ladder it is about to lay
+/// down. Without that the early rungs clamp at the origin, the intervals stop
+/// being uniform, and the median period the rule reads is not the one the test
+/// asked for — which is a fixture that silently tests a different branch.
+fn seed_phase_for_a_hold(period_us: u64, lateness_us: u64) {
+    let ladder_us = period_us * HOUR_PERIOD_SAMPLES as u64 + lateness_us;
+    loop {
+        let now_us = hour_frontier_observation::micros_since_origin(Instant::now());
+        let Some(shortfall) = ladder_us.checked_sub(now_us) else {
+            break;
+        };
+        thread::sleep(Duration::from_micros(shortfall + 1_000));
+    }
+    let newest = hour_frontier_observation::micros_since_origin(Instant::now())
+        .saturating_sub(lateness_us);
+    let oldest = newest - period_us * HOUR_PERIOD_SAMPLES as u64;
+    for step in 0..=HOUR_PERIOD_SAMPLES as u64 {
+        hour_phase::note_boundary(
+            i32::try_from(step).unwrap(),
+            oldest + step * period_us,
+        );
+    }
+}
+
+fn t45_sweep_shape() -> SweepShapeEstimator {
+    let mut shape = SweepShapeEstimator::new();
+    for _ in 0..SWEEP_SHAPE_SAMPLES {
+        shape.observe(T45_FANOUT_ORIGIN_US, T45_CRIT_US);
+    }
+    shape
+}
+
+/// THE HOLD SAYS WHAT IT GAVE UP - the counter half.
+///
+/// Before this a hold published how often it happened (`lw_phase_hold_locked`,
+/// `lw_phase_hold_timeout`) and what it cost in idle (`lw_phase_hold_us`), and
+/// nothing about the consequence that matters: whether the boundary it woke on
+/// cost a pending hour. That fact lived only in the scheduler's session total
+/// `rs_evicted_pending_hours`, which also counts evictions from iterations no
+/// hold was involved in, so no reader could attribute one to the other (#181-3).
+///
+/// This half holds the counter: both arms charge it, it accumulates across the
+/// holds since the last drain, and the drain zeroes it. The ORDERING half - that
+/// the number reaching these calls is a bracket over the scheduler's running
+/// total rather than a reading of it - is
+/// `the_rendezvous_brackets_the_eviction_total_around_the_park`.
+///
+/// NO CLOCK. The first draft drove the real rendezvous against a thread that
+/// evicted an hour 20 ms into a 55.5 ms park; under the full parallel suite the
+/// park overshot its budget and timed out first, so it was flaky. What it was
+/// reaching for is these two facts, and neither needs a race to state.
+///
+/// kills: drop `HOLD_EVICTED_PENDING.fetch_add` from `record_hold_locked` or
+/// from `record_hold_timeout`, or drop the counter from
+/// `hour_phase::take_counters`, or stop zeroing it on the drain.
+#[test]
+fn a_hold_reports_the_pending_hours_the_scheduler_gave_up_while_it_was_parked() {
+    let _guard = phase_global();
+    hour_phase::reset_for_test();
+
+    // A locked hold that cost two hours, and a timed-out hold that cost one.
+    // The timed-out arm is charged deliberately: a hold that bought nothing can
+    // still have cost an hour, and reporting only the locked arm would hide
+    // exactly the case worth seeing.
+    hour_phase::record_hold_locked(1_000, 2);
+    hour_phase::record_hold_timeout(500, 1);
+
+    let (locked, timed_out, held_us, evicted, reasons) = hour_phase::take_counters();
+    assert_eq!((locked, timed_out), (1, 1));
+    assert_eq!(held_us, 1_500, "idle is still both arms together");
+    assert_eq!(
+        evicted, 3,
+        "the disposition accumulates over the holds the frame drains, both arms"
+    );
+    assert_eq!(reasons, [0; 5], "no un-held start was recorded here");
+
+    // DRAINED, like every other lane-wall counter: what this frame published
+    // must not be published again by the next one.
+    let (_, _, _, evicted_again, _) = hour_phase::take_counters();
+    assert_eq!(
+        evicted_again, 0,
+        "a counter the probe drains must be zero on the next read, or every \
+         frame after the first republishes the same hours"
+    );
+}
+
+/// THE HOLD SAYS WHAT IT GAVE UP - the ordering half.
+///
+/// The number the counter half receives has to be a BRACKET over the scheduler's
+/// running eviction total: read once before the park, once after, subtracted.
+/// Reading it once and passing the absolute value would publish the session
+/// total as though it were this hold's cost, which is the same arithmetic error
+/// that made the whole `rs_*` family unreadable.
+///
+/// THIS IS A SHAPE GATE OVER THE PRODUCER SOURCE, AND ITS LIMIT IS STATED. It
+/// catches deletion, reordering, and every rewrite that changes one of the
+/// spellings below. It CANNOT catch a semantically-equivalent rewrite that
+/// preserves them: four review rounds produced four such escapes in turn
+/// (`let (evicted_pending_hours,) =`, `let evicted_before = 0;`,
+/// `let (evicted_before,) = (0_u64,);` ...), and each patch invited the next.
+/// The rendezvous is a method on a runtime that owns an observer thread and
+/// parks on a process-global condvar, so there is no seam to call it through
+/// without the clock race that made the first attempt flaky. That is the
+/// residual, named here rather than papered over: this gate is a tripwire, not
+/// a proof, and the arithmetic it guards is proved instead by
+/// `a_hold_reports_the_pending_hours_the_scheduler_gave_up_while_it_was_parked`
+/// over the counters and by the wire gate below over the emitted record.
+///
+/// kills: delete either reading, drop the `saturating_sub`, or reorder the
+/// readings around the park.
+#[test]
+fn the_rendezvous_brackets_the_eviction_total_around_the_park() {
+    // The bracketing lives in the FREE rendezvous function (the method
+    // delegates to it, passing the scheduler's counter as a closure), so the
+    // scan targets the free function's body: from its column-0 definition to
+    // its column-0 closing brace.
+    const PRODUCER: &str = include_str!("../attach_log.rs");
+    let start = PRODUCER
+        .find("\nfn rendezvous_with_hour_boundary(")
+        .expect("the free rendezvous must still be named this");
+    let end = PRODUCER[start..]
+        .find("\n}\n")
+        .expect("the free rendezvous must close at column 0")
+        + start;
+    let body = &PRODUCER[start..end];
+    let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    let before = body
+        .find("let evicted_before = evicted_pending_hours();")
+        .expect("the total must be read BEFORE the park");
+    let park = body
+        .find("hour_phase::hold_for_boundary(")
+        .expect("the park must still be here");
+    assert!(
+        before < park,
+        "the opening reading is taken after the park, so the window it brackets \
+         is not the park"
+    );
+    assert!(
+        flat.contains("evicted_pending_hours().saturating_sub(evicted_before)"),
+        "the second reading must be subtracted from the first, not used raw"
+    );
+    assert_eq!(
+        flat.matches("evicted_pending_hours()").count(),
+        2,
+        "the bracket is exactly two readings of the counter"
+    );
+    for arm in [
+        "hour_phase::record_hold_locked(held_us, evicted_pending_hours)",
+        "hour_phase::record_hold_timeout(held_us, evicted_pending_hours)",
+    ] {
+        assert!(
+            body.contains(arm),
+            "both held arms must carry the bracketed figure; missing `{arm}`"
+        );
+    }
+    // And the counter the closure reads is the SCHEDULER'S total, not a stub:
+    // the method hands its own accessor in.
+    assert!(
+        PRODUCER.contains(
+            "rendezvous_with_hour_boundary(sweep_shape, deadline, || self.evicted_pending_hours())"
+        ),
+        "the scheduler must pass its own eviction total into the rendezvous"
+    );
+}
+
+/// THE DISPOSITION IS ON THE WIRE, ON EVERY FRAME, INCLUDING AS ZERO.
+///
+/// This gates what the producer EMITS, not the source that emits it. Three
+/// review rounds found three escapes against a source-shape version of this
+/// test -- `if value != 0 {`, then `if phase_hold_evicted_pending > 0`, then
+/// `(phase_hold_evicted_pending > 0).then(|| ...)` -- and each patch invited the
+/// next, which is the evidence that a shape gate was the wrong instrument here
+/// rather than that it needed a fourth patch.
+/// `append_compact_lane_wall_probe_record` is a free function, so the record it
+/// builds can simply be read.
+///
+/// Both halves matter. A hold that cost an hour must say so; and a frame with
+/// no held rendezvous at all must still carry the unit, because "not emitted"
+/// and "cost nothing" are different claims and only one of them is a
+/// measurement. The second frame is what every conditional-emission escape was
+/// hiding behind, and it is built here.
+///
+/// WHAT THIS DOES NOT DECIDE: the VALUE. The record's trailer is binary and its
+/// decoder lives in `recorder_host`, which this crate cannot reach, so what is
+/// asserted is that the unit is PRESENT on both frames. The value's arithmetic
+/// is proved by `a_hold_reports_the_pending_hours_the_scheduler_gave_up_while_
+/// it_was_parked` over the counters the probe drains.
+///
+/// kills: delete the `lw_phase_hold_evicted_pending_hours` push from the
+/// lane-wall probe, or condition it on the counter in any form -- an `if`, a
+/// `match`, a `.then()`, a `filter` -- because the zero case is a frame this
+/// test builds. Adding the name to `CUMULATIVE_UNITS` or to
+/// `LANE_WALL_SESSION_CONSTANTS` fails the accumulation assertion instead.
+#[test]
+fn the_hold_disposition_reaches_the_wire_as_a_summable_per_frame_unit() {
+    use std::collections::BTreeSet;
+    const UNIT: &str = "lw_phase_hold_evicted_pending_hours";
+
+    fn probe_text() -> String {
+        let summary = summarize_lane_spans(&[]);
+        let mut out = Vec::new();
+        append_compact_lane_wall_probe_record(
+            &mut out,
+            7,
+            123,
+            5,
+            900,
+            125,
+            Some(2),
+            FrameHourAge::default(),
+            &[],
+            &BTreeSet::new(),
+            MapTopologyShareCounts::default(),
+            130,
+            700,
+            0,
+            &OutsideBuildSpans::default(),
+            &summary,
+            FrameCpuSplit::default(),
+        );
+        String::from_utf8_lossy(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]).into_owned()
+    }
+
+    let _guard = phase_global();
+
+    // A frame on which a hold gave up two hours.
+    hour_phase::reset_for_test();
+    hour_phase::record_hold_locked(1_000, 2);
+    let carried = probe_text();
+    assert!(
+        carried.contains(UNIT),
+        "the frame that drained a two-hour hold must carry `{UNIT}`"
+    );
+
+    // A frame on which nothing was held at all. The unit is still there.
+    hour_phase::reset_for_test();
+    let quiet = probe_text();
+    assert!(
+        quiet.contains(UNIT),
+        "a frame with NO hold at all must still carry `{UNIT}` -- \"not emitted\" \
+         and \"cost nothing\" are different claims, and this is the frame every \
+         conditional-emission escape was hiding behind"
+    );
+
+    // And the host must SUM it, unlike its cumulative `rs_` namesake.
+    use compact_contract::diagnostic_channel::{unit_accumulation, Accumulation};
+    assert_eq!(
+        unit_accumulation(UNIT),
+        Accumulation::PerFrame,
+        "the probe drains this counter, so summing frames is the whole-capture \
+         figure; MAX would publish the busiest single frame as the total"
+    );
+    assert_eq!(
+        unit_accumulation("rs_evicted_pending_hours"),
+        Accumulation::Cumulative,
+        "and the scheduler's running total must stay on the other side, or a \
+         reader adding the two would double-count every eviction"
+    );
+}

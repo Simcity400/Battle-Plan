@@ -36,19 +36,27 @@
 //!
 //! [`Component`] therefore lists only owners that are ACTUALLY charged. A
 //! component declared but never charged reads as "holds zero bytes", which is a
-//! stronger and falser claim than saying nothing. Three large owners are known
-//! and deliberately absent, because none of them can be priced without either
-//! walking a structure per hour or estimating.
+//! stronger and falser claim than saying nothing. Three large owners were known
+//! and deliberately absent, because none of them could be priced without either
+//! walking a structure per hour or estimating. **Two remain.**
 //!
-//! One of the three has since been SPLIT. The manifest's recording-gap ledger
-//! was the session-length term inside that third bullet, and it is now
-//! [`Component::ManifestGapLedger`]: it is assembled while `compact_stream` is
-//! being built, which is before the report is taken, so its peak is real. What
-//! remains unnamed below is the rest of the manifest — the read buffer and the
-//! `serde_json::Value` trees of the pack-time rewrite, which genuinely cannot be
-//! counted into a report they precede.
+//! The third was the session manifest, and it has been split twice. Its
+//! recording-gap ledger became [`Component::ManifestGapLedger`], which is
+//! assembled while `compact_stream` is being built and so lands in the report
+//! that follows it. The rest — the read buffer, the `serde_json::Value` tree of
+//! the finalize rewrite, and the `host_finalize` block that joins that tree — is
+//! now [`Component::ManifestDocument`].
 //!
-//! The three:
+//! The ordering objection that withdrew the first attempt was answered by moving
+//! the code rather than by accepting the hole, twice over. The rewrite reads and
+//! parses before it builds the telemetry block; `build_host_finalize_telemetry`
+//! no longer takes the memory snapshot at all, so the block is charged before
+//! the report that must carry it is taken; and the document is serialised
+//! straight to a file through a bounded writer instead of into a second
+//! whole-document `Vec`, so the one moment that genuinely could not have been
+//! reported no longer exists.
+//!
+//! The two that remain:
 //!
 //!   * the fold's retained world state — bounded, not measured, by the
 //!     live-heap difference across the `finalize.before_fold_release` /
@@ -59,16 +67,10 @@
 //!     measurement of it;
 //!   * the game content index and effective VFS — bracketed by the
 //!     `capture.window_open` mark, which is taken with the spool charge already
-//!     live, so content is what remains after the spool writer is subtracted;
-//!   * the session manifest, its read buffer and its `serde_json::Value` trees
-//!     at pack time — bracketed by the `finalize.before_manifest_rewrite` mark.
-//!     A component for these was written and then withdrawn: the rewrite runs
-//!     AFTER [`report_json`] has been taken for that same manifest, so any
-//!     counter for it could only ever publish its own previous value. A number
-//!     that can never be right is worse than a mark saying where to look.
+//!     live, so content is what remains after the spool writer is subtracted.
 //!
-//! All three land in `unaccounted_bytes`, where they are visible, rather than
-//! in a component whose number would be wrong.
+//! Both land in `unaccounted_bytes`, where they are visible, rather than in a
+//! component whose number would be wrong.
 //!
 //! # Cost
 //!
@@ -135,13 +137,58 @@ pub enum Component {
     /// cheap only because the ledger is now run encoded; pricing the flat shape
     /// this way would have cost a second copy of it.
     ///
-    /// This is the ONE manifest owner that can be charged honestly. The rest of
-    /// the manifest read-modify-write happens after [`report_json`] has been
-    /// taken for that same manifest, so a counter for it could only publish its
-    /// own previous value (see the module note). The ledger is different: it is
-    /// built while `compact_stream` is being assembled, which is BEFORE
-    /// `host_finalize` is written, so the peak this records is in the report.
+    /// This was for a while the ONE manifest owner that could be charged
+    /// honestly, because it is built while `compact_stream` is being assembled
+    /// and so before `host_finalize` is written. The read-modify-write that
+    /// follows is now charged too, as [`Component::ManifestDocument`]; the
+    /// ordering that made it impossible was a property of that code, not of
+    /// this module, and it was changed.
     ManifestGapLedger = 6,
+    /// The finalize manifest read-modify-write: the file's bytes in memory and
+    /// the `serde_json::Value` tree parsed from them.
+    ///
+    /// SCOPE: the whole document the rewrite holds — the tree as read AND the
+    /// `host_finalize` block that joins it, with any block the insert REPLACES
+    /// subtracted so neither is counted twice.
+    ///
+    /// The block had to be included rather than excused. A draft called it
+    /// "kilobytes, bounded" and that was false: it carries
+    /// `excluded_domain_data`, whose record ledger holds one entry per invalid
+    /// record and grows with the recording, so excusing it would have reopened a
+    /// session-length hole one level down from the one this component closed.
+    /// Including it is what forced `build_host_finalize_telemetry` to stop
+    /// taking the memory snapshot itself: the block is charged first and the
+    /// report is taken last, in `update_host_finalize_telemetry`.
+    ///
+    /// WHAT IS LEFT OUT, exactly: the RESIDENT `serde_json::Value` subtree the
+    /// report object itself becomes — its maps, keys, value slots and strings.
+    /// Not its serialized length, which an earlier draft named instead. It
+    /// cannot be otherwise, because a report cannot state its own size before it
+    /// exists; and unlike everything above it is a FIXED shape, one entry per
+    /// [`COMPONENT_COUNT`] plus a capped mark ring, so it does not grow with the
+    /// recording.
+    ///
+    /// A session-length scaler and, once the gap rows stopped materializing,
+    /// the finalize phase's own peak — 33.5 KB of manifest JSON per game hour
+    /// on t41b, so a full campaign's document is measured in gigabytes and the
+    /// tree is a multiple of that again.
+    ///
+    /// MEASURED, not estimated, and in two different ways because the two
+    /// halves admit different instruments. The read buffer is charged from the
+    /// file's own length before the read allocates and corrected to the buffer's
+    /// exact `len()` after. The tree is charged from
+    /// [`json_resident_bytes`], a structural walk of the real nodes — a FLOOR
+    /// in the convention this module already uses for `SpoolWriter`, because
+    /// `BTreeMap`'s internal node layout is not readable from safe Rust, and a
+    /// floor that says so beats a multiplier somebody guessed.
+    ///
+    /// Its ORDER is what makes it reportable, and that order is load-bearing
+    /// rather than incidental: `update_host_finalize_telemetry` reads and parses
+    /// first and only then builds the block that snapshots [`report_json`], so
+    /// the peak moment (buffer and tree both live) is already recorded when the
+    /// report is taken. The old code did the opposite and that is why this
+    /// component did not exist.
+    ManifestDocument = 7,
 }
 
 impl Component {
@@ -154,6 +201,7 @@ impl Component {
         Component::CacheDeltaBase,
         Component::CacheHourEntries,
         Component::ManifestGapLedger,
+        Component::ManifestDocument,
     ];
 
     /// The stable manifest key for this component. Changing one of these
@@ -167,6 +215,7 @@ impl Component {
             Component::CacheDeltaBase => "cache_delta_base",
             Component::CacheHourEntries => "cache_hour_entries",
             Component::ManifestGapLedger => "manifest_gap_ledger",
+            Component::ManifestDocument => "manifest_document",
         }
     }
 
@@ -186,6 +235,7 @@ impl Component {
             Component::CacheDeltaBase => Scaling::GameSize,
             Component::CacheHourEntries => Scaling::SessionLength,
             Component::ManifestGapLedger => Scaling::SessionLength,
+            Component::ManifestDocument => Scaling::SessionLength,
         }
     }
 }
@@ -213,7 +263,7 @@ impl Scaling {
     }
 }
 
-pub const COMPONENT_COUNT: usize = 7;
+pub const COMPONENT_COUNT: usize = 8;
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO: AtomicU64 = AtomicU64::new(0);
@@ -287,6 +337,68 @@ pub fn total_held() -> u64 {
         .iter()
         .map(|component| held(*component))
         .fold(0u64, u64::saturating_add)
+}
+
+/// The resident bytes a `serde_json::Value` tree holds, WALKED rather than
+/// guessed.
+///
+/// # Why a walk and not a multiplier
+///
+/// A JSON document's serialized length and its parsed residency are different
+/// numbers by a large factor that depends on the document's shape: a manifest
+/// of short keys and small numbers pays a whole `Value` (and, inside an object,
+/// a `String` and a map node) for every scalar, while one long string pays
+/// almost exactly its own bytes. Any single ratio between the two is a guess
+/// about a shape, and the manifest's shape changes with every domain that
+/// starts reporting. This returns what the nodes in front of it actually are.
+///
+/// # The convention, and what it is a floor on
+///
+/// Every node contributes its own `size_of::<Value>()` slot plus whatever it
+/// owns. Arrays are charged by CAPACITY, not length, because capacity is what
+/// is resident. Objects are charged one key `String` header, the key's own
+/// capacity and one `Value` slot per entry.
+///
+/// It is a FLOOR, in the same convention `Component::SpoolWriter` uses and for
+/// the same reason: `serde_json::Map` is a `BTreeMap`, whose node layout —
+/// per-node arrays of keys, values and child pointers, and the slack in a node
+/// that is not full — is not readable from safe Rust. The real residency is
+/// higher. A floor that says it is a floor is a measurement; a multiplier
+/// chosen to close the gap would not be.
+///
+/// # Cost
+///
+/// O(nodes), and called ONCE per manifest rewrite — not per hour and not per
+/// record. It walks the same tree the parser just built, so it is a second pass
+/// over hot memory rather than a second parse.
+pub fn json_resident_bytes(value: &serde_json::Value) -> u64 {
+    const VALUE: u64 = std::mem::size_of::<serde_json::Value>() as u64;
+    const STRING: u64 = std::mem::size_of::<String>() as u64;
+    // The node's own slot, plus everything below it.
+    VALUE.saturating_add(json_owned_bytes(value, VALUE, STRING))
+}
+
+/// Everything a node owns BELOW its own `Value` slot.
+fn json_owned_bytes(value: &serde_json::Value, value_size: u64, string_size: u64) -> u64 {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 0,
+        serde_json::Value::String(text) => text.capacity() as u64,
+        serde_json::Value::Array(items) => {
+            // The element slots are the Vec's CAPACITY; each element's own
+            // owned bytes are added on top, and never its slot twice.
+            let slots = (items.capacity() as u64).saturating_mul(value_size);
+            items.iter().fold(slots, |total, item| {
+                total.saturating_add(json_owned_bytes(item, value_size, string_size))
+            })
+        }
+        serde_json::Value::Object(entries) => entries.iter().fold(0u64, |total, (key, item)| {
+            total
+                .saturating_add(string_size)
+                .saturating_add(key.capacity() as u64)
+                .saturating_add(value_size)
+                .saturating_add(json_owned_bytes(item, value_size, string_size))
+        }),
+    }
 }
 
 /// An RAII charge: the bytes are charged now and released when this is dropped.
@@ -736,5 +848,104 @@ mod tests {
         for component in Component::ALL {
             assert!(report["components"][component.key()]["scaling"].is_string());
         }
+    }
+
+    /// `json_resident_bytes` MEASURES the tree in front of it, and what it
+    /// measures is residency rather than the serialized length.
+    ///
+    /// The two diverge in opposite directions for the two shapes a manifest is
+    /// made of, which is why no single ratio between them would do:
+    ///
+    ///   * a document of many small scalars is far LARGER resident than
+    ///     serialized — every entry pays a `String` header, a `Value` slot and
+    ///     a key, against two or three bytes of JSON;
+    ///   * a document that is one long string is roughly its own length in both.
+    ///
+    /// kills: return `serde_json::to_vec(value).len()` from
+    /// `json_resident_bytes`, or price arrays by `len()` instead of
+    /// `capacity()`. The first fails the small-scalar assertion (serialized is
+    /// smaller), the second fails the reserved-array one.
+    #[test]
+    fn json_resident_bytes_measures_the_nodes_and_not_the_serialized_length() {
+        // 64 entries of `"k<i>": <i>`: ~10 bytes of JSON each, but a String
+        // header, a key and a Value slot each in memory.
+        let mut small = serde_json::Map::new();
+        for index in 0..64u32 {
+            small.insert(format!("k{index}"), serde_json::json!(index));
+        }
+        let scalars = serde_json::Value::Object(small);
+        let serialized = serde_json::to_vec(&scalars).expect("serialize").len() as u64;
+        let resident = json_resident_bytes(&scalars);
+        assert!(
+            resident > serialized * 2,
+            "a table of small scalars is several times larger resident than \
+             serialized: resident {resident}, serialized {serialized}"
+        );
+
+        // Capacity, not length: a Vec that reserved room holds those bytes
+        // whether or not anything was pushed into them.
+        let mut reserved: Vec<serde_json::Value> = Vec::with_capacity(1024);
+        reserved.push(serde_json::json!(1));
+        let reserved_bytes = json_resident_bytes(&serde_json::Value::Array(reserved));
+        assert!(
+            reserved_bytes >= 1024 * std::mem::size_of::<serde_json::Value>() as u64,
+            "array slots are charged by capacity: {reserved_bytes}"
+        );
+
+        // And it RECURSES. A walker that stopped at the top level would price
+        // this object at one entry and miss the string three levels down, so
+        // the buried payload is what the assertion is about.
+        let payload = "x".repeat(4096);
+        let buried = serde_json::json!({ "a": { "b": [{ "c": payload }] } });
+        assert!(
+            json_resident_bytes(&buried) > 4096,
+            "a string buried three levels down is still resident: {}",
+            json_resident_bytes(&buried)
+        );
+        let hollow = serde_json::json!({ "a": { "b": [{ "c": "" }] } });
+        assert!(
+            json_resident_bytes(&buried) - json_resident_bytes(&hollow) >= 4096,
+            "and the whole difference between the two trees is that string"
+        );
+    }
+
+    /// The component is DECLARED, and declared correctly.
+    ///
+    /// This gates the registry half only, and says so: whether the production
+    /// charge exists and is taken before the report snapshot is a fact about
+    /// `main.rs`, and it is gated there by
+    /// `the_manifest_document_charges_precede_the_report_snapshot_that_publishes_them`.
+    /// An earlier draft of this comment claimed those mutations, which was
+    /// false — the body below mints its own guard and would survive both
+    /// (Codex round 1, class 5).
+    ///
+    /// kills: drop `Component::ManifestDocument` from `Component::ALL` (it
+    /// vanishes from every published report), give it a duplicate `key()` (a
+    /// serde map insert overwrites, silently dropping a component), or declare
+    /// it anything other than `SessionLength`.
+    #[test]
+    fn the_manifest_document_component_is_declared_scaling_and_reachable() {
+        assert_eq!(Component::ManifestDocument.key(), "manifest_document");
+        assert_eq!(
+            Component::ManifestDocument.scaling(),
+            Scaling::SessionLength,
+            "the manifest grows with the recording; anything else understates \
+             the class this component belongs to"
+        );
+        assert!(
+            Component::ALL.contains(&Component::ManifestDocument),
+            "a component missing from ALL is missing from every published report"
+        );
+        assert!(
+            report_json()["components"]["manifest_document"]["peak_bytes"].is_u64(),
+            "the report must carry a slot for it even before a rewrite has run"
+        );
+        // The charge path itself, end to end through the guard.
+        let base = peak(Component::ManifestDocument);
+        {
+            let _guard = Charge::new(Component::ManifestDocument, 1 << 20);
+            assert!(held(Component::ManifestDocument) >= 1 << 20);
+        }
+        assert!(peak(Component::ManifestDocument) >= base.max(1 << 20));
     }
 }
