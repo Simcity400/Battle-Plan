@@ -83,3 +83,4 @@ replay_interface/re_evidence/rendering_laws/replay_promotion/*.md text eol=lf
 portable_replay/native/render_stream/src/c07_tree_content_hashes.rs text eol=lf
 portable_replay/native/render_stream/src/c07_tree_complete_buckets.rs text eol=lf
 portable_replay/native/render_stream/src/c07_tree_content_library.bin -text
+extractor/native/lanes/map_passive_carriers_live/fixtures/*.json text eol=lf
