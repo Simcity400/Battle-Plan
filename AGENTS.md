@@ -35,7 +35,9 @@
   imports, constructed data paths). Baseline the workspace suite before purges
   and reconcile pass counts.
 - Docs read as current intent only. Evidence under `extractor/native/runs/` is
-  append-only; never rewrite a completed run or job directory.
+  append-only; never rewrite a completed run or job directory. Force-adds are
+  scoped to the run directory itself (`git add -f extractor/native/runs/<yours>`),
+  never the tree above it — a broad `-f` swept a `__pycache__` into a commit.
 - Tests carry a one-line `kills:` comment naming the production change that
   fails them. Empirical mutation batteries are banned by default. Before
   deleting a test, prove it has no distinct contract value.
