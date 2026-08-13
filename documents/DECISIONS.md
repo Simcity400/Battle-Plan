@@ -84,20 +84,35 @@ the ordinary state of the game — nobody has a designer open. Measured identica
 `extractor/native/runs/hh_zero_rows/VERDICTS.md`.
 
 Because it is descheduled, the `0x1410b6280` mis-scope in its selection hook is not being fixed: nothing
-downstream reads its verdict any more. **It is not inert, though, and saying so would be false.** A
-passive capture builds the production hook registry unconditionally, and that registry's install unit for
-d85 is not gated on the domain being requested — so its detours are still installed and still take
-1,229–1,929 callbacks per capture for a domain nobody now asks for. The unit patches **eight** sites, not
-five: seven in the selected-designer module (five selection observers plus two destruction observers that
-retire the `handler -> view` join before the engine frees the memory it names) and d78's designer-refresh
-prerequisite. Gating the unit is the open follow-up, and it is not a one-liner: the receipt group is woven
-through the partial-install abort steps, the roster ordering, teardown and the receipt census, and
-dropping the d78 prerequisite with it needs its own argument.
+downstream reads its verdict any more. It was **not** inert when the ruling landed — the production hook
+registry a passive capture always builds installed d85's detours unconditionally, taking 1,229–1,929
+callbacks per capture for a domain nobody asks for. That unit patched **eight** sites: seven in the
+selected-designer module (five selection observers plus two destruction observers that retire the
+`handler -> view` join before the engine frees the memory it names) and d78's designer-refresh
+prerequisite.
 
-d85 is not unique in having production-installed hooks while descheduled. d75's producer edge is
-installed in production too, because it supplies d64's dispatch prerequisite and the two share one
-install unit by design. Any gating work must preserve that dependency rather than assume a descheduled
-domain's hooks are always free to drop.
+**Closed 2026-08-13.** The seven are no longer installed and no longer pinned; the d78 prerequisite
+stayed, and the group it travelled in is now `StandardHookReceiptGroup::D78` holding that one site. The
+rule is derived, not hand-listed: `compact_contract::production_hook_site_installs` says a
+producer detour is installed unless the owner descheduled the domain that owns it AND no domain the
+shipped roster schedules holds that exact site as an install prerequisite. Two consequences a reader should not have to re-derive —
+d78's site stays because **domain 78 was never descheduled**, so dropping it would need its own ruling
+about d78, not this one; and the pinned roster shrank by seven, which moves `allowed_hook_count` and the
+allowlist digest together, so a clean capture still reports every allowed hook active.
+
+d85 was not unique in having production-installed hooks while descheduled, and the other case is what the
+rule is shaped around. d75's producer edge is installed in production too, because it supplies d64's
+dispatch prerequisite and the two share one install unit by design. That hold is recorded in
+`compact_contract::DESCHEDULED_DOMAIN_HOOK_PREREQUISITES`, names the three `gameplay.d75.*` sites
+exactly rather than the domain, and is conditional on d64 still being in the shipped roster — so a later
+ruling on d64 releases the edge rather than silently preserving it, and a future d75 site added for some
+unrelated reason does not inherit the exception.
+
+The seven d85 addresses did not simply disappear: they moved to
+`compact_contract::passive_ready::FORBIDDEN_PASSIVE_PRODUCTION_HOOK_SPECS_V1`, which the recorder host
+baselines before injection and re-reads at READY and at teardown. "Not installed" therefore remains an
+independent observation of the game's own memory rather than the collector's word — the thing that would
+otherwise have been lost by deleting them from the roster the host walks.
 
 Reviving d85 means giving it a presence read that can say "nothing is selected" (the owner slots at
 `0x140B52390 +0x250/+0x258/+0x260/+0x268`, the way d97 uses its container count) and closing that

@@ -52,10 +52,13 @@ use std::sync::Mutex;
 /// How many individual attempts are kept in order before the history starts
 /// counting overflow instead of storing it.
 ///
-/// The shipped roster is 55 detours, each of which is disabled and then
-/// removed, so a clean teardown writes 110 entries. This leaves room for
-/// several full retry rounds on top of that before anything is dropped, and a
-/// teardown that has retried more than that has a per-target summary saying so.
+/// The shipped roster is every non-`bootstrap.` entry of
+/// `compact_contract::passive_ready::PINNED_PRODUCTION_HOOK_SPECS_V1` -- it was
+/// 55 detours when this constant was chosen and moves whenever a domain is
+/// scheduled or descheduled -- and each is disabled and then removed, so a
+/// clean teardown writes two entries per detour. This leaves room for several
+/// full retry rounds on top of that before anything is dropped, and a teardown
+/// that has retried more than that has a per-target summary saying so.
 pub const HISTORY_CAPACITY: usize = 512;
 
 /// Which byte-restoring operation an attempt was.

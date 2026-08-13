@@ -502,9 +502,13 @@ mod windows_impl {
     ///
     /// [`enable`] freezes the whole process per call, and a freeze is two
     /// system-wide thread-list walks plus a suspend/resume of every other
-    /// thread, followed by MinHook's own third walk. The shipped roster is 55
-    /// MinHook detours, so the install path paid 55 freezes and the teardown
-    /// path 110. This pays ONE, on every path including the failure path.
+    /// thread, followed by MinHook's own third walk. The shipped roster is every
+    /// non-`bootstrap.` entry of
+    /// `compact_contract::passive_ready::PINNED_PRODUCTION_HOOK_SPECS_V1` (the
+    /// two bootstrap hooks are IAT stores, not detours) -- it was 55 when this
+    /// was written and moves whenever a domain is scheduled or descheduled --
+    /// so the install path paid one freeze per detour and the teardown path
+    /// two. This pays ONE, on every path including the failure path.
     ///
     /// # PRECONDITION: no target may already be enabled
     ///
@@ -575,7 +579,7 @@ mod windows_impl {
     /// it is still counted and still queued as enabled -- because it IS.
     ///
     /// The REPORT stays per target -- which hook failed, with which status --
-    /// because that is the fidelity a 57-of-57 roster needs.
+    /// because that is the fidelity a whole-roster census needs.
     ///
     /// # Safety
     ///

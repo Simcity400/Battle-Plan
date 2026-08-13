@@ -610,7 +610,8 @@ pub fn install() -> Result<InstalledRoots, String> {
     // ONE freeze for all twelve. Each `inline_detour::enable` freezes the
     // whole process -- two system-wide thread-list walks and a suspend/resume
     // of every game thread -- so twelve of them cost twelve freezes at a
-    // moment when the roster is installing 55 detours in total.
+    // moment when the roster is installing every pinned gameplay detour it
+    // holds (55 when this was written; the count moves with the schedule).
     //
     // Batching is not merely cheaper here, it is STRICTER. The twelve
     // callbacks now become live inside a single freeze window, so no game
