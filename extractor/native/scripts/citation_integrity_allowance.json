@@ -1472,8 +1472,7 @@
     },
     "extractor/native/recorder_host/src/world_fold/wave2_sidecars/combat_presentation.rs": {
       "replay_core/src/combat_presentation.rs:12": 1,
-      "replay_core/src/world.rs:24016": 1,
-      "replay_core/src/world.rs:24048": 1
+      "replay_core/src/world.rs:24016": 1
     },
     "extractor/native/recorder_host/src/world_fold/wave2_sidecars/decision_evaluation.rs": {
       "replay_core/src/decision_evaluation.rs:14": 1,
