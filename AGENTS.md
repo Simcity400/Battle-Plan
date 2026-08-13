@@ -72,7 +72,8 @@
   lane could fix — fix it, gate it, and have it re-reviewed before reporting.
   Never call anything complete with open residuals; each residual names its
   qualifying category and owner.
-- Max 7 concurrent implementation lanes; queue beyond that.
+- Max 10 concurrent implementation lanes (owner 2026-08-13); queue beyond that. Lanes
+  already in flight when the cap changes finish naturally.
 
 ## Agent delegation
 
