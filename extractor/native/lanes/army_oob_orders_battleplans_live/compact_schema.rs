@@ -74,7 +74,11 @@ const ARMY_ORDER_OWNER_KIND_ARMY: u32 = 0;
 const ARMY_ORDER_OWNER_KIND_ARMY_GROUP: u32 = 1;
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_ARMY_ORDER_SLOT_INDEX: u32 = 64;
-const MAX_STATE_ID: u32 = 65_535;
+/// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
+/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`);
+/// dossier `extractor/native/runs/ia_province_caps/SWEEP.md`. A separate
+/// constant from the province one even though the numbers coincide.
+const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 
 const OOB_ROW_LEN: usize = 80;
 const OOB_MEMBER_ROW_LEN: usize = 8;
@@ -92,7 +96,9 @@ const OOB_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 const OOB_FLAG_LOCATION: u32 = 1 << 7;
 const MAX_OOB_ID: u32 = 4_000_000;
 const MAX_OOB_MEMBER_ROWS: usize = 250_000;
-const MAX_OOB_LOCATION_PROVINCE_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+const MAX_OOB_LOCATION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 const MAX_OOB_LEADER_SKILL: u32 = 15;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

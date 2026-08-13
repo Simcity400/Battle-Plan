@@ -111,7 +111,96 @@ pub const BOUND_TRIP_WEATHER_ARRAY_LEN: usize = 10;
 /// parties. The raw sample carries the vector length that was seen, which is
 /// what a capture needs to say "raise the budget to N".
 pub const BOUND_TRIP_POLITICAL_PARTY_COUNT: usize = 11;
-pub const BOUND_TRIP_ID_COUNT: usize = 12;
+/// A STATE id was refused by a map-side reader.
+///
+/// Added by lane IA, and the gap it fills is the finding: the province family
+/// had [`BOUND_TRIP_SUPPLY_PROVINCE_ID`] and the state family had NOTHING, so
+/// a reader that wanted to name a state-id refusal had nowhere to file it and
+/// every one of them was a bare `return None`, a `continue`, or an
+/// `Option::filter` — the CLAMP-DROP shape this registry exists to end. Six
+/// collector sites and the occupation lane's walk were in that position.
+///
+/// It is deliberately NOT merged with the province unit. Lane HJ's rule: a
+/// merged counter "would report a database-range failure for a value that never
+/// indexed the database", and a state id and a province id are different
+/// spaces with different structural proofs
+/// (`claim_39c989ce13504504353c` vs `claim_347234c20a542ca79032`).
+pub const BOUND_TRIP_MAP_STATE_ID: usize = 12;
+/// A country's faction-group word was outside its representation envelope, or
+/// could not be read at all.
+///
+/// The raw sample distinguishes the two: an out-of-range word records the word,
+/// an unreadable one records `u64::MAX`. That distinction is the point. Before
+/// lane IA a single bad word made `read_faction_groups` return an empty gate --
+/// discarding EVERY country's faction group for the frame -- and the only thing
+/// downstream saw was `STATUS_FACTION_GROUP_UNVALIDATED`, one bit that cannot
+/// tell "a word was out of range" from "a read failed" from "the completeness
+/// heuristic did not converge". Three causes, one bit, no count.
+///
+/// The bound this fires against is
+/// `build_profile::DOMAIN53_MAX_FACTION_GROUP_INDEX`, which is explicitly NOT
+/// engine-proven: what `CCountry + 0x598` indexes is unestablished (residual
+/// R-IA-2). So a trip here means "a word this reader cannot vouch for", not "a
+/// word the engine would reject" -- and it is filed under its own id rather
+/// than the country one for exactly that reason.
+pub const BOUND_TRIP_FACTION_GROUP_INDEX: usize = 13;
+/// A PROVINCE id was refused by a map-side reader.
+///
+/// The sibling of [`BOUND_TRIP_MAP_STATE_ID`], and it exists for the asymmetry
+/// that unit's arrival created: once map-side STATE refusals were attributed,
+/// the map-side PROVINCE refusal beside them was still a bare `return None`,
+/// collapsed by its caller into a generic `invalid_air_base_rows` tick and then
+/// into one `PARTIAL_DATA` status bit. The hour still sealed as partial, so no
+/// data was corrupted — but a capture could not tell a torn or out-of-space
+/// province identity apart from a vtable mismatch, a bad handle, a capacity
+/// failure or a duplicate row, which is the whole purpose of this registry.
+///
+/// It is NOT [`BOUND_TRIP_SUPPLY_PROVINCE_ID`]. That one belongs to the supply
+/// family and fires against the live CSupply-derived ceiling; this one is the
+/// map-control family firing against the id space's structural width. Merging
+/// them would report a supply-family bound failure for a value that never went
+/// near the supply walk — lane HJ's merged-attribution defect, which is the
+/// same reason the state family did not borrow the province unit.
+pub const BOUND_TRIP_MAP_PROVINCE_ID: usize = 14;
+/// A province-keyed vector was longer than a carrier's transport SLOT BUDGET.
+///
+/// This is a COUNT unit, not an identity one, and it exists because lane IA
+/// filed D94's budget refusal under [`BOUND_TRIP_MAP_PROVINCE_ID`] on the
+/// reasoning that "what it bounds is a province-keyed vector length". That
+/// reasoning is wrong in the one way this registry exists to prevent: the
+/// province unit means an IDENTITY exceeded the id space's structural width,
+/// so a 65 536-province map made `bt_map_province_id_*` tick when every
+/// province id in it was perfectly legal. A capture reading that could not tell
+/// "raise D94's slot budget" from "the map handed us an invalid province".
+///
+/// The two are different repairs, so they get different units. The bound is
+/// `MAX_PROVINCE_SLOTS` (a deliberate transport budget, not an engine width);
+/// the raw sample carries the COUNT SEEN, which is exactly what sizing the
+/// budget needs. Its siblings in shape are `bt_faction_slots` and
+/// `bt_weather_array_len` -- both count budgets that already refused to borrow
+/// an identity unit.
+pub const BOUND_TRIP_MAP_PROVINCE_SLOTS: usize = 15;
+/// A CSupply province ARRAY LENGTH exceeded the priced copy budget.
+///
+/// The supply family's count unit, and the exact sibling of
+/// [`BOUND_TRIP_MAP_PROVINCE_SLOTS`] one domain over. It exists because the two
+/// length admissions in `attach_log`'s `supply_province` module
+/// (`observe_engine_province_count` and `admit_csupply_input_len`) compared a
+/// count against `MAX_CSUPPLY_INPUT_LEN` -- a 64 MiB copy budget at an 8-byte
+/// stride -- and then recorded [`BOUND_TRIP_SUPPLY_PROVINCE_ID`], the unit the
+/// same module's `over_max` uses for genuine province IDENTITY refusals.
+///
+/// The registry keeps ONE counter and ONE last-raw sample per unit, so the
+/// merge was not merely untidy: a later identity refusal overwrote the count
+/// sample, and the two raw ranges overlap, so nothing downstream could recover
+/// which had fired. "Raise the CSupply copy budget" and "this province id is
+/// not in the loaded map, or no live ceiling was available" are different
+/// repairs. `admit_csupply_input_len`'s own doc already said the bound is
+/// "deliberately NOT the province id space's structural width: this length
+/// sizes an allocation" -- the attribution simply had not followed the
+/// reasoning.
+pub const BOUND_TRIP_CSUPPLY_INPUT_LEN: usize = 16;
+pub const BOUND_TRIP_ID_COUNT: usize = 17;
 
 /// `(per-frame trip counter unit, last-observed raw value unit)` per bound id.
 /// The counter unit is summable in the recorder; the `_sample` suffix routes
@@ -151,6 +240,20 @@ pub const BOUND_TRIP_UNITS: [(&str, &str); BOUND_TRIP_ID_COUNT] = [
     (
         "bt_political_party_count_trips",
         "bt_political_party_count_raw_sample",
+    ),
+    ("bt_map_state_id_trips", "bt_map_state_id_raw_sample"),
+    (
+        "bt_faction_group_index_trips",
+        "bt_faction_group_index_raw_sample",
+    ),
+    ("bt_map_province_id_trips", "bt_map_province_id_raw_sample"),
+    (
+        "bt_map_province_slots_trips",
+        "bt_map_province_slots_raw_sample",
+    ),
+    (
+        "bt_csupply_input_len_trips",
+        "bt_csupply_input_len_raw_sample",
     ),
 ];
 
@@ -643,6 +746,7 @@ mod tests {
     /// both.
     #[test]
     fn each_bound_id_is_pinned_to_its_own_unit_names() {
+        let mut pinned = std::vec::Vec::new();
         for (id, expected) in [
             (
                 BOUND_TRIP_UNIT_LEADER_SKILL,
@@ -707,9 +811,64 @@ mod tests {
                     "bt_political_party_count_raw_sample",
                 ),
             ),
+            // Lane IA's three. They were originally covered only by the
+            // distinctness list below, which is satisfied by ANY permutation --
+            // so swapping the state, faction-group and province names among
+            // their slots left this fixture green while every capture
+            // mislabelled the refusals it recorded. A pin is not a pin if it
+            // only constrains the set.
+            (
+                BOUND_TRIP_MAP_STATE_ID,
+                ("bt_map_state_id_trips", "bt_map_state_id_raw_sample"),
+            ),
+            (
+                BOUND_TRIP_FACTION_GROUP_INDEX,
+                (
+                    "bt_faction_group_index_trips",
+                    "bt_faction_group_index_raw_sample",
+                ),
+            ),
+            (
+                BOUND_TRIP_MAP_PROVINCE_ID,
+                ("bt_map_province_id_trips", "bt_map_province_id_raw_sample"),
+            ),
+            // The two COUNT units split out of identity units by review rounds
+            // 18 and 19. Their absence here was itself an instance of the gap
+            // the comment above describes: they were added to the distinctness
+            // list only, so slot 15 or 16 could carry any unique, charset-legal
+            // name pair and every registry test stayed green while captures
+            // emitted the wrong named refusal.
+            (
+                BOUND_TRIP_MAP_PROVINCE_SLOTS,
+                (
+                    "bt_map_province_slots_trips",
+                    "bt_map_province_slots_raw_sample",
+                ),
+            ),
+            (
+                BOUND_TRIP_CSUPPLY_INPUT_LEN,
+                (
+                    "bt_csupply_input_len_trips",
+                    "bt_csupply_input_len_raw_sample",
+                ),
+            ),
         ] {
+            pinned.push(id);
             assert_eq!(BOUND_TRIP_UNITS[id], expected, "bound id {id}");
         }
+
+        // The pin list must cover EVERY id, not merely the ids someone
+        // remembered to add. Twice now a new unit reached production pinned
+        // only by the distinctness list (rounds 18, 19), so the omission is
+        // made impossible rather than noted: adding id 17 without a name pin
+        // fails here.
+        pinned.sort_unstable();
+        assert_eq!(
+            pinned,
+            (0..BOUND_TRIP_ID_COUNT).collect::<std::vec::Vec<_>>(),
+            "every bound id must be pinned to its own unit NAMES above, not just \
+             to the distinctness list below"
+        );
 
         // And the ids are pairwise distinct, so the table above cannot be
         // satisfied by two constants naming one slot.
@@ -726,6 +885,11 @@ mod tests {
             BOUND_TRIP_SUPPLY_PROVINCE_ID,
             BOUND_TRIP_WEATHER_ARRAY_LEN,
             BOUND_TRIP_POLITICAL_PARTY_COUNT,
+            BOUND_TRIP_MAP_STATE_ID,
+            BOUND_TRIP_FACTION_GROUP_INDEX,
+            BOUND_TRIP_MAP_PROVINCE_ID,
+            BOUND_TRIP_MAP_PROVINCE_SLOTS,
+            BOUND_TRIP_CSUPPLY_INPUT_LEN,
         ];
         assert_eq!(ids.len(), BOUND_TRIP_ID_COUNT, "an id is missing from this table");
         let mut sorted = ids;

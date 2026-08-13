@@ -305,6 +305,11 @@ pub const COMPACT_MARKET_TRADE_ROW_LEN: usize = 48;
 pub const COMPACT_MARKET_TRADE_CONTRACT_TYPE: u32 = 81;
 pub const COMPACT_MAX_OWNER_TAG_DB_ID: u32 =
     compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
+
+/// The D45 numeric decision target is a STATE identity (see the collector and
+/// `world_fold`'s matching constant). It was `1_000_000` -- a state ceiling
+/// under a role name.
+pub const COMPACT_MAX_STATE_ID_FRD: u32 = compact_contract::build_profile::MAX_STATE_ID;
 pub const COMPACT_MARKET_TRADE_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_MARKET_TRADE_MAX_CONTRACT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MARKET_TRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
@@ -608,7 +613,9 @@ pub const COMPACT_DIVISION_TYPE: u32 = 4713;
 // organisation, supply-status, and dig-in operands.
 pub const COMPACT_DIVISION_ROW_LEN: usize = 120;
 pub const LEGACY_COMPACT_DIVISION_ROW_LEN: usize = 104;
-pub const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 pub const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
 pub const COMPACT_MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
@@ -662,7 +669,9 @@ pub const COMPACT_MAX_DIVISION_EQUIPMENT_VARIANT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MAX_DIVISION_EQUIPMENT_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
 pub const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 pub const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
-pub const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_LAND_COMBAT_MAX_AGE_DAYS: u32 = 100_000;
 pub const COMPACT_ARMY_ORDER_ROW_LEN: usize = 48;
 pub const COMPACT_ARMY_ORDER_TARGET_ROW_LEN: usize = 8;
@@ -672,7 +681,9 @@ pub const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
 pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY: u32 = 0;
 pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY_GROUP: u32 = 1;
 pub const COMPACT_ARMY_ORDER_MAX_SLOT_INDEX: u32 = 64;
-pub const COMPACT_ARMY_ORDER_MAX_STATE_ID: u32 = 65_535;
+/// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
+/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const COMPACT_ARMY_ORDER_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_ROW_LEN: usize = 80;
 pub const COMPACT_OOB_MEMBER_ROW_LEN: usize = 8;
 pub const COMPACT_OOB_KIND_ARMY: u32 = 1;
@@ -688,7 +699,9 @@ pub const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
 pub const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
 pub const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
-pub const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
 pub const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;
 pub const COMPACT_SHIP_ROW_BASE_LEN: usize = 40;
@@ -801,7 +814,9 @@ pub const COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_KNOWN_FLAGS: u32 =
     COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_KNOWN_FLAGS
         | COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK;
 pub const COMPACT_PROJECT_MAX_ID: u32 = 10_000_000;
-pub const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_PROJECT_MAX_HANDLE: u32 = 10_000_000;
 pub const COMPACT_PROJECT_MAX_ITERATIONS: u32 = 1_000_000;
 pub const COMPACT_PROJECT_MAX_PROGRESS_RAW: u32 = 1_000_000_000;
@@ -828,7 +843,9 @@ pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_
 pub const COMPACT_AIR_BASE_STATUS_ROW_LEN: usize = 32;
 pub const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
 pub const COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
-pub const COMPACT_AIR_BASE_STATUS_MAX_STATE_ID: u32 = 65_535;
+/// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
+/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const COMPACT_AIR_BASE_STATUS_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_AIR_BASE_STATUS_MAX_CAPACITY: u32 = 1_000_000;
 pub const COMPACT_AIR_BASE_STATUS_MAX_BUILDING_LEVEL: u32 = 1_000;
 pub const COMPACT_AIR_BASE_STATUS_MAX_WING_COUNT: u32 = 20_000;
@@ -869,8 +886,15 @@ pub const COMPACT_WEATHER_MIN_REGION_ROWS: usize = 1;
 /// It replaces a `10_000` tuned on the vanilla map.
 pub const COMPACT_WEATHER_MIN_PROVINCE_ROWS: usize = 2;
 pub const COMPACT_WEATHER_MAX_PROVINCE_ROWS: usize = 65_536;
-pub const COMPACT_MAP_MAX_STATE_ID: u32 = 65_535;
-pub const COMPACT_MAP_MAX_PROVINCE_ID: u32 = 65_536;
+/// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
+/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const COMPACT_MAP_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
+/// Province id space STRUCTURAL width (lane IA). This one was additionally
+/// spelled with the SLOT-COUNT value `65_536` rather than an id maximum -- an
+/// identity carrying a count's number, which admitted one id past the last
+/// addressable slot. Both halves fixed: it is an ID and it is the id space's
+/// width (`claim_347234c20a542ca79032`).
+pub const COMPACT_MAP_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_MAP_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
 pub const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
@@ -4295,7 +4319,8 @@ fn decode_compact_frd_depth_data_payload(
         }
         if target_id == 0
             || (country_flags && target_id > COMPACT_MAX_OWNER_TAG_DB_ID)
-            || (numeric_flags && target_id > 1_000_000)
+            // The numeric target is a STATE id (see the collector's note).
+            || (numeric_flags && target_id > COMPACT_MAX_STATE_ID_FRD)
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: decision target row {row_index} has invalid typed target id {target_id}"

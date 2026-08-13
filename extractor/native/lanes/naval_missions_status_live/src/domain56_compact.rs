@@ -26,7 +26,12 @@ pub const NAVAL_SUPREMACY_TRAILER_HEADER_LEN: usize = 12;
 pub const NAVAL_SUPREMACY_TRAILER_ROW_LEN: usize = 32;
 pub const MAX_OOB_ID: u32 = 4_000_000;
 pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
-pub const MAX_PROVINCE_ID: u32 = 1_000_000;
+/// The province id space's STRUCTURAL width (lane IA). Was a guess --
+/// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
+/// four different ceilings for one id space. Proven from the engine's signed-int
+/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`); dossier
+/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_REGION_ID: u32 = 100_000;
 /// Exact build-870ebf ENavalMission maximum. Unknown values fail closed.
 pub const MAX_MISSION_ENUM: u32 = 9;

@@ -253,10 +253,16 @@ fn check_authority_payload(
     province_rows: &[u8],
     at_byte: usize,
 ) -> Result<(), String> {
-    const MIN_STATE_ROWS: usize = 1_000;
-    const MIN_PROVINCE_ROWS: usize = 10_000;
-    const MAX_STATE_ID: u32 = 65_535;
-    const MAX_PROVINCE_ID: u32 = 65_536;
+    // Lane GK R3 shape: a vanilla-sized-map floor refuses a legal smaller
+    // total conversion. The structural rule is "at least one authenticated
+    // row", not "at least a vanilla map".
+    const MIN_STATE_ROWS: usize = 1;
+    const MIN_PROVINCE_ROWS: usize = 1;
+    // Lane IA: the province/state id spaces are i32-wide. A measurement tool
+    // that rejects valid modded streams measures nothing about them, and a
+    // green bench then certifies a law it never exercised.
+    const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
+    const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
     // `domain_data_authority::COMPACT_MAP_MAX_TAG_DB_ID`. Was `1_024`, a
     // guess at the vanilla-plus-DLC country count; now the family's
     // engine-structural id-space width.

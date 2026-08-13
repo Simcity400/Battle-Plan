@@ -320,7 +320,7 @@ fn check_authority_payload(payload: &[u8], at_byte: usize) -> Result<(), String>
             }
         }
         if flags & d28::FLAG_LOCATION != 0 {
-            if location == 0 || location > 1_000_000 {
+            if location == 0 || location > (i32::MAX as u32) - 1 {
                 return Err(format!(
                     "d28 authority at byte {at_byte}: row {row_index} has invalid location {location}"
                 ));

@@ -85,7 +85,8 @@ const LEGACY_ROW_LEN: usize = 104;
 const FIXED_SCALE_RAW: u32 = 100_000;
 const FIXED_SCALE: f64 = 100_000.0;
 const DIVISION_TYPE: u32 = 4713;
-const MAX_PROVINCE_ID: u32 = 1_000_000;
+// Lane IA: the province id space is i32-wide.
+const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 const MAX_COMBAT_REF_COUNT: u32 = 1_000;
 const MAX_ORGANISATION_RAW: u32 = 100_000_000;
 const MAX_STRENGTH_RAW: u32 = 1_000_000_000;

@@ -698,7 +698,7 @@ fn validate_live_root_evidence(summary: &Value, errors: &mut Vec<String>) -> boo
                     state_id
                         .parse::<u32>()
                         .ok()
-                        .is_some_and(|state_id| state_id != 0 && state_id <= 65_535)
+                        .is_some_and(|state_id| state_id != 0 && state_id <= 2_147_483_646)
                         && address
                             .as_str()
                             .and_then(parse_canonical_hex_u64)
@@ -707,14 +707,22 @@ fn validate_live_root_evidence(summary: &Value, errors: &mut Vec<String>) -> boo
         });
     let valid = game_state.is_some_and(is_heap_ptr)
         && province_array.is_some_and(is_heap_ptr)
-        && province_count.is_some_and(|count| (10_001..=65_536).contains(&count))
+        // The 10_000-province floor was lane GK's residual R3 shape: an unproven
+        // claim that a real game has at least a vanilla-sized map, which refuses
+        // a legal smaller total conversion. What is structural is that slot 0 is
+        // the vacant province, so a loaded table declares at least two, and that
+        // the walk must authenticate at least one row rather than publish a
+        // successful empty.
+        && province_count.is_some_and(|count| (2..=65_536).contains(&count))
         && province_rows.is_some_and(|rows| {
-            rows >= 10_000 && province_count.is_some_and(|count| rows <= count)
+            rows >= 1 && province_count.is_some_and(|count| rows <= count)
         })
         && invalid_province_rows == Some(0)
         && invalid_state_links == Some(0)
+        // Same for the 1_000-state floor: a conversion may define far fewer.
+        // "at least one authenticated state root" is the structural rule.
         && state_roots.is_some_and(|rows| {
-            rows >= 1_000 && province_rows.is_some_and(|provinces| rows <= provinces)
+            rows >= 1 && province_rows.is_some_and(|provinces| rows <= provinces)
         })
         && sample_roots_valid;
     if !valid {

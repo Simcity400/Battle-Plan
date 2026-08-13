@@ -1157,14 +1157,51 @@ mod tests {
         );
     }
 
-    /// Fails if `MAX_STATE_ID` is widened past the shared u16 representation
-    /// bound, or if the state-id check is removed entirely.
+    /// The state id space's boundary walk: every retired ceiling is admitted,
+    /// and only the structurally impossible words are refused.
+    ///
+    /// This test used to assert the OPPOSITE for three of these values. It
+    /// probed `[0, 65_536, 1_000_000, u32::MAX]` as things that must be
+    /// REJECTED, with a comment explaining that concrete values were chosen
+    /// deliberately because `MAX_STATE_ID + 1` "can never catch it being
+    /// widened". That reasoning was right while the bound was a guess, and it
+    /// is the reason the test had to change meaning rather than be re-pointed:
+    /// lane IA proved the state id space is `i32`-wide from the engine's own
+    /// sign-checked signed-int subscript (`ai_theatre_graph.cpp:0x86`,
+    /// `claim_39c989ce13504504353c`), so 65 536 and 1 000 000 are ORDINARY
+    /// state ids and refusing them was discarding rows the recorder had
+    /// collected correctly.
+    ///
+    /// kills: narrowing `MAX_STATE_ID` back to `65_535`, `70_000` or any other
+    /// content-scale number -- the admitted arm goes red. Also kills removing
+    /// the state-id check entirely, and WIDENING it past the structural edge --
+    /// the refused arm probes `i32::MAX` as a LITERAL, so a ceiling that grows
+    /// by one does not carry the probe along with it.
     #[test]
-    fn still_rejects_state_id_above_the_representation_bound() {
-        // Concrete values for the same reason as the disrupted-supply garbage
-        // test: `MAX_STATE_ID + 1` tracks the bound and can never catch it
-        // being widened.
-        for state_id in [0, 65_536, 1_000_000, u32::MAX] {
+    fn the_state_id_boundary_walk_admits_every_retired_ceiling() {
+        for state_id in [1u32, 65_535, 65_536, 70_000, 1_000_000, MAX_STATE_ID] {
+            let mut rows = fixture_rows();
+            rows.iter_mut()
+                .find(|row| row.row_kind == ROW_KIND_PROVINCE_LOGISTICS)
+                .expect("fixture province row")
+                .join_id = state_id;
+            let header = fixture_header(&rows);
+            let summary = decode_payload(0, &encode_payload(&header, &rows));
+            assert!(
+                summary.parse_errors.is_empty(),
+                "state_id {state_id} is inside the id space and must be \
+                 admitted, got {:?}",
+                summary.parse_errors
+            );
+        }
+        // `i32::MAX` is spelled as a LITERAL, deliberately. A probe derived as
+        // `MAX_STATE_ID + 1` tracks the constant, so widening the constant by
+        // one merely moves the probe with it and the fixture stays green while
+        // the first identity the engine's signed-int subscript cannot address
+        // becomes admitted. This test's own retired predecessor made exactly
+        // that point about content-scale ceilings; it applies to the structural
+        // edge too.
+        for state_id in [0, MAX_STATE_ID + 1, 2_147_483_647, u32::MAX] {
             let mut rows = fixture_rows();
             rows.iter_mut()
                 .find(|row| row.row_kind == ROW_KIND_PROVINCE_LOGISTICS)
@@ -1215,7 +1252,13 @@ mod tests {
         let rows = vec![SupplyLogisticsRow {
             row_kind: ROW_KIND_DIVISION_SUPPLY,
             entity_id: 7,
-            join_id: 9_999_999,
+            // Was `9_999_999`, which is an ORDINARY province id now that the
+            // ceiling is the id space's structural width rather than a
+            // content-scale guess. This test's job is to prove the province_id
+            // check EXISTS beside the other field checks, not to pin the
+            // ceiling -- that is the boundary walk's job -- so it uses the
+            // garbage word, which no widening of a real id space can admit.
+            join_id: u32::MAX,
             owner_tag_db_id: 0,
             flags: ROW_FLAG_DIVISION_OWNER,
             value_a_raw: -1,

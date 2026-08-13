@@ -4,7 +4,48 @@ pub const DOMAIN_ID: u16 = 94;
 pub const DOMAIN_NAME: &str = "pov_province_visibility_live";
 pub const CARRIER_MAGIC: [u8; 4] = *b"FOW1";
 pub const CARRIER_VERSION: u16 = 1;
+/// Upper bound (INCLUSIVE) on the NUMBER of province slots one d94 frame
+/// carries. A COUNT and a transport budget -- never an id bound.
+///
+/// # Why this one does not move with `MAX_PROVINCE_ID`
+///
+/// Lane IA proved the province ID SPACE is `i32`-wide (`build_profile::
+/// MAX_PROVINCE_ID`, `claim_347234c20a542ca79032`) and retired the `65_535`
+/// guess everywhere it was acting as an identity ceiling. This constant keeps
+/// the number, and that is a deliberate split rather than a site the sweep
+/// missed.
+///
+/// D94's carrier is DENSE: one byte of visibility level per province, and the
+/// province id IS the byte's position in the vector. So this number sizes a
+/// buffer taken from a stream word. At the id space's structural width it
+/// would authorise a 2 GB allocation from a two-byte header field -- the same
+/// shape as the `PairSeenSet` abort lane GV hit, where a widened identity
+/// ceiling reached an allocation and took the process with it.
+///
+/// The two jobs are now two constants: this one bounds the vector, and
+/// [`MAX_PROVINCE_SLOT_INDEX`] bounds a slot index and is DERIVED from it, so
+/// the id side can never be widened without widening the buffer that has to
+/// hold it.
+///
+/// # The cost, stated rather than hidden
+///
+/// A mod set defining more than 65 535 provinces loses domain 94 -- refused by
+/// name (`"province vector length ... is outside the admitted range"`), never
+/// silently truncated, so the hour is accounted rather than quietly wrong.
+/// That is a real mod-compatibility limit and it is a TRANSPORT limit, not a
+/// claim about how many provinces a game may define. Raising it means pricing
+/// a bigger frame or changing the carrier to a sparse encoding, which is a
+/// format decision and not a bounds edit.
 pub const MAX_PROVINCE_SLOTS: usize = 65_535;
+
+/// Upper bound (INCLUSIVE) on a d94 province SLOT INDEX.
+///
+/// Derived from [`MAX_PROVINCE_SLOTS`] and not from the province id space:
+/// this domain's "province id" is a POSITION in a dense vector, so the widest
+/// addressable index is one less than the widest vector. Spelling it as its
+/// own constant is what keeps the `>= count` / `> max_index` off-by-one from
+/// being re-derived at each call site.
+pub const MAX_PROVINCE_SLOT_INDEX: u32 = (MAX_PROVINCE_SLOTS - 1) as u32;
 /// A POV country id is a country-database id, so it carries the family bound:
 /// [`crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`]. Was `2_048`, a guess
 /// at the vanilla-plus-DLC country count (vanilla defines 439 tags), which cost

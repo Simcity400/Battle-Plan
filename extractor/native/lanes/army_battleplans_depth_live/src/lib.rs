@@ -76,8 +76,17 @@ pub const ORDER_TYPE_PARADROP: i32 = 4;
 pub const ORDER_TYPE_AREA_DEFENSE: i32 = 5;
 const MAX_CHILD_ROWS: u32 = 5_000;
 const MAX_INLINE_CHILD_ROWS: u32 = 256;
-const MAX_STATE_ID: u32 = 65_535;
-const MAX_PROVINCE_ID: u32 = 65_535;
+/// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
+/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`);
+/// dossier `extractor/native/runs/ia_province_caps/SWEEP.md`. A separate
+/// constant from the province one even though the numbers coincide.
+const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
+/// The province id space's STRUCTURAL width (lane IA). Was a guess --
+/// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
+/// four different ceilings for one id space. Proven from the engine's signed-int
+/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`); dossier
+/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_SLOT_INDEX: u32 = 64;
 const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
@@ -364,6 +373,7 @@ pub fn read_type5_target_states<M: BattleplansDepthMemory>(
         MAX_CHILD_ROWS,
         MAX_INLINE_CHILD_ROWS,
         MAX_STATE_ID,
+        compact_contract::bound_trips::BOUND_TRIP_MAP_STATE_ID,
     )
     .map(|(values, count)| (values, Some(count), STATUS_EXACT))
     .unwrap_or_else(|status| (Vec::new(), None, status))
@@ -391,6 +401,7 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
         MAX_CHILD_ROWS,
         MAX_INLINE_CHILD_ROWS,
         MAX_PROVINCE_ID,
+        compact_contract::bound_trips::BOUND_TRIP_MAP_PROVINCE_ID,
     ) {
         Ok((values, _)) if !values.is_empty() => values,
         Ok(_) => return (Vec::new(), STATUS_FIXTURE_REQUIRED),
@@ -411,7 +422,14 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
     let Some(target) = mem.read_u32(target_address) else {
         return (Vec::new(), STATUS_VALIDATION_FAILED);
     };
-    if target == 0 || target > MAX_PROVINCE_ID || target == source {
+    if target == 0
+        || compact_contract::bound_trips::bound_exceeded_u32(
+            target,
+            MAX_PROVINCE_ID,
+            compact_contract::bound_trips::BOUND_TRIP_MAP_PROVINCE_ID,
+        )
+        || target == source
+    {
         return (Vec::new(), STATUS_VALIDATION_FAILED);
     }
     (vec![source, target], STATUS_EXACT)
@@ -1147,6 +1165,11 @@ fn read_u32_vector<M: BattleplansDepthMemory>(
     max_count: u32,
     max_inline: u32,
     max_value: u32,
+    // The bound-trip unit for `max_value`. Passed rather than inferred because
+    // this reader serves BOTH id spaces -- type-5 targets are STATE ids, paths
+    // are PROVINCE ids -- and filing both under one unit would report the wrong
+    // space, which is the provenance error this lane exists to close.
+    value_trip_unit: usize,
 ) -> Result<(Vec<u32>, u32), u32> {
     let begin = mem
         .read_u64(
@@ -1185,7 +1208,18 @@ fn read_u32_vector<M: BattleplansDepthMemory>(
     for index in 0..count as usize {
         let start = index * 4;
         let value = u32::from_le_bytes(bytes[start..start + 4].try_into().unwrap());
-        if value == 0 || value > max_value {
+        if value == 0 {
+            return Err(STATUS_VALIDATION_FAILED);
+        }
+        // ATTRIBUTED separately from the zero/heap/read/length failures above,
+        // which all share STATUS_VALIDATION_FAILED. The status is unchanged --
+        // the whole vector is still refused -- but an out-of-space identity is
+        // no longer indistinguishable from a bad length or an unreadable body.
+        if compact_contract::bound_trips::bound_exceeded_u32(
+            value,
+            max_value,
+            value_trip_unit,
+        ) {
             return Err(STATUS_VALIDATION_FAILED);
         }
         out.push(value);

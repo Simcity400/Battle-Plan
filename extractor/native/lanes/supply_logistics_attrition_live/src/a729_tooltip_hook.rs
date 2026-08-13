@@ -253,7 +253,20 @@ unsafe extern "system" fn hook_formatter(dst: usize, raw: i64, decimals: u32) ->
 fn open_observation(province: usize) -> Option<OpenObservation> {
     let base = MODULE_BASE.load(Ordering::Acquire);
     let province_id = read_u32(province.checked_add(CPROVINCE_ID_OFFSET)?).ok()?;
-    if province_id == 0 || province_id > MAX_PROVINCE_ID { return None; }
+    // ATTRIBUTED. This returned a bare, uncounted `None` -- unlike the queue
+    // overflow beside it, which increments DROPPED_ROWS -- so an out-of-space
+    // province word left no trace at all. It files under the MAP unit rather
+    // than the supply family's: this hook holds no live CSupply ceiling, it is
+    // range-checking an identity against the id space's structural width.
+    if province_id == 0
+        || compact_contract::bound_trips::bound_exceeded_u32(
+            province_id,
+            MAX_PROVINCE_ID,
+            compact_contract::bound_trips::BOUND_TRIP_MAP_PROVINCE_ID,
+        )
+    {
+        return None;
+    }
     let current_ref_fn: CurrentCountryRefFn = unsafe {
         mem::transmute(base.checked_add(CURRENT_COUNTRY_REF_RVA)?)
     };

@@ -235,7 +235,10 @@ fn check_authority_payload(
     at_byte: usize,
 ) -> Result<(), String> {
     const MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
-    const MAX_STATE_ID: u32 = 65_535;
+    // Lane IA: the province/state id spaces are i32-wide. A measurement tool
+    // that rejects valid modded streams measures nothing about them, and a
+    // green bench then certifies a law it never exercised.
+    const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
     const MAX_CAPACITY: u32 = 1_000_000;
     const MAX_BUILDING_LEVEL: u32 = 1_000;
     const MAX_WING_COUNT: u32 = 20_000;

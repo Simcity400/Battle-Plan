@@ -93,7 +93,15 @@ pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPAC
 pub const MAX_GROUP_INDEX: u32 = 64;
 pub const MAX_MEMBER_INDEX: u32 = 1_000;
 pub const MAX_BATTLE_SLOT_INDEX: u32 = 4_096;
-pub const MAX_LOCATION_ID: u32 = 1_000_000;
+/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+///
+/// Was `1_000_000`. This constant is named for the FIELD (`location`) rather
+/// than the SPACE, which is why lane IA's name-based census -- built around
+/// `MAX_PROVINCE_ID` and `MAX_STATE_ID` -- did not see it for fourteen review
+/// rounds. The value it bounds is read from an authenticated `CProvince` and is
+/// a province id like any other. Dossier:
+/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+pub const MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_REGION_ID: u32 = 100_000;
 pub const MAX_DESIGNED_STRENGTH_RAW: u32 = 1_000_000_000;
 pub const MAX_FIXED_POINT_RAW: u32 = 1_000_000_000;

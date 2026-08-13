@@ -258,7 +258,12 @@ def resolve_state_roots(p):
         except OSError:
             invalid_state_links += 1
             continue
-        if not (1 <= state_id <= 65535):
+        # The state id space is i32-wide (lane IA, claim_39c989ce13504504353c);
+        # 65535 was a guess and this probe is the lane's CERTIFYING path, so a
+        # ceiling here rejects exactly the high-state maps the collector now
+        # accepts. Lane GV's round-8 lesson: a sweep scoped to one language
+        # should say so, and this one did not have to.
+        if not (1 <= state_id <= 2_147_483_646):
             invalid_state_links += 1
             continue
         old = state_roots.get(state_id)

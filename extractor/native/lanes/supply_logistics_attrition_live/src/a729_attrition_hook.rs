@@ -262,6 +262,23 @@ unsafe fn begin_transaction(registers: SavedRegisters) {
     let province_id = unsafe { read_u32(division + 0x18) };
     let owner_tag_db_id = unsafe { read_u32(division + 0x1c8) };
     let tick = unsafe { read_i32(base + CURRENT_TICK_RVA) };
+    // The PROVINCE refusal is split out and ATTRIBUTED. It used to share this
+    // arm with the type, division-id, owner, tick and read failures, so the
+    // only output was the aggregate `dropped_rows` counter and neither the
+    // reason nor the offending identity survived. The row is still dropped --
+    // acceptance is unchanged -- but a capture can now name what caused it.
+    if let Some(value) = province_id {
+        if value != 0
+            && compact_contract::bound_trips::bound_exceeded_u32(
+                value,
+                MAX_PROVINCE_ID,
+                compact_contract::bound_trips::BOUND_TRIP_MAP_PROVINCE_ID,
+            )
+        {
+            drop_row();
+            return;
+        }
+    }
     if !matches!(type_id, Some(4713 | 51))
         || !matches!(raw_division_id, Some(value) if value > 0 && value <= i32::MAX as u32)
         || !matches!(province_id, Some(value) if value > 0 && value <= MAX_PROVINCE_ID)

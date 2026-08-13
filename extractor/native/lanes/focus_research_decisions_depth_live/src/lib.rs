@@ -128,7 +128,13 @@ const DECISION_TARGET_UNKNOWN_ID: u32 = u32::MAX;
 /// 439 tags). ENGINE-STRUCTURAL now: a country database id is admissible iff
 /// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`.
 const DECISION_TARGET_MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
-const DECISION_TARGET_MAX_NUMERIC_ID: u32 = 1_000_000;
+/// The numeric decision target is a STATE identity, not an opaque number:
+/// `TargetedDecisionTarget::Numeric` becomes `panel::Target::State(state_id)`
+/// in `collector/src/a34_a40_evidence.rs`. So this was a state ceiling under a
+/// role name -- `1_000_000` -- and a name-based census could not see it. It is
+/// now the state id space's STRUCTURAL width
+/// (`claim_39c989ce13504504353c`; `runs/ia_province_caps/SWEEP.md`).
+const DECISION_TARGET_MAX_NUMERIC_ID: u32 = (i32::MAX as u32) - 1;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DepthGateSummary {
@@ -3261,6 +3267,48 @@ fn json_str(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// D45's numeric decision target is a STATE identity, and it carries the
+    /// state id space's shared width.
+    ///
+    /// # Why this pin lives HERE and not in the shared agreement fixture
+    ///
+    /// `wire_format/tests/producer_consumer_admission_agreement.rs` asserts
+    /// that "every consumer applies the shared envelope" over a hand-maintained
+    /// list, and `wire_format` does not depend on the lane crates -- so this
+    /// constant CANNOT appear in that list. That gap is not academic: it is
+    /// exactly why a `1_000_000` ceiling on a state identity survived every
+    /// gate and fourteen adversarial review rounds. A list bounded by a crate's
+    /// dependency graph cannot honour a claim about every consumer.
+    ///
+    /// # Why it is a state identity at all
+    ///
+    /// `TargetedDecisionTarget::Numeric(state_id)` is converted to
+    /// `panel::Target::State(state_id)` in
+    /// `collector/src/a34_a40_evidence.rs`. The role name "numeric" is what hid
+    /// it from a census scoped by the names `MAX_STATE_ID`/`MAX_PROVINCE_ID`.
+    ///
+    /// kills: reverting `DECISION_TARGET_MAX_NUMERIC_ID` to `1_000_000`,
+    /// `65_535`, `70_000` or any other content-scale number; and widening it
+    /// past the structural edge, since `2_147_483_647` is asserted refused as a
+    /// LITERAL rather than as `MAX + 1`.
+    #[test]
+    fn the_numeric_decision_target_is_a_state_identity_at_the_shared_width() {
+        assert_eq!(
+            super::DECISION_TARGET_MAX_NUMERIC_ID,
+            compact_contract::build_profile::MAX_STATE_ID,
+            "the numeric decision target is a STATE id and must carry the state \
+             id space's width, not a private ceiling"
+        );
+        assert_eq!(super::DECISION_TARGET_MAX_NUMERIC_ID, 2_147_483_646);
+        for admitted in [1u32, 65_535, 70_000, 1_000_000, 1_000_001] {
+            assert!(
+                admitted <= super::DECISION_TARGET_MAX_NUMERIC_ID,
+                "state id {admitted} must be admitted as a decision target"
+            );
+        }
+        assert!(2_147_483_647 > super::DECISION_TARGET_MAX_NUMERIC_ID);
+    }
+
     use super::*;
 
     fn empty_focus_payload() -> Vec<u8> {

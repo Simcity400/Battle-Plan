@@ -13526,11 +13526,33 @@ fn d44_fold_admits_state_id_above_the_vanilla_state_count() {
     );
 }
 
-/// Fails if `SUPPLY_MAX_STATE_ID` is widened past the shared u16 representation
-/// bound, or the fold's state-id check is removed.
+/// The state id space's boundary walk THROUGH THE SHIPPING FOLD.
+///
+/// The fold is the consumer that mattered most here: it asserted the OPPOSITE
+/// for 65 536 and 1 000 000, so a modded map's states were folded out after the
+/// recorder had collected them, with nothing on the producer side reporting it.
+/// Lane IA proved the space is `i32`-wide (`claim_39c989ce13504504353c`).
+///
+/// kills: narrowing `SUPPLY_MAX_STATE_ID` back to `65_535` or `70_000` -- the
+/// admitted arm goes red; removing the fold's state-id check, or widening it
+/// past the structural edge -- the refused arm goes red.
 #[test]
-fn d44_fold_still_rejects_state_id_above_the_representation_bound() {
-    for state_id in [0u32, 65_536, 1_000_000, u32::MAX] {
+fn d44_fold_walks_the_state_id_boundary() {
+    for state_id in [1u32, 65_535, 65_536, 70_000, 1_000_000] {
+        let payload = d44_baseline_with_state_id(state_id);
+        assert!(
+            WorldFold::validate_domain_data_payload_exact(44, &payload, 0).is_ok(),
+            "state_id {state_id} is inside the id space and must fold"
+        );
+    }
+    // `i32::MAX` is spelled as a LITERAL, deliberately. A probe derived as
+    // `MAX_STATE_ID + 1` tracks the constant, so widening the constant by
+    // one merely moves the probe with it and the fixture stays green while
+    // the first identity the engine's signed-int subscript cannot address
+    // becomes admitted. This test's own retired predecessor made exactly
+    // that point about content-scale ceilings; it applies to the structural
+    // edge too.
+    for state_id in [0u32, 2_147_483_647, u32::MAX] {
         let payload = d44_baseline_with_state_id(state_id);
         assert!(
             WorldFold::validate_domain_data_payload_exact(44, &payload, 0).is_err(),

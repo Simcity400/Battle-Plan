@@ -359,7 +359,7 @@ fn check_authority_payload(payload: &[u8], at_byte: usize) -> Result<(), String>
     for (row_index, row) in targets.chunks_exact(d27::TARGET_ROW_LEN).enumerate() {
         let state_id = d27::parse_target_row(row)
             .map_err(|e| format!("d27 authority at byte {at_byte}: target row {row_index}: {e}"))?;
-        if state_id > 65_535 {
+        if state_id > (i32::MAX as u32) - 1 {
             return Err(format!(
                 "d27 authority at byte {at_byte}: target row {row_index} has invalid state id {state_id}"
             ));
@@ -1370,7 +1370,13 @@ mod tests {
         let mut bad = d27_payload(FAILED, 7, &[900]);
         bad[d27::HEADER_LEN + 44..d27::HEADER_LEN + 48].copy_from_slice(&1u32.to_le_bytes());
         bad_payloads.push(bad);
-        let bad = d27_payload(FAILED, 7, &[65_536]);
+        // Was `&[65_536]`, one past the retired `65_535` state ceiling. That is
+        // an ORDINARY state id now (lane IA: the state id space is i32-wide,
+        // `claim_39c989ce13504504353c`), so the probe moved to one past the
+        // STRUCTURAL edge -- the first word no signed-int subscript can address.
+        // The check itself is unchanged and still exercised; only the threshold
+        // it is probed at moved, which is the point of the widening.
+        let bad = d27_payload(FAILED, 7, &[i32::MAX as u32]);
         bad_payloads.push(bad);
         let mut bad = d27_payload(FAILED, 7, &[900]);
         let target_reserved = d27::HEADER_LEN + d27::ROW_LEN + 4;

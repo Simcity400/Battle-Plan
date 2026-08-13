@@ -243,10 +243,16 @@ fn check_authority_payload(
     tables: &d23::Tables<'_>,
     at_byte: usize,
 ) -> Result<(), String> {
-    const MIN_STATE_ROWS: usize = 1_000;
-    const MIN_PROVINCE_ROWS: usize = 10_000;
-    const MAX_STATE_ID: u32 = 65_535;
-    const MAX_PROVINCE_ID: u32 = 65_536;
+    // Lane GK R3 shape: a vanilla-sized-map floor refuses a legal smaller
+    // total conversion. The structural rule is "at least one authenticated
+    // row", not "at least a vanilla map".
+    const MIN_STATE_ROWS: usize = 1;
+    const MIN_PROVINCE_ROWS: usize = 1;
+    // Lane IA: the province/state id spaces are i32-wide. A measurement tool
+    // that rejects valid modded streams measures nothing about them, and a
+    // green bench then certifies a law it never exercised.
+    const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
+    const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
     const MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
     const MAX_BUILDING_LEVEL: u32 = 1_000;
 
@@ -1737,14 +1743,28 @@ mod tests {
         };
 
         let mut bad = Vec::new();
-        bad.push(d23_payload(1, 7, 1)); // full-snapshot minimum counts
+        // RETIRED (lane IA): `bad.push(d23_payload(1, 7, 1))`, described here as
+        // "full-snapshot minimum counts". `d23_payload` builds one state and
+        // one province, so that case was refused ONLY by this binary's
+        // MIN_STATE_ROWS = 1_000 / MIN_PROVINCE_ROWS = 10_000 floors -- lane
+        // GK's residual R3 shape, an unproven claim that a real game has at
+        // least a vanilla-sized map. A one-state, one-province total conversion
+        // is legal, so keeping this entry would assert the defect rather than
+        // the rule. The structural rules that replaced those floors (a table
+        // declares at least two slots, and the walk must authenticate at least
+        // one row) are what stop a successful empty; the eight payloads below
+        // are all still genuinely malformed.
         let mut header = d23_payload(FAILED_DELTA, 7, 1);
         header[24..28].copy_from_slice(&0u32.to_le_bytes());
         bad.push(header);
         let mut changed = d23_payload(FAILED_DELTA, 7, 1);
         changed[12..16].copy_from_slice(&1u32.to_le_bytes());
         bad.push(changed);
-        bad.push(d23_payload(FAILED_DELTA, 65_536, 1));
+        // Probes moved from the retired content-scale ceilings to one past the
+        // STRUCTURAL edge (lane IA). 65_536 / 65_537 are ordinary map ids now;
+        // `i32::MAX` is the first word no signed-int subscript can address, so
+        // the checks stay exercised at the only threshold that is derived.
+        bad.push(d23_payload(FAILED_DELTA, i32::MAX as u32, 1));
 
         let mut duplicate_state = d23_payload(FAILED_DELTA, 7, 1);
         let state = duplicate_state[d23::HEADER_LEN..d23::HEADER_LEN + d23::STATE_ROW_LEN].to_vec();
@@ -1759,12 +1779,12 @@ mod tests {
 
         let mut province_id = d23_payload(FAILED_DELTA, 7, 1);
         province_id[d23::HEADER_LEN + d23::STATE_ROW_LEN..d23::HEADER_LEN + d23::STATE_ROW_LEN + 4]
-            .copy_from_slice(&65_537u32.to_le_bytes());
+            .copy_from_slice(&(i32::MAX as u32).to_le_bytes());
         bad.push(province_id);
         let mut province_state = d23_payload(FAILED_DELTA, 7, 1);
         province_state
             [d23::HEADER_LEN + d23::STATE_ROW_LEN + 4..d23::HEADER_LEN + d23::STATE_ROW_LEN + 8]
-            .copy_from_slice(&65_536u32.to_le_bytes());
+            .copy_from_slice(&(i32::MAX as u32).to_le_bytes());
         bad.push(province_state);
 
         let mut unknown_flags = d23_payload(FAILED_DELTA, 7, 1);

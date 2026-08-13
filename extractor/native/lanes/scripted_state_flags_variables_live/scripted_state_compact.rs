@@ -58,7 +58,11 @@ pub const ROW_FLAG_DELAYED_DUE_PRESENT: u32 = 1 << 5;
 pub const MAX_KEY_BYTES: usize = 512;
 pub const MAX_KEY_TABLE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_COUNTRY_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
-pub const MAX_STATE_ID: u32 = 65_535;
+/// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
+/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`);
+/// dossier `extractor/native/runs/ia_province_caps/SWEEP.md`. A separate
+/// constant from the province one even though the numbers coincide.
+pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// Combined event id = namespace*100000 + index (CEvent+0x0C). A live event
 /// always has a nonzero namespace, so the minimum valid combined id is
 /// 100_000; the ceiling bounds namespace < 100_000 (id space 100000*100000).
