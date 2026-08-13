@@ -63,7 +63,7 @@ pub use recording_composition::{
 };
 pub use replay_cache::{
     CacheAudit, CacheAuditVerdict, CacheBuildHour, CacheBuildHourMeta, CacheIdentityMode,
-    CanonicalWorldHour, ConfinedHour,
+    CacheTruncation, CanonicalWorldHour, ConfinedHour,
     validate_checkpoint_cache_header, CertifiedCacheFile, CertifiedReplayCache, ReplayCacheEncoder,
     ReplayCacheError, ReplayCacheReader, ReplayExcludedHour, ReplayHourEntry, ReplayHourIndex,
     ReplaySeekReceipt,

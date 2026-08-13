@@ -1493,6 +1493,11 @@ struct HourReport {
     hour_index: i64,
     date: String,
     snapshot_hash: String,
+    /// The same snapshot with its `provenance` member removed — see
+    /// [`world_only_hash`]. Test-only, because nothing the tool PUBLISHES may
+    /// be a hash that ignores an hour's account of itself.
+    #[cfg(test)]
+    world_hash: String,
     snapshot_bytes: usize,
     domain_data_counts: BTreeMap<u16, u64>,
     completeness: HourCompleteness,
@@ -1678,6 +1683,41 @@ fn verify_published_coverage(
     ))
 }
 
+/// Hash one published hour with its `provenance` member removed.
+///
+/// `snapshot_hash` covers every published byte, and since lane GQ taught
+/// `WorldFold::ingest_record` to dispatch `COMPACT_RECORD_TYPE_DOMAIN_GAP`, an
+/// accounted absence writes a `domain_problems` entry and a note NAMING its
+/// reason into `provenance`. So two streams differing only in a gap — or in a
+/// gap's reason — legitimately publish different snapshot bytes. That is the
+/// point of the per-hour seal: why a domain was absent is part of the hour.
+///
+/// It also means `snapshot_hash` can no longer answer "did the WORLD move",
+/// which is the question the fold-equivalence gates are about. This hash
+/// answers that one, by removing exactly the member the gap writes into:
+/// `provenance.collector.domain_problems`, `provenance.collector
+/// .unfolded_domains` and `provenance.notes` all live under it
+/// (`world_fold.rs` builds `collector` into `provenance`), and nothing else
+/// does.
+///
+/// Not a second canonicalization: `serde_json::Map` is `BTreeMap`-backed and
+/// this crate does not enable `preserve_order`, so removing one top-level key
+/// and re-serializing yields the byte-identical document minus that member.
+#[cfg(test)]
+fn world_only_hash(bytes: &[u8]) -> String {
+    let mut doc: Value = serde_json::from_slice(bytes)
+        .expect("a published hour snapshot is JSON; the fold serialized it");
+    doc.as_object_mut()
+        .expect("a published hour snapshot is a JSON object")
+        .remove("provenance")
+        .expect("every published hour carries a provenance member");
+    to_hex(&Sha256::digest(
+        serde_json::to_vec(&doc)
+            .expect("re-serializing a parsed document cannot fail")
+            .as_slice(),
+    ))
+}
+
 /// Record one closed hour into the running `hours` list. The fold's output is
 /// canonical by construction — every accumulator is a BTreeMap/BTreeSet and
 /// serde_json (no `preserve_order`) writes object keys sorted, so identical
@@ -1694,6 +1734,8 @@ fn push_hour(
         hour_index,
         date: date.to_string(),
         snapshot_hash: to_hex(&Sha256::digest(bytes)),
+        #[cfg(test)]
+        world_hash: world_only_hash(bytes),
         snapshot_bytes: bytes.len(),
         domain_data_counts: counts.clone(),
         completeness: completeness.clone(),

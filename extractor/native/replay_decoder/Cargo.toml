@@ -62,6 +62,12 @@ gz-interior-holes = []
 # it refuses by name. Measurement only: it writes nothing outside the scratch
 # directory it is given, is never on by default and is never packaged.
 ha-entry-confinement = []
+# Lane HR truncation harness (task #192). Shares lane HA's fixture
+# (`src/bin/entry_damage_fixture.rs`) and cuts the packaged H4CP short instead
+# of flipping a byte, reporting which hours the verified prefix still serves.
+# Measurement only: it writes nothing outside the scratch directory it is given,
+# is never on by default and is never packaged.
+hr-truncated-prefix = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -123,6 +129,11 @@ required-features = ["gz-interior-holes"]
 name = "ha_entry_confinement"
 path = "src/bin/ha_entry_confinement.rs"
 required-features = ["ha-entry-confinement"]
+
+[[bin]]
+name = "hr_truncated_prefix"
+path = "src/bin/hr_truncated_prefix.rs"
+required-features = ["hr-truncated-prefix"]
 
 [[test]]
 name = "prefold_worker_process"

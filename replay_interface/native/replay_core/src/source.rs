@@ -1395,29 +1395,77 @@ fn open_packaged_replay_cache(
         // record from it. Without a base the old resident read stands, and the
         // container reader's 2 GiB materialization cap refuses an oversized
         // cache BY NAME rather than truncating it.
-        let cache = match cache_spool_base {
+        // THE CONTAINER'S ACCOUNT OF THIS ENTRY IS NOT THE LAST WORD ON IT
+        // (task #192, HA-3).
+        //
+        // Both routes used to authenticate the entry against the container
+        // manifest and refuse the WHOLE recording the moment that digest
+        // disagreed — the spool route inside
+        // `spool_entry_to_file_transactionally_bounded`, the resident route
+        // inside `read_entry_bytes`. A cache entry that rotted after packing
+        // therefore cost every hour of the recording, and the per-record
+        // confinement lanes GZ and HA built was never reached, because it lives
+        // one call further in, in `CertifiedReplayCache`'s admission.
+        //
+        // The order is inverted here for the reason
+        // `compact_replay_verification_gates`' link 6 already states about the
+        // same bytes: the sealed H4IX carries a digest per cache record, and
+        // that is a STRICTLY STRONGER authority than the container manifest's
+        // one digest over the whole entry. A record whose bytes hash to the
+        // digest the SEAL published is that record, whatever the container's
+        // own account of the entry says. So the entry is streamed into a
+        // caller-owned sink that is never published on this route, the copy's
+        // outcome is KEPT AS A FACT instead of ending the open, and
+        // `CertifiedReplayCache` — the one door that can attribute damage to
+        // hours — is what judges the bytes.
+        //
+        // No unverified byte is ever served by this: every hour that
+        // reconstructs has had its record checked against the sealed
+        // per-record digest, and every hour that has not is refused by name.
+        // The two accounts disagreeing in the OTHER directions is a
+        // whole-recording refusal, in the four-outcome match below.
+        let (cache, copy_outcome) = match cache_spool_base {
             Some(base) => {
                 let owner = PrefoldSpoolOwner::create(base)?;
                 let spooled = owner.root().join("checkpoints.h4cp");
-                let receipt = container
-                    .spool_entry_to_file_transactionally_bounded(
+                let copy_outcome = {
+                    let mut sink = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&spooled)
+                        .map_err(|error| {
+                            SourceError::Open(format!(
+                                "create private checkpoint cache spool {}: {error}",
+                                spooled.display()
+                            ))
+                        })?;
+                    let outcome = container.copy_entry_to_unpublished_writer_bounded(
                         &cache_entry.path,
-                        &spooled,
+                        &mut sink,
                         snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
-                    )
-                    .map_err(|error| {
+                    );
+                    sink.sync_all().map_err(|error| {
                         SourceError::Open(format!(
-                            "authenticate certified replay_decoder checkpoint cache into private spool: {error}"
+                            "sync private checkpoint cache spool {}: {error}",
+                            spooled.display()
                         ))
                     })?;
-                if receipt.path() != cache_entry.path.as_str()
-                    || receipt.uncompressed_len() != cache_entry.bytes
-                    || receipt.sha256() != cache_entry.sha256
-                {
-                    return Err(SourceError::Open(
-                        "checkpoint cache spool receipt does not match its container role entry"
-                            .to_string(),
-                    ));
+                    outcome
+                };
+                // When the container DID vouch for the entry, its receipt must
+                // still be the entry the role index names. This check is not
+                // weakened by the reordering; it is only skipped when there is
+                // no receipt to check.
+                if let Ok(receipt) = &copy_outcome {
+                    if receipt.path() != cache_entry.path.as_str()
+                        || receipt.uncompressed_len() != cache_entry.bytes
+                        || receipt.sha256() != cache_entry.sha256
+                    {
+                        return Err(SourceError::Open(
+                            "checkpoint cache spool receipt does not match its container role entry"
+                                .to_string(),
+                        ));
+                    }
                 }
                 let file = open_private_prefold_spool_file(&spooled)?;
                 let cache = snapshot::CertifiedReplayCache::open_file(
@@ -1427,34 +1475,66 @@ fn open_packaged_replay_cache(
                     &source_sha256,
                 )
                 .map_err(|error| {
-                    SourceError::Open(format!(
-                        "admit packaged replay_decoder binary artifacts: {error}"
-                    ))
+                    SourceError::Open(admission_refusal(&error, &copy_outcome))
                 })?;
                 cache_spool = Some(owner);
-                cache
+                (cache, copy_outcome)
             }
             None => {
-                let cache_bytes = container
-                    .read_entry_bytes(&cache_entry.path)
-                    .map_err(|error| {
-                        SourceError::Open(format!(
-                            "read certified replay_decoder checkpoint cache: {error}"
-                        ))
-                    })?;
-                snapshot::CertifiedReplayCache::open(
+                let mut cache_bytes = Vec::new();
+                let copy_outcome = container.copy_entry_to_unpublished_writer_bounded(
+                    &cache_entry.path,
+                    &mut cache_bytes,
+                    snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+                );
+                let cache = snapshot::CertifiedReplayCache::open(
                     &index_bytes,
                     cache_bytes,
                     source_len,
                     &source_sha256,
                 )
                 .map_err(|error| {
-                    SourceError::Open(format!(
-                        "admit packaged replay_decoder binary artifacts: {error}"
-                    ))
-                })?
+                    SourceError::Open(admission_refusal(&error, &copy_outcome))
+                })?;
+                (cache, copy_outcome)
             }
         };
+        // THE FOUR OUTCOMES of one packaged cache judged by two accounts, each
+        // named. Two are agreements; two are the container's own account of the
+        // entry and the seal's account of the same bytes contradicting each
+        // other, which is attributable to no hour and refuses the recording.
+        //
+        // This is the same match `compact_replay_verification_gates`' link 6
+        // makes over the same entry, and it is made here as well because the
+        // gate certifies a recording once while this door opens one every time
+        // a reader is constructed.
+        match (&copy_outcome, cache.confined_hours().is_empty()) {
+            // The container verified the entry and every record is the sealed
+            // one.
+            (Ok(_), true) => {}
+            // The container refused the entry and the sealed index says exactly
+            // which records moved. This is HA-3's case, and confining it is the
+            // point of the reordering.
+            (Err(_), false) => {}
+            (Ok(receipt), false) => {
+                return Err(SourceError::Open(format!(
+                    "the container verified {} against its own manifest digest {}, yet the \
+                     sealed H4IX refuses {} of its hours by per-record digest; the two accounts \
+                     of the same bytes disagree, so neither is trusted",
+                    cache_entry.path,
+                    receipt.sha256(),
+                    cache.confined_hours().len(),
+                )))
+            }
+            (Err(copy_error), true) => {
+                return Err(SourceError::Open(format!(
+                    "the container refused {} ({copy_error}), but every record in it matches the \
+                     per-record digest the sealed H4IX publishes; the damage is in the \
+                     container's own account of the entry, which serves no single game hour",
+                    cache_entry.path,
+                )))
+            }
+        }
         if cache.index().game_id() != game_id
             || cache.index().schema_version() != "1"
             || cache.index().identity_mode()
@@ -3823,6 +3903,28 @@ fn timeline_compact_evidence(timeline: &Value) -> Option<String> {
 static PREFOLD_SPOOL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const PREFOLD_SPOOL_MARKER: &str = ".hoi4-prefold-owner";
 
+/// The refusal text when `CertifiedReplayCache` will not admit the packaged
+/// artifacts at all.
+///
+/// When the container ALSO refused the entry, its complaint is carried into the
+/// sentence. The reordering in `open_packaged_replay_cache` means the
+/// container's refusal is no longer what ends the open, and a reader that saw
+/// only "admit packaged replay_decoder binary artifacts: …" would have lost the
+/// fact that the container's own account of the entry disagreed too — which is
+/// usually the more diagnostic of the two.
+fn admission_refusal(
+    error: &snapshot::ReplayCacheError,
+    copy_outcome: &Result<snapshot::SpoolEntryReceipt, snapshot::ContainerError>,
+) -> String {
+    match copy_outcome {
+        Ok(_) => format!("admit packaged replay_decoder binary artifacts: {error}"),
+        Err(copy_error) => format!(
+            "admit packaged replay_decoder binary artifacts: {error} (the container also \
+             refused the entry: {copy_error})"
+        ),
+    }
+}
+
 /// RAII ownership for one private bounded pre-fold workspace. Cleanup is
 /// attempted only when the exact canonical directory and unique-per-open
 /// marker still match; an identity discrepancy leaves evidence in place rather
@@ -3830,9 +3932,18 @@ const PREFOLD_SPOOL_MARKER: &str = ".hoi4-prefold-owner";
 /// Open this process's own checkpoint-cache spool for bounded record reads.
 ///
 /// The pathname is the one just created inside this process's private
-/// [`PrefoldSpoolOwner`] root and published by the container's transactional
-/// spool. Nothing outside that root is ever named here, and the file is opened
-/// read-only: the cache reader seeks in it, it never writes to it.
+/// [`PrefoldSpoolOwner`] root and written by the entry copy in
+/// `open_packaged_replay_cache`. Nothing outside that root is ever named here,
+/// and the file is opened read-only: the cache reader seeks in it, it never
+/// writes to it.
+///
+/// It is NOT published by the container's transactional spool any more (task
+/// #192): the container's verdict on the entry can no longer decide whether the
+/// bytes are written, because the sealed H4IX judges them record by record
+/// afterwards. So the bytes in this file are unjudged at the moment it is
+/// opened. The root's privacy is what makes that safe — nothing outside this
+/// call can see it, it is removed with the source, and nothing leaves
+/// `CertifiedReplayCache` that has not matched a digest the seal published.
 fn open_private_prefold_spool_file(spool_path: &Path) -> Result<fs::File, SourceError> {
     let spool_file = fs::OpenOptions::new()
         .read(true)
@@ -5872,6 +5983,131 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// Flip one byte of the STORED H4CP entry inside an already-packed
+    /// recording, at `offset` within the cache artifact.
+    ///
+    /// POST-SEAL ROT: everything the container says about the entry — its
+    /// length, its digest, its CRC — still describes what the recorder sealed,
+    /// and only the bytes on disk have moved. Damaging the cache before packing
+    /// could not model this, because the packer would have derived its own
+    /// account from the damaged bytes.
+    ///
+    /// The entry is located by its own bytes rather than by parsing the ZIP,
+    /// and the occurrence is required to be unique so this can never damage
+    /// some other entry that happened to contain the same run.
+    fn rot_sealed_cache_byte_in_recording(recording: &Path, cache_bytes: &[u8], offset: usize) {
+        let mut packed = fs::read(recording).unwrap();
+        let positions: Vec<usize> = packed
+            .windows(cache_bytes.len())
+            .enumerate()
+            .filter(|(_, window)| *window == cache_bytes)
+            .map(|(position, _)| position)
+            .collect();
+        assert_eq!(
+            positions.len(),
+            1,
+            "the sealed cache must appear exactly once in the packed container"
+        );
+        packed[positions[0] + offset] ^= 0xff;
+        fs::write(recording, &packed).unwrap();
+    }
+
+    /// A PACKAGED H4CP ENTRY THAT ROTTED AFTER SEALING COSTS THE HOURS ITS
+    /// DAMAGED RECORD REACHES, NOT THE RECORDING (task #192, residual HA-3).
+    ///
+    /// Lanes GZ and HA built per-record confinement inside
+    /// `snapshot::CertifiedReplayCache`, and this door never reached it: both
+    /// routes authenticated the container entry FIRST — the spooled route
+    /// inside `spool_entry_to_file_transactionally_bounded`, the resident route
+    /// inside `read_entry_bytes` — and a digest disagreement ended the open
+    /// before one per-record digest was read. One rotted byte cost every hour.
+    ///
+    /// The fixture's cache has two records at checkpoint interval 2, so hour 10
+    /// is the window's checkpoint and hour 11 its only delta. Rotting hour 11's
+    /// record must cost hour 11 and leave hour 10 serving, byte-for-byte,
+    /// through BOTH routes — which is also what proves the two routes still
+    /// agree after the reordering.
+    ///
+    /// kills: restoring either container-first refusal. Put
+    /// `spool_entry_to_file_transactionally_bounded` back and the spooled half
+    /// fails at `open_recording_with_spooled_decoder`; put `read_entry_bytes`
+    /// back and the resident half fails at `open_recording`. Deleting the
+    /// four-outcome match instead does NOT fail this test — that arm is pinned
+    /// by the recording being refused when the two accounts agree in the wrong
+    /// direction, which no fixture here can build; it is stated at the code
+    /// site the way the gate's identical arm is.
+    #[test]
+    fn a_rotted_packaged_cache_entry_confines_its_hours_instead_of_the_recording() {
+        let root = temp_root("binary_replay_rotted_cache");
+        let recording = root.join("binary.battleplan");
+        write_portable_binary_replay_fixture_with_composition(
+            &recording,
+            true,
+            snapshot::RawStreamPackaging::Omitted,
+        );
+
+        // Hour 11's record window comes from the container's OWN sealed H4IX,
+        // not from a second copy of the encoder's arithmetic.
+        let (cache_bytes, last_byte_of_hour_11) = {
+            let container =
+                snapshot::Container::open(&recording, &snapshot::ExpectedIdentity::default())
+                    .unwrap();
+            let index_bytes = container
+                .read_entry_bytes(&format!(
+                    "payload/binary-game/{}",
+                    snapshot::HOUR_INDEX_FILE
+                ))
+                .unwrap();
+            let index = snapshot::ReplayHourIndex::from_bytes(&index_bytes).unwrap();
+            let row = &index.hours()[1];
+            assert_eq!(row.hour_index(), 11, "position 1 serves hour 11");
+            assert_eq!(index.hours()[0].hour_index(), 10);
+            let offset = (row.cache_record_offset() + row.cache_record_len() - 1) as usize;
+            let cache = container
+                .read_entry_bytes(&format!(
+                    "payload/binary-game/{}",
+                    snapshot::CHECKPOINT_CACHE_FILE
+                ))
+                .unwrap();
+            (cache, offset)
+        };
+        rot_sealed_cache_byte_in_recording(&recording, &cache_bytes, last_byte_of_hour_11);
+
+        // The resident route.
+        let resident = open_recording(&recording).unwrap();
+        assert_eq!(resident.hours(), &[10, 11]);
+        let frame = resident
+            .frame(10)
+            .expect("hour 10's record still hashes to the digest the seal published for it");
+        assert_eq!(frame.rest["countries"]["FRA"]["stability"], json!(0.50));
+        let refusal = resident.frame(11).unwrap_err().to_string();
+        assert!(
+            refusal.contains("game hour 11"),
+            "the confined hour is refused by name: {refusal}"
+        );
+
+        // The spooled route reaches the same verdict over the same bytes.
+        let spool_base = root.join("spool");
+        fs::create_dir(&spool_base).unwrap();
+        let spooled =
+            open_recording_with_spooled_decoder(&recording, &spool_base, &UnusedSpoolDecoder)
+                .unwrap();
+        assert_eq!(spooled.hours(), resident.hours());
+        assert_eq!(
+            spooled.frame(10).unwrap().rest,
+            resident.frame(10).unwrap().rest,
+            "the served hour is byte-identical by route"
+        );
+        assert!(
+            spooled.frame(11).is_err(),
+            "the confined hour is confined by route too"
+        );
+
+        drop(spooled);
+        drop(resident);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// The composition is authority in both directions. A recording that
     /// declares the cache-only composition but ships a stream entry anyway is a
     /// rewritten recording and must fail closed rather than be quietly read.
@@ -7261,6 +7497,17 @@ mod tests {
                     // The packaged checkpoint cache, spooled into this same
                     // private root and reopened read-only for bounded seeks.
                     | "let spooled = owner.root().join(\"checkpoints.h4cp\");"
+                    // Task #192 moved the CREATE of that file here from
+                    // `Container::spool_entry_to_file_transactionally_bounded`,
+                    // because the container's own verdict on the entry can no
+                    // longer be what decides whether the bytes are written —
+                    // the sealed H4IX judges them record by record afterwards.
+                    // The capability is unchanged in reach: the destination is
+                    // one fixed name inside the identity-marked private root
+                    // this call just created, and `create_new(true)` refuses to
+                    // replace anything.
+                    | "let mut sink = fs::OpenOptions::new()"
+                    | ".open(&spooled)"
                     | "fn open_private_prefold_spool_file(spool_path: &Path) -> Result<fs::File, SourceError> {"
                     | "let spool_file = fs::OpenOptions::new()"
                     | ".open(spool_path)"

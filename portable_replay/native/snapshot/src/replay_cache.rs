@@ -722,18 +722,47 @@ impl ReplayHourIndex {
     /// byte, which is the whole-container refusal this replaces wearing a
     /// different name.
     ///
+    /// A TRUNCATED cache confines by the same law, from the same set: the audit
+    /// puts every position it could not vouch for into `damaged_positions`, so
+    /// the window arithmetic below needs no special case. Only the REASON
+    /// differs, because "this record is not the one the seal published" and
+    /// "this record's bytes are not in the artifact at all" are different facts
+    /// about the hour and a consumer asking why is owed the true one.
+    ///
     /// The reason string is minted here, once, so the reader's refusal and the
     /// replay authority's coverage row cannot drift into two spellings of the
     /// same injury.
-    pub fn confine_damaged_records(&self, damaged_positions: &[usize]) -> Vec<ConfinedHour> {
+    pub fn confine_damaged_records(&self, verdict: &CacheAuditVerdict) -> Vec<ConfinedHour> {
         let mut confined: BTreeMap<i64, ConfinedHour> = BTreeMap::new();
-        for position in damaged_positions {
+        for position in verdict.damaged_positions() {
             let Some(damaged) = self.hours.get(*position) else {
                 continue;
             };
             let checkpoint_position = damaged.checkpoint_position as usize;
             let Some(checkpoint) = self.hours.get(checkpoint_position) else {
                 continue;
+            };
+            let reason = match verdict.truncation() {
+                Some(truncation) if *position >= truncation.first_unvouched_position() => {
+                    format!(
+                        "the packaged H4CP ends at {} bytes of the {} the sealed H4IX published, \
+                         so the record for game hour {} is not wholly in the artifact, and this \
+                         hour reconstructs through that record (checkpoint hour {}); the records \
+                         before it still hash to the digests the seal published and their hours \
+                         are served",
+                        truncation.seen_len(),
+                        truncation.published_len(),
+                        damaged.hour_index,
+                        checkpoint.hour_index
+                    )
+                }
+                _ => format!(
+                    "the packaged H4CP record for game hour {} is not the record the sealed \
+                     H4IX published for it, and this hour reconstructs through that record \
+                     (checkpoint hour {}); one damaged record costs its checkpoint window, \
+                     never the recording",
+                    damaged.hour_index, checkpoint.hour_index
+                ),
             };
             for hour in self.hours[*position..]
                 .iter()
@@ -750,13 +779,7 @@ impl ReplayHourIndex {
                         h4cr_end_offset: hour.h4cr_end_offset,
                         damaged_record_hour: damaged.hour_index,
                         checkpoint_hour: checkpoint.hour_index,
-                        reason: format!(
-                            "the packaged H4CP record for game hour {} is not the record the \
-                             sealed H4IX published for it, and this hour reconstructs through \
-                             that record (checkpoint hour {}); one damaged record costs its \
-                             checkpoint window, never the recording",
-                            damaged.hour_index, checkpoint.hour_index
-                        ),
+                        reason: reason.clone(),
                     });
             }
         }
@@ -819,6 +842,45 @@ pub struct CacheAuditVerdict {
     header: Vec<u8>,
     whole_cache_sha256: String,
     damaged_positions: Vec<usize>,
+    truncated: Option<CacheTruncation>,
+}
+
+/// A cache whose bytes RAN OUT before the length the sealed index published.
+///
+/// Everything the audit proved about a truncated cache is proved about its
+/// PREFIX: `first_unvouched_position` is the earliest index position whose
+/// record did not close and match, so every position below it hashed to the
+/// digest the seal published for it, at the offset the seal named. That is a
+/// statement about bytes, and truncation cannot weaken it — a preimage of the
+/// sealed digest at the sealed offset IS that record, whatever happened to the
+/// bytes after it.
+///
+/// It is deliberately NOT a claim about which end moved. An INSERTION also
+/// leaves a prefix that verifies and a tail that does not, and this type does
+/// not distinguish the two, because it does not have to: the tail is unvouched
+/// under either reading and is confined by name either way. What is refused
+/// whole is a cache LONGER than the index published — see [`CacheAudit::finish`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheTruncation {
+    published_len: u64,
+    seen_len: u64,
+    first_unvouched_position: usize,
+}
+
+impl CacheTruncation {
+    /// The cache length the sealed index published.
+    pub fn published_len(&self) -> u64 {
+        self.published_len
+    }
+    /// The bytes that actually arrived.
+    pub fn seen_len(&self) -> u64 {
+        self.seen_len
+    }
+    /// The earliest index position the audit could not vouch for. Every
+    /// position below it closed against the digest the sealed index published.
+    pub fn first_unvouched_position(&self) -> usize {
+        self.first_unvouched_position
+    }
 }
 
 impl CacheAuditVerdict {
@@ -838,6 +900,13 @@ impl CacheAuditVerdict {
     }
     pub fn is_intact(&self) -> bool {
         self.damaged_positions.is_empty()
+    }
+    /// `Some` when the cache ran out before the published length. A truncated
+    /// cache is never intact: every position from
+    /// [`CacheTruncation::first_unvouched_position`] on is in
+    /// [`Self::damaged_positions`].
+    pub fn truncation(&self) -> Option<CacheTruncation> {
+        self.truncated
     }
 }
 
@@ -885,30 +954,88 @@ impl<'a> CacheAudit<'a> {
         }
     }
 
-    /// Close the audit. Refuses a cache whose LENGTH is not the one the index
-    /// published, because that damage is not attributable to a record: an
-    /// insertion moves every later byte out from under the offsets the index
-    /// named, and nothing here can tell an insertion from a truncation without
-    /// assuming which end moved. An injured hour is never guessed, only named,
-    /// so this is named and refused whole.
+    /// Close the audit.
+    ///
+    /// # A cache LONGER than the index published is refused whole
+    ///
+    /// The index accounts for `cache_len` bytes and nothing else. Extra bytes
+    /// are described by no row, so no row can be checked against them, and an
+    /// insertion ANYWHERE inside the cache produces this shape — every later
+    /// record slides out from under the offset the index named. Nothing here
+    /// can attribute that to an hour, and an injured hour is never guessed.
+    ///
+    /// # A cache SHORTER than the index published confines its tail
+    ///
+    /// This is the narrowing task #192 asks for, and it rests entirely on the
+    /// per-record digests H4IX v4 carries. A record at position `p` is hashed
+    /// over exactly the bytes `[cache_record_offset, +cache_record_len)` as
+    /// counted from the stream's first byte; when that digest equals the one
+    /// the SEALED index published for `p`, those bytes are that record. Bytes
+    /// that never arrived cannot un-prove it. So the prefix of positions that
+    /// closed and matched is vouched, and everything from the first position
+    /// that did not — the record in flight when the bytes ran out, and every
+    /// position after it — is unvouched and confined by name.
+    ///
+    /// The old refusal's argument was that an insertion cannot be told from a
+    /// truncation without assuming which end moved. That argument is answered
+    /// rather than overruled: nothing here decides which end moved. A short
+    /// cache with a middle deletion, a short cache with a lost tail and a short
+    /// cache with an early insertion all vouch for exactly the positions that
+    /// hashed correctly and confine exactly the rest.
+    ///
+    /// Two shapes stay whole refusals even when short:
+    ///
+    ///  * fewer bytes than the [`CACHE_HEADER_LEN`]-byte header — the
+    ///    artifact's identity is what the header carries, and a cache whose
+    ///    identity cannot be established is not this recording's cache;
+    ///  * a short cache that nonetheless hashes to the whole-cache digest the
+    ///    index published, which is the index describing two different caches.
+    ///    Handled in `admit_cache` with the other account disagreements.
     pub fn finish(mut self) -> Result<CacheAuditVerdict, ReplayCacheError> {
-        if self.seen != self.index.cache_len {
+        if self.seen > self.index.cache_len {
             return Err(ReplayCacheError::new(format!(
-                "the checkpoint cache is {} bytes but the index published {}; a cache whose \
-                 length moved cannot be attributed to any record, because every record offset \
-                 the index names is measured from a length that no longer holds",
-                self.seen, self.index.cache_len
+                "the checkpoint cache is {} bytes but the index published {}; the index accounts \
+                 for no byte past {}, so the extra bytes belong to no record and every record \
+                 offset the index names may have been displaced by them",
+                self.seen, self.index.cache_len, self.index.cache_len
             )));
         }
-        // Only reachable when `seen == cache_len` and the last row's record was
-        // still open, which the index's own tiling rule forbids; spelled out so
-        // a future format change that broke the tiling cannot close an unclosed
-        // record silently.
-        self.close_record_if_complete();
+        let truncated = if self.seen < self.index.cache_len {
+            if self.seen < CACHE_HEADER_LEN {
+                return Err(ReplayCacheError::new(format!(
+                    "the checkpoint cache is {} bytes, short of its own {CACHE_HEADER_LEN}-byte \
+                     header; the artifact's identity is in that header, so nothing here can say \
+                     which recording these bytes belong to, let alone which hour they injure",
+                    self.seen
+                )));
+            }
+            // Every position from the one in flight on is unvouched: its bytes
+            // either arrived incomplete or did not arrive. Positions already in
+            // `self.damaged` closed and disagreed, and stay named.
+            let first_unvouched = self.position;
+            for position in first_unvouched..self.index.hours.len() {
+                self.damaged.push(position);
+            }
+            self.damaged.sort_unstable();
+            self.damaged.dedup();
+            Some(CacheTruncation {
+                published_len: self.index.cache_len,
+                seen_len: self.seen,
+                first_unvouched_position: first_unvouched,
+            })
+        } else {
+            // Only reachable when `seen == cache_len` and the last row's record
+            // was still open, which the index's own tiling rule forbids;
+            // spelled out so a future format change that broke the tiling
+            // cannot close an unclosed record silently.
+            self.close_record_if_complete();
+            None
+        };
         Ok(CacheAuditVerdict {
             header: self.header,
             whole_cache_sha256: to_hex(&self.whole.finalize()),
             damaged_positions: self.damaged,
+            truncated,
         })
     }
 
@@ -1445,15 +1572,22 @@ pub struct ReplaySeekReceipt {
 
 /// Where a certified cache's bytes live.
 ///
-/// Everything this module does with a cache reduces to three questions: how
-/// long is it, what does it hash to, and what are the bytes of one indexed
-/// record. Nothing needs the whole cache resident, and on a real campaign
-/// nothing could hold it: capture t32 emitted 2,209,767,138 bytes for 656
-/// hours (3.37 MB per hour), so a full campaign's cache is tens of gigabytes.
-/// A slice backing serves the encoder and the small fixtures; a file backing
-/// serves every artifact big enough to matter.
+/// Everything this module does with a cache reduces to two questions: what does
+/// it stream, and what are the bytes of one indexed record. Nothing needs the
+/// whole cache resident, and on a real campaign nothing could hold it: capture
+/// t32 emitted 2,209,767,138 bytes for 656 hours (3.37 MB per hour), so a full
+/// campaign's cache is tens of gigabytes. A slice backing serves the encoder
+/// and the small fixtures; a file backing serves every artifact big enough to
+/// matter.
+///
+/// It used to answer a third question — HOW LONG IS IT — for `admit_cache` to
+/// compare against the index before streaming anything. Task #192 moved that
+/// judgement into [`CacheAudit::finish`], which measures the length of what
+/// actually streamed and has the per-record account in hand when it does, so
+/// the backing is no longer asked. Each implementation still bounds its own
+/// reads by its own real length through [`record_window`], which is the check
+/// that mattered.
 pub(crate) trait CacheRecords {
-    fn cache_len(&self) -> u64;
     /// Stream every byte of the cache, in order, past `sink`.
     ///
     /// This replaces the whole-cache `cache_sha256()` this trait used to
@@ -1488,10 +1622,6 @@ fn record_window(cache_len: u64, offset: u64, len: u64) -> Result<(u64, usize), 
 pub(crate) struct SliceCache<'a>(pub(crate) &'a [u8]);
 
 impl<'a> CacheRecords for SliceCache<'a> {
-    fn cache_len(&self) -> u64 {
-        self.0.len() as u64
-    }
-
     fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
         sink.write_all(self.0)
             .map_err(|error| ReplayCacheError::new(format!("audit resident cache: {error}")))
@@ -1534,10 +1664,6 @@ impl CertifiedCacheFile {
 }
 
 impl CacheRecords for CertifiedCacheFile {
-    fn cache_len(&self) -> u64 {
-        self.len
-    }
-
     fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
         let mut file = self
             .file
@@ -1649,15 +1775,19 @@ pub fn validate_checkpoint_cache_header(
 /// confined hour is refused by name at every door, and every kind of damage
 /// that CANNOT be attributed to a record is still a whole-artifact refusal.
 ///
-/// The four unattributable kinds, each refused here:
+/// The unattributable kinds, each refused here:
 ///
-///  * the cache's LENGTH moved ([`CacheAudit::finish`]);
+///  * the cache is LONGER than the index published, or shorter than its own
+///    header ([`CacheAudit::finish`]);
 ///  * the cache's HEADER moved — its magic, format version, or the H4CR source
 ///    it is bound to. That is the artifact's identity, not an hour's, and the
 ///    per-record account rests on the framing it declares;
 ///  * the whole-cache digest disagrees while every record agrees;
-///  * the whole-cache digest AGREES while a record disagrees. The last two are
-///    the index contradicting itself; see below.
+///  * the whole-cache digest AGREES while a record disagrees, or while the
+///    cache is short. Those are the index contradicting itself; see below.
+///
+/// A cache that is merely SHORT is not one of them (task #192): its verified
+/// prefix serves and its tail is confined by name. See [`CacheAudit::finish`].
 fn admit_cache(
     index_bytes: &[u8],
     cache: &dyn CacheRecords,
@@ -1665,14 +1795,17 @@ fn admit_cache(
     expected_source_sha256: &str,
 ) -> Result<(ReplayHourIndex, Vec<ConfinedHour>), ReplayCacheError> {
     let index = ReplayHourIndex::from_bytes(index_bytes)?;
-    if index.source_len != expected_source_len
-        || index.source_sha256 != expected_source_sha256
-        || index.cache_len != cache.cache_len()
-    {
+    if index.source_len != expected_source_len || index.source_sha256 != expected_source_sha256 {
         return Err(ReplayCacheError::new(
             "replay index/cache is not bound to the selected canonical H4CR source",
         ));
     }
+    // The cache LENGTH is judged by the audit, not here. It used to be part of
+    // the binding above, which meant a truncated artifact was refused with a
+    // sentence about the H4CR source it is in fact still bound to — and refused
+    // before a single per-record digest was read. `CacheAudit::finish` sees the
+    // same disagreement one pass later, with the per-record account in hand,
+    // and can say which hours it costs.
     let mut audit = CacheAudit::new(&index);
     cache.read_all(&mut audit)?;
     let verdict = audit.finish()?;
@@ -1693,6 +1826,14 @@ fn admit_cache(
     //
     // Both are refused rather than resolved, because an account that does not
     // add up cannot be partially believed.
+    //
+    // A TRUNCATED cache is exempt from the first arm and only from it: its
+    // whole-cache digest is a digest of a PREFIX, so of course it disagrees,
+    // and that disagreement is explained by the length the audit measured
+    // rather than by an index that does not add up. The second arm still
+    // applies with full force — a short cache whose bytes nonetheless hash to
+    // the digest published for the full-length cache is an index describing two
+    // different caches, and is refused below.
     match (
         verdict.whole_cache_sha256() == index.cache_sha256,
         verdict.is_intact(),
@@ -1709,15 +1850,27 @@ fn admit_cache(
             )))
         }
         (true, false) => {
-            return Err(ReplayCacheError::new(format!(
-                "the checkpoint cache is byte-identical to the one the index is bound to, yet {} \
-                 of its records do not match the per-record digests the same index publishes; the \
-                 index describes two different caches, so it is not an authority over this one",
-                verdict.damaged_positions().len(),
-            )))
+            return Err(ReplayCacheError::new(match verdict.truncation() {
+                Some(truncation) => format!(
+                    "the checkpoint cache is {} bytes of the {} the index published, yet it \
+                     hashes to the whole-cache digest {} the index is bound to; a prefix cannot \
+                     hash to the whole, so the index describes two different caches and is not \
+                     an authority over this one",
+                    truncation.seen_len(),
+                    truncation.published_len(),
+                    index.cache_sha256,
+                ),
+                None => format!(
+                    "the checkpoint cache is byte-identical to the one the index is bound to, \
+                     yet {} of its records do not match the per-record digests the same index \
+                     publishes; the index describes two different caches, so it is not an \
+                     authority over this one",
+                    verdict.damaged_positions().len(),
+                ),
+            }))
         }
     }
-    let confined = index.confine_damaged_records(verdict.damaged_positions());
+    let confined = index.confine_damaged_records(&verdict);
     Ok((index, confined))
 }
 
@@ -3257,36 +3410,66 @@ mod tests {
         );
     }
 
-    /// A cache whose LENGTH moved is refused whole, because no record offset in
-    /// the index means anything over bytes that shifted under it.
+    /// The three lengths a streamed cache can have, and the three different
+    /// things the audit says about them (task #192).
     ///
-    /// Asked of the audit directly: the readers compare the backing's own
-    /// length against the index before they stream anything, so this guard is
-    /// reachable only through the STREAMING consumer — the container gate,
-    /// which is handed an entry and cannot know its length in advance.
+    /// * SHORT — the verified prefix stands and the tail is confined. Every
+    ///   position that closed against the digest the sealed index published is
+    ///   vouched by a statement about bytes that missing bytes cannot revoke;
+    ///   the record in flight and everything after it is unvouched and named.
+    /// * LONG — refused whole. The index accounts for `cache_len` bytes and no
+    ///   more, so extra bytes are described by no row, and an insertion
+    ///   anywhere produces exactly this shape.
+    /// * EXACT — the ordinary intact verdict, and it must survive being fed in
+    ///   chunk sizes that fall nowhere near a record boundary.
     ///
-    /// kills: deleting `finish`'s length comparison. This is the ONLY guard
-    /// that reads the streamed length, so nothing else can be relied on to
-    /// refuse a stream that stops short (Codex review round 9, finding 5): the
-    /// reader's `cache_len` comparison is against the BACKING's length, not the
-    /// stream's, and the gate's four-outcome match would admit a short stream
-    /// that also carried one completed damaged record — `(Err, false)` with a
-    /// non-empty confinement — as an ordinary rotted cache. What makes the
-    /// deletion safe to reason about is not a fallback but this refusal, and
-    /// its diagnosis says which of the two accounts moved.
+    /// Asked of the audit directly: this is the only place the STREAMED length
+    /// is known. The readers see a backing whose length they could compare
+    /// themselves, but the container gate is handed an entry and cannot know
+    /// its length in advance, so both go through this one verdict.
+    ///
+    /// kills: deleting `finish`'s `seen > cache_len` refusal admits an extended
+    /// cache whose every named record still matches, over bytes no row
+    /// describes. Deleting the `seen < CACHE_HEADER_LEN` refusal admits an
+    /// artifact with no identity. Returning `truncated: None` for a short
+    /// stream drops every unreached position out of `damaged_positions`, so a
+    /// truncated cache is admitted as INTACT and its lost hours serve — the
+    /// `first_unvouched` and `damaged_positions` assertions below are what
+    /// catch it.
     #[test]
-    fn an_audit_refuses_a_cache_whose_length_moved() {
+    fn an_audit_confines_a_short_cache_and_refuses_a_long_one() {
         let (cache, index, _) = build(2, &[(0, r#"{"v":0}"#), (1, r#"{"v":1}"#)]);
+
+        // SHORT: one byte gone takes hour 1's record, which is the one in
+        // flight when the bytes run out. Hour 0's record closed and matched
+        // before it, so position 0 is vouched.
         let mut short = CacheAudit::new(&index);
         short.write_all(&cache[..cache.len() - 1]).unwrap();
-        let error = short.finish().unwrap_err();
-        assert!(error.message().contains("cannot be attributed"), "{error}");
+        let verdict = short.finish().unwrap();
+        let truncation = verdict
+            .truncation()
+            .expect("a stream that stopped short is reported as truncated");
+        assert_eq!(truncation.published_len(), index.cache_len());
+        assert_eq!(truncation.seen_len(), cache.len() as u64 - 1);
+        assert_eq!(truncation.first_unvouched_position(), 1);
+        assert_eq!(verdict.damaged_positions(), &[1]);
+        assert!(!verdict.is_intact());
 
+        // SHORT, before the header is even complete: nothing here can say
+        // which recording these bytes are, so there is no hour to name.
+        let mut headless = CacheAudit::new(&index);
+        headless
+            .write_all(&cache[..CACHE_HEADER_LEN as usize - 1])
+            .unwrap();
+        let error = headless.finish().unwrap_err();
+        assert!(error.message().contains("short of its own"), "{error}");
+
+        // LONG: refused whole.
         let mut long = CacheAudit::new(&index);
         long.write_all(&cache).unwrap();
         long.write_all(b"\0").unwrap();
         let error = long.finish().unwrap_err();
-        assert!(error.message().contains("cannot be attributed"), "{error}");
+        assert!(error.message().contains("belong to no record"), "{error}");
 
         // The honest stream, fed in awkward chunks: a record boundary must be
         // found from the index's offsets, never from where a write happened to
@@ -3297,6 +3480,7 @@ mod tests {
         }
         let verdict = split.finish().unwrap();
         assert!(verdict.is_intact());
+        assert!(verdict.truncation().is_none());
         assert_eq!(verdict.whole_cache_sha256(), index.cache_sha256());
         assert_eq!(verdict.header().len(), CACHE_HEADER_LEN as usize);
     }
@@ -3413,8 +3597,8 @@ mod tests {
 
     /// A file whose bytes are not the cache the index is bound to is judged by
     /// the same admission gate the resident reader uses, and reaches the same
-    /// verdict: the hours a moved record reaches are refused by name, and a
-    /// file whose LENGTH moved is refused whole.
+    /// verdict: the hours a moved record reaches are refused by name, and so
+    /// are the hours a TRUNCATED file's lost tail reaches.
     ///
     /// kills: this test pins that a FINAL-BYTE mutation of a file-backed cache
     /// is CONFINED rather than refused whole, and confined exactly. The flipped
@@ -3426,13 +3610,14 @@ mod tests {
     /// and there is nothing to confine; the `confined_hours()` comparison fails
     /// if the confinement is too wide (hour 0) or too narrow (empty).
     ///
-    /// It does NOT pin the admission side of either failure, and the two
-    /// corrections are worth keeping straight: hashing a record PREFIX still
-    /// produces a digest that is not the sealed one, so the record is still
-    /// classified as damaged (Codex review round 5, finding 3); and dropping
-    /// the `cache_len` comparison in `admit_cache` is still caught one layer
-    /// down by `CacheAudit::finish` refusing a short stream, with a different
-    /// sentence (round 1, finding 4).
+    /// It does NOT pin the admission side of that failure: hashing a record
+    /// PREFIX still produces a digest that is not the sealed one, so the record
+    /// is still classified as damaged (Codex review round 5, finding 3).
+    ///
+    /// The truncation half additionally kills restoring `admit_cache`'s
+    /// `index.cache_len != cache.cache_len()` refusal, which is the whole-cache
+    /// door task #192 removed: with it back, the short file is refused before a
+    /// single per-record digest is read and hour 0 is lost with hour 1.
     #[test]
     fn a_file_backed_cache_that_is_not_the_indexed_one_is_refused() {
         let hours: Vec<(i64, &str)> = vec![(0, r#"{"v":1}"#), (1, r#"{"v":2}"#)];
@@ -3458,21 +3643,37 @@ mod tests {
         confined.reconstruct_json(0).expect("hour 0 still serves");
         assert!(confined.reconstruct_json(1).is_err());
 
+        // A TRUNCATED file goes through the same door and keeps its verified
+        // prefix (task #192). One byte short costs hour 1's record; hour 0's
+        // record closed against the sealed digest before the bytes ran out, so
+        // hour 0 still serves and hour 1 is refused by a name that says the
+        // record is not wholly in the artifact.
         let mut truncated = cache.clone();
         truncated.pop();
         let scratch = TempCacheFile::write("truncated", &truncated);
-        let error = match CertifiedReplayCache::open_file(
-            &index_bytes,
-            scratch.open(),
-            200,
-            &source_sha,
-        ) {
-            Ok(_) => panic!("a short cache is not the indexed cache"),
-            Err(error) => error,
-        };
+        let short = CertifiedReplayCache::open_file(&index_bytes, scratch.open(), 200, &source_sha)
+            .expect("a truncated cache serves its verified prefix");
+        assert_eq!(
+            short
+                .confined_hours()
+                .iter()
+                .map(ConfinedHour::hour_index)
+                .collect::<Vec<i64>>(),
+            vec![1],
+            "the lost byte is in hour 1's record and costs hour 1 alone"
+        );
+        short
+            .reconstruct_json(0)
+            .expect("hour 0's record arrived whole and hashes to the sealed digest");
+        let error = short.reconstruct_json(1).unwrap_err();
         assert!(
-            error.message().contains("not bound to the selected canonical H4CR source"),
-            "{error}"
+            error.message().contains("ends at")
+                && error.message().contains("not wholly in the artifact"),
+            "a truncated tail is named as truncation, not as a rotted record: {error}"
+        );
+        assert!(
+            short.verify_every_hour().is_err(),
+            "the producer's total proof must not hold over a cache that lost a record"
         );
     }
 
@@ -3579,10 +3780,6 @@ mod tests {
     }
 
     impl CacheRecords for CountingCache<'_> {
-        fn cache_len(&self) -> u64 {
-            self.inner.cache_len()
-        }
-
         fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
             self.inner.read_all(sink)
         }

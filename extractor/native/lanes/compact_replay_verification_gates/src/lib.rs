@@ -5019,7 +5019,7 @@ fn certify_cache_only_recording(
             )
         },
     )?;
-    let confined_hours = hour_index.confine_damaged_records(verdict.damaged_positions());
+    let confined_hours = hour_index.confine_damaged_records(&verdict);
     // THE FOUR OUTCOMES of streaming one packaged cache past the sealed index,
     // each named. Two are agreements and are handled below; two are
     // disagreements between the container's own entry account and the seal's,
@@ -12140,10 +12140,12 @@ mod tests {
     ///
     /// The confinement above is not a licence to serve whatever survives. FIVE
     /// shapes of H4CP damage belong to no single hour. The first is the
-    /// artifact's LENGTH moving, refused by `CacheAudit::finish` and pinned on
-    /// the snapshot side by `an_audit_refuses_a_cache_whose_length_moved`
-    /// (Codex review round 7, finding 2). Of the remaining four, two are pinned
-    /// here:
+    /// artifact growing LONGER than the index published, or shorter than its
+    /// own header, refused by `CacheAudit::finish` and pinned on the snapshot
+    /// side by `an_audit_confines_a_short_cache_and_refuses_a_long_one` (Codex
+    /// review round 7, finding 2; narrowed to those two length shapes by task
+    /// #192, which confines an ordinary TRUNCATION to the hours past the
+    /// verified prefix). Of the remaining four, two are pinned here:
     ///
     ///  * the file HEADER — the artifact's own identity and the framing every
     ///    record offset is measured from;

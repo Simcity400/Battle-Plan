@@ -1094,12 +1094,24 @@ fn domain_gap_is_the_domains_terminal_outcome_not_a_missing_perf_record() {
 
 #[test]
 fn why_a_domain_was_absent_is_part_of_the_hours_certified_identity() {
-    // Two hours identical in every published byte: the same DOMAIN_DATA for
-    // domain 18, the same seal, and domain 26 absent in both. They differ only
-    // in the REASON domain 26 was absent -- an unreadable clock in one, a
-    // panicked worker in the other. Those are different facts about the hour,
-    // and a certification that cannot tell them apart is not certifying the
-    // absence at all.
+    // Two hours carrying the same WORLD: the same DOMAIN_DATA for domain 18,
+    // the same seal, and domain 26 absent in both. They differ only in the
+    // REASON domain 26 was absent -- an unreadable clock in one, a panicked
+    // worker in the other. Those are different facts about the hour, and a
+    // certification that cannot tell them apart is not certifying the absence
+    // at all.
+    //
+    // Since lane GQ, the fold does not merely let the reason reach the CHAIN:
+    // `record_domain_gap` writes the reason into the hour's own `provenance`,
+    // so the two hours are no longer identical in every published byte and
+    // `snapshot_hash` itself separates them. Both statements are asserted
+    // below -- the world is the same, the published hour is not.
+    //
+    // What production change makes this fail: dropping the
+    // `COMPACT_RECORD_TYPE_DOMAIN_GAP` arm from `WorldFold::ingest_record`, or
+    // dropping the reason from the note `record_domain_gap` writes, collapses
+    // the two hours onto one `snapshot_hash` and one chain hash. Making a gap
+    // fabricate world state instead breaks the world equality.
     fn stream(gap_payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         push_record(
@@ -1142,8 +1154,14 @@ fn why_a_domain_was_absent_is_part_of_the_hours_certified_identity() {
     assert_eq!(clock.hours.len(), 1);
     assert_eq!(panic.hours.len(), 1);
     assert_eq!(
+        clock.hours[0].world_hash, panic.hours[0].world_hash,
+        "the folded WORLD is identical: a gap folds nothing in either stream"
+    );
+    assert_ne!(
         clock.hours[0].snapshot_hash, panic.hours[0].snapshot_hash,
-        "the folded state is identical: a gap folds nothing in either stream"
+        "the reason for an accounted absence is written into the hour's own published \
+         provenance, so it is part of the hour the recording publishes -- not only of the \
+         chain over it"
     );
     assert_ne!(
         chain_hash(&clock.hours),
@@ -3620,6 +3638,12 @@ fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
         );
     }
     // And the foreign gap must not move the world by itself.
+    //
+    // "The world" is now the precise claim, not the whole published hour: since
+    // lane GQ a `DOMAIN_GAP` writes d64's accounted absence and its reason into
+    // hour B's `provenance`, which is the per-hour seal working as ruled. So
+    // the gap MUST change hour B's published bytes, and must change nothing in
+    // the world any hour folds to. Both directions are asserted.
     let with_gap = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
     let without_gap = fold_bytes(&ships_delta_chain_stream(
         false,
@@ -3627,9 +3651,33 @@ fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
     ));
     for (a, b) in with_gap.hours.iter().zip(without_gap.hours.iter()) {
         assert_eq!(
-            a.snapshot_hash, b.snapshot_hash,
+            a.world_hash, b.world_hash,
             "hour {} changed world merely because domain 64 gapped",
             a.hour_index
+        );
+    }
+    assert_ne!(
+        with_gap.hours[1].snapshot_hash, without_gap.hours[1].snapshot_hash,
+        "hour B is the hour domain 64 gapped in; the gap is an accounted absence the hour has \
+         to state, so the two streams cannot publish the same hour B"
+    );
+    // EVERY OTHER HOUR IS BYTE-IDENTICAL, on the FULL snapshot and not on the
+    // world projection. One bad hour costs exactly that hour: hour A precedes
+    // the gap, and hour C must not inherit hour B's account of itself.
+    //
+    // Hour C is the load-bearing one. `WorldFold::reset_hour_state` clears
+    // `domain_problems_this_hour` and `notes_this_hour` when an hour closes
+    // (`world_fold.rs:4852-4853`); dropping either clear would leak hour B's
+    // gap problem and its reason note into hour C's published provenance, and
+    // `world_hash` would not see it because `world_hash` is exactly the hash
+    // that ignores provenance. So this assertion — not the loop above — is what
+    // holds the per-hour boundary (Codex review round 1, blocking finding).
+    for hour in [0usize, 2] {
+        assert_eq!(
+            with_gap.hours[hour].snapshot_hash, without_gap.hours[hour].snapshot_hash,
+            "hour {} does not carry domain 64's gap and must be published byte-identically in \
+             both streams; a gap that outlived its own hour would show up here",
+            with_gap.hours[hour].hour_index
         );
     }
 }
@@ -3679,6 +3727,13 @@ fn the_hour_c_delta_merges_onto_the_retained_baseline() {
     let retained = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
 
     // The same three hours, except hour C's delta also tombstones ship 2.
+    //
+    // "The same" includes hour B's foreign d64 gap, which the control carries
+    // for the same reason `ships_delta_chain_stream(true, ..)` does. Since lane
+    // GQ an accounted absence is written into its hour's `provenance`, so a
+    // control built WITHOUT the gap would differ from `retained` in hour B as
+    // well as hour C — and the hour-B equality below exists precisely to prove
+    // the two streams part company only at hour C.
     let mut tombstoned = Vec::new();
     let mut seq = 1u64;
     let mut push = |stream: &mut Vec<u8>, hour: i64, domain: u16, rtype: u16, payload: &[u8]| {
@@ -3704,12 +3759,24 @@ fn the_hour_c_delta_merges_onto_the_retained_baseline() {
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
             &perf_payload_with_status(status),
         );
+        let outcomes = if hour == HOUR_B {
+            push(
+                &mut tombstoned,
+                hour,
+                64,
+                COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                &clock_unreadable_gap_payload(HOUR_B, 0),
+            );
+            2
+        } else {
+            1
+        };
         push(
             &mut tombstoned,
             hour,
             DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_END,
-            &frame_end_payload_with(1, 1, 0),
+            &frame_end_payload_with(outcomes, outcomes, 0),
         );
     }
     let without_ship2 = fold_bytes(&tombstoned);
