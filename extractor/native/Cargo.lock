@@ -170,6 +170,7 @@ dependencies = [
  "occupation_resistance_compliance_live_lane",
  "portable_content_manifest",
  "portable_render_stream",
+ "postfx_exposure",
  "power_balance_presentation_live_lane",
  "production_hook_receipt",
  "production_render_catalog_live_lane",
@@ -185,7 +186,11 @@ dependencies = [
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
  "theatre_selector_live_lane",
+ "victory_points",
  "windows-sys",
+ "xmap06_border",
+ "xmap17_labels",
+ "xui26_frontend",
 ]
 
 [[package]]
@@ -776,6 +781,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "postfx_exposure"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
+
+[[package]]
 name = "power_balance_presentation_live_lane"
 version = "0.1.0"
 dependencies = [
@@ -1228,6 +1240,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "victory_points"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
+
+[[package]]
 name = "weather_live_lane"
 version = "0.1.0"
 dependencies = [
@@ -1297,6 +1316,27 @@ dependencies = [
  "sha2",
  "wire_format",
  "zstd",
+]
+
+[[package]]
+name = "xmap06_border"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
+
+[[package]]
+name = "xmap17_labels"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
+
+[[package]]
+name = "xui26_frontend"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
 ]
 
 [[package]]

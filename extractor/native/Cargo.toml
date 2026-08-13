@@ -65,6 +65,19 @@ members = [
     "lanes/sunk_ship_history_live",
     "lanes/decision_panel_live",
     "lanes/passive_clock_witness",
+    # Wave-2 scaffold (task 183): the five Wave-5 producer skeletons. They are
+    # DECLARED PENDING PRODUCERS, not stubs that pretend to read -- each one
+    # names the carrier it owes, the schema its consumer requires, and the exact
+    # reverse engineering or capture that must land first, and each refuses
+    # installation by name until then. They live here now, landed once by an
+    # exclusive lane, because this member list is a single contiguous region:
+    # five concurrent new-producer lanes would collide here even though their
+    # own sources never overlap.
+    "lanes/xmap17_labels",
+    "lanes/xmap06_border",
+    "lanes/xui26_frontend",
+    "lanes/victory_points",
+    "lanes/postfx_exposure",
 ]
 
 # Fail-closed doctrine for all untrusted compact-stream, replay-container, and

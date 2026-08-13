@@ -1,0 +1,11 @@
+[package]
+name = "xui26_frontend"
+version = "0.1.0"
+edition = "2021"
+description = "Wave-5 GP-N3 producer skeleton: XUI26 frontend payload families"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }

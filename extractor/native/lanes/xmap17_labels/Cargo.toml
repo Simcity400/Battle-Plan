@@ -1,0 +1,11 @@
+[package]
+name = "xmap17_labels"
+version = "0.1.0"
+edition = "2021"
+description = "Wave-5 GP-N1 producer skeleton: XMAP17 player and faction label identity"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
