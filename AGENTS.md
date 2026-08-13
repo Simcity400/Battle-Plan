@@ -29,6 +29,9 @@ recording.
   get raw evidence, not summaries.
 - Clean up after yourself: worktree, branch, build output, temp files.
 - Never git stash. Check against origin before pushing.
+- Generated runtime inputs (e.g. extractor/game_defs/out) are not debris: a
+  purge must prove the regeneration path first.
+- Any committed hash-pinned file needs a .gitattributes `text eol=lf` line.
 
 ## Tools
 
