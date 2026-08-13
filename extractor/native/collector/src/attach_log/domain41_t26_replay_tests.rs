@@ -468,6 +468,9 @@ fn decode_projects_payload(payload: &[u8]) -> DecodedRecord {
         // The capture's breakthrough rows are decoded with their specialization
         // codes, so this is the same question over the same rows.
         breakthrough_specializations_resolved: true,
+        // Lane IJ: no fixture here stages a cache shortfall.
+        facility_row_shortfall: 0,
+        scientist_row_shortfall: 0,
         root_reasons,
         lifecycle,
         lifecycle_countries,

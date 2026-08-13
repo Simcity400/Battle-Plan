@@ -125,6 +125,9 @@ fn read_with(
         neutral_project_pool_countries: 0,
         invalid_breakthrough_countries: 0,
         breakthrough_specializations_resolved: true,
+        // Lane IJ: no fixture here stages a cache shortfall.
+        facility_row_shortfall: 0,
+        scientist_row_shortfall: 0,
         root_reasons: ProjectRootReasonCounters::default(),
         lifecycle: Vec::new(),
         lifecycle_countries: 0,
