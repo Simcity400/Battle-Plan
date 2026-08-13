@@ -453,19 +453,24 @@ mod tests {
             carrier.slot.validate().unwrap_or_else(|error| {
                 panic!("wave-2 carrier declaration is malformed: {error}")
             });
-            // The citation has to be openable, not merely colon-shaped: an
-            // earlier `contains(':')` check accepted `world.rs:not-a-line`.
-            let (path, line) = carrier
-                .slot
-                .consumer_citation
-                .rsplit_once(':')
-                .expect("a citation carries a colon");
-            assert!(!path.is_empty(), "{}", carrier.slot.wire_key);
+            // The citation has to be WELL FORMED, not merely colon-shaped: an
+            // earlier `contains(':')` check accepted a non-numeric line tail.
+            // Well formed is not the same as openable, and this deliberately does
+            // not try to be -- whether the file exists and defines the item is
+            // `scripts/verify_citation_integrity.py`'s job, across the whole tree.
+            //
+            // Two spellings, `path:line` and `path::item`. The rule lives in ONE
+            // place -- `compact_contract::pending_producer::citation_is_well_formed`,
+            // the same predicate `slot.validate()` uses. An earlier revision
+            // reimplemented it here and the two copies immediately disagreed: this
+            // one accepted an item containing spaces. A shape rule with two
+            // implementations is a shape rule with two answers.
+            let citation = carrier.slot.consumer_citation;
             assert!(
-                line.parse::<u32>().is_ok(),
-                "{} cites {:?}, whose tail is not a line number",
+                compact_contract::pending_producer::citation_is_well_formed(citation),
+                "{} cites {:?}, which is neither path:line nor path::item",
                 carrier.slot.wire_key,
-                carrier.slot.consumer_citation
+                citation
             );
         }
     }
