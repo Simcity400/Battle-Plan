@@ -812,6 +812,26 @@ fn uncaptured_controller_fields_are_declared() {
             "{captured} is measured now and must not be declared uncaptured"
         );
     }
+    // The combat-log rows are a *permanent* absence, not a backlog item, and
+    // the length check above cannot see one of them being swapped out. Lane HV
+    // proved the engine law's receiver is a single per-client `CCombatLogView`
+    // at client-HUD-root `+0x2a0` -- reached only through `CInGameIdler +
+    // 0x6b8` -- and not `country + 0x2a0` as earlier briefs assumed. There is no authoritative per-country value to measure, so
+    // "capturing" it would mean labelling the recording client's panel state as
+    // every country's state.
+    // kills: a lane deletes one of these entries after reading the field off
+    // the client's CCombatLogView and calling it measured.
+    for permanent in [
+        "theater_group_item.combat_log_ownership_and_eligibility",
+        "navy_theater_group_item.combat_log_ownership_and_eligibility",
+        "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
+    ] {
+        assert!(
+            UNCAPTURED_CONTROLLER_FIELDS.contains(&permanent),
+            "{permanent} is client-local UI state and must stay declared uncaptured \
+             (runs/hv_theatre_devirt/DOSSIER_F1A_combat_log_owned.md)"
+        );
+    }
     let mut sorted = UNCAPTURED_CONTROLLER_FIELDS.to_vec();
     sorted.sort_unstable();
     sorted.dedup();

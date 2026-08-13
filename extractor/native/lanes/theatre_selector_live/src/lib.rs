@@ -59,12 +59,27 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"THS2");
 /// together in this file, so an older payload is rejected outright rather than
 /// partially understood.
 ///
-/// This is **not** the XUI07 replay schema 6. Schema 6 additionally hard-requires
-/// `combat_log_owned` on every land controller and a whole strategic-region
-/// subtree with a `pinned_frame`, and both of those leaves are decided by an
-/// engine virtual call rather than by any field this producer can copy. Bumping
-/// past 4 before those are measured would ship a shape replay refuses anyway,
-/// with the difference that the refusal would look like a producer bug.
+/// This is **not** the XUI07 replay schema 6, and — as specified today — it
+/// never can be. Schema 6 hard-requires `combat_log_owned` on every land
+/// controller as a `bool_field` with no null branch, and lane HV proved that
+/// leaf is **client-local UI state**, not authoritative per-country state: its
+/// receiver is a single `CCombatLogView` hanging off the client HUD root at
+/// `CInGameIdler + 0x6b8`, one instance per client, and the earlier briefs'
+/// premise that it lives at `country + 0x2a0` is factually wrong. A
+/// host-side all-country producer has nothing to read, so no amount of work in
+/// this crate closes that row. See
+/// `runs/hv_theatre_devirt/DOSSIER_F1A_combat_log_owned.md`.
+///
+/// The other schema-6 blocker did close: the strategic-region `pinned_frame`
+/// map-mode key is no longer an engine virtual call at all
+/// (`runs/hv_theatre_devirt/DOSSIER_F1B_pinned_frame.md`). It is not emitted
+/// here because THS2 carries no strategic-region rows yet and a lone field on
+/// an absent row is bytes replay cannot consume; the rest of that subtree is
+/// `READ_LAWS.md` §6 F2 work.
+///
+/// So the version stays at 4 deliberately. Bumping it would ship a shape replay
+/// refuses anyway, with the difference that the refusal would look like a
+/// producer bug instead of the schema disagreement it is.
 pub const SCHEMA_VERSION: u32 = 4;
 
 /// Fail-closed ceiling on the number of country rows a THS2 census or section
@@ -114,17 +129,28 @@ pub const AIR_AND_NAVY_LAW_MANIFEST_SHA256: [u8; 32] =
 /// was never true as a blanket claim and is now removed: XUI07's
 /// `manifest.json` `controller_law_evidence` carries function-level artifacts
 /// for all of them. Each remaining row is here for one of exactly two reasons,
-/// and `runs/gs_theatre_reads/READ_LAWS.md` says which:
+/// and `runs/gs_theatre_reads/READ_LAWS.md` plus lane HV's dossiers say which:
 ///
 /// * **Unimplemented** -- the law is a plain field read (or a walk over
 ///   structures this producer already reaches) and nothing but work stands
-///   between it and capture.
-/// * **Blocked on an engine virtual** -- the law's value is produced by a
-///   runtime-polymorphic call whose leaf set XUI07 explicitly declines to
-///   bound. A worker-thread reader that copies bytes cannot evaluate one, and
-///   guessing the leaf is exactly the fail-open this carrier exists to refuse.
-///   Only `*.combat_log_ownership_and_eligibility` and the strategic row's
-///   pinned frame are in this class.
+///   between it and capture. Every `strategic_region_*` row is in this class,
+///   including the `pinned_frame` that used to be a virtual: lane HV resolved
+///   that dispatch to a pure field chain
+///   (`runs/hv_theatre_devirt/DOSSIER_F1B_pinned_frame.md`), so what is left
+///   there is the rest of the strategic subtree, not research.
+/// * **Not authoritative state** -- the value is local client UI state, which
+///   this recorder does not capture at all (it records host-visible
+///   authoritative state, never client UI). Only the three
+///   `*.combat_log_ownership_and_eligibility` rows are in this class, and they
+///   are permanent: lane HV proved the law's receiver is a single per-client
+///   `CCombatLogView`, not a per-country object
+///   (`runs/hv_theatre_devirt/DOSSIER_F1A_combat_log_owned.md`). Reading it and
+///   labelling it as every country's state would be a false measurement, which
+///   is worse than the named absence carried here.
+///
+/// No row is "blocked on an engine virtual" any more. That category is retired:
+/// one member of it was devirtualized and the other turned out to be the wrong
+/// kind of state.
 pub const UNCAPTURED_CONTROLLER_FIELDS: &[&str] = &[
     "navy_theater_fleet_item.live_spotting_state",
     "navy_theater_fleet_item.exercise_stop_at_max_state",
