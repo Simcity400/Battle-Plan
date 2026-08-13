@@ -920,3 +920,465 @@ fn a_sweep_that_outlives_the_hour_leaves_the_loop_exactly_as_it_was() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The guard's own inputs on the wire (CAPTURE_FLOOR_S0.md NEGATIVE 9)
+// ---------------------------------------------------------------------------
+
+/// Fill the process-global rendezvous with a measurable period.
+///
+/// `HOUR_PERIOD_SAMPLES` INTERVALS need one more boundary than that, and only an
+/// exact consecutive-hour advance feeds one, so the loop starts at hour 0 and
+/// never skips.
+fn seed_global_period(period_us: u64) {
+    for hour in 0..=(HOUR_PERIOD_SAMPLES as i32) {
+        hour_phase::note_boundary(hour, u64::try_from(hour).unwrap() * period_us);
+    }
+}
+
+fn sweep_shape_at(fanout_origin_us: u64, crit_wall_us: u64) -> SweepShapeEstimator {
+    let mut shape = SweepShapeEstimator::new();
+    for _ in 0..SWEEP_SHAPE_SAMPLES {
+        shape.observe(fanout_origin_us, crit_wall_us);
+    }
+    shape
+}
+
+/// THE TWO NUMBERS THE GUARD COMPARED REACH THE PROBE, and they are the ones it
+/// compared rather than a later reading of the same state.
+///
+/// This is `CAPTURE_FLOOR_S0.md` NEGATIVE 9. The document could report WHICH arm
+/// the guard took (the `start_reasons` counters) but not WHY, so §3E's threshold
+/// arithmetic had to reconstruct the two running medians from per-frame
+/// percentiles and a harness clock bracket — and the reconstruction predicts the
+/// counter backwards across captures (t50 rebuilds to 0.98, below the threshold,
+/// and fires the arm on 91.63 % of starts; t46 rebuilds to 1.30 and fires on
+/// 49.80 %). With both inputs published the arm is checkable directly:
+/// `sweep_exceeds_hour` fires exactly when `half_yield_us >= period_us`.
+///
+/// kills: deleting the `hour_phase::record_decision_inputs` call from
+/// `rendezvous_with_hour_boundary`; moving it below the rule so a returning arm
+/// skips it; latching at probe time instead of at the decision; or swapping the
+/// two values, which would invert every reading of the guard's threshold.
+#[test]
+fn the_guard_publishes_the_pair_it_compared_and_the_arm_that_pair_selects() {
+    const PERIOD_US: u64 = 68_000;
+    // Half-yield ABOVE the period: t50's regime, the one that disarms the lock.
+    const FANOUT_ORIGIN_US: u64 = 35_524;
+    const CRIT_WALL_US: u64 = 80_000;
+    let _guard = phase_global();
+    hour_phase::reset_for_test();
+
+    seed_global_period(PERIOD_US);
+    let shape = sweep_shape_at(FANOUT_ORIGIN_US, CRIT_WALL_US);
+    let half_yield_us = shape.half_yield_us().expect("five builds is the estimate");
+    assert!(
+        half_yield_us >= PERIOD_US,
+        "the fixture must be in the disarmed regime it is named for"
+    );
+
+    // The production path, not the pure rule: this is what a capture runs.
+    let outcome = rendezvous_with_hour_boundary(&shape, Instant::now() + Duration::from_secs(30));
+    assert_eq!(
+        outcome,
+        PhaseLockOutcome::Started(PhaseLockStart::SweepExceedsHour),
+        "half the brackets do not close inside the hour, so the guard disarms"
+    );
+
+    let guard = hour_phase::take_decision_inputs();
+    assert_eq!(
+        guard.period_us,
+        Some(PERIOD_US),
+        "the period the guard compared must be on the wire, not a bracket the \
+         harness measured elsewhere"
+    );
+    assert_eq!(
+        guard.half_yield_us,
+        Some(half_yield_us),
+        "and the sweep shape it compared it against"
+    );
+    assert_eq!(
+        guard.unestimated_decisions, 0,
+        "both estimates existed, so no decision may be counted as unestimated"
+    );
+    // THE COMPARISON ITSELF. The host publishes the two medians as separate
+    // distributions, so nothing downstream can re-pair them; this is what
+    // carries the relation, and it must agree with the arm that fired.
+    assert_eq!(
+        guard.disarmed,
+        Some(true),
+        "the guard evaluated `half_yield >= period` as true and took \
+         SweepExceedsHour, so the published predicate must say so"
+    );
+    assert!(
+        guard.half_yield_us.unwrap() >= guard.period_us.unwrap(),
+        "and the published operands must satisfy the published predicate"
+    );
+}
+
+/// THE PREDICATE FOLLOWS THE COMPARISON, in the other direction too.
+///
+/// A guard with room in the hour must publish `disarmed = false` and take an arm
+/// other than `SweepExceedsHour`. Without this the previous test passes against
+/// a producer that hardcodes `true`.
+///
+/// kills: latching a constant instead of the comparison; evaluating the
+/// predicate as `>` or with the operands swapped, either of which inverts it in
+/// exactly the regime a conversion is trying to reach.
+#[test]
+fn a_sweep_that_fits_the_hour_publishes_an_armed_guard() {
+    const PERIOD_US: u64 = 68_000;
+    let _guard = phase_global();
+    hour_phase::reset_for_test();
+    seed_global_period(PERIOD_US);
+
+    // Half-yield well under the hour: the regime §4 solves for.
+    let shape = sweep_shape_at(8_000, 12_000);
+    let half_yield_us = shape.half_yield_us().expect("five builds is the estimate");
+    assert!(half_yield_us < PERIOD_US, "fixture check");
+
+    let outcome = rendezvous_with_hour_boundary(&shape, Instant::now() + Duration::from_secs(30));
+    assert!(
+        !matches!(
+            outcome,
+            PhaseLockOutcome::Started(PhaseLockStart::SweepExceedsHour)
+        ),
+        "the sweep fits, so this arm must not fire; got {outcome:?}"
+    );
+    let guard = hour_phase::take_decision_inputs();
+    assert_eq!(
+        guard.disarmed,
+        Some(false),
+        "the sweep fits inside the hour, so the guard is ARMED and the \
+         published predicate must say so"
+    );
+}
+
+/// AND THE PAIR IS DRAINED, so a window in which the rule was never evaluated
+/// publishes nothing rather than repeating the previous window's pair.
+///
+/// Absent and zero are different facts here for the same reason they are for
+/// `lw_hour_age_us`: a period of zero would be a claim about the engine, while
+/// "no estimate" is a claim about the capture's age. `unestimated` counts the
+/// decisions that had none, and the value units are simply not emitted.
+///
+/// kills: making `take_decision_inputs` a read instead of a swap; storing zero
+/// for a missing estimate instead of the absent sentinel; or dropping the
+/// unestimated count, which is what separates "the rule was never run" from
+/// "the rule ran before it could measure anything".
+#[test]
+fn an_unestimated_decision_publishes_no_pair_and_the_drain_does_not_repeat() {
+    let _guard = phase_global();
+    hour_phase::reset_for_test();
+
+    // No boundaries and no builds: neither running median exists yet, which is
+    // the state every capture opens in.
+    let outcome = rendezvous_with_hour_boundary(
+        &SweepShapeEstimator::new(),
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(
+        outcome,
+        PhaseLockOutcome::Started(PhaseLockStart::Unestimated)
+    );
+
+    let guard = hour_phase::take_decision_inputs();
+    assert_eq!(guard.period_us, None, "there is no period to publish");
+    assert_eq!(guard.half_yield_us, None, "and no sweep shape");
+    assert_eq!(
+        guard.disarmed, None,
+        "and NO predicate: with no pair there is no comparison, and a `false` \
+         here would read as `the guard was armed`"
+    );
+    assert_eq!(
+        guard.unestimated_decisions, 1,
+        "but there WAS a decision, and it had neither"
+    );
+
+    // Second drain, no further decisions: everything must be back to empty.
+    assert_eq!(
+        hour_phase::take_decision_inputs(),
+        hour_phase::GuardInputs::default()
+    );
+}
+
+/// A DECISION TAKEN AFTER THE CAPTURE DEADLINE PUBLISHES NOTHING, because it
+/// took no decision.
+///
+/// `PhaseLockOutcome::NotEvaluated` is counted nowhere — attributing it to one
+/// of the five reasons would put a decision on the wire that was never taken —
+/// and the guard's inputs follow the same rule for the same reason.
+///
+/// kills: moving `record_decision_inputs` above the deadline check, which would
+/// make the last iteration of every capture publish a pair no rule consumed.
+#[test]
+fn a_rendezvous_past_the_deadline_publishes_no_guard_inputs() {
+    let _guard = phase_global();
+    hour_phase::reset_for_test();
+    seed_global_period(68_000);
+
+    let outcome = rendezvous_with_hour_boundary(
+        &sweep_shape_at(20_000, 20_000),
+        Instant::now() - Duration::from_secs(1),
+    );
+    assert_eq!(outcome, PhaseLockOutcome::NotEvaluated);
+    assert_eq!(
+        hour_phase::take_decision_inputs(),
+        hour_phase::GuardInputs::default(),
+        "no decision was taken, so nothing about one may be published"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The observer's poll gaps (CAPTURE_FLOOR_S0.md NEGATIVE 11)
+// ---------------------------------------------------------------------------
+
+/// THE SKIP ARITHMETIC, which is what the whole instrument turns on.
+///
+/// An hour is lost to the clock exactly when the observer's next stamp is more
+/// than one hour past its last: the hours between reach no scheduler admission
+/// and become `skipped_hour` in the host's ledger. At t50 that arm was 92 of 897
+/// hours — 10.27 % of elapsed hours — and `CAPTURE_FLOOR_S0.md` NEGATIVE 11 is
+/// that nothing committed says whether it falls when the sweep shortens.
+///
+/// kills: counting the advance instead of the hours between it, which would
+/// report every ordinary boundary as a skipped hour; treating a backwards step
+/// as a skip, which would charge a campaign reload as lost hours; or counting
+/// the first stamp of a capture, which has no predecessor to be late against.
+#[test]
+fn only_the_hours_between_two_stamps_count_as_skipped() {
+    assert_eq!(
+        hours_skipped_between(Some(10), Some(11)),
+        0,
+        "the ordinary case"
+    );
+    assert_eq!(
+        hours_skipped_between(Some(10), Some(12)),
+        1,
+        "hour 11 was lost"
+    );
+    assert_eq!(hours_skipped_between(Some(10), Some(20)), 9);
+    assert_eq!(
+        hours_skipped_between(Some(10), Some(10)),
+        0,
+        "a re-read of the stamped hour is not a boundary at all"
+    );
+    assert_eq!(
+        hours_skipped_between(Some(10), Some(3)),
+        0,
+        "a backwards step is a reload, not seven lost hours"
+    );
+    assert_eq!(hours_skipped_between(None, Some(4)), 0, "no predecessor");
+    assert_eq!(hours_skipped_between(Some(4), None), 0, "no stamp this poll");
+}
+
+/// THE HISTOGRAM PLACES A GAP ON THE SIDE OF ITS EDGE THAT THE NAME CLAIMS.
+///
+/// The bucket names say `le1ms`, `le2ms` and so on, so the bounds are INCLUSIVE
+/// and a gap of exactly 1 000 us belongs in the first bucket. An off-by-one here
+/// would be invisible in every capture and would move counts between the two
+/// buckets that decide NEGATIVE 11.
+///
+/// kills: changing `<=` to `<` in `poll_gap_bucket`; reordering
+/// `POLL_GAP_BUCKET_MAX_US`; renaming a bucket without moving its bound, or
+/// moving a bound without renaming it. An earlier version of this test asserted
+/// a handful of hand-picked values and was VACUOUS against a reorder — swapping
+/// the 2 ms and 4 ms bounds left every assertion true while `le2ms` silently
+/// accepted gaps up to 4 ms and the bucket after it became unreachable (Codex
+/// review round 1, finding 6). It now walks the whole table.
+#[test]
+fn poll_gap_buckets_are_inclusive_of_the_bound_they_are_named_for() {
+    use compact_contract::diagnostic_channel::{
+        poll_gap_bucket, POLL_GAP_BUCKET_COUNT, POLL_GAP_BUCKET_MAX_US, POLL_GAP_BUCKET_UNIT_NAMES,
+    };
+    // STRICTLY ASCENDING, or `position(|bound| gap <= bound)` silently makes a
+    // bucket unreachable and the one before it twice as wide.
+    for pair in POLL_GAP_BUCKET_MAX_US.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "the bucket bounds must ascend strictly; {pair:?} does not"
+        );
+    }
+    assert_eq!(
+        POLL_GAP_BUCKET_UNIT_NAMES.len(),
+        POLL_GAP_BUCKET_MAX_US.len() + 1,
+        "one name per bound, plus the unbounded tail"
+    );
+    // EVERY bound, and the microsecond after it. A bound must land in its own
+    // bucket (the names say `le`), and bound+1 must land in the NEXT one -- so
+    // a bound that moved without its name, or a name that moved without its
+    // bound, fails here whichever way round it happened.
+    for (index, bound) in POLL_GAP_BUCKET_MAX_US.iter().copied().enumerate() {
+        assert_eq!(
+            poll_gap_bucket(bound),
+            index,
+            "{bound} us must be INSIDE {}, which is what `le` means",
+            POLL_GAP_BUCKET_UNIT_NAMES[index]
+        );
+        assert_eq!(
+            poll_gap_bucket(bound + 1),
+            index + 1,
+            "{} us must fall past {}",
+            bound + 1,
+            POLL_GAP_BUCKET_UNIT_NAMES[index]
+        );
+    }
+    // And the names spell the bounds they carry EXACTLY, so a reader of the
+    // manifest is not trusting a label against a table they cannot see. The
+    // whole-millisecond check is what makes the name check exact: without it,
+    // `bound / 1_000` truncates and a bound moved from 2 000 to 2 500 still
+    // spells `le2ms`, so the bucket silently widens by half a millisecond with
+    // every assertion here passing (Codex review round 2, finding 3).
+    for (index, bound) in POLL_GAP_BUCKET_MAX_US.iter().copied().enumerate() {
+        assert_eq!(
+            bound % 1_000,
+            0,
+            "bucket {index}'s bound is {bound} us, which no `leNms` name can \
+             state; a bound this table cannot spell cannot be labelled"
+        );
+        assert_eq!(
+            POLL_GAP_BUCKET_UNIT_NAMES[index],
+            format!("lw_poll_gap_le{}ms", bound / 1_000),
+            "bucket {index}'s name must state its own bound"
+        );
+    }
+    assert_eq!(
+        poll_gap_bucket(0),
+        0,
+        "a zero gap is a gap and belongs in the first bucket, not out of the table"
+    );
+    // The engine hour at max speed is ~56-68 ms, so a poll gap that skipped an
+    // hour lands in the last two buckets. These are the ones NEGATIVE 11 reads.
+    assert_eq!(
+        POLL_GAP_BUCKET_UNIT_NAMES[poll_gap_bucket(64_000)],
+        "lw_poll_gap_le64ms"
+    );
+    assert_eq!(
+        POLL_GAP_BUCKET_UNIT_NAMES[poll_gap_bucket(64_001)],
+        "lw_poll_gap_gt64ms"
+    );
+    assert_eq!(
+        poll_gap_bucket(u64::MAX),
+        POLL_GAP_BUCKET_COUNT - 1,
+        "the last bucket is unbounded above; nothing may fall out of the table"
+    );
+}
+
+/// SKIP GAPS ARE A SUBSET OF THE GAP DISTRIBUTION, NOT A SEPARATE POPULATION —
+/// and the window is drained, so a capture's totals are every poll exactly once.
+///
+/// The number NEGATIVE 11 turns on is `skip_gap_us / skips`: the mean gap a skip
+/// rode on. It is only comparable against the ordinary mean `gap_us / gaps` if
+/// the skip polls are counted in BOTH, which is what this pins.
+///
+/// kills: recording a skip poll into the skip counters only, which would make
+/// the two means describe disjoint populations and understate the ordinary gap;
+/// making `gap_us` optional again, which would force either a poll or a skip out
+/// of the accounting; or turning the drain into a read, which would multiply
+/// every total by the number of frames that reported it.
+#[test]
+fn a_skip_poll_is_counted_in_both_distributions_and_the_window_drains() {
+    use compact_contract::diagnostic_channel::poll_gap_bucket;
+    let _guard = phase_global();
+    observer_poll_gap::reset_counters();
+
+    // Three ordinary polls, one of which carried a two-hour advance. On this
+    // path every read succeeded, so the cadence gap and the observation gap are
+    // the same interval.
+    observer_poll_gap::record_poll(900, 900, false, 0);
+    observer_poll_gap::record_poll(1_500, 1_500, false, 0);
+    observer_poll_gap::record_poll(70_000, 70_000, false, 2);
+    // One poll whose clock could not be read at all.
+    observer_poll_gap::record_poll(1_200, 1_200, true, 0);
+
+    let window = observer_poll_gap::take_window();
+    assert_eq!(
+        window.gaps, 4,
+        "every poll carries a gap, so `gaps` IS the poll count -- which is what \
+         makes `skips` a subset of it rather than a separate population"
+    );
+    assert_eq!(window.total_us, 900 + 1_500 + 70_000 + 1_200);
+    assert_eq!(window.max_us, 70_000);
+    assert_eq!(window.unreadable, 1);
+    assert_eq!(window.skips, 1);
+    assert_eq!(window.skipped_hours, 2, "one poll, two hours lost");
+    assert_eq!(
+        window.skip_total_us, 70_000,
+        "the skip's own gap, and it is ALSO in total_us above"
+    );
+    assert_eq!(window.skip_max_us, 70_000);
+
+    assert_eq!(window.buckets[poll_gap_bucket(900)], 1);
+    assert_eq!(window.buckets[poll_gap_bucket(1_500)], 2, "1 200 us joins it");
+    assert_eq!(
+        window.buckets[poll_gap_bucket(70_000)],
+        1,
+        "the skip gap is above the engine hour, which is the reading NEGATIVE 11 \
+         needs"
+    );
+    assert_eq!(
+        window.buckets.iter().sum::<u64>(),
+        window.gaps,
+        "the buckets PARTITION the gaps -- and they do so BY CONSTRUCTION, \
+         because `gaps` is their sum rather than a counter kept beside them. \
+         This asserts the definition still holds, not a race: a stored counter \
+         is what two threads could pull apart"
+    );
+
+    assert_eq!(
+        observer_poll_gap::take_window(),
+        Default::default(),
+        "the window is drained as it is read, so no total is published twice"
+    );
+}
+
+/// A SKIP AFTER A CLOCK OUTAGE IS CHARGED THE OUTAGE, NOT THE LAST POLL.
+///
+/// Only a poll that READ the clock can witness a boundary, so the span in which
+/// an hour passed unseen runs from the last SUCCESSFUL read — not from the last
+/// attempt. The first cut of this instrument charged the cadence gap, so three
+/// hours lost across a 210 ms outage were reported as riding on a 1 ms gap
+/// (Codex review round 1, finding 3). That number is the one NEGATIVE 11 reads
+/// against the engine hour to decide whether the skipped arm is starvation, so
+/// getting it wrong does not merely lose precision — it answers the question
+/// backwards, and it does so most strongly in exactly the case where the loss
+/// was largest.
+///
+/// kills: passing `gap_us` where `observation_gap_us` belongs in
+/// `record_poll`; advancing `last_observation_at` on a failed read, which
+/// collapses the two stamps back into one.
+#[test]
+fn a_skip_across_a_clock_outage_is_charged_the_whole_unobserved_window() {
+    let _guard = phase_global();
+    observer_poll_gap::reset_counters();
+
+    // A run of polls whose reads failed: the cadence stays at ~1 ms while the
+    // unobserved window grows.
+    observer_poll_gap::record_poll(1_000, 70_000, true, 0);
+    observer_poll_gap::record_poll(1_000, 140_000, true, 0);
+    // Then a read succeeds and proves three hours went by unseen. Its CADENCE
+    // gap is 1 ms; the window it could not see is 210 ms.
+    observer_poll_gap::record_poll(1_000, 210_000, false, 3);
+
+    let window = observer_poll_gap::take_window();
+    assert_eq!(window.gaps, 3);
+    assert_eq!(window.unreadable, 2);
+    assert_eq!(window.skips, 1);
+    assert_eq!(window.skipped_hours, 3);
+    assert_eq!(
+        window.skip_total_us, 210_000,
+        "the skip must carry the unobserved window, not the 1 ms cadence gap of \
+         the poll that happened to notice it"
+    );
+    assert_eq!(window.skip_max_us, 210_000);
+    assert_eq!(
+        window.total_us, 3_000,
+        "and the CADENCE total is unaffected: the histogram still describes how \
+         often the thread ran, which is a different question"
+    );
+    assert!(
+        window.skip_total_us > window.total_us,
+        "the two totals measure different spans and must never be differenced; \
+         this fixture is the case that proves it"
+    );
+}
+

@@ -2046,6 +2046,56 @@ pub fn outside_build_segment_name(code: u16) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// INCLUSIVE upper bounds, in micros, of the clock observer's poll-gap
+/// histogram buckets. A final bucket, unbounded above, catches the rest.
+///
+/// Shared by the collector (which fills them) and the host (which routes them),
+/// for the same reason [`OUTSIDE_BUILD_UNIT_NAMES`] is shared: a bucket table
+/// that exists twice is a bucket table that drifts, and a drifted edge turns
+/// two captures' histograms into two different instruments wearing one name.
+///
+/// Powers of two around the engine hour rather than fractions of it. The hour
+/// period is MEASURED and moves with game speed and machine, so an edge defined
+/// against it would move between captures; fixed edges keep the buckets a
+/// property of the instrument. At max speed the engine hour sits around
+/// 56–68 ms, so a poll gap that skipped an hour must land in the 32–64 ms
+/// bucket or above.
+pub const POLL_GAP_BUCKET_MAX_US: [u64; 7] = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000];
+
+/// The wire unit name for each [`POLL_GAP_BUCKET_MAX_US`] bucket, in order,
+/// with a final overflow name.
+pub const POLL_GAP_BUCKET_UNIT_NAMES: [&str; POLL_GAP_BUCKET_MAX_US.len() + 1] = [
+    "lw_poll_gap_le1ms",
+    "lw_poll_gap_le2ms",
+    "lw_poll_gap_le4ms",
+    "lw_poll_gap_le8ms",
+    "lw_poll_gap_le16ms",
+    "lw_poll_gap_le32ms",
+    "lw_poll_gap_le64ms",
+    "lw_poll_gap_gt64ms",
+];
+
+/// How many poll-gap buckets exist. Producer and host both size from this.
+pub const POLL_GAP_BUCKET_COUNT: usize = POLL_GAP_BUCKET_UNIT_NAMES.len();
+
+/// Which bucket a gap of `gap_us` falls in.
+///
+/// Lives here rather than in the producer so that the host's labels and the
+/// collector's counts cannot disagree about an edge.
+pub fn poll_gap_bucket(gap_us: u64) -> usize {
+    POLL_GAP_BUCKET_MAX_US
+        .iter()
+        .position(|bound| gap_us <= *bound)
+        .unwrap_or(POLL_GAP_BUCKET_COUNT - 1)
+}
+
+/// The bucket index a poll-gap unit name denotes, or `None` for any other name.
+pub fn poll_gap_bucket_of_unit(name: &str) -> Option<usize> {
+    POLL_GAP_BUCKET_UNIT_NAMES
+        .iter()
+        .position(|bucket| *bucket == name)
+}
+
 /// Units inside a [`STATEFUL_UNIT_PREFIXES`] family that ARE per-frame, listed
 /// explicitly because inside those families silence means undeclared.
 pub const STATEFUL_FAMILY_PER_FRAME_UNITS: &[&str] = &[

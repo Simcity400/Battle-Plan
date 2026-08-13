@@ -25,23 +25,154 @@ below are that file's.
 | **The build is 1.53 hours long on its own.** | Mean build (`fanout_origin.avg` + `worker_span`/frame) = **104 194 µs per extracted frame** against a 68 000 µs free-run hour. A genuine per-frame mean; the conclusion needs no marginal-sum arithmetic. |
 | **The sweep is one domain.** | d81 `rail_replay_state_live` holds the critical lane **61.89 ms of the 62.57 ms mean critical path — 98.91 %**. The other 67 domains sum to 0.67 ms/frame. |
 | **The serial prefix is one domain's prewarm.** | `fanout_origin` p50 35.5 ms, of which the d47 prewarm is **96.1 %**. It runs before any bracket opens, so no in-bracket change can reach it. |
-| **Eviction is evenly spread, not bursty.** | 346 evicted hours form **346 runs of length 1** on the labelled axis — not one adjacent pair in 805 hours. On the **raw** axis, where clock-skipped hours also lose data, runs reach length 3. Both are reported; neither may be quoted alone. This bounds *displacement*, not the loop period — see §2.2. |
+| **Eviction is evenly spread, not bursty.** | 346 evicted hours form **346 runs of length 1** on the labelled axis — not one adjacent pair in 805 hours. On the **raw** axis, where the unlabelled hours also lose data, runs reach length 3. Both are reported; neither may be quoted alone. This bounds *displacement*, not the loop period — see §2.2. |
 | **The phase lock is not degrading.** | It is **disarmed by its own guard**: 416 of 454 starts took `SweepExceedsHour`. Lateness is a symptom of sweep length, not an independent lever. |
 
 **The loss, on the denominator that counts every lost hour** (§0). The
 897-hour axis is `[first_game_hour_raw, last_game_hour_raw]`; it equals
-805 labelled + 92 clock-skipped hours, and that identity is asserted by the
-script.
+805 labelled + 92 unlabelled hours, and that identity is asserted by the script.
+
+**THE CAUSAL PARTITION, in hours** — read this one:
 
 | outcome | hours | share of the 897-hour axis |
 |---|---:|---:|
 | built a frame | 459 | 51.17 % |
-| evicted to backpressure | 346 | 38.57 % |
-| skipped by the clock (never labelled) | 92 | 10.26 % |
+| admitted, then lost under backpressure | 438 | 48.83 % |
+| never observed by the clock | **0** | **0.00 %** |
 | **published d47 data** | **60** | **6.69 %** |
 
+**"Lost under backpressure", and the word "eviction" is a shorthand this
+document uses for that whole arm.** The wire's `Backpressure` ranges are raised
+at three sites and the ranges do not say which, so **"eviction" below means the
+backpressure ARM, not the eviction SITE**. The one place the distinction bites is
+the counter: `rs_evicted_pending_hours` counts the site alone and its own source
+calls itself a **strict subset** of the hours those ranges cover. Never read that
+counter as the arm (§6.1).
+
+**The other two sites are TEARDOWN-ONLY and structurally bounded at ≤2 hours per
+scheduler lifetime.** `flush_latest_pending` removes at most the one unissued
+frontier;
+the `flush()` that follows can then close only the remaining `in_flight` hour,
+and `gap_all_pending` reaches a `Backpressure` kind through `flush()` and
+nowhere else — its other callers raise `ClockUnreadable` and `ReloadBaseline`,
+which are different gap reasons and in t50 never fired at all
+(`rs_clock_unreadable_events = 0`, `rs_reloads = 0`). Neither site can produce
+hours spread across an 897-hour axis; both run only as a scheduler is torn down.
+
+**The capture bound is ≤2N for N scheduler lifetimes, not a constant**, because
+a campaign-identity boundary tears the scheduler down and restarts it mid-capture
+— and `rs_reloads` does not count that, since a restart resets the telemetry it
+would be counted in.
+
+**N IS NOT PUBLISHED AND CANNOT BE BOUNDED FROM THIS MANIFEST.** An earlier
+draft tried, reading `rs_scheduled_hours = 885` as the final lifetime's own
+admissions and bounding every earlier lifetime into the remaining ~21 hours.
+**Withdrawn.** The host folds `rs_*` by **MAX** (they are declared cumulative),
+so 885 is the largest published *sample*, not a final total: it says one probe
+reached 885 and none exceeded it, which under several lifetimes is the largest
+single-lifetime prefix and constrains nothing about the others. The same applies
+to `rs_evicted_pending_hours = 435`, which is therefore **not** proven to be the
+capture-wide eviction-site total. *The one measurement that settles it:* a
+scheduler-lifetime count on the wire — the same window-self-description §6.1
+specifies for this family, and unbuilt for the same reason.
+
+**So what share of the 438 is eviction rather than teardown is a residual, and
+it is named here rather than assumed.** What does NOT depend on it, and this is
+the part the correction below rests on:
+
+- **The clock arm is zero, robustly.** `rs_unobserved_overrun_hours`,
+  `rs_unobserved_clock_unknown_hours`, `rs_clock_unreadable_events` and
+  `rs_reloads` are all **0**, and a MAX fold makes a zero *stronger* than a
+  total: no probe of any lifetime ever published a nonzero. The set-inclusion
+  of all 92 unlabelled hours in backpressure ranges is computed over the **full
+  wire** and uses no `rs_*` value at all.
+- **Teardown loss cannot become a floor.** It is ≤2 hours per lifetime, paid
+  once per teardown — **≤0.22 % of an 897-hour axis at N = 1**, amortised by a
+  longer capture, and it is a fixed cost rather than a rate. It does not fall
+  with build duration and it is not claimed to; it is also not clock loss, which
+  is the only thing the withdrawn 10.27 % floor was ever about.
+
+**The eviction share of the arm is what §3's model projects**, and a shorter
+sweep displaces fewer pending requests at the eviction site. The correction below
+needs less again — only that these hours were **admitted**, i.e. the observer saw
+them, which is what a clock-lost hour by definition was not.
+
+**THE `FRAME_END`-CLOSURE IDENTITY**, which is what the script asserts and which
+is *not* a causal partition — its middle term is RECORDS while the others are
+hours:
+
+| term | count |
+|---|---:|
+| built a frame (hours) | 459 |
+| backpressure RECORDS (coalesced ranges) | 346 |
+| unlabelled hours, i.e. `skipped_hour` rows (hours) | 92 |
+| sum | 897 |
+
+The second table's third row is named `skipped_hour` on the wire because the
+host derives it from holes between `FRAME_END` records, and every one of those
+92 hours is an unlabelled *interior* of a backpressure range. **The name states
+the host's evidence, not a cause** — see the CORRECTION below, which is where
+that was established and where the 10.27 % "floor" built on the old reading is
+withdrawn.
+
 Quoting d47 delivery as 60/805 = 7.45 % understates the loss by omitting the
-92 skipped hours. Both bases appear below and every use names which it is.
+92 unlabelled hours. Both bases appear below and every use names which it is.
+
+> ### CORRECTION (lane HM, task #132 follow-on): the third row is not a third arm
+>
+> **The table above is a `FRAME_END`-CLOSURE identity, and it holds. It is not a
+> causal partition, and NEGATIVE 11 read it as one.** Its middle term is
+> **346 RECORDS** while the other two are **hours** — the basis error NEGATIVE 6
+> is about, sitting inside the headline table.
+>
+> On t50's own manifest, re-derived by
+> `extractor/native/runs/hm_s0_units/verify_neg6.py`
+> (output: `VERIFY_NEG6.txt`):
+>
+> | | hours |
+> |---|---:|
+> | built a frame | 459 |
+> | admitted, then lost under backpressure — hours the 346 backpressure RECORDS cover | 447 |
+> | of those, admitted before the axis opens (before the first `FRAME_END`) | 9 |
+> | **never observed by the clock** | **0** |
+> | 459 + (447 − 9) | **897 = the axis, exactly** |
+>
+> **All 92 `skipped_hour` hours lie inside a backpressure range** (92 of 92; none
+> outside). They are the *unlabelled interiors* of coalesced backpressure runs:
+> `build_scheduler_gap_frames` closes each run with one `FRAME_END(range_end)`,
+> so only a run's last hour is labelled and the host's FRAME_END-discontinuity
+> scan reports the rest as holes. `skipped_hour` names **the host's evidence,
+> not a cause.**
+>
+> *Which* backpressure site lost them is a question this capture does not answer
+> and this correction does not need — see the shorthand note above. What decides
+> the floor is only that these hours were **admitted**: the observer saw them,
+> which is exactly what a clock-lost hour was not, and it is what makes them fall
+> with the sweep.
+>
+> The producer agrees and is the only instrument that could disagree: an hour the
+> observer misses reaches no admission site at all, and t50 reports
+> `rs_unobserved_overrun_hours = 0`, `rs_unobserved_clock_unknown_hours = 0`,
+> `rs_clock_unreadable_events = 0`, `rs_reloads = 0`,
+> `rs_counter_anomaly_events = 0`.
+>
+> **Consequence.** The 10.27 % "skipped arm floor" of §3.0/§4F **does not exist
+> as a separate arm on this capture**: those hours were admitted and then lost
+> under backpressure, which is the arm §3 already models as falling with build
+> duration. Every row of §3.3, §3.5 and §4F that
+> carries the floor as an additive term should be read without it. NEGATIVE 11
+> becomes a question about *future* captures rather than a floor on this one —
+> see §3.0.
+>
+> **Bounded by one caveat, stated rather than smoothed over:** `rs_finalized = 0`,
+> so no terminal probe was published, and the host folds this family by **MAX** —
+> each `rs_*` value is the LARGEST PUBLISHED SAMPLE, not a capture total. For the
+> **zeroes** above that is the strong direction and it is why they carry the
+> argument: a nonzero unobserved-hour count in any lifetime's any probe would
+> have survived the MAX, and none did. It is *nonzero* totals that the fold
+> cannot certify, which is why nothing here rests on one. The ledger
+> set-inclusion above needs no caveat at all: it is computed over the full wire
+> and uses no `rs_*` value.
 
 ---
 
@@ -140,8 +271,10 @@ medians: **even at zero lateness** the mean build is 104 194 µs against a
 
 ### 2.1 The counting trap, first
 
-Backpressure gap **records** carry `span_hours > 1`, and those spans swallow the
-clock-skipped hours next to the eviction:
+Backpressure gap **records** carry `span_hours > 1`, and those spans cover the
+unlabelled hours beside the backpressure they close — **all 92 of them**,
+which is the
+observation the §0 CORRECTION turns on and which this table was one step from:
 
 | span_hours | records |
 |---:|---:|
@@ -194,7 +327,8 @@ problem on that basis (`perf-measure-decay-not-rate`,
 `loss-tracks-game-speed`), not on a bound the evidence cannot support.
 
 **On the raw hour axis** — the one a reader of the recording experiences, where
-an hour is lost whether it was evicted or clock-skipped — the runs are longer:
+an hour is lost whether or not it was the hour of its run that carried the
+`FRAME_END` — the runs are longer:
 
 | run len | runs | hours | share |
 |---:|---:|---:|---:|
@@ -249,7 +383,7 @@ is the stage that bites.
 
 ## 3. The floor projection (§3) — every number here is a projection
 
-### 3.0 What the model actually predicts, and the floor that sits under it
+### 3.0 What the model actually predicts
 
 Over a wall window T the game advances T/H hours and the loop completes T/S
 frames, so the fraction of **elapsed** hours that get no frame is
@@ -257,26 +391,82 @@ frames, so the fraction of **elapsed** hours that get no frame is
 
 **The modelled quantity is the NO-FRAME rate over elapsed hours, not the
 `backpressure` gap reason.** The ledger splits t50's 438 frameless hours into
-346 `backpressure` (labelled, then evicted) and 92 `skipped_hour` (the clock
-observer never labelled it). The model counts hours that got a frame and is
-agnostic about which arm the rest fall into.
+346 `backpressure` RECORDS (whose ranges close with a `FRAME_END`) and 92
+`skipped_hour` rows (unlabelled hours inside those same ranges). The model
+counts hours that got a frame and is agnostic about how the rest are labelled —
+which is what makes it robust to exactly the misreading below.
 
-**The consequence for the floor is new and is not comfortable: driving the
-model's rate to 0 requires the skipped arm to vanish too.**
+**NO ADDITIONAL FLOOR SITS UNDER THIS MODEL.** All 438 frameless hours are the
+one arm the model projects. An earlier draft of this subsection read the 92
+`skipped_hour` rows as a second, clock-caused arm and concluded that *"driving
+the model's rate to 0 requires the skipped arm to vanish too"*, pricing a
+**10.27 % floor** that no build cut could reach. That is **withdrawn**: those
+hours were admitted and then lost under backpressure (§0 CORRECTION), and the
+projections below stand without an
+additive term. The reasoning that follows is kept because the *mechanism* it
+describes is real and unmeasured — it is simply not what t50 observed.
 
-**NEGATIVE 11** — whether the 92 skipped hours fall with build duration is not
-derivable. The observer polls at `sample_ms = 1` against a 68 ms hour, so a skip
-needs an observer stall of roughly a whole hour — consistent with CPU starvation
-by the 12 reader lanes, but not shown by anything committed. **If the skipped
-arm does not fall, the loss floor is 10.27 % of elapsed hours (92 of 896) no
-matter how short the build gets**, and no build duration in §3.3 reaches <1 %.
-On the §0 slot basis the same count reads 10.26 %; the two must not be
-interchanged. *The one
-measurement that closes it:* an observer poll-gap histogram (largest gap between
-consecutive clock reads per hour) as a lane-wall diagnostic unit — a gap near H
-*is* the skip, and its correlation with build length answers the question in one
-capture. **This gates the entire <1 % target and is the second-cheapest open
-item in the document.**
+**NEGATIVE 11, restated — and it is no longer a floor.** t50 lost **no** hour to
+the clock: all 92 unlabelled hours lie inside a backpressure range and the
+scheduler's own unobserved-hour counters are zero (§0 CORRECTION;
+`runs/hm_s0_units/VERIFY_NEG6.txt`). What stays open is the *mechanism*, on
+future captures: the observer polls at `sample_ms = 1` against a 68 ms hour, so
+a real skip needs an observer stall of roughly a whole hour — plausible under
+CPU starvation by the 12 reader lanes, never yet observed. **Nothing committed
+before this lane could tell a clock-lost hour from an unlabelled backpressure
+interior**, which
+is why the earlier draft could read the second as the first.
+
+*Retained for the record:* that draft concluded **"if the skipped arm does not
+fall, the loss floor is 10.27 % of elapsed hours (92 of 896) no matter how short
+the build gets"**, and ranked this negative as gating the entire <1 % target.
+The arithmetic was right and the premise was wrong. **Withdrawn.**
+
+**INSTRUMENT LANDED (lane HM).** The unit exists on
+the lane wall as `lw_poll_*` and reaches the manifest as
+`compact_stream.lane_wall.observer_poll_gaps`. It publishes the gap between
+consecutive observer clock reads — `gaps`, `gap_us_total`, a per-window
+`window_max_us` distribution and an eight-bucket histogram from 1 ms to >64 ms —
+and, separately, the subset of those polls that proved hours had gone unobserved
+(`skips.polls`, `skips.hours`, `skips.gap_us_total`, `skips.window_max_us`).
+It costs the observer no clock read: the gap is measured between the
+`Instant::now()` stamps the poll loop already takes after each authenticated
+read, which is exactly the window in which the engine hour can advance unseen.
+
+**The first reading is `skips.hours`.** That single number is what nothing
+before this could produce: it names a clock-lost hour directly, instead of
+leaving an analysis to infer a cause from a `skipped_hour` label that only means
+"no `FRAME_END` here". When it is *not* zero, `skips.gap_us_total /
+skips.polls` is the mean **unobserved window** those skips rode on — measured
+from the last poll whose read SUCCEEDED, not from the last attempt, so a clock
+outage is charged its whole duration rather than the cadence gap of the poll
+that noticed it. Near the engine hour means the observer was starved while the
+reader lanes ran and a shorter sweep shortens it; no larger than the ordinary
+`gap_us_total / gaps` means sweep length is not the cause and a real floor would
+then have to be priced. `clock_unreadable_polls` separates the third case, a
+skip caused by a clock the observer could not read at all.
+
+**ASYMMETRIC EVIDENCE, and the asymmetry is stated rather than smoothed over.**
+These counters reach the wire only through a lane-wall probe, which only a BUILT
+frame emits, so polls after a capture's last built frame are never published —
+an unbounded remainder in principle, and the same limitation the
+`start_reasons` counters beside them have always carried. **A nonzero
+`skips.hours` is therefore proof of clock loss; a zero is proof only over the
+drained window.** For t50 that is not the binding evidence anyway: the
+set-inclusion of all 92 unlabelled hours in backpressure ranges is computed over
+the **full wire** and needs no such caveat. *The one change that would remove the
+asymmetry:* a terminal drain of both families beside the final scheduler probe
+that already sets `rs_finalized`. **Residual, owner unstaffed.**
+
+`skips.hours` is a SECOND count of clock loss beside
+`rs_unobserved_overrun_hours + rs_unobserved_clock_unknown_hours` (the
+scheduler's, at admission). **The `skipped_hour` gap records are not a third:
+they count unlabelled hours, whatever caused them, which is why they read 92
+where both instruments that can see the clock read 0.** That is the whole
+content of the §0 CORRECTION, and it is why the two counts above are the ones to
+compare against each other; a divergence between *them* would be a finding.
+The observer's count is the only one of the three taken at the moment the loss
+happens.
 
 ### 3.1 The period, and why it is not taken from the loop wall
 
@@ -366,8 +556,11 @@ Against today's 104 194 µs build that is **2.60×** (pessimistic) or **2.07×**
 (optimistic) for <1 % at the free-run hour. <1 % and <0.1 % are within 2 % of
 each other in required duration — once the sweep fits inside the hour, the
 no-frame arm collapses fast. **The hard target is <1 %; <0.1 % is nearly free
-after it** — subject entirely to the §3.0 skipped-arm floor, which no build cut
-addresses.
+after it.** An earlier draft made these figures "subject entirely to the §3.0
+skipped-arm floor, which no build cut addresses"; that is **withdrawn** (§0
+CORRECTION). The floor was the 92 `skipped_hour` rows read as a clock arm; they
+are backpressure-range interiors and t50 lost no hour to the clock, so **no additive
+floor applies to these figures.**
 
 ### 3.4 The torn arm does not track the no-frame arm
 
@@ -395,6 +588,33 @@ running medians as lane-wall diagnostic units beside the existing
 `start_reasons` counters — a two-field producer change, no capture-protocol
 change. **Cheapest open item in this document.**
 
+**INSTRUMENT LANDED (lane HM), VERIFIABLE FROM THE NEXT CAPTURE ON.** Both
+medians are now latched **at the decision**, in the same expression that feeds
+the rule, and published as `lw_phase_period_us` / `lw_phase_half_yield_us`;
+they reach the manifest as `compact_stream.lane_wall.phase_lock.guard_inputs`
+with `unestimated_decisions` counting the decisions taken before either median
+existed. Latching rather than sampling at probe time is load-bearing: the probe
+is assembled inside a build that starts after the decision, by which point
+another build has finished and the sweep-shape median has moved.
+
+**What is published, precisely, because the distinction is the same one this
+negative is about.** The two medians reach the manifest as **marginal
+distributions** — one sample per lane-wall record, being that record's LAST
+decision — so they give the magnitudes and their spread but **not** which period
+was compared against which half-yield. The comparison itself is therefore
+published as its own unit: `guard_disarmed` is the producer's own evaluation of
+`half_yield_us >= period_us` at that same decision, reported as
+`{windows, disarmed}`. So the guard's rule is checkable **without re-pairing
+anything**, which matters because re-pairing from summaries is precisely the
+reconstruction that failed in §5.
+
+Two limits stated rather than implied: the sample is one decision per record and
+`start_reasons` counts every decision, so the two are not on the same
+denominator; and a decision taken while only one median exists publishes that
+median with no comparison beside it, which is why `guard_disarmed` is absent
+rather than `0` in that case. Neither affects the §3E reading — the arm fires
+iff the predicate holds, and `guard_disarmed` is that predicate.
+
 ### 3.5 The 4c/16GB ship floor — weakest basis here
 
 t50 ran unmasked on the dev machine. The only committed 4-core evidence is
@@ -409,9 +629,11 @@ t50 ran unmasked on the dev machine. The only committed 4-core evidence is
 | **36 600** | 44 872 | **4.66 % / 0.00 %** |
 | 30 000 | 36 780 | 0.00 % / 0.00 % |
 
-The column is the **no-frame rate**, not the `backpressure` gap reason: its
-residuals inherit the elapsed-hour calibration, which contains both arms, and
-NEGATIVE 11 says the two cannot be separated under projection.
+The column is the **no-frame rate**, not the `backpressure` gap *reason*: its
+residuals inherit the elapsed-hour calibration, which counts every hour that got
+no frame however the ledger labels it. On t50 that is one arm — the 92
+`skipped_hour` rows are unlabelled interiors of the same backpressure runs (§0
+CORRECTION) — so nothing has to be separated here.
 
 With the same strict-rounding rule as §3.3, <1 % at 4c needs a dev build
 ≤ **34 388 µs** (pess) / **42 745 µs** (opt).
@@ -486,12 +708,16 @@ it returns a bound rather than an achieved span.
 
 ### The ranking
 
-Projected quantity is the **no-frame rate** over elapsed hours (§3.0). The
-skipped-arm floor applies on top of every row unless NEGATIVE 11 resolves
+Projected quantity is the **no-frame rate** over elapsed hours (§3.0).
+~~The skipped-arm floor applies on top of every row unless NEGATIVE 11 resolves
 favourably, and on this section's **elapsed-hour** basis that floor is
 **10.27 %** (92 skipped of 896 elapsed hours) — *not* the 10.26 % slot-basis
 figure of §0, which cannot be applied to an elapsed-basis rate (Codex round 3,
-finding 5). **Every cell in the last column is a resultant rate**, so
+finding 5).~~ **WITHDRAWN (§0 CORRECTION): no such floor applies.** The 92 hours
+are backpressure-range interiors, already inside the no-frame rate this column
+projects, so adding them on top would have DOUBLE-COUNTED them. The two-basis
+warning above it stands as a rule and simply has nothing left to govern here.
+**Every cell in the last column is a resultant rate**, so
 the rows are comparable (Codex round 2, finding 6) — ranks 3 and 5 are not
 deltas dressed as rates.
 
@@ -588,8 +814,8 @@ That is a far weaker requirement than any single span estimate, which is why
 this conclusion survives NEGATIVE 12 while the earlier interval-based version
 did not. `half_yield` at the break-even span is 20 414 µs — far below H — so
 **the phase lock re-arms for free and the torn arm falls with the lateness.**
-NEGATIVE 3 is exactly what that cannot quantify, and the §3.0 skipped-arm floor
-still applies on top.
+NEGATIVE 3 is exactly what that cannot quantify. ~~The §3.0 skipped-arm floor
+still applies on top.~~ **WITHDRAWN — see the §0 CORRECTION.**
 
 Note what is *not* claimed: neither rank is shown to be strictly necessary. Both
 are conditions on the same unknown span, and the ranking rests on the 10.4×
@@ -682,19 +908,96 @@ a sufficient test of the guard, and nothing here rests on it.
 | 3 | torn rate below the phase-lock discontinuity | first post-conversion capture | the lane landing #119 (HC) |
 | 4 | 4c/16GB floor at the current tip | one 4-core capture, t50 protocol | 4-core capture lane |
 | 5 | retry-until-clean recovery fraction | retry-policy histogram experiment | **unstaffed** |
-| 6 | `rs_*` counters vs the gap ledger disagree (885 vs 805 scheduled; 435 vs 346 evicted) | source read of the two emitters' windows + one wire field | **unstaffed** — no capture needed |
+| 6 | `rs_*` counters vs the gap ledger disagree (885 vs 805 scheduled; 435 vs 346 evicted) | source read of the two emitters' windows | **CLOSED — lane HM.** Neither instrument is wrong; the pairs are not comparable. See §6.1 |
 | 7 | lane → domain map | packaged-wire capture | as 1 |
 | 8 | d81's disjoint in-bracket breakdown | `sweep_span_audit --domain 81` | as 1 |
-| 9 | phase-lock guard's running inputs | two lane-wall diagnostic units | **unstaffed** — cheapest item here |
+| 9 | phase-lock guard's running inputs | two lane-wall diagnostic units | **INSTRUMENT LANDED — lane HM** (`lw_phase_period_us` / `lw_phase_half_yield_us`); verifiable from the next capture on (§3E) |
 | 10 | per-frame period distribution | packaged-wire capture | as 1 |
-| 11 | do the 92 skipped hours fall with build duration? **A 10.27 % elapsed-basis loss floor rides on this** (§3.0; the §0 slot basis reads 10.26 %) | observer poll-gap histogram, one lane-wall unit | **unstaffed** — gates the whole <1 % target |
+| 11 | do the 92 skipped hours fall with build duration? | observer poll-gap histogram, one lane-wall unit | **PREMISE REFUTED for t50 — lane HM.** No 10.27 % floor: 0 hours were unobserved (§0 CORRECTION). Instrument landed (`lw_poll_*`); it makes a *nonzero* clock loss visible on any later capture, and a zero reading only over the drained window — see 11a |
+| 11a | the poll-gap and phase counters are never drained after a capture's last BUILT frame, so a zero reading does not cover the tail | terminal drain of both families beside the final scheduler probe that sets `rs_finalized` | **unstaffed** — raised by lane HM's own review |
 | 12 | achievable fan-out span after the top domain is cut | `sweep_span_audit` `makespan_floor`/`longest_job` | as 1 |
 
 Negatives 1, 2, 7, 8, 10 and 12 are all closed by the **same** packaged-wire
 capture, which is by a wide margin the highest-value single measurement
-remaining for S0. Its prerequisite is t50 defect **HB-4**. NEGATIVE 11 is
-second: it needs no capture protocol change and it decides whether the <1 %
-target is reachable by build cuts at all.
+remaining for S0. Its prerequisite is t50 defect **HB-4**.
 
-Nothing in this document is complete while these are open; each names its owner
-above.
+**NEGATIVE 11 no longer gates the <1 % target.** It was ranked second because a
+10.27 % floor rode on it; that floor does not exist on this capture, so nothing
+in §3.3 or §4F needs it as an additive term. The instrument that would detect a
+real clock skip is landed, and its evidence is **asymmetric**: a nonzero
+`observer_poll_gaps.skips.hours` on any later capture proves clock loss and
+prices the gap it rode on, while a zero covers only the window that was drained
+(11a). A capture that wants the zero to be conclusive needs 11a first.
+
+Nothing in this document is complete while the remaining items are open; each
+names its owner above.
+
+### 6.1 NEGATIVE 6, closed: two instruments, two units, two windows
+
+**Neither counter is wrong and neither needs fixing. Both pairs were compared
+across a unit boundary, and one of them across a window boundary as well.** The
+fix is that the bases are now stated here so they cannot be conflated again.
+Evidence: `extractor/native/runs/hm_s0_units/VERIFY_NEG6.txt`, re-derivable with
+`verify_neg6.py` beside it; source read `codex_neg6_reply.txt`.
+
+**`rs_evicted_pending_hours` 435 vs "backpressure 346" — a pure RECORDS-vs-HOURS
+basis error.** 346 is the number of *coalesced range records* on the wire; the
+same ranges cover **447 hours**. `read_only_scheduler.rs:1387` increments the
+counter once per **hour**, guarded by `index == 0` so it is not once per domain.
+The unit-correct comparison is therefore **435 against 447**, and the source
+states the relation as a **strict subset**, not an equality: `flush_latest_pending`
+and `gap_all_pending` also raise `Backpressure` ranges and count themselves as
+`flushed_pending_hours` / `abandoned_hours`. `435 ≤ 447` is what is required and
+what holds. Both of those siblings read 0, and a MAX fold makes a zero a
+statement about EVERY published probe rather than the last one, so no other
+eviction site published a nonzero anywhere in this capture. What the residual 12
+is made of is not determined: 435 is the largest published sample, not a proven
+capture total (see the §0 note on N).
+
+**`rs_scheduled_hours` 885 vs "805 labelled" — a unit error AND a window error.**
+Unit: one increment is one **admission** of a `CaptureRequest`
+(`read_only_scheduler.rs:1381`), and `observe_stable` admits from four sites — the
+first observation, an ordinary forward advance, a reload (backwards step, which
+re-admits an hour that may already have been scheduled), and a clock-unknown
+recovery (which can re-admit the *same* hour). 805 is the count of **distinct
+labelled hours**. Its same-unit wire comparison is hour outcomes, `459 + 447 =
+906`, not 805. Window: the scheduler starts at `attach_log.rs:2731`, *before*
+`worker_started` and the readiness exchange open the graded interval, so 9 hours
+are admitted before the axis does; and with `rs_finalized = 0` no terminal probe
+was published at all, so 885 is the **largest published sample** of a MAX-folded
+family — under one lifetime that is its last probe, and under several it is the
+largest single-lifetime prefix.
+
+**The 80 is therefore explained in KIND but not decomposed exactly, and an
+earlier draft that decomposed it is withdrawn.** It offered
+`92 in-axis range interiors + 9 pre-axis admissions − 21 post-probe admissions`,
+which reads `906 − 885 = 21` as a tail after one probe. With N unknown that
+subtraction is the difference between a capture-wide outcome count and a maximum
+per-lifetime prefix, which is not a tail and not an addend (Codex round 8). What
+survives is the diagnosis, and it is enough for the purpose: the two numbers
+differ because they count **different things** (admissions vs distinct labelled
+hours) over **different windows** (a lifetime prefix that opens before the axis,
+vs the whole wire), and both differences push in the observed direction. *The one
+measurement that would decompose it:* the scheduler-lifetime count and window
+endpoints named above.
+
+**The trap, and it is the standing one.** `rs_*` and the gap ledger are not two
+readings of one axis. The ledger is a **superset** carrying both host-derived and
+H4DG-projected planes, and the reason string is **not a join key** — which is
+exactly how `skipped_hour` came to be read as a cause in §0. Join by typed origin,
+range and hour, never by reason text. The same pattern sits under three more
+pairs, each a MAX-folded sample against a full-wire figure and none of them a
+defect: `rs_accepted_hours` 448 vs `lane_wall.frames` 459; `rs_degraded_hours`
+208 vs `frame_degraded_record_count` 209; and the shadow family
+(`rs_shadow_hour_edges` 885, `rs_shadow_agreed_evictions` 435) repeating both
+errors under shadow names.
+
+**Standing rule for this document and anything downstream of it: never compare an
+`rs_*` counter with a ledger figure without stating, at the point of use, whether
+each is RECORDS or HOURS, and whether it is the LARGEST PUBLISHED SAMPLE of a
+MAX-folded family or a figure over the whole wire.**
+The one wire field that would make the window self-describing — the first and last
+admitted raw hour, packed as an `rs_*_sample` unit maintained at `enqueue_request`
+with no extra clock read — is specified in `codex_neg6_reply.txt` §4 and is
+**not** built here: it is a scheduler-probe change, and the accounting it would
+guard is now stated above. Residual, owner **unstaffed**.
