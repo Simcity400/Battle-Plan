@@ -7,41 +7,15 @@ autobins = false
 autotests = false
 
 [features]
-default = []
-# Historical process-boundary fixture only. Production uses replay_app's
-# authenticated internal child mode and must never mint or package this binary.
-dev-prefold-worker-bin = []
-# Lane CC size-lever measurement instrument. Builds the certified binary replay
-# artifacts for an existing capture at a chosen checkpoint interval so the
-# checkpoint-density curve can be measured rather than modelled. Never on by
-# default and never packaged.
-# Each of these three instruments installs the same global allocator the
-# production recorder installs (`dep:mimalloc`), so each measures that process
-# and not the Windows system heap; the fold they stand in for is
-# allocation-bound, and the system heap inflates its allocation-heavy phases
-# more than the rest. Allocator choice cannot change a produced byte.
-cc-cache-probe = ["dep:mimalloc"]
-# Lane CE cache-size measurement instrument. Decomposes an already-built
-# checkpoint cache and prices candidate encodings in container bytes. Never on
-# by default and never packaged.
-ce-cache-anatomy = ["snapshot/ce-cache-anatomy", "dep:mimalloc"]
-# Lane CZ finalize-cost measurement instrument. Attributes post-capture finalize
-# wall time to the phases of `build_certified_replay_artifacts` on an existing
-# capture, so the blocker is argued from a profile rather than a model. Never on
-# by default and never packaged.
-cz-finalize-profile = ["dep:mimalloc"]
-# Lane DQ H4CP v3 stage-2 prototype. Runs a canonical-binary section state and
-# mutation journal beside the v2 path on an existing capture and prices both,
-# so the architecture decision rests on a measurement. Never on by default and
-# never packaged; it writes no artifact.
 dq-v3-prototype = ["dep:mimalloc", "dep:fold_v3", "snapshot/dq-v3-prototype"]
-# Lane FR resident-memory instrument. Runs `build_certified_replay_artifacts`
-# on an existing capture under an allocation-tracking allocator and samples the
-# live heap, the OS private bytes and every `recorder_host::mem_account`
-# component on a fixed cadence, so finalize's footprint can be attributed to
-# named owners instead of read off a single process peak. Never on by default
-# and never packaged; it writes no artifact outside the caller's spill dir.
-fr-mem-profile = ["dep:mimalloc", "recorder_host/mem-alloc-trace"]
+default = []
+# The lanes CC / CE / CZ / DQ / FR measurement instruments that used to live
+# here (`cc-cache-probe`, `ce-cache-anatomy`, `cz-finalize-profile`,
+# `dq-v3-prototype`, `fr-mem-profile`) and the `dev-prefold-worker-bin` fixture
+# were retired with their lanes on 2026-08-13. Their published measurements
+# stand in `extractor/documents/DELTA_WIRE_DESIGN.md` and under
+# `extractor/native/runs/`; the code that produced them does not.
+#
 # Lane GQ bad-hour fault-injection harness. Injects one structural fault at a
 # time into an otherwise clean H4CR stream (and into a real retained container)
 # and reports which game hours the REAL production paths still deliver, which
@@ -70,50 +44,14 @@ ha-entry-confinement = []
 hr-truncated-prefix = []
 
 [dependencies]
+# Instrument-only; pulled in solely by the Lane DQ prototype feature.
+mimalloc = { version = "0.1.52", optional = true }
+fold_v3 = { path = "../fold_v3", optional = true }
 compact_stream = { path = "../compact_stream" }
 compact_contract = { path = "../compact_contract" }
 recorder_host = { path = "../recorder_host" }
 snapshot = { path = "../snapshot" }
 serde_json = "1"
-# Instrument-only; pulled in solely by the three instrument features.
-mimalloc = { version = "0.1.52", optional = true }
-# Instrument-only; pulled in solely by the Lane DQ prototype feature.
-fold_v3 = { path = "../fold_v3", optional = true }
-
-[[bin]]
-name = "replay_prefold_worker"
-path = "src/bin/replay_prefold_worker.rs"
-required-features = ["dev-prefold-worker-bin"]
-
-[[bin]]
-name = "cc_cache_probe"
-path = "src/bin/cc_cache_probe.rs"
-required-features = ["cc-cache-probe"]
-
-[[bin]]
-name = "ce_cache_anatomy"
-path = "src/bin/ce_cache_anatomy.rs"
-required-features = ["ce-cache-anatomy"]
-
-[[bin]]
-name = "cz_finalize_profile"
-path = "src/bin/cz_finalize_profile.rs"
-required-features = ["cz-finalize-profile"]
-
-[[bin]]
-name = "dq_v3_prototype"
-path = "src/bin/dq_v3_prototype.rs"
-required-features = ["dq-v3-prototype"]
-
-[[bin]]
-name = "dq_v3_census"
-path = "src/bin/dq_v3_census.rs"
-required-features = ["dq-v3-prototype"]
-
-[[bin]]
-name = "fr_mem_profile"
-path = "src/bin/fr_mem_profile.rs"
-required-features = ["fr-mem-profile"]
 
 [[bin]]
 name = "gq_bad_hour"
@@ -135,7 +73,14 @@ name = "hr_truncated_prefix"
 path = "src/bin/hr_truncated_prefix.rs"
 required-features = ["hr-truncated-prefix"]
 
-[[test]]
-name = "prefold_worker_process"
-path = "tests/prefold_worker_process.rs"
-required-features = ["dev-prefold-worker-bin"]
+# `src/bin/replay_prefold_worker.rs` is deliberately NOT a `[[bin]]` target and
+# `autobins = false` keeps it from becoming one. It is PRODUCTION SOURCE: the
+# shipped recorder `include!`s it (`recorder_host/src/main.rs`) and runs it
+# through `replay_app`'s authenticated internal child mode. It must never be
+# minted or packaged as a standalone executable, which is what declaring a
+# target here would allow.
+
+[[bin]]
+name = "dq_v3_prototype"
+path = "src/bin/dq_v3_prototype.rs"
+required-features = ["dq-v3-prototype"]

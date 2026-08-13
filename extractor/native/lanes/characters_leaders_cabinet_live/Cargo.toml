@@ -7,26 +7,17 @@ edition = "2021"
 name = "characters_leaders_cabinet_live_lane"
 path = "src/lib.rs"
 
-[features]
-replay-verify = ["dep:snapshot"]
+# The `replay-verify` developer tools (`replay_fixture_verify`,
+# `replay_record_verify`) and the optional `snapshot` dependency they were the
+# only consumer of were retired on 2026-08-13. Nothing else in this crate uses
+# the snapshot container reader.
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
-snapshot = { path = "../../snapshot", optional = true }
 
 [[bin]]
 name = "appointed_fixture_gate"
 path = "src/bin/appointed_fixture_gate.rs"
-
-[[bin]]
-name = "replay_fixture_verify"
-path = "src/bin/replay_fixture_verify.rs"
-required-features = ["replay-verify"]
-
-[[bin]]
-name = "replay_record_verify"
-path = "src/bin/replay_record_verify.rs"
-required-features = ["replay-verify"]
 
 [[bin]]
 name = "adapter_fixture_gate"

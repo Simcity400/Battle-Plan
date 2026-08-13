@@ -41,8 +41,8 @@ use super::*;
 /// seam a unit test can drive: it owns a live transport, a hook registry, an
 /// observer thread and a process-global sweep service. The properties asserted
 /// against this text are the ones that are structural -- which arms exist, what
-/// each one does with the outcome it was handed -- and each is paired with a
-/// demonstrated mutation in `terminal_write_path_mutations.py`.
+/// each one does with the outcome it was handed -- and each states, at the
+/// assertion, the production change that would make it fail.
 const COLLECTOR_SOURCE: &str = include_str!("../attach_log.rs");
 
 /// The terminal H4DG publication, comments stripped: from the reservation that

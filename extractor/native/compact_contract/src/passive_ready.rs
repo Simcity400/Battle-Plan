@@ -335,27 +335,6 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         "b17fdbf47dfb9f150b9dd55018b81765b8e3777c42cf64b96bf04a7f3e6cd1fb"
     ),
     pinned_rva!(
-        "gameplay.d57.pause_forced",
-        0xDBE260,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
-    ),
-    pinned_rva!(
-        "gameplay.d57.pause_toggle",
-        0xDC6520,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
-    ),
-    pinned_rva!(
-        "gameplay.d57.speed_setter",
-        0x1EDAD0,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
-    ),
-    pinned_rva!(
         "gameplay.d64.definition_cancel",
         0x6DD7F0,
         5,
@@ -447,13 +426,6 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
     // `selected_designer_identity::a729_hook::PRODUCTION_HOOK_SPECS`, which
     // still carries every RVA, patch length and sentinel, and which an evidence
     // capture still installs from.
-    pinned_rva!(
-        "gameplay.d78.designer_refresh",
-        0x17797A0,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "5e5e3d93a65ddd686cb3828e88035ec2401c4ba870cb5300e762e138bc08e25e"
-    ),
     pinned_rva!(
         "gameplay.d86.attributed_record_writer",
         0x1D2C90,
@@ -592,13 +564,6 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
     // that can see this roster and the lane at once, and is where the equality
     // belongs anyway. The proof digest is SHA-256 over the lane's
     // the five-byte REL5 patch lands on; the same test binds it.
-    pinned_rva!(
-        "gameplay.d99.land_combat_round_entry",
-        0x12A3220,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "e7f71427c3057c7ade226615453c6858a15c7ba1b80737aebe47b7a64e6cba2a"
-    ),
 ];
 
 /// Derived from the sole explicit roster authority above. Never hardcode a
@@ -656,16 +621,34 @@ pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
     // Nothing else changed -- no surviving entry's name, RVA, patch length,
     // primitive, proof or mandatory bit was touched.
     //
+    // 2026-08-13 (second ruling of the same day): recomputed after the FIVE
+    // optional fail-closed companion sites were REMOVED -- `gameplay.d57.*`
+    // (pause_forced, pause_toggle, speed_setter),
+    // `gameplay.d78.designer_refresh` and
+    // `gameplay.d99.land_combat_round_entry`. The owner ruled that a passive
+    // capture installs no optional companion's detour, which is clause 2 of
+    // `crate::production_hook_site_installs`; a roster that still named them
+    // would make `outcomes()` demand receipts nothing mints. d99's site was
+    // briefly deferred by name while another lane had the combat family open,
+    // which is why the digest below is the SECOND recomputation of the day for
+    // this ruling; the interim 46-spec value is listed under prior values.
+    // Nothing else changed -- no surviving entry's name, RVA, patch length,
+    // primitive, proof or mandatory bit was touched.
+    //
     // Recomputed by this crate's own `hook_allowlist_sha256` encoder over the
     // new spec list, via `pinned_allowlist_literal_matches_the_encoder`, and
     // independently by `PassiveCapture.Lifecycle.ps1`'s
     // `Get-PassivePinnedHookAllowlistAuthorityFromSource` -- which re-derives
     // the roster from THIS FILE'S TEXT by regex and encodes the preimage in
-    // PowerShell. The two agree at 50 specs (2 import + 48 RVA), which is the
+    // PowerShell. The two agree at 45 specs (2 import + 43 RVA), which is the
     // check that matters here: the out-of-tree encoder is the one that fails a
     // live capture with `canonical_hook_authority_roster_count_mismatch` when
     // it drifts, and it saw the same roster this crate compiles.
     // Prior values for this roster, newest first:
+    //   4624f87dd3a2b8340f692a3b5bc2279a6c79d62e6c347129855873c1b77b4c3c
+    //     (46 specs: the d57 and d78 sites out, d99 still deferred)
+    //   3b0f8fff486771b865cc0970f1b7faa8e2600aae7bb5620c949d0d2fac9eb40d
+    //     (before the four optional-companion sites were ruled out)
     //   d26ff16a5e307f3ba7fa7774a82ab2bb0287280f9b75b322e64c1be2c4af6207
     //     (before d85's seven sites were descheduled out of the roster)
     //   d22f46e7a255f74366be4075f8ddd16210fbea9f945a551116cc5fe668720bfe
@@ -686,7 +669,7 @@ pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
     //     minhook-0.9.0.normal-jmp-rel5, to the primitive the provider
     //     actually installs, patch_len 8
     //     pe64.import-address-slot.atomic-cas.v1)
-    digest_from_hex("3b0f8fff486771b865cc0970f1b7faa8e2600aae7bb5620c949d0d2fac9eb40d");
+    digest_from_hex("54348f3d32277a114474c0a2b667ddf32cab6388adfd2a42500cac79ea8eaa79");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
@@ -705,11 +688,16 @@ pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError>
 /// at those addresses. This roster is what the host reads instead, so "not
 /// installed" stays an independent observation of the target's own memory.
 ///
-/// These are the seven `gameplay.d85.*` sites, unchanged from when they were
-/// pinned as installable: the RVAs, patch lengths, primitive and proof digests
-/// are the same literals, still equal to
-/// `design_catalog_context_live_lane::selected_designer_identity::a729_hook::PRODUCTION_HOOK_SPECS`
-/// field for field, and still bound to it by the collector-side
+/// Twelve sites, arriving by the two different removal authorities of
+/// [`crate::production_hook_site_installs`] and grouped that way below: the
+/// seven `gameplay.d85.*` sites the owner DESCHEDULED on 2026-08-13, and the
+/// five optional fail-closed companion sites (d57 ×3, d78 ×1, d99 ×1) the owner
+/// ruled out of a passive capture the same day.
+///
+/// Every one is unchanged from when it was pinned as installable: the RVAs,
+/// patch lengths, primitive and proof digests are the same literals, still
+/// equal to their own lane's `PRODUCTION_HOOK_SPECS` field for field, and still
+/// bound to it by the collector-side
 /// `the_recovered_domain_specs_match_their_lanes_hook_authority`. Nothing about
 /// the RE evidence changed; what changed is which side of the contract they sit
 /// on.
@@ -771,6 +759,59 @@ pub const FORBIDDEN_PASSIVE_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpec
         5,
         MINHOOK_NORMAL_REL5,
         "77fc7a5ef65dc0f4739157a8a698f10a46bb4d58b0663e7583c9721504753a7f"
+    ),
+    // ---- The optional fail-closed companions, owner ruling 2026-08-13 -------
+    //
+    // These four arrived here by the SECOND removal authority, not by a
+    // deschedule: their domains are optional fail-closed companions, so a
+    // passive capture never schedules them and patching the game for reads
+    // nobody takes is cost with no product behind it. See
+    // `crate::production_hook_site_installs` clause 2. As with the d85 block
+    // above, every literal is unchanged from when the site was installable --
+    // the RE evidence did not move, only which side of the contract it sits on
+    // -- and the lanes that minted them still carry them:
+    // `session_multiplayer_metadata_live`'s `x12_a729_hook` for the three d57
+    // sites, `design_catalog_context_live`'s `a729_hook` for d78's.
+    //
+    // All FIVE sites the ruling covers are here. d99's arrived last: it was
+    // deferred by name in
+    // `crate::OPTIONAL_COMPANION_SITES_DEFERRED_TO_ACTIVE_LANES` while another
+    // lane had the combat family open, and moved the moment that lane landed
+    // without having touched d99. That constant is now empty.
+    pinned_rva!(
+        "gameplay.d57.pause_forced",
+        0xDBE260,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
+    ),
+    pinned_rva!(
+        "gameplay.d57.pause_toggle",
+        0xDC6520,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
+    ),
+    pinned_rva!(
+        "gameplay.d57.speed_setter",
+        0x1EDAD0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
+    ),
+    pinned_rva!(
+        "gameplay.d78.designer_refresh",
+        0x17797A0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "5e5e3d93a65ddd686cb3828e88035ec2401c4ba870cb5300e762e138bc08e25e"
+    ),
+    pinned_rva!(
+        "gameplay.d99.land_combat_round_entry",
+        0x12A3220,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "e7f71427c3057c7ade226615453c6858a15c7ba1b80737aebe47b7a64e6cba2a"
     ),
 ];
 
@@ -2191,6 +2232,105 @@ mod pinned_bootstrap_import_primitive {
                 "{malformed} must be refused rather than silently skipped"
             );
         }
+    }
+
+    /// Law: the optional-companion ruling of 2026-08-13 is APPLIED, and the one
+    /// site it has not reached yet is named rather than forgotten.
+    ///
+    /// The ruling takes every optional fail-closed companion's producer detour
+    /// out of a passive capture. Applying it left exactly one deviation:
+    /// `gameplay.d99.land_combat_round_entry` was in another lane's active
+    /// combat-family work at the time, so it is still pinned and is listed by
+    /// name in `crate::OPTIONAL_COMPANION_SITES_DEFERRED_TO_ACTIVE_LANES`.
+    ///
+    /// A deferral is only honest while somebody is still made to look at it, so
+    /// this test asserts BOTH directions and neither is decoration:
+    ///
+    ///   * every deferred name is a real companion site that is really still
+    ///     pinned -- otherwise the list is a stale string keeping a `true` arm
+    ///     alive in the install rule over a site nobody patches;
+    ///   * every OTHER companion site is gone from the pinned roster -- which is
+    ///     what stops the deferral being quietly widened into "the ruling was
+    ///     never applied".
+    ///
+    /// kills: adding a name to the deferred list to make a roster edit pass;
+    /// re-pinning any `gameplay.d57.*` or `gameplay.d78.*` site; deleting d99's
+    /// site from the pinned roster without also emptying the deferred list, which
+    /// would leave `production_hook_site_installs` answering `true` for a site
+    /// that is not installable.
+    #[test]
+    fn the_optional_companion_ruling_is_applied_except_where_it_is_named() {
+        use super::{PinnedHookProducer, PINNED_PRODUCTION_HOOK_SPECS_V1};
+
+        let pinned: Vec<&str> = PINNED_PRODUCTION_HOOK_SPECS_V1
+            .iter()
+            .map(|spec| spec.logical_name)
+            .collect();
+
+        for deferred in crate::OPTIONAL_COMPANION_SITES_DEFERRED_TO_ACTIVE_LANES {
+            let producer = super::pinned_hook_producer(deferred)
+                .expect("a deferred site names its producer");
+            let PinnedHookProducer::Domain(id) = producer else {
+                panic!("{deferred} is a bootstrap hook and no companion ruling reaches it");
+            };
+            assert!(
+                crate::is_optional_fail_closed_companion(id),
+                "{deferred} is deferred from the optional-companion ruling but d{id} \
+                 is not an optional companion, so no ruling covers it"
+            );
+            // A deferred site whose domain has since been descheduled AND has
+            // nothing holding it is a deviation that has outlived the only
+            // ruling it was ever a deviation from: the install rule reads the
+            // deschedule first, so the site is already out and the name here
+            // describes nothing. That is how a carve-out becomes permanent by
+            // accident.
+            //
+            // The HOLD is why this is not simply "not descheduled". A site can
+            // legitimately be a companion's, descheduled, deferred AND held by
+            // a scheduled domain all at once -- the live hold defeats clause 1
+            // and the deferral defeats clause 2, and
+            // `production_hook_site_installs` rightly answers `true`. Asserting
+            // the stronger form would order the deferral deleted and let clause
+            // 2 remove a site its holder still needs.
+            assert!(
+                !crate::is_descheduled_from_capture(id)
+                    || crate::descheduled_hook_site_prerequisite(deferred).is_some(),
+                "d{id} has been descheduled with nothing holding {deferred}, so the \
+                 deschedule authority already removes it and this deferral no longer \
+                 defers anything -- delete the entry rather than leaving a carve-out \
+                 that describes nothing"
+            );
+            assert!(
+                pinned.contains(deferred),
+                "{deferred} is deferred, which means STILL INSTALLED -- but it is not \
+                 in the pinned roster, so the install rule answers `true` for a site \
+                 the capture would then refuse as unpinned"
+            );
+        }
+
+        // And every companion site the deferral does NOT name must be gone.
+        let still_pinned: Vec<&str> = pinned
+            .iter()
+            .copied()
+            .filter(|name| {
+                if crate::OPTIONAL_COMPANION_SITES_DEFERRED_TO_ACTIVE_LANES.contains(name) {
+                    return false;
+                }
+                match super::pinned_hook_producer(name) {
+                    Ok(PinnedHookProducer::Domain(id)) => {
+                        crate::is_optional_fail_closed_companion(id)
+                    }
+                    Ok(PinnedHookProducer::Bootstrap) => false,
+                    Err(error) => panic!("the companion ruling cannot judge {name}: {error}"),
+                }
+            })
+            .collect();
+        assert!(
+            still_pinned.is_empty(),
+            "the owner ruled every optional fail-closed companion's detour out of a \
+             passive capture on 2026-08-13, and these are still pinned without being \
+             named as deferred: {still_pinned:?}"
+        );
     }
 
     /// Law: the two rosters are disjoint, and every site removed by a

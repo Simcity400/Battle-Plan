@@ -926,14 +926,6 @@
       "world_fold.rs:6799-6803": 1,
       "xui20_replay_admission.rs:311-314": 1
     },
-    "TERMINAL_WRITE_PATH_NOTES.md": {
-      "attach_log.rs:33226": 1,
-      "extractor/native/collector/src/attach_log.rs:1344": 1,
-      "extractor/native/lanes/fired_event_popups_live/src/a729_runtime.rs:1111": 1
-    },
-    "WRITE_RECEIPT_NOTES.md": {
-      "lanes/fired_event_popups_live/src/a729_runtime.rs:1111": 1
-    },
     "extractor/documents/AUTO_ATTACH_DESIGN.md": {
       "extractor/native/recorder_host/src/modset.rs:328-420": 1,
       "extractor/native/recorder_host/src/modset.rs:353-376": 1,
@@ -1535,10 +1527,6 @@
       "game_ui/src/active_abilities.rs:1091-1101": 1,
       "game_ui/src/active_abilities.rs:2681": 1,
       "game_ui/tests/production_renderer.rs:429-431": 1
-    },
-    "extractor/native/scripts/Measure-AutoAttachIdleCost.ps1": {
-      "auto_attach.rs:116-119": 1,
-      "recorder_host/src/auto_attach/policy.rs:18-80": 1
     },
     "extractor/native/scripts/c0_domain_census.py": {
       "lib.rs:132-226": 1

@@ -122,6 +122,49 @@ mis-scope first.
 scheduled. d95 in particular is in-scope class A, and d97 already publishes a clean `SOURCE_EMPTY` for
 its own idle state — exactly the vocabulary d85 lacks.
 
+### Optional companions patch nothing, owner decision 2026-08-13
+
+**A passive capture installs no optional fail-closed companion's producer detour.** The companions are
+`compact_contract::OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS` — d57, d78, d84, d98, d99 — domains kept
+out of the mandatory production profile and never scheduled by
+`compact_contract::passive_production_roster()`. Three of them owned pinned detours a shipped capture
+patched in anyway: d57's three (`pause_forced`, `pause_toggle`, `speed_setter`), d78's one
+(`designer_refresh`) and d99's one (`land_combat_round_entry`). Five detours in a player's game, for
+reads nobody takes.
+
+This is a **second, separate removal authority**, not an extension of the deschedule. A deschedule says
+the owner ruled a domain out of the product; this says a domain a passive capture never schedules should
+not be patching the game. Both live in `compact_contract::production_hook_site_installs`, as two clauses
+of one rule rather than a list of exceptions, so a domain later promoted out of the companion set gets
+its detours back without anyone editing anything. The companion clause deliberately does **not** consult
+`DESCHEDULED_DOMAIN_HOOK_PREREQUISITES`: a hold exists so a *scheduled* domain can keep a descheduled
+one's site alive, and a companion is by construction not scheduled, so it can hold nothing.
+
+Same treatment as d85's seven: the addresses move to
+`compact_contract::passive_ready::FORBIDDEN_PASSIVE_PRODUCTION_HOOK_SPECS_V1` unchanged field for field,
+so the recorder host still baselines them before injection and re-reads them at READY and at teardown,
+and "not installed" stays an observation of the game's own memory. Their lanes keep every RVA, patch
+length and sentinel, and an evidence capture still installs them.
+
+`StandardHookReceiptGroup::D57`, `::D78` and `::D99` are gone with their sites — a group owning no site
+installs nothing — and the pinned roster went 50 → 45, moving `allowed_hook_count` and the allowlist
+digest together.
+
+**All five are out.** d99's went last: while the ruling was being applied another lane had the
+d21/d49/d50/d55/d99 combat family open, so `gameplay.d99.land_combat_round_entry` was deferred BY NAME in
+`compact_contract::OPTIONAL_COMPANION_SITES_DEFERRED_TO_ACTIVE_LANES` rather than by silence, and moved
+the moment that lane landed without having touched d99. That constant is now empty and is kept empty: a
+deferral is a deviation from the law rather than a clause of it, and the shape — read only inside clause
+2, held to being a real companion site that is really still pinned — is what the next lane needing one
+should inherit instead of inventing a carve-out under time pressure.
+
+Two consequences of d99 in particular. Its `uninstall` SEALS the producer rather than disarming it, so
+the forbidden-site refusal calls its ABORT, which discards the queued combat rounds with an exact count —
+the only honest thing to do with rows whose frame was never going to exist. And
+`CUSTODY_OUTLIVES_UNINSTALL`, the collector roster of lanes whose custody outlives their detour, had d99
+as its only member; it is now empty, kept rather than deleted for the same reason the forbidden roster
+existed at length zero before d85 was descheduled into it.
+
 A domain that was deliberately not scheduled must never be indistinguishable from one that failed to
 produce. The set is owned by `compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS`, mirrored into
 `extractor/native/domain_registry.json` as `capture_scheduled: false`, and published positively into

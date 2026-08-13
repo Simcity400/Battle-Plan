@@ -4246,12 +4246,6 @@ pub fn seek_to_hour(
     found.ok_or(SeekError::HourNotFound(target))
 }
 
-/// Lane CZ finalize-cost measurement instrument. Never on by default and never
-/// packaged; it exists so the post-capture finalize's wall time is attributed
-/// to phases from a run rather than argued from a model.
-#[cfg(feature = "cz-finalize-profile")]
-pub mod cz_finalize_profile;
-
 /// Lane DQ H4CP v3 stage-2 prototype. Never on by default and never packaged; it
 /// runs a canonical-binary section state and mutation journal beside the v2 path
 /// on a real capture so the architecture decision is taken from a measurement
@@ -4259,19 +4253,10 @@ pub mod cz_finalize_profile;
 #[cfg(feature = "dq-v3-prototype")]
 pub mod dq_v3_prototype;
 
-/// Lane EE stage-1 density census: how many grains each top-level member of the
-/// world document actually moves per hour, at each candidate grain depth. It is
-/// what fixes the order the remaining sections are converted in, and it shares
-/// no code with the prototype's timed regions.
-#[cfg(feature = "dq-v3-prototype")]
-pub mod dq_v3_census;
-
-/// Lane FR resident-memory measurement instrument. Never on by default and
-/// never packaged; it exists so finalize's footprint is attributed to named
-/// owners from a run, and so the always-on component table has an oracle (the
-/// allocator's own live-heap total) to be checked against.
-#[cfg(feature = "fr-mem-profile")]
-pub mod fr_mem_profile;
+// The lanes CZ, DQ, EE and FR measurement instruments used to be declared here
+// behind `cz-finalize-profile`, `dq-v3-prototype` and `fr-mem-profile`. They
+// were retired with their lanes on 2026-08-13; their published measurements
+// stand in `extractor/documents/` and under `extractor/native/runs/`.
 
 #[cfg(test)]
 mod tests;

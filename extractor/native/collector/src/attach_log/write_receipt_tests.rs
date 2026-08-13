@@ -180,9 +180,10 @@ fn a_receipt_numbers_the_frame_from_the_bytes_the_sinks_accepted() {
 /// no value in them to take a receipt out of, so a commit cannot be written
 /// there at all.
 ///
-/// The runtime half of that is here; the compile half is
-/// `write_receipt_mutations.py` W3, which puts a commit into the `RolledOver`
-/// arm and gets `cannot find value` from rustc.
+/// The runtime half of that is here; the compile half needs no test, because
+/// it is not expressible: writing a commit inside the `RolledOver` arm has no
+/// binding to take a receipt out of, so rustc answers `cannot find value` and
+/// the shape never reaches a test run at all.
 #[test]
 fn a_not_written_verdict_carries_nothing_to_commit_with() {
     let path = temp_stream_path("not_written");

@@ -14,9 +14,10 @@ Current extraction completion status lives in
   canonical record flags and types, one exactly matching PERF/DATA pair per
   owned hour, FRAME_END counts bound to the observed frame records, nonfatal
   status, consecutive closed hours, and a final FRAME_END.
-- `replay_fixture_verify` creates a synthetic closed fixture stream, and
-  `replay_record_verify` wraps one DATA record or payload in a synthetic closed
-  envelope. Their reports use
-  `container_integrity_verified_non_certifying`: they prove replay-container
-  integrity and byte identity only. They do not certify source ordering,
-  unique source hours, live capture, cadence, or production readiness.
+- The `replay-verify` developer tools (`replay_fixture_verify`,
+  `replay_record_verify`) were retired on 2026-08-13. They were
+  non-certifying — their reports read
+  `container_integrity_verified_non_certifying` and proved replay-container
+  integrity and byte identity only, never source ordering, unique source hours,
+  live capture, cadence, or production readiness — so nothing that certifies
+  anything depended on them.

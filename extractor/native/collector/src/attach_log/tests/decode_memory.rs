@@ -183,7 +183,12 @@ fn no_generic_decode_body_reaches_the_live_process_by_name() {
         "LIVE_MEMORY",
         "LiveMemory",
         "Domain47InProcessMemory",
-        "Domain47SnapshotMemory",
+        // The surviving live-process `SnapshotMemory`. `Domain47SnapshotMemory`
+        // stood here until d47's copy bracket was retired on 2026-08-13; the
+        // entry is renamed rather than dropped because the name this blacklist
+        // has to catch is whichever adapter still bottoms out in `read_into`,
+        // and a blacklist entry for a deleted type is a check that cannot fail.
+        "Domain81SnapshotMemory",
     ];
     // THE SCAN IS TRANSITIVE. Scanning the generic bodies alone is evaded by
     // one level of indirection — a generic body calling a pure-looking helper
@@ -2213,7 +2218,7 @@ fn a_held_snapshot_is_the_source_of_the_header_not_the_process() {
 /// divergence to the admitting direction without anyone deciding to.
 #[test]
 fn a_view_read_spanning_two_transactions_refuses_and_that_is_a_known_loss() {
-    use crate::attach_log::d47_copy_bracket::Domain47SnapshotMemory;
+    use crate::attach_log::d81_copy_bracket::Domain81SnapshotMemory;
     use crate::snapshot_recipes::executor::{observe, ObservationConfig, Recipe, RecipeOp, Root};
     use crate::snapshot_recipes::view::ViewRefusal;
     use crate::snapshot_recipes::{ConsumerId, HourStamp, RecipeId, Span};
@@ -2246,7 +2251,7 @@ fn a_view_read_spanning_two_transactions_refuses_and_that_is_a_known_loss() {
     };
     let build = observe(
         &[leg(RecipeId(150), addr), leg(RecipeId(151), addr + 8)],
-        &Domain47SnapshotMemory,
+        &Domain81SnapshotMemory,
         ObservationConfig::new(HOUR),
     )
     .expect("the fixture is far inside the custody ceiling");
@@ -2327,7 +2332,7 @@ fn a_view_read_spanning_two_transactions_refuses_and_that_is_a_known_loss() {
 /// common than the two-recipe case and would raise the residual's urgency.
 #[test]
 fn within_one_recipe_adjacent_copies_coalesce_and_holes_refuse_on_both_forms() {
-    use crate::attach_log::d47_copy_bracket::Domain47SnapshotMemory;
+    use crate::attach_log::d81_copy_bracket::Domain81SnapshotMemory;
     use crate::snapshot_recipes::executor::{observe, ObservationConfig, Recipe, RecipeOp, Root};
     use crate::snapshot_recipes::{ConsumerId, HourStamp, RecipeId};
 
@@ -2368,7 +2373,7 @@ fn within_one_recipe_adjacent_copies_coalesce_and_holes_refuse_on_both_forms() {
         );
         let build = observe(
             &[plan],
-            &Domain47SnapshotMemory,
+            &Domain81SnapshotMemory,
             ObservationConfig::new(HOUR),
         )
         .expect("the fixture is far inside the custody ceiling");
@@ -2452,7 +2457,7 @@ fn within_one_recipe_adjacent_copies_coalesce_and_holes_refuse_on_both_forms() {
 /// range rule diverging from `read_into`'s.
 #[test]
 fn the_portrait_decode_reads_the_same_identities_off_a_copy_as_off_the_engine() {
-    use crate::attach_log::d47_copy_bracket::Domain47SnapshotMemory;
+    use crate::attach_log::d81_copy_bracket::Domain81SnapshotMemory;
     use crate::snapshot_recipes::executor::{
         observe, ExtentGuard, ObservationConfig, Recipe, RecipeOp, Root,
     };
@@ -2502,8 +2507,8 @@ fn the_portrait_decode_reads_the_same_identities_off_a_copy_as_off_the_engine() 
         // THE COPY PLAN. Two ops and no decisions: the entry body, and the
         // payload as a guarded extent whose guard is the capacity word (below
         // 16 the characters are inside the body already copied, so the branch
-        // ends without a dereference — the same rule `d47_copy_bracket`'s
-        // `string_extent` states).
+        // ends without a dereference — the `_Myres >= 16` rule every MSVC
+        // string extent in this substrate is built on).
         let plan = Recipe::new(
             PLAN,
             CONSUMER,
@@ -2539,7 +2544,7 @@ fn the_portrait_decode_reads_the_same_identities_off_a_copy_as_off_the_engine() 
         page_cache_new_frame();
         let build = observe(
             &[plan],
-            &Domain47SnapshotMemory,
+            &Domain81SnapshotMemory,
             ObservationConfig::new(HOUR),
         )
         .expect("the fixture is far inside the custody ceiling");
@@ -2644,7 +2649,7 @@ fn the_portrait_decode_reads_the_same_identities_off_a_copy_as_off_the_engine() 
 /// law and this states as behaviour.
 #[test]
 fn a_decode_over_the_copy_cannot_see_a_write_made_after_the_bracket() {
-    use crate::attach_log::d47_copy_bracket::Domain47SnapshotMemory;
+    use crate::attach_log::d81_copy_bracket::Domain81SnapshotMemory;
     use crate::snapshot_recipes::executor::{
         observe, ExtentGuard, ObservationConfig, Recipe, RecipeOp, Root,
     };
@@ -2694,7 +2699,7 @@ fn a_decode_over_the_copy_cannot_see_a_write_made_after_the_bracket() {
 
     let build = observe(
         &[plan_for(entry.addr() as u64)],
-        &Domain47SnapshotMemory,
+        &Domain81SnapshotMemory,
         ObservationConfig::new(HOUR),
     )
     .expect("the fixture is far inside the custody ceiling");
@@ -2752,7 +2757,7 @@ fn a_decode_over_the_copy_cannot_see_a_write_made_after_the_bracket() {
 
     let build = observe(
         &[plan_for(entry.addr() as u64)],
-        &Domain47SnapshotMemory,
+        &Domain81SnapshotMemory,
         ObservationConfig::new(HOUR),
     )
     .expect("the fixture is far inside the custody ceiling");
@@ -2822,7 +2827,7 @@ fn a_decode_over_the_copy_cannot_see_a_write_made_after_the_bracket() {
 
     let build = observe(
         &[plan_for(entry.addr() as u64)],
-        &Domain47SnapshotMemory,
+        &Domain81SnapshotMemory,
         ObservationConfig::new(HOUR),
     )
     .expect("the fixture is far inside the custody ceiling");
@@ -2874,8 +2879,9 @@ fn a_decode_over_the_copy_cannot_see_a_write_made_after_the_bracket() {
 /// A `SnapshotViewMemory` can only ever produce the first. Its
 /// `bytes_with_reason` returns `ZeroLength` or `OutsideConfirmedRanges` and
 /// nothing else, because the cause is already gone by the time a `ViewRefusal`
-/// exists: `Domain47SnapshotMemory::copy_into` reduces both live failures to an
-/// untyped `MemoryRefusal` during the bracket.
+/// exists: a live-process `SnapshotMemory::copy_into` (`Domain81SnapshotMemory`
+/// is the surviving one) reduces both live failures to an untyped
+/// `MemoryRefusal` during the bracket.
 ///
 /// So this states the divergence rather than papering over it: for a payload
 /// the engine refused AFTER confirming its range, the post-bracket decode

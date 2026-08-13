@@ -10,9 +10,14 @@ path = "src/lib.rs"
 [features]
 # Declared, never enabled, and deliberately empty in the production workspace.
 #
-# `src/a729_hook/a25_gui_bridge.rs` is shared verbatim with the standalone
-# reverse-engineering harness at
+# `src/a729_hook/a25_gui_bridge.rs` — that ONE file, not the `a729_hook` family
+# around it — is shared verbatim with the standalone reverse-engineering
+# harness at
 # `extractor/re_evidence/PRODUCTION_RENDER_SUBMIT_INLINE_HOOKS/hook_harness/`.
+# The harness manifest is the authority on which paths are byte-identical, and
+# it lists `a729_hook.rs` itself as one of two INTENTIONALLY DIVERGENT paths: a
+# direct diff of the two copies is 582 insertions / 728 deletions. Read the
+# sentence below as covering `a25_gui_bridge.rs` only.
 # The inline-hook installer in that file (`install`, `uninstall`, and the four
 # `hook_*` trampolines) is RE evidence and is gated behind this feature so it
 # compiles only in the harness. Declaring the feature here keeps the `cfg`

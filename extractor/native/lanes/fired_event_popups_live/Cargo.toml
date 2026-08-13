@@ -8,9 +8,12 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Diagnostic-only reproduction of the historical popup/UI hook graph. Shipped
-# production capture uses only the three semantic detours.
-unshipped-d75-full-evidence = []
+# `unshipped-d75-full-evidence` — the diagnostic reproduction of the historical
+# popup/UI hook graph — was retired on 2026-08-13. Its seven gates read
+# `any(test, feature = "unshipped-d75-full-evidence")` and are now plain
+# `cfg(test)`, so the code keeps every test that covered it and NO non-test
+# build can carry the historical graph any more. Shipped production capture
+# uses only the three semantic detours, as it always did.
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

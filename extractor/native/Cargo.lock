@@ -130,7 +130,6 @@ name = "characters_leaders_cabinet_live"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
- "snapshot",
 ]
 
 [[package]]

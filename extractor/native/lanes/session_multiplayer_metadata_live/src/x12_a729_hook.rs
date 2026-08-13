@@ -102,6 +102,39 @@ static ORIGINAL_PAUSE_TOGGLE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_PAUSE_FORCED: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+/// One-way latch: a removal or rollback ran and could NOT be proved to have
+/// finished.
+///
+/// `INSTALLED` alone is a one-sided answer and always was. FOUR paths store or
+/// leave `false` in it while sites may still be created, enabled or
+/// unwitnessed, and every one of them sets this latch:
+///
+///  1. `seal_after_final_drain_and_uninstall_inner`, receipt-owned removal
+///     failing partway -- some of the three sites may still be patched;
+///  2. the same function, `observe_release_receipts` failing after every target
+///     came out -- the bytes are gone but nothing witnessed it;
+///  3. the same function's PARTIAL-DISABLE restore path, when the restore or
+///     its receipt re-observation fails -- the set is neither cleanly installed
+///     nor cleanly removed;
+///  4. `with_rollback_result` receiving `Err` -- the rollback failed to
+///     establish a COMPLETE, WITNESSED undo. That covers two different states
+///     and the latch is deliberately set for both: sites may still be created
+///     or enabled (removal did not happen), or removal succeeded and the
+///     EVIDENCE for it is missing -- sentinel verification or release-receipt
+///     observation can fail after every site is out. `INSTALLED` is no guide to
+///     which: most of these paths leave it false, while `rollback_enabled`'s
+///     retryable-receipt branch deliberately leaves it TRUE because every
+///     detour is still enabled and owned and no site may be removed until the
+///     exact installed roster exists. This latch does not track `INSTALLED`, it
+///     tracks what is still OWED -- cleanup, proof, or both.
+///
+/// Anything asking "may a D57 detour still be executing" has to read this as
+/// well as `installed()`, which is what `release_pending` is for.
+///
+/// Cleared only by a removal that reaches the end with no errors, or by a fresh
+/// successful install -- which is safe because unresolved module or receipt
+/// custody stops that success from being reached. Never cleared by an observer.
+static REMOVAL_UNPROVED: AtomicBool = AtomicBool::new(false);
 static ACCEPTING_CALLBACKS: AtomicBool = AtomicBool::new(false);
 static CALLBACKS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static TERMINAL_SEALED: AtomicBool = AtomicBool::new(false);
@@ -427,6 +460,9 @@ pub fn install() -> Result<InstalledAddresses, String> {
         return Err(with_rollback_result(reason, rollback_enabled(&addresses)));
     }
     INSTALLED.store(true, Ordering::Release);
+    // A fresh install supersedes any earlier unproved removal: these are new
+    // hooks with new receipts, and the debt was about the old ones.
+    REMOVAL_UNPROVED.store(false, Ordering::Release);
     Ok(addresses)
 }
 
@@ -601,6 +637,13 @@ fn seal_after_final_drain_and_uninstall_locked(
         if fully_reenabled {
             INSTALLED.store(true, Ordering::Release);
             ACCEPTING_CALLBACKS.store(true, Ordering::Release);
+        } else {
+            // NOT fully restored, and `INSTALLED` is being left FALSE over a set
+            // that is neither cleanly installed nor cleanly removed: some sites
+            // are disabled, some are patched, and if the receipt re-observation
+            // is what failed then nothing has witnessed which is which. An
+            // observer reading `installed()` alone would call that absent.
+            REMOVAL_UNPROVED.store(true, Ordering::Release);
         }
         return Err(errors.join("; "));
     }
@@ -702,6 +745,10 @@ fn seal_after_final_drain_and_uninstall_locked(
         // another teardown attempt. Never advertise a partially removed set as
         // a live installation.
         INSTALLED.store(false, Ordering::Release);
+        // ... but do not let that read as "provably absent" either. Some of the
+        // three sites may still be patched, and `installed()` is about to say
+        // false over them.
+        REMOVAL_UNPROVED.store(true, Ordering::Release);
         return Err(errors.join("; "));
     }
 
@@ -710,6 +757,10 @@ fn seal_after_final_drain_and_uninstall_locked(
         Err(error) => {
             errors.push(format!("X12 hook release receipt failed: {error}"));
             INSTALLED.store(false, Ordering::Release);
+            // The bytes are out -- every target above removed cleanly -- but
+            // nothing WITNESSED it. An unwitnessed removal is exactly the state
+            // this latch exists to keep visible.
+            REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(errors.join("; "));
         }
     }
@@ -720,6 +771,10 @@ fn seal_after_final_drain_and_uninstall_locked(
     MODULE_BASE.store(0, Ordering::Release);
     TERMINAL_SEALED.store(false, Ordering::Release);
     if errors.is_empty() {
+        // Removed, and witnessed. This is the ONLY place the debt is cleared by
+        // a removal, and it is reached only when every target came out and
+        // `observe_release_receipts` succeeded.
+        REMOVAL_UNPROVED.store(false, Ordering::Release);
         Ok(())
     } else {
         Err(errors.join("; "))
@@ -728,6 +783,20 @@ fn seal_after_final_drain_and_uninstall_locked(
 
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
+}
+
+/// Whether a removal is still owed a proof.
+///
+/// The companion to [`installed`], and the reason a caller must read BOTH. This
+/// lane clears `INSTALLED` on the way out of a removal that failed partway and
+/// on the way out of one whose release receipts could not be observed, so
+/// `installed()` answers false in two states where a detour may still be
+/// executing or where nothing witnessed it leaving. Same primitive D45 and D78
+/// carry; this lane did without one until 2026-08-13, which is why it was the
+/// one receipt group that could not answer
+/// `GROUPS_THAT_ANSWER_UNPROVED_CLEANUP` truthfully.
+pub fn release_pending() -> bool {
+    REMOVAL_UNPROVED.load(Ordering::Acquire)
 }
 
 pub fn activation_enabled() -> bool {
@@ -1499,10 +1568,27 @@ fn wait_for_callback_quiescence(stage: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Formats an install failure together with the outcome of its safe rollback --
+/// and records the DEBT when that rollback failed.
+///
+/// Every install-time rollback in this module funnels through here, and a
+/// rollback that returned `Err` failed to establish a complete, witnessed undo:
+/// either detours remain, or they are out and the evidence of their removal is
+/// missing (sentinel verification and release-receipt observation can both fail
+/// after every site has come out). Either way something is OWED, which is what
+/// `REMOVAL_UNPROVED` records, and `INSTALLED` is no guide to which -- most of
+/// these paths leave it false, while `rollback_enabled`'s retryable-receipt
+/// branch deliberately leaves it TRUE so no site is removed before the exact
+/// installed roster exists. Setting the latch here rather than at each caller
+/// is deliberate: this function is the one thing every rollback path already
+/// has in common, so a new install-failure exit cannot forget it.
 fn with_rollback_result(reason: String, rollback: Result<(), String>) -> String {
     match rollback {
         Ok(()) => reason,
-        Err(error) => format!("{reason}; safe rollback failed: {error}"),
+        Err(error) => {
+            REMOVAL_UNPROVED.store(true, Ordering::Release);
+            format!("{reason}; safe rollback failed: {error}")
+        }
     }
 }
 
