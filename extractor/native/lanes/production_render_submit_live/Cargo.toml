@@ -30,6 +30,7 @@ portable_render_stream = { path = "../../../../portable_replay/native/render_str
 portable_content_manifest = { path = "../../../../portable_replay/native/content_manifest" }
 production_render_catalog_capture_contract = { path = "../production_render_catalog_capture_contract" }
 compact_contract = { path = "../../compact_contract" }
+map_passive_carriers_live_lane = { path = "../map_passive_carriers_live" }
 runtime_text_inputs_live_lane = { path = "../runtime_text_inputs_live" }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

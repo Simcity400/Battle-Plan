@@ -619,6 +619,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "map_passive_carriers_live_lane"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "market_trade_live_lane"
 version = "0.1.0"
 dependencies = [
@@ -839,6 +849,7 @@ name = "production_render_submit_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "map_passive_carriers_live_lane",
  "png",
  "portable_content_manifest",
  "portable_render_stream",

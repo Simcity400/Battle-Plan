@@ -78,6 +78,7 @@ members = [
     "lanes/xui26_frontend",
     "lanes/victory_points",
     "lanes/postfx_exposure",
+    "lanes/map_passive_carriers_live",
 ]
 
 # Fail-closed doctrine for all untrusted compact-stream, replay-container, and
