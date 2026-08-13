@@ -26091,12 +26091,63 @@ fn d43_fold_refuses_a_payload_whose_two_trailers_state_different_widths() {
 /// and outside `record_framing_damage`. That is exactly the mutation
 /// `fold_check`'s gate is proven against, and this test is what stops it
 /// appearing on a domain that gate does not cover.
+///
+
+/// # THE SCAN READS CODE, BECAUSE THE COMMENTS ARE BLANKED FIRST
+///
+/// The rule is about code, but the file is text and the field is named in
+/// COMMENTS too. Only one doc block used to name it — `record_framing_damage`'s,
+/// covered by the exempt range above — so the question never arose. Lane HI
+/// (task #161) moved `replace_or_sparse_after_first` below five folds' decode
+/// loops precisely because that call INSERTS into this set, and every one of
+/// those folds has to say so.
+///
+/// Three successive heuristics for "is this reference prose?" were each shown to
+/// admit executable code (Codex rounds 3, 4 and 5): "a `//` appears earlier on
+/// the line" is fooled by `"https://"`; "the line STARTS with `//`" is fooled by
+/// a line inside a block comment that closes it (`// */ code`) or inside a
+/// hashed raw string; adding `*/` and `"#` guards is fooled by an ordinary
+/// multiline `"` string. Every one of those is a lexer question being asked with
+/// a substring test, so the answer is to lex: [`blank_rust_comments`] walks the
+/// file once tracking line comments, nested block comments, strings, raw strings
+/// and char literals, and overwrites comment BODIES with spaces while preserving
+/// every byte offset and newline. The scan then runs over source in which no
+/// comment contains anything at all, and the prose question does not exist.
+///
+/// The exempt range stays, because `record_framing_damage` really does remove
+/// from the set IN CODE.
 #[test]
 fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
     // Line endings normalised because this repo checks the source out with
     // CRLF; the patterns below are single-line, so this is insurance rather
     // than load-bearing, but the idiom is cheap and the trap is silent.
-    let source = include_str!("../world_fold.rs").replace("\r\n", "\n");
+    let raw_source = include_str!("../world_fold.rs").replace("\r\n", "\n");
+    let source = blank_rust_comments(&raw_source);
+    assert_eq!(
+        source.len(),
+        raw_source.len(),
+        "blanking must preserve byte offsets, or every range below is wrong"
+    );
+    assert_eq!(
+        source.matches('\n').count(),
+        raw_source.matches('\n').count(),
+        "blanking must preserve newlines, or the reported line numbers are wrong"
+    );
+    assert!(
+        !source.contains("Codex review round"),
+        "prose must be gone from the scanned text, or the blanking did nothing"
+    );
+    assert!(
+        !source.contains("owned snapshot leaf unknown this hour"),
+        "string literals must be gone too. This phrase occurs only inside string \
+         literals (it is note text), so it is the check that the literal branches \
+         run — `delta_before_baseline` would NOT do: it is also a substring of the \
+         identifier `reject_delta_before_baseline`, which must survive"
+    );
+    assert!(
+        source.contains("fn reset_hour_state"),
+        "and CODE must survive, or the blanking overreached"
+    );
 
     // The ONE function permitted to forget a baseline, located by its own
     // signature so the exemption is a byte range in the real source rather than
@@ -26106,14 +26157,9 @@ fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
     let exempt_signature_at = source
         .find(EXEMPT_SIGNATURE)
         .expect("record_framing_damage must exist for its exemption to mean anything");
-    // Back up over the function's own doc block, which argues the exemption and
-    // therefore names the field in prose. The scan cannot tell code from
-    // comments, so the range has to cover both or the argument for the
-    // exemption would itself trip the rule it explains.
-    let exempt_start = source[..exempt_signature_at]
-        .rfind("\n\n")
-        .map(|at| at + 2)
-        .unwrap_or(exempt_signature_at);
+    // The doc block above the signature no longer needs covering — it is blank
+    // by now — so the range is the function body itself.
+    let exempt_start = exempt_signature_at;
     let exempt_end = exempt_signature_at
         + source[exempt_signature_at..]
             .find("\n    }\n")
@@ -26170,6 +26216,185 @@ fn no_fold_path_removes_a_domain_from_delta_baselines_seen() {
          delta:\n  {}",
         offenders.join("\n  ")
     );
+}
+
+/// Overwrite every COMMENT and every STRING LITERAL in Rust source with spaces,
+/// preserving byte offsets and newlines so the caller's ranges and line numbers
+/// stay valid.
+///
+/// Literals are blanked as well as comments because the field name can appear
+/// inside one — an error message, a JSON key — and a scan that reads it there
+/// fails the build over text that removes nothing (Codex round 6, finding 3).
+/// Blanking them also removes the only remaining way to smuggle a `//` past the
+/// comment states.
+///
+/// This exists because `no_fold_path_removes_a_domain_from_delta_baselines_seen`
+/// scans source text for a field name and has to know whether a hit is code. See
+/// that test for the three substring heuristics this replaces and how each was
+/// defeated; all three failures were the same mistake, asking a lexer question
+/// with a substring test.
+///
+/// It tracks the four states that can contain a `/` or a `"` without meaning
+/// one: line comments, NESTED block comments (Rust allows nesting, so a depth
+/// counter is required, not a search for the first `*/`), ordinary strings with
+/// backslash escapes, raw strings with any number of hashes, and char literals
+/// (`'/'` and the escaped `'\''`). Lifetimes (`'a`) are distinguished from char
+/// literals by looking for the closing quote within three bytes.
+///
+/// Comment DELIMITERS are blanked along with the body, so no `//` or `*/`
+/// survives to be misread by anything downstream.
+fn blank_rust_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = bytes.to_vec();
+    let n = bytes.len();
+    let blank = |out: &mut Vec<u8>, at: usize| {
+        if out[at] != b'\n' {
+            out[at] = b' ';
+        }
+    };
+    let ident_byte = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut i = 0usize;
+    while i < n {
+        // RAW-STRING PREFIXES ONLY: `r`, `br`, `cr`. A prefix is only a prefix
+        // where it does not continue an identifier. `cr` is here because
+        // `cr#".."#` is a string too, and omitting it let the ordinary-string
+        // branch close on an interior quote and blank the code after it (Codex
+        // round 6, finding 2).
+        //
+        // `b"..."` and `c"..."` are deliberately NOT here. They are ordinary
+        // strings that happen to carry a prefix byte, and routing them through
+        // the raw loop below would ignore their escapes: `b"\" //"` would
+        // terminate at the ESCAPED quote and then blank the code after it as a
+        // comment (Codex round 7). Falling through leaves the `b`/`c` to the
+        // catch-all arm and the `"` to the escape-aware branch, which is where
+        // they belong.
+        let prefix_len = if i > 0 && ident_byte(bytes[i - 1]) {
+            None
+        } else {
+            match (bytes[i], bytes.get(i + 1)) {
+                (b'b', Some(b'r')) | (b'c', Some(b'r')) => Some(2),
+                (b'r', _) => Some(1),
+                _ => None,
+            }
+        };
+        if let Some(prefix) = prefix_len {
+            let mut j = i + prefix;
+            let hash_start = j;
+            while j < n && bytes[j] == b'#' {
+                j += 1;
+            }
+            if j < n && bytes[j] == b'"' {
+                let hashes = j - hash_start;
+                for at in i..=j {
+                    blank(&mut out, at);
+                }
+                j += 1;
+                // Raw strings have no escapes: the terminator is a quote
+                // followed by exactly `hashes` hashes.
+                while j < n {
+                    if bytes[j] == b'"' {
+                        let mut k = j + 1;
+                        let mut seen = 0usize;
+                        while k < n && seen < hashes && bytes[k] == b'#' {
+                            k += 1;
+                            seen += 1;
+                        }
+                        if seen == hashes {
+                            for at in j..k {
+                                blank(&mut out, at);
+                            }
+                            j = k;
+                            break;
+                        }
+                    }
+                    blank(&mut out, j);
+                    j += 1;
+                }
+                i = j.min(n);
+                continue;
+            }
+        }
+        match bytes[i] {
+            b'/' if i + 1 < n && bytes[i + 1] == b'/' => {
+                while i < n && bytes[i] != b'\n' {
+                    blank(&mut out, i);
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < n && bytes[i + 1] == b'*' => {
+                // Rust block comments NEST, so this counts depth rather than
+                // searching for the first `*/`.
+                let mut depth = 1usize;
+                blank(&mut out, i);
+                blank(&mut out, i + 1);
+                i += 2;
+                while i < n && depth > 0 {
+                    if i + 1 < n && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                        depth += 1;
+                        blank(&mut out, i);
+                        blank(&mut out, i + 1);
+                        i += 2;
+                    } else if i + 1 < n && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        depth -= 1;
+                        blank(&mut out, i);
+                        blank(&mut out, i + 1);
+                        i += 2;
+                    } else {
+                        blank(&mut out, i);
+                        i += 1;
+                    }
+                }
+            }
+            b'"' => {
+                blank(&mut out, i);
+                i += 1;
+                while i < n {
+                    if bytes[i] == b'\\' {
+                        blank(&mut out, i);
+                        if i + 1 < n {
+                            blank(&mut out, i + 1);
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    let closing = bytes[i] == b'"';
+                    blank(&mut out, i);
+                    i += 1;
+                    if closing {
+                        break;
+                    }
+                }
+            }
+            b'\'' => {
+                // Three cases, and only the first two are literals:
+                //   `'\n'`, `'\''` — escaped: the close is the next quote;
+                //   `'x'`          — one character then a quote;
+                //   `'a`           — a LIFETIME, which is not a literal. The
+                //                    whole identifier is stepped over, because
+                //                    stopping after the quote alone let `'r"..."`
+                //                    be re-read as a raw string (Codex round 6,
+                //                    finding 1).
+                // The distinction matters because a char literal can hold a
+                // slash: `['/', '/']` must not read as a line comment.
+                if bytes.get(i + 1) == Some(&b'\\') {
+                    i += 2;
+                    while i < n && bytes[i] != b'\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if bytes.get(i + 2) == Some(&b'\'') {
+                    i += 3;
+                } else {
+                    i += 1;
+                    while i < n && ident_byte(bytes[i]) {
+                        i += 1;
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    String::from_utf8(out).expect("blanking replaces whole bytes with ASCII spaces")
 }
 
 // ---------------------------------------------------------------------
@@ -29804,6 +30029,696 @@ fn a_resync_whose_rows_are_malformed_leaves_the_previous_baseline_intact() {
         1,
         "a well-formed resync REPLACES the folded state, so the fixture does exercise the \
          clearing path"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lane HI, task #161 — record-level fold atomicity.
+//
+// The law is `fold_air_region_activity`'s: a record is one unit, it applies
+// whole or not at all. These pin the sites that did not obey it.
+// ---------------------------------------------------------------------------
+
+/// A d30 payload of `rows`, with the row at `bad_index` given an unknown row
+/// flag. `AIR_WING_KNOWN_FLAGS` is `DELETED | MISSION_REGION`, so bit 4 is not
+/// one, and row flags live at `+16` of a 40-byte row behind a 36-byte header.
+fn hi_torn_d30_payload(rows: &[(u32, u32, u64, u32)], bad_index: usize) -> Vec<u8> {
+    let mut payload = d30_air_wings_payload(rows, 0);
+    let base = AIR_WING_HEADER_LEN + bad_index * AIR_WING_ROW_LEN;
+    payload[base + 16..base + 20].copy_from_slice(&(1u32 << 4).to_le_bytes());
+    payload
+}
+
+/// A d30 payload whose FIRST row deletes `(owner, wing_id, generation)` and
+/// whose SECOND row is torn. `deleted_rows` is 1 so the header's own
+/// `row_count <= observed + deleted` rule still admits it.
+fn hi_d30_delete_then_torn_payload(
+    delete: (u32, u32, u64),
+    live: (u32, u32, u64, u32),
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    c2_u64(&mut p, 0);
+    c2_u32(&mut p, 2); // row_count
+    c2_u32(&mut p, 2); // changed_rows
+    c2_u32(&mut p, 0); // status_flags
+    c2_u32(&mut p, 1); // observed_air_wing_rows
+    c2_u32(&mut p, 1); // deleted_rows
+    c2_u32(&mut p, FIXED_SCALE as u32);
+    c2_u32(&mut p, 0); // reserved0
+    let (d_owner, d_wing, d_gen) = delete;
+    c2_u32(&mut p, d_owner);
+    c2_u32(&mut p, d_wing);
+    c2_u64(&mut p, d_gen);
+    c2_u32(&mut p, ROW_FLAG_DELETED_LOW_BIT);
+    for _ in 0..5 {
+        c2_u32(&mut p, 0);
+    }
+    let (owner, wing, generation, count) = live;
+    c2_u32(&mut p, owner);
+    c2_u32(&mut p, wing);
+    c2_u64(&mut p, generation);
+    c2_u32(&mut p, 1u32 << 4); // THE TEAR: not a known row flag
+    c2_u32(&mut p, count);
+    c2_u32(&mut p, 7);
+    c2_u32(&mut p, 88);
+    c2_u32(&mut p, count.saturating_sub(1));
+    c2_u32(&mut p, 0);
+    p
+}
+
+/// **A TORN D30 RECORD MUST NOT DELETE A WING, NOR THE D32 LOADOUT THE
+/// END-OF-HOUR PRUNE HANGS ON IT.**
+///
+/// D30 is the consumer of the shared air-wing generation authority, and
+/// `prune_air_wing_loadout_orphans_for_current_hour` reads `air_wings` as the
+/// authority for which wings exist. The applying loop used to `remove` a wing
+/// and queue its key in `air_wing_loadout_orphan_check_keys_this_hour` as it
+/// walked, and could then reject a LATER row — so a refused record deleted the
+/// wing anyway, and the prune, seeing d30 neither fresh nor unknown (a bare
+/// `Err` sets neither), deleted that wing's observed loadout too. The record was
+/// refused and applied at the same time, and the second casualty was in a
+/// DIFFERENT domain.
+///
+/// The torn row here is the SECOND, so the first row's deletion is exactly what
+/// the old ordering left behind.
+///
+/// kills: staging in `WorldFold::fold_air_wings`. Move `self.air_wings.remove`
+/// and the orphan-queue insert back inside the decode loop and wing 700 is gone
+/// from `air_wings` while its loadout is gone from `air_wing_loadouts`, failing
+/// both surviving-state assertions.
+#[test]
+fn a_torn_d30_record_deletes_neither_a_wing_nor_the_loadout_hanging_on_it() {
+    let mut fold = WorldFold::new("d30_record_atomicity");
+    fold.fold_air_wings(&d30_air_wings_payload(&[(1, 700, 77, 100)], 0))
+        .expect("the baseline record folds");
+    fold.fold_air_wing_loadouts(&d32_loadouts_payload(
+        &[(1, 700, 77, 9001, vec![(900, 100_000)])],
+        0,
+    ))
+    .expect("the loadout record folds");
+    assert_eq!(fold.air_wings.len(), 1, "the wing must exist to be deleted");
+    assert_eq!(
+        fold.air_wing_loadouts.len(),
+        1,
+        "the loadout must exist to be pruned"
+    );
+
+    let err = fold
+        .fold_air_wings(&hi_d30_delete_then_torn_payload(
+            (1, 700, 77),
+            (1, 701, 78, 50),
+        ))
+        .expect_err("a malformed row is a hard decode error");
+    assert!(
+        err.contains("unknown flags"),
+        "the error must be the row rejection: {err}"
+    );
+
+    assert_eq!(
+        fold.air_wings.len(),
+        1,
+        "the refused record must not have deleted wing 700: {:?}",
+        fold.air_wings.keys().collect::<Vec<_>>()
+    );
+
+    // The prune is what turns the tear into a d32 deletion, so run it. The
+    // orphan queue is deliberately NOT asserted empty: `fold_air_wing_loadouts`
+    // enqueues every LIVE key it applies, so the d32 baseline above already put
+    // this wing in it. That is exactly why the queue cannot be the guard — the
+    // prune's authority is `air_wings`, and the tear is that a REFUSED record
+    // had already emptied it.
+    fold.prune_air_wing_loadout_orphans_for_current_hour();
+    assert_eq!(
+        fold.air_wing_loadouts.len(),
+        1,
+        "the observed loadout must survive a record that was refused"
+    );
+
+    // CONTROL: the same deletion WITHOUT the torn second row does delete both,
+    // so the assertions above are the staging's doing and not a fold that
+    // stopped applying deletions.
+    fold.fold_air_wings(&d30_air_wings_delete_payload(1, 700, 77))
+        .expect("a well-formed deletion folds");
+    fold.prune_air_wing_loadout_orphans_for_current_hour();
+    assert!(
+        fold.air_wings.is_empty() && fold.air_wing_loadouts.is_empty(),
+        "a well-formed deletion DOES remove the wing and prune its loadout, so the fixture \
+         exercises the destructive path"
+    );
+}
+
+/// **A REFUSED D30 RECORD MUST NOT DELETE A D32 LOADOUT BY STAYING QUIET.**
+///
+/// Staging closed the case where the refused record's OWN rows did the deleting.
+/// This is the other half, and it survives staging: d30's record is refused for
+/// any reason at all, so it applies nothing — and `air_wings` therefore still
+/// holds only what EARLIER hours put there. A bare `Err` used to land on
+/// `apply_domain_data`'s catch-all note, which marks the domain neither fresh
+/// nor unknown, so `prune_air_wing_loadout_orphans_for_current_hour` passed both
+/// of its d30 guards and read that carried map as this hour's authority. A wing
+/// first published by d32 in this hour is absent from it, and its freshly
+/// observed loadout was deleted; a later d30 record naming the wing published it
+/// with no loadout and no complaint.
+///
+/// A d30 `DOMAIN_GAP` was always safe from this, because `record_domain_gap`
+/// types the domain unknown and the third guard fires. A refused record is the
+/// same claim and now says the same thing.
+///
+/// kills: removing `AIR_WINGS_DOMAIN_ID` from the `malformed_payload` arm of
+/// `WorldFold::apply_domain_data`. D30 falls back to the catch-all note, the
+/// prune runs against the stale wing set, and wing 701's loadout is gone.
+///
+/// (Codex round 2, finding 1.)
+#[test]
+fn a_refused_d30_record_does_not_delete_a_loadout_by_leaving_the_domain_unnamed() {
+    let hour = raw_for(16_959_360);
+    let mut fold = WorldFold::new("d30_refusal_is_named");
+
+    // Hour authority: d30 succeeded, so `fold_domain_seen(30)` is true forever.
+    fold.apply_domain_data(
+        1,
+        hour,
+        AIR_WINGS_DOMAIN_ID,
+        &d30_air_wings_payload(&[(1, 700, 77, 100)], 0),
+        0,
+    );
+    // d32 observes a wing d30 has not named yet.
+    fold.apply_domain_data(
+        2,
+        hour,
+        AIR_WING_LOADOUTS_DOMAIN_ID,
+        &d32_loadouts_payload(&[(1, 701, 78, 9002, vec![(901, 200_000)])], 0),
+        0,
+    );
+    assert_eq!(
+        fold.air_wing_loadouts.len(),
+        1,
+        "the loadout must exist for the prune to be able to delete it"
+    );
+
+    // A d30 record that is REFUSED. It applies nothing either way; what matters
+    // is whether the refusal is NAMED.
+    fold.apply_domain_data(
+        3,
+        hour,
+        AIR_WINGS_DOMAIN_ID,
+        &hi_torn_d30_payload(&[(1, 702, 79, 25)], 0),
+        0,
+    );
+    assert!(
+        fold.fold_domain_unknown(AIR_WINGS_DOMAIN_ID),
+        "a refused d30 record must type the domain-hour unknown, exactly as its DOMAIN_GAP does"
+    );
+
+    fold.prune_air_wing_loadout_orphans_for_current_hour();
+    assert_eq!(
+        fold.air_wing_loadouts.len(),
+        1,
+        "the prune must not use a carried wing set as authority for an hour d30 did not \
+         authenticate: the loadout it would delete was observed THIS hour"
+    );
+
+    // CONTROL: with d30 authoritative this hour and wing 701 genuinely absent
+    // from its wing set, the prune DOES delete the orphan — so the assertion
+    // above is the naming's doing, not a prune that stopped working.
+    let mut control = WorldFold::new("d30_refusal_is_named_control");
+    control.apply_domain_data(
+        1,
+        hour,
+        AIR_WING_LOADOUTS_DOMAIN_ID,
+        &d32_loadouts_payload(&[(1, 701, 78, 9002, vec![(901, 200_000)])], 0),
+        0,
+    );
+    control.apply_domain_data(
+        2,
+        hour,
+        AIR_WINGS_DOMAIN_ID,
+        &d30_air_wings_payload(&[(1, 700, 77, 100)], 0),
+        0,
+    );
+    control.prune_air_wing_loadout_orphans_for_current_hour();
+    assert!(
+        control.air_wing_loadouts.is_empty(),
+        "a clean d30 hour DOES prune a loadout with no owner row, so the fixture exercises \
+         the destructive path"
+    );
+}
+
+/// **A REFUSED RECORD MUST NOT REGISTER THE DOMAIN'S DELTA BASELINE.**
+///
+/// `replace_or_sparse_after_first` reads like a query and is not one: it INSERTS
+/// the domain into `delta_baselines_seen`, which `reset_hour_state` never
+/// clears. Every one of these folds called it above its decode loop, so a
+/// refused FIRST record left the accumulator untouched — which is what staging
+/// was for — and still registered the baseline. The next WHOLE record then took
+/// the `sparse` branch and MERGED instead of replacing, so any row the first
+/// record's world had and the second's did not survived forever.
+///
+/// d31 is included deliberately: it is the fold whose own comment declares the
+/// staged-rows law, and it had this residual anyway. The accumulator being
+/// untouched is only half of "leaves no trace".
+///
+/// kills: moving `replace_or_sparse_after_first` back above the decode loop in
+/// any of `fold_air_wings`, `fold_air_region_activity`, `fold_air_base_status`,
+/// `fold_air_variant_reserves` or `fold_air_superiority_inputs` — each domain's
+/// assertion below fails on its own.
+#[test]
+fn a_refused_first_record_does_not_register_the_delta_baseline() {
+    // EVERY arm asserts the error is the ROW rejection. Without that the
+    // assertion would also pass if the fixture were refused at the header, which
+    // would exercise none of the code under test.
+    fn refused_at_a_row(err: String, domain: &str) {
+        assert!(
+            err.contains(domain) && err.contains("row has unknown flags"),
+            "the fixture must be refused by the DECODE LOOP, not by a header check, \
+             or the baseline assertion below is vacuous: {err}"
+        );
+    }
+
+    // d30
+    let mut fold = WorldFold::new("d30_baseline_registration");
+    refused_at_a_row(
+        fold.fold_air_wings(&hi_torn_d30_payload(&[(1, 700, 77, 100)], 0))
+            .expect_err("the torn record is refused"),
+        "air_wings",
+    );
+    assert!(
+        !fold.delta_baselines_seen.contains(&AIR_WINGS_DOMAIN_ID),
+        "a refused d30 record must not register d30's baseline"
+    );
+
+    // d31 — the fold that states the law. Row flags at `+12` of a 32-byte row.
+    let mut fold = WorldFold::new("d31_baseline_registration");
+    let mut torn = d31_air_region_activity_payload(&[(88, 1, 7, 100)], 0);
+    let at = AIR_REGION_ACTIVITY_HEADER_LEN + 12;
+    torn[at..at + 4].copy_from_slice(&(1u32 << 4).to_le_bytes());
+    refused_at_a_row(
+        fold.fold_air_region_activity(&torn)
+            .expect_err("the torn record is refused"),
+        "air_region_activity",
+    );
+    assert!(
+        !fold
+            .delta_baselines_seen
+            .contains(&AIR_REGION_ACTIVITY_DOMAIN_ID),
+        "a refused d31 record must not register d31's baseline"
+    );
+
+    // d34 — row flags at `+8` of the first row.
+    let mut fold = WorldFold::new("d34_baseline_registration");
+    let mut torn = d34_air_base_status_payload(&[(9001, 64, 6508, 100)], 0);
+    let at = AIR_BASE_STATUS_HEADER_LEN + 8;
+    torn[at..at + 4].copy_from_slice(&(1u32 << 4).to_le_bytes());
+    refused_at_a_row(
+        fold.fold_air_base_status(&torn)
+            .expect_err("the torn record is refused"),
+        "air_base_status",
+    );
+    assert!(
+        !fold
+            .delta_baselines_seen
+            .contains(&AIR_BASE_STATUS_DOMAIN_ID),
+        "a refused d34 record must not register d34's baseline"
+    );
+
+    // d36 — row flags at `+8` of the first row.
+    let mut fold = WorldFold::new("d36_baseline_registration");
+    let mut torn = d36_reserves_payload(&[(1, 900, 100_000)], 0);
+    let at = AIR_VARIANT_RESERVE_HEADER_LEN + 8;
+    torn[at..at + 4].copy_from_slice(&(1u32 << 4).to_le_bytes());
+    refused_at_a_row(
+        fold.fold_air_variant_reserves(&torn)
+            .expect_err("the torn record is refused"),
+        "air_variant_reserves",
+    );
+    assert!(
+        !fold
+            .delta_baselines_seen
+            .contains(&AIR_VARIANT_RESERVES_DOMAIN_ID),
+        "a refused d36 record must not register d36's baseline"
+    );
+
+    // d38 — row flags at `+16` of the first row.
+    let mut fold = WorldFold::new("d38_baseline_registration");
+    let mut torn = d38_air_superiority_inputs_payload(&[(88, 1, 7, 900, 100_000)], 0);
+    let at = AIR_SUPERIORITY_INPUT_HEADER_LEN + 16;
+    torn[at..at + 4].copy_from_slice(&(1u32 << 4).to_le_bytes());
+    refused_at_a_row(
+        fold.fold_air_superiority_inputs(&torn)
+            .expect_err("the torn record is refused"),
+        "air_superiority_inputs",
+    );
+    assert!(
+        !fold
+            .delta_baselines_seen
+            .contains(&AIR_SUPERIORITY_INPUTS_DOMAIN_ID),
+        "a refused d38 record must not register d38's baseline"
+    );
+
+    // CONTROL: a WELL-FORMED first record DOES register the baseline, so the
+    // five assertions above are the reordering's doing and not a fold that
+    // stopped registering baselines at all.
+    let mut fold = WorldFold::new("d30_baseline_registration_control");
+    fold.fold_air_wings(&d30_air_wings_payload(&[(1, 700, 77, 100)], 0))
+        .expect("a well-formed record folds");
+    assert!(
+        fold.delta_baselines_seen.contains(&AIR_WINGS_DOMAIN_ID),
+        "a clean first record must still register the baseline"
+    );
+}
+
+/// **A REFUSED D26 RECORD REALLY DOES RETAIN THE ACCUMULATOR.**
+///
+/// `apply_domain_data`'s d26 `Err` arm publishes the words "accumulator
+/// retained". They were not true: the duplicate-VARIANT check ran inside the
+/// applying loop, past `division_equipment.clear()` and past the duplicate-key
+/// removals, so the accumulator that arm retained was the torn one — emptied by
+/// a record that was then refused.
+///
+/// The fixture is a clean full baseline, then a full baseline whose LAST root
+/// repeats a variant. Under the old ordering the second record cleared the map,
+/// re-inserted the good root, then failed — leaving the division that only the
+/// FIRST record described gone for good.
+///
+/// kills: moving `division_equipment.clear()` and the duplicate-key `remove`s
+/// back above the staging loop in `WorldFold::fold_division_equipment`.
+#[test]
+fn a_refused_d26_record_really_does_retain_the_accumulator() {
+    let mut fold = WorldFold::new("d26_record_atomicity");
+    fold.fold_division_equipment(&chunk3_division_equipment_payload(
+        0,
+        &[(47, 17, 0, 0, 0, 1), (47, 18, 0, 0, 1, 1)],
+        &[(900, 100_000), (901, 200_000)],
+    ))
+    .expect("the baseline record folds");
+    assert_eq!(
+        fold.division_equipment.len(),
+        2,
+        "both divisions must be present, or the wipe below is unobservable"
+    );
+
+    // A second FULL baseline. Its first root (19) is new and decodes cleanly;
+    // its second (18) claims two entries and both are variant 902 — the
+    // duplicate the staged pass rejects. Under the old ordering this record
+    // cleared the map, inserted 19, and then failed: divisions 17 and 18 were
+    // destroyed by a record that was refused, and 19 — which no accepted record
+    // ever described — was left in their place.
+    let err = fold
+        .fold_division_equipment(&chunk3_division_equipment_payload(
+            0,
+            &[(47, 19, 0, 0, 0, 1), (47, 18, 0, 0, 1, 2)],
+            &[(900, 100_000), (902, 1), (902, 2)],
+        ))
+        .expect_err("a repeated variant on one root is a hard decode error");
+    assert!(
+        err.contains("duplicates variant"),
+        "the error must be the duplicate-variant rejection, not a header check: {err}"
+    );
+
+    let live: Vec<u32> = fold
+        .division_equipment
+        .keys()
+        .map(|key| key.div_id)
+        .collect();
+    assert_eq!(
+        live,
+        vec![17, 18],
+        "the refused record must leave BOTH original divisions and add none of its own: \
+         clearing on the strength of a record that then failed destroys equipment no later \
+         record restores"
+    );
+    assert!(
+        !fold
+            .division_equipment_touched_this_hour
+            .iter()
+            .any(|key| key.div_id == 19),
+        "and it must not have claimed to touch the root it never applied"
+    );
+
+    // CONTROL: the same two roots WITHOUT the duplicate do replace the map, so
+    // the assertions above are the staging's doing and not a fold that stopped
+    // applying baselines.
+    fold.fold_division_equipment(&chunk3_division_equipment_payload(
+        0,
+        &[(47, 19, 0, 0, 0, 1), (47, 18, 0, 0, 1, 1)],
+        &[(900, 100_000), (902, 1)],
+    ))
+    .expect("a well-formed baseline folds");
+    let live: Vec<u32> = fold
+        .division_equipment
+        .keys()
+        .map(|key| key.div_id)
+        .collect();
+    assert_eq!(
+        live,
+        vec![18, 19],
+        "a well-formed full baseline DOES replace the map, so the fixture exercises the clear"
+    );
+}
+
+/// **A MALFORMED D64 TABLE ROW NAMES ITS REFUSAL.**
+///
+/// D64 carries two halves from two producers: the per-country delayed-event
+/// TABLE and the DEL2 ledger trailer. The trailer settling on a table `Err` is
+/// deliberate and measured — it stands on its own COMPLETE flag and sequence —
+/// and the table half is itself atomic. What was missing is the NAME: d64 had no
+/// arm in `apply_domain_data`, so a malformed row landed on the catch-all
+/// free-text note, `fold_domain_unknown(64)` stayed false, and the hour
+/// published the PREVIOUS hour's `countries[*].delayed_events` as though it had
+/// measured them. The status-failure path already says otherwise through
+/// `handle_compact_failure`; a malformed row is the same claim about the same
+/// half.
+///
+/// kills: the `DELAYED_EVENT_DOMAIN_ID` arm in `WorldFold::apply_domain_data`.
+/// Remove it and the record falls through to the catch-all note, leaving d64
+/// neither unknown nor problem-bearing.
+#[test]
+fn a_malformed_d64_table_row_names_its_refusal() {
+    let mut fold = WorldFold::new("d64_named_refusal");
+    // A row with a zero owner tag_db_id is rejected by `fold_delayed_event_rows`.
+    let payload = delayed_events_payload(&[(0, 5, None, None)]);
+    fold.apply_domain_data(1, raw_for(16_959_360), DELAYED_EVENT_DOMAIN_ID, &payload, 0);
+
+    assert!(
+        fold.fold_domain_unknown(DELAYED_EVENT_DOMAIN_ID),
+        "a refused d64 table half must type the domain-hour unknown, not merely note it"
+    );
+    assert!(
+        fold.domain_problems_this_hour
+            .iter()
+            .any(|entry| entry.domain_id == DELAYED_EVENT_DOMAIN_ID
+                && entry.problem == "malformed_payload"),
+        "and it must carry a structured problem, not just a note: {:?}",
+        fold.domain_problems_this_hour
+            .iter()
+            .map(|entry| (entry.domain_id, entry.problem))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **A REFUSED D30 RECORD MUST NOT TRUNCATE THE PUBLISHED WING SET.**
+///
+/// The full-replace path is the sharpest form of the same tear: `air_wings` was
+/// refilled row by row, so a record failing on row `k` left the map holding
+/// `0..k` — a truncated wing set published as the world, because a bare `Err`
+/// marks the domain neither fresh nor unknown and `build_order_of_battle`
+/// therefore takes its `fold_domain_seen` branch.
+///
+/// The CLEAR is deliberately not what this pins, and saying it was would have
+/// been a false claim: `replace_or_sparse_after_first` returns `false` only for
+/// a domain's FIRST record, so d30's `clear()` runs exactly once, on an
+/// `air_wings` that is still empty. Moving it above the loop is unobservable
+/// here. What the staging actually buys on this path is that the ROWS do not
+/// land. (Codex round 2, finding 2.)
+///
+/// kills: applying the rows inside the decode loop again in
+/// `WorldFold::fold_air_wings` — i.e. replacing the `staged.push(..)` calls with
+/// the `self.air_wings.insert(..)` / `remove(..)` they replaced. The first two
+/// rows then land before the third is rejected and `air_wings` holds 2, not 0.
+#[test]
+fn a_refused_d30_full_replace_publishes_no_truncated_wing_set() {
+    let mut fold = WorldFold::new("d30_truncation");
+    let err = fold
+        .fold_air_wings(&hi_torn_d30_payload(
+            &[(1, 700, 77, 100), (1, 701, 78, 50), (1, 702, 79, 25)],
+            2,
+        ))
+        .expect_err("a malformed row is a hard decode error");
+    assert!(err.contains("unknown flags"), "{err}");
+    assert!(
+        fold.air_wings.is_empty(),
+        "a refused first record must apply none of its rows, not the two that decoded: {:?}",
+        fold.air_wings.keys().collect::<Vec<_>>()
+    );
+
+    // CONTROL: the same three rows without the tear DO land.
+    fold.fold_air_wings(&d30_air_wings_payload(
+        &[(1, 700, 77, 100), (1, 701, 78, 50), (1, 702, 79, 25)],
+        0,
+    ))
+    .expect("a well-formed record folds");
+    assert_eq!(fold.air_wings.len(), 3);
+}
+
+/// **A HALF-DELIVERED AIR-WING UNIT COSTS NOTHING, AND THAT IS WHY THE UNIT
+/// NEEDS NO WIRE-LEVEL WITHDRAWAL.** (Lane HI, task #162.)
+///
+/// d30/d32/d42 are one transactional unit sharing one generation authority, but
+/// each member's producer pin rolls back only when THAT member's own bracket was
+/// rejected — so a frame can deliver d32's record and withhold d30's.
+/// `DELTA_WIRE_DESIGN.md` §7.1.1 recorded that as "found and NOT fixed", on the
+/// stated consequence that "a wing identity FIRST published by d32 in an hour
+/// d30 was gapped has no d30 counterpart that hour, so
+/// `prune_air_wing_loadout_orphans_for_current_hour` drops the loadout row until
+/// d32 next emits it", and left a wire-contract change (a ninth
+/// `DomainGapReason` meaning "withdrawn because a sibling failed") for its own
+/// lane.
+///
+/// That consequence does not occur. A d30 `DOMAIN_GAP` runs
+/// `record_domain_gap`, which marks d30 unknown for the hour, and the prune's
+/// third guard is `!fold_domain_unknown(30)` — it returns without deleting
+/// anything. The wire asymmetry is real and its damage is not, so the withdrawal
+/// would only discard cleanly-read sibling data for the frame: a refusal-scope
+/// escalation from the unit to the frame, which is the opposite of what the unit
+/// rule is for.
+///
+/// This is the test that stops the closure being accidental. Hour 0 publishes
+/// wing `(1,700,77)` with a loadout. Hour 1 carries a d30 `DOMAIN_GAP` and a d32
+/// record for a newly observed wing `(1,701,78)`. Hour 2 supplies d30 naming
+/// both.
+///
+/// kills: the `self.fold_domain_unknown(AIR_WINGS_DOMAIN_ID)` guard in
+/// `WorldFold::prune_air_wing_loadout_orphans_for_current_hour`. Remove it and
+/// hour 1's prune finds `(1,701,78)` absent from the carried hour-0 `air_wings`
+/// and deletes the loadout that hour actually observed, so hour 2 publishes wing
+/// 701 with a null loadout and the final assertion fails.
+#[test]
+fn a_d30_domain_gap_does_not_let_the_prune_delete_a_loadout_observed_beside_it() {
+    let base_hi = 16_959_360i64;
+    let mut stream = Vec::new();
+    let mut seq = 1u64;
+    let push_hour = |stream: &mut Vec<u8>,
+                     seq: &mut u64,
+                     hour_offset: i64,
+                     data: Vec<(u16, Vec<u8>)>,
+                     gapped: Option<u16>| {
+        let raw = raw_for(base_hi + hour_offset);
+        for (domain_id, payload) in data {
+            push_record(
+                stream,
+                *seq,
+                raw,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            *seq += 1;
+        }
+        if let Some(domain_id) = gapped {
+            push_record(
+                stream,
+                *seq,
+                raw,
+                domain_id,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP,
+                &gq_domain_gap_payload(raw),
+            );
+            *seq += 1;
+        }
+        push_record(
+            stream,
+            *seq,
+            raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        *seq += 1;
+    };
+
+    push_hour(
+        &mut stream,
+        &mut seq,
+        0,
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (30, d30_air_wings_payload(&[(1, 700, 77, 100)], 0)),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 700, 77, 9001, vec![(900, 100_000)])], 0),
+            ),
+        ],
+        None,
+    );
+    // HALF A UNIT ON THE WIRE: d32 delivers, d30 is a gap.
+    push_hour(
+        &mut stream,
+        &mut seq,
+        1,
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                32,
+                d32_loadouts_payload(&[(1, 701, 78, 9002, vec![(901, 200_000)])], 0),
+            ),
+        ],
+        Some(30),
+    );
+    push_hour(
+        &mut stream,
+        &mut seq,
+        2,
+        vec![
+            (18, country_identity_payload(&[(1, "GER")])),
+            (
+                30,
+                d30_air_wings_payload(&[(1, 700, 77, 100), (1, 701, 78, 100)], 0),
+            ),
+        ],
+        None,
+    );
+
+    let mut fold = WorldFold::new("hi_air_wing_unit_wire_gap");
+    fold.ingest_stream(&stream);
+    let snaps: Vec<Value> = fold
+        .finish()
+        .into_iter()
+        .map(|(_, _, bytes)| parse(&bytes))
+        .collect();
+    assert_eq!(snaps.len(), 3, "every hour closes with a FRAME_END");
+
+    // The gapped hour SAYS so, and publishes no wing set rather than a stale one.
+    assert_eq!(
+        snaps[1]["order_of_battle"]["air_wings"],
+        Value::Null,
+        "an hour whose d30 was gapped must not publish a carried wing set"
+    );
+    assert!(
+        snaps[1]["provenance"]["collector"]["domain_problems"]
+            .as_array()
+            .map(|problems| problems
+                .iter()
+                .any(|problem| problem["domain_id"] == json!(30)
+                    && problem["problem"] == json!("domain_gap")))
+            .unwrap_or(false),
+        "and it must name the gap: {}",
+        snaps[1]["provenance"]["collector"]["domain_problems"]
+    );
+
+    // THE POINT: the loadout observed beside the gap survives it.
+    let wings = snaps[2]["order_of_battle"]["air_wings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let wing = wings
+        .iter()
+        .find(|wing| wing["id"] == json!(701))
+        .unwrap_or_else(|| panic!("d30 named wing 701 this hour: {wings:?}"));
+    assert_eq!(
+        wing["_r2_air_wing_loadout"]["air_base_id"],
+        json!(9002),
+        "the d32 row delivered while d30 was gapped must still be joined once d30 returns: \
+         withdrawing it at the wire would have destroyed a cleanly-read observation: {wing}"
     );
 }
 
