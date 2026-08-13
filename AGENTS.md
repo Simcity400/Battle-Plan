@@ -133,6 +133,13 @@
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Final -Workspace All
 ```
 
+- **Worktree lanes: invoke YOUR OWN checkout's copy of the script**
+  (`<your-worktree>\extractor\native\scripts\Invoke-CentralRustValidation.ps1`).
+  The script resolves its workspace from its own location (`$PSScriptRoot`), so
+  the absolute path above validates `` — a green gate about the
+  wrong tree (lane IC found this via a digest test that could not have passed
+  against its roster). A gate log that never compiles your diff is void.
+
 - Narrower runs: `-Workspace Extractor|Replay`, `-Mode Check|Build|Fast|Integration|Test`
   (accept package/target selectors; don't broaden a targeted check). `Final` is
   the complete deterministic offline battery; `Soak`/`Evidence` only when that
