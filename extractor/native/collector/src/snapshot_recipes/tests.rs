@@ -4244,6 +4244,143 @@ fn one_annotation_entry_keeps_its_five_parts_independently_absent() {
     );
 }
 
+/// SAMPLED INTERVALS COME OUT IN ASCENDING ID ORDER, WHATEVER ORDER THEY WENT
+/// IN.
+///
+/// `close_witnesses` walks `sampled_intervals` and pushes the torn and the
+/// uncertified in the order it sees them, so that order reaches the wire and
+/// reaches every reader comparing two captures. It used to be free: the table
+/// was a `BTreeMap` and iteration WAS the key order. Lane HL made the table an
+/// index and a slot vector, and the slots are in FIRST-ANNOTATION order — so
+/// the ordering is now a property of walking the index rather than the slots,
+/// and a spelling that walked the slots would pass every other test in this
+/// file while quietly reordering the wire.
+///
+/// The ids are annotated in DESCENDING order here for exactly that reason: an
+/// implementation that yielded slot order would return them descending, and
+/// one that yielded index order returns them ascending. Under the old
+/// `BTreeMap` both spellings agreed, which is why this test could not have been
+/// written to fail before.
+///
+/// kills: `Annotations::sampled_intervals` iterating `self.slots` instead of
+/// `self.index` — the assertion below sees `[9, 4, 1]` where it wants
+/// `[1, 4, 9]`.
+#[test]
+fn sampled_intervals_iterate_in_ascending_id_order_not_insertion_order() {
+    use super::annot::Annotations;
+    let consumer = ConsumerId(2);
+    let mut annot = Annotations::new();
+    annot.arm();
+    // Descending, and 0 is deliberately never annotated so that a hole inside
+    // the index is walked over rather than yielded.
+    for id in [9u32, 4, 1] {
+        annot.entry(IntervalId(id)).ask_samples(consumer, 2, true);
+    }
+
+    let seen: Vec<u32> = annot
+        .sampled_intervals()
+        .map(|(id, _images)| id.0)
+        .collect();
+    assert_eq!(
+        seen,
+        vec![1, 4, 9],
+        "close_witnesses walks this iterator, so its order is the order the \
+         torn and uncertified lists reach the wire in",
+    );
+}
+
+/// A DISTANT INTERVAL ID DOES NOT ALLOCATE THE GAP, AND STILL SORTS WHERE IT
+/// BELONGS.
+///
+/// `IntervalId` and `Annotations::entry` are both `pub`, so "the ownership map
+/// mints ids densely from zero" is a fact about today's callers rather than a
+/// property of the type. Lane HL's dense index would, taken naively, turn
+/// `entry(IntervalId(u32::MAX))` into a 16 GiB allocation taken BEFORE custody
+/// reconciliation ever sees it — where the `BTreeMap` it replaced took one
+/// node. `place` therefore grows the dense vector only within a bounded slack
+/// of the slots that exist and puts anything beyond it in a sparse tail.
+///
+/// The SECOND half is the one that is easy to lose: the sparse tail is CHAINED
+/// after the dense walk rather than merged into it, which is only correct
+/// because `place` never grows the dense index past an id the sparse map
+/// already holds. That guard needs its own sequence to test — with a distant id
+/// like `u32::MAX` the guard is true anyway and removing it changes nothing
+/// (Codex round 3, finding 6) — so the second block picks ids that straddle the
+/// slack boundary.
+///
+/// kills: `Annotations::place` dropping EITHER guard, one per block.
+/// * Removing the `DENSE_INDEX_SLACK` bound makes the first block's
+///   `entry(IntervalId(u32::MAX))` resize the index to 2^32 entries; its
+///   `capacity_bytes` assertion fails (and the allocation is 16 GiB).
+/// * Removing the `sparse.keys().next()` guard lets the second block's id
+///   1026 — which is inside the slack once two slots exist — grow the dense
+///   index past the sparse key 1025 and land densely. The chained walk then
+///   yields 0, 1026, 1025 and the ascending assertion fails.
+#[test]
+fn a_distant_interval_id_goes_to_the_sparse_tail_and_still_iterates_in_order() {
+    use super::annot::Annotations;
+    let consumer = ConsumerId(4);
+
+    // BLOCK ONE: the slack bound. A distant id must not allocate the gap.
+    let mut annot = Annotations::new();
+    annot.arm();
+    // DISTANT FIRST. Nothing exists yet, so the slack cannot reach it.
+    annot
+        .entry(IntervalId(u32::MAX))
+        .ask_samples(consumer, 2, false);
+    assert!(
+        annot.capacity_bytes() < 64 * 1024,
+        "a distant id must not allocate the gap; charged {} bytes",
+        annot.capacity_bytes(),
+    );
+    // NEAR SECOND, and inside the slack, so this one is indexed densely.
+    annot.entry(IntervalId(7)).ask_samples(consumer, 2, false);
+    assert!(
+        annot.capacity_bytes() < 64 * 1024,
+        "and the near id does not change that; charged {} bytes",
+        annot.capacity_bytes(),
+    );
+    let seen: Vec<u32> = annot
+        .sampled_intervals()
+        .map(|(id, _images)| id.0)
+        .collect();
+    assert_eq!(
+        seen,
+        vec![7, u32::MAX],
+        "ascending, once each, across both tables",
+    );
+    // And both are readable through the ordinary accessor, which is what says
+    // the two tables are one table to every reader.
+    assert!(annot.samples(IntervalId(7)).is_some());
+    assert!(annot.samples(IntervalId(u32::MAX)).is_some());
+    assert!(annot.samples(IntervalId(8)).is_none());
+
+    // BLOCK TWO: the minimum-sparse-key guard, on ids that straddle the slack.
+    //
+    // 1025 with no slots yet is one past the slack and goes sparse. 0 is inside
+    // it and goes dense. 1026 is then inside the slack — two slots exist — and
+    // WOULD go dense but for the guard, which refuses to grow the index past
+    // the sparse key 1025. Without the guard the chained walk stops being
+    // ascending, which is the failure this block exists to catch.
+    let mut straddle = Annotations::new();
+    straddle.arm();
+    for id in [1025u32, 0, 1026] {
+        straddle
+            .entry(IntervalId(id))
+            .ask_samples(consumer, 2, false);
+    }
+    let straddled: Vec<u32> = straddle
+        .sampled_intervals()
+        .map(|(id, _images)| id.0)
+        .collect();
+    assert_eq!(
+        straddled,
+        vec![0, 1025, 1026],
+        "the dense walk and the sparse tail are CHAINED, so every dense id must \
+         sort below every sparse one",
+    );
+}
+
 /// THE SAMPLING ASK IS APPENDED IN PLACE, AND IT LANDS BESIDE THE IMAGES THAT
 /// WERE ALREADY TAKEN.
 ///

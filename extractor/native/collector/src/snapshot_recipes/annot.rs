@@ -323,9 +323,46 @@ struct IntervalAnnot {
 }
 
 /// Everything the annotations hold for one observation.
+///
+/// # Why an index and not an ordered map
+///
+/// Lane GL turned five `BTreeMap<IntervalId, _>` into one; lane HL (task #185)
+/// removed the descent itself. `IntervalId` is a DENSE `u32` handed out in
+/// order by the ownership map — `dedup.rs` mints it as `records.len()` — so the
+/// key already indexes an array and an ordered map was searching for a number
+/// it had been given. At d81's production shape that is a descent through
+/// 21,056 entries, taken twice per request across 35,084 requests, to reach a
+/// slot whose position was known.
+///
+/// [`index`] maps interval id to `slot + 1`, with `0` for "never annotated", and
+/// [`slots`] holds only the intervals that were. That pair, rather than one
+/// `Vec<IntervalAnnot>` indexed directly, because the direct spelling would
+/// materialise an entry for every id BELOW the highest annotated one: on d81
+/// that is nearly free, and on a recipe with a million intervals and ten
+/// annotations it would charge the custody ledger for a million
+/// `IntervalAnnot`s. The index costs four bytes per id and the slots cost what
+/// they hold.
+///
+/// ASCENDING ITERATION IS PRESERVED BY CONSTRUCTION, not by a sort:
+/// [`Self::sampled_intervals`] walks `index` in id order, which is the order
+/// the map produced and the order `close_witnesses` depends on.
+///
+/// [`index`]: Self::index
+/// [`slots`]: Self::slots
 #[derive(Clone, Debug, Default)]
 pub struct Annotations {
-    per_interval: BTreeMap<IntervalId, IntervalAnnot>,
+    /// Interval id -> `slots` position PLUS ONE; `0` means no entry exists.
+    /// Plus one rather than a sentinel `u32::MAX` so that the vector's own
+    /// zero-initialised growth is already the absent state.
+    index: Vec<u32>,
+    /// Interval ids too far past the dense index to grow it to — see
+    /// [`Self::place`], which bounds the dense vector at `slots + slack` so
+    /// that a caller passing a distant id cannot allocate the gap. Empty on
+    /// every path production takes, because the ownership map mints ids
+    /// densely from zero.
+    sparse: BTreeMap<IntervalId, u32>,
+    /// The annotated intervals, in first-annotation order.
+    slots: Vec<IntervalAnnot>,
     /// True once any recipe in the observation declares any annotation. While
     /// false every entry point below is a single predictable branch.
     armed: bool,
@@ -440,21 +477,105 @@ impl Annotations {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.per_interval.is_empty()
+        self.slots.is_empty()
     }
 
     /// One interval's annotations, opened once for a whole request's worth of
     /// writes. See [`IntervalEntry`].
+    ///
+    /// Creates the entry if this is the first annotation against `interval`,
+    /// exactly as the map's `entry(..).or_default()` did.
     pub fn entry(&mut self, interval: IntervalId) -> IntervalEntry<'_> {
         IntervalEntry {
-            slot: self.per_interval.entry(interval).or_default(),
+            slot: self.slot_mut(interval),
         }
+    }
+
+    /// The slot for `interval`, created empty if it does not exist yet.
+    fn slot_mut(&mut self, interval: IntervalId) -> &mut IntervalAnnot {
+        let at = self.place(interval);
+        &mut self.slots[at - 1]
+    }
+
+    /// This interval's slot position PLUS ONE, creating the slot if needed.
+    ///
+    /// # The dense index is grown only where growing it is bounded
+    ///
+    /// `IntervalId` is `pub` and `entry` is `pub`, so "the ownership map mints
+    /// ids densely from zero" is a fact about today's callers and not a
+    /// property of this type. A dense index sized to `id + 1` would turn
+    /// `entry(IntervalId(u32::MAX))` into a 16 GiB allocation taken BEFORE the
+    /// custody ledger ever sees it — an unbudgeted allocation where the
+    /// `BTreeMap` this replaced would have taken one node (Codex round 2,
+    /// finding 3).
+    ///
+    /// So the index grows only to ids within [`DENSE_INDEX_SLACK`] of the
+    /// entries that already exist, which makes the dense term at most
+    /// `slots + SLACK` however the ids arrive, and anything beyond it goes into
+    /// an ordered map that costs one entry per id exactly as the old table did.
+    /// The dense path is what every production caller takes; the sparse path
+    /// exists so that the ones that do not cannot allocate a gap.
+    ///
+    /// BOTH PATHS STORE THE SAME THING — position plus one — and every reader
+    /// goes through [`Self::slot`], which consults both.
+    ///
+    /// # THE INVARIANT, because it is what keeps ascending iteration free
+    ///
+    /// `index.len() <= every key in sparse`. The dense vector is never grown
+    /// past an id the sparse map already holds, so "dense ids, then sparse ids"
+    /// IS ascending id order and [`Self::sampled_intervals`] can simply chain
+    /// the two rather than merge them.
+    fn place(&mut self, interval: IntervalId) -> usize {
+        /// How far past the last dense slot an id may sit and still be indexed
+        /// densely. The dense vector is therefore bounded by
+        /// `slots.len() + this`, whatever order the ids arrive in.
+        const DENSE_INDEX_SLACK: usize = 1024;
+
+        let id = interval.0 as usize;
+        if let Some(&at) = self.index.get(id) {
+            if at != 0 {
+                return at as usize;
+            }
+        }
+        // Only ever non-empty on the sparse path, so the common case pays one
+        // branch on a length rather than a descent.
+        if !self.sparse.is_empty() {
+            if let Some(&at) = self.sparse.get(&interval) {
+                return at as usize;
+            }
+        }
+        if id >= self.index.len()
+            && id <= self.slots.len().saturating_add(DENSE_INDEX_SLACK)
+            // The invariant: never grow past an id the sparse map holds.
+            && self.sparse.keys().next().is_none_or(|low| id < low.0 as usize)
+        {
+            // GROW TO THE ID AND NO FURTHER. `resize` zero-fills, and zero is
+            // the absent state, so there is no separate initialisation pass.
+            self.index.resize(id + 1, 0);
+        }
+        self.slots.push(IntervalAnnot::default());
+        // `slots.len()` is the position PLUS ONE by construction, which is
+        // exactly what both tables store.
+        let at = self.slots.len() as u32;
+        if id < self.index.len() {
+            self.index[id] = at;
+        } else {
+            self.sparse.insert(interval, at);
+        }
+        at as usize
     }
 
     /// One interval's annotations, or `None` when nothing has been recorded
     /// against it.
     fn slot(&self, interval: IntervalId) -> Option<&IntervalAnnot> {
-        self.per_interval.get(&interval)
+        let at = match self.index.get(interval.0 as usize).copied() {
+            Some(at) if at != 0 => at,
+            // Absent from the dense index, or present as the zero that means
+            // "no entry" — either way the sparse tail is the other place it
+            // could be. See `place`.
+            _ => *self.sparse.get(&interval)?,
+        };
+        self.slots.get(at as usize - 1)
     }
 
     /// How many CLOSING images this interval's consumers asked for.
@@ -476,9 +597,7 @@ impl Annotations {
 
     /// Record one extra closing image's arena offset.
     pub fn push_closing_image(&mut self, interval: IntervalId, offset: u32) {
-        self.per_interval
-            .entry(interval)
-            .or_default()
+        self.slot_mut(interval)
             .closing
             .get_or_insert_with(ClosingImages::default)
             .extra
@@ -570,7 +689,7 @@ impl Annotations {
     }
 
     pub fn set_samples(&mut self, interval: IntervalId, images: SampleImages) {
-        self.per_interval.entry(interval).or_default().samples = Some(images);
+        self.slot_mut(interval).samples = Some(images);
     }
 
     pub fn samples(&self, interval: IntervalId) -> Option<&SampleImages> {
@@ -579,10 +698,27 @@ impl Annotations {
 
     /// ASCENDING BY INTERVAL ID, which is what the map-keyed spelling produced
     /// and what `close_witnesses` walks in.
-    pub fn sampled_intervals(&self) -> impl Iterator<Item = (&IntervalId, &SampleImages)> {
-        self.per_interval
-            .iter()
-            .filter_map(|(id, slot)| slot.samples.as_ref().map(|images| (id, images)))
+    ///
+    /// The index is walked, not the slots: the slots are in first-annotation
+    /// order and the index is in id order, so this is where the guarantee in
+    /// the sentence above actually comes from. The id is yielded BY VALUE
+    /// because there is no longer a stored key to borrow — `IntervalId` is a
+    /// `Copy` newtype over a `u32`, so nothing is copied that was not already.
+    pub fn sampled_intervals(&self) -> impl Iterator<Item = (IntervalId, &SampleImages)> {
+        let dense = self.index.iter().enumerate().filter_map(move |(id, at)| {
+            let slot = self.slots.get((*at as usize).checked_sub(1)?)?;
+            slot.samples
+                .as_ref()
+                .map(|images| (IntervalId(id as u32), images))
+        });
+        // CHAINED, NOT MERGED, and `place`'s invariant is the whole licence for
+        // that: every sparse key is at least `index.len()`, so every dense id
+        // precedes every sparse one and both halves are already ascending.
+        let sparse = self.sparse.iter().filter_map(move |(id, at)| {
+            let slot = self.slots.get((*at as usize).checked_sub(1)?)?;
+            slot.samples.as_ref().map(|images| (*id, images))
+        });
+        dense.chain(sparse)
     }
 
     /// Tag `interval` with the stage of an op that reached it. Stages are a set:
@@ -601,76 +737,36 @@ impl Annotations {
             .unwrap_or(&[])
     }
 
-    /// Modelled footprint. Approximate in the same way
-    /// [`super::arena::hash_table_bytes`] is: node overhead is modelled, not
-    /// measured, because a `BTreeMap`'s allocation is not observable.
     /// Modelled footprint.
     ///
-    /// # Modelled from `size_of`, not from a constant somebody guessed
+    /// # It models the structure that exists, and that structure changed
     ///
-    /// A `BTreeMap` entry costs the KEY, the VALUE INLINE, and the node's own
-    /// per-entry overhead. The earlier version charged one flat 48 bytes per
-    /// entry, which is less than a `Consumption` alone: that value holds two
-    /// `Vec` headers at 24 bytes each. At a hundred thousand masked intervals
-    /// the ledger under-reported by more than a megabyte, and an under-model is
-    /// custody the ceiling never sees — the one direction the accounting must
-    /// not fail in.
+    /// This charged `BTreeMap` NODES — fixed arrays allocated whole whatever
+    /// their fill — because that is what the table was. It is two vectors now
+    /// (lane HL), and a `Vec`'s allocation, unlike a node's, IS observable:
+    /// `capacity()` is the number the allocator was asked for. So the model no
+    /// longer estimates anything about the container itself. The one estimate
+    /// that survives is `Vec::capacity` on the inline `Vec`s each slot owns,
+    /// which is likewise exact.
     ///
-    /// # A NODE is allocated whole, so the model charges nodes, not entries
+    /// CAPACITY AND NOT LENGTH, in both vectors. Both grow by doubling, so a
+    /// table holding 21,056 slots may hold 32,768 slots' worth of allocation,
+    /// and charging the length would under-report by a third at the worst
+    /// moment. An under-model is custody the ceiling never sees — the one
+    /// direction this accounting must not fail in.
     ///
-    /// A `BTreeMap` leaf holds fixed arrays for [`BTREE_CAPACITY`] keys and the
-    /// same number of values and is allocated at that size whatever its current
-    /// length. Charging one key plus one initialised value per entry therefore
-    /// under-reports every sparse node — and an under-model is custody the
-    /// ceiling never sees, which is the one direction this accounting must not
-    /// fail in.
+    /// THE INDEX IS CHARGED TOO, and it is the term that did not exist before:
+    /// four bytes for every interval id up to the highest annotated one,
+    /// whether or not that id was annotated. On a dense recipe it is noise
+    /// against the slots; on a sparse one it is the whole charge, which is
+    /// correct — it is the whole allocation.
     ///
-    /// So the charge is `nodes * node_size`, with the node count bounded from
-    /// above: every leaf except the root holds at least [`BTREE_MIN_FILL`]
-    /// entries, so `1 + len / BTREE_MIN_FILL` is an upper bound on the leaves,
-    /// and internal nodes are strictly fewer again and are covered by the same
-    /// `+1` on small maps and by the slack on large ones. The heap each inline
-    /// `Vec` owns is then added per entry, because that part is real and is not
-    /// part of the node.
-    ///
-    /// It over-charges, deliberately. Over-charging costs an observation
-    /// headroom it did not need; under-charging costs the ceiling its meaning.
+    /// It over-charges, deliberately, wherever it estimates at all.
+    /// Over-charging costs an observation headroom it did not need;
+    /// under-charging costs the ceiling its meaning.
     pub fn capacity_bytes(&self) -> u64 {
-        /// Entries a `BTreeMap` node reserves slots for, whatever its length.
-        const BTREE_CAPACITY: u64 = 11;
-        /// Entries every non-root leaf holds at least.
-        const BTREE_MIN_FILL: u64 = 5;
-        /// A node's own header: parent pointer, parent index, length, and the
-        /// edge array on an internal node.
-        const NODE_HEADER: u64 = 128;
-
-        let table = |len: usize, value: usize, heap: u64| -> u64 {
-            if len == 0 {
-                return 0;
-            }
-            let node = NODE_HEADER
-                + BTREE_CAPACITY
-                    * (std::mem::size_of::<IntervalId>() as u64 + value as u64);
-            let nodes = 1 + len as u64 / BTREE_MIN_FILL;
-            nodes * node + heap
-        };
-
-        // ONE TABLE, because there is one map. The five separate charges this
-        // replaces summed five node arrays for an interval that appeared in all
-        // five; the merged entry is one node array holding one value that
-        // carries all five fields, and `size_of::<IntervalAnnot>()` is that
-        // value. The heap each of its `Vec`s owns is added per entry exactly as
-        // before, because that part is real and is not part of the node.
-        //
-        // IT IS NOT UNIFORMLY CHEAPER OR DEARER THAN THE FIVE, and that is
-        // worth saying because this figure decides when an observation at the
-        // ceiling refuses: an interval that carried all five is charged one node
-        // slot where it was charged five, and an interval that carried only a
-        // stage is charged a whole `IntervalAnnot` where it was charged a
-        // `Vec<u16>`. The model still tracks the structure that exists, which is
-        // the only property it has to have.
         let mut heap = 0u64;
-        for slot in self.per_interval.values() {
+        for slot in self.slots.iter() {
             if let Some(consumption) = &slot.consumed {
                 heap += vec_bytes(&consumption.spans) + vec_bytes(&consumption.strided);
                 for mask in &consumption.strided {
@@ -687,11 +783,33 @@ impl Annotations {
             heap += vec_bytes(&slot.stages);
         }
 
-        table(
-            self.per_interval.len(),
-            std::mem::size_of::<IntervalAnnot>(),
-            heap,
-        )
+        // The same model `vec_bytes` applies to every inline `Vec` above,
+        // spelled out here because these two are the CONTAINER and a reader
+        // checking the ledger against the allocator should see the two terms
+        // named: `capacity`, not `len`, times the element size.
+        let index = self.index.capacity() as u64 * std::mem::size_of::<u32>() as u64;
+        let slots = self.slots.capacity() as u64 * std::mem::size_of::<IntervalAnnot>() as u64;
+        // THE SPARSE TAIL IS STILL A `BTreeMap` AND IS STILL CHARGED AS NODES,
+        // for the reason the whole table used to be: a node is allocated whole
+        // whatever its fill, so charging entries under-reports every sparse
+        // node, and under-charging is the direction this must not fail in.
+        // Every non-root leaf holds at least `BTREE_MIN_FILL`, so
+        // `1 + len / BTREE_MIN_FILL` bounds the leaves from above and internal
+        // nodes are strictly fewer again. Zero on every production path,
+        // because `place` never reaches the sparse table there.
+        const BTREE_CAPACITY: u64 = 11;
+        const BTREE_MIN_FILL: u64 = 5;
+        const NODE_HEADER: u64 = 128;
+        let sparse = if self.sparse.is_empty() {
+            0
+        } else {
+            let node = NODE_HEADER
+                + BTREE_CAPACITY
+                    * (std::mem::size_of::<IntervalId>() as u64
+                        + std::mem::size_of::<u32>() as u64);
+            (1 + self.sparse.len() as u64 / BTREE_MIN_FILL) * node
+        };
+        index + slots + sparse + heap
     }
 
     /// Bring the ledger up to this table's real footprint. Reconciled rather

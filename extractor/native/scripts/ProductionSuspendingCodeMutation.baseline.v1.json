@@ -380,18 +380,7 @@
                       "performs_suspending_code_mutation":  false,
                       "delegates_suspending_code_mutation":  true,
                       "direct_evidence":  [
-                                              {
-                                                  "file":  "extractor/native/lanes/land_combat_detail_events_live/src/a729_hook.rs",
-                                                  "capability":  "FlushInstructionCache",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              },
-                                              {
-                                                  "file":  "extractor/native/lanes/land_combat_detail_events_live/src/a729_hook.rs",
-                                                  "capability":  "VirtualProtect",
-                                                  "kind":  "direct_call",
-                                                  "count":  1
-                                              }
+
                                           ],
                       "delegated_patchers":  [
                                                  {

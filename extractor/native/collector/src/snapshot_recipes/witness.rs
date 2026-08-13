@@ -142,6 +142,25 @@ impl SnapshotBuild {
         // nobody else's.
         let mut torn: Vec<IntervalId> = Vec::new();
         let mut uncertified: Vec<(IntervalId, ConsumerId)> = Vec::new();
+        // THE LOOKUP BELOW IS A LINEAR SCAN INSIDE THIS LOOP, and lane HL
+        // (task #185) left it there deliberately after measuring it.
+        //
+        // `intervals().iter().position(..)` walks every interval in the
+        // snapshot to find one, so the pair is quadratic in the interval count
+        // — d81's production shape is 21,056 intervals. It is NOT reached on
+        // any shape this repo currently runs: the scan sits behind
+        // `images.anyone_gaps()`, and the only production recipe with this many
+        // intervals is d81's copy plan, whose two `SampleSpec`s both declare
+        // `DisagreeAction::Record` (`d81_copy_bracket.rs`, the `samples`
+        // assignments) and therefore set `gap_on_disagree` false on every ask.
+        // An indexed spelling was written and measured against the base at four
+        // shapes up to 84,226 transactions and moved nothing, which is what
+        // "never reached" predicts; it was reverted rather than kept as an
+        // unpriced change (`runs/hl_d81_span/AB_SUBSTRATE.txt`).
+        //
+        // WHAT WOULD MAKE IT HOT, stated so this is a measurement and not a
+        // shrug: one recipe declaring `DisagreeAction::Gap` at d81's interval
+        // count. Residual HL-2, owner: the S4 substrate lane.
         for (id, images) in snapshot.annotations().sampled_intervals() {
             // SHORTNESS IS PER CONSUMER. A recipe that asked for three images
             // and got two is short; a recipe that asked for two and got them is
@@ -149,7 +168,7 @@ impl SnapshotBuild {
             // of the interval instead of the request is how one recipe's
             // stricter requirement takes its neighbour's hour.
             for consumer in images.unmet() {
-                uncertified.push((*id, consumer));
+                uncertified.push((id, consumer));
             }
             // The comparison itself is only worth running if somebody wants to
             // be gapped by it.
@@ -159,7 +178,7 @@ impl SnapshotBuild {
             let Some(position) = snapshot
                 .intervals()
                 .iter()
-                .position(|record| record.id() == *id)
+                .position(|record| record.id() == id)
             else {
                 continue;
             };
@@ -173,7 +192,7 @@ impl SnapshotBuild {
                     break;
                 }
                 let second = second as usize;
-                disagreed = match snapshot.annotations().consumption(*id) {
+                disagreed = match snapshot.annotations().consumption(id) {
                     Some(consumption) => !consumption.images_agree(
                         record.span(),
                         snapshot.raw(first, len),
@@ -183,7 +202,7 @@ impl SnapshotBuild {
                 };
             }
             if disagreed {
-                torn.push(*id);
+                torn.push(id);
             }
         }
 
