@@ -24,6 +24,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -93,11 +94,39 @@ def _redact_cmd(cmd: list[str]) -> list[str]:
     return [_redact_text(part) for part in cmd]
 
 
+def _report_strings(value: Any) -> Iterator[str]:
+    """Every string a report carries -- object keys included.
+
+    Tuples are traversed alongside lists: `json.dumps` writes a tuple as an
+    array, so a path hidden in one reaches the emitted report exactly like a
+    path in a list, and skipping them would be fail-open.
+    """
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str):
+                yield key
+            yield from _report_strings(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _report_strings(child)
+    elif isinstance(value, str):
+        yield value
+
+
 def assert_no_report_path_leaks(report: dict[str, Any]) -> None:
-    text = json.dumps(report, ensure_ascii=False, sort_keys=True)
-    leaked = [pat for pat in _FORBIDDEN_REPORT_PATTERNS if pat in text]
-    if _DRIVE_ABS_IN_JSON.search(text):
-        leaked.append("drive-letter absolute path")
+    # Scan the string VALUES, never the serialized document. `[A-Za-z]:[\\/]`
+    # applied to JSON text also matches an ordinary word ending in a colon
+    # whenever the next character is one JSON escapes with a backslash, because
+    # the escape supplies the "\" the pattern is looking for. Cargo emits
+    # exactly that: "...present in multiple build targets:\n" serializes as
+    # `targets:\\n`, whose `s:\` tripped this gate on every run and stopped the
+    # report from ever being written -- while a real `C:\Users\Example value is
+    # still caught here, unescaped, in the string it actually lives in.
+    leaked: list[str] = []
+    for text in _report_strings(report):
+        leaked.extend(pat for pat in _FORBIDDEN_REPORT_PATTERNS if pat in text)
+        if _DRIVE_ABS_IN_JSON.search(text):
+            leaked.append("drive-letter absolute path")
     if leaked:
         raise AssertionError(f"localisation gate report leaked path metadata: {sorted(set(leaked))}")
 
