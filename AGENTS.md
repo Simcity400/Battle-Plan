@@ -150,7 +150,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts
   install/capture corpus/live process/sleep/soak. Evidence-dependent tests go in
   the soak/evidence tiers and never silently pass when evidence is absent.
 - `-CacheMode Iterative` for repeated edits, `Reusable` for clean/worktree
-  builds, `-Timings` for an HTML timing report. Shared target dir is
-  `.cargo-target` (do not override; first build is cold).
+  builds, `-Timings` for an HTML timing report.
+- **Per-checkout target dirs (owner, 2026-08-13):** every checkout builds into
+  its OWN `<checkout>\.cargo-target` — this happens automatically when you run
+  your own checkout's validation script or cargo from your checkout root (the
+  `.cargo/config.toml` path is relative). NEVER point `CARGO_TARGET_DIR` at
+  another checkout's target dir; cross-checkout sharing is what produced the
+  stale-rlib false alarms and rebuild storms. First build per worktree is cold —
+  that is the accepted price.
+- **Cleanup law (owner, 2026-08-13):** a lane's build output lives and dies
+  with its worktree. On completion, lanes delete their own temp/scratch files
+  (mktemp outputs they created, stray logs outside the run directory); the
+  orchestrator reclaims the worktree — including its `.cargo-target` (~10-16 GB)
+  — at merge push. Nothing a finished lane made may outlive its retirement
+  except the committed evidence in `runs/`.
 - Gate discipline: capture the cargo exit code before any pipe.
 - Test-quality audit: `python extractor/native/scripts/Audit-RustTests.py`.
