@@ -1186,10 +1186,25 @@ try {
             "--repo-root",
             $repoRoot
         )
+        # -Full: THE ONE VERIFICATION PER BATTERY THAT CONSULTS NO CACHE.
+        #
+        # The gate remembers each file's result, keyed on that file's bytes, on
+        # the allowance, on the script and on every question its resolution asked
+        # about the rest of the tree; a file whose recorded inputs all still hold
+        # is not swept again. That is what took `recorder_host`'s
+        # `citation_integrity` test - the same script, run from inside the cargo
+        # suite - from 70.8 s to a warm couple of seconds, and it is 66% of the
+        # time the Extractor serial half holds the machine-wide mutex.
+        #
+        # This invocation is the belt to that braces. It runs OUTSIDE the mutex,
+        # where a minute costs the machine nothing it was holding, so a landing
+        # never depends on the cache being right - and it leaves the cache warm
+        # for the cargo run that follows it in the same battery.
         Invoke-Checked -Program "python" -Arguments @(
             $citationIntegrityVerifier,
             "--repo-root",
-            $repoRoot
+            $repoRoot,
+            "--full"
         )
     }
 

@@ -75,18 +75,53 @@ ADDED, and both accept an unused allowance entry, so the cost of the overlap is
 one extra allowance edit on the rare occasion a new world_fold line number is
 deliberately grandfathered -- and the benefit is that neither gate's coverage
 depends on the other still existing.
+
+WHY THERE IS A CACHE.  Lane JD timed a full battery and found this gate, as run
+by ``recorder_host``'s ``citation_integrity`` test, was 70.8 s of the 106.6 s the
+Extractor serial half holds the machine-wide mutex -- 66% of it, one test.  Lane
+JN profiled where that goes: the three citation patterns swept over the 98.2 MB
+of text in the scan set cost 61.4 s of a 64.5 s run, and everything else --
+walking the tree, sniffing it for binaries, reading every byte and hashing it --
+costs 0.7 s together.  The whole of the expense is re-asking a question about
+files that did not change.
+
+WHAT MAKES SKIPPING IT SOUND.  Verifying ONE citing file is a deterministic
+function of that file's bytes, of the allowance, of this script, and of a set of
+QUESTIONS ABOUT THE REST OF THE TREE -- which files carry a basename, how long
+one is, what names it declares.  ``Tree`` is the only route to those questions,
+so every one of them is recorded, with the answer it gave, while the file is
+verified.  A cached result is reused only when the file's bytes hash the same AND
+every recorded question still gives the recorded answer; by determinism the run
+would then replay identically, so the recorded result IS this run's result.
+Anything else -- one recorded answer that moved, a cache written by another
+allowance or another copy of this script, a cache that will not parse, an entry
+whose own digest does not match its contents -- verifies the file again.  The
+cache is therefore incapable of hiding a citation: it can only be slower than it
+could have been.
+
+Two consequences worth stating plainly.  A changed ALLOWANCE or a changed SCRIPT
+re-verifies the whole tree, because both are inputs to every file's result and
+both are hashed into the cache's key.  And ``--full`` ignores the cache for
+reading while still refreshing it, which is what the central validation runner
+passes: every landing gets one verification that consulted no cache at all, and
+it leaves the cache warm for the in-lane runs that follow.  ``--full`` is not a
+second implementation of the rules -- both paths call the same ``verify_one``,
+and the only difference between them is whether a recorded result is consulted.
 """
 
 from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 import importlib.util
 import io
 import json
+import marshal
 import os
 import re
 import sys
+import types
 import unicodedata
 from collections import Counter
 from pathlib import Path
@@ -124,14 +159,33 @@ BINARY_SUFFIXES = frozenset(
 # How much of a file to sniff for a NUL byte before calling it text.
 BINARY_SNIFF_BYTES = 8192
 
-# The one file that must NOT be scanned: this gate's own allowance, whose KEYS
-# are citations.  Scanning it would read every grandfathered citation back as a
-# fresh citation of the allowance file, and the ratchet would demand the
-# allowance grandfather itself.  Named by path, not by suffix, so `.json`
-# documents (the dossiers carry real item citations) are still covered.
-UNSCANNED = ("extractor/native/scripts/citation_integrity_allowance.json",)
+# The files that must NOT be scanned.
+#
+# The allowance, whose KEYS are citations.  Scanning it would read every
+# grandfathered citation back as a fresh citation of the allowance file, and the
+# ratchet would demand the allowance grandfather itself.  Named by path, not by
+# suffix, so `.json` documents (the dossiers carry real item citations) are still
+# covered.
+#
+# The cache, for the same reason twice over: it records the citations each file
+# was found to carry, and a failure message it caches spells the citation that
+# failed.  Its directory is in `SKIP_DIRS` already, so this is the second of two
+# independent reasons it is not scanned rather than the only one -- a cache that
+# became visible to the scan would fail the gate with citations nobody wrote.
+UNSCANNED = (
+    "extractor/native/scripts/citation_integrity_allowance.json",
+    "target/citation_integrity_cache.json",
+)
 
 ALLOWANCE = Path("extractor/native/scripts/citation_integrity_allowance.json")
+
+# Where a verified result is remembered.  Under `target/`, which is git-ignored
+# at the repository root and is in `SKIP_DIRS`, so the cache is neither committed
+# nor scanned.  A `cargo clean` removes it, and removing it costs one full run.
+CACHE = Path("target/citation_integrity_cache.json")
+# Bumped whenever the shape of an entry changes.  It is hashed into the cache
+# key, so an older cache is not misread -- it is discarded and rebuilt.
+CACHE_SCHEMA = "battle-plan.citation_integrity_cache.v1"
 
 # Directory names that never contain a file worth indexing or scanning.
 # `target` and `.cargo-target` are build outputs: a basename that resolves into
@@ -715,11 +769,39 @@ SCOPE_HEADER = re.compile(
 )
 
 
+class Dependencies:
+    """Every question one file's verification asked about the rest of the tree.
+
+    Two kinds, because the tree answers two kinds:
+
+    * ``candidates`` -- "which indexed files could this citation name?", whose
+      answer depends on the SET of `.rs` paths.  A new file appearing, or an old
+      one being deleted or moved, changes an answer here and nothing else would
+      notice: no file's CONTENT changed when `lib.rs` number 72 was added, yet
+      every bare citation of that basename just became ambiguous.
+    * ``files`` -- "how long is this file / what does it declare?", whose answer
+      depends on that file's CONTENT, recorded as the digest it had.
+
+    Recorded by `Tree` itself rather than by its callers, so a new question
+    cannot be added to the gate and forgotten here: the three content methods and
+    the candidate lookup are the whole of the tree's surface, and each records
+    itself.
+    """
+
+    def __init__(self) -> None:
+        self.candidates: dict[tuple[str, str], list[str]] = {}
+        self.files: dict[str, str] = {}
+
+
 class Tree:
     """The cited side: every `.rs` file in the repository, read at most once."""
 
-    def __init__(self, repo_root: Path) -> None:
+    def __init__(self, repo_root: Path, store: "FileStore | None" = None) -> None:
         self.repo_root = repo_root
+        self.store = store if store is not None else FileStore(repo_root)
+        # Set to a `Dependencies` while one citing file is being verified; every
+        # question asked in that window is recorded into it.
+        self.recording: Dependencies | None = None
         self.by_basename: dict[str, list[str]] = {}
         self._lines: dict[str, int] = {}
         self._defined: dict[str, frozenset[str]] = {}
@@ -738,7 +820,12 @@ class Tree:
             paths.sort()
 
     def _text(self, relative: str) -> str:
-        return read_text(self.repo_root / relative)
+        return self.store.text(relative)
+
+    def _consulted(self, relative: str) -> None:
+        """Note that this run's answer depended on ``relative``'s content."""
+        if self.recording is not None and relative not in self.recording.files:
+            self.recording.files[relative] = self.store.digest(relative)
 
     def line_count(self, relative: str) -> int:
         """PHYSICAL lines.
@@ -748,6 +835,7 @@ class Tree:
         and reported 1 for an empty file.  (Codex review round 2, finding 3.)
         The text is not retained: `attach_log.rs` alone is 5 MB.
         """
+        self._consulted(relative)
         if relative not in self._lines:
             self._lines[relative] = len(self._text(relative).splitlines())
         return self._lines[relative]
@@ -760,6 +848,7 @@ class Tree:
         string literal, declare nothing a citation can reach, and all three used
         to satisfy one.  (Codex review round 6, finding 3.)
         """
+        self._consulted(relative)
         if relative not in self._defined:
             names: set[str] = set()
             for declared, _members in self.scope_members(relative).values():
@@ -769,6 +858,7 @@ class Tree:
 
     def scope_members(self, relative: str) -> dict[tuple[str, ...], frozenset[str]]:
         """route -> what that route declares.  Built once per file; see `index_scopes`."""
+        self._consulted(relative)
         if relative not in self._scopes:
             self._scopes[relative] = index_scopes(self._text(relative))
         return self._scopes[relative]
@@ -784,13 +874,22 @@ class Tree:
         """
         indexed = self.by_basename.get(base, [])
         if not path:
-            return list(indexed)
-        wanted = (path + base).replace("\\", "/")
-        return [
-            relative
-            for relative in indexed
-            if relative == wanted or relative.endswith("/" + wanted)
-        ]
+            answer = list(indexed)
+        else:
+            wanted = (path + base).replace("\\", "/")
+            answer = [
+                relative
+                for relative in indexed
+                if relative == wanted or relative.endswith("/" + wanted)
+            ]
+        # EVERY lookup is recorded, including the ones `cited_path` makes while
+        # deciding how much of a spaced filename the author wrote. Which spelling
+        # wins there depends on which of them names an indexed file, so a cache
+        # that recorded only the final lookup would miss a new file changing that
+        # decision.
+        if self.recording is not None:
+            self.recording.candidates[(path, base)] = answer
+        return answer
 
     def defines(self, relative: str, item_path: str) -> bool:
         """Is ``item_path`` a real route through ``relative``?
@@ -950,8 +1049,8 @@ def _walk_error(error: OSError) -> None:
     raise VerificationError(f"cannot list {error.filename}: {error}")
 
 
-def read_text(path) -> str:
-    """Read a file, or say which one could not be read.
+def read_bytes(path) -> bytes:
+    """Read a file's bytes, or say which one could not be read.
 
     An unguarded read raised a bare `OSError` that `main` did not catch, so a
     permission problem crashed the gate with a traceback instead of naming the
@@ -959,10 +1058,203 @@ def read_text(path) -> str:
     file whose citations it has not checked, so this is an error, never a skip.
     """
     try:
-        with io.open(path, encoding="utf-8", errors="replace") as handle:
+        with io.open(path, "rb") as handle:
             return handle.read()
     except OSError as error:
         raise VerificationError(f"cannot read {path}: {error}") from error
+
+
+def decode(data: bytes) -> str:
+    """A file's bytes as this gate reads them: UTF-8, replacing, universal newlines.
+
+    THE ONE DECODER.  The bytes are needed anyway -- the cache keys a file's
+    result on their digest -- so reading text a second way would be a second
+    answer to "what does this file say", and the two would drift over a BOM, a
+    lone CR, or an invalid sequence. `io.TextIOWrapper` over the bytes is not a
+    re-implementation of `io.open`'s text mode: it is the same class `io.open`
+    itself layers on the file, with the same defaults, so the two cannot decode
+    differently. `test_verify_citation_integrity.py` holds them to that over
+    CRLF, a BOM, a lone CR and invalid UTF-8.
+    """
+    return io.TextIOWrapper(io.BytesIO(data), encoding="utf-8", errors="replace").read()
+
+
+def digest_bytes(data: bytes) -> str:
+    """The content identity a cached result is keyed on."""
+    return hashlib.blake2b(data, digest_size=32).hexdigest()
+
+
+def read_text(path) -> str:
+    """Read a file as text, or say which one could not be read."""
+    return decode(read_bytes(path))
+
+
+def _script_digest() -> "str | None":
+    """This script's identity: the CODE THAT IS RUNNING, not a file on disk.
+
+    Every cached result is filed under a key containing this, so that editing the
+    gate re-verifies the tree rather than leaving anyone to judge whether their
+    edit was cache-safe.
+
+    READING THE FILE CANNOT ESTABLISH THIS, at any moment.  Python compiles the
+    source once, at import; a read taken afterwards -- however soon afterwards --
+    can return different bytes, and the run would then verify under the compiled
+    rules while filing its results under the key of rules it never ran.  A later
+    process running those newer rules would reuse them.  Moving the read earlier
+    narrows that window without closing it. (Codex review rounds 1 and 2, finding
+    1 both times.)
+
+    So the digest is taken over the module's own CODE OBJECT, reached through the
+    importing frame -- the object CPython compiled and is now executing, which no
+    edit to the file can change underneath it.  `marshal` carries a code object's
+    bytecode, its constants and every function and class body defined in it
+    (each is a constant of the module's code), and it sorts frozenset constants
+    precisely so that its output is reproducible between processes.
+
+    WHAT THIS DELIBERATELY DOES NOT NOTICE: a change to this file that leaves the
+    compiled code identical -- a `#` comment, blank lines, reformatting. Such an
+    edit cannot change how any OTHER file is verified, because the rules are the
+    code. It does change THIS file's own citing-side content, and that is caught
+    the ordinary way: this file is in the scan set, so its entry is keyed on its
+    bytes like everyone else's.
+
+    The direction that has to hold is: a change to how this gate BEHAVES always
+    moves the digest.  It does -- behaviour lives in the bytecode, the constants
+    and the names, and all three are marshalled.  The converse is not claimed and
+    does not need to be: an edit that moves code around without changing it moves
+    the line table and re-verifies the tree for nothing, which costs one cold run.
+
+    An interpreter that cannot supply its own frame, or a code object that will
+    not marshal, returns ``None`` -- and a run without an identity for its own
+    rules neither reads nor writes the cache, and says so.  It must not fall back
+    to a per-process invention: that reads as an ordinary cold run every time,
+    which is precisely how a cache silently stops working.
+    """
+    try:
+        return code_digest(sys._getframe(1).f_code)
+    except (AttributeError, ValueError, TypeError, RecursionError):
+        return None
+
+
+# THE MARSHAL VERSION IS PART OF THE CORRECTNESS, not a detail.
+#
+# Versions 3 and 4 carry a REFERENCE TABLE: an object that appears twice is
+# written once and back-referenced, and whether two equal strings are one object
+# depends on what the running process happened to intern earlier.  So the modern
+# spellings encode object IDENTITY as well as value, and the same source
+# compiled in two processes -- or in one process at two moments -- can marshal to
+# different bytes.  Measured, not feared: compiling this file before and after an
+# unrelated test in the same interpreter produced two different version-4 blobs,
+# differing in exactly one byte, the FLAG_REF bit on an interned string.
+#
+# That would not have failed anything loudly.  It would have given each run a key
+# no other run computes, and the cache would simply never be reused again -- this
+# gate quietly back to 70 s with every test still green.  Version 2 predates the
+# reference table, so its output is a function of the code's VALUE alone; it is
+# larger and slower to produce, and neither matters for one hash of one module.
+CODE_MARSHAL_VERSION = 2
+
+
+def code_digest(code) -> str:
+    """A digest of what a code object DOES, identical in every process."""
+    return digest_bytes(marshal.dumps(_anonymous(code), CODE_MARSHAL_VERSION))
+
+
+def _anonymous(code):
+    """A code object with every filename in it removed, nested ones included.
+
+    `co_filename` is marshalled with the rest, so without this the digest would
+    be an identity for "this gate, at this path" rather than for this gate -- and
+    the thing being claimed is that the RULES decide the key, not where the file
+    happens to sit.  The nested walk is what makes it true of every function and
+    class body as well as of the module.
+    """
+    constants = tuple(
+        _anonymous(constant) if isinstance(constant, types.CodeType) else constant
+        for constant in code.co_consts
+    )
+    return code.replace(co_filename="", co_consts=constants)
+
+
+SCRIPT_DIGEST = _script_digest()
+
+
+class FileStore:
+    """Reads a file once, and remembers only its digest.
+
+    The digest is what the cache compares; the TEXT is deliberately not
+    retained, because the scan set is 98 MB and `attach_log.rs` alone is 6 MB --
+    the pre-cache gate held one file's text at a time and this must not regress
+    that. Digests are small and are kept for the whole run, so a file that is
+    both cited and citing is read once and hashed once.
+    """
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+        self._digests: dict[str, str] = {}
+
+    def text(self, relative: str) -> str:
+        """The file's text; its digest is memoized on the way past."""
+        return decode(self._read(relative))
+
+    def digest(self, relative: str) -> str:
+        """The digest of the file's bytes, reading it if it has not been read.
+
+        DECODING IS NOT DONE HERE.  A warm run wants the digest of every file in
+        the scan set and the text of none of them, and decoding 98 MB it will not
+        look at was a third of that run.
+        """
+        if relative not in self._digests:
+            self._read(relative)
+        return self._digests[relative]
+
+    def digest_of_present(self, relative: str) -> str | None:
+        """The digest, or ``None`` for a file that is no longer there.
+
+        Used only when re-checking a cached dependency: a dependency that has
+        been DELETED is a changed answer, not an error, and the file that
+        depended on it is verified again -- which is where its disappearance is
+        reported, if it matters.
+        """
+        if relative in self._digests:
+            return self._digests[relative]
+        if not (self.repo_root / relative).is_file():
+            return None
+        try:
+            return self.digest(relative)
+        except VerificationError:
+            return None
+
+    def _read(self, relative: str) -> bytes:
+        """The file's bytes, digesting them on the way past.
+
+        The bytes are not retained -- see the class docstring -- so a file whose
+        TEXT is wanted after its digest has been taken is read a second time.
+        That is one file in the scan set per stale cache entry, and keeping 98 MB
+        alive to save it would trade a bounded read for an unbounded footprint.
+
+        ONE FILE HAS ONE CONTENT FOR THE WHOLE RUN, and a second read that
+        disagrees with the first is refused rather than absorbed.  Without this,
+        a file edited WHILE the gate ran could be analysed at one version and
+        recorded at another: `Tree` memoizes a file's declarations the first time
+        a citation resolves against it, a later read as a CITING file would move
+        the remembered digest to the new bytes, and a citation resolved after
+        that would be recorded as depending on bytes it was never checked
+        against -- an entry that then looks valid for ever. (Codex review round 4,
+        finding 2.)  A tree that changes underneath a verification cannot be
+        verified; the run says so and the next one is clean.
+        """
+        data = read_bytes(self.repo_root / relative)
+        digest = digest_bytes(data)
+        known = self._digests.get(relative)
+        if known is not None and known != digest:
+            raise VerificationError(
+                f"{relative} changed while this run was reading the tree, so "
+                f"what was checked and what would be recorded are two different "
+                f"files. Nothing has been recorded; run the gate again."
+            )
+        self._digests[relative] = digest
+        return data
 
 
 def is_text_file(full_path: str, name: str) -> bool:
@@ -986,6 +1278,28 @@ def is_text_file(full_path: str, name: str) -> bool:
     return b"\x00" not in head
 
 
+def read_allowance(repo_root: Path) -> tuple[bytes, dict]:
+    """The allowance's BYTES and the object they parse to, from ONE read.
+
+    THE TWO MUST COME FROM THE SAME READ.  The bytes are hashed into the cache
+    key and the object decides what is grandfathered, so reading the file twice
+    admits a run that verifies under one allowance and RECORDS the result under
+    the key of another -- and unlike an ordinary read-while-changing race, that
+    one persists: the next run parses the new allowance, computes the key the
+    stale results were filed under, and reuses them. (Codex review round 1,
+    finding 1.) One read, one truth, and a caller that cannot get them apart.
+    """
+    path = repo_root / ALLOWANCE
+    if not path.is_file():
+        raise VerificationError(
+            f"the citation allowance {ALLOWANCE.as_posix()} is missing; it is "
+            f"the record of which line citations are grandfathered, and without "
+            f"it this gate cannot tell an old citation from a new one"
+        )
+    data = read_bytes(path)
+    return data, _parse_allowance(path, data)
+
+
 def load_allowance(repo_root: Path) -> dict:
     """The grandfathered set, or a hard failure.
 
@@ -995,16 +1309,20 @@ def load_allowance(repo_root: Path) -> dict:
     gate this repository has already been burned by.  Failing on absence makes
     the two states distinguishable.
     """
-    path = repo_root / ALLOWANCE
-    if not path.is_file():
-        raise VerificationError(
-            f"the citation allowance {ALLOWANCE.as_posix()} is missing; it is "
-            f"the record of which line citations are grandfathered, and without "
-            f"it this gate cannot tell an old citation from a new one"
-        )
+    return read_allowance(repo_root)[1]
+
+
+def _parse_allowance(path: Path, data: bytes) -> dict:
+    """Validate the allowance's shape, given the bytes it was read as."""
+    # `RecursionError` IS ONE OF THESE, and unlike the cache it must be FATAL.
+    # An allowance too nested for the parser is an allowance nobody knows the
+    # contents of; continuing with an empty one would fail every citation in the
+    # tree, and continuing with a partial one is worse. It is a `RuntimeError`,
+    # so a `ValueError` catch let it out of `main` as a traceback instead of the
+    # named failure this gate promises. (Codex review round 2, finding 3.)
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        loaded = json.loads(decode(data))
+    except (ValueError, RecursionError) as error:
         raise VerificationError(f"cannot read {path}: {error}") from error
     if not isinstance(loaded, dict):
         raise VerificationError(f"{ALLOWANCE.as_posix()}: expected a JSON object")
@@ -1091,11 +1409,578 @@ def _external(external: list[str], path: str, base: str) -> bool:
     return any(written == entry or written.endswith("/" + entry) for entry in external)
 
 
-def verify_repo(repo_root: Path) -> tuple[int, int, int, int]:
-    """-> (files scanned, line citations, item citations, unused allowance entries)."""
+def verify_one(
+    citing: str,
+    text: str,
+    tree: "Tree",
+    permitted: dict,
+    unresolved_ok: dict,
+    items_ok: dict,
+    external: list[str],
+) -> tuple[list[str], int, int, "Counter[str]"]:
+    """Apply all three rules to ONE citing file.
+
+    -> (the failures it produced, its line citations, its item citations, the
+    allowance entries it consumed and how often).
+
+    THE ONLY IMPLEMENTATION OF THE RULES.  A full run and an incremental run
+    differ in which files reach this function, never in what happens when one
+    does, so there is nothing here for a "fast path" to have got wrong.
+
+    Deterministic in its arguments and in what `tree` answers, which is the whole
+    premise of the cache: recording every answer `tree` gave is recording
+    everything about the rest of the repository that this result depended on.
+    Nothing here reads the clock, the environment, or any file directly -- the
+    text arrives as an argument and the tree is the only oracle.
+    """
+    failures: list[str] = []
+    used: "Counter[str]" = Counter()
+    line_total = 0
+    item_total = 0
+    budget = Counter(permitted.get(citing, {}))
+    item_spans: list[tuple[int, int]] = []
+
+    # A malformed item citation is REPORTED, not ignored.  `<file>::okay::`
+    # names no item; before this it simply did not match any pattern, so the
+    # gate said nothing about it at all, which is the same silence as a
+    # citation that resolves wrongly.  (Codex review round 6, finding 1.)
+    for match in MALFORMED_ITEM.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        path, base = cited_path(text, match, tree)
+        written = f"{path}{base}::{match.group('item')}"
+        failures.append(
+            f"{citing}:{line}: `{written}` is not a complete item citation -- "
+            f"it ends on a `::` and names no item. Finish the path, or drop "
+            f"the separator."
+        )
+
+    for match in ITEM_CITATION.finditer(text):
+        item_spans.append((match.start(), match.end()))
+        path, base = cited_path(text, match, tree)
+        item_path = match.group("item")
+        written = f"{path}{base}::{item_path}"
+        if _external(external, path, base):
+            continue
+        item_total += 1
+        reason = items_ok.get(citing, {}).get(written)
+        candidates = tree.candidates(path, base)
+        defining = [
+            relative
+            for relative in candidates
+            if tree.defines(relative, item_path)
+        ]
+        if len(defining) == 1:
+            if reason is not None:
+                used[written] += 1
+            continue
+        if reason is not None:
+            used[written] += 1
+            continue
+        line = text.count("\n", 0, match.start()) + 1
+        if not candidates:
+            failures.append(
+                f"{citing}:{line}: `{written}` names no file in this tree"
+            )
+        elif not defining:
+            failures.append(
+                f"{citing}:{line}: `{written}` -- none of {candidates} "
+                f"defines `{item_path}`; the item was renamed or deleted, so "
+                f"re-point the citation at what it is called now"
+            )
+        else:
+            failures.append(
+                f"{citing}:{line}: `{written}` is ambiguous -- {defining} all "
+                f"define `{item_path}`; qualify the citation with enough of "
+                f"its path to name one"
+            )
+
+    for match in LINE_CITATION.finditer(text):
+        if any(start <= match.start() < end for start, end in item_spans):
+            continue
+        path, base = cited_path(text, match, tree)
+        cited_line = int(match.group("line"))
+        # THE RANGE ENDPOINT IS PART OF THE CITATION.  Dropping it made
+        # a `file.rs:<start>-<end>` citation key the budget on its START
+        # alone and range-check that alone: the endpoint could be moved to
+        # any number, existing or not,
+        # without changing a budget key or being checked against the file.
+        # (Codex review 019fdd05-0dd0-7833-8b8b-cc0bfa4e3aa2, finding 3.)
+        cited_end = citation_end(text, match)
+        written = written_citation(text, match, tree)
+        if _external(external, path, base):
+            continue
+        # Counted AFTER the external skip, so the reported total is the
+        # number of citations the allowance actually has to carry and a
+        # reader can compare it against the file.
+        line_total += 1
+        line = text.count("\n", 0, match.start()) + 1
+
+        # Rule L first: whether the citation is ALLOWED TO EXIST is
+        # independent of whether it currently resolves, and reporting the
+        # resolution failure of a citation that should not have been written
+        # at all buries the instruction that matters.
+        if budget[written] <= 0:
+            failures.append(
+                f"{citing}:{line}: `{written}` is a new free-text line "
+                f"number. Line numbers drift on the next insertion into the "
+                f"cited file and nothing checks them; cite the item instead, "
+                f"as `{base}::<item_name>`. (If this reference genuinely "
+                f"cannot name an item, add it to {ALLOWANCE.name} under "
+                f'"line_references" with the reason.)'
+            )
+            continue
+        budget[written] -= 1
+        used[written] += 1
+
+        reason = unresolved_ok.get(citing, {}).get(written)
+        candidates = tree.candidates(path, base)
+        if len(candidates) == 1:
+            total = tree.line_count(candidates[0])
+            last = cited_end if cited_end is not None else cited_line
+            # `1 <= start <= end <= total`.  Line zero does not exist and an
+            # end before its start denotes nothing; both read as resolvable
+            # while only the start was bounds-checked.
+            if 1 <= cited_line <= last <= total:
+                continue
+            if reason is None and cited_end is not None and cited_end < cited_line:
+                failures.append(
+                    f"{citing}:{line}: `{written}` is a backwards range -- it "
+                    f"ends before it starts, so it cites nothing."
+                )
+                continue
+            if reason is None and cited_line < 1:
+                failures.append(
+                    f"{citing}:{line}: `{written}` cites line {cited_line}; "
+                    f"files start at line 1."
+                )
+                continue
+        if reason is not None:
+            continue
+        if not candidates:
+            failures.append(
+                f"{citing}:{line}: `{written}` names no file in this tree. "
+                f"Find what it meant (`git log -S`), then re-point it at the "
+                f"item -- or correct the sentence and delete it."
+            )
+        elif len(candidates) > 1:
+            failures.append(
+                f"{citing}:{line}: `{written}` is ambiguous -- {len(candidates)} "
+                f"files carry that name ({candidates[:4]}...). Qualify it with "
+                f"enough of its path to name one."
+            )
+        else:
+            failures.append(
+                f"{citing}:{line}: `{written}` is past the end of "
+                f"{candidates[0]} ({tree.line_count(candidates[0])} lines). "
+                f"The cited text moved or was deleted; re-point the citation "
+                f"at the item it meant."
+            )
+    return failures, line_total, item_total, used
+
+
+# ---------------------------------------------------------------------------
+# THE CACHE.  Everything below decides whether a recorded result may be reused;
+# nothing below decides whether a citation resolves.  That separation is the
+# safety argument: the rules live in `verify_one` and are reached identically on
+# both paths, so the worst a mistake down here can do is verify a file that did
+# not need verifying.  For the failure direction that would matter -- reusing a
+# result that is no longer true -- every reuse has to clear all four of the
+# checks in `reusable`, and any one of them not being decidable is a re-verify.
+# ---------------------------------------------------------------------------
+
+# The fields of an entry the tag covers.  Named explicitly rather than "whatever
+# keys the dict has", so a field ADDED later without being listed here fails the
+# tests below rather than travelling unauthenticated.
+ENTRY_FIELDS = (
+    "digest",
+    "candidates",
+    "files",
+    "failures",
+    "line_total",
+    "item_total",
+    "used",
+)
+
+
+def cache_key(repo_root: Path, allowance_bytes: bytes) -> str:
+    """What every cached result depends on, beyond its own file and the tree.
+
+    All three are hashed WHOLE rather than consulted for the part that matters:
+
+    * this script, because a changed rule is a changed result and no reviewer
+      should have to decide whether their edit was cache-safe;
+    * the allowance, because it is an input to every file's verification --
+      `external_sources` alone is consulted for every citation in the tree -- and
+      because widening it while an old cache said PASS is exactly the shape of
+      staleness that would let an exemption go unread;
+    * the interpreter, because `IDENT` and `PATH_CHAR` are DERIVED at import from
+      the running interpreter's XID tables.  A different Python can read the same
+      bytes as a different name, so a cache written by one is not evidence for
+      the other.
+
+    THE ALLOWANCE ARRIVES AS BYTES, from the same read that produced the object
+    the run is verifying against -- never re-read here.  See `read_allowance`.
+
+    ``repo_root`` is unused by the digest and is a parameter only so that a
+    caller cannot mistake this for a key that is portable between checkouts: it
+    is not, because the allowance it hashes belongs to one.
+
+    Never called without an identified script: `verify_repo` checks first and
+    runs cache-free rather than inventing a key nothing can match.
+    """
+    if SCRIPT_DIGEST is None:
+        raise VerificationError(
+            "this gate cannot establish the identity of its own code, so there "
+            "is no key under which a result could be recorded"
+        )
+    digest = hashlib.blake2b(digest_size=32)
+    for part in (
+        CACHE_SCHEMA,
+        SCRIPT_DIGEST,
+        digest_bytes(allowance_bytes),
+        sys.version,
+        unicodedata.unidata_version,
+    ):
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+def entry_tag(key: str, entry: dict) -> str:
+    """A digest over an entry's own contents, bound to the cache key.
+
+    This is what makes a HAND-EDITED entry a miss rather than a lie.  The
+    dependency checks below compare the entry's record of the world against the
+    world; they cannot, on their own, notice an entry whose recorded RESULT was
+    altered -- deleting a cached failure would otherwise buy a green run.  The
+    tag covers the result and the record together, so altering either without
+    recomputing it is detected and the file is verified again.
+
+    It is a digest, not a signature: someone who can write the cache can also
+    recompute a tag, exactly as they could edit this script.  What it defends
+    against is the reachable case -- an entry edited by hand or damaged in
+    place -- and there it is decisive.
+    """
+    payload = json.dumps(
+        [entry.get(field) for field in ENTRY_FIELDS],
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return hashlib.blake2b(
+        (key + "\x00" + payload).encode("utf-8"), digest_size=32
+    ).hexdigest()
+
+
+def well_formed(entry: object) -> bool:
+    """Is this entry shaped the way the aggregation below will read it?
+
+    A cache is a file on disk and may be truncated, half-written by a killed
+    process, or edited.  Reading a result out of a mis-shaped entry would raise a
+    traceback at best; at worst a wrong type would sum into a reported count.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if not isinstance(entry.get("digest"), str):
+        return False
+    if not isinstance(entry.get("files"), dict) or not all(
+        isinstance(name, str) and isinstance(value, str)
+        for name, value in entry["files"].items()
+    ):
+        return False
+    if not isinstance(entry.get("candidates"), list) or not all(
+        isinstance(record, list)
+        and len(record) == 3
+        and isinstance(record[0], str)
+        and isinstance(record[1], str)
+        and isinstance(record[2], list)
+        and all(isinstance(name, str) for name in record[2])
+        for record in entry["candidates"]
+    ):
+        return False
+    if not isinstance(entry.get("failures"), list) or not all(
+        isinstance(message, str) for message in entry["failures"]
+    ):
+        return False
+    # `bool` is an `int` in Python and would sum silently into a count.
+    for field in ("line_total", "item_total"):
+        value = entry.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return False
+    if not isinstance(entry.get("used"), list) or not all(
+        isinstance(record, list)
+        and len(record) == 2
+        and isinstance(record[0], str)
+        and isinstance(record[1], int)
+        and not isinstance(record[1], bool)
+        for record in entry["used"]
+    ):
+        return False
+    return True
+
+
+def reusable(entry: object, relative: str, tree: "Tree", store: "FileStore", key: str) -> bool:
+    """May this recorded result stand in for verifying ``relative`` again?
+
+    Four questions, all of which must answer yes:
+
+    1. is the entry shaped like an entry, and does its tag match its contents;
+    2. does the citing file still hash to what it hashed to;
+    3. does every recorded candidate lookup still return the recorded answer --
+       which is what notices a file added, deleted or moved elsewhere in the
+       tree, none of which changes any file's content;
+    4. does every file whose content was consulted still hash the same.
+
+    A file that has been deleted since -- the citing file itself, or one it
+    depended on -- reads as a changed answer and re-verifies, which is where its
+    absence gets reported if it matters.
+    """
+    if not well_formed(entry) or entry.get("tag") != entry_tag(key, entry):
+        return False
+    if entry["digest"] != store.digest_of_present(relative):
+        return False
+    for path, base, answer in entry["candidates"]:
+        if tree.candidates(path, base) != answer:
+            return False
+    for name, digest in entry["files"].items():
+        if store.digest_of_present(name) != digest:
+            return False
+    return True
+
+
+def verify_and_record(
+    citing: str,
+    tree: "Tree",
+    store: "FileStore",
+    permitted: dict,
+    unresolved_ok: dict,
+    items_ok: dict,
+    external: list[str],
+    key: str,
+) -> dict:
+    """Verify one file for real, recording what its result depended on."""
+    deps = Dependencies()
+    tree.recording = deps
+    try:
+        text = store.text(citing)
+        failures, line_total, item_total, used = verify_one(
+            citing, text, tree, permitted, unresolved_ok, items_ok, external
+        )
+    finally:
+        # Restored even on the way out of a `VerificationError`, so a later
+        # candidate lookup made while VALIDATING an entry cannot be recorded as
+        # though some file had asked it.
+        tree.recording = None
+    entry = {
+        "digest": store.digest(citing),
+        "candidates": sorted(
+            [path, base, answer] for (path, base), answer in deps.candidates.items()
+        ),
+        "files": dict(sorted(deps.files.items())),
+        "failures": failures,
+        "line_total": line_total,
+        "item_total": item_total,
+        "used": sorted([written, count] for written, count in used.items()),
+    }
+    entry["tag"] = entry_tag(key, entry)
+    return entry
+
+
+def cache_location(
+    repo_root: Path, given: "Path | None", notices: "list[str] | None" = None
+) -> "Path | None":
+    """Where the cache lives, or ``None`` when there is nowhere usable.
+
+    A cache inside the scan set is not a small problem: it records the citations
+    every file carries and spells out any failure message, so scanning it would
+    invent citations nobody wrote and fail the gate on them.  The default sits
+    under `target/`, which `SKIP_DIRS` excludes; an override may live outside the
+    repository (which is what the tests do), but inside it must be somewhere the
+    scan does not reach -- and THAT is refused outright, because it is a
+    misconfiguration that would corrupt what the gate reports.
+
+    Being unable to REACH a location is the other case entirely, and returns
+    ``None``: the run simply proceeds without a cache.
+    """
+    if notices is None:
+        notices = []
+    path = (repo_root / CACHE) if given is None else Path(given)
+    # BOTH SPELLINGS ARE CHECKED, the one written and the one it resolves to.
+    # Resolving alone was a hole: a scanned path that is a SYMLINK to somewhere
+    # outside the repository resolves outside it and was accepted, and the gate
+    # then wrote the cache through the link -- leaving the in-tree symlink for
+    # the next scan to follow and read as a file full of citations nobody wrote.
+    # (Codex review round 1, finding 3.)  The written spelling is what the scan
+    # walks, so the written spelling is what has to be outside it too.
+    # A PATH THAT CANNOT BE RESOLVED IS NOT A GATE FAILURE.  `resolve()` reaches
+    # the filesystem, and on Windows an unreachable UNC host raises WinError 53
+    # out here, past `main`, which catches only `VerificationError` -- so an
+    # unavailable network drive turned an optional optimization into an
+    # unexplained failure of the citation gate. (Codex review round 3, finding
+    # 1.)  There is nothing to fail about: a cache whose home cannot be reached
+    # is a cache that is not used, which is the same as not having one.
+    try:
+        resolved = path.resolve()
+    except OSError as error:
+        notices.append(
+            f"citation integrity cache: {path} cannot be reached ({error}); "
+            f"verifying every file and recording nothing"
+        )
+        return None
+    for spelling in (Path(os.path.abspath(path)), resolved):
+        inside = _within_repo(spelling, repo_root)
+        if inside is None:
+            continue
+        written = "/".join(inside)
+        # ONLY a skipped directory, and NOT merely "somewhere the scan does not
+        # read". `UNSCANNED` also names the ALLOWANCE, and accepting it here let
+        # `--cache <the allowance>` be taken, verified against, and then
+        # OVERWRITTEN by the cache document -- the gate's own authority file
+        # destroyed by a flag. (Codex review round 4, finding 1.) The default
+        # cache path is under `target/`, so it passes on the skip-directory rule
+        # alone and needs no exception of its own.
+        if any(part in SKIP_DIRS for part in inside):
+            continue
+        raise VerificationError(
+            f"the cache path {written} is inside the tree this gate scans. Its "
+            f"contents are citations and failure messages, so scanning it would "
+            f"fail the gate on citations nobody wrote. Put it under one of "
+            f"{sorted(SKIP_DIRS)}, or outside the repository."
+        )
+    return resolved
+
+
+def _within_repo(path: Path, repo_root: Path) -> "list[str] | None":
+    """``path``'s components below ``repo_root``, or ``None`` if it is outside.
+
+    BY FILE IDENTITY, not by comparing spellings.  Windows has several names for
+    one directory -- an extended-length prefix, a `\\\\localhost\\C$` share, a
+    junction, a different case -- and none of them can be made relative to the
+    ordinary spelling by text, so a lexical check accepted every one of them and
+    would have let the cache be written into the scanned tree, for the next run
+    to read back as citations nobody wrote. (Codex review round 2, finding 2.)
+    Walking up to a directory that IS the repository root, asked of the
+    filesystem rather than of the string, has no such aliases to miss.
+
+    The path itself need not exist -- the cache usually does not yet -- so only
+    the directories that do exist are compared, and each component that is not
+    the root is collected on the way up.
+    """
+    components: list[str] = []
+    current = path
+    for _ in range(len(path.parts) + 1):
+        try:
+            if current.is_dir() and os.path.samefile(current, repo_root):
+                return components
+        except OSError:  # a name that cannot be stat'd is not the root
+            pass
+        parent = current.parent
+        if parent == current:
+            return None
+        components.insert(0, current.name)
+        current = parent
+    return None
+
+
+def load_cache(path: Path, key: str, notices: list[str]) -> dict:
+    """The recorded entries, or none of them.
+
+    EVERY WAY OF NOT UNDERSTANDING THIS FILE RETURNS NOTHING, which verifies the
+    whole tree.  A cache that cannot be read is a slow run; a cache half-believed
+    is an unchecked citation, so there is no partial acceptance here and no
+    repair attempt.  Only a first run is silent about it -- an absent cache is
+    the normal state of a fresh checkout, not a fault.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    # `RecursionError` IS ONE OF THESE.  A cache of a few thousand nested arrays
+    # parses to a `RecursionError`, which is a `RuntimeError` and so slipped past
+    # a `ValueError` catch -- and out of `main`, which catches only
+    # `VerificationError`, as a traceback. (Codex review round 1, finding 2.)
+    # The gate failed rather than passed, so nothing unchecked got through, but
+    # "cannot understand the cache" must mean "verify everything" on every route
+    # into it, not on most of them.
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError) as error:
+        notices.append(
+            f"citation integrity cache: {path.name} could not be read ({error}); "
+            f"verifying every file"
+        )
+        return {}
+    if not isinstance(raw, dict) or raw.get("schema") != CACHE_SCHEMA:
+        notices.append(
+            f"citation integrity cache: {path.name} is not a v1 cache; "
+            f"verifying every file"
+        )
+        return {}
+    if raw.get("key") != key:
+        # The usual and expected case: this script or the allowance changed.
+        notices.append(
+            f"citation integrity cache: this script, the allowance or the "
+            f"interpreter changed; verifying every file"
+        )
+        return {}
+    entries = raw.get("entries")
+    if not isinstance(entries, dict):
+        notices.append(
+            f"citation integrity cache: {path.name} carries no entries object; "
+            f"verifying every file"
+        )
+        return {}
+    return entries
+
+
+def save_cache(path: Path, key: str, entries: dict, notices: list[str]) -> None:
+    """Write the cache, atomically, and never fail the gate over it.
+
+    Written through a temporary and `os.replace` because several checkouts of
+    this repository run their batteries at once and a half-written cache read by
+    the next run would be a miss at best.  A write that cannot happen at all --
+    a read-only tree, a full disk -- is reported and ignored: it costs the NEXT
+    run its speed and costs this one's correctness nothing.
+    """
+    document = {"schema": CACHE_SCHEMA, "key": key, "entries": entries}
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(temporary, path)
+    except OSError as error:
+        notices.append(
+            f"citation integrity cache: not written ({error}); the next run "
+            f"verifies every file"
+        )
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+
+
+def verify_repo(
+    repo_root: Path,
+    *,
+    use_cache: bool = True,
+    cache_path: "Path | None" = None,
+    notices: "list[str] | None" = None,
+) -> tuple[int, int, int, int]:
+    """-> (files scanned, line citations, item citations, unused allowance entries).
+
+    ``use_cache=False`` is `--full`: every file is verified from its bytes, with
+    no recorded result consulted.  The cache is still WRITTEN either way, so the
+    full run a landing performs leaves it warm for the in-lane runs that follow.
+    """
     repo_root = repo_root.resolve()
-    tree = Tree(repo_root)
-    allowance = load_allowance(repo_root)
+    if notices is None:
+        notices = []
+    store = FileStore(repo_root)
+    tree = Tree(repo_root, store)
+    # ONE read, feeding both the rules and the key they are recorded under.
+    allowance_bytes, allowance = read_allowance(repo_root)
     permitted: dict[str, dict[str, int]] = allowance.get("line_references", {})
     unresolved_ok: dict[str, dict[str, str]] = allowance.get("unresolved", {})
     items_ok: dict[str, dict[str, str]] = allowance.get("items", {})
@@ -1105,6 +1990,10 @@ def verify_repo(repo_root: Path) -> tuple[int, int, int, int]:
     # grandfathers a citation this gate would reject at rule L anyway, so it is
     # a record of a permission that does nothing -- the kind of entry that
     # accumulates and then gets cited as precedent.
+    #
+    # Checked on every run, cached or not: it is a property of the allowance
+    # alone, it costs nothing, and a whole-allowance check that ran only when
+    # some file happened to need verifying would be a check with a hole in it.
     orphaned = sorted(
         f"{citing} :: {citation}"
         for citing, entries in unresolved_ok.items()
@@ -1117,152 +2006,62 @@ def verify_repo(repo_root: Path) -> tuple[int, int, int, int]:
             f"\"line_references\" entry, so they permit nothing: {orphaned}"
         )
 
+    location = cache_location(repo_root, cache_path, notices)
+    # A run that cannot say which rules it is running records nothing and reuses
+    # nothing. Loud, because the alternative -- a key nothing will ever match --
+    # looks exactly like an ordinary cold run, for ever. The same is true of a
+    # cache location that cannot be reached at all.
+    identified = SCRIPT_DIGEST is not None and location is not None
+    if SCRIPT_DIGEST is None:
+        notices.append(
+            "citation integrity: this gate could not establish the identity of "
+            "its own code, so every file is verified and nothing is recorded"
+        )
+    key = cache_key(repo_root, allowance_bytes) if identified else ""
+    recorded = load_cache(location, key, notices) if use_cache and identified else {}
+
     failures: list[str] = []
     used: Counter[tuple[str, str]] = Counter()
     line_total = 0
     item_total = 0
+    reused = 0
+    entries: dict[str, dict] = {}
 
     scanned = scan_files(repo_root)
     for citing in scanned:
-        text = read_text(repo_root / citing)
-        budget = Counter(permitted.get(citing, {}))
-        item_spans: list[tuple[int, int]] = []
-
-        # A malformed item citation is REPORTED, not ignored.  `<file>::okay::`
-        # names no item; before this it simply did not match any pattern, so the
-        # gate said nothing about it at all, which is the same silence as a
-        # citation that resolves wrongly.  (Codex review round 6, finding 1.)
-        for match in MALFORMED_ITEM.finditer(text):
-            line = text.count("\n", 0, match.start()) + 1
-            path, base = cited_path(text, match, tree)
-            written = f"{path}{base}::{match.group('item')}"
-            failures.append(
-                f"{citing}:{line}: `{written}` is not a complete item citation -- "
-                f"it ends on a `::` and names no item. Finish the path, or drop "
-                f"the separator."
+        entry = recorded.get(citing)
+        if entry is not None and reusable(entry, citing, tree, store, key):
+            reused += 1
+        else:
+            entry = verify_and_record(
+                citing,
+                tree,
+                store,
+                permitted,
+                unresolved_ok,
+                items_ok,
+                external,
+                key,
             )
+        # Only the files SCANNED THIS RUN are carried forward, so an entry for a
+        # deleted file leaves the cache with it rather than lingering as a result
+        # about nothing.
+        entries[citing] = entry
+        failures.extend(entry["failures"])
+        line_total += entry["line_total"]
+        item_total += entry["item_total"]
+        for written, count in entry["used"]:
+            used[(citing, written)] += count
 
-        for match in ITEM_CITATION.finditer(text):
-            item_spans.append((match.start(), match.end()))
-            path, base = cited_path(text, match, tree)
-            item_path = match.group("item")
-            written = f"{path}{base}::{item_path}"
-            if _external(external, path, base):
-                continue
-            item_total += 1
-            reason = items_ok.get(citing, {}).get(written)
-            candidates = tree.candidates(path, base)
-            defining = [
-                relative
-                for relative in candidates
-                if tree.defines(relative, item_path)
-            ]
-            if len(defining) == 1:
-                if reason is not None:
-                    used[(citing, written)] += 1
-                continue
-            if reason is not None:
-                used[(citing, written)] += 1
-                continue
-            line = text.count("\n", 0, match.start()) + 1
-            if not candidates:
-                failures.append(
-                    f"{citing}:{line}: `{written}` names no file in this tree"
-                )
-            elif not defining:
-                failures.append(
-                    f"{citing}:{line}: `{written}` -- none of {candidates} "
-                    f"defines `{item_path}`; the item was renamed or deleted, so "
-                    f"re-point the citation at what it is called now"
-                )
-            else:
-                failures.append(
-                    f"{citing}:{line}: `{written}` is ambiguous -- {defining} all "
-                    f"define `{item_path}`; qualify the citation with enough of "
-                    f"its path to name one"
-                )
-
-        for match in LINE_CITATION.finditer(text):
-            if any(start <= match.start() < end for start, end in item_spans):
-                continue
-            path, base = cited_path(text, match, tree)
-            cited_line = int(match.group("line"))
-            # THE RANGE ENDPOINT IS PART OF THE CITATION.  Dropping it made
-            # a `file.rs:<start>-<end>` citation key the budget on its START
-            # alone and range-check that alone: the endpoint could be moved to
-            # any number, existing or not,
-            # without changing a budget key or being checked against the file.
-            # (Codex review 019fdd05-0dd0-7833-8b8b-cc0bfa4e3aa2, finding 3.)
-            cited_end = citation_end(text, match)
-            written = written_citation(text, match, tree)
-            if _external(external, path, base):
-                continue
-            # Counted AFTER the external skip, so the reported total is the
-            # number of citations the allowance actually has to carry and a
-            # reader can compare it against the file.
-            line_total += 1
-            line = text.count("\n", 0, match.start()) + 1
-
-            # Rule L first: whether the citation is ALLOWED TO EXIST is
-            # independent of whether it currently resolves, and reporting the
-            # resolution failure of a citation that should not have been written
-            # at all buries the instruction that matters.
-            if budget[written] <= 0:
-                failures.append(
-                    f"{citing}:{line}: `{written}` is a new free-text line "
-                    f"number. Line numbers drift on the next insertion into the "
-                    f"cited file and nothing checks them; cite the item instead, "
-                    f"as `{base}::<item_name>`. (If this reference genuinely "
-                    f"cannot name an item, add it to {ALLOWANCE.name} under "
-                    f'"line_references" with the reason.)'
-                )
-                continue
-            budget[written] -= 1
-            used[(citing, written)] += 1
-
-            reason = unresolved_ok.get(citing, {}).get(written)
-            candidates = tree.candidates(path, base)
-            if len(candidates) == 1:
-                total = tree.line_count(candidates[0])
-                last = cited_end if cited_end is not None else cited_line
-                # `1 <= start <= end <= total`.  Line zero does not exist and an
-                # end before its start denotes nothing; both read as resolvable
-                # while only the start was bounds-checked.
-                if 1 <= cited_line <= last <= total:
-                    continue
-                if reason is None and cited_end is not None and cited_end < cited_line:
-                    failures.append(
-                        f"{citing}:{line}: `{written}` is a backwards range -- it "
-                        f"ends before it starts, so it cites nothing."
-                    )
-                    continue
-                if reason is None and cited_line < 1:
-                    failures.append(
-                        f"{citing}:{line}: `{written}` cites line {cited_line}; "
-                        f"files start at line 1."
-                    )
-                    continue
-            if reason is not None:
-                continue
-            if not candidates:
-                failures.append(
-                    f"{citing}:{line}: `{written}` names no file in this tree. "
-                    f"Find what it meant (`git log -S`), then re-point it at the "
-                    f"item -- or correct the sentence and delete it."
-                )
-            elif len(candidates) > 1:
-                failures.append(
-                    f"{citing}:{line}: `{written}` is ambiguous -- {len(candidates)} "
-                    f"files carry that name ({candidates[:4]}...). Qualify it with "
-                    f"enough of its path to name one."
-                )
-            else:
-                failures.append(
-                    f"{citing}:{line}: `{written}` is past the end of "
-                    f"{candidates[0]} ({tree.line_count(candidates[0])} lines). "
-                    f"The cited text moved or was deleted; re-point the citation "
-                    f"at the item it meant."
-                )
+    # Written BEFORE the failure check, so a failing run is as cheap to re-run as
+    # a passing one: the file whose citation is broken is the file the next run
+    # verifies again.
+    if identified:
+        save_cache(location, key, entries, notices)
+    notices.append(
+        f"citation integrity: {reused} file(s) reused from cache, "
+        f"{len(scanned) - reused} verified"
+    )
 
     if failures:
         raise VerificationError(
@@ -1271,11 +2070,17 @@ def verify_repo(repo_root: Path) -> tuple[int, int, int, int]:
 
     unused = sum(
         1
-        for citing, entries in permitted.items()
-        for citation, count in entries.items()
+        for citing, entries_for_file in permitted.items()
+        for citation, count in entries_for_file.items()
         if used[(citing, citation)] < count
     )
     return len(scanned), line_total, item_total, unused
+
+
+def _report(notices: list[str]) -> None:
+    """Say what the run did, on stderr, where it cannot disturb the report."""
+    for notice in notices:
+        print(notice, file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1283,7 +2088,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--repo-root", type=Path, default=Path(__file__).resolve().parents[3]
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "verify every file from its bytes, consulting no recorded result. "
+            "The central validation runner passes this, so every landing gets "
+            "one cache-free verification; the cache is still refreshed, leaving "
+            "it warm for the in-lane runs that follow."
+        ),
+    )
+    parser.add_argument(
+        "--cache",
+        type=Path,
+        default=None,
+        help=(
+            f"where results are remembered (default: {CACHE.as_posix()}). Must "
+            f"not be anywhere this gate scans."
+        ),
+    )
     args = parser.parse_args(argv)
+    notices: list[str] = []
     # A REPORT MUST SURVIVE THE CONSOLE IT IS PRINTED TO.  Now that a name is
     # captured whole, a failure message can carry any character a Rust identifier
     # or a filename may carry -- and on the Windows console this gate runs on,
@@ -1298,10 +2123,25 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError):  # a stream that cannot be reconfigured
                 pass
     try:
-        files, lines, items, unused = verify_repo(args.repo_root)
+        files, lines, items, unused = verify_repo(
+            args.repo_root,
+            use_cache=not args.full,
+            cache_path=args.cache,
+            notices=notices,
+        )
     except VerificationError as error:
+        # The notices go out even on a failure: "the cache could not be read" is
+        # part of understanding what the run did, and a failing run is exactly
+        # when someone reads this output.
+        _report(notices)
         print(f"citation integrity check: FAIL: {error}", file=sys.stderr)
         return 1
+    _report(notices)
+    # STDOUT IS THE ONE PASS LINE AND NOTHING ELSE.  `recorder_host`'s
+    # `citation_integrity` test refuses a stdout that is not a single line
+    # beginning `citation integrity check: PASS (`, because a gate whose report
+    # can drift is a gate whose counts nobody is comparing. Everything about how
+    # the run was performed -- reused, verified, cache trouble -- is stderr.
     print(
         f"citation integrity check: PASS ({files} files scanned, "
         f"{lines} line citations grandfathered, {items} item citations resolved, "

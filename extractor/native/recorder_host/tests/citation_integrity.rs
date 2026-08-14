@@ -17,6 +17,23 @@
 //! particular; it lives beside `world_fold_citation_authority.rs` so the two
 //! citation gates are found together. Nothing here is specific to
 //! `recorder_host`.
+//!
+//! WHY THIS RUN IS THE INCREMENTAL ONE. Lane JD measured this single test at
+//! 70.8 s -- 66% of the time the Extractor serial half holds the machine-wide
+//! mutex, because a half's wall clock is its slowest test and not its count.
+//! Lane JN found the whole of that cost was three regular expressions being
+//! re-run over 98 MB of files that had not changed, and gave the verifier a
+//! cache: a file whose bytes, whose allowance, whose script and whose every
+//! question about the rest of the tree are all unchanged reports the result it
+//! reported before. Nothing here needs to know that. The command is the same
+//! command, the report it demands below is the same report, and a cache that
+//! cannot be trusted -- absent, damaged, written under another allowance --
+//! simply verifies everything and takes the old 70 s.
+//!
+//! The cache-free run still happens every battery: `Invoke-CentralRustValidation.ps1`
+//! invokes this same script with `--full` before cargo starts, out where the
+//! mutex is not held. So a landing never rests on the cache, and this test --
+//! the one that costs the machine -- finds it warm.
 
 use std::path::PathBuf;
 use std::process::Command;
