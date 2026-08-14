@@ -344,6 +344,18 @@ def _offline_preparation_fixture(tmp_path: Path) -> tuple[Path, Path]:
                 "creation_filetime_utc": 133700000000000000,
                 "exe_sha256": exe_sha,
             },
+            # This fixture install owns no DLC, so the engine roster the
+            # provenance policy reads is the mod roster alone.
+            "runtime": {
+                "first_time": "00:00:00",
+                "version": "Fixture v1.19.2.0.a729 build time: never",
+                "active_dlc": [],
+                "active_mods": [source["name"] for source in sources],
+            },
+            "launcher_dlc_conflicts": [],
+            "requested_profile_dlc_ids": [],
+            "effective_launch_dlc_ids": [],
+            "descriptorless_asset_layers": [],
             "binding_identity": mod_state["identity"],
             "source_inventory_rows": len(inventory["rows"]),
             "source_inventory_sha256": inventory["inventory_sha256"],
@@ -485,33 +497,6 @@ def _fake_product_bundle_build(**kwargs):
     return {"schema": B.BUILD_SCHEMA, "passed": True}
 
 
-def _write_product_policy(exe: Path, bindings: Path, path: Path) -> Path:
-    _report, product = PREPARE._validate_binding_corpus(exe, bindings)
-    mod_state = SB._validate_binding_document(
-        SB.load_object(bindings / "mod_state.json", "mod_state"), "mod_state"
-    )
-    classification = (
-        "validated_modset"
-        if any(row["enabled"] for row in mod_state["items"])
-        else "vanilla"
-    )
-    _write_json(
-        path,
-        {
-            "schema": "extractor.supported_product_modsets.v1",
-            "policy": "exact_registry_match",
-            "entries": [
-                {
-                    "id": "fixture-exact-product",
-                    "classification": classification,
-                    "product_modset": product,
-                }
-            ],
-        },
-    )
-    return path
-
-
 def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -519,17 +504,14 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     monkeypatch.setattr(PREPARE.LR, "EXPECTED_EXE_SHA256", SB.sha256_file(exe))
     _retain_process_bound_ui14_evidence(exe, bindings)
     monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
-    policy = _write_product_policy(exe, bindings, tmp_path / "supported.json")
 
+    # No registry entry is authored for this modset anywhere: the canonical
+    # mechanism policy admits it from its own resolution provenance.
     first = PREPARE.prepare_offline(
         exe=exe, bindings=bindings, output=tmp_path / "prepared-a",
-        admission_policy=policy,
-        allow_dev_policy_override=True,
     )
     second = PREPARE.prepare_offline(
         exe=exe, bindings=bindings, output=tmp_path / "prepared-b",
-        admission_policy=policy,
-        allow_dev_policy_override=True,
     )
 
     assert first["preparation_mode"] == "authenticated_binding_corpus"
@@ -538,7 +520,11 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     assert first["static_bundle"]["product_modset_sha256"] == first[
         "product_modset_sha256"
     ]
-    assert first["product_modset_admission"]["entry_id"] == "fixture-exact-product"
+    assert first["product_modset_admission"]["classification"] == "modded"
+    assert first["product_modset_admission"]["policy_sha256"] == (
+        PREPARE.PMA.CANONICAL_POLICY_SHA256
+    )
+    assert first["product_modset_admission"]["enabled_mod_ids"] == ["mod/z-last.mod"]
     assert first["ui14_capture_evidence"]["capture_nonce_sha256"]
     assert first["ui14_capture_evidence"] == second["ui14_capture_evidence"]
     PREPARE._reject_pointers(first)
@@ -549,10 +535,7 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     )
     assert persisted == first
     monkeypatch.setattr(VERIFY_PREPARED, "EXACT_A729_SHA256", SB.sha256_file(exe))
-    independent = VERIFY_PREPARED.verify(
-        exe, tmp_path / "prepared-a", admission_policy=policy,
-        allow_dev_policy_override=True,
-    )
+    independent = VERIFY_PREPARED.verify(exe, tmp_path / "prepared-a")
     assert independent["product_modset_admission"] == first[
         "product_modset_admission"
     ]
@@ -562,8 +545,7 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
         tmp_path / "prepared-a/bindings/dlc_state.json",
         tmp_path / "prepared-a/bindings/load_order.json",
         tmp_path / "prepared-a/bindings/source_inventory.json",
-        policy,
-        allow_dev_policy_override=True,
+        tmp_path / "prepared-a/bindings/resolution_report.json",
     )
     assert direct == first["product_modset_admission"]
     for name in PREPARE.BINDING_FILES:

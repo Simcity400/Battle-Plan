@@ -376,7 +376,7 @@ function Get-ProductionRustInputDigest {
         (Join-Path $repo "extractor\game_defs\build_runtime_static_bundle.py"),
         (Join-Path $repo "extractor\game_defs\prepare_product_modset_capture.py"),
         (Join-Path $repo "extractor\game_defs\product_modset_admission.py"),
-        (Join-Path $repo "extractor\game_defs\supported_product_modsets.json"),
+        (Join-Path $repo "extractor\game_defs\product_modset_admission_policy.json"),
         (Join-Path $repo "extractor\game_defs\materialize_ui14_engine_vfs.py"),
         (Join-Path $repo "extractor\game_defs\verify_product_modset_capture_ready.py"),
         (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_live.py"),

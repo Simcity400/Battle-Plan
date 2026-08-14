@@ -43,7 +43,11 @@ extractor/save_oracle/test_parse_projects.py text eol=lf
 extractor/save_oracle/test_parse_combats.py text eol=crlf
 extractor/save_oracle/test_parse_intel_peace.py text eol=lf
 extractor/coverage_audit/atlas_input_manifest.json text eol=lf
-extractor/game_defs/supported_product_modsets.json text eol=lf
+extractor/game_defs/product_modset_admission_policy.json text eol=lf
+# Lane JA's synthetic modset corpus: every file's SHA-256 is recorded in the
+# committed source_inventory.json beside it, so the bytes must survive checkout
+# unchanged or the retained admission receipt stops describing them.
+extractor/native/runs/ja_modset_design/synthetic_corpus/** text eol=lf
 
 # Rendering-law evidence is SHA-pinned as canonical LF text. Keep these packet
 # trees byte-stable on Windows so their verifiers do not mistake checkout EOL

@@ -1,0 +1,24 @@
+{
+  "schema": "extractor.product_modset_admission_policy.v2",
+  "policy": "live_resolution_provenance",
+  "resolution_mechanism": {
+    "engine_build_id": "a729",
+    "resolution_report_schema": "extractor.live_binding_resolution.v1",
+    "source_inventory_schema": "extractor.live_binding_source_inventory.v3",
+    "product_modset_key_schema": "extractor.product_modset_key.v1",
+    "binding_schemas": {
+      "mod_state": "extractor.mod_state.v1",
+      "dlc_state": "extractor.dlc_state.v1",
+      "load_order": "extractor.load_order.v1"
+    }
+  },
+  "required_provenance": [
+    "resolution_mechanism_domain",
+    "engine_activated_dlc_roster",
+    "engine_activated_mod_roster",
+    "engine_mount_order_reproduced",
+    "effective_vfs_namespace_coverage",
+    "binding_identity_agreement",
+    "product_modset_key_recomputed"
+  ]
+}

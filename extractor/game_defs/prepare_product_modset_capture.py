@@ -232,7 +232,9 @@ def _copy_binding_corpus(source: Path, destination: Path) -> dict[str, Any]:
     return {**core, "sha256": SB.sha256_bytes(SB.canonical_json(core))}
 
 
-def _validate_binding_corpus(exe: Path, bindings_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def _validate_binding_corpus(
+    exe: Path, bindings_dir: Path
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Validate every cross-document join needed by live or offline preparation."""
     exe_sha = SB.sha256_file(exe)
     # Keep the exact wire documents alongside their normalized validation
@@ -371,16 +373,17 @@ def _validate_binding_corpus(exe: Path, bindings_dir: Path) -> tuple[dict[str, A
         winner_paths.add(key)
     LR.validate_ui14_mod_collision_winners(inventory_by_id, winners)
     product_modset = SB.product_modset_binding(exe_sha, documents, source_inventory)
-    return report, product_modset
+    return report, source_inventory, product_modset
 
 
 def _complete_preparation(
     *, exe: Path, bindings_dir: Path, output: Path, preparation_mode: str,
     binding_corpus: dict[str, Any] | None = None,
     admission_policy: Path = PMA.DEFAULT_POLICY,
-    allow_dev_policy_override: bool = False,
 ) -> dict[str, Any]:
-    report, expected_product_modset = _validate_binding_corpus(exe, bindings_dir)
+    report, source_inventory, expected_product_modset = _validate_binding_corpus(
+        exe, bindings_dir
+    )
     documents = {
         role: SB._validate_binding_document(
             SB.load_object(bindings_dir / f"{role}.json", f"capture {role}"), role
@@ -388,8 +391,7 @@ def _complete_preparation(
         for role in ("mod_state", "dlc_state", "load_order")
     }
     product_admission = PMA.admit(
-        expected_product_modset, documents, admission_policy,
-        allow_dev_policy_override=allow_dev_policy_override,
+        expected_product_modset, documents, source_inventory, report, admission_policy,
     )
     static_output = output / "static_bundle"
     build = RB.build(
@@ -516,7 +518,6 @@ def prepare(
     ui14_capture_root: Path,
     output: Path,
     admission_policy: Path = PMA.DEFAULT_POLICY,
-    allow_dev_policy_override: bool = False,
 ) -> dict[str, Any]:
     if pid <= 0:
         raise LR.ResolutionError("pid must be positive")
@@ -599,14 +600,12 @@ def prepare(
         output=output,
         preparation_mode="live_binding_resolution",
         admission_policy=admission_policy,
-        allow_dev_policy_override=allow_dev_policy_override,
     )
 
 
 def prepare_offline(
     *, exe: Path, bindings: Path, output: Path,
     admission_policy: Path = PMA.DEFAULT_POLICY,
-    allow_dev_policy_override: bool = False,
 ) -> dict[str, Any]:
     """Prepare from an already-authenticated, immutable binding corpus.
 
@@ -633,7 +632,7 @@ def prepare_offline(
     # selected it.  Offline reuse is admitted only from a prior live-prepared
     # handoff that retained the four raw process-bound UI14 artifacts and the
     # corresponding resolution-report join.
-    report, _product_modset = _validate_binding_corpus(exe, bindings)
+    report, _source_inventory, _product_modset = _validate_binding_corpus(exe, bindings)
     source_evidence = bindings.parent / "ui14_capture_evidence"
     evidence_paths = {
         "manifest": source_evidence / "manifest.json",
@@ -695,7 +694,6 @@ def prepare_offline(
         preparation_mode="authenticated_binding_corpus",
         binding_corpus=corpus,
         admission_policy=admission_policy,
-        allow_dev_policy_override=allow_dev_policy_override,
     )
 
 
@@ -714,11 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ui14-capture-root", type=Path)
     parser.add_argument(
         "--admission-policy", type=Path, default=PMA.DEFAULT_POLICY,
-        help="strict exact-match supported product-modset registry",
-    )
-    parser.add_argument(
-        "--allow-dev-policy-override", action="store_true",
-        help="allow a noncanonical policy digest for explicit tests/development",
+        help="canonical product-modset admission mechanism policy",
     )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -734,7 +728,6 @@ def main(argv: list[str] | None = None) -> int:
                 bindings=args.bindings,
                 output=args.out,
                 admission_policy=args.admission_policy,
-                allow_dev_policy_override=args.allow_dev_policy_override,
             )
         else:
             if (args.userdir is None or args.ui14_engine_vfs is None
@@ -750,7 +743,6 @@ def main(argv: list[str] | None = None) -> int:
                 ui14_capture_root=args.ui14_capture_root,
                 output=args.out,
                 admission_policy=args.admission_policy,
-                allow_dev_policy_override=args.allow_dev_policy_override,
             )
     except (LR.ResolutionError, SB.BundleError, OSError, json.JSONDecodeError) as exc:
         print(f"product modset capture preparation: FAIL: {exc}", file=sys.stderr)

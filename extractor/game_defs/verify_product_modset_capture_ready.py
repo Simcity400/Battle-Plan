@@ -68,8 +68,7 @@ def resolve_member(root: Path, row: Any, label: str) -> Path:
 
 
 def verify(
-    exe: Path, root: Path, admission_policy: Path = PMA.DEFAULT_POLICY, *,
-    allow_dev_policy_override: bool = False,
+    exe: Path, root: Path, admission_policy: Path = PMA.DEFAULT_POLICY,
 ) -> dict[str, Any]:
     exe = exe.resolve()
     root = root.resolve()
@@ -169,7 +168,9 @@ def verify(
     if manifest_path.name != "static_bundle_manifest.json":
         raise ValueError("prepared static-bundle manifest filename is noncanonical")
 
-    _report, product_modset = PREPARE._validate_binding_corpus(exe, bindings)
+    corpus_report, source_inventory, product_modset = PREPARE._validate_binding_corpus(
+        exe, bindings
+    )
     documents = {
         role: SB._validate_binding_document(
             SB.load_object(bindings / f"{role}.json", f"capture {role}"), role
@@ -177,8 +178,7 @@ def verify(
         for role in ("mod_state", "dlc_state", "load_order")
     }
     policy_admission = PMA.admit(
-        product_modset, documents, admission_policy,
-        allow_dev_policy_override=allow_dev_policy_override,
+        product_modset, documents, source_inventory, corpus_report, admission_policy,
     )
     if ready.get("product_modset_admission") != policy_admission:
         raise ValueError(
@@ -248,19 +248,12 @@ def main() -> int:
     parser.add_argument("--prepared", required=True, type=Path)
     parser.add_argument(
         "--admission-policy", type=Path, default=PMA.DEFAULT_POLICY,
-        help="strict exact-match supported product-modset registry",
-    )
-    parser.add_argument(
-        "--allow-dev-policy-override", action="store_true",
-        help="allow a noncanonical policy digest for explicit tests/development",
+        help="canonical product-modset admission mechanism policy",
     )
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     try:
-        result = verify(
-            args.exe, args.prepared, args.admission_policy,
-            allow_dev_policy_override=args.allow_dev_policy_override,
-        )
+        result = verify(args.exe, args.prepared, args.admission_policy)
     except (OSError, ValueError, json.JSONDecodeError, SB.BundleError) as exc:
         print(f"prepared product-modset admission: FAIL: {exc}", file=sys.stderr)
         return 1
