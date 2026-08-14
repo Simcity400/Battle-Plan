@@ -901,7 +901,6 @@
     },
     "ACCEPTANCE.md": {
       "attach_log.rs:44160-44170": 1,
-      "combat_detail_losses.rs:1580-1674": 1,
       "extractor/native/lanes/land_combat_detail_events_live/src/a729_hook.rs:432-438": 1,
       "extractor/native/lanes/land_combat_detail_events_live/src/lib.rs:357": 1,
       "extractor/native/recorder_host/src/world_fold.rs:6689-6691": 1,
@@ -923,8 +922,7 @@
       "ui_runtime.rs:2544-2558": 1,
       "world_fold.rs:6782-6786": 1,
       "world_fold.rs:6795": 1,
-      "world_fold.rs:6799-6803": 1,
-      "xui20_replay_admission.rs:311-314": 1
+      "world_fold.rs:6799-6803": 1
     },
     "extractor/documents/AUTO_ATTACH_DESIGN.md": {
       "extractor/native/recorder_host/src/modset.rs:328-420": 1,
@@ -1135,16 +1133,6 @@
       "replay_app/src/app.rs:10460": 1,
       "replay_app/src/app.rs:13312": 1,
       "replay_app/src/gui_definition_admission.rs:3251": 1,
-      "replay_app/src/ui_runtime.rs:10275": 1,
-      "replay_app/src/ui_runtime.rs:10911": 1,
-      "replay_app/src/ui_runtime.rs:11110": 1,
-      "replay_app/src/ui_runtime.rs:11489": 2,
-      "replay_app/src/ui_runtime.rs:9321": 1,
-      "replay_app/src/ui_runtime.rs:9370": 1,
-      "replay_app/src/ui_runtime.rs:9543": 1,
-      "replay_app/src/ui_runtime.rs:9623": 1,
-      "replay_app/src/ui_runtime.rs:9745": 1,
-      "replay_app/src/ui_runtime.rs:9927": 1,
       "replay_core/src/theatre_selector.rs:35": 1,
       "replay_core/src/world.rs:19936": 1,
       "replay_core/src/world.rs:22744": 1,
@@ -3954,7 +3942,6 @@
       "world_fold.rs:995": 1
     },
     "replay_interface/documents/DELTA_REPLAY_MODEL_MAP.md": {
-      "replay_app/src/selected_pov_runtime.rs:766": 1,
       "source.rs:194": 1,
       "world.rs:3936": 1
     },
