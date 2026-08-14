@@ -2,28 +2,63 @@
 //! and compliance, plus the `GAR1` garrison-alert and `COL1` collaboration
 //! trailers.
 //!
-//! Derived from `world_fold.rs:20852`-`:21114`
+//! Derived from `world_fold.rs:21099`-`:21105`
 //! (`fold_occupation_resistance_compliance`, dispatched `:4714`), its payload
-// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=20852-21114 sha256=e3869710e831805a13f140854562fbf62949e989b8f96d4c405429b5662f826e closure=5b860aea40d93bcaa077215c522a27676d2a81da1d4f68cc33d77e732bfd09e1
-// @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=244-619 sha256=8dc1515a505fc28e96b58a60819cc25a02c7b5df927cb4d0a0d2ded487e5fc5c
+// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=21099-21105 sha256=3264eb66c9def2ec9621972f8ec726bae49e6c181c3bdea79c7f28437185d962 closure=4d548dbb2c67bcdee8d5683805b086b24c0bd488473a781735add29a9ab995ab
+// @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=265-662 sha256=974013e723937ae796d4f566b1b702b266e152ddf2e990ba2f3409d31994eff5
 //! constants at `:388`-`:399` and `:435`-`:466`, its two trailer decoders
 //! (`occupation_garrison_alert_len` `:30271`, `decode_occupation_collaboration`
 //! `:30291`, `decode_occupation_garrison_alert` `:30355`), the lane's own payload
 //! contract
 //! (`extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs`,
 //! included verbatim as `domain52_compact.rs`) and the collector read that
-//! produces the presence flags (`collector_module.rs:1079`-`:1117`). There is no
-//! `documents/domains/d52_*.md` dossier; the fold, the lane contract and the
-//! collector read are the whole basis.
+//! produces the presence flags (`collector_module.rs:1079`-`:1117`), plus
+//! `extractor/documents/domains/d52_occupation_resistance_compliance_live.md`.
+//! This note used to say there was no domain dossier, which was true when the
+//! module was written; lane IM added one's census section and the prose contract
+//! for the coverage verdict lives there now.
 //!
 //! # Payload grammar
 //!
-//! A 52-byte header, `row_count` fixed 64-byte state rows, then **two optional
+//! A 56-byte header, `row_count` fixed 64-byte state rows, then **two optional
 //! trailers** in a fixed order: `GAR1` (40-byte header + 16-byte equipment rows)
 //! and `COL1` (32-byte header + 16-byte relation rows).
 //!
-//! **The fold reads exactly two header words** — `row_count` at `+8` and
-//! `status_flags` at `+16` (`world_fold.rs::fold_occupation_resistance_compliance`). Every other word is
+//! **The fold reads four header words** — `row_count` at `+8`, `status_flags`
+//! at `+16` and, since lane IM (GP-U6), `observed_state_rows` at `+20` and
+//! `invalid_state_rows` at `+52`
+//! (`world_fold.rs::fold_occupation_resistance_compliance`). The header grew from
+//! 52 to 56 bytes in that lane, because the extractor had always counted the
+//! state roots it could not read and never encoded the count: on a FULL frame the
+//! loss was still derivable as `observed - row_count`, but on a DELTA it was not
+//! derivable at all, and a delta that silently dropped a root left the fold
+//! retaining the previous hour's value for that state under this hour's stamp.
+//! The census pair is not a [`split_payload`] invariant: the fold PUBLISHES the
+//! pair, as the census witness `_r2_occupation_census_live`
+//! (`world_fold.rs::record_occupation_census`). The pair is a COVERAGE VERDICT
+//! rather than a measurement of the engine's cardinality -- zero means the hour
+//! is trustworthy, nonzero means it is not, and the magnitude is accounting
+//! rather than a count of lost states -- and the thing that refuses on it
+//! is the replay admission for `mapmode.occupation_resistance_compliance`
+//! (`replay_interface/native/map_viewer/src/map_authority.rs::occupation_resistance_compliance_status`),
+//! which reconciles the recorder's published count and membership digest against
+//! the frame's own `states` object. Refusing in `split_payload` instead would
+//! throw away the HOUR over an incomplete census, which is the opposite of what
+//! the census is for.
+//!
+//! [`check_authority_payload`] is the other half of that split and DOES constrain
+//! the pair, mirroring the lane decoder, because these are arithmetic no frame
+//! the producer built can break:
+//!
+//! * on EVERY frame, `row_count + invalid_state_rows <= observed_state_rows` —
+//!   a delta's rows are a subset of the same valid extraction the verdict
+//!   describes, so rows and losses together never exceed the roots walked;
+//! * on a NON-DELTA frame, that sum is an equality, because a full extraction
+//!   accounts for every root exactly once.
+//!
+//! The first subsumes the separate `row_count <= observed_state_rows` and
+//! `invalid_state_rows <= observed_state_rows` bounds that used to stand beside
+//! it; both were deleted rather than kept as guards no test could isolate. Every other word is
 //! parsed and reported by [`PayloadHeader`] and **never enforced here**, per the
 //! recipe's rule that the test is whether YOUR fold reads it. In particular
 //! `changed_rows` at `+12` is *not* an invariant of this fold: it is the lane
@@ -36,7 +71,7 @@
 //! | `+8`  | u32 | `row_count`               | **yes** (`:16802`) |
 //! | `+12` | u32 | `changed_rows`            | no |
 //! | `+16` | u32 | `status_flags`            | **yes** (`:16803`) |
-//! | `+20` | u32 | `observed_state_rows`     | no |
+//! | `+20` | u32 | `observed_state_rows`     | **yes** (`world_fold.rs::fold_occupation_resistance_compliance`) |
 //! | `+24` | u32 | `occupied_state_rows`     | no |
 //! | `+28` | u32 | `wall_badge_rows`         | no |
 //! | `+32` | u32 | `scale_raw` (== 100000)   | no |
@@ -44,6 +79,7 @@
 //! | `+40` | u32 | `garrison_template_rows`  | no |
 //! | `+44` | u32 | `garrison_scalar_rows`    | no |
 //! | `+48` | u32 | `garrison_anomaly_rows`   | no |
+//! | `+52` | u32 | `invalid_state_rows` (coverage verdict; zero = trustworthy) | **yes** (`world_fold.rs::fold_occupation_resistance_compliance`) |
 //!
 //! State row, 64 bytes (`world_fold.rs::fold_occupation_resistance_compliance`):
 //!
@@ -292,7 +328,7 @@ pub mod field {
 // --- Payload grammar constants, from `world_fold.rs:388`-`:399`, `:435`-`:466`.
 
 /// `OCCUPATION_HEADER_LEN`, `world_fold.rs::OCCUPATION_HEADER_LEN`.
-pub const HEADER_LEN: usize = 52;
+pub const HEADER_LEN: usize = 56;
 /// `OCCUPATION_ROW_LEN`, `world_fold.rs::OCCUPATION_ROW_LEN`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 64;
 /// `OCCUPATION_GARRISON_ALERT_HEADER_LEN`, `world_fold.rs::OCCUPATION_GARRISON_ALERT_HEADER_LEN`.
@@ -604,9 +640,28 @@ pub fn schema() -> Schema {
 
 // --- Header and payload split -----------------------------------------------
 
-/// The 52-byte payload header. Every word is parsed; only `row_count` and
-/// `status_flags` are enforced by [`split_payload`], because only those two are
-/// read by `fold_occupation_resistance_compliance`.
+/// The 56-byte payload header. Every word is parsed; only `row_count` and
+/// `status_flags` are enforced by [`split_payload`].
+///
+/// `fold_occupation_resistance_compliance` reads two further words — the census
+/// pair `observed_state_rows` at `+20` and `invalid_state_rows` at `+52` — and
+/// [`split_payload`] deliberately does not enforce either. Enforcement there
+/// would mean refusing the RECORD, and a census that does not add up is a
+/// refused census, not a refused hour: the rows the record carries are still the
+/// engine's rows. The fold publishes the pair with its own verdict as
+/// `_r2_occupation_census_live` (`world_fold.rs::record_occupation_census`) and
+/// the replay admission for `mapmode.occupation_resistance_compliance` is what
+/// refuses on it
+/// (`replay_interface/native/map_viewer/src/map_authority.rs::occupation_resistance_compliance_status`).
+///
+/// [`check_authority_payload`] is a different question and DOES constrain the
+/// pair, mirroring the lane decoder: `row_count + invalid_state_rows <=
+/// observed_state_rows` on EVERY frame, and that same sum as an EQUALITY on a
+/// non-delta one. Both hold of every frame the producer builds, so a payload
+/// that breaks one is malformed rather than merely incomplete — which is why
+/// these live here and not in [`split_payload`], whose refusals throw away the
+/// hour. The inequality subsumes the two separate bounds that used to stand
+/// beside it, which were deleted rather than kept as unisolable guards.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -622,6 +677,13 @@ pub struct PayloadHeader {
     pub garrison_template_rows: u32,
     pub garrison_scalar_rows: u32,
     pub garrison_anomaly_rows: u32,
+    /// The frame's COVERAGE VERDICT, at `+52`. Zero means the walk accounted for
+    /// every root it could see and the province array did not move under it;
+    /// nonzero means the hour's coverage is not to be trusted. The magnitude is
+    /// an accounting quantity, not a defensible count of lost states — on a
+    /// replaced array it is simply the roots the old walk found, which bears no
+    /// relation to the new array's size.
+    pub invalid_state_rows: u32,
 }
 
 impl PayloadHeader {
@@ -655,6 +717,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
         garrison_template_rows: u32_at(payload, 40),
         garrison_scalar_rows: u32_at(payload, 44),
         garrison_anomaly_rows: u32_at(payload, 48),
+        invalid_state_rows: u32_at(payload, 52),
     })
 }
 
@@ -1577,10 +1640,44 @@ pub fn check_authority_payload(payload: &[u8]) -> core::result::Result<(), Strin
             payload.len()
         ));
     }
-    if row_count > header.observed_state_rows as usize {
+    // The census invariants, mirrored from the lane decoder
+    // (`occupation_resistance_compliance_live/domain44_compact.rs::decode_payload`).
+    // This function is the SECONDARY authority `bench_real_d52` treats as
+    // decoder-equivalent, so an invariant enforced only over there would let a
+    // stream certify here and be refused in production.
+    // Rows and drops together never exceed the roots walked, on ANY frame. A
+    // delta's rows are a subset of the same valid extraction the verdict
+    // describes (`collector_module.rs::delta_rows` selects from it), so the
+    // inequality holds for every frame the producer can build even though only a
+    // FULL frame satisfies it with equality.
+    //
+    // Two standalone checks stood here and were removed for the same reason:
+    // `invalid_state_rows > observed_state_rows` and `row_count >
+    // observed_state_rows`. Neither count is ever negative, so this one
+    // inequality already implies both, and no payload can fail either without
+    // failing this.
+    //
+    // Both operands are widened to `usize` before the addition, exactly as
+    // `occupation_resistance_compliance_live/domain44_compact.rs::decode_payload`
+    // widens both of its own at read time (the d53 lane has a file of the same
+    // name and its own `decode_payload`).
+    // The two authorities have to agree on the arithmetic as well as the rule.
+    let census_accounted = row_count.saturating_add(header.invalid_state_rows as usize);
+    let observed = header.observed_state_rows as usize;
+    if census_accounted > observed {
         return Err(format!(
-            "occupation row_count {row_count} > observed_state_rows {}",
-            header.observed_state_rows
+            "occupation row_count {row_count} + invalid_state_rows {} > observed_state_rows {}",
+            header.invalid_state_rows, header.observed_state_rows
+        ));
+    }
+    // A FULL extraction visits every state root exactly once and either emits a
+    // row or counts a drop, so equality is an identity rather than a policy. A
+    // delta carries only the changed rows and cannot be checked that way, which
+    // is the whole reason the verdict is on the wire at all.
+    if !header.is_delta() && census_accounted != observed {
+        return Err(format!(
+            "occupation full frame row_count {row_count} + invalid_state_rows {} != observed_state_rows {}",
+            header.invalid_state_rows, header.observed_state_rows
         ));
     }
     if header.changed_rows > header.row_count {
@@ -1993,7 +2090,7 @@ mod tests {
         }
     }
 
-    fn payload_of(header_tail: [u32; 10], elapsed: u64, rows: &[RawRow]) -> Vec<u8> {
+    fn payload_of(header_tail: [u32; 11], elapsed: u64, rows: &[RawRow]) -> Vec<u8> {
         let mut p = Vec::new();
         p.extend_from_slice(&elapsed.to_le_bytes());
         p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
@@ -2027,6 +2124,11 @@ mod tests {
                 count(ROW_FLAG_GARRISON_TEMPLATE),
                 count(ROW_FLAG_GARRISON_SCALARS),
                 0, // garrison_anomaly_rows
+                // invalid_state_rows: the helper's `observed_state_rows` is
+                // `rows.len().max(1)`, so a ROWLESS payload declares one root and
+                // must account for it as a drop or the full-frame identity
+                // `row_count + invalid == observed` fails.
+                if rows.is_empty() { 1 } else { 0 },
             ],
             7,
             rows,
@@ -2327,7 +2429,7 @@ mod tests {
         // round-trip or replay assertion can see it — both arms agree on the
         // wrong slice. So every word `peek_header` reads gets a known value.
         let rows = [full_row()];
-        let p = payload_of([11, 22, 33, 44, 55, FIXED_SCALE_RAW, 77, 88, 99, 111], 9, &rows);
+        let p = payload_of([11, 22, 33, 44, 55, FIXED_SCALE_RAW, 77, 88, 99, 111, 122], 9, &rows);
         let h = peek_header(&p).expect("header");
         assert_eq!(h.elapsed_wall_ms, 9);
         assert_eq!(h.row_count, 1);
@@ -2341,10 +2443,11 @@ mod tests {
         assert_eq!(h.garrison_template_rows, 88);
         assert_eq!(h.garrison_scalar_rows, 99);
         assert_eq!(h.garrison_anomaly_rows, 111);
+        assert_eq!(h.invalid_state_rows, 122);
         // The delta bit is read from +16 and nowhere else.
         assert!(!h.is_delta());
         let delta = payload_of(
-            [0, STATUS_DELTA_DATA, 1, 0, 0, FIXED_SCALE_RAW, 0, 0, 0, 0],
+            [0, STATUS_DELTA_DATA, 1, 0, 0, FIXED_SCALE_RAW, 0, 0, 0, 0, 0],
             0,
             &rows,
         );
@@ -3711,10 +3814,45 @@ mod tests {
                 "counter at +{offset} must be cross-checked"
             );
         }
-        // `row_count > observed_state_rows`.
+        // Rows beyond the roots walked. This used to have its own check and its
+        // own message; the universal census inequality below subsumes it, so
+        // this now asserts the REFUSAL rather than a particular wording.
         let mut p = good.clone();
         p[20..24].copy_from_slice(&1u32.to_le_bytes());
         assert!(check_authority_payload(&p).is_err());
+
+        // The census pair, mirrored from the lane decoder. Deleting either check
+        // from `check_authority_payload` left the whole suite green while this
+        // authority certified streams the lane decoder refuses -- the exact
+        // two-authority drift the checks exist to prevent. Each assertion below
+        // is arranged so that exactly ONE production check can decide it.
+        //
+        // (a) The UNIVERSAL inequality, isolated on a DELTA so the full-frame
+        // identity cannot be what refuses. `good` has two rows and two observed
+        // roots; as a delta claiming two drops, rows + drops = 4 > 2.
+        let mut p = good.clone();
+        p[16..20].copy_from_slice(&STATUS_DELTA_DATA.to_le_bytes());
+        p[52..56].copy_from_slice(&2u32.to_le_bytes());
+        assert!(
+            check_authority_payload(&p).is_err(),
+            "rows and drops together may not exceed the roots walked, delta or not"
+        );
+        // (b) The FULL-frame identity, isolated by staying INSIDE the
+        // inequality: three observed roots, two rows, zero drops. Nothing is
+        // over-accounted, so only the equality can refuse it.
+        let mut p = good.clone();
+        p[20..24].copy_from_slice(&3u32.to_le_bytes());
+        assert!(
+            check_authority_payload(&p).is_err(),
+            "a full frame's rows and drops must account for every observed root"
+        );
+        // (c) The SCOPING: the very same payload is legal as a delta, because a
+        // delta carries only the changed rows and its count says nothing about
+        // the walk. Without this, an identity applied to every frame would
+        // refuse every healthy delta, and no other assertion here would notice.
+        p[16..20].copy_from_slice(&STATUS_DELTA_DATA.to_le_bytes());
+        check_authority_payload(&p)
+            .expect("a delta's row count need not account for every observed root");
         // A duplicated state_id inside one frame — a rejected frame, never a
         // last-writer-wins overwrite.
         let dup = payload(0, &[full_row(), full_row()]);

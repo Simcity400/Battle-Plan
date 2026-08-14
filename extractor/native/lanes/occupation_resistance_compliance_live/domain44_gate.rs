@@ -1058,6 +1058,7 @@ mod tests {
                 garrison_template_rows: 0,
                 garrison_scalar_rows: 0,
                 garrison_anomaly_rows: 0,
+                invalid_state_rows: 0,
             },
             &[],
         )

@@ -985,6 +985,10 @@ mod tests {
         p.extend_from_slice(&0u32.to_le_bytes()); // garrison_template_rows
         p.extend_from_slice(&0u32.to_le_bytes()); // garrison_scalar_rows
         p.extend_from_slice(&0u32.to_le_bytes()); // garrison_anomaly_rows
+        // invalid_state_rows: one root walked, one row emitted, so zero drops.
+        // The full-frame identity `row_count + invalid == observed` is checked by
+        // the lane decoder, and this fixture is the shape a real hour carries.
+        p.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(p.len(), d52::HEADER_LEN);
         let mut row = vec![0u8; d52::ROW_LEN];
         row[0..4].copy_from_slice(&state_id.to_le_bytes());

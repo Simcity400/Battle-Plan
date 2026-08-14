@@ -281,6 +281,19 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         can_report_absent: true,
     },
     MapAuthorityOwnerProvenAdmission {
+        input_id: "mapmode.occupation_resistance_compliance",
+        owner_packet: "XMAP18",
+        payload_schema: "WorldFrame.occupation_by_state",
+        status_accessor: "occupation_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "ascending state id, under D52's own state-root census witness",
+        status: occupation_resistance_compliance_status,
+        // `build_occupation` returns `DomainAbsent` when the frame carries no
+        // `states` key, and `certified_census_status` passes a refusal through
+        // unchanged, so this predicate does observe `DomainAbsent`.
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
         input_id: "world.calendar_time",
         owner_packet: "XMAP09",
         payload_schema: "WorldFrame.hour_index;WorldFrame.date",
@@ -318,6 +331,7 @@ pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
     match input_id {
         "combat.naval_air_epoch" => "naval_combats_status",
         "combat.land_terminal_detail" => "certified ended_combats_status",
+        "mapmode.occupation_resistance_compliance" => "certified occupation_status",
         "weather.province_snow_accumulator" => "certified weather_province_snow_status",
         "world.calendar_time" => "derived hour_index;date pair",
         // These two ARE read off the accessor the ledger names, but "root
@@ -342,6 +356,214 @@ fn certified_census_status(status: ViewStatus, complete: bool) -> ViewStatus {
         return ViewStatus::DomainUnavailable;
     }
     status
+}
+
+/// The admission status for `mapmode.occupation_resistance_compliance`.
+///
+/// The census this map mode reads has two halves and each needs its own
+/// evidence, because neither can see the other's loss.
+///
+/// **The producer half.** A state lost BEFORE the snapshot was written leaves no
+/// warning, no unmeasured leaf and no short object — the snapshot is simply a
+/// description of a smaller world, and every other check on this frame agrees
+/// with it. Two things can lose one: a state root the collector could not READ
+/// (`extractor/native/lanes/occupation_resistance_compliance_live/collector_module.rs::extract_rows_from_state_roots`),
+/// and a state the collector never DISCOVERED, behind an unreadable province row
+/// or an unfollowable state link. Both reach the wire as `invalid_state_rows` at
+/// header `+52` — the second by being folded into the observed-root count at the
+/// collector's own call site, so any discovery loss makes the drop count nonzero.
+/// Nothing on the frame could catch either until D52's state-root census was
+/// published; it now is, as
+/// `_r2_occupation_census_live` (`extractor/native/recorder_host/src/world_fold.rs::record_occupation_census`),
+/// and `census_complete` is that half's whole answer. A frame that omits the
+/// witness is refused rather than trusted: an absent count is not a statement
+/// that nothing is missing, and an explicit null is the recorder saying its own
+/// d52 record was refused this hour.
+///
+/// **The decoder half.** `build_occupation` drops a state whose object key is
+/// not numeric and a state whose value is not an object, both with a bare
+/// `continue` and no warning
+/// (`replay_interface/native/replay_core/src/world.rs::build_occupation`).
+/// Those losses happen after the producer's count was fixed, so
+/// `census_complete` cannot see them.
+///
+/// This half is TWO readings of the raw object, and the split is load-bearing.
+/// The first revision of this guard filtered the raw members by the decoder's
+/// own admission test — numeric key AND object value AND an `occupation`
+/// member — and so discarded exactly the members the decoder discarded and
+/// reported agreement. A structural walk cannot reuse the predicate whose
+/// omissions it exists to detect. So:
+///
+/// * the WALK asks only whether every `states` member is well formed at all —
+///   numeric key, object value — which is the pair of silent `continue`s;
+/// * the COUNT then compares occupation-bearing raw members against decoded
+///   rows, which catches the losses that are well formed: a wrong-typed
+///   `occupation`, and the `"5"`/`"05"` key collapse the province-snow
+///   predicate records below (both parse to the same `u32`, so the walk is
+///   content and only the count is short).
+///
+/// **Neither half anchors the census MEMBERSHIP**, and two review rounds found
+/// the hole in two stages. First: a
+/// member that vanished whole between the recorder's fold and this frame leaves
+/// the raw object structurally intact, raw and decoded agreeing at the smaller
+/// number, every surviving leaf measured, and `census_complete` still true
+/// because it was computed before the loss. So the witness carries
+/// `published_state_rows` — the states the fold was holding occupation data for
+/// when it wrote the hour — and `raw == published` is the conjunct that makes the
+/// size falsifiable. The two header counts cannot do that job: D52 emits a row
+/// for every state root, occupied or not, and the fold drops the ones whose
+/// flags produced no content, so `emitted_state_rows` legitimately exceeds the
+/// published set by an amount only the producer knows.
+///
+/// Second, and this is why the count was still not enough: **cardinality is not
+/// membership**. A frame that loses state 6 and gains state 7 has the same
+/// count on every side, is structurally intact, and has measured leaves
+/// throughout — so every count-based conjunct above agrees with it. The witness
+/// therefore also carries `published_state_digest`, an FNV-1a-64 over the
+/// ascending published ids, recomputed here from the raw object rather than
+/// trusted. A witness that omits it refuses.
+///
+/// The two are not redundant, and which one decides depends on the loss. A
+/// SUBSTITUTION at constant cardinality moves only the digest, so the digest is
+/// the sole guard there. A witness that OMITS its digest, or omits its count,
+/// refuses on the missing field alone — each is pinned by its own test
+/// (`an_occupation_census_witness_without_a_membership_digest_is_not_admitted`,
+/// `an_occupation_census_witness_without_a_published_count_is_not_admitted`). A
+/// lost member trips both at once, and no fixture separates them there, which is
+/// why the lost-member test claims neither.
+///
+/// **The bound of this predicate, stated so nobody has to rediscover it.** What
+/// it certifies is COVERAGE and IDENTITY: every state the engine had is here,
+/// none was substituted, and every certified leaf was measured rather than
+/// retained unread. It does NOT certify the per-state VALUES. A frame whose
+/// state 6 says resistance 99.0 where the recorder wrote 1.5 passes every
+/// conjunct, because the id set, the counts, the digest and the leaf kinds are
+/// all unchanged. Closing that would mean digesting the values too, which means
+/// pinning a float spelling across a JSON round trip on both sides of a
+/// workspace boundary — a different and much more brittle contract than this
+/// one, and the wrong tool for it: value authenticity belongs to the capture's
+/// own record-level integrity, not to a map-mode census guard.
+///
+/// The two counting rules do agree for an honest frame, which matters because a
+/// guard that refuses healthy hours is as bad as one that admits broken ones.
+/// The recorder emits `states` as the union of its own state map with the
+/// map-control state map, copying each entry whole; the members that come only
+/// from map control carry no `occupation` key, and every member that carries one
+/// carries the object the fold counted. The three ways the two could diverge are
+/// all already refusals for another reason: an hour whose d52 record was refused
+/// nulls the `occupation` values but publishes a null witness; an hour with no
+/// d52 record at all publishes no witness key; and a failed fold retires the
+/// witness outright.
+fn occupation_resistance_compliance_status(frame: &WorldFrame) -> ViewStatus {
+    let census = frame
+        .domain("_r2_occupation_census_live")
+        .and_then(serde_json::Value::as_object);
+    let producer_census_is_complete = census
+        .and_then(|census| census.get("census_complete"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    // How many states the RECORDER holds occupation data for, which is the only
+    // number that can be compared against the census the frame carries. The two
+    // header counts cannot: D52 emits a row for every state root, occupied or
+    // not, and the fold drops the ones whose flags produced no content, so
+    // `emitted_state_rows` legitimately exceeds the published set by an amount
+    // only the producer knows. Without this the guard admitted a frame that had
+    // lost a whole well-formed member after the witness was computed — raw and
+    // decoded simply agreed at the smaller number.
+    let published_rows = census
+        .and_then(|census| census.get("published_state_rows"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|rows| usize::try_from(rows).ok());
+    // The recorder's membership digest, carried as a decimal string so no JSON
+    // tool can round a 64-bit value on the way through.
+    let published_digest = census
+        .and_then(|census| census.get("published_state_digest"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|digest| digest.parse::<u64>().ok());
+    let decoded_rows = frame.occupation_by_state().len();
+    // Two readings of the same raw object, and the split is the whole point: the
+    // structural walk must NOT reuse the decoder's own admission test, or it
+    // would drop exactly the members the decoder dropped and report agreement.
+    // So the walk asks whether every member is well formed AT ALL, and the count
+    // then compares occupation-bearing members against decoded rows.
+    let states = frame
+        .domain("states")
+        .and_then(serde_json::Value::as_object);
+    let states_are_structurally_intact = states.is_some_and(|states| {
+        states
+            .iter()
+            .all(|(key, value)| key.parse::<u32>().is_ok() && value.is_object())
+    });
+    // The raw occupation-bearing members, by id, ascending — the same sequence
+    // the recorder digested. Members whose key is not numeric are folded in as
+    // the reserved id `u32::MAX`, exactly as the producer does, so a frame that
+    // renamed a key cannot match by having the same number of members.
+    let raw_occupation_ids: Option<Vec<u32>> = states.map(|states| {
+        let mut ids: Vec<u32> = states
+            .iter()
+            .filter(|(_, value)| {
+                value
+                    .as_object()
+                    .is_some_and(|state| state.contains_key("occupation"))
+            })
+            .map(|(key, _)| key.parse::<u32>().unwrap_or(u32::MAX))
+            .collect();
+        ids.sort_unstable();
+        ids
+    });
+    let raw_rows = raw_occupation_ids.as_ref().map(Vec::len);
+    // Every leaf the row claims has to have been measured, not merely present:
+    // `build_occupation` retains a row whose value failed its own read as an
+    // `Unobtained` leaf and still reports `Present`, and this input IS the
+    // per-state resistance/compliance pair.
+    let every_row_measured = frame.occupation_by_state().values().all(|row| {
+        matches!(row.resistance, Leaf::Measured(_)) && matches!(row.compliance, Leaf::Measured(_))
+    });
+    // `published_rows` anchors the chain to a number the RECORDER stated. Without
+    // it the two comparisons below are only self-consistent: a member that
+    // vanished whole between the fold and this frame leaves raw and decoded
+    // agreeing at the smaller count, structurally intact, every surviving leaf
+    // measured, and `census_complete` still true because it was computed before
+    // the loss. `raw == published` is what makes the census size falsifiable.
+    // Cardinality is not membership, and the counts alone could not tell the
+    // difference: a frame that loses state 6 and gains state 7 keeps every count
+    // identical, stays structurally intact, and leaves every surviving leaf
+    // measured. The digest over the ascending published ids is what makes the
+    // census a membership claim. It is recomputed here rather than trusted,
+    // and a witness that omits it refuses.
+    let membership_matches = match (published_digest, raw_occupation_ids.as_deref()) {
+        (Some(digest), Some(ids)) => digest == fnv1a64_over_state_ids(ids),
+        _ => false,
+    };
+    let complete = producer_census_is_complete
+        && states_are_structurally_intact
+        && every_row_measured
+        && raw_rows == Some(decoded_rows)
+        && raw_rows == published_rows
+        && membership_matches;
+    certified_census_status(frame.occupation_status(), complete)
+}
+
+/// FNV-1a-64 over a sequence of state ids, each as four little-endian bytes.
+///
+/// The byte-for-byte twin of
+/// `extractor/native/recorder_host/src/world_fold.rs::fnv1a64_over_state_ids`.
+/// Written out on both sides rather than shared through a crate because the two
+/// live in different workspaces; a digest whose definition is a dependency
+/// version is not a cross-seam contract. The producer sorts its ids numerically
+/// before digesting — its own map is keyed by the decimal string, so its natural
+/// order is lexicographic — and so does the caller here.
+fn fnv1a64_over_state_ids(ids: &[u32]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for id in ids {
+        for byte in id.to_le_bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    hash
 }
 
 /// The admission status for `weather.province_snow_accumulator`.
@@ -1025,12 +1247,18 @@ pub fn map_authority_requirement_metadata(
         "diplomacy.faction_roster" => {
             "the recording carries no measured faction-membership roster for this hour"
         }
+        // XMAP18 has proved the occupation map mode (lane IM, GP-U6): D52's
+        // state-root census reaches the frame as `_r2_occupation_census_live`,
+        // so the membership half is decidable and the blocker names the hour's
+        // missing or incomplete measurement rather than a pending proof.
+        "mapmode.occupation_resistance_compliance" => {
+            "the recording carries no complete measured per-state occupation census for this hour"
+        }
         "diplomacy.pair_relations"
         | "mapmode.air_superiority"
         | "mapmode.infrastructure_state"
         | "mapmode.intelligence"
         | "mapmode.naval_supremacy"
-        | "mapmode.occupation_resistance_compliance"
         | "mapmode.raids"
         | "mapmode.resource_deposits"
         | "mapmode.scripted_inputs"

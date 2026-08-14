@@ -61,6 +61,129 @@ effects, and shortens the live race window between address validation and copy.
 Perf diagnostics, allocator behavior, and concurrent mutation timing can
 therefore differ even when decoded rows do not.
 
+### The state-root census witness
+
+The census pair is a **conservative coverage accounting, not a measurement** of
+the engine's state cardinality. `observed_state_rows` at header `+20` is the
+roots the walk found plus everything it may have missed; on a frame where the
+province array was replaced mid-walk it is inflated further still, purely to
+force a refusal, so an old two-root array replaced by a hundred-root one
+publishes four. `invalid_state_rows` at `+52` is the matching verdict rather than a tally, derived
+as `observed - rows.len()`, so
+`row_count + invalid_state_rows == observed_state_rows` is an identity over a
+full extraction by construction.
+
+The pair answers exactly one question: can this hour's occupation coverage be
+trusted? Zero loss means the walk accounted for everything it could see and the
+array did not move under it. Any other value refuses, and its magnitude means nothing
+beyond that.
+
+A root lost before the snapshot was written leaves no warning, no unmeasured
+leaf, and no short object — only a complete description of a smaller world — so
+these counters are the only membership evidence any consumer can have.
+
+**Two different failures can lose a state, and both have to land in that
+counter.** The first is a root the extractor could not READ, which
+`extract_rows_from_state_roots` counts itself. The second is a state never
+DISCOVERED — `resolve_state_roots` reports its own `invalid_province_rows` and
+`invalid_state_links`, and the states behind those failures are invisible to the
+row loop, so its counter is silent about them. `StateRoots::observed_state_rows_bound` therefore folds the discovery losses into
+the observed-root count before encoding, which makes the derived verdict
+`read failures + discovery losses` and keeps the wire identity intact. The
+arithmetic lives beside the walk that produces the counts rather than at the
+collector's call site, so it is unit-testable without a live process. An unreadable province row is counted as one
+possibly-lost state: it may have had none, and refusing on the safe side is what
+the verdict is for.
+
+A third loss shape sits above both: the engine can REPLACE the province array
+without the hour changing, which would leave every root reading cleanly for
+superseded geometry. The collector re-checks the array's address and count after
+the walk (`cprovince_array_still_current`, the same currency test the shared map
+topology uses) and, on a replacement, spells the hour as a total loss of coverage
+— a refused census, not a failed record.
+
+A fourth shape is closed at the producer rather than through the verdict: a frame
+that LOSES a state root is emitted FULL. A delta upserts and has no way to say
+"this state is gone", so a clean walk that swaps root 2 for root 3 would leave the
+fold holding 2 forever and publishing its previous-hour value under this hour's
+stamp — with the root cardinality unchanged, the verdict zero, and the published
+digest honestly describing the fold's own accumulator. Only the fold's baseline
+clear can drop the departed state, so `delta_rows` emits the frame full when its
+memory holds a root this walk did not find.
+
+**The header grew from 52 to 56 bytes in lane IM** to carry `invalid_state_rows`
+at `+52`. On a FULL frame the coverage loss was already derivable as
+`observed - row_count`; on a DELTA it was not derivable at all, and that case is
+not hypothetical. A delta carries only changed rows, so a root the extraction
+could not read this hour simply does not appear among them, the fold goes on
+holding the previous hour's value for that state, and publishes it under this
+hour's stamp — the wrong-hour rule. The count is therefore encoded rather than
+inferred, and the lane decoder re-checks the identity on every non-delta frame.
+
+The fold reads the count and publishes its verdict as the root snapshot key
+`_r2_occupation_census_live` (`source`, `observed_state_rows`,
+`emitted_state_rows`, `invalid_state_rows`, `published_state_rows`,
+`published_state_digest`, `baseline`, `census_complete`), under the same
+same-hour domain guard as `_r2_occupation_garrison_alert_live`. No hour ever
+republishes the previous hour's verdict, and the two failure shapes spell
+themselves differently: a record THIS FOLD refuses or fails marks the domain as
+having reported, so its hour carries an explicit null, while a record rejected at
+the stream boundary never enters `domains_this_hour` and its hour carries no
+census key at all. The consumer refuses both. Each rule below has its own killing
+test in `extractor/native/recorder_host/src/world_fold/tests.rs`:
+
+- A full snapshot is complete iff `emitted == observed` and no root was dropped.
+- A declared zero is a failed read and never a measured-empty world.
+- A delta cannot prove coverage. It inherits a STANDING claim, which exists only
+  while a baseline that was itself complete is still in force, and it can only
+  retire that claim — by reporting a different `observed_state_rows`, or by
+  arriving with no standing claim at all, or by reporting a nonzero
+  `invalid_state_rows`. A delta that fails to match CLEARS the claim, so a later
+  delta drifting back to the original count cannot resurrect it. An incomplete
+  baseline leaves no claim to inherit.
+- Any fold error — a header that does not frame, a trailer that does not decode,
+  a row that fails validation part way through the loop — retires the census
+  outright, because the accumulator the next delta would land in is
+  part-mutated. So does a record rejected at the stream boundary before the fold
+  is entered at all (`world_fold.rs::record_malformed_domain_payload`); that hour
+  publishes no census key rather than a null, because the domain never reported.
+- `published_state_rows` is the number of states the fold holds occupation data
+  for after applying the record. It is **not** derivable from the other two:
+  D52 emits a row for every state root, occupied or not, and the row loop drops
+  the `occupation` object again when a row's flags produced no content.
+- `published_state_digest` is an FNV-1a-64 over those states' ids, ascending.
+  Counts alone are cardinality, not membership: a frame that loses one state and
+  gains another keeps every count identical, and only the digest sees it. The
+  producer sorts numerically before digesting — its own map is keyed by the
+  decimal string, so its natural order is lexicographic — and the consumer
+  recomputes rather than trusts. The count and the digest are not redundant: a
+  witness omitting either refuses on that field alone.
+
+An incomplete census is never a fold error — the rows the record did carry still
+reach the snapshot.
+
+XMAP00's `mapmode.occupation_resistance_compliance` is admitted on this witness
+plus a structural walk of the raw `states` object, a reconciliation of
+`published_state_rows` against it, and a recomputation of
+`published_state_digest`
+(`replay_interface/native/map_viewer/src/map_authority.rs::occupation_resistance_compliance_status`).
+Each catches a loss the others cannot see. The producer's verdict was fixed
+before the decoder ran, so the decoder's own silent drops are invisible to it.
+The decoder's raw/decoded comparison is blind to a member that vanished whole
+between the fold and the frame, because raw and decoded then agree at the
+smaller number. And every count-based check is blind to a substitution — one
+state lost, another gained — which only the digest sees.
+
+What that admission does NOT certify is the per-state VALUES: a frame whose
+resistance figure was altered keeps the same ids, counts, digest and leaf kinds.
+The census guard is about coverage and identity; value authenticity belongs to
+the capture's own record-level integrity.
+
+`replay_verify` enforces the same fact on the other side: a stream whose wire
+reports a nonzero `invalid_state_rows` for any hour does not certify, because the
+replay map refuses exactly those hours and two authorities disagreeing about one
+capture is itself the defect.
+
 See also d47, d48, d51, and d53.
 
 

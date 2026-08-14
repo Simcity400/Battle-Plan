@@ -246,6 +246,52 @@ fn province_snow_fixture() -> Value {
     })
 }
 
+/// Two occupied states with both certified leaves measured, under a D52
+/// state-root census that says every root the engine reported produced a row.
+///
+/// `census_complete` is the producer's verdict, not a count this fixture
+/// re-derives: the two counts beside it are the numbers it was computed from and
+/// are carried so a reader can see the arithmetic.
+fn occupation_census_fixture() -> Value {
+    json!({
+        "_r2_occupation_census_live": {
+            "source": "occupation_resistance_compliance_live",
+            "observed_state_rows": 2,
+            "emitted_state_rows": 2,
+            "invalid_state_rows": 0,
+            "published_state_rows": 2,
+            "published_state_digest": occupation_state_digest(&[5, 6]).to_string(),
+            "baseline": true,
+            "census_complete": true
+        },
+        "states": {
+            "5": {"occupation": {"resistance": 22.3, "compliance": 65.0}},
+            "6": {"occupation": {"resistance": 1.5, "compliance": 4.0}}
+        }
+    })
+}
+
+/// The recorder's membership digest, recomputed in the test rather than pasted
+/// as a literal.
+///
+/// A hard-coded hex constant here would pass whatever the two implementations
+/// happened to agree on, including agreeing on nothing: if the producer and the
+/// admission predicate ever drifted apart, a literal would keep matching one of
+/// them and the fixture would still be "green". Recomputing from the ids means
+/// the fixture asserts the same thing the recorder asserts.
+fn occupation_state_digest(ids: &[u32]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for id in ids {
+        for byte in id.to_le_bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    hash
+}
+
 /// The number of members in the snapshot's raw province object, which is what
 /// the guard compares the D24 witness against. Read from the frame rather than
 /// the fixture so the test sees exactly what the derivation sees.
@@ -325,6 +371,13 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
             NamedSnapshotFixture {
                 name: "authenticated D24 province-snow row",
                 rest: province_snow_fixture(),
+            },
+        ),
+        (
+            "mapmode.occupation_resistance_compliance",
+            NamedSnapshotFixture {
+                name: "complete D52 per-state occupation census under its own witness",
+                rest: occupation_census_fixture(),
             },
         ),
         (
@@ -470,6 +523,18 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             object.remove("diplomacy_world");
             false
         }
+        // `occupation_status` stays `Present` when the producer's own census
+        // says a state root was dropped: `build_occupation` sees a perfectly
+        // well-formed `states` object and has no way to know the world was
+        // larger than the one it was handed. Only the D52 witness sees it.
+        "mapmode.occupation_resistance_compliance" => {
+            object
+                .get_mut("_r2_occupation_census_live")
+                .and_then(Value::as_object_mut)
+                .expect("the measured fixture carries the D52 census witness")
+                .insert("census_complete".into(), json!(false));
+            true
+        }
         // `weather_province_snow_status` stays `Present` after the decoder
         // discards a non-numeric province key: declared 2 == raw 2, but only one
         // member survived decoding, and only the certified reading sees it.
@@ -528,6 +593,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
             replay_core::world::FactionRosterStatus::MeasuredEmpty
             | replay_core::world::FactionRosterStatus::MeasuredNonEmpty => ViewStatus::Present,
         },
+        "mapmode.occupation_resistance_compliance" => frame.occupation_status(),
         "weather.province_snow_accumulator" => frame.weather_province_snow_status(),
         // The ledger names `date` for this row, and `WorldFrame::date` is an
         // `Option<&str>` rather than a `ViewStatus`: the only reading it
@@ -921,6 +987,9 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "map": {"_r2_weather_live": Value::Null},
             "countries": Value::Null,
             "diplomacy_live": Value::Null,
+            // Explicitly unobtained rather than missing: `build_occupation`
+            // distinguishes the two, and this projection is the unobtained one.
+            "states": Value::Null,
             }),
             None,
         ),
@@ -1260,6 +1329,173 @@ fn a_province_snow_member_outside_the_declared_range_is_not_admitted() {
         warning.starts_with("map._r2_weather_live.provinces.") && warning.contains("row ignored")
     }));
     assert_owner_proven_unavailable(&frame, "weather.province_snow_accumulator");
+}
+
+/// kills: dropping the `census_complete` conjunct from
+/// `occupation_resistance_compliance_status`. A state root the collector could
+/// not read leaves NO other trace on the frame: the snapshot is a complete,
+/// well-formed description of a SMALLER world, `build_occupation` reports
+/// `Present`, every leaf is `Measured`, the raw and decoded counts agree with
+/// each other, and no warning is raised. The recorder's own verdict is the only
+/// thing that contradicts it.
+///
+/// The fixture is a producer-representative dropped root: three roots observed,
+/// two rows emitted, one counted unreadable at header `+52`, and the recorder
+/// therefore calling its own census incomplete.
+#[test]
+fn an_occupation_census_the_producer_calls_incomplete_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    let census = rest["_r2_occupation_census_live"].as_object_mut().unwrap();
+    census.insert("census_complete".into(), json!(false));
+    census.insert("observed_state_rows".into(), json!(3));
+    census.insert("invalid_state_rows".into(), json!(1));
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.occupation_status(), replay_core::ViewStatus::Present);
+    assert_eq!(frame.occupation_by_state().len(), 2);
+    assert_owner_proven_unavailable(&frame, "mapmode.occupation_resistance_compliance");
+}
+
+/// kills: treating a missing or null witness as "nothing was missing". An
+/// absent count is not a statement of completeness, and an explicit null is the
+/// recorder saying its own d52 record was refused this hour -- the loudest
+/// possible reason not to admit the census that record was supposed to produce.
+#[test]
+fn an_occupation_census_without_its_witness_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    rest.as_object_mut()
+        .unwrap()
+        .remove("_r2_occupation_census_live");
+    let absent = world_frame_with(rest);
+    assert_eq!(absent.occupation_status(), replay_core::ViewStatus::Present);
+    assert_owner_proven_unavailable(&absent, "mapmode.occupation_resistance_compliance");
+
+    let mut rest = occupation_census_fixture();
+    rest["_r2_occupation_census_live"] = Value::Null;
+    let refused = world_frame_with(rest);
+    assert_eq!(refused.occupation_status(), replay_core::ViewStatus::Present);
+    assert_owner_proven_unavailable(&refused, "mapmode.occupation_resistance_compliance");
+}
+
+/// kills: comparing the decoded membership against itself, or against the raw
+/// `states` object without filtering to the members that carry an `occupation`
+/// object. `build_occupation` drops a non-numeric key with a bare `continue`
+/// and no warning, and the producer's census was fixed before that drop
+/// happened, so `census_complete` stays true and cannot see it.
+///
+/// The fixture is built so that ONLY that comparison can refuse it: the added
+/// state's key is numeric and its value is an object, so the structural walk is
+/// content; and the witness names all three ids, so the digest and the published
+/// count both agree with the raw object. What the decoder will not accept is the
+/// wrong-typed `occupation` member, which it skips with no warning at all.
+#[test]
+fn an_occupation_census_the_decoder_silently_shortened_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    rest["states"]["7"] = json!({"occupation": "not-an-object"});
+    let census = rest["_r2_occupation_census_live"].as_object_mut().unwrap();
+    census.insert("observed_state_rows".into(), json!(3));
+    census.insert("emitted_state_rows".into(), json!(3));
+    census.insert("published_state_rows".into(), json!(3));
+    census.insert(
+        "published_state_digest".into(),
+        json!(occupation_state_digest(&[5, 6, 7]).to_string()),
+    );
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.occupation_status(), replay_core::ViewStatus::Present);
+    // Raw carries three occupation members; only two survived decoding.
+    assert_eq!(frame.occupation_by_state().len(), 2);
+    assert_owner_proven_unavailable(&frame, "mapmode.occupation_resistance_compliance");
+}
+
+/// kills: trusting the frame's own self-consistency. A whole well-formed member
+/// is gone here, so the raw object is structurally intact, raw and decoded agree
+/// at the smaller number, every surviving leaf is measured, and
+/// `census_complete` is still true because the producer computed it before the
+/// loss. Only the recorder's own published witness contradicts the frame.
+///
+/// A lost member moves the published count AND the digest together, so this test
+/// deliberately claims NEITHER conjunct individually -- removing either one alone
+/// leaves the other refusing. What it pins is that the recorder's witness is
+/// consulted at all. The two conjuncts are separated elsewhere:
+/// `an_occupation_census_that_substituted_one_state_for_another_is_not_admitted`
+/// isolates the digest, and the two witness-field tests isolate each field's
+/// absence.
+#[test]
+fn an_occupation_census_that_lost_a_member_after_the_witness_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    rest["states"].as_object_mut().unwrap().remove("6");
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.occupation_status(), replay_core::ViewStatus::Present);
+    // Every self-consistent check passes: one raw member, one decoded row,
+    // measured, structurally intact, and the producer said the census was whole.
+    assert_eq!(frame.occupation_by_state().len(), 1);
+    assert_owner_proven_unavailable(&frame, "mapmode.occupation_resistance_compliance");
+}
+
+/// kills: treating a witness with no `published_state_rows` as satisfying the
+/// size check. An older recorder's witness omits the field entirely, and
+/// defaulting it to the observed count -- or skipping the comparison when it is
+/// missing -- would admit exactly the losses the field was added to catch.
+#[test]
+fn an_occupation_census_witness_without_a_published_count_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    rest["_r2_occupation_census_live"]
+        .as_object_mut()
+        .unwrap()
+        .remove("published_state_rows");
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.occupation_status(), replay_core::ViewStatus::Present);
+    assert_owner_proven_unavailable(&frame, "mapmode.occupation_resistance_compliance");
+}
+
+/// kills: checking cardinality and calling it membership. This frame swaps
+/// state 6 for state 7: the structural walk passes, raw and decoded counts are
+/// both two, `published_state_rows` is two, every leaf is `Measured`, and
+/// `census_complete` is true — every count-based conjunct agrees, and the census
+/// has still lost a state and invented another. Only the digest over the
+/// ascending ids sees it. Found by review round 2, not by foresight.
+#[test]
+fn an_occupation_census_that_substituted_one_state_for_another_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    let states = rest["states"].as_object_mut().unwrap();
+    let row = states.remove("6").expect("the fixture carries state 6");
+    states.insert("7".into(), row);
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.occupation_status(), replay_core::ViewStatus::Present);
+    assert_eq!(frame.occupation_by_state().len(), 2);
+    assert_owner_proven_unavailable(&frame, "mapmode.occupation_resistance_compliance");
+}
+
+/// kills: treating a witness with no `published_state_digest` as satisfying the
+/// membership check, or accepting a digest the frame does not reproduce.
+#[test]
+fn an_occupation_census_witness_without_a_membership_digest_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    rest["_r2_occupation_census_live"]
+        .as_object_mut()
+        .unwrap()
+        .remove("published_state_digest");
+    let absent = world_frame_with(rest);
+    assert_owner_proven_unavailable(&absent, "mapmode.occupation_resistance_compliance");
+
+    let mut rest = occupation_census_fixture();
+    rest["_r2_occupation_census_live"]["published_state_digest"] =
+        json!(occupation_state_digest(&[5, 6]).wrapping_add(1).to_string());
+    let wrong = world_frame_with(rest);
+    assert_owner_proven_unavailable(&wrong, "mapmode.occupation_resistance_compliance");
+}
+
+/// kills: dropping the per-row measured check. `build_occupation` retains a row
+/// whose value failed its own read as an `Unobtained` leaf and still reports
+/// `Present`, and this input IS the per-state resistance/compliance pair, so a
+/// membership-only guard would admit a census whose values are missing.
+#[test]
+fn an_occupation_row_whose_value_was_not_measured_is_not_admitted() {
+    let mut rest = occupation_census_fixture();
+    rest["states"]["6"]["occupation"]["compliance"] = Value::Null;
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.occupation_status(), replay_core::ViewStatus::Present);
+    assert_eq!(frame.occupation_by_state().len(), 2);
+    assert_owner_proven_unavailable(&frame, "mapmode.occupation_resistance_compliance");
 }
 
 /// kills: admitting `weather.province_snow_accumulator` when the D24 row-count witness proves a member was lost before the snapshot.
@@ -1676,7 +1912,7 @@ fn a_proven_input_refuses_when_its_own_payload_is_unmeasured() {
             .is_admitted(proven.input_id));
     }
     assert_eq!(
-        composites_covered, 3,
+        composites_covered, 4,
         "the composite-accessor cases are the ones this test exists for"
     );
 }

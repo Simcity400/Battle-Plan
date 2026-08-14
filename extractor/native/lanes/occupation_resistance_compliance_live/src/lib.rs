@@ -9,7 +9,8 @@ pub mod a729_garrison_alert;
 
 pub use collector_module::{
     compact, encode_rows, encode_rows_with_alert, extract_rows_from_state_roots,
-    read_country_collaboration_relations, read_country_occupation_status, resolve_state_roots,
+    observed_state_rows_after_currency_check, read_country_collaboration_relations,
+    read_country_occupation_status, resolve_state_roots,
     CompactOccupationResistanceComplianceTracker, EncodedFrame, ExtractError, ExtractedRows,
     OccupationMemory, StateRoots,
 };

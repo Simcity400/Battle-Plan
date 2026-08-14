@@ -1,8 +1,8 @@
 //! d24 `weather_live` — per-strategic-region and per-province realized weather.
 //!
-//! Derived from `world_fold.rs:21117`-`:21521`
+//! Derived from `world_fold.rs:21382`-`:21786`
 //! (`fold_weather`), its payload constants at `:761`-`:808`, the state it folds
-// @world-fold-authority domain=24 functions=fold_weather lines=21117-21521 sha256=cb64398a4fed19cdb9e5b90b172c5bdd8089464281df60ba503732f0022be22f closure=4b5a0b8227ed5172cc907fcdbe0e5580bf22e847d0a1035bc615ce6652918162
+// @world-fold-authority domain=24 functions=fold_weather lines=21382-21786 sha256=cb64398a4fed19cdb9e5b90b172c5bdd8089464281df60ba503732f0022be22f closure=bef39a0a0d1582eaca5b755e682b857b42b00a3cc8042c7b5280b50feeea1065
 //! into at `:24179`-`:24301`, the collector read that produces the flags
 //! (`extractor/native/collector/src/attach_log.rs:59018`-`:59192`), and the
 //! production consumer of the folded JSON

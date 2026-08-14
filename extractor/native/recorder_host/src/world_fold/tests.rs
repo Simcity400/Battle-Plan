@@ -11551,7 +11551,43 @@ fn d52_payload(status_flags: u32, rows: impl FnOnce(&mut Vec<u8>) -> u32) -> Vec
     payload.extend_from_slice(&row_count.to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
+    // `invalid_state_rows` at `+52`: zero, i.e. every state root read cleanly.
+    // The default helper describes a healthy extraction, so the census tests
+    // that need a drop set it through `d52_payload_with_observed`'s sibling.
+    payload.extend_from_slice(&0u32.to_le_bytes());
     payload.extend_from_slice(&row_bytes);
+    payload
+}
+
+/// [`d52_payload`] with the state-root census stated independently of the row
+/// count.
+///
+/// `d52_payload` sets `observed_state_rows == row_count`, i.e. a perfectly
+/// complete walk, which is exactly the case that cannot exercise the census
+/// witness. The censusless helper stays because every other d52 test wants that
+/// default.
+fn d52_payload_with_observed(
+    status_flags: u32,
+    observed_state_rows: u32,
+    rows: impl FnOnce(&mut Vec<u8>) -> u32,
+) -> Vec<u8> {
+    d52_payload_with_census(status_flags, observed_state_rows, 0, rows)
+}
+
+/// [`d52_payload_with_observed`] that also states the drop count at `+52`.
+///
+/// `invalid_state_rows` is the only evidence a DELTA has that it left a state
+/// holding an earlier hour's value, so the delta cases cannot be written without
+/// setting it independently of the row count.
+fn d52_payload_with_census(
+    status_flags: u32,
+    observed_state_rows: u32,
+    invalid_state_rows: u32,
+    rows: impl FnOnce(&mut Vec<u8>) -> u32,
+) -> Vec<u8> {
+    let mut payload = d52_payload(status_flags, rows);
+    payload[20..24].copy_from_slice(&observed_state_rows.to_le_bytes());
+    payload[52..56].copy_from_slice(&invalid_state_rows.to_le_bytes());
     payload
 }
 
@@ -13087,6 +13123,700 @@ fn folds_d52_occupation_with_r2_law_token_and_tag_resolution() {
         .unwrap()
         .iter()
         .any(|domain| domain == "occupation_resistance_compliance_live"));
+}
+
+/// kills: dropping `observed_state_rows` from the fold again, or publishing the
+/// witness without the two counts it was computed from. D52 has carried the
+/// engine's state-root census at `+20` since the domain was written and this
+/// fold read past it, so a state root lost between the engine and the snapshot
+/// left NO trace a consumer could find: no warning, no unmeasured leaf, and a
+/// `states` object that is simply shorter than the world. Without this key
+/// `mapmode.occupation_resistance_compliance` cannot be admitted at all.
+#[test]
+fn folds_d52_census_witness_from_the_state_root_count_the_wire_already_carried() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "FRA"), (2, "GER")])),
+        (
+            52,
+            d52_payload_with_observed(0, 3, |rows| {
+                push_d52_row(rows, 5, 1, 2, 1, 2_230_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                push_d52_row(rows, 6, 1, 2, 1, 2_230_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                push_d52_row(rows, 7, 1, 2, 1, 2_230_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                3
+            }),
+        ),
+    ]);
+    let census = &snap["_r2_occupation_census_live"];
+    assert_eq!(census["source"], json!("occupation_resistance_compliance_live"));
+    assert_eq!(census["observed_state_rows"], json!(3));
+    assert_eq!(census["emitted_state_rows"], json!(3));
+    assert_eq!(census["baseline"], json!(true));
+    assert_eq!(census["census_complete"], json!(true));
+}
+
+/// kills: computing `census_complete` from anything but the equality, e.g.
+/// hard-coding `true`, or comparing `emitted` against itself. A full snapshot
+/// enumerates every engine state root, so `emitted < observed` is exactly the
+/// collector's silent `invalid_state_rows` drop.
+///
+/// It also kills turning that drop into a fold `Err`: the rows this record DID
+/// carry are still the engine's rows and they must still reach the snapshot.
+/// An hour that names its own incompleteness outranks one that is thrown away.
+#[test]
+fn folds_d52_census_witness_refuses_a_baseline_that_dropped_a_state_root() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "FRA"), (2, "GER")])),
+        (
+            52,
+            d52_payload_with_observed(0, 4, |rows| {
+                push_d52_row(
+                    rows,
+                    5,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+                1
+            }),
+        ),
+    ]);
+    let census = &snap["_r2_occupation_census_live"];
+    assert_eq!(census["observed_state_rows"], json!(4));
+    assert_eq!(census["emitted_state_rows"], json!(1));
+    assert_eq!(census["census_complete"], json!(false));
+    // The hour still carries what was measured.
+    assert!(snap["states"]["5"]["occupation"].is_object());
+}
+
+/// kills: dropping the `observed != 0` conjunct. The collector emits no rows and
+/// flags the domain when its walk fails, so a failed read reaches this fold as
+/// `0 == 0` and a bare equality would publish it as a COMPLETE census of an
+/// empty world -- the measured-empty-for-absent collapse. d24's consumer guards
+/// the same shape with a range check on its own province census.
+#[test]
+fn folds_d52_census_witness_refuses_a_declared_zero_census() {
+    let snap = chunk1_one_snapshot(vec![(52, d52_payload_with_observed(0, 0, |_| 0))]);
+    let census = &snap["_r2_occupation_census_live"];
+    assert_eq!(census["observed_state_rows"], json!(0));
+    assert_eq!(census["emitted_state_rows"], json!(0));
+    assert_eq!(census["census_complete"], json!(false));
+}
+
+/// kills: leaving the witness set through a refused or failed d52 record. The
+/// key would then republish the LAST good hour's verdict over rows this hour
+/// never obtained -- the same defect the gap map records for D44's DOMAIN_GAP,
+/// and indistinguishable, from the consumer, from a genuinely complete hour.
+#[test]
+fn folds_d52_census_witness_is_an_explicit_null_when_the_record_failed() {
+    // A COMPLETE hour first. Starting from a fresh fold would assert the null
+    // against a witness that was never set, which the failure branch cannot
+    // affect either way -- the thing under test is that a failed record REPLACES
+    // a standing verdict rather than leaving it to be republished.
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            52,
+            d52_payload_with_observed(0, 1, |rows| {
+                push_d52_row(
+                    rows,
+                    5,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+                1
+            }),
+        )],
+        vec![(
+            52,
+            d52_payload_with_observed(COMPACT_STATUS_SOURCE_UNAVAILABLE, 3, |_| 0),
+        )],
+    ]);
+    assert_eq!(
+        snaps[0]["_r2_occupation_census_live"]["census_complete"],
+        json!(true)
+    );
+    let snap = &snaps[1];
+    // `snap["k"]` yields `Value::Null` for a MISSING key too, so the null this
+    // test is about has to be read through `get`. An hour that heard from d52
+    // and refused its record says so with an explicit null; an hour that never
+    // heard from d52 omits the key, and the two are different facts.
+    assert_eq!(
+        snap.get("_r2_occupation_census_live"),
+        Some(&Value::Null),
+        "a refused d52 record publishes an explicit null, not an absent key"
+    );
+    // And the standing claim went with it, so the NEXT delta cannot inherit a
+    // verdict this hour destroyed.
+    let after = chunk1_snapshots(vec![
+        vec![(
+            52,
+            d52_payload_with_observed(0, 1, |rows| {
+                push_d52_row(
+                    rows,
+                    5,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+                1
+            }),
+        )],
+        vec![(
+            52,
+            d52_payload_with_observed(COMPACT_STATUS_SOURCE_UNAVAILABLE, 1, |_| 0),
+        )],
+        vec![(
+            52,
+            d52_payload_with_observed(COMPACT_STATUS_DELTA_DATA, 1, |rows| {
+                push_d52_row(
+                    rows,
+                    5,
+                    1,
+                    2,
+                    1,
+                    3_000_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+                1
+            }),
+        )],
+    ]);
+    assert_eq!(
+        after[2]["_r2_occupation_census_live"]["census_complete"],
+        json!(false),
+        "the failure retired the claim the delta would otherwise have inherited"
+    );
+}
+
+/// kills: publishing the census key on an hour d52 never reported in. The
+/// same-hour `domains_this_hour` guard is what separates "this recorder
+/// refused its own record this hour" from "no d52 record reached this hour",
+/// and an absent key is the second of those.
+#[test]
+fn folds_no_d52_census_witness_at_all_when_the_hour_carried_no_d52_record() {
+    let snap = chunk1_one_snapshot(vec![(18, country_identity_payload(&[(1, "FRA")]))]);
+    assert_eq!(snap.get("_r2_occupation_census_live"), None);
+}
+
+/// kills: reading `invalid_state_rows` as anything but a refusal on a DELTA.
+/// This is the case the header word was added for and the one no derivation
+/// could reach: a delta carries only changed rows, so a root the extraction
+/// could not read this hour simply does not appear, the fold goes on holding
+/// the PREVIOUS hour's value for that state, and publishes it under this hour's
+/// stamp. Both counts match the baseline, so nothing else on the frame differs.
+#[test]
+fn a_d52_delta_that_dropped_a_state_root_refuses_the_census() {
+    let row = |resistance| {
+        move |rows: &mut Vec<u8>| {
+            push_d52_row(
+                rows,
+                5,
+                1,
+                2,
+                1,
+                resistance,
+                6_500_000,
+                OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+            );
+            1
+        }
+    };
+    // TWO observed roots throughout. One would be producer-impossible on the
+    // middle frame: the same single root cannot be both emitted as a row and
+    // counted as unreadable. The baseline therefore emits one of two roots and
+    // is itself incomplete, so the sequence starts from a COMPLETE two-row
+    // baseline instead.
+    let two_rows = |a: i32, b: i32| {
+        move |rows: &mut Vec<u8>| {
+            for (id, resistance) in [(5u32, a), (6u32, b)] {
+                push_d52_row(
+                    rows,
+                    id,
+                    1,
+                    2,
+                    1,
+                    resistance,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+            }
+            2
+        }
+    };
+    let snaps = chunk1_snapshots(vec![
+        vec![(52, d52_payload_with_census(0, 2, 0, two_rows(2_230_000, 1_500_000)))],
+        // A delta that changed state 5 and could not read state 6 at all.
+        vec![(
+            52,
+            d52_payload_with_census(COMPACT_STATUS_DELTA_DATA, 2, 1, row(3_000_000)),
+        )],
+        // A later clean delta: the accumulator still holds a state 6 whose value
+        // is an unknown number of hours old, so the claim stays retired.
+        vec![(
+            52,
+            d52_payload_with_census(COMPACT_STATUS_DELTA_DATA, 2, 0, row(3_100_000)),
+        )],
+    ]);
+    assert_eq!(
+        snaps[0]["_r2_occupation_census_live"]["census_complete"],
+        json!(true)
+    );
+    let dropped = &snaps[1]["_r2_occupation_census_live"];
+    assert_eq!(dropped["invalid_state_rows"], json!(1));
+    assert_eq!(dropped["census_complete"], json!(false));
+    assert_eq!(
+        snaps[2]["_r2_occupation_census_live"]["census_complete"],
+        json!(false),
+        "the accumulator now holds a state whose value is an unknown number of hours old"
+    );
+}
+
+/// kills: removing the d52 arm from `record_malformed_domain_payload`. That is
+/// the OTHER way a d52 record fails -- `validate_domain_data_payload` rejects it
+/// at the stream boundary and the fold is never entered, so the fold's own error
+/// wrapper cannot see it. The sibling test above enters through `ingest_stream`
+/// and therefore does not exercise this path at all: without a test that calls
+/// the boundary function directly, deleting the arm would go unnoticed and a
+/// later delta would inherit completeness across an hour that was thrown away.
+#[test]
+fn a_d52_record_rejected_at_the_stream_boundary_retires_the_census() {
+    let hour = 16_959_360i64;
+    let mut fold = WorldFold::new("d52_boundary_rejection");
+    // A complete baseline first, so there is a standing claim to lose. Folded
+    // directly: this test is about the boundary function, and routing the
+    // baseline through the stream would only add a second thing that could fail.
+    fold.fold_occupation_resistance_compliance(&d52_payload_with_census(0, 1, 0, |rows| {
+        push_d52_row(
+            rows,
+            5,
+            1,
+            2,
+            1,
+            2_230_000,
+            6_500_000,
+            OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+        );
+        1
+    }))
+    .expect("baseline folds");
+    assert_eq!(fold.occupation_census_standing, Some(1));
+
+    fold.record_malformed_domain_payload(
+        raw_for(hour),
+        52,
+        &[0u8; 8],
+        "fixture d52 payload is truncated",
+    );
+    assert_eq!(
+        fold.occupation_census_standing, None,
+        "a boundary-rejected record leaves an accumulator no delta can be complete with"
+    );
+    assert_eq!(fold.occupation_census_this_hour, None);
+}
+
+/// kills: reading `invalid_state_rows` from the wrong header offset, or dropping
+/// it from the published witness. It does NOT claim to kill the drop-count
+/// conjunct of the BASELINE rule, and saying so would be a lie: on a full frame
+/// the producer's own identity forces `emitted + dropped == observed`, so a
+/// dropped root always makes `emitted != observed` too and the equality refuses
+/// first. That conjunct earns its place on DELTAS, where it is the only signal
+/// -- `a_d52_delta_that_dropped_a_state_root_refuses_the_census` is where it is
+/// pinned.
+#[test]
+fn a_d52_baseline_that_dropped_a_state_root_reports_the_drop_it_was_given() {
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload_with_census(0, 4, 3, |rows| {
+            push_d52_row(
+                rows,
+                5,
+                1,
+                2,
+                1,
+                2_230_000,
+                6_500_000,
+                OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+            );
+            1
+        }),
+    )]);
+    let census = &snap["_r2_occupation_census_live"];
+    assert_eq!(census["observed_state_rows"], json!(4));
+    assert_eq!(census["emitted_state_rows"], json!(1));
+    assert_eq!(census["invalid_state_rows"], json!(3));
+    assert_eq!(census["census_complete"], json!(false));
+}
+
+/// kills: the BASELINE rule's `!dropped_a_root` conjunct, which nothing else in
+/// the suite can reach. On a producer-built full frame the conjunct is redundant
+/// -- the extractor's own identity forces `emitted + dropped == observed`, so a
+/// dropped root always makes `emitted != observed` and the equality refuses
+/// first. It is not redundant on an arbitrary FRAMED payload, because
+/// `split_payload` deliberately does not enforce census arithmetic: a frame
+/// claiming every root produced a row AND that roots were unreadable is
+/// self-contradictory, and the fold must call that census incomplete rather than
+/// complete. This is the fail-closed half of the rule, and it is the one shape
+/// that isolates it.
+#[test]
+fn a_self_contradictory_d52_baseline_census_is_not_complete() {
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        // Two roots, two rows -- the equality is satisfied -- and yet the frame
+        // also claims one root could not be read.
+        d52_payload_with_census(0, 2, 1, |rows| {
+            for id in [5u32, 6] {
+                push_d52_row(
+                    rows,
+                    id,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+            }
+            2
+        }),
+    )]);
+    let census = &snap["_r2_occupation_census_live"];
+    assert_eq!(census["observed_state_rows"], json!(2));
+    assert_eq!(census["emitted_state_rows"], json!(2));
+    assert_eq!(census["invalid_state_rows"], json!(1));
+    assert_eq!(
+        census["census_complete"],
+        json!(false),
+        "a frame that claims a drop cannot also claim a complete census"
+    );
+}
+
+/// kills: digesting the fold's own key order, or dropping the digest. The state
+/// map is keyed by the DECIMAL STRING, so its natural order is lexicographic --
+/// "10" sorts before "9" -- while the consumer sorts numerically. Any world with
+/// more than nine occupied states would then disagree across the seam and refuse
+/// every healthy hour.
+///
+/// It also folds a SECOND world whose ids differ by one substitution and asserts
+/// the published digests differ. Comparing two locally computed hashes instead
+/// would have asserted a property of FNV rather than of this producer, which is
+/// what an earlier revision of this test did.
+#[test]
+fn the_d52_census_digest_is_over_numerically_sorted_state_ids() {
+    let digest_of = |ids: &[u32]| {
+        const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut hash = OFFSET_BASIS;
+        for id in ids {
+            for byte in id.to_le_bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(PRIME);
+            }
+        }
+        hash
+    };
+    // Ten states, so lexicographic and numeric order genuinely differ.
+    let ids: Vec<u32> = (1..=10).collect();
+    let snap = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload_with_observed(0, ids.len() as u32, |rows| {
+            for id in 1..=10u32 {
+                push_d52_row(
+                    rows,
+                    id,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+            }
+            10
+        }),
+    )]);
+    let census = &snap["_r2_occupation_census_live"];
+    assert_eq!(census["published_state_rows"], json!(10));
+    assert_eq!(
+        census["published_state_digest"],
+        json!(digest_of(&ids).to_string())
+    );
+
+    // The same world with state 10 replaced by state 11, folded rather than
+    // hashed locally: the PUBLISHED digests must differ.
+    let substituted = chunk1_one_snapshot(vec![(
+        52,
+        d52_payload_with_observed(0, 10, |rows| {
+            for id in (1..=9u32).chain(std::iter::once(11)) {
+                push_d52_row(
+                    rows,
+                    id,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+            }
+            10
+        }),
+    )]);
+    let substituted = &substituted["_r2_occupation_census_live"];
+    assert_eq!(substituted["published_state_rows"], json!(10));
+    assert_ne!(
+        substituted["published_state_digest"], census["published_state_digest"],
+        "a substituted state must change the published digest, at equal cardinality"
+    );
+}
+
+/// kills: letting a delta assert completeness on its own row count, and killing
+/// the retirement rule with it. A delta carries only CHANGED rows, so
+/// `emitted == observed` is meaningless for it; what it inherits is the
+/// baseline's verdict, and the one thing it can falsify is the baseline's
+/// subject -- an engine that now reports a different number of state roots is
+/// not the world the baseline enumerated.
+#[test]
+fn a_d52_delta_inherits_the_baseline_census_and_retires_it_when_the_world_resizes() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            52,
+            d52_payload_with_observed(0, 2, |rows| {
+                push_d52_row(rows, 5, 1, 2, 1, 2_230_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                push_d52_row(rows, 6, 1, 2, 1, 2_230_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                2
+            }),
+        )],
+        vec![(
+            52,
+            d52_payload_with_observed(COMPACT_STATUS_DELTA_DATA, 2, |rows| {
+                push_d52_row(rows, 5, 1, 2, 1, 3_000_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                1
+            }),
+        )],
+        vec![(
+            52,
+            d52_payload_with_observed(COMPACT_STATUS_DELTA_DATA, 9, |rows| {
+                push_d52_row(rows, 5, 1, 2, 1, 3_100_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                1
+            }),
+        )],
+    ]);
+    assert_eq!(snaps[0]["_r2_occupation_census_live"]["census_complete"], json!(true));
+    let inherited = &snaps[1]["_r2_occupation_census_live"];
+    assert_eq!(inherited["census_complete"], json!(true));
+    assert_eq!(inherited["baseline"], json!(false));
+    assert_eq!(inherited["emitted_state_rows"], json!(1));
+    assert_eq!(inherited["observed_state_rows"], json!(2));
+    assert_eq!(snaps[2]["_r2_occupation_census_live"]["census_complete"], json!(false));
+}
+
+/// kills: retaining the standing claim from a baseline that was itself
+/// INCOMPLETE. Storing `observed_state_rows` unconditionally is the obvious
+/// implementation and it is wrong: the incomplete baseline has an observed count
+/// too, so the very next delta matches it and publishes `census_complete: true`
+/// for a census the baseline never claimed. Found by review, not by foresight.
+#[test]
+fn a_d52_delta_cannot_inherit_completeness_from_an_incomplete_baseline() {
+    let snaps = chunk1_snapshots(vec![
+        vec![(
+            52,
+            d52_payload_with_observed(0, 3, |rows| {
+                push_d52_row(
+                    rows,
+                    5,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+                1
+            }),
+        )],
+        vec![(
+            52,
+            d52_payload_with_observed(COMPACT_STATUS_DELTA_DATA, 3, |rows| {
+                push_d52_row(
+                    rows,
+                    5,
+                    1,
+                    2,
+                    1,
+                    3_000_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+                1
+            }),
+        )],
+    ]);
+    assert_eq!(
+        snaps[0]["_r2_occupation_census_live"]["census_complete"],
+        json!(false)
+    );
+    assert_eq!(
+        snaps[1]["_r2_occupation_census_live"]["census_complete"],
+        json!(false),
+        "the delta matched the baseline's observed count, and the baseline had nothing to give"
+    );
+}
+
+/// kills: letting a retired claim come back. A delta that reports a different
+/// state-root count retires the baseline's claim; if it only reported ITSELF
+/// incomplete, a later delta drifting back to the original count would find the
+/// standing value still set and republish completeness over an accumulator that
+/// has since absorbed an unmeasured world size.
+#[test]
+fn a_retired_d52_census_claim_is_not_resurrected_by_a_later_matching_delta() {
+    let baseline = |observed, status| {
+        d52_payload_with_observed(status, observed, |rows| {
+            push_d52_row(
+                rows,
+                5,
+                1,
+                2,
+                1,
+                2_230_000,
+                6_500_000,
+                OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+            );
+            1
+        })
+    };
+    let snaps = chunk1_snapshots(vec![
+        vec![(52, baseline(1, 0))],
+        vec![(52, baseline(7, COMPACT_STATUS_DELTA_DATA))],
+        vec![(52, baseline(1, COMPACT_STATUS_DELTA_DATA))],
+    ]);
+    assert_eq!(
+        snaps[0]["_r2_occupation_census_live"]["census_complete"],
+        json!(true)
+    );
+    assert_eq!(
+        snaps[1]["_r2_occupation_census_live"]["census_complete"],
+        json!(false)
+    );
+    assert_eq!(
+        snaps[2]["_r2_occupation_census_live"]["census_complete"],
+        json!(false),
+        "the world resized once; drifting back is not evidence it was re-enumerated"
+    );
+}
+
+/// kills: retiring the census only on the STATUS-flagged refusals and not on a
+/// fold `Err`. A malformed row aborts the loop half way through, leaving the
+/// accumulator part-mutated -- and the standing claim intact, so the next delta
+/// republished completeness over it. The retirement therefore wraps the whole
+/// fold rather than sitting at each early return.
+#[test]
+fn a_malformed_d52_record_retires_the_census_for_the_deltas_after_it() {
+    let good = |observed, status| {
+        d52_payload_with_observed(status, observed, |rows| {
+            push_d52_row(
+                rows,
+                5,
+                1,
+                2,
+                1,
+                2_230_000,
+                6_500_000,
+                OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+            );
+            1
+        })
+    };
+    // A row carrying an unknown flag bit: `fold_occupation_resistance_compliance`
+    // returns `Err` from inside the row loop, after the census was recorded.
+    let malformed = d52_payload_with_observed(COMPACT_STATUS_DELTA_DATA, 1, |rows| {
+        push_d52_row(rows, 5, 1, 2, 1, 2_230_000, 6_500_000, 1 << 30);
+        1
+    });
+    let snaps = chunk1_snapshots(vec![
+        vec![(52, good(1, 0))],
+        vec![(52, malformed)],
+        vec![(52, good(1, COMPACT_STATUS_DELTA_DATA))],
+    ]);
+    assert_eq!(
+        snaps[0]["_r2_occupation_census_live"]["census_complete"],
+        json!(true)
+    );
+    assert_eq!(
+        snaps[1]["_r2_occupation_census_live"],
+        Value::Null,
+        "a record that failed to fold has no census"
+    );
+    assert_eq!(
+        snaps[2]["_r2_occupation_census_live"]["census_complete"],
+        json!(false),
+        "the accumulator the delta lands in was part-mutated by the failure"
+    );
+}
+
+/// kills: deriving `published_state_rows` from `emitted_state_rows`, or dropping
+/// it. D52 emits a row for every state root, occupied or not, and the fold
+/// removes the `occupation` object again when a row's flags produced no content,
+/// so the published set is a strict subset by an amount only the fold knows.
+/// Without this number the replay guard's comparisons are only self-consistent:
+/// a member lost between the fold and the frame leaves raw and decoded agreeing
+/// at the smaller count with nothing to contradict them.
+#[test]
+fn the_d52_census_publishes_the_state_count_the_fold_actually_holds() {
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(1, "FRA"), (2, "GER")])),
+        (
+            52,
+            d52_payload_with_observed(0, 3, |rows| {
+                // Two rows with content...
+                push_d52_row(
+                    rows,
+                    5,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_RESISTANCE,
+                );
+                push_d52_row(
+                    rows,
+                    6,
+                    1,
+                    2,
+                    1,
+                    2_230_000,
+                    6_500_000,
+                    OCC_ROW_FLAG_OWNER | OCC_ROW_FLAG_COMPLIANCE,
+                );
+                // ...and one whose flags produce an empty occupation object, so
+                // the fold publishes no `occupation` for it at all.
+                push_d52_row(rows, 7, 1, 2, 1, 2_230_000, 6_500_000, OCC_ROW_FLAG_OWNER);
+                3
+            }),
+        ),
+    ]);
+    let census = &snap["_r2_occupation_census_live"];
+    assert_eq!(census["observed_state_rows"], json!(3));
+    assert_eq!(census["emitted_state_rows"], json!(3));
+    assert_eq!(
+        census["published_state_rows"],
+        json!(2),
+        "the third row produced no occupation object and must not be counted"
+    );
+    assert_eq!(census["census_complete"], json!(true));
+    assert!(snap["states"]["5"]["occupation"].is_object());
+    assert!(snap["states"]["6"]["occupation"].is_object());
+    assert!(snap["states"]["7"].get("occupation").is_none());
 }
 
 #[test]
@@ -29939,7 +30669,15 @@ fn bit15_converted_folds() -> Vec<Bit15Case> {
         },
         Bit15Case {
             domain_id: OCCUPATION_RESISTANCE_COMPLIANCE_DOMAIN_ID,
-            fold: "fold_occupation_resistance_compliance",
+            // The INNER function, because this field names the method whose body
+            // asks `refuse_inadmissible_baseline_clear` and that is what the
+            // divergence check below reads. D52's public
+            // `fold_occupation_resistance_compliance` is a wrapper that retires
+            // the occupation census on any `Err` and delegates the rest; the
+            // admission call lives one level in. Every case is exercised through
+            // `fold_one_domain_record` by `domain_id`, so this string is a label
+            // and moving it does not change what runs.
+            fold: "fold_occupation_resistance_compliance_inner",
             payload: |extra| domain52_occupation_payload(extra),
             refusal_is_err: false,
             refused_by: Bit15RefusedBy::Fold,

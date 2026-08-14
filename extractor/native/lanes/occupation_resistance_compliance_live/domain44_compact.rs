@@ -3,7 +3,7 @@ use std::convert::TryInto;
 
 pub const DOMAIN_ID: u16 = 52;
 pub const DOMAIN_NAME: &str = "occupation_resistance_compliance_live";
-pub const HEADER_LEN: usize = 52;
+pub const HEADER_LEN: usize = 56;
 pub const ROW_LEN: usize = 64;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
@@ -76,6 +76,26 @@ pub struct OccupationHeader {
     /// (occupies the previously reserved header u32 at byte 48; historical
     /// payloads carry 0).
     pub garrison_anomaly_rows: u32,
+    /// This frame's COVERAGE VERDICT, at byte 52. Zero means the walk accounted
+    /// for every root it could see and the province array did not move under it;
+    /// nonzero means the hour's coverage is not to be trusted. The magnitude is
+    /// accounting, not a defensible count of lost states.
+    ///
+    /// Three things drive it nonzero: roots the row loop walked and could not
+    /// read, roots discovery never found, and a province array replaced
+    /// mid-walk. The extractor has always counted the first kind — one per root whose
+    /// `read_state_row` returned `Ok(None)` or `Err`
+    /// (`collector_module.rs::extract_rows_from_state_roots`) — and until lane
+    /// IM it threw the count away, which made a dropped root invisible to every
+    /// consumer. The second kind is folded in through the observed-root count
+    /// (`collector_module.rs::StateRoots::observed_state_rows_bound`), because
+    /// the row loop never sees those states and cannot count them. On a FULL frame the loss was still derivable, because
+    /// `row_count + invalid_state_rows == observed_state_rows` exactly; on a
+    /// DELTA it was not derivable at all, and a delta that silently dropped a
+    /// root left the fold retaining the previous hour's value for that state
+    /// under this hour's stamp. That is the wrong-hour rule, so the count is now
+    /// carried.
+    pub invalid_state_rows: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,6 +176,7 @@ pub fn encode_payload(header: &OccupationHeader, rows: &[OccupationStateRow]) ->
     payload.extend_from_slice(&header.garrison_template_rows.to_le_bytes());
     payload.extend_from_slice(&header.garrison_scalar_rows.to_le_bytes());
     payload.extend_from_slice(&header.garrison_anomaly_rows.to_le_bytes());
+    payload.extend_from_slice(&header.invalid_state_rows.to_le_bytes());
     for row in rows {
         payload.extend_from_slice(&row.state_id.to_le_bytes());
         payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
@@ -262,6 +283,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let garrison_template_rows = read_u32_le(payload, 40) as usize;
     let garrison_scalar_rows = read_u32_le(payload, 44) as usize;
     let garrison_anomaly_rows = read_u32_le(payload, 48) as usize;
+    let invalid_state_rows = read_u32_le(payload, 52) as usize;
     summary.status_flags_or |= status_flags;
 
     if scale_raw != FIXED_SCALE_RAW {
@@ -277,9 +299,30 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         ));
         return summary;
     }
-    if row_count > observed_state_rows {
+    // Rows and drops together never exceed the roots walked, on ANY frame. A
+    // delta's rows are a subset of the same valid extraction the drop count
+    // describes (`collector_module.rs::delta_rows` selects from it), so the
+    // inequality holds for every frame the producer can build even though only a
+    // FULL frame satisfies it with equality.
+    //
+    // Two standalone checks stood here and were removed for the same reason:
+    // `invalid_state_rows > observed_state_rows` and `row_count >
+    // observed_state_rows`. Neither count is ever negative, so this one
+    // inequality already implies both, and no payload can fail either without
+    // failing this. A guard whose removal no test can detect is dead logic, not
+    // defence in depth -- the same call `province_snow_accumulator_status`
+    // records making about its own dropped-key check.
+    let census_accounted = row_count.saturating_add(invalid_state_rows);
+    if census_accounted > observed_state_rows {
         summary.parse_errors.push(format!(
-            "offset {offset}: occupation row_count {row_count} > observed_state_rows {observed_state_rows}"
+            "offset {offset}: occupation row_count {row_count} + invalid_state_rows \
+             {invalid_state_rows} > observed_state_rows {observed_state_rows}"
+        ));
+    }
+    if status_flags & STATUS_DELTA_DATA == 0 && census_accounted != observed_state_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation full frame row_count {row_count} + invalid_state_rows \
+             {invalid_state_rows} != observed_state_rows {observed_state_rows}"
         ));
     }
     if changed_rows > row_count {
@@ -888,6 +931,12 @@ mod tests {
             garrison_template_rows: 0,
             garrison_scalar_rows: 0,
             garrison_anomaly_rows: 0,
+            // 1081 roots walked, one row emitted: the other 1080 are drops. The
+            // fixture declared the live observed count and one row long before
+            // the drop count was on the wire, so it was never self-consistent --
+            // it just had nothing to be inconsistent WITH until the full-frame
+            // identity `row_count + invalid == observed` started being checked.
+            invalid_state_rows: 1080,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(32, &payload);
@@ -949,6 +998,7 @@ mod tests {
                 garrison_template_rows: 0,
                 garrison_scalar_rows: 0,
                 garrison_anomaly_rows: 0,
+                invalid_state_rows: 0,
             },
             &rows,
         );
@@ -977,6 +1027,7 @@ mod tests {
                 garrison_template_rows: 0,
                 garrison_scalar_rows: 0,
                 garrison_anomaly_rows: 0,
+                invalid_state_rows: 0,
             },
             &[row],
         );
@@ -1008,6 +1059,7 @@ mod tests {
                 garrison_template_rows: 1,
                 garrison_scalar_rows: 0,
                 garrison_anomaly_rows: 0,
+                invalid_state_rows: 0,
             },
             &[row],
         );
@@ -1048,6 +1100,7 @@ mod tests {
             garrison_template_rows: 0,
             garrison_scalar_rows: 1,
             garrison_anomaly_rows: anomaly_rows,
+            invalid_state_rows: 0,
         }
     }
 
@@ -1194,6 +1247,7 @@ mod tests {
                 garrison_template_rows: 0,
                 garrison_scalar_rows: 0,
                 garrison_anomaly_rows: 0,
+                invalid_state_rows: 0,
             },
             &[row],
         );
@@ -1226,6 +1280,9 @@ mod tests {
             garrison_template_rows: 0,
             garrison_scalar_rows: 0,
             garrison_anomaly_rows: 0,
+            // This payload carries no state rows at all, so the one root it
+            // declares having walked has to be accounted for as a drop.
+            invalid_state_rows: 1,
         };
         let alert = GarrisonAlertExtension {
             game_hour_raw: 1,
@@ -1304,6 +1361,7 @@ mod tests {
             garrison_template_rows: 0,
             garrison_scalar_rows: 0,
             garrison_anomaly_rows: 0,
+            invalid_state_rows: 0,
         };
         let alert = GarrisonAlertExtension {
             game_hour_raw: 1,

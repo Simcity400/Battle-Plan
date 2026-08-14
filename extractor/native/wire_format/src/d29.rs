@@ -1,8 +1,8 @@
 //! d29 `ships_live` — one row per live ship instance.
 //!
-//! Derived from `world_fold.rs:18098`-`:18209`
+//! Derived from `world_fold.rs:18191`-`:18302`
 //! (`fold_ships`), its payload constants at `:973`-`:974` and `:1039`-`:1045`, the
-// @world-fold-authority domain=29 functions=fold_ships lines=18098-18209 sha256=05578c1403d6463124e9d7f942c571186b2392b2b7926221a917bf067c8d6b11 closure=a8aee9640e2bb97e7545ab3ac92f4274aec0e29845629cd03157ff146e5d1d47
+// @world-fold-authority domain=29 functions=fold_ships lines=18191-18302 sha256=05578c1403d6463124e9d7f942c571186b2392b2b7926221a917bf067c8d6b11 closure=90599d269f3e9f12c44b8a989622e45e1cf1aa2d01e107f0d41b0ab7522c2110
 //! render path that consumes the folded state (`:8620`-`:8634`, `:8539`-`:8573`),
 //! and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:47977`-`:48031`,
