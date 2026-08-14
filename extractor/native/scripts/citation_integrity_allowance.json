@@ -1513,14 +1513,6 @@
       "map_viewer/src/production_features/xmap05.rs:1146-1152": 1,
       "map_viewer/src/production_features/xmap05.rs:1162": 1
     },
-    "extractor/native/recorder_host/src/world_fold/wave2_sidecars/xui12_production_lines.rs": {
-      "game_ui/src/production_lines.rs:748": 1,
-      "game_ui/src/production_lines.rs:748-761": 1
-    },
-    "extractor/native/recorder_host/src/world_fold/wave2_sidecars/xui15_trade_catalogue.rs": {
-      "game_ui/src/trade_compositor.rs:522": 1,
-      "game_ui/src/trade_compositor.rs:522-534": 1
-    },
     "extractor/native/recorder_host/src/world_fold/wave2_sidecars/xui23_command_abilities.rs": {
       "game_ui/src/active_abilities.rs:1091": 1,
       "game_ui/src/active_abilities.rs:1091-1101": 1,
