@@ -114,6 +114,29 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
             or not focus.get("source_layer")
         ):
             raise RuntimeError(f"focus definition {focus_id!r} has inconsistent identity")
+        # The two scripted-gate counts XUI10's replay-side scene derivation
+        # refuses on. They are counts of blocks the parser saw, so a negative or
+        # non-integer value means the parser row was assembled by something
+        # other than `parse_focus_def.parse_focus`, and a missing key means an
+        # artifact built before the derivation existed. Both must fail the gate
+        # rather than reach the consumer as a silent "no scripted geometry".
+        for scripted_key in ("scripted_position_offsets", "allow_branch_blocks"):
+            value = focus.get(scripted_key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise RuntimeError(
+                    f"focus definition {focus_id!r} has no valid {scripted_key} count"
+                )
+        exclusions = focus.get("mutually_exclusive")
+        if (
+            not isinstance(exclusions, list)
+            or any(not _PORTABLE_ID.fullmatch(other) for other in exclusions if isinstance(other, str))
+            or any(not isinstance(other, str) for other in exclusions)
+            or len(set(exclusions)) != len(exclusions)
+            or focus_id in exclusions
+        ):
+            raise RuntimeError(
+                f"focus definition {focus_id!r} has a malformed mutually_exclusive set"
+            )
         kind_counts[kind] += 1
         style = focus.get("background_style")
         style_name = focus.get("background_style_name")

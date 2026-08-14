@@ -68,6 +68,23 @@ pub struct StaticFocusDefinition {
     pub authored_y: Option<f64>,
     pub relative_position_id: Option<String>,
     pub prerequisites: Vec<Vec<String>>,
+    /// Authored mutual-exclusion partners. XUI10's exclusive link tiles are
+    /// selected by this set, so it is admitted here rather than re-derived.
+    pub mutually_exclusive: Vec<String>,
+    /// How many scripted `offset` blocks the authored definition declares.
+    ///
+    /// `CNationalFocus::GetPosition` adds each block's x/y to the resolved
+    /// position only when that block's trigger passes for the evaluating
+    /// country, so a non-zero count means the authored position alone does not
+    /// determine where the node lands. A replay-side derivation cannot evaluate
+    /// scripted triggers; it refuses such a node by name instead of pretending
+    /// the offsets are absent, which is why the count is admitted rather than
+    /// dropped.
+    pub scripted_position_offsets: u32,
+    /// How many scripted `allow_branch` blocks the authored definition
+    /// declares. Non-zero means the node's visibility is a trigger result, not
+    /// an authored fact.
+    pub allow_branch_blocks: u32,
     pub background_style_name: String,
     pub background_style: StaticFocusBackgroundStyle,
     pub source_file: String,
@@ -187,6 +204,15 @@ struct FocusRow {
     relative_position_id: Option<String>,
     #[serde(default)]
     prerequisites: Vec<Vec<String>>,
+    // No `serde(default)` on the three rows below. An artifact built before
+    // `focus_defs_static_gate.py` emitted them cannot distinguish "this focus
+    // has no scripted offsets" from "this build never looked", and the
+    // derivation's refusal turns on exactly that difference. Defaulting them to
+    // zero/empty would silently promote every stale artifact to "fully
+    // derivable authored geometry", so a stale artifact must fail admission.
+    mutually_exclusive: Vec<String>,
+    scripted_position_offsets: u32,
+    allow_branch_blocks: u32,
     background_style_name: String,
     background_style: StaticFocusBackgroundStyle,
     source_file: String,
@@ -355,6 +381,14 @@ pub fn admit_static_focus_definitions(
                 group.iter().any(|id| !portable_id(id))
                     || group.iter().collect::<BTreeSet<_>>().len() != group.len()
             })
+            || row.mutually_exclusive.iter().any(|id| !portable_id(id))
+            || row
+                .mutually_exclusive
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != row.mutually_exclusive.len()
+            || row.mutually_exclusive.contains(&focus_id)
         {
             return Err(StaticFocusDefsError::new(format!(
                 "focus {focus_id:?} has malformed identity, geometry, or dependency rows"
@@ -390,6 +424,9 @@ pub fn admit_static_focus_definitions(
                 authored_y: row.y,
                 relative_position_id: row.relative_position_id,
                 prerequisites: row.prerequisites,
+                mutually_exclusive: row.mutually_exclusive,
+                scripted_position_offsets: row.scripted_position_offsets,
+                allow_branch_blocks: row.allow_branch_blocks,
                 background_style_name: row.background_style_name,
                 background_style: row.background_style,
                 source_file: row.source_file,

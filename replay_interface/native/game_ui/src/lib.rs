@@ -26,6 +26,7 @@ pub mod engine_surface_roots;
 pub mod engine_text_layout;
 pub mod event_chrome;
 pub mod focus_observer;
+pub mod focus_observer_derivation;
 pub mod font;
 pub mod frontend_meta;
 pub mod gfx;

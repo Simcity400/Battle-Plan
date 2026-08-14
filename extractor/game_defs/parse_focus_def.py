@@ -12,7 +12,9 @@ Per focus tree:
   id, country (where set), default, continuous_focus_position, shared_focus refs
 Per focus:
   id, icon, overlay, text_icon, x, y, relative_position_id, authored base cost,
-  prerequisites [[...] or...], mutually_exclusive, available/bypass presence,
+  prerequisites [[...] or...], mutually_exclusive, scripted `offset` and
+  `allow_branch` block COUNTS (presence, never trigger bodies), available/bypass
+  presence,
   exact background style and four state sprites, search_filters,
   loc {title,desc}, source_file. The authored cost is not promoted to an
   effective runtime duration because decisions and scripted state can reduce it.
@@ -82,6 +84,29 @@ def _prereq_groups(node: Node):
     return groups
 
 
+def _mutual_exclusions(node: Node):
+    """Every `mutually_exclusive` block on this focus, flattened and deduped.
+
+    ``node.get`` returns only the FIRST block. Shipped content authors repeated
+    blocks: 28 effective vanilla focuses carry two, and for 27 of them the second
+    block names a partner the first does not, so reading only the first deletes
+    the exclusive link tile for that pair from an otherwise complete topology.
+    (The 28th, ``URG_accion_revisionista_del_uruguay``, repeats the same two
+    partners in both blocks and loses nothing -- which is why the dedupe below
+    is not cosmetic.) Order is authored order with the first occurrence winning,
+    so the list is stable and the static gate's uniqueness check has something
+    deterministic to judge.
+    """
+    seen = []
+    for blk in node.get_all("mutually_exclusive"):
+        if not isinstance(blk, Node):
+            continue
+        for k, v in blk.entries:
+            if k.lower() == "focus" and isinstance(v, str) and v not in seen:
+                seen.append(v)
+    return seen
+
+
 def parse_focus(node: Node, loc, rel, source_layer=None) -> dict:
     fid = _scalar(node.get("id"))
     if not fid:
@@ -99,9 +124,21 @@ def parse_focus(node: Node, loc, rel, source_layer=None) -> dict:
         "relative_position_id": _scalar(node.get("relative_position_id")),
         "cost": _num(node.get("cost")),
         "prerequisites": _prereq_groups(node),
-        "mutually_exclusive": [v for k, v in (node.get("mutually_exclusive").entries
-                               if isinstance(node.get("mutually_exclusive"), Node) else [])
-                               if k.lower() == "focus" and isinstance(v, str)],
+        "mutually_exclusive": _mutual_exclusions(node),
+        # Count, not contents. `CNationalFocus::GetPosition` (a729
+        # `FUN_1402d2330`) adds each `offset` block's x/y to the resolved
+        # position ONLY when that block's trigger passes against the evaluating
+        # country, so a focus with any offset block has a country-dependent
+        # authored position. A replay-side derivation cannot evaluate scripted
+        # triggers, so it needs to know the block is THERE in order to refuse;
+        # it never needs the trigger body. Emitting the count rather than a
+        # boolean keeps the gate able to say how much scripted geometry the
+        # effective content carries.
+        "scripted_position_offsets": len(node.get_all("offset")),
+        # Same shape, for the other scripted gate on the same node: a focus with
+        # an `allow_branch` block is visible only when that trigger passes, so
+        # the visible set is not a function of authored content alone.
+        "allow_branch_blocks": len(node.get_all("allow_branch")),
         "has_available": node.get("available") is not None,
         "has_bypass": node.get("bypass") is not None,
         "has_completion_reward": node.get("completion_reward") is not None,

@@ -5778,14 +5778,35 @@ impl ProductionUiRenderer {
             Some(carrier) => carrier,
             None => {
                 route.semantic = Some(semantic);
+                // Lane IE proved EIR-NE-002's producer half cannot be written,
+                // and the owner routed the scene to a replay-side derivation
+                // instead. The status alone said only "no carrier", which reads
+                // as an unfinished recorder.
+                //
+                // These are the CONTENT-INDEPENDENT refusals, read off the
+                // derivation's inventory. They are the whole reason today, and
+                // they are free to report. Content-dependent refusals -- a node
+                // moved by a scripted offset, an edge to a node the layout did
+                // not place -- are decided by
+                // `focus_observer_derivation::derive_observer_focus_scene` when
+                // a scene is actually derived, and are deliberately not computed
+                // here: they would need the authored GUI layout parsed on a
+                // route that runs every frame, to add detail to a refusal the
+                // inventory has already settled.
                 route.gaps.push(ObserverUiGap {
                     surface: "XUI10/national_focus",
                     field: "evaluated_all_country_focus_scene",
                     required_domain:
-                        "EIR-NE-002 canonical current-hour all-country evaluated focus carrier",
+                        "replay-derived observer focus scene; EIR-NE-002's all-country carrier \
+                         cannot be produced passively",
                     reason: format!(
-                        "passive evaluated focus carrier is {:?}",
-                        frame.national_focus_observer_exact_status()
+                        "passive evaluated focus carrier is {:?}; the replay-side derivation \
+                         (game_ui/src/focus_observer_derivation.rs::derive_observer_focus_scene) \
+                         cannot produce these families for any content: {}. Of those, the engine \
+                         law is already ported for: {}",
+                        frame.national_focus_observer_exact_status(),
+                        crate::focus_observer_derivation::statically_refused_families().join("; "),
+                        crate::focus_observer_derivation::law_ported_families().join("; "),
                     ),
                 });
                 return route;
